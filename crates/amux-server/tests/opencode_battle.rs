@@ -67,10 +67,7 @@ async fn collect_events(
         }
         match tokio::time::timeout(end - now, rx.recv()).await {
             Ok(Ok(ev)) => {
-                let terminal = matches!(
-                    ev,
-                    WorkerEvent::TurnCompleted(_) | WorkerEvent::Exited(_)
-                );
+                let terminal = matches!(ev, WorkerEvent::TurnCompleted(_) | WorkerEvent::Exited(_));
                 out.push(ev);
                 if terminal {
                     break;
@@ -152,7 +149,11 @@ async fn state_transitions_idle_working_idle() {
     );
 
     let final_state = wait_state(&proto, &w, |s| *s == AgentState::Idle).await;
-    assert_eq!(final_state, AgentState::Idle, "must return to Idle after turn");
+    assert_eq!(
+        final_state,
+        AgentState::Idle,
+        "must return to Idle after turn"
+    );
 }
 
 // ---- 2. Conversation continuity: turn 2 remembers turn 1 ----
@@ -247,8 +248,10 @@ async fn conversation_continuity_across_turns() {
     let kinds2: Vec<_> = evs.iter().map(kind).collect();
     if kinds2.contains(&"rate_limited") || kinds2.contains(&"failed") {
         eprintln!("SKIPPED: hit rate limit during conversation test. Events: {kinds2:?}");
-        eprintln!("Conversation continuity is verified by the unit test \
-                   real_claude_conversation_remembers_pomegranate (passed separately).");
+        eprintln!(
+            "Conversation continuity is verified by the unit test \
+                   real_claude_conversation_remembers_pomegranate (passed separately)."
+        );
         return;
     }
 
@@ -351,8 +354,10 @@ async fn cancel_stops_running_turn() {
     proto.cancel(&w).await.unwrap();
 
     // Should settle to Exited or Idle within a reasonable time
-    let final_state =
-        wait_state(&proto, &w, |s| matches!(s, AgentState::Idle | AgentState::Exited { .. })).await;
+    let final_state = wait_state(&proto, &w, |s| {
+        matches!(s, AgentState::Idle | AgentState::Exited { .. })
+    })
+    .await;
     eprintln!("state after cancel: {final_state:?}");
 
     let evs = collect_events(&mut rx, Duration::from_secs(10)).await;
@@ -392,7 +397,11 @@ async fn idempotency_prevents_double_execution() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     let state = proto.state(&w).await.unwrap();
-    assert_eq!(state, AgentState::Idle, "should stay Idle (no second spawn)");
+    assert_eq!(
+        state,
+        AgentState::Idle,
+        "should stay Idle (no second spawn)"
+    );
 }
 
 // ---- 6. Error handling: bad prompt/exit ----
@@ -589,13 +598,7 @@ async fn reject_send_while_working() {
     let mut rx = proto.events(&w);
 
     proto
-        .send_prompt(
-            &w,
-            prompt(
-                "busy-1",
-                "Write a paragraph about the weather.",
-            ),
-        )
+        .send_prompt(&w, prompt("busy-1", "Write a paragraph about the weather."))
         .await
         .unwrap();
 

@@ -5,70 +5,74 @@
 //! alias registry (RR-0018a).
 
 pub mod alerts;
-pub mod branding;
-pub mod channels;
-pub mod stats;
-pub mod usage;
 pub mod aliases;
 pub mod auth;
 pub mod board;
 pub mod board_intake;
 pub mod board_lifecycle;
-pub mod criteria;
-pub mod dependency_audit;
+pub mod board_themes;
+pub mod branding;
+pub mod brex;
 pub mod browser;
 pub mod browser_import;
 pub mod calendar;
+pub mod channels;
+pub mod commit_mentions;
+pub mod config_iac;
+pub mod connection;
 pub mod connectors;
+pub mod criteria;
+pub mod crm;
+pub mod deleted_substrate;
+pub mod dependency_audit;
 pub mod dictation;
-pub mod tts;
 pub mod email;
 pub mod email_approval;
+pub mod email_intel;
+pub mod env_config;
 pub mod file_viewer;
 pub mod files;
 pub mod fs;
 pub mod git_guard;
-pub mod email_intel;
-pub mod grants;
+pub mod gmail;
 pub mod gmail_auth;
 pub mod google_sa;
-pub mod groups;
-pub mod crm;
-pub mod speedtest;
-pub mod habits;
-pub mod health;
-pub mod env_config;
-pub mod gmail;
+pub mod grants;
 pub mod graph;
+pub mod groups;
+pub mod habits;
 pub mod harness;
+pub mod health;
 pub mod history;
 pub mod history_ask;
-pub mod reports;
-pub mod terminal;
-pub mod invariants_api;
-pub mod brex;
 pub mod interactions;
+pub mod invariants_api;
 pub mod journal;
 pub mod layout_presets;
 pub mod log_search;
+pub mod lookup;
 pub mod map;
-pub mod measured;
+pub mod mcp;
 pub mod mdai;
+pub mod measured;
 pub mod memories;
+pub mod messages;
 pub mod metrics;
 pub mod observability;
 pub mod offline_origin;
-pub mod messages;
+pub mod orchestrate;
+pub mod orchestrations;
 pub mod org;
-pub mod prefs;
-pub mod recordings;
-pub mod policy;
 pub mod planning;
+pub mod policy;
+pub mod prefs;
+pub mod projects;
 pub mod proxies;
-pub mod tunnel;
 pub mod py_proxy;
 pub mod reclaim;
 pub mod reconciliation;
+pub mod recordings;
+pub mod reports;
 pub mod request_log;
 pub mod review;
 pub mod saved_messages;
@@ -78,27 +82,25 @@ pub mod screen;
 pub mod search;
 pub mod self_update;
 pub mod session_verbs;
-pub mod telegram;
-pub mod board_themes;
-pub mod lookup;
-pub mod orchestrate;
-pub mod orchestrations;
-pub mod simple;
-pub mod config_iac;
-pub mod skin;
-pub mod commit_mentions;
-pub mod deleted_substrate;
 pub mod sessions_git;
 pub mod sessions_legacy;
 pub mod settings;
-pub mod mcp;
+pub mod simple;
 pub mod skills;
+pub mod skin;
+pub mod speedtest;
 pub mod sql;
 pub mod sse;
 pub mod static_files;
+pub mod stats;
 pub mod sync;
+pub mod telegram;
+pub mod terminal;
 pub mod torrents;
+pub mod tts;
+pub mod tunnel;
 pub mod upload;
+pub mod usage;
 pub mod verify;
 pub mod why;
 pub mod worker_create;
@@ -179,12 +181,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats/daily", axum::routing::get(stats::daily))
         // The writer for the baseline `daily` already reads (AMUX-2871).
         .route("/api/stats/reset", axum::routing::post(stats::reset))
-        .route("/api/branding", axum::routing::get(branding::get_branding)
-            .post(branding::post_branding).delete(branding::delete_branding))
+        .route(
+            "/api/branding",
+            axum::routing::get(branding::get_branding)
+                .post(branding::post_branding)
+                .delete(branding::delete_branding),
+        )
         // base64 icons: the handler's own 5MB check must answer (Python's
         // 400), not axum's 2MB default 413.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
-        .route("/api/branding/asset/{fname}", axum::routing::get(branding::serve_asset))
+        .route(
+            "/api/branding/asset/{fname}",
+            axum::routing::get(branding::serve_asset),
+        )
         .nest("/api/email", email::routes())
         .nest("/api/cal-events", calendar::routes())
         // Legacy SHAPE (not just path): the SPA renders this array (RR-0075).
@@ -244,7 +253,10 @@ pub fn router(state: AppState) -> Router {
         // The SPA Files BROWSER's listing + dir autocomplete — native, same
         // module (top-level paths in python, so top-level here).
         .route("/api/ls", axum::routing::any(fs::ls))
-        .route("/api/autocomplete/dir", axum::routing::any(fs::autocomplete_dir))
+        .route(
+            "/api/autocomplete/dir",
+            axum::routing::any(fs::autocomplete_dir),
+        )
         // Chunked upload: /api/upload/start, /api/upload/:id/chunk/:n,
         // /api/upload/:id/finish — native Rust (no Python proxy).
         .nest("/api/upload", upload::routes())
@@ -253,6 +265,7 @@ pub fn router(state: AppState) -> Router {
         // CC_TAGS env files, config from the shared group_config table
         // (api/groups.rs). Both spellings, matching python's alias.
         .nest("/api/groups", groups::routes())
+        .nest("/api/projects", projects::routes())
         .nest("/api/tags", groups::tags_routes())
         .nest("/api/journal", journal::routes())
         // CRM: a PORT of the python contract, not a new feature — the schema and
@@ -331,8 +344,14 @@ pub fn router(state: AppState) -> Router {
         // here. Each 404 body deserialized cleanly into the client's success
         // path, so all three failed silently: no branch badges, per-worker
         // gates rendering as deleted, and an unactionable red offline banner.
-        .route("/api/sessions-git", axum::routing::get(sessions_git::sessions_git))
-        .route("/api/board/themes", axum::routing::get(board_themes::board_themes))
+        .route(
+            "/api/sessions-git",
+            axum::routing::get(sessions_git::sessions_git),
+        )
+        .route(
+            "/api/board/themes",
+            axum::routing::get(board_themes::board_themes),
+        )
         .route("/api/lookup", axum::routing::post(lookup::lookup))
         .route(
             "/api/lookup/bulk",
@@ -379,12 +398,21 @@ pub fn router(state: AppState) -> Router {
         // AF-123: OBSERVED edit records from the Bash hook pair — mtimes that
         // moved during a command, reported rather than parsed, so a heredoc
         // or an extensionless path cannot hide a write from attribution.
-        .route("/api/git/observed-edits", axum::routing::post(git_guard::observed_edits))
+        .route(
+            "/api/git/observed-edits",
+            axum::routing::post(git_guard::observed_edits),
+        )
         // AF-127: the per-verdict OUTCOME instrument. The guard records its
         // verdict as a row; the hook reports what resolved a block (declared
         // override / observed trim); the debug read computes the mix.
-        .route("/api/git/guard-outcome", axum::routing::post(git_guard::guard_outcome))
-        .route("/api/debug/guard-outcomes", axum::routing::get(git_guard::guard_outcomes_debug))
+        .route(
+            "/api/git/guard-outcome",
+            axum::routing::post(git_guard::guard_outcome),
+        )
+        .route(
+            "/api/debug/guard-outcomes",
+            axum::routing::get(git_guard::guard_outcomes_debug),
+        )
         // Client diagnostic beacons (AR-128): the SPA sends geometry/tap
         // traces for mobile layout debugging.
         //
@@ -446,10 +474,16 @@ pub fn router(state: AppState) -> Router {
         // until now. Public like its debug siblings (lane names and timings).
         .route("/api/debug/scan", axum::routing::get(health::debug_scan))
         .route("/api/debug/sse", axum::routing::get(debug_sse))
-        .route("/api/debug/downtime", axum::routing::get(health::debug_downtime))
+        .route(
+            "/api/debug/downtime",
+            axum::routing::get(health::debug_downtime),
+        )
         // Per-session logging health + a computed stale verdict (AMUX-2628).
         // Public like its debug siblings: session names and byte counts only.
-        .route("/api/debug/logs", axum::routing::get(session_verbs::debug_logs))
+        .route(
+            "/api/debug/logs",
+            axum::routing::get(session_verbs::debug_logs),
+        )
         // Compaction generations per lane (AMUX-3742): the instrument that
         // could not express "amux claude performs worse than raw claude".
         // Public like its debug siblings — lane names and counts only.
@@ -462,7 +496,10 @@ pub fn router(state: AppState) -> Router {
         // natively, which proxy to python and why, and the cutover exit for
         // each. Route names only — nothing secret, so public like its
         // debug sibling above.
-        .route("/api/debug/boundary", axum::routing::get(py_proxy::boundary))
+        .route(
+            "/api/debug/boundary",
+            axum::routing::get(py_proxy::boundary),
+        )
         // Legacy-port retirement counter (ethos rule 4): "can we stop
         // answering 8822 yet?" as a number rather than a guess — hit count,
         // which IPs/user-agents are still calling it, and the exit condition
@@ -483,7 +520,10 @@ pub fn router(state: AppState) -> Router {
         // The routing truth (AMUX-2610): the ROUTE_TABLE as JSON, so "is X
         // routed, with which methods" is a GET, not a grep. Public like its
         // debug siblings (route names only, nothing secret).
-        .route("/api/debug/routes", axum::routing::get(request_log::debug_routes))
+        .route(
+            "/api/debug/routes",
+            axum::routing::get(request_log::debug_routes),
+        )
         // Public: calendar fetchers (Google/Apple) cannot send bearer tokens.
         .route("/api/calendar.ics", axum::routing::get(calendar::ics_feed))
         // Dynamic manifest: PWA name/color follow the branding prefs (the
@@ -501,7 +541,13 @@ pub fn router(state: AppState) -> Router {
         // a revocable member cookie; the outer identity layer below resolves
         // it before auth and request logging.
         .merge(org::public_routes())
-        .route("/api/_clear_sw", axum::routing::get(static_files::clear_sw_landing))
+        .merge(connection::routes(
+            crate::config::ServerConfig::from_process_env().tls_dir(),
+        ))
+        .route(
+            "/api/_clear_sw",
+            axum::routing::get(static_files::clear_sw_landing),
+        )
         .merge(static_files::routes())
         .merge(protected)
         .with_state(state);
@@ -532,7 +578,9 @@ pub fn router(state: AppState) -> Router {
     // with prose knows more than this layer does and must not be overwritten.
     let app = app.layer(axum::middleware::from_fn(explain_method_not_allowed));
     let app = app.layer(axum::middleware::from_fn_with_state(
-        store_for_reqlog.clone(), interactions::middleware));
+        store_for_reqlog.clone(),
+        interactions::middleware,
+    ));
 
     // Transparent gzip compression for every response whose client sends
     // Accept-Encoding: gzip. Board slim drops from 690KB to 162KB,
@@ -624,14 +672,31 @@ async fn explain_method_not_allowed(
 /// Python's `_PLACEHOLDER_API_KEYS` (py:77268), verbatim: obvious
 /// template/dummy values that must not count as "a key is configured".
 const PLACEHOLDER_API_KEYS: &[&str] = &[
-    "changeme", "change-me", "change_me",
-    "your-api-key", "your_api_key", "your-key", "yourkey",
-    "your_key_here", "your-key-here", "your-api-key-here",
-    "placeholder", "dummy", "example", "sample",
-    "test", "test-key", "testkey",
-    "replace-me", "replace_me",
-    "xxx", "xxxx",
-    "sk-ant-xxx", "sk-ant-your-key", "sk-ant-example", "sk-ant-placeholder",
+    "changeme",
+    "change-me",
+    "change_me",
+    "your-api-key",
+    "your_api_key",
+    "your-key",
+    "yourkey",
+    "your_key_here",
+    "your-key-here",
+    "your-api-key-here",
+    "placeholder",
+    "dummy",
+    "example",
+    "sample",
+    "test",
+    "test-key",
+    "testkey",
+    "replace-me",
+    "replace_me",
+    "xxx",
+    "xxxx",
+    "sk-ant-xxx",
+    "sk-ant-your-key",
+    "sk-ant-example",
+    "sk-ant-placeholder",
 ];
 
 /// The 500 every API module was spelling for itself (AMUX-2919).
@@ -741,7 +806,10 @@ async fn debug_sse(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::Json<serde_json::Value> {
     let (live, opened) = crate::api::sse::conn_stats();
-    let since_h: f64 = q.get("since_h").and_then(|v| v.parse().ok()).unwrap_or(24.0);
+    let since_h: f64 = q
+        .get("since_h")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24.0);
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -762,11 +830,18 @@ async fn debug_sse(
                 .iter()
                 .filter(|v| {
                     v.get("kind").and_then(|k| k.as_str()) == Some("sse-stale-reconnect")
-                        && v.get("ts").and_then(serde_json::Value::as_f64).unwrap_or(0.0) >= cutoff
+                        && v.get("ts")
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(0.0)
+                            >= cutoff
                 })
                 .collect();
             let n = hits.len();
-            (n, hits.into_iter().rev().take(5).cloned().collect::<Vec<_>>(), Some(scanned))
+            (
+                n,
+                hits.into_iter().rev().take(5).cloned().collect::<Vec<_>>(),
+                Some(scanned),
+            )
         }
         Err(_) => (0, Vec::new(), None),
     };
@@ -901,9 +976,11 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         .to_string();
     // has_api_key counts ONLY server.env (python's comment: never
     // Docker-injected process env), and only non-placeholder values.
-    let home = std::env::var("AMUX_HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| {
-        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
-    });
+    let home = std::env::var("AMUX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
+        });
     let mut has_key_in_env = false;
     let mut base = String::new();
     let mut tok = String::new();
@@ -911,7 +988,11 @@ async fn identity(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Valu
         for l in env_text.lines() {
             let l = l.trim();
             if let Some(val) = l.strip_prefix("ANTHROPIC_API_KEY=") {
-                let v = val.trim().trim_matches('"').trim_matches('\'').to_lowercase();
+                let v = val
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_lowercase();
                 if !v.is_empty() && !PLACEHOLDER_API_KEYS.contains(&v.as_str()) {
                     has_key_in_env = true;
                 }
@@ -975,10 +1056,7 @@ async fn global_memory_post(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let content = body
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let path = global_memory_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1004,7 +1082,13 @@ mod truthy_reachability {
     /// u64/i64/f64 and `as_f64()` casts lossily rather than failing.
     #[test]
     fn as_f64_never_none_without_arbitrary_precision() {
-        for s in ["18446744073709551615", "-9223372036854775808", "0", "1", "1.5"] {
+        for s in [
+            "18446744073709551615",
+            "-9223372036854775808",
+            "0",
+            "1",
+            "1.5",
+        ] {
             let v: serde_json::Value = serde_json::from_str(s).unwrap();
             let n = v.as_number().expect("parsed as a number");
             assert!(
@@ -1036,14 +1120,23 @@ mod slow_ok_tests {
         // THE CONTROL THAT MATTERS. A fast model inside a slow request leaves
         // time that is amux's own, and it must STILL be measured — otherwise
         // this is a route exemption wearing a per-request header.
-        assert!(!dominated_by_external(11_000, 200), "5s+ of amux time must still file");
-        assert!(!dominated_by_external(10_000, 6_000), "60% is not dominated");
+        assert!(
+            !dominated_by_external(11_000, 200),
+            "5s+ of amux time must still file"
+        );
+        assert!(
+            !dominated_by_external(10_000, 6_000),
+            "60% is not dominated"
+        );
 
         // And a fast request declares nothing: a 3ms call stamping the header
         // would put a permanent exemption on the route by another name.
         assert!(!dominated_by_external(3, 3));
         assert!(!dominated_by_external(999, 999), "under the floor");
-        assert!(dominated_by_external(1_000, 1_000), "at the floor, fully external");
+        assert!(
+            dominated_by_external(1_000, 1_000),
+            "at the floor, fully external"
+        );
     }
 
     /// The reason string is the only thing a human sees when asking why a slow
@@ -1051,9 +1144,22 @@ mod slow_ok_tests {
     /// bare label (ethos rule 4).
     #[test]
     fn the_slow_ok_reason_carries_what_it_was_measured_on() {
-        let r = slow_ok(axum::response::Response::new(axum::body::Body::empty()), "helper-model claude:haiku 6900ms");
-        let v = r.headers().get("x-amux-slow-ok").and_then(|v| v.to_str().ok()).unwrap_or("");
-        assert!(v.contains("6900ms"), "the excluded-on measurement must be in it: {v}");
-        assert!(v.contains("helper-model"), "and what consumed the time: {v}");
+        let r = slow_ok(
+            axum::response::Response::new(axum::body::Body::empty()),
+            "helper-model claude:haiku 6900ms",
+        );
+        let v = r
+            .headers()
+            .get("x-amux-slow-ok")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            v.contains("6900ms"),
+            "the excluded-on measurement must be in it: {v}"
+        );
+        assert!(
+            v.contains("helper-model"),
+            "and what consumed the time: {v}"
+        );
     }
 }

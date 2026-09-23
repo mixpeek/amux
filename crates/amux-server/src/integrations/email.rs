@@ -40,8 +40,12 @@ pub const DEFAULT_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 
 /// Python's own-domain exemption list (`_gmail_reply_send` / the new-thread
 /// guard), ported verbatim.
-pub const OUR_DOMAINS: [&str; 4] =
-    ["mixpeek.com", "trymixpeek.com", "joinmixpeek.com", "getmixpeek.com"];
+pub const OUR_DOMAINS: [&str; 4] = [
+    "mixpeek.com",
+    "trymixpeek.com",
+    "joinmixpeek.com",
+    "getmixpeek.com",
+];
 
 // ---------------------------------------------------------------------------
 // base64 (std + urlsafe) — implemented here because the workspace forbids new
@@ -54,7 +58,11 @@ const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxy
 fn b64_encode(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(alphabet[(n >> 18) as usize & 63] as char);
         out.push(alphabet[(n >> 12) as usize & 63] as char);
@@ -314,9 +322,20 @@ pub struct MimeSpec<'a> {
 /// A header-safe filename: no quotes or CR/LF that could break the
 /// Content-Disposition line.
 fn sanitize_filename(name: &str) -> String {
-    let cleaned: String = name.chars().filter(|c| *c != '"' && *c != '\r' && *c != '\n').collect();
-    let base = cleaned.rsplit(['/', '\\']).next().unwrap_or(&cleaned).trim();
-    if base.is_empty() { "attachment".to_string() } else { base.to_string() }
+    let cleaned: String = name
+        .chars()
+        .filter(|c| *c != '"' && *c != '\r' && *c != '\n')
+        .collect();
+    let base = cleaned
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&cleaned)
+        .trim();
+    if base.is_empty() {
+        "attachment".to_string()
+    } else {
+        base.to_string()
+    }
 }
 
 /// Build the RFC822 message (CRLF line ends, base64 parts). With no attachments
@@ -330,9 +349,13 @@ pub fn build_rfc822(spec: &MimeSpec) -> String {
     let outer = format!("{}_mix", spec.boundary);
     let mut lines: Vec<String> = vec!["MIME-Version: 1.0".into()];
     if has_att {
-        lines.push(format!("Content-Type: multipart/mixed; boundary=\"{outer}\""));
+        lines.push(format!(
+            "Content-Type: multipart/mixed; boundary=\"{outer}\""
+        ));
     } else {
-        lines.push(format!("Content-Type: multipart/alternative; boundary=\"{inner}\""));
+        lines.push(format!(
+            "Content-Type: multipart/alternative; boundary=\"{inner}\""
+        ));
     }
     lines.push(format!("To: {}", spec.to));
     lines.push(format!("From: {}", spec.from));
@@ -342,7 +365,11 @@ pub fn build_rfc822(spec: &MimeSpec) -> String {
     }
     if !spec.in_reply_to.is_empty() {
         lines.push(format!("In-Reply-To: {}", spec.in_reply_to));
-        let refs = if spec.references.is_empty() { spec.in_reply_to } else { spec.references };
+        let refs = if spec.references.is_empty() {
+            spec.in_reply_to
+        } else {
+            spec.references
+        };
         lines.push(format!("References: {refs}"));
     }
     lines.push(String::new());
@@ -350,7 +377,9 @@ pub fn build_rfc822(spec: &MimeSpec) -> String {
     // there are attachments, otherwise the top-level body.
     if has_att {
         lines.push(format!("--{outer}"));
-        lines.push(format!("Content-Type: multipart/alternative; boundary=\"{inner}\""));
+        lines.push(format!(
+            "Content-Type: multipart/alternative; boundary=\"{inner}\""
+        ));
         lines.push(String::new());
     }
     for (ctype, body) in [("text/plain", spec.plain), ("text/html", spec.html)] {
@@ -374,7 +403,9 @@ pub fn build_rfc822(spec: &MimeSpec) -> String {
             lines.push(format!("--{outer}"));
             lines.push(format!("Content-Type: {ct}; name=\"{fname}\""));
             lines.push("Content-Transfer-Encoding: base64".into());
-            lines.push(format!("Content-Disposition: attachment; filename=\"{fname}\""));
+            lines.push(format!(
+                "Content-Disposition: attachment; filename=\"{fname}\""
+            ));
             lines.push(String::new());
             lines.push(wrap76(&base64_std(&att.data)));
         }
@@ -420,8 +451,11 @@ pub fn compose_bodies(body: &str, sig_html: &str) -> (String, String, bool) {
         html_full.push_str(&format!("<br><br>{sig_html}"));
     }
     let sig_text = sig_html_to_text(sig_html);
-    let plain_full =
-        if sig_text.is_empty() { body.to_string() } else { format!("{body}\n\n{sig_text}") };
+    let plain_full = if sig_text.is_empty() {
+        body.to_string()
+    } else {
+        format!("{body}\n\n{sig_text}")
+    };
     (plain_full, html_full, !sig_html.is_empty())
 }
 
@@ -501,7 +535,11 @@ pub fn derive_reply_plan(
     } else {
         // The party who last spoke (From) if external, else the original
         // recipient(s).
-        let pick = if from_ext.is_empty() { &to_ext } else { &from_ext };
+        let pick = if from_ext.is_empty() {
+            &to_ext
+        } else {
+            &from_ext
+        };
         (pick.join(", "), String::new())
     };
     if to_addr.is_empty() && allow_self {
@@ -513,17 +551,31 @@ pub fn derive_reply_plan(
         };
         let raw_from = not_me(hdr("from"));
         let raw_to = not_me(hdr("to"));
-        to_addr = if raw_from.is_empty() { raw_to.join(", ") } else { raw_from.join(", ") };
+        to_addr = if raw_from.is_empty() {
+            raw_to.join(", ")
+        } else {
+            raw_from.join(", ")
+        };
     }
     if to_addr.is_empty() {
         // NEVER fall back to emailing ourselves (without explicit allow_self).
-        return Err("no external recipient on this thread (would email ourselves) — \
+        return Err(
+            "no external recipient on this thread (would email ourselves) — \
                     pass an explicit 'to' via /api/email/send, or use \
                     {\"allow_self\": true} to run a threading self-test between owned accounts"
-            .into());
+                .into(),
+        );
     }
-    let references = format!("{} {}", hdr("references"), orig_msgid).trim().to_string();
-    Ok(ReplyPlan { to: to_addr, cc, subject, in_reply_to: orig_msgid, references })
+    let references = format!("{} {}", hdr("references"), orig_msgid)
+        .trim()
+        .to_string();
+    Ok(ReplyPlan {
+        to: to_addr,
+        cc,
+        subject,
+        in_reply_to: orig_msgid,
+        references,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -539,11 +591,8 @@ pub trait HttpTransport: Send + Sync {
         bearer: Option<&str>,
         body: &Value,
     ) -> Result<(u16, Value), String>;
-    async fn post_form(
-        &self,
-        url: &str,
-        form: &[(String, String)],
-    ) -> Result<(u16, Value), String>;
+    async fn post_form(&self, url: &str, form: &[(String, String)])
+        -> Result<(u16, Value), String>;
     /// Raw-body POST with a caller-chosen content type, response as TEXT —
     /// the Gmail batch endpoint (AMUX-3520) speaks multipart/mixed in both
     /// directions, which the JSON-shaped verbs above cannot carry. Defaulted
@@ -642,7 +691,11 @@ impl HttpTransport for ReqwestTransport {
         content_type: &str,
         body: String,
     ) -> Result<(u16, String), String> {
-        let mut req = self.client.post(url).header("content-type", content_type).body(body);
+        let mut req = self
+            .client
+            .post(url)
+            .header("content-type", content_type)
+            .body(body);
         if let Some(t) = bearer {
             req = req.bearer_auth(t);
         }
@@ -657,9 +710,19 @@ impl HttpTransport for ReqwestTransport {
         body: &Value,
         header_name: &str,
     ) -> Result<(u16, Value, Option<String>), String> {
-        let res = self.client.post(url).json(body).send().await.map_err(|e| e.to_string())?;
+        let res = self
+            .client
+            .post(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         let status = res.status().as_u16();
-        let header = res.headers().get(header_name).and_then(|h| h.to_str().ok()).map(str::to_string);
+        let header = res
+            .headers()
+            .get(header_name)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
         let value: Value = res.json().await.unwrap_or(Value::Null);
         Ok((status, value, header))
     }
@@ -699,7 +762,9 @@ pub(crate) fn batch_request_body(boundary: &str, sub_paths: &[String]) -> String
 /// malformed part degrades to one extra GET, never to a wrong message.
 pub(crate) fn parse_batch_parts(body: &str) -> Vec<(usize, u16, Value)> {
     let norm = body.replace("\r\n", "\n");
-    let Some(bline) = norm.lines().find(|l| l.starts_with("--")) else { return vec![] };
+    let Some(bline) = norm.lines().find(|l| l.starts_with("--")) else {
+        return vec![];
+    };
     let boundary = bline.trim_end_matches('-').trim();
     let mut out = Vec::new();
     for part in norm.split(boundary) {
@@ -719,7 +784,9 @@ pub(crate) fn parse_batch_parts(body: &str) -> Vec<(usize, u16, Value)> {
             continue;
         };
         // Embedded HTTP status line, then the JSON after its header block.
-        let Some(http_at) = part.find("HTTP/1.1 ") else { continue };
+        let Some(http_at) = part.find("HTTP/1.1 ") else {
+            continue;
+        };
         let embedded = &part[http_at..];
         let Some(status) = embedded
             .split_whitespace()
@@ -728,9 +795,13 @@ pub(crate) fn parse_batch_parts(body: &str) -> Vec<(usize, u16, Value)> {
         else {
             continue;
         };
-        let Some(blank) = embedded.find("\n\n") else { continue };
+        let Some(blank) = embedded.find("\n\n") else {
+            continue;
+        };
         let json_text = embedded[blank..].trim();
-        let Ok(v) = serde_json::from_str::<Value>(json_text) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(json_text) else {
+            continue;
+        };
         out.push((idx, status, v));
     }
     out
@@ -741,16 +812,23 @@ pub(crate) fn parse_batch_parts(body: &str) -> Vec<(usize, u16, Value)> {
 // ---------------------------------------------------------------------------
 
 pub fn default_amux_home() -> PathBuf {
-    std::env::var("AMUX_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-        std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/")).join(".amux")
-    })
+    std::env::var("AMUX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/"))
+                .join(".amux")
+        })
 }
 
 /// Accounts with stored tokens (Python `_gmail_connected_accounts`): sorted
 /// stems of `<home>/gmail-tokens/*.json`.
 pub fn connected_accounts_in(home: &Path) -> Vec<String> {
     let dir = home.join("gmail-tokens");
-    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut out: Vec<String> = rd
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -773,7 +851,9 @@ pub fn connected_accounts_in(home: &Path) -> Vec<String> {
 /// Accounts whose mtime is unreadable sort last (treated as oldest).
 pub fn connected_accounts_by_freshness_in(home: &Path) -> Vec<String> {
     let dir = home.join("gmail-tokens");
-    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut out: Vec<(std::time::SystemTime, String)> = rd
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -797,7 +877,9 @@ pub fn connected_accounts_by_freshness_in(home: &Path) -> Vec<String> {
 /// `invalid_grant` (the amux-cloud incident), so "a connected account exists" is
 /// not enough to call email deliverable. `now` is passed for testability.
 pub fn newest_token_age_secs_in(home: &Path, now: std::time::SystemTime) -> Option<u64> {
-    let acct = connected_accounts_by_freshness_in(home).into_iter().next()?;
+    let acct = connected_accounts_by_freshness_in(home)
+        .into_iter()
+        .next()?;
     let p = home.join("gmail-tokens").join(format!("{acct}.json"));
     let mtime = p.metadata().ok()?.modified().ok()?;
     now.duration_since(mtime).ok().map(|d| d.as_secs())
@@ -826,7 +908,11 @@ pub struct GmailClient {
 
 impl GmailClient {
     pub fn new(http: Arc<dyn HttpTransport>, home: PathBuf) -> Self {
-        Self { http, home, token_cache: Mutex::new(HashMap::new()) }
+        Self {
+            http,
+            home,
+            token_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn new_default() -> Self {
@@ -842,7 +928,9 @@ impl GmailClient {
     }
 
     fn token_path(&self, account: &str) -> PathBuf {
-        self.home.join("gmail-tokens").join(format!("{account}.json"))
+        self.home
+            .join("gmail-tokens")
+            .join(format!("{account}.json"))
     }
 
     /// Load the token file, merging client id/secret from
@@ -921,10 +1009,15 @@ impl GmailClient {
                 return Ok(t.clone());
             }
         }
-        let tf = self.load_token_file(account).ok_or_else(|| "not_connected".to_string())?;
+        let tf = self
+            .load_token_file(account)
+            .ok_or_else(|| "not_connected".to_string())?;
         if !force_refresh {
             if let Some(t) = &tf.token {
-                self.token_cache.lock().expect("token cache").insert(account.into(), t.clone());
+                self.token_cache
+                    .lock()
+                    .expect("token cache")
+                    .insert(account.into(), t.clone());
                 return Ok(t.clone());
             }
         }
@@ -950,7 +1043,10 @@ impl GmailClient {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("token refresh response missing access_token: {body}"))?
             .to_string();
-        self.token_cache.lock().expect("token cache").insert(account.into(), access.clone());
+        self.token_cache
+            .lock()
+            .expect("token cache")
+            .insert(account.into(), access.clone());
         // AF-117. GOOGLE MAY ROTATE THE REFRESH TOKEN, and this used to persist
         // the one it had just SENT rather than the one it got back. When the
         // token endpoint returns a `refresh_token`, the one you presented is
@@ -997,7 +1093,8 @@ impl GmailClient {
         //
         // Still best-effort: a failed write must not fail the send, since the
         // access token in hand is good for the call being made.
-        let _ = Self::write_token_file_atomically(&self.token_path(account), &persisted.to_string());
+        let _ =
+            Self::write_token_file_atomically(&self.token_path(account), &persisted.to_string());
         Ok(access)
     }
 
@@ -1117,7 +1214,10 @@ impl GmailClient {
     }
 
     fn metadata_url(&self, id: &str, headers: &[&str]) -> String {
-        let hs: String = headers.iter().map(|h| format!("&metadataHeaders={h}")).collect();
+        let hs: String = headers
+            .iter()
+            .map(|h| format!("&metadataHeaders={h}"))
+            .collect();
         format!("{GMAIL_BASE}/messages/{id}?format=metadata{hs}")
     }
 
@@ -1133,7 +1233,9 @@ impl GmailClient {
         headers: &[&str],
     ) -> Vec<Option<Value>> {
         let mut out: Vec<Option<Value>> = vec![None; mids.len()];
-        let Ok(mut token) = self.access_token(account, false).await else { return out };
+        let Ok(mut token) = self.access_token(account, false).await else {
+            return out;
+        };
         let ct = format!("multipart/mixed; boundary={GMAIL_BATCH_BOUNDARY}");
         for (chunk_i, chunk) in mids.chunks(100).enumerate() {
             let base = chunk_i * 100;
@@ -1146,12 +1248,17 @@ impl GmailClient {
                 })
                 .collect();
             let body = batch_request_body(GMAIL_BATCH_BOUNDARY, &subs);
-            let mut resp =
-                self.http.post_raw(GMAIL_BATCH_URL, Some(&token), &ct, body.clone()).await;
+            let mut resp = self
+                .http
+                .post_raw(GMAIL_BATCH_URL, Some(&token), &ct, body.clone())
+                .await;
             if matches!(&resp, Ok((401, _))) {
                 if let Ok(t2) = self.access_token(account, true).await {
                     token = t2;
-                    resp = self.http.post_raw(GMAIL_BATCH_URL, Some(&token), &ct, body).await;
+                    resp = self
+                        .http
+                        .post_raw(GMAIL_BATCH_URL, Some(&token), &ct, body)
+                        .await;
                 }
             }
             match resp {
@@ -1188,7 +1295,10 @@ impl GmailClient {
         max_results: usize,
         page_token: Option<&str>,
     ) -> Result<Value, String> {
-        let mut url = format!("{GMAIL_BASE}/messages?q={}&maxResults={max_results}", urlencode(q));
+        let mut url = format!(
+            "{GMAIL_BASE}/messages?q={}&maxResults={max_results}",
+            urlencode(q)
+        );
         if let Some(pt) = page_token {
             url.push_str(&format!("&pageToken={}", urlencode(pt)));
         }
@@ -1199,17 +1309,25 @@ impl GmailClient {
     /// signature; "" on any failure.
     pub async fn get_signature(&self, account: &str) -> String {
         let url = format!("{GMAIL_BASE}/settings/sendAs");
-        let Ok(v) = self.api(account, "GET", &url, None).await else { return String::new() };
+        let Ok(v) = self.api(account, "GET", &url, None).await else {
+            return String::new();
+        };
         let empty = vec![];
         let sendas = v.get("sendAs").and_then(Value::as_array).unwrap_or(&empty);
         let target = account.to_lowercase();
         let chosen = sendas
             .iter()
             .find(|sa| {
-                sa.get("sendAsEmail").and_then(Value::as_str).unwrap_or("").to_lowercase() == target
+                sa.get("sendAsEmail")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_lowercase()
+                    == target
             })
             .or_else(|| {
-                sendas.iter().find(|sa| sa.get("isPrimary").and_then(Value::as_bool) == Some(true))
+                sendas
+                    .iter()
+                    .find(|sa| sa.get("isPrimary").and_then(Value::as_bool) == Some(true))
             })
             .or_else(|| sendas.first());
         chosen
@@ -1236,8 +1354,11 @@ impl GmailClient {
         include_signature: bool,
         attachments: &[Attachment],
     ) -> Result<Value, String> {
-        let sig_html =
-            if include_signature { self.get_signature(account).await } else { String::new() };
+        let sig_html = if include_signature {
+            self.get_signature(account).await
+        } else {
+            String::new()
+        };
         let (plain, html, sig_included) = compose_bodies(body, &sig_html);
         // Boundary needs no cryptographic strength, only absence from the
         // payload; nanos + a fixed tag matches Python's uniqueness level.
@@ -1266,7 +1387,9 @@ impl GmailClient {
             send_body.insert("threadId".into(), json!(thread_id));
         }
         let url = format!("{GMAIL_BASE}/messages/send");
-        let res = self.api(account, "POST", &url, Some(&Value::Object(send_body))).await?;
+        let res = self
+            .api(account, "POST", &url, Some(&Value::Object(send_body)))
+            .await?;
         Ok(json!({
             "ok": true,
             "id": res.get("id").cloned().unwrap_or(Value::Null),
@@ -1278,12 +1401,32 @@ impl GmailClient {
     /// Python `_gmail_find_message_by_rfc822`: indexed `rfc822msgid:` lookup
     /// -> metadata resource (or None).
     pub async fn find_message_by_rfc822(&self, account: &str, rfc822_id: &str) -> Option<Value> {
-        let rid = rfc822_id.trim().trim_start_matches('<').trim_end_matches('>');
-        let list = self.list_ids(account, &format!("rfc822msgid:{rid}"), 1, None).await.ok()?;
-        let mid = list.get("messages")?.as_array()?.first()?.get("id")?.as_str()?.to_string();
+        let rid = rfc822_id
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>');
+        let list = self
+            .list_ids(account, &format!("rfc822msgid:{rid}"), 1, None)
+            .await
+            .ok()?;
+        let mid = list
+            .get("messages")?
+            .as_array()?
+            .first()?
+            .get("id")?
+            .as_str()?
+            .to_string();
         let url = self.metadata_url(
             &mid,
-            &["From", "To", "Cc", "Subject", "Message-ID", "References", "In-Reply-To"],
+            &[
+                "From",
+                "To",
+                "Cc",
+                "Subject",
+                "Message-ID",
+                "References",
+                "In-Reply-To",
+            ],
         );
         self.api(account, "GET", &url, None).await.ok()
     }
@@ -1299,7 +1442,11 @@ impl GmailClient {
         let h = header_map_of(&payload);
         let hget = |k: &str| h.get(k).cloned().unwrap_or_default();
         let (html_body, text_body) = decode_body(&payload);
-        let body = if !text_body.is_empty() { text_body.clone() } else { html_body.clone() };
+        let body = if !text_body.is_empty() {
+            text_body.clone()
+        } else {
+            html_body.clone()
+        };
         Ok(json!({
             "account": account,
             "gmail_id": gmail_id,
@@ -1331,7 +1478,10 @@ impl GmailClient {
             urlencode(attachment_id)
         );
         let resp = self.api(account, "GET", &url, None).await?;
-        let data = resp.get("data").and_then(Value::as_str).ok_or("attachment has no data")?;
+        let data = resp
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or("attachment has no data")?;
         base64url_decode(data)
     }
 
@@ -1362,13 +1512,23 @@ impl GmailClient {
             Err(e) => return self.gmail_error_shape(account, &e),
         };
         let empty = vec![];
-        let ids = listed.get("messages").and_then(Value::as_array).unwrap_or(&empty);
-        let next = listed.get("nextPageToken").and_then(Value::as_str).unwrap_or("");
+        let ids = listed
+            .get("messages")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty);
+        let next = listed
+            .get("nextPageToken")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let mut summaries = vec![];
         for m in ids {
-            let Some(mid) = m.get("id").and_then(Value::as_str) else { continue };
+            let Some(mid) = m.get("id").and_then(Value::as_str) else {
+                continue;
+            };
             let murl = self.metadata_url(mid, &["From", "To", "Subject", "Date"]);
-            let Ok(hdr) = self.api(account, "GET", &murl, None).await else { continue };
+            let Ok(hdr) = self.api(account, "GET", &murl, None).await else {
+                continue;
+            };
             let h = header_map(&hdr);
             let lids: Vec<&str> = hdr
                 .get("labelIds")
@@ -1401,7 +1561,10 @@ impl GmailClient {
             Err(e) => return self.gmail_error_shape(account, &e),
         };
         let empty = vec![];
-        let msgs = thread.get("messages").and_then(Value::as_array).unwrap_or(&empty);
+        let msgs = thread
+            .get("messages")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty);
         let mut out = vec![];
         let mut unread_ids = vec![];
         for msg in msgs {
@@ -1436,7 +1599,12 @@ impl GmailClient {
         for uid in unread_ids {
             let murl = format!("{GMAIL_BASE}/messages/{uid}/modify");
             let _ = self
-                .api(account, "POST", &murl, Some(&json!({"removeLabelIds": ["UNREAD"]})))
+                .api(
+                    account,
+                    "POST",
+                    &murl,
+                    Some(&json!({"removeLabelIds": ["UNREAD"]})),
+                )
                 .await;
         }
         json!({ "thread_id": thread_id, "messages": out })
@@ -1448,12 +1616,21 @@ impl GmailClient {
     /// renders an empty label rail rather than an error).
     pub async fn list_labels(&self, account: &str) -> Vec<Value> {
         let url = format!("{GMAIL_BASE}/labels");
-        let Ok(v) = self.api(account, "GET", &url, None).await else { return vec![] };
-        let mut labels: Vec<Value> =
-            v.get("labels").and_then(Value::as_array).cloned().unwrap_or_default();
+        let Ok(v) = self.api(account, "GET", &url, None).await else {
+            return vec![];
+        };
+        let mut labels: Vec<Value> = v
+            .get("labels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         const PRIO: [&str; 6] = ["INBOX", "STARRED", "SENT", "DRAFTS", "SPAM", "TRASH"];
         labels.sort_by_key(|l| {
-            let n = l.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            let n = l
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             match PRIO.iter().position(|p| *p == n) {
                 Some(i) => (0, i.to_string()),
                 None => (1, n.to_lowercase()),
@@ -1493,7 +1670,9 @@ impl GmailClient {
         reply_all: bool,
         allow_self: bool,
     ) -> Result<(String, String, String), String> {
-        let mut orig = self.find_message_by_rfc822(account, rfc822_message_id).await;
+        let mut orig = self
+            .find_message_by_rfc822(account, rfc822_message_id)
+            .await;
         if orig.is_none() {
             for acct in self.connected_accounts() {
                 if acct == account {
@@ -1537,7 +1716,9 @@ impl GmailClient {
         allow_self: bool,
         attachments: &[Attachment],
     ) -> Result<Value, String> {
-        let mut orig = self.find_message_by_rfc822(account, rfc822_message_id).await;
+        let mut orig = self
+            .find_message_by_rfc822(account, rfc822_message_id)
+            .await;
         let mut thread_account = account.to_string();
         if orig.is_none() {
             for acct in self.connected_accounts() {
@@ -1557,10 +1738,16 @@ impl GmailClient {
         let headers = header_map(&orig);
         // threadId is account-local; only valid if the message lives in the
         // SENDING account.
-        let orig_thread_id =
-            orig.get("threadId").and_then(Value::as_str).unwrap_or("").to_string();
-        let thread_id =
-            if thread_account == account { orig_thread_id.clone() } else { String::new() };
+        let orig_thread_id = orig
+            .get("threadId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let thread_id = if thread_account == account {
+            orig_thread_id.clone()
+        } else {
+            String::new()
+        };
         let connected = self.connected_accounts();
         let plan = derive_reply_plan(
             &headers,
@@ -1587,8 +1774,11 @@ impl GmailClient {
         // Threading proof for the caller (assertable evidence, ethos rule 4).
         let threaded = !thread_id.is_empty()
             && res.get("thread_id").and_then(Value::as_str) == Some(thread_id.as_str());
-        res["orig_thread_id"] =
-            json!(if thread_id.is_empty() { orig_thread_id } else { thread_id });
+        res["orig_thread_id"] = json!(if thread_id.is_empty() {
+            orig_thread_id
+        } else {
+            thread_id
+        });
         res["threaded"] = json!(threaded);
         // Resolved envelope back to the caller (GT-58): the send-audit ledger
         // must record WHO a reply went to and under WHAT subject — reply rows
@@ -1640,13 +1830,20 @@ impl GmailClient {
                 break;
             }
             let resp = self
-                .list_ids(account, &query, (want - ids.len()).min(100), page_token.as_deref())
+                .list_ids(
+                    account,
+                    &query,
+                    (want - ids.len()).min(100),
+                    page_token.as_deref(),
+                )
                 .await?;
             if let Some(msgs) = resp.get("messages").and_then(Value::as_array) {
                 ids.extend(msgs.iter().cloned());
             }
-            page_token =
-                resp.get("nextPageToken").and_then(Value::as_str).map(String::from);
+            page_token = resp
+                .get("nextPageToken")
+                .and_then(Value::as_str)
+                .map(String::from);
             if page_token.is_none() {
                 break;
             }
@@ -1760,13 +1957,16 @@ impl GmailClient {
         let res = self.list_ids(account, &q, 10, None).await.ok()?;
         for m in res.get("messages")?.as_array()? {
             let mid = m.get("id")?.as_str()?;
-            let url =
-                self.metadata_url(mid, &["From", "To", "Subject", "Message-ID", "Date"]);
-            let Ok(meta) = self.api(account, "GET", &url, None).await else { continue };
+            let url = self.metadata_url(mid, &["From", "To", "Subject", "Message-ID", "Date"]);
+            let Ok(meta) = self.api(account, "GET", &url, None).await else {
+                continue;
+            };
             let h = header_map(&meta);
             let hv = |k: &str| h.get(k).cloned().unwrap_or_default();
             if !subject_contains.is_empty()
-                && !hv("subject").to_lowercase().contains(&subject_contains.to_lowercase())
+                && !hv("subject")
+                    .to_lowercase()
+                    .contains(&subject_contains.to_lowercase())
             {
                 continue;
             }
@@ -1790,9 +1990,10 @@ fn header_map(msg: &Value) -> HashMap<String, String> {
     let mut out = HashMap::new();
     if let Some(hs) = msg.pointer("/payload/headers").and_then(Value::as_array) {
         for h in hs {
-            if let (Some(n), Some(v)) =
-                (h.get("name").and_then(Value::as_str), h.get("value").and_then(Value::as_str))
-            {
+            if let (Some(n), Some(v)) = (
+                h.get("name").and_then(Value::as_str),
+                h.get("value").and_then(Value::as_str),
+            ) {
                 out.insert(n.to_lowercase(), v.to_string());
             }
         }
@@ -1806,9 +2007,10 @@ fn header_map_of(payload: &Value) -> HashMap<String, String> {
     let mut out = HashMap::new();
     if let Some(hs) = payload.get("headers").and_then(Value::as_array) {
         for h in hs {
-            if let (Some(n), Some(v)) =
-                (h.get("name").and_then(Value::as_str), h.get("value").and_then(Value::as_str))
-            {
+            if let (Some(n), Some(v)) = (
+                h.get("name").and_then(Value::as_str),
+                h.get("value").and_then(Value::as_str),
+            ) {
                 out.insert(n.to_lowercase(), v.to_string());
             }
         }
@@ -1829,9 +2031,15 @@ fn internal_date(msg: &Value) -> i64 {
 /// Python `_gmail_decode_body`: recursively extract (html, text) from a
 /// message payload — first text/html and first text/plain part win.
 fn decode_body(payload: &Value) -> (String, String) {
-    let mime = payload.get("mimeType").and_then(Value::as_str).unwrap_or("");
+    let mime = payload
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let data = |p: &Value| -> String {
-        let d = p.pointer("/body/data").and_then(Value::as_str).unwrap_or("");
+        let d = p
+            .pointer("/body/data")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if d.is_empty() {
             return String::new();
         }
@@ -1926,14 +2134,18 @@ pub fn email_log_path(home: &Path) -> PathBuf {
 pub fn email_log(home: &Path, mut record: Value) {
     let mut write = || -> std::io::Result<()> {
         if record.get("ts").is_none() {
-            record["ts"] = json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
+            record["ts"] =
+                json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
         }
         let p = email_log_path(home);
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)?;
         writeln!(f, "{record}")?;
         Ok(())
     };
@@ -1975,7 +2187,11 @@ pub fn row_delivered(rec: &Value) -> (bool, &'static str) {
     if rec.get("rejected").and_then(Value::as_bool) == Some(true) {
         return (false, "rejected");
     }
-    if rec.get("blocked").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) {
+    if rec
+        .get("blocked")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty())
+    {
         return (false, "parked");
     }
     match rec.get("via").and_then(Value::as_str) {
@@ -1990,7 +2206,9 @@ pub fn read_email_log(home: &Path, days: i64, limit: usize, session_filter: &str
     let mut out: Vec<Value> = Vec::new();
     if let Ok(content) = std::fs::read_to_string(email_log_path(home)) {
         for line in content.lines() {
-            let Ok(mut rec) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(mut rec) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
             let ts = rec.get("ts").and_then(Value::as_str).unwrap_or("");
             if ts < cutoff.as_str() {
                 continue;
@@ -2096,11 +2314,17 @@ mod tests {
     fn a_row_with_no_discriminator_is_unknown_and_not_quietly_undelivered() {
         let (ok, why) = row_delivered(&json!({"endpoint":"send","ts":"2026-01-01"}));
         assert!(!ok);
-        assert_eq!(why, "unknown", "an unclassifiable row must say so, not read as parked");
+        assert_eq!(
+            why, "unknown",
+            "an unclassifiable row must say so, not read as parked"
+        );
         // An empty via is not a departure either.
         assert_eq!(row_delivered(&json!({"via":"  "})), (false, "unknown"));
         // ...and a blank `blocked` is not a park.
-        assert_eq!(row_delivered(&json!({"blocked":"","via":"gmail"})), (true, "departed"));
+        assert_eq!(
+            row_delivered(&json!({"blocked":"","via":"gmail"})),
+            (true, "departed")
+        );
     }
 
     /// The envelope must disclose its own truncation. 500 is a HARD CAP and
@@ -2132,20 +2356,43 @@ mod tests {
 
         let all = read_email_log(dir.path(), 7, 100, "");
         assert_eq!(all["total"], json!(10));
-        assert_eq!(all["truncated"], json!(false), "not truncated when the limit is not reached");
-        assert_eq!(all["delivered_count"], json!(7), "3 of the 10 are parks, not sends");
-        let parked = all["log"].as_array().unwrap().iter()
-            .filter(|r| r["delivered"] == json!(false)).count();
-        assert_eq!(parked, 3, "each park carries its OWN delivered:false, not just a count");
+        assert_eq!(
+            all["truncated"],
+            json!(false),
+            "not truncated when the limit is not reached"
+        );
+        assert_eq!(
+            all["delivered_count"],
+            json!(7),
+            "3 of the 10 are parks, not sends"
+        );
+        let parked = all["log"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["delivered"] == json!(false))
+            .count();
+        assert_eq!(
+            parked, 3,
+            "each park carries its OWN delivered:false, not just a count"
+        );
         assert_eq!(all["undetermined"], json!(0));
 
         let cut = read_email_log(dir.path(), 7, 3, "");
         assert_eq!(cut["count"], json!(3));
-        assert_eq!(cut["total"], json!(10), "total must survive the limit, or truncation is invisible");
+        assert_eq!(
+            cut["total"],
+            json!(10),
+            "total must survive the limit, or truncation is invisible"
+        );
         assert_eq!(cut["truncated"], json!(true));
         // And every returned row carries the verdict, not just the envelope.
         for r in cut["log"].as_array().unwrap() {
-            assert_eq!(r["delivered"], json!(false), "newest-first, so a limit of 3 returns the parks");
+            assert_eq!(
+                r["delivered"],
+                json!(false),
+                "newest-first, so a limit of 3 returns the parks"
+            );
             assert_eq!(r["delivered_reason"], json!("parked"));
         }
     }
@@ -2160,13 +2407,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tok = dir.path().join("gmail-tokens");
         std::fs::create_dir_all(&tok).unwrap();
-        for a in ["esteininger21@gmail.com", "ethan@mixpeek.com", "info@mixpeek.com"] {
+        for a in [
+            "esteininger21@gmail.com",
+            "ethan@mixpeek.com",
+            "info@mixpeek.com",
+        ] {
             std::fs::write(tok.join(format!("{a}.json")), "{}").unwrap();
         }
         // touch -t [[CC]YY]MMDDhhmm: esteininger21 stale (Jul), ethan newest (Aug 16).
         let set = |name: &str, stamp: &str| {
             std::process::Command::new("touch")
-                .args(["-t", stamp, tok.join(format!("{name}.json")).to_str().unwrap()])
+                .args([
+                    "-t",
+                    stamp,
+                    tok.join(format!("{name}.json")).to_str().unwrap(),
+                ])
                 .status()
                 .unwrap();
         };
@@ -2175,17 +2430,35 @@ mod tests {
         set("ethan@mixpeek.com", "202608161200");
 
         let order = connected_accounts_by_freshness_in(dir.path());
-        assert_eq!(order.first().map(String::as_str), Some("ethan@mixpeek.com"), "newest first: {order:?}");
-        assert_eq!(order.last().map(String::as_str), Some("esteininger21@gmail.com"), "stale last: {order:?}");
+        assert_eq!(
+            order.first().map(String::as_str),
+            Some("ethan@mixpeek.com"),
+            "newest first: {order:?}"
+        );
+        assert_eq!(
+            order.last().map(String::as_str),
+            Some("esteininger21@gmail.com"),
+            "stale last: {order:?}"
+        );
         // The incident, made explicit: first-alphabetical IS the dead account, and
         // freshness ordering must not pick it.
         let mut alpha = order.clone();
         alpha.sort();
-        assert_eq!(alpha.first().map(String::as_str), Some("esteininger21@gmail.com"));
-        assert_ne!(order.first(), alpha.first(), "freshness must not pick the dead first-alphabetical account");
+        assert_eq!(
+            alpha.first().map(String::as_str),
+            Some("esteininger21@gmail.com")
+        );
+        assert_ne!(
+            order.first(),
+            alpha.first(),
+            "freshness must not pick the dead first-alphabetical account"
+        );
 
         // Age helper: None with no accounts, small for a just-written token.
-        assert_eq!(newest_token_age_secs_in(&dir.path().join("nope"), std::time::SystemTime::now()), None);
+        assert_eq!(
+            newest_token_age_secs_in(&dir.path().join("nope"), std::time::SystemTime::now()),
+            None
+        );
     }
 
     #[test]
@@ -2206,7 +2479,10 @@ mod tests {
 
     #[test]
     fn html_escape_matches_python_quote_true() {
-        assert_eq!(html_escape(r#"<a href="x">&'b'</a>"#), "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;b&#x27;&lt;/a&gt;");
+        assert_eq!(
+            html_escape(r#"<a href="x">&'b'</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;&amp;&#x27;b&#x27;&lt;/a&gt;"
+        );
     }
 
     #[test]
@@ -2248,8 +2524,7 @@ mod tests {
         // correct and which `lines()` counts. The code was right and the
         // expectation was wrong, so the expectation moved.
         assert_eq!(
-            txt,
-            "Ethan Steininger\nFounder & CEO @ Mixpeek\n\nLinkedIn\nSchedule time with me",
+            txt, "Ethan Steininger\nFounder & CEO @ Mixpeek\n\nLinkedIn\nSchedule time with me",
             "the whole point is the shape, so assert the shape: {txt:?}"
         );
 
@@ -2292,7 +2567,10 @@ mod tests {
         let (_plain, html, _) = compose_bodies("para one\n\npara two\nnext line", "");
 
         // A blank line is TWO breaks; a single newline is one.
-        assert!(html.contains("para one<br><br>para two<br>next line"), "{html}");
+        assert!(
+            html.contains("para one<br><br>para two<br>next line"),
+            "{html}"
+        );
 
         // NO RAW NEWLINE SURVIVES IN THE BODY. Under `pre-wrap` a `<br>`
         // followed by a literal newline renders as TWO breaks, so keeping both
@@ -2335,7 +2613,10 @@ mod tests {
             html,
             "<div style=\"white-space:pre-wrap;\">hi &lt;b&gt;<br>line2</div><br><br><b>Sig</b>"
         );
-        assert!(html.contains("pre-wrap"), "the div still carries indentation: {html}");
+        assert!(
+            html.contains("pre-wrap"),
+            "the div still carries indentation: {html}"
+        );
         assert!(inc);
         let (plain2, html2, inc2) = compose_bodies("hi", "");
         assert_eq!(plain2, "hi");
@@ -2364,18 +2645,40 @@ mod tests {
             attachments: std::slice::from_ref(&att),
         };
         let msg = build_rfc822(&spec);
-        assert!(msg.contains("Content-Type: multipart/mixed; boundary=\"=_bnd_mix\""), "{msg}");
+        assert!(
+            msg.contains("Content-Type: multipart/mixed; boundary=\"=_bnd_mix\""),
+            "{msg}"
+        );
         assert!(msg.contains("Content-Type: multipart/alternative; boundary=\"=_bnd\""));
         assert!(msg.contains("Content-Disposition: attachment; filename=\"report.pdf\""));
         assert!(msg.contains("Content-Type: application/pdf; name=\"report.pdf\""));
-        assert!(msg.contains(&base64_std(b"PDF-BYTES")), "attachment bytes not base64-embedded");
-        assert!(msg.trim_end().ends_with("--=_bnd_mix--"), "mixed container must close last: {msg}");
+        assert!(
+            msg.contains(&base64_std(b"PDF-BYTES")),
+            "attachment bytes not base64-embedded"
+        );
+        assert!(
+            msg.trim_end().ends_with("--=_bnd_mix--"),
+            "mixed container must close last: {msg}"
+        );
         // A path-traversing filename is reduced to its basename in the headers.
-        let att2 = Attachment { filename: "../../etc/passwd".into(), content_type: String::new(), data: vec![1] };
-        let spec2 = MimeSpec { attachments: std::slice::from_ref(&att2), ..spec };
+        let att2 = Attachment {
+            filename: "../../etc/passwd".into(),
+            content_type: String::new(),
+            data: vec![1],
+        };
+        let spec2 = MimeSpec {
+            attachments: std::slice::from_ref(&att2),
+            ..spec
+        };
         let msg2 = build_rfc822(&spec2);
-        assert!(msg2.contains("filename=\"passwd\""), "filename must be a basename: {msg2}");
-        assert!(msg2.contains("Content-Type: application/octet-stream"), "empty ct -> octet-stream");
+        assert!(
+            msg2.contains("filename=\"passwd\""),
+            "filename must be a basename: {msg2}"
+        );
+        assert!(
+            msg2.contains("Content-Type: application/octet-stream"),
+            "empty ct -> octet-stream"
+        );
     }
 
     #[test]
@@ -2399,14 +2702,26 @@ mod tests {
         });
         let atts = collect_attachments(&payload);
         assert_eq!(atts.len(), 2);
-        let pdf = atts.iter().find(|a| a["filename"] == json!("report.pdf")).unwrap();
+        let pdf = atts
+            .iter()
+            .find(|a| a["filename"] == json!("report.pdf"))
+            .unwrap();
         assert_eq!(pdf["attachment_id"], json!("att-1"));
         assert_eq!(pdf["size"], json!(1234));
         assert_eq!(pdf["inline"], json!(false), "a real file is not inline");
-        let logo = atts.iter().find(|a| a["filename"] == json!("logo.png")).unwrap();
-        assert_eq!(logo["inline"], json!(true), "a cid: signature logo is inline");
+        let logo = atts
+            .iter()
+            .find(|a| a["filename"] == json!("logo.png"))
+            .unwrap();
+        assert_eq!(
+            logo["inline"],
+            json!(true),
+            "a cid: signature logo is inline"
+        );
         // A plain body-only message has no attachments.
-        assert!(collect_attachments(&json!({"mimeType":"text/plain","body":{"data":"aGk"}})).is_empty());
+        assert!(
+            collect_attachments(&json!({"mimeType":"text/plain","body":{"data":"aGk"}})).is_empty()
+        );
     }
 
     #[test]
@@ -2493,14 +2808,23 @@ mod tests {
     fn non_ascii_subject_is_rfc2047_encoded() {
         assert_eq!(encode_header_value("plain"), "plain");
         let enc = encode_header_value("héllo");
-        assert!(enc.starts_with("=?utf-8?b?") && enc.ends_with("?="), "{enc}");
-        assert_eq!(base64url_decode(&enc[10..enc.len() - 2]).unwrap(), "héllo".as_bytes());
+        assert!(
+            enc.starts_with("=?utf-8?b?") && enc.ends_with("?="),
+            "{enc}"
+        );
+        assert_eq!(
+            base64url_decode(&enc[10..enc.len() - 2]).unwrap(),
+            "héllo".as_bytes()
+        );
     }
 
     // ---- reply derivation -------------------------------------------------
 
     fn hdrs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     const ME: &str = "owner@mixpeek.com";
@@ -2563,7 +2887,10 @@ mod tests {
             ("to", "info@mixpeek.com"),
         ]);
         let err = derive_reply_plan(&h, "<m@x>", ME, &connected(), false, false).unwrap_err();
-        assert!(err.starts_with("no external recipient on this thread (would email ourselves)"), "{err}");
+        assert!(
+            err.starts_with("no external recipient on this thread (would email ourselves)"),
+            "{err}"
+        );
         assert!(err.contains("allow_self"), "{err}");
     }
 
@@ -2581,7 +2908,11 @@ mod tests {
 
     #[test]
     fn missing_angle_bracket_gets_pythons_exact_fixup() {
-        let h = hdrs(&[("subject", "s"), ("from", "x@ext.com"), ("message-id", "bare@id>")]);
+        let h = hdrs(&[
+            ("subject", "s"),
+            ("from", "x@ext.com"),
+            ("message-id", "bare@id>"),
+        ]);
         let plan = derive_reply_plan(&h, "bare@id>", ME, &connected(), false, false).unwrap();
         // Python wraps unconditionally when no leading '<' (amux-server.py:26957
         // f"<{id}>"), so a trailing '>' doubles. Parity beats prettiness: the
@@ -2611,8 +2942,16 @@ mod tests {
                 ),
             })
         }
-        fn answer(&self, method: &str, url: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
-            self.calls.lock().unwrap().push((method.into(), url.into(), body.cloned()));
+        fn answer(
+            &self,
+            method: &str,
+            url: &str,
+            body: Option<&Value>,
+        ) -> Result<(u16, Value), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((method.into(), url.into(), body.cloned()));
             let mut script = self.script.lock().unwrap();
             if let Some(pos) = script
                 .iter()
@@ -2644,7 +2983,9 @@ mod tests {
             form: &[(String, String)],
         ) -> Result<(u16, Value), String> {
             let v = Value::Object(
-                form.iter().map(|(k, val)| (k.clone(), json!(val))).collect(),
+                form.iter()
+                    .map(|(k, val)| (k.clone(), json!(val)))
+                    .collect(),
             );
             self.answer("FORM", url, Some(&v))
         }
@@ -2658,7 +2999,12 @@ mod tests {
             // Scripted like every other verb; the multipart RESPONSE rides in
             // the script's Value as a plain string.
             let (st, v) = self.answer("RAW", url, Some(&Value::String(body)))?;
-            Ok((st, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+            Ok((
+                st,
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string()),
+            ))
         }
     }
 
@@ -2711,7 +3057,9 @@ mod tests {
         // ...and PERSISTED the rotated one. Writing back what we sent is the bug.
         let persisted: Value = serde_json::from_str(
             &std::fs::read_to_string(
-                home.path().join("gmail-tokens").join("acct@example.com.json"),
+                home.path()
+                    .join("gmail-tokens")
+                    .join("acct@example.com.json"),
             )
             .unwrap(),
         )
@@ -2745,7 +3093,9 @@ mod tests {
             let _ = client.get_signature("acct@example.com").await;
             let persisted: Value = serde_json::from_str(
                 &std::fs::read_to_string(
-                    home.path().join("gmail-tokens").join("acct@example.com.json"),
+                    home.path()
+                        .join("gmail-tokens")
+                        .join("acct@example.com.json"),
                 )
                 .unwrap(),
             )
@@ -2769,27 +3119,41 @@ mod tests {
 
         // Creates the directory it needs.
         GmailClient::write_token_file_atomically(&path, r#"{"token":"one"}"#).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"token":"one"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"token":"one"}"#
+        );
 
         // Replaces without leaving the sibling temp file behind — a stray
         // `.acct@example.com.json.tmp` holding a refresh token would be a
         // credential copy nobody knows about.
         GmailClient::write_token_file_atomically(&path, r#"{"token":"two"}"#).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"token":"two"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"token":"two"}"#
+        );
         let leftovers: Vec<String> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     #[tokio::test]
     async fn token_refresh_posts_correct_form_and_persists() {
         let home = temp_home_with_token("acct@example.com", false);
         let http = MockHttp::new(vec![
-            ("FORM", "oauth2.googleapis.com/token", 200, json!({ "access_token": "FRESH", "expires_in": 3599 })),
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({ "access_token": "FRESH", "expires_in": 3599 }),
+            ),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
@@ -2806,7 +3170,9 @@ mod tests {
         // Refreshed token persisted back in Python's file shape.
         let persisted: Value = serde_json::from_str(
             &std::fs::read_to_string(
-                home.path().join("gmail-tokens").join("acct@example.com.json"),
+                home.path()
+                    .join("gmail-tokens")
+                    .join("acct@example.com.json"),
             )
             .unwrap(),
         )
@@ -2820,14 +3186,40 @@ mod tests {
         let home = temp_home_with_token("acct@example.com", true);
         let http = MockHttp::new(vec![
             // First API call uses the stale stored token -> 401.
-            ("POST", "/messages/send", 401, json!({ "error": { "code": 401 } })),
-            ("FORM", "oauth2.googleapis.com/token", 200, json!({ "access_token": "FRESH2" })),
+            (
+                "POST",
+                "/messages/send",
+                401,
+                json!({ "error": { "code": 401 } }),
+            ),
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({ "access_token": "FRESH2" }),
+            ),
             // Retry succeeds.
-            ("POST", "/messages/send", 200, json!({ "id": "m1", "threadId": "t1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m1", "threadId": "t1" }),
+            ),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
         let res = client
-            .compose_send("acct@example.com", "x@ext.com", "S", "B", "", "", "", "", false, &[])
+            .compose_send(
+                "acct@example.com",
+                "x@ext.com",
+                "S",
+                "B",
+                "",
+                "",
+                "",
+                "",
+                false,
+                &[],
+            )
             .await
             .unwrap();
         assert_eq!(res["ok"], json!(true));
@@ -2851,7 +3243,18 @@ mod tests {
         )]);
         let client = GmailClient::new(http, home.path().to_path_buf());
         let err = client
-            .compose_send("acct@example.com", "x@ext.com", "S", "B", "", "", "", "", false, &[])
+            .compose_send(
+                "acct@example.com",
+                "x@ext.com",
+                "S",
+                "B",
+                "",
+                "",
+                "",
+                "",
+                false,
+                &[],
+            )
             .await
             .unwrap_err();
         assert!(err.contains("invalid_grant"), "{err}");
@@ -2861,10 +3264,20 @@ mod tests {
     async fn compose_send_raw_decodes_to_rfc822_with_signature_and_thread() {
         let home = temp_home_with_token("acct@example.com", true);
         let http = MockHttp::new(vec![
-            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [
-                { "sendAsEmail": "acct@example.com", "signature": "<b>Sig</b>" },
-            ]})),
-            ("POST", "/messages/send", 200, json!({ "id": "m2", "threadId": "T9" })),
+            (
+                "GET",
+                "/settings/sendAs",
+                200,
+                json!({ "sendAs": [
+                    { "sendAsEmail": "acct@example.com", "signature": "<b>Sig</b>" },
+                ]}),
+            ),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m2", "threadId": "T9" }),
+            ),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
         let res = client
@@ -2884,7 +3297,10 @@ mod tests {
             .unwrap();
         assert_eq!(res["signature_included"], json!(true));
         let calls = http.calls.lock().unwrap();
-        let (_, _, body) = calls.iter().find(|(m, u, _)| m == "POST" && u.contains("/messages/send")).unwrap();
+        let (_, _, body) = calls
+            .iter()
+            .find(|(m, u, _)| m == "POST" && u.contains("/messages/send"))
+            .unwrap();
         let body = body.as_ref().unwrap();
         assert_eq!(body["threadId"], json!("T9"));
         let raw = body["raw"].as_str().unwrap();
@@ -2914,13 +3330,31 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "q=rfc822msgid", 200, json!({ "messages": [{ "id": "g1" }] })),
+            (
+                "GET",
+                "q=rfc822msgid",
+                200,
+                json!({ "messages": [{ "id": "g1" }] }),
+            ),
             ("GET", "/messages/g1", 200, orig),
-            ("POST", "/messages/send", 200, json!({ "id": "m3", "threadId": "T1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m3", "threadId": "T1" }),
+            ),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
         let res = client
-            .reply_send("acct@example.com", "<orig@ext>", "thanks!", false, false, false, &[])
+            .reply_send(
+                "acct@example.com",
+                "<orig@ext>",
+                "thanks!",
+                false,
+                false,
+                false,
+                &[],
+            )
             .await
             .unwrap();
         assert_eq!(res["threaded"], json!(true));
@@ -2930,7 +3364,10 @@ mod tests {
         assert_eq!(res["to"], json!("p@customer.com"));
         assert_eq!(res["subject"], json!("Re: Deal"));
         let calls = http.calls.lock().unwrap();
-        let (_, _, body) = calls.iter().find(|(m, u, _)| m == "POST" && u.contains("/messages/send")).unwrap();
+        let (_, _, body) = calls
+            .iter()
+            .find(|(m, u, _)| m == "POST" && u.contains("/messages/send"))
+            .unwrap();
         let body = body.as_ref().unwrap();
         assert_eq!(body["threadId"], json!("T1"));
         let decoded =
@@ -2952,10 +3389,21 @@ mod tests {
         )]);
         let client = GmailClient::new(http, home.path().to_path_buf());
         let err = client
-            .reply_send("acct@example.com", "<gone@id>", "b", false, false, false, &[])
+            .reply_send(
+                "acct@example.com",
+                "<gone@id>",
+                "b",
+                false,
+                false,
+                false,
+                &[],
+            )
             .await
             .unwrap_err();
-        assert_eq!(err, "message not found in any connected account — check message_id");
+        assert_eq!(
+            err,
+            "message not found in any connected account — check message_id"
+        );
     }
 
     #[tokio::test]
@@ -2974,15 +3422,23 @@ mod tests {
             })
         };
         let http = MockHttp::new(vec![
-            ("GET", "/messages?q=", 200, json!({
-                "messages": [{ "id": "g1" }, { "id": "g2" }],
-                "nextPageToken": "more",
-            })),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({
+                    "messages": [{ "id": "g1" }, { "id": "g2" }],
+                    "nextPageToken": "more",
+                }),
+            ),
             ("GET", "/messages/g1", 200, meta("g1", "<m1@x>")),
             ("GET", "/messages/g2", 200, meta("g2", "<m2@x>")),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", 2, "", 3.0, None).await.unwrap();
+        let res = client
+            .inbox_messages("acct@example.com", 2, "", 3.0, None)
+            .await
+            .unwrap();
         // Window held more than the cap: a caller can tell 0 from capped.
         assert_eq!(res["truncated"], json!(true));
         // AF-704: the cursor to resume past the cap rides beside `truncated`,
@@ -2996,7 +3452,11 @@ mod tests {
         assert_eq!(msgs[0]["account"], json!("acct@example.com"));
         // The list call carried in:inbox + an epoch after: filter.
         let calls = http.calls.lock().unwrap();
-        let url = &calls.iter().find(|(m, u, _)| m == "GET" && u.contains("/messages?q=")).unwrap().1;
+        let url = &calls
+            .iter()
+            .find(|(m, u, _)| m == "GET" && u.contains("/messages?q="))
+            .unwrap()
+            .1;
         assert!(url.contains(&urlencode("in:inbox after:")[..20]), "{url}");
     }
 
@@ -3022,10 +3482,15 @@ mod tests {
         let http = MockHttp::new(vec![
             // Matched on the pageToken alone: proves resume_from reached the
             // real request rather than a fresh, tokenless one.
-            ("GET", "pageToken=resume-tok-1", 200, json!({
-                "messages": [{ "id": "g3" }],
-                "nextPageToken": "resume-tok-2",
-            })),
+            (
+                "GET",
+                "pageToken=resume-tok-1",
+                200,
+                json!({
+                    "messages": [{ "id": "g3" }],
+                    "nextPageToken": "resume-tok-2",
+                }),
+            ),
             ("GET", "/messages/g3", 200, meta("g3", "<m3@x>")),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
@@ -3058,17 +3523,40 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "/messages?q=", 200, json!({ "messages": [{ "id": "g1" }] })),
-            ("GET", "/messages/g1", 429, json!({ "error": "rateLimitExceeded" })),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({ "messages": [{ "id": "g1" }] }),
+            ),
+            (
+                "GET",
+                "/messages/g1",
+                429,
+                json!({ "error": "rateLimitExceeded" }),
+            ),
             ("GET", "/messages/g1", 200, meta),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", 1, "", 3.0, None).await.unwrap();
+        let res = client
+            .inbox_messages("acct@example.com", 1, "", 3.0, None)
+            .await
+            .unwrap();
         let msgs = res["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 1, "the 429'd message must be retried into the response");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "the 429'd message must be retried into the response"
+        );
         assert_eq!(msgs[0]["message_id"], json!("<m1@x>"));
         // Both the 429 and the retry hit the wire.
-        let gets = http.calls.lock().unwrap().iter().filter(|(m, u, _)| m == "GET" && u.contains("/messages/g1")).count();
+        let gets = http
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, u, _)| m == "GET" && u.contains("/messages/g1"))
+            .count();
         assert_eq!(gets, 2);
     }
 
@@ -3078,8 +3566,13 @@ mod tests {
     /// brackets, a non-JSON error part) by SKIPPING, never by mis-mapping.
     #[test]
     fn batch_multipart_builder_and_parser_round_google_shapes() {
-        let body = batch_request_body("B", &["/gmail/v1/users/me/messages/a?x=1".into(),
-                                             "/gmail/v1/users/me/messages/b?x=1".into()]);
+        let body = batch_request_body(
+            "B",
+            &[
+                "/gmail/v1/users/me/messages/a?x=1".into(),
+                "/gmail/v1/users/me/messages/b?x=1".into(),
+            ],
+        );
         assert!(body.contains("--B\r\nContent-Type: application/http\r\nContent-ID: <item0>"));
         assert!(body.contains("GET /gmail/v1/users/me/messages/b?x=1 HTTP/1.1"));
         assert!(body.ends_with("--B--\r\n"));
@@ -3124,16 +3617,32 @@ mod tests {
             ("GET", "/messages/g7", 200, meta7),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", n, "", 3.0, None).await.unwrap();
+        let res = client
+            .inbox_messages("acct@example.com", n, "", 3.0, None)
+            .await
+            .unwrap();
         let msgs = res["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), n, "batch + hole-fallback must deliver every message");
-        assert_eq!(msgs[7]["message_id"], json!("<m7@x>"), "the hole came via fallback, in place");
+        assert_eq!(
+            msgs.len(),
+            n,
+            "batch + hole-fallback must deliver every message"
+        );
+        assert_eq!(
+            msgs[7]["message_id"],
+            json!("<m7@x>"),
+            "the hole came via fallback, in place"
+        );
         let calls = http.calls.lock().unwrap();
         let raw_calls = calls.iter().filter(|(m, _, _)| m == "RAW").count();
-        let single_gets =
-            calls.iter().filter(|(m, u, _)| m == "GET" && u.contains("/messages/g")).count();
+        let single_gets = calls
+            .iter()
+            .filter(|(m, u, _)| m == "GET" && u.contains("/messages/g"))
+            .count();
         assert_eq!(raw_calls, 1, "one batch round-trip for 25 ids");
-        assert_eq!(single_gets, 1, "only the hole single-fetches: {single_gets}");
+        assert_eq!(
+            single_gets, 1,
+            "only the hole single-fetches: {single_gets}"
+        );
     }
 
     #[tokio::test]
@@ -3144,18 +3653,50 @@ mod tests {
             "payload": { "headers": [ { "name": "Message-ID", "value": "<m2@x>" } ] },
         });
         let http = MockHttp::new(vec![
-            ("GET", "/messages?q=", 200, json!({ "messages": [{ "id": "g1" }, { "id": "g2" }] })),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({ "messages": [{ "id": "g1" }, { "id": "g2" }] }),
+            ),
             // g1: four 429s — every attempt eaten, the message drops (loudly, WARN).
-            ("GET", "/messages/g1", 429, json!({ "error": "rateLimitExceeded" })),
-            ("GET", "/messages/g1", 429, json!({ "error": "rateLimitExceeded" })),
-            ("GET", "/messages/g1", 429, json!({ "error": "rateLimitExceeded" })),
-            ("GET", "/messages/g1", 429, json!({ "error": "rateLimitExceeded" })),
+            (
+                "GET",
+                "/messages/g1",
+                429,
+                json!({ "error": "rateLimitExceeded" }),
+            ),
+            (
+                "GET",
+                "/messages/g1",
+                429,
+                json!({ "error": "rateLimitExceeded" }),
+            ),
+            (
+                "GET",
+                "/messages/g1",
+                429,
+                json!({ "error": "rateLimitExceeded" }),
+            ),
+            (
+                "GET",
+                "/messages/g1",
+                429,
+                json!({ "error": "rateLimitExceeded" }),
+            ),
             ("GET", "/messages/g2", 200, meta),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
-        let res = client.inbox_messages("acct@example.com", 2, "", 3.0, None).await.unwrap();
+        let res = client
+            .inbox_messages("acct@example.com", 2, "", 3.0, None)
+            .await
+            .unwrap();
         let msgs = res["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 1, "g2 must survive g1's sustained quota failure");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "g2 must survive g1's sustained quota failure"
+        );
         assert_eq!(msgs[0]["message_id"], json!("<m2@x>"));
     }
 
@@ -3173,7 +3714,12 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "/messages?q=", 200, json!({ "messages": [{ "id": "g9" }] })),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({ "messages": [{ "id": "g9" }] }),
+            ),
             ("GET", "/messages/g9", 200, meta),
         ]);
         let client = GmailClient::new(http.clone(), home.path().to_path_buf());
@@ -3190,11 +3736,24 @@ mod tests {
             let calls = http.calls.lock().unwrap();
             (calls[1].1.clone(), calls[0].1.clone())
         };
-        assert!(list_url.contains(&urlencode("(from:ceo@customer.com OR to:ceo@customer.com) newer_than:14d")), "{list_url} {url}");
+        assert!(
+            list_url.contains(&urlencode(
+                "(from:ceo@customer.com OR to:ceo@customer.com) newer_than:14d"
+            )),
+            "{list_url} {url}"
+        );
         // API error -> None (fail-open guard, never a gate).
-        let http2 = MockHttp::new(vec![("GET", "/messages?q=", 500, json!({ "error": "boom" }))]);
+        let http2 = MockHttp::new(vec![(
+            "GET",
+            "/messages?q=",
+            500,
+            json!({ "error": "boom" }),
+        )]);
         let client2 = GmailClient::new(http2, home.path().to_path_buf());
-        assert!(client2.latest_matching("acct@example.com", "x@y.z", "", "", 14).await.is_none());
+        assert!(client2
+            .latest_matching("acct@example.com", "x@y.z", "", "", 14)
+            .await
+            .is_none());
     }
 
     // ---- send-audit ledger ------------------------------------------------
@@ -3233,7 +3792,10 @@ mod tests {
         std::fs::write(tokens.join("b@x.com.json"), "{}").unwrap();
         std::fs::write(tokens.join("a@x.com.json"), "{}").unwrap();
         std::fs::write(tokens.join("notes.txt"), "").unwrap();
-        assert_eq!(connected_accounts_in(dir.path()), vec!["a@x.com", "b@x.com"]);
+        assert_eq!(
+            connected_accounts_in(dir.path()),
+            vec!["a@x.com", "b@x.com"]
+        );
         assert!(connected_accounts_in(&dir.path().join("missing")).is_empty());
     }
 }
@@ -3260,9 +3822,16 @@ mod gmail_rate_limit_tests {
     /// error format.
     #[test]
     fn every_spelling_google_uses_counts() {
-        for reason in ["RATE_LIMIT_EXCEEDED", "rateLimitExceeded", "userRateLimitExceeded"] {
+        for reason in [
+            "RATE_LIMIT_EXCEEDED",
+            "rateLimitExceeded",
+            "userRateLimitExceeded",
+        ] {
             let b = serde_json::json!({"error":{"details":[{"reason":reason}]}});
-            assert!(GmailClient::gmail_rate_limited(403, &b), "reason {reason} must count");
+            assert!(
+                GmailClient::gmail_rate_limited(403, &b),
+                "reason {reason} must count"
+            );
         }
         // The legacy shape carries no `details`, only `errors[].domain`.
         let legacy = serde_json::json!({"error":{"errors":[{"domain":"usageLimits","message":"Quota exceeded"}]}});
@@ -3276,7 +3845,10 @@ mod gmail_rate_limit_tests {
     fn a_fault_that_merely_mentions_a_quota_is_not_a_quota_refusal() {
         let b = serde_json::json!({"error":{"code":500,"message":"RATE_LIMIT_EXCEEDED usageLimits appeared in a log line"}});
         assert!(!GmailClient::gmail_rate_limited(500, &b));
-        assert!(!GmailClient::gmail_rate_limited(403, &b), "403 alone is not a rate limit");
+        assert!(
+            !GmailClient::gmail_rate_limited(403, &b),
+            "403 alone is not a rate limit"
+        );
     }
 
     /// A 403 is ALSO how Gmail says "forbidden". Permission failures must keep
@@ -3305,9 +3877,16 @@ mod gmail_rate_limit_tests {
     #[test]
     fn the_retry_decision_covers_gmails_403_and_still_gives_up() {
         let quota = real_body();
-        assert!(GmailClient::should_retry_upstream(403, &quota, 0), "the original defect");
+        assert!(
+            GmailClient::should_retry_upstream(403, &quota, 0),
+            "the original defect"
+        );
         assert!(GmailClient::should_retry_upstream(429, &quota, 0));
-        assert!(GmailClient::should_retry_upstream(503, &serde_json::Value::Null, 0));
+        assert!(GmailClient::should_retry_upstream(
+            503,
+            &serde_json::Value::Null,
+            0
+        ));
         // A sustained limit must still stop: three backoffs, then error.
         assert!(
             !GmailClient::should_retry_upstream(403, &quota, 3),

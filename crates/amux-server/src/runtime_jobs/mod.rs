@@ -51,35 +51,35 @@ pub mod autofix;
 pub mod board_drain;
 pub mod board_drive;
 pub mod board_hygiene;
-pub mod message_capture;
 pub mod browser_reaper;
 pub mod cdc_poller;
 pub mod codex_ledger;
-pub mod gemini_ledger;
 pub mod commit_mention_notes;
 pub mod context_health;
-pub mod status_history;
 pub mod disk_watch;
 pub(crate) mod executor;
+pub mod gemini_ledger;
 pub mod heartbeat;
 pub mod host_metrics;
+mod log_retention;
 pub mod mac_health;
 mod memory_consumers;
+pub mod message_capture;
 pub mod model_catalog_refresh;
 pub mod pane_size;
+mod poll_watch;
 /// The live registry of the jobs below — see [`registry`] for why it is
 /// derived from the spawn sites rather than declared alongside them.
 pub mod recordings_transcribe;
 pub mod registry;
-mod poll_watch;
 pub mod scheduler;
+pub mod status_history;
 pub mod storage;
-mod log_retention;
 pub mod tailnet_watch;
 pub mod telegram_poll;
 pub mod telegram_relay;
-pub mod tunnel;
 pub mod token_ledger;
+pub mod tunnel;
 
 pub use scheduler::{
     firing_enabled, run_scheduler, scheduler_tick, DueRuns, DurableSchedule, ExprParseError,
@@ -195,7 +195,11 @@ pub(crate) fn fleet_isolation_reason(name: &str) -> Option<String> {
 /// [`spawn_periodic`] with a raw `Duration`, for sub-second internal ticks
 /// (and for tests, which drive real ~tens-of-ms intervals — the workspace
 /// tokio has no `test-util`, so there is no paused clock to lean on).
-pub fn spawn_periodic_every<F, Fut>(name: impl Into<String>, interval: Duration, mut f: F) -> PeriodicTask
+pub fn spawn_periodic_every<F, Fut>(
+    name: impl Into<String>,
+    interval: Duration,
+    mut f: F,
+) -> PeriodicTask
 where
     F: FnMut() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -226,7 +230,11 @@ where
         // makes the job visible. Kept as a completed handle so PeriodicTask's
         // shape is unchanged for callers.
         let handle = tokio::spawn(async {});
-        return PeriodicTask { name, interval, handle };
+        return PeriodicTask {
+            name,
+            interval,
+            handle,
+        };
     }
 
     // VISIBILITY IS NOT OPTIONAL, and it is not the job's responsibility.
@@ -274,7 +282,12 @@ where
             registry::tick_end(&job_id);
         }
     });
-    registry::register(&name, "periodic", Some(interval), Some(handle.abort_handle()));
+    registry::register(
+        &name,
+        "periodic",
+        Some(interval),
+        Some(handle.abort_handle()),
+    );
     PeriodicTask {
         name,
         interval,
@@ -344,8 +357,14 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let nf = fast.load(Ordering::SeqCst);
         let ns = slow.load(Ordering::SeqCst);
-        assert!(nf >= 8, "fast task starved by slow one: {nf} ticks in 400ms");
-        assert!((1..=2).contains(&ns), "slow task should be mid-first-run: {ns}");
+        assert!(
+            nf >= 8,
+            "fast task starved by slow one: {nf} ticks in 400ms"
+        );
+        assert!(
+            (1..=2).contains(&ns),
+            "slow task should be mid-first-run: {ns}"
+        );
         tf.abort();
         ts.abort();
     }
@@ -390,8 +409,10 @@ mod tests {
                 continue;
             }
             let stem = name.trim_end_matches(".rs");
-            let mut cands: Vec<String> =
-                vec![per_job_disable_var(&stem.replace('_', "-")), per_job_disable_var(stem)];
+            let mut cands: Vec<String> = vec![
+                per_job_disable_var(&stem.replace('_', "-")),
+                per_job_disable_var(stem),
+            ];
             cands.sort();
             cands.dedup();
             for cand in cands {
@@ -413,7 +434,10 @@ mod tests {
         // with '-' turned into '_'. These two are the fleet-driving jobs AF-69
         // exists to keep a test server from running.
         assert_eq!(per_job_disable_var("pane_size"), "AMUX_PANE_SIZE_SECS");
-        assert_eq!(per_job_disable_var("ghost-rescue"), "AMUX_GHOST_RESCUE_SECS");
+        assert_eq!(
+            per_job_disable_var("ghost-rescue"),
+            "AMUX_GHOST_RESCUE_SECS"
+        );
     }
 
     /// The isolation predicate WITH its negative controls, exercised without
@@ -449,7 +473,8 @@ mod tests {
         // is "off", not "on"), and a non-0 interval must NOT disable - otherwise
         // AMUX_BOARD_DRIVE_SECS=20 would silently kill a healthy loop.
         assert_eq!(
-            isolation_reason_with("pane_size", |k| (k == "AMUX_ISOLATED").then(|| "0".to_string())),
+            isolation_reason_with("pane_size", |k| (k == "AMUX_ISOLATED")
+                .then(|| "0".to_string())),
             None
         );
         assert_eq!(
@@ -518,7 +543,10 @@ mod tests {
             .find(|s| s.id == name)
             .expect("an isolated job must still appear in /api/system-jobs");
         assert_eq!(row.ticks, 0);
-        assert_eq!(row.disabled_reason.as_deref(), Some("AMUX_AF69_ISOLATED_PROBE_SECS=0"));
+        assert_eq!(
+            row.disabled_reason.as_deref(),
+            Some("AMUX_AF69_ISOLATED_PROBE_SECS=0")
+        );
 
         iso.abort();
         std::env::remove_var(&var);

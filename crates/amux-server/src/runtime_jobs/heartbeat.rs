@@ -142,7 +142,10 @@ fn classify(down_from: f64, machine_boot_at: Option<f64>) -> Option<DowntimeCaus
 /// rule is intact — there is no `if IS_CLOUD` hiding in this.
 #[cfg(target_os = "macos")]
 fn machine_boot_at() -> Option<f64> {
-    let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
     let mut len = std::mem::size_of::<libc::timeval>();
     let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
     // SAFETY: mib is a 2-element CTL_KERN/KERN_BOOTTIME query and the output
@@ -264,7 +267,11 @@ pub fn boot_gap() -> Option<Gap> {
 /// stamp, write the current one, and hand back what was there before.
 fn stamp(conn: &rusqlite::Connection, now: f64) -> rusqlite::Result<Option<f64>> {
     let prev: Option<f64> = conn
-        .query_row("SELECT beat_at FROM server_heartbeat WHERE id = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT beat_at FROM server_heartbeat WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
         .ok();
     conn.execute(
         "INSERT INTO server_heartbeat (id, beat_at) VALUES (1, ?1)
@@ -365,7 +372,10 @@ pub fn record_boot(store: &Store, port: u16) -> Option<Gap> {
         // resource as the fault it watches. The row still commits; `applied`
         // only controls whether subscribers are told something changed, and
         // nothing user-visible did.
-        Ok(WriteOutcome { applied: false, events: vec![] })
+        Ok(WriteOutcome {
+            applied: false,
+            events: vec![],
+        })
     });
 
     if let Err(e) = res {
@@ -379,29 +389,26 @@ pub fn record_boot(store: &Store, port: u16) -> Option<Gap> {
     // return a value, so this reads `server_downtime` for the row keyed to this
     // boot — which also proves the insert actually landed, rather than trusting
     // that it did (ethos rule 6: verify the operand you just wrote).
-    let gap = store
-        .read()
-        .ok()
-        .and_then(|c| {
-            c.query_row(
-                "SELECT down_from, up_at, seconds, requests_during, cause FROM server_downtime \
+    let gap = store.read().ok().and_then(|c| {
+        c.query_row(
+            "SELECT down_from, up_at, seconds, requests_during, cause FROM server_downtime \
                  WHERE up_at = ?1 ORDER BY id DESC LIMIT 1",
-                [now],
-                |r| {
-                    Ok(Gap {
-                        down_from: r.get(0)?,
-                        up_at: r.get(1)?,
-                        seconds: r.get(2)?,
-                        requests_during: r.get(3)?,
-                        cause: r
-                            .get::<_, Option<String>>(4)?
-                            .as_deref()
-                            .and_then(DowntimeCause::from_str),
-                    })
-                },
-            )
-            .ok()
-        });
+            [now],
+            |r| {
+                Ok(Gap {
+                    down_from: r.get(0)?,
+                    up_at: r.get(1)?,
+                    seconds: r.get(2)?,
+                    requests_during: r.get(3)?,
+                    cause: r
+                        .get::<_, Option<String>>(4)?
+                        .as_deref()
+                        .and_then(DowntimeCause::from_str),
+                })
+            },
+        )
+        .ok()
+    });
 
     // Only a gap with NOTHING served is downtime, and only downtime reaches
     // `/health`'s `downtime_before_boot_s`. A heartbeat gap published there would
@@ -467,7 +474,10 @@ pub fn beat(store: &Store) {
     if let Err(e) = store.write(move |conn| {
         stamp(conn, now)?;
         // See record_boot: never bump the global revision from a heartbeat.
-        Ok(WriteOutcome { applied: false, events: vec![] })
+        Ok(WriteOutcome {
+            applied: false,
+            events: vec![],
+        })
     }) {
         tracing::warn!(error = %e, "heartbeat: stamp failed");
     }
@@ -487,7 +497,9 @@ pub fn downtime_within(conn: &rusqlite::Connection, from: f64, to: f64) -> f64 {
         Ok(s) => s,
         Err(_) => return 0.0,
     };
-    let rows = stmt.query_map([from, to], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)));
+    let rows = stmt.query_map([from, to], |r| {
+        Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?))
+    });
     match rows {
         Ok(it) => it
             .filter_map(|r| r.ok())
@@ -496,7 +508,6 @@ pub fn downtime_within(conn: &rusqlite::Connection, from: f64, to: f64) -> f64 {
         Err(_) => 0.0,
     }
 }
-
 
 /// Spawns the beat loop. Registered like every other background job, so a
 /// heartbeat that stopped ticking is visible in `/api/system-jobs` — a dead
@@ -567,7 +578,10 @@ mod tests {
     fn a_first_ever_boot_is_not_an_outage() {
         let c = db();
         let gap = boot_tx(&c, 1_000.0, 120.0, 8824, None).unwrap();
-        assert!(gap.is_none(), "an empty heartbeat table means no history, not a four-hour outage");
+        assert!(
+            gap.is_none(),
+            "an empty heartbeat table means no history, not a four-hour outage"
+        );
         assert!(outages(&c).is_empty());
     }
 
@@ -594,13 +608,22 @@ mod tests {
         let back_up = last_beat + (4.0 * 3600.0 + 26.0 * 60.0);
         // Seed the heartbeat as the dead server left it.
         stamp(&c, last_beat).unwrap();
-        let gap = boot_tx(&c, back_up, 120.0, 8824, None).unwrap().expect("4h26m must register");
+        let gap = boot_tx(&c, back_up, 120.0, 8824, None)
+            .unwrap()
+            .expect("4h26m must register");
         assert_eq!(gap.down_from, last_beat);
         assert_eq!(gap.up_at, back_up);
-        assert!((gap.seconds - 15_960.0).abs() < 0.001, "seconds = {}", gap.seconds);
+        assert!(
+            (gap.seconds - 15_960.0).abs() < 0.001,
+            "seconds = {}",
+            gap.seconds
+        );
         let rows = outages(&c);
         assert_eq!(rows.len(), 1, "one outage, one row");
-        assert!((rows[0].2 / 60.0 - 266.0).abs() < 0.001, "4h26m = 266 minutes");
+        assert!(
+            (rows[0].2 / 60.0 - 266.0).abs() < 0.001,
+            "4h26m = 266 minutes"
+        );
     }
 
     /// The boundary, asserted from BOTH sides — a threshold tested only from
@@ -609,9 +632,15 @@ mod tests {
     fn the_threshold_discriminates_at_its_own_boundary() {
         let c = db();
         stamp(&c, 0.0).unwrap();
-        assert!(boot_tx(&c, 120.0, 120.0, 1, None).unwrap().is_none(), "exactly at the floor is not an outage");
+        assert!(
+            boot_tx(&c, 120.0, 120.0, 1, None).unwrap().is_none(),
+            "exactly at the floor is not an outage"
+        );
         stamp(&c, 0.0).unwrap();
-        assert!(boot_tx(&c, 120.5, 120.0, 1, None).unwrap().is_some(), "past the floor is");
+        assert!(
+            boot_tx(&c, 120.5, 120.0, 1, None).unwrap().is_some(),
+            "past the floor is"
+        );
     }
 
     /// The two-process dedupe. 8823 and 8824 share one DB and boot together;
@@ -624,8 +653,14 @@ mod tests {
         stamp(&c, 0.0).unwrap();
         let first = boot_tx(&c, 10_000.0, 120.0, 8824, None).unwrap();
         let second = boot_tx(&c, 10_000.1, 120.0, 8823, None).unwrap();
-        assert!(first.is_some(), "the first process through sees the stale stamp");
-        assert!(second.is_none(), "the second sees a stamp 0.1s old — no second row");
+        assert!(
+            first.is_some(),
+            "the first process through sees the stale stamp"
+        );
+        assert!(
+            second.is_none(),
+            "the second sees a stamp 0.1s old — no second row"
+        );
         assert_eq!(outages(&c).len(), 1);
     }
 
@@ -636,10 +671,13 @@ mod tests {
         let c = db();
         boot_tx(&c, 0.0, 120.0, 1, None).unwrap();
         for t in 1..=400 {
-            stamp(&c, t as f64 * 15.0).unwrap();   // 100 minutes of 15s beats
+            stamp(&c, t as f64 * 15.0).unwrap(); // 100 minutes of 15s beats
         }
         let gap = boot_tx(&c, 400.0 * 15.0 + 5.0, 120.0, 1, None).unwrap();
-        assert!(gap.is_none(), "a served 100 minutes must not be filed as a 100-minute outage");
+        assert!(
+            gap.is_none(),
+            "a served 100 minutes must not be filed as a 100-minute outage"
+        );
         assert!(outages(&c).is_empty());
     }
 
@@ -647,7 +685,7 @@ mod tests {
     fn downtime_within_reports_only_the_overlap() {
         let c = db();
         stamp(&c, 0.0).unwrap();
-        boot_tx(&c, 1_000.0, 120.0, 1, None).unwrap();   // outage [0, 1000]
+        boot_tx(&c, 1_000.0, 120.0, 1, None).unwrap(); // outage [0, 1000]
 
         // Fully inside the window.
         assert!((downtime_within(&c, 0.0, 2_000.0) - 1_000.0).abs() < 0.001);
@@ -678,18 +716,27 @@ mod tests {
     fn a_gap_with_traffic_inside_it_is_a_heartbeat_gap_not_downtime() {
         let c = db();
         let (down_from, up_at) = (1_787_144_660.0, 1_787_190_218.0); // the real bracket
-        c.execute("INSERT INTO server_heartbeat (id, beat_at) VALUES (1, ?1)", [down_from])
-            .unwrap();
+        c.execute(
+            "INSERT INTO server_heartbeat (id, beat_at) VALUES (1, ?1)",
+            [down_from],
+        )
+        .unwrap();
         serve(&c, down_from, up_at, 40);
 
-        let gap = boot_tx(&c, up_at, 120.0, 8824, None).unwrap().expect("a gap is still recorded");
+        let gap = boot_tx(&c, up_at, 120.0, 8824, None)
+            .unwrap()
+            .expect("a gap is still recorded");
         assert_eq!(gap.requests_during, Some(40));
         assert!(
             !gap.is_real_downtime(),
             "the server served 40 requests inside this stretch — calling it downtime is \
              the bug, and downtime_within() would SUBTRACT it from every lane's stall"
         );
-        assert_eq!(outages(&c).len(), 1, "still filed: a stopped heartbeat is its own fault");
+        assert_eq!(
+            outages(&c).len(),
+            1,
+            "still filed: a stopped heartbeat is its own fault"
+        );
         assert_eq!(
             downtime_within(&c, down_from - 1.0, up_at + 1.0),
             0.0,
@@ -701,14 +748,21 @@ mod tests {
     fn a_gap_with_no_traffic_is_real_downtime_and_is_subtracted() {
         let c = db();
         let (down_from, up_at) = (1_000.0, 20_000.0);
-        c.execute("INSERT INTO server_heartbeat (id, beat_at) VALUES (1, ?1)", [down_from])
-            .unwrap();
+        c.execute(
+            "INSERT INTO server_heartbeat (id, beat_at) VALUES (1, ?1)",
+            [down_from],
+        )
+        .unwrap();
         // deliberately NO serve() — and rows OUTSIDE the window must not count
         serve(&c, 100.0, 900.0, 5);
         serve(&c, 20_100.0, 20_900.0, 5);
 
         let gap = boot_tx(&c, up_at, 120.0, 8824, None).unwrap().expect("gap");
-        assert_eq!(gap.requests_during, Some(0), "traffic outside the bracket is not inside it");
+        assert_eq!(
+            gap.requests_during,
+            Some(0),
+            "traffic outside the bracket is not inside it"
+        );
         assert!(gap.is_real_downtime());
         assert_eq!(downtime_within(&c, down_from, up_at), 19_000.0);
     }
@@ -754,12 +808,17 @@ mod tests {
         .unwrap();
 
         let served: Option<i64> = c
-            .query_row("SELECT requests_during FROM server_downtime", [], |r| r.get(0))
+            .query_row("SELECT requests_during FROM server_downtime", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(served, Some(33), "the backfill must count the traffic that was served");
+        assert_eq!(
+            served,
+            Some(33),
+            "the backfill must count the traffic that was served"
+        );
         assert_eq!(downtime_within(&c, down_from, up_at), 0.0);
     }
-
 
     // ---- DESKT-22: WHY was amux absent? ----
 
@@ -792,10 +851,16 @@ mod tests {
         // is read live while the ROW is what anyone asks weeks later.
         let c = db();
         stamp(&c, down_from).unwrap();
-        let gap = boot_tx(&c, up_at, 120.0, 8824, Some(boot)).unwrap().expect("126.88s is an outage");
+        let gap = boot_tx(&c, up_at, 120.0, 8824, Some(boot))
+            .unwrap()
+            .expect("126.88s is an outage");
         assert_eq!(gap.cause, Some(DowntimeCause::ProcessOnly));
         let stored: Option<String> = c
-            .query_row("SELECT cause FROM server_downtime ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT cause FROM server_downtime ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(stored.as_deref(), Some("process-only"));
     }
@@ -823,7 +888,9 @@ mod tests {
 
         let c = db();
         stamp(&c, down_from).unwrap();
-        let gap = boot_tx(&c, up_at, 120.0, 8824, Some(machine_back)).unwrap().expect("4h26m");
+        let gap = boot_tx(&c, up_at, 120.0, 8824, Some(machine_back))
+            .unwrap()
+            .expect("4h26m");
         assert_eq!(gap.cause, Some(DowntimeCause::Machine));
     }
 
@@ -832,15 +899,24 @@ mod tests {
     /// during the gap.
     #[test]
     fn the_boundary_between_machine_and_process_only_is_the_last_beat() {
-        assert_eq!(classify(1_000.0, Some(1_000.0)), Some(DowntimeCause::ProcessOnly));
-        assert_eq!(classify(1_000.0, Some(1_000.1)), Some(DowntimeCause::Machine));
+        assert_eq!(
+            classify(1_000.0, Some(1_000.0)),
+            Some(DowntimeCause::ProcessOnly)
+        );
+        assert_eq!(
+            classify(1_000.0, Some(1_000.1)),
+            Some(DowntimeCause::Machine)
+        );
     }
 
     /// The two causes must not collapse to the same string — the whole point is
     /// that they route a reader to different subsystems.
     #[test]
     fn the_causes_are_distinguishable_on_the_wire() {
-        assert_ne!(DowntimeCause::Machine.as_str(), DowntimeCause::ProcessOnly.as_str());
+        assert_ne!(
+            DowntimeCause::Machine.as_str(),
+            DowntimeCause::ProcessOnly.as_str()
+        );
         for c in [DowntimeCause::Machine, DowntimeCause::ProcessOnly] {
             assert_eq!(DowntimeCause::from_str(c.as_str()), Some(c), "round trip");
         }
@@ -855,9 +931,15 @@ mod tests {
     fn the_kernel_boot_instant_is_readable_on_this_host() {
         let b = machine_boot_at().expect("kern.boottime / proc btime must be readable");
         let now = crate::runtime_jobs::registry::unix_now();
-        assert!(b > 0.0 && b < now, "boot instant {b} must be a past unix time (now {now})");
+        assert!(
+            b > 0.0 && b < now,
+            "boot instant {b} must be a past unix time (now {now})"
+        );
         // Sanity: nobody's uptime is 20 years. Catches a units mix-up, which is
         // the failure mode that would silently make every gap read as `machine`.
-        assert!(now - b < 20.0 * 365.0 * 86_400.0, "implausible uptime — units wrong?");
+        assert!(
+            now - b < 20.0 * 365.0 * 86_400.0,
+            "implausible uptime — units wrong?"
+        );
     }
 }

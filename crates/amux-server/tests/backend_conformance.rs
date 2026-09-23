@@ -124,7 +124,11 @@ async fn mid_lifecycle(
 ) -> Result<(), String> {
     match backend.status(proc).await {
         Ok(BackendStatus::Running) => {}
-        Ok(other) => return Err(format!("status after spawn: expected Running, got {other:?}")),
+        Ok(other) => {
+            return Err(format!(
+                "status after spawn: expected Running, got {other:?}"
+            ))
+        }
         Err(e) => return Err(format!("status after spawn errored: {e}")),
     }
 

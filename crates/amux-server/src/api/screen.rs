@@ -46,7 +46,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 fn capture_path() -> std::path::PathBuf {
-    crate::config::amux_home().join("screen-captures").join("latest.png")
+    crate::config::amux_home()
+        .join("screen-captures")
+        .join("latest.png")
 }
 
 fn loopback_only(peer: Option<Extension<ConnectInfo<SocketAddr>>>) -> Option<Response> {

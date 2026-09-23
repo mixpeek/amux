@@ -40,7 +40,10 @@ async fn list(State(state): State<AppState>, RawQuery(q): RawQuery) -> Response 
     let conn = match state.store.read() {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": e.to_string()})))
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": e.to_string()})),
+            )
                 .into_response()
         }
     };
@@ -77,7 +80,11 @@ async fn list(State(state): State<AppState>, RawQuery(q): RawQuery) -> Response 
 async fn create(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let text = body["text"].as_str().unwrap_or("").trim().to_string();
     if text.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "text required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "text required"})),
+        )
+            .into_response();
     }
     let label = body["label"].as_str().unwrap_or("").trim().to_string();
     let session = body["session"].as_str().unwrap_or("").trim().to_string();
@@ -127,12 +134,18 @@ async fn remove(State(state): State<AppState>, Path(id): Path<i64>) -> Response 
         .store
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM saved_messages WHERE id=?1", [id])?;
-            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
         })
         .await
     {
         Ok(_) => Json(json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -150,7 +163,10 @@ async fn patch(
         Some(v) => {
             let t = v.as_str().unwrap_or("").trim().to_string();
             if t.is_empty() {
-                return (StatusCode::BAD_REQUEST, Json(json!({"error": "text required"})))
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "text required"})),
+                )
                     .into_response();
             }
             Some(t)
@@ -167,17 +183,29 @@ async fn patch(
         .store
         .write_async(move |conn| {
             if let Some(t) = &text {
-                conn.execute("UPDATE saved_messages SET text=?1 WHERE id=?2", rusqlite::params![t, id])?;
+                conn.execute(
+                    "UPDATE saved_messages SET text=?1 WHERE id=?2",
+                    rusqlite::params![t, id],
+                )?;
             }
             if let Some(l) = &label {
-                conn.execute("UPDATE saved_messages SET label=?1 WHERE id=?2", rusqlite::params![l, id])?;
+                conn.execute(
+                    "UPDATE saved_messages SET label=?1 WHERE id=?2",
+                    rusqlite::params![l, id],
+                )?;
             }
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
     {
         Ok(_) => Json(json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }

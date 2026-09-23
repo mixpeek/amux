@@ -197,7 +197,10 @@ fn qpath(qs: &[(String, String)]) -> Result<PathBuf, Box<Response>> {
     } else if !cwd.is_empty() {
         Ok(expanduser(cwd).join(p))
     } else {
-        Err(Box::new(j(400, json!({"error": "relative path without cwd"}))))
+        Err(Box::new(j(
+            400,
+            json!({"error": "relative path without cwd"}),
+        )))
     }
 }
 
@@ -232,7 +235,10 @@ fn resolve_viewable_fallback(fpath: &str, cwd: &str, naive: &Path) -> PathBuf {
         return PathBuf::from(resolved);
     }
     let root = PathBuf::from(cwd.trim_end_matches('/'));
-    let rel_clean = fpath.trim().trim_start_matches('/').trim_start_matches("./");
+    let rel_clean = fpath
+        .trim()
+        .trim_start_matches('/')
+        .trim_start_matches("./");
     if let Some(found) = resolve_rel_descend(&root, rel_clean, &allowed_exists, &real_list_dirs) {
         return found;
     }
@@ -243,7 +249,10 @@ fn resolve_viewable_fallback(fpath: &str, cwd: &str, naive: &Path) -> PathBuf {
 /// stream anything larger via /api/file/raw. Config, not a constant — the
 /// hard 5MB refusal it replaced is the AMUX-2344 incident.
 fn img_inline_max() -> u64 {
-    std::env::var("AMUX_IMG_INLINE_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(2_000_000)
+    std::env::var("AMUX_IMG_INLINE_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000_000)
 }
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -271,7 +280,11 @@ async fn view(req: Request) -> Response {
     // AMUX-4682: this is the read-only fallback (see resolve_viewable_fallback's
     // own doc) -- everything else in this handler is unchanged, so a path that
     // already resolves correctly today behaves identically.
-    let p = resolve_viewable_fallback(qs_get(&qs, "path").unwrap_or(""), qs_get(&qs, "cwd").unwrap_or(""), &p);
+    let p = resolve_viewable_fallback(
+        qs_get(&qs, "path").unwrap_or(""),
+        qs_get(&qs, "cwd").unwrap_or(""),
+        &p,
+    );
     if !is_path_allowed(&p) {
         return j(403, json!({"error": "access denied"}));
     }
@@ -319,7 +332,10 @@ async fn view(req: Request) -> Response {
             return j(400, json!({"error": "PDF too large (>10 MB)"}));
         }
         let data_url = format!("data:application/pdf;base64,{}", B64.encode(&raw));
-        return j(200, json!({"path": pystr(&p), "is_pdf": true, "data_url": data_url}));
+        return j(
+            200,
+            json!({"path": pystr(&p), "is_pdf": true, "data_url": data_url}),
+        );
     }
 
     if let Some(mime) = mime_of(VIDEO_MIMES, &ext) {
@@ -352,7 +368,11 @@ async fn view(req: Request) -> Response {
     if renderable || EBOOK_DOWNLOAD_ONLY.contains(&ext.as_str()) {
         let fsize = meta.len();
         let kind = ext.trim_start_matches('.');
-        let cap: u64 = if ext == ".cbz" { 60_000_000 } else { 25_000_000 };
+        let cap: u64 = if ext == ".cbz" {
+            60_000_000
+        } else {
+            25_000_000
+        };
         if renderable && fsize <= cap {
             // Python renders these to inline HTML (`ebook_to_html`, py:491)
             // with stdlib zip/deflate + ElementTree + MOBI/PalmDOC decoding.
@@ -415,7 +435,11 @@ async fn view(req: Request) -> Response {
     // Python limits are in CHARACTERS (str slicing), not bytes.
     let limit: usize = if is_csv { 5_000_000 } else { 200_000 };
     if content.chars().count() > limit {
-        let cut = content.char_indices().nth(limit).map(|(i, _)| i).unwrap_or(content.len());
+        let cut = content
+            .char_indices()
+            .nth(limit)
+            .map(|(i, _)| i)
+            .unwrap_or(content.len());
         content.truncate(cut);
         content.push_str(if is_csv {
             "\n... (truncated at 5MB)"
@@ -472,7 +496,11 @@ async fn view_from_git(cwd: &str, fpath: &str) -> Option<Response> {
     let is_html = matches!(ext.as_str(), ".html" | ".htm");
     let limit: usize = if is_csv { 5_000_000 } else { 200_000 };
     if text.chars().count() > limit {
-        let cut = text.char_indices().nth(limit).map(|(i, _)| i).unwrap_or(text.len());
+        let cut = text
+            .char_indices()
+            .nth(limit)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
         text.truncate(cut);
         text.push_str(if is_csv {
             "\n... (truncated at 5MB)"
@@ -495,11 +523,60 @@ async fn view_from_git(cwd: &str, fpath: &str) -> Option<Response> {
 /// ("foo.env") — a FILE named ".env" has no suffix and passes the
 /// extensionless branch, exactly as in python.
 const WRITABLE_EXTS: &[&str] = &[
-    ".md", ".markdown", ".mdx", ".mdai", ".txt", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".sh",
-    ".bash", ".zsh", ".py", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".css", ".scss",
-    ".less", ".html", ".htm", ".xml", ".svg", ".csv", ".sql", ".graphql", ".proto", ".go", ".rs",
-    ".java", ".rb", ".php", ".swift", ".kt", ".c", ".cpp", ".h", ".cs", ".r", ".lua", ".pl",
-    ".env", ".gitignore", ".dockerignore", ".tf", ".hcl", ".conf", ".log", ".makefile",
+    ".md",
+    ".markdown",
+    ".mdx",
+    ".mdai",
+    ".txt",
+    ".json",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+    ".css",
+    ".scss",
+    ".less",
+    ".html",
+    ".htm",
+    ".xml",
+    ".svg",
+    ".csv",
+    ".sql",
+    ".graphql",
+    ".proto",
+    ".go",
+    ".rs",
+    ".java",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".c",
+    ".cpp",
+    ".h",
+    ".cs",
+    ".r",
+    ".lua",
+    ".pl",
+    ".env",
+    ".gitignore",
+    ".dockerignore",
+    ".tf",
+    ".hcl",
+    ".conf",
+    ".log",
+    ".makefile",
 ];
 
 async fn put_file(req: Request) -> Response {
@@ -524,12 +601,18 @@ async fn put_file(req: Request) -> Response {
     }
     let ext = py_suffix(&p);
     if !ext.is_empty() && !WRITABLE_EXTS.contains(&ext.as_str()) {
-        return j(400, json!({"error": format!("file type not writable: {ext}")}));
+        return j(
+            400,
+            json!({"error": format!("file type not writable: {ext}")}),
+        );
     }
     // Code-execution-vector writes are refused even when extensionless
     // (shell rc files, launch agents, git hooks) — py:67924.
     if is_dangerous_write(&p) {
-        return j(403, json!({"error": "refused: writing this file could execute code"}));
+        return j(
+            403,
+            json!({"error": "refused: writing this file could execute code"}),
+        );
     }
     if let Some(parent) = p.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -594,7 +677,11 @@ async fn xlsx(req: Request) -> Response {
                     .iter()
                     .take(MAX_COLS)
                     .map(|c| {
-                        let s = if c.is_empty() { String::new() } else { c.to_string() };
+                        let s = if c.is_empty() {
+                            String::new()
+                        } else {
+                            c.to_string()
+                        };
                         if s.chars().count() > MAX_CELL {
                             s.chars().take(MAX_CELL).collect::<String>() + "…"
                         } else {
@@ -611,7 +698,10 @@ async fn xlsx(req: Request) -> Response {
     .await;
     match parsed {
         Ok(Ok(v)) => j(200, v),
-        Ok(Err(e)) => j(422, json!({"error": format!("could not parse spreadsheet: {e}")})),
+        Ok(Err(e)) => j(
+            422,
+            json!({"error": format!("could not parse spreadsheet: {e}")}),
+        ),
         Err(e) => j(500, json!({"error": format!("parse task failed: {e}")})),
     }
 }
@@ -681,7 +771,12 @@ pub(crate) fn stream_file(path: PathBuf, start: u64, length: u64) -> Body {
         remaining: u64,
         file: Option<tokio::fs::File>,
     }
-    let init = St { path, start, remaining: length, file: None };
+    let init = St {
+        path,
+        start,
+        remaining: length,
+        file: None,
+    };
     let stream = futures::stream::unfold(init, |mut st| async move {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
         if st.remaining == 0 {
@@ -694,7 +789,13 @@ pub(crate) fn stream_file(path: PathBuf, start: u64, length: u64) -> Body {
         }
         let want = st.remaining.min(1 << 20) as usize;
         let mut buf = vec![0u8; want];
-        match st.file.as_mut().expect("file opened above").read(&mut buf).await {
+        match st
+            .file
+            .as_mut()
+            .expect("file opened above")
+            .read(&mut buf)
+            .await
+        {
             Ok(0) | Err(_) => None, // early EOF / client teardown: end quietly
             Ok(n) => {
                 buf.truncate(n);
@@ -728,7 +829,12 @@ async fn raw(req: Request) -> Response {
     let file_size = meta.len();
     // ETag from mtime+size (py:68097) — If-None-Match short-circuits to 304.
     let etag = format!("\"{}-{}\"", mtime_secs(&meta), file_size);
-    if req.headers().get("if-none-match").and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+    if req
+        .headers()
+        .get("if-none-match")
+        .and_then(|v| v.to_str().ok())
+        == Some(etag.as_str())
+    {
         return Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .body(Body::empty())
@@ -744,10 +850,17 @@ async fn raw(req: Request) -> Response {
     let renderable = matches!(kind, "video" | "audio" | "image" | "text")
         || mime == "application/pdf"
         || mime.starts_with("application/json");
-    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
-    let range_header =
-        req.headers().get("range").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let range_header = req
+        .headers()
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     // Content-Disposition is a DOWNLOAD directive — emit it ONLY to force a
     // download (attachment). For an inline render we send NO disposition at all:
     // a `Content-Disposition` header (even `inline`, even one that only carries a
@@ -763,10 +876,16 @@ async fn raw(req: Request) -> Response {
         ("content-type", mime.to_string()),
         ("accept-ranges", "bytes".to_string()),
         ("etag", etag),
-        ("cache-control", "private, max-age=3600, immutable".to_string()),
+        (
+            "cache-control",
+            "private, max-age=3600, immutable".to_string(),
+        ),
     ];
     if force_dl || !renderable {
-        common.push(("content-disposition", format!("attachment; filename=\"{name}\"")));
+        common.push((
+            "content-disposition",
+            format!("attachment; filename=\"{name}\""),
+        ));
     }
     if !range_header.is_empty() {
         // Python `re.match(r'bytes=(\d*)-(\d*)')`: absent groups default to
@@ -774,8 +893,8 @@ async fn raw(req: Request) -> Response {
         // (m is None → the same defaults). Suffix ranges ("bytes=-500") are
         // therefore full-file-from-0 — python's (non-RFC) behavior, kept.
         static RANGE_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-        let re = RANGE_RE
-            .get_or_init(|| regex::Regex::new(r"^bytes=(\d*)-(\d*)").expect("range regex"));
+        let re =
+            RANGE_RE.get_or_init(|| regex::Regex::new(r"^bytes=(\d*)-(\d*)").expect("range regex"));
         let (mut start, mut end): (i128, i128) = (0, file_size as i128 - 1);
         if let Some(c) = re.captures(&range_header) {
             if let Ok(v) = c[1].parse::<i128>() {
@@ -831,13 +950,22 @@ async fn raw(req: Request) -> Response {
 /// lookup reports ffmpeg missing on the machine it is installed on — then a
 /// $PATH scan for everything else.
 pub(crate) fn find_bin(name: &str) -> Option<PathBuf> {
-    for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/opt/local/bin"] {
+    for d in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/opt/local/bin",
+    ] {
         let c = Path::new(d).join(name);
         if c.is_file() {
             return Some(c);
         }
     }
-    for d in std::env::var("PATH").unwrap_or_default().split(':').filter(|s| !s.is_empty()) {
+    for d in std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|s| !s.is_empty())
+    {
         let c = Path::new(d).join(name);
         if c.is_file() {
             return Some(c);
@@ -850,8 +978,14 @@ pub(crate) fn find_bin(name: &str) -> Option<PathBuf> {
 /// its check in try/except the same way — a probe failure skips the check,
 /// never fails the request).
 fn disk_free_bytes(path: &Path) -> Option<u64> {
-    let df = ["/bin/df", "/usr/bin/df"].iter().find(|c| Path::new(c).is_file())?;
-    let out = std::process::Command::new(df).arg("-Pk").arg(path).output().ok()?;
+    let df = ["/bin/df", "/usr/bin/df"]
+        .iter()
+        .find(|c| Path::new(c).is_file())?;
+    let out = std::process::Command::new(df)
+        .arg("-Pk")
+        .arg(path)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -879,12 +1013,21 @@ async fn probe_media(ffprobe: &Path, src: &Path) -> (f64, String, String) {
             .output(),
     )
     .await;
-    let Ok(Ok(out)) = ran else { return (0.0, String::new(), String::new()) };
+    let Ok(Ok(out)) = ran else {
+        return (0.0, String::new(), String::new());
+    };
     let info: Value = serde_json::from_slice(&out.stdout).unwrap_or(json!({}));
-    let dur = info["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0);
+    let dur = info["format"]["duration"]
+        .as_str()
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(0.0);
     let mut vcodec = String::new();
     let mut acodec = String::new();
-    for s in info["streams"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+    for s in info["streams"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[])
+    {
         let codec = s["codec_name"].as_str().unwrap_or("").to_string();
         match s["codec_type"].as_str() {
             Some("video") if vcodec.is_empty() => vcodec = codec,
@@ -906,7 +1049,11 @@ async fn probe_media(ffprobe: &Path, src: &Path) -> (f64, String, String) {
 /// (config, not constant) and test-overridable for hermeticity.
 fn media_cache_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(d) = tests::MEDIA_CACHE_OVERRIDE.lock().expect("cache override").clone() {
+    if let Some(d) = tests::MEDIA_CACHE_OVERRIDE
+        .lock()
+        .expect("cache override")
+        .clone()
+    {
         return d;
     }
     if let Ok(v) = std::env::var("AMUX_MEDIA_CACHE_DIR") {
@@ -1012,7 +1159,10 @@ async fn job_write(
         .store
         .write_async(move |conn| {
             f(conn)?;
-            Ok(WriteOutcome { applied: false, events: vec![] })
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .await;
     if let Err(e) = res {
@@ -1089,7 +1239,10 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
             let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
             if let Some(free) = disk_free_bytes(&home) {
                 if free < meta.len() + meta.len() / 5 {
-                    return j(507, json!({"error": "not enough free disk for prepared copy"}));
+                    return j(
+                        507,
+                        json!({"error": "not enough free disk for prepared copy"}),
+                    );
                 }
             }
             // Claim atomically on the writer thread: the same staleness
@@ -1132,7 +1285,10 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
                 return j(200, json!({"ready": false, "progress": 0.0}));
             }
             tokio::spawn(run_prepare(state.clone(), ffmpeg, p, out, key));
-            j(200, json!({"ready": false, "progress": 0.0, "started": true}))
+            j(
+                200,
+                json!({"ready": false, "progress": 0.0, "started": true}),
+            )
         }
     }
 }
@@ -1142,20 +1298,29 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
 /// else transcode via the videotoolbox hardware encoder — python pins the
 /// same macOS-specific encoder; parity kept deliberately.
 async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBuf, key: String) {
-    let src_name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let src_name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     // Per-attempt tmp name (pid-tagged): an ffmpeg orphaned by a previous
     // server process may still be writing ITS tmp; unique names keep a
     // restarted job from colliding with it.
     let tmp = out.with_file_name(format!(
         "{}.{}.part.mp4",
-        out.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        out.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         std::process::id()
     ));
     match do_prepare(&state, &ffmpeg, &src, &out, &tmp, &key).await {
         Ok(()) => {
             let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-            tracing::info!("[media-prep] {src_name} → {} ready ({sz} bytes)",
-                out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            tracing::info!(
+                "[media-prep] {src_name} → {} ready ({sz} bytes)",
+                out.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            );
         }
         Err(e) => {
             let msg: String = e.chars().take(300).collect(); // python str(e)[:300]
@@ -1194,7 +1359,10 @@ async fn do_prepare(
     let vcopy = matches!(vcodec.as_str(), "h264" | "hevc");
     let acopy = matches!(acodec.as_str(), "aac" | "mp3");
     let mut cmd = tokio::process::Command::new(ffmpeg);
-    cmd.arg("-y").arg("-i").arg(src).args(["-map", "0:v:0", "-map", "0:a:0?"]);
+    cmd.arg("-y")
+        .arg("-i")
+        .arg(src)
+        .args(["-map", "0:v:0", "-map", "0:a:0?"]);
     cmd.args(["-c:v", if vcopy { "copy" } else { "h264_videotoolbox" }]);
     if vcopy && vcodec == "hevc" {
         cmd.args(["-tag:v", "hvc1"]);
@@ -1206,16 +1374,27 @@ async fn do_prepare(
     if !acopy {
         cmd.args(["-b:a", "192k", "-ac", "2"]);
     }
-    cmd.args(["-movflags", "+faststart", "-f", "mp4", "-progress", "pipe:1", "-nostats",
-        "-loglevel", "error"])
-        .arg(tmp);
+    cmd.args([
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        "-loglevel",
+        "error",
+    ])
+    .arg(tmp);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     tracing::info!(
         "[media-prep] {}: v={vcodec}{} a={acodec}{}",
-        src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        src.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         if vcopy { "(copy)" } else { "→h264" },
         if acopy { "(copy)" } else { "→aac" },
     );
@@ -1275,11 +1454,16 @@ async fn do_prepare(
     let status = child.wait().await.map_err(|e| e.to_string())?;
     let stderr_text = err_task.await.unwrap_or_default();
     if !status.success() {
-        let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+        let code = status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".into());
         let snippet: String = stderr_text.chars().take(300).collect();
         return Err(format!("ffmpeg exit {code}: {snippet}"));
     }
-    tokio::fs::rename(tmp, out).await.map_err(|e| e.to_string())?;
+    tokio::fs::rename(tmp, out)
+        .await
+        .map_err(|e| e.to_string())?;
     let k = key.to_string();
     job_write(state, move |conn| {
         conn.execute(
@@ -1298,12 +1482,17 @@ async fn do_prepare(
 /// processes — the durable-jobs analogue of python's tmp unlink).
 fn prune_cache(cache: &Path) {
     let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(cache) else { return };
+    let Ok(rd) = std::fs::read_dir(cache) else {
+        return;
+    };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(md) = e.metadata() else { continue };
         let idle = |t: std::io::Result<std::time::SystemTime>| {
-            t.ok().and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs()).unwrap_or(0)
+            t.ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
         };
         let stale = if name.ends_with(".part.mp4") {
             idle(md.modified()) > 86_400
@@ -1349,16 +1538,27 @@ async fn transcode(req: Request) -> Response {
             let ran = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 tokio::process::Command::new(&ffprobe)
-                    .args(["-v", "quiet", "-select_streams", sel, "-show_entries",
-                        "stream=codec_name", "-of", "csv=p=0"])
+                    .args([
+                        "-v",
+                        "quiet",
+                        "-select_streams",
+                        sel,
+                        "-show_entries",
+                        "stream=codec_name",
+                        "-of",
+                        "csv=p=0",
+                    ])
                     .arg(&p)
                     .output(),
             )
             .await;
             if let Ok(Ok(out)) = ran {
-                let first =
-                    String::from_utf8_lossy(&out.stdout).trim().lines().next().unwrap_or("")
-                        .to_string();
+                let first = String::from_utf8_lossy(&out.stdout)
+                    .trim()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 if !first.is_empty() {
                     *slot = first;
                 }
@@ -1384,7 +1584,9 @@ async fn transcode(req: Request) -> Response {
         .kill_on_drop(true);
     tracing::info!(
         "[transcode] {}: vcodec={vcodec} acodec={acodec} → {}",
-        p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         if copy_safe { "remux" } else { "transcode" }
     );
     let mut child = match cmd.spawn() {
@@ -1418,7 +1620,10 @@ async fn transcode(req: Request) -> Response {
                 }
                 Ok(n) => {
                     buf.truncate(n);
-                    Some((Ok::<_, std::io::Error>(Bytes::from(buf)), (child, so, stderr)))
+                    Some((
+                        Ok::<_, std::io::Error>(Bytes::from(buf)),
+                        (child, so, stderr),
+                    ))
                 }
             }
         },
@@ -1437,8 +1642,9 @@ async fn transcode(req: Request) -> Response {
 // fallback. Mounted at the TOP level (mod.rs), like python.
 // ---------------------------------------------------------------------------
 
-const LIB_EBOOK_EXTS: &[&str] =
-    &[".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kfx", ".fb2", ".cbz", ".cbr", ".pdf", ".djvu"];
+const LIB_EBOOK_EXTS: &[&str] = &[
+    ".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kfx", ".fb2", ".cbz", ".cbr", ".pdf", ".djvu",
+];
 
 fn lib_fmt_rank(fmt: &str) -> i64 {
     match fmt.to_lowercase().as_str() {
@@ -1482,7 +1688,10 @@ pub async fn library(method: Method, RawQuery(q): RawQuery) -> Response {
 fn lib_index(root: &Path) -> Result<Value, String> {
     let db = root.join("metadata.db");
     let (books, source) = if db.exists() {
-        (lib_calibre(&db, root).map_err(|e| e.to_string())?, "calibre")
+        (
+            lib_calibre(&db, root).map_err(|e| e.to_string())?,
+            "calibre",
+        )
     } else {
         (lib_opf_scan(root, 5000), "opf")
     };
@@ -1565,17 +1774,23 @@ fn lib_calibre(db_path: &Path, root: &Path) -> rusqlite::Result<Vec<Value>> {
     link!(
         "SELECT bal.book, a.name FROM books_authors_link bal \
          JOIN authors a ON a.id=bal.author ORDER BY bal.id",
-        |b, r| { b.authors.push(r.get(1)?); }
+        |b, r| {
+            b.authors.push(r.get(1)?);
+        }
     );
     link!(
         "SELECT btl.book, t.name FROM books_tags_link btl \
          JOIN tags t ON t.id=btl.tag ORDER BY t.name",
-        |b, r| { b.tags.push(r.get(1)?); }
+        |b, r| {
+            b.tags.push(r.get(1)?);
+        }
     );
     link!(
         "SELECT bsl.book, s.name FROM books_series_link bsl \
          JOIN series s ON s.id=bsl.series",
-        |b, r| { b.series = Some(r.get(1)?); }
+        |b, r| {
+            b.series = Some(r.get(1)?);
+        }
     );
     link!(
         "SELECT brl.book, rt.rating FROM books_ratings_link brl \
@@ -1586,23 +1801,28 @@ fn lib_calibre(db_path: &Path, root: &Path) -> rusqlite::Result<Vec<Value>> {
         }
     );
     {
-        let mut stmt =
-            con.prepare("SELECT book, format, name, uncompressed_size FROM data")?;
+        let mut stmt = con.prepare("SELECT book, format, name, uncompressed_size FROM data")?;
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {
             let book: i64 = r.get(0)?;
-            let Some(b) = books.get_mut(&book) else { continue };
+            let Some(b) = books.get_mut(&book) else {
+                continue;
+            };
             let fmt: String = r.get::<_, Option<String>>(1)?.unwrap_or_default();
             let name: String = r.get::<_, Option<String>>(2)?.unwrap_or_default();
             let size: i64 = r.get::<_, Option<i64>>(3)?.unwrap_or(0);
-            let fp = root.join(&b.rel_path).join(format!("{name}.{}", fmt.to_lowercase()));
+            let fp = root
+                .join(&b.rel_path)
+                .join(format!("{name}.{}", fmt.to_lowercase()));
             b.formats.push((fmt.to_uppercase(), pystr(&fp), size));
         }
     }
 
     let mut out: Vec<Value> = Vec::new();
     for id in order {
-        let Some(mut b) = books.remove(&id) else { continue };
+        let Some(mut b) = books.remove(&id) else {
+            continue;
+        };
         b.formats.retain(|(_, path, _)| Path::new(path).exists());
         if b.formats.is_empty() {
             continue;
@@ -1654,7 +1874,9 @@ fn xml_unescape(s: &str) -> String {
 /// Python `_lib_parse_opf` (py:576): first title, all creators/subjects,
 /// calibre:series meta. Parse failure = empty meta, never an error.
 fn parse_opf(opf: &Path) -> OpfMeta {
-    let Ok(raw) = std::fs::read(opf) else { return OpfMeta::default() };
+    let Ok(raw) = std::fs::read(opf) else {
+        return OpfMeta::default();
+    };
     let text = String::from_utf8_lossy(&raw);
     static ELEM: std::sync::OnceLock<[regex::Regex; 4]> = std::sync::OnceLock::new();
     let [title_re, creator_re, subject_re, meta_re] = ELEM.get_or_init(|| {
@@ -1718,7 +1940,9 @@ fn lib_opf_scan(root: &Path, limit: usize) -> Vec<Value> {
         if count >= limit {
             break;
         }
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         let mut subdirs: Vec<PathBuf> = Vec::new();
         let mut ebooks: Vec<String> = Vec::new();
         for e in rd.flatten() {
@@ -1740,7 +1964,11 @@ fn lib_opf_scan(root: &Path, limit: usize) -> Vec<Value> {
             continue;
         }
         let opf = dir.join("metadata.opf");
-        let meta = if opf.exists() { parse_opf(&opf) } else { OpfMeta::default() };
+        let meta = if opf.exists() {
+            parse_opf(&opf)
+        } else {
+            OpfMeta::default()
+        };
         let cover = ["cover.jpg", "cover.jpeg", "cover.png"]
             .iter()
             .map(|c| dir.join(c))
@@ -1751,7 +1979,10 @@ fn lib_opf_scan(root: &Path, limit: usize) -> Vec<Value> {
         let mut groups: Vec<(String, Vec<(String, String)>)> = Vec::new();
         for f in ebooks {
             let fp = Path::new(&f);
-            let base = fp.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let base = fp
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let ext = py_suffix(fp).trim_start_matches('.').to_string();
             match groups.iter_mut().find(|(b, _)| *b == base) {
                 Some((_, v)) => v.push((ext, f)),
@@ -1838,7 +2069,10 @@ fn lib_facets(books: &[Value]) -> Value {
     let top = |d: &std::collections::HashMap<String, i64>, n: usize| -> Vec<Value> {
         let mut kv: Vec<(&String, &i64)> = d.iter().collect();
         kv.sort_by_key(|e| (std::cmp::Reverse(e.1), e.0.to_lowercase()));
-        kv.into_iter().take(n).map(|(k, v)| json!({"name": k, "count": v})).collect()
+        kv.into_iter()
+            .take(n)
+            .map(|(k, v)| json!({"name": k, "count": v}))
+            .collect()
     };
     json!({
         "authors": top(&authors, 60), "formats": top(&formats, 12),
@@ -1860,9 +2094,14 @@ pub(crate) mod tests {
         std::fs::write(&path, b"complete evidence").unwrap();
         let mut body = super::stream_file(path, 0, 17).into_data_stream();
         let mut bytes = Vec::new();
-        while let Some(frame) = body.next().await { bytes.extend_from_slice(&frame.unwrap()); }
+        while let Some(frame) = body.next().await {
+            bytes.extend_from_slice(&frame.unwrap());
+        }
         assert_eq!(bytes, b"complete evidence");
-        assert!(body.next().await.is_none(), "compression must be able to poll after EOF");
+        assert!(
+            body.next().await.is_none(),
+            "compression must be able to poll after EOF"
+        );
     }
 
     use super::*;
@@ -1885,7 +2124,7 @@ pub(crate) mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -1896,18 +2135,27 @@ pub(crate) mod tests {
             .with_state(state())
     }
 
-    async fn send(app: &axum::Router, req: HttpRequest<Body>) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    async fn send(
+        app: &axum::Router,
+        req: HttpRequest<Body>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let headers = res.headers().clone();
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
         (status, headers, body)
     }
 
     async fn get(app: &axum::Router, path: &str) -> (StatusCode, Value) {
         let (status, _, body) = send(
             app,
-            HttpRequest::builder().uri(path).body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
@@ -1928,8 +2176,18 @@ pub(crate) mod tests {
         let ffmpeg = find_bin("ffmpeg")?;
         let out = dir.join(name);
         let ok = std::process::Command::new(ffmpeg)
-            .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=0.5:size=64x64:rate=10",
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-shortest"])
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=0.5:size=64x64:rate=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.5",
+                "-shortest",
+            ])
             .args(container_args)
             .arg(&out)
             .output()
@@ -1955,8 +2213,11 @@ pub(crate) mod tests {
         // Bounded range.
         let (status, h, body) = send(
             &app,
-            HttpRequest::builder().uri(&uri).header("range", "bytes=10-19")
-                .body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .uri(&uri)
+                .header("range", "bytes=10-19")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::PARTIAL_CONTENT);
@@ -1974,8 +2235,11 @@ pub(crate) mod tests {
         // Open-ended range (what scrubbing players send).
         let (status, h, body) = send(
             &app,
-            HttpRequest::builder().uri(&uri).header("range", "bytes=90-")
-                .body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .uri(&uri)
+                .header("range", "bytes=90-")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::PARTIAL_CONTENT);
@@ -1986,8 +2250,11 @@ pub(crate) mod tests {
         // End past EOF clamps.
         let (status, h, _) = send(
             &app,
-            HttpRequest::builder().uri(&uri).header("range", "bytes=0-100000")
-                .body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .uri(&uri)
+                .header("range", "bytes=0-100000")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::PARTIAL_CONTENT);
@@ -1997,7 +2264,10 @@ pub(crate) mod tests {
         // No Range: plain 200, still range-advertising + cacheable.
         let (status, h, body) = send(
             &app,
-            HttpRequest::builder().uri(&uri).body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .uri(&uri)
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2009,8 +2279,11 @@ pub(crate) mod tests {
         // If-None-Match short-circuits to 304.
         let (status, _, body) = send(
             &app,
-            HttpRequest::builder().uri(&uri).header("if-none-match", &etag)
-                .body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .uri(&uri)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_MODIFIED);
@@ -2023,11 +2296,15 @@ pub(crate) mod tests {
             &app,
             HttpRequest::builder()
                 .uri(format!("/api/file/raw?path={}", enc(t.to_str().unwrap())))
-                .body(Body::empty()).unwrap(),
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(h["content-type"], "application/octet-stream");
-        assert_eq!(h["content-disposition"], "attachment; filename=\"notes.bin\"");
+        assert_eq!(
+            h["content-disposition"],
+            "attachment; filename=\"notes.bin\""
+        );
 
         // Renderable types serve with a real content-type AND inline disposition
         // so a browser navigation renders instead of downloading (amax-gtm bug 3).
@@ -2036,8 +2313,12 @@ pub(crate) mod tests {
         let (_, h, _) = send(
             &app,
             HttpRequest::builder()
-                .uri(format!("/api/file/raw?path={}", enc(html.to_str().unwrap())))
-                .body(Body::empty()).unwrap(),
+                .uri(format!(
+                    "/api/file/raw?path={}",
+                    enc(html.to_str().unwrap())
+                ))
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(h["content-type"], "text/html; charset=utf-8");
@@ -2053,12 +2334,19 @@ pub(crate) mod tests {
         let (_, h, _) = send(
             &app,
             HttpRequest::builder()
-                .uri(format!("/api/file/raw?path={}&download=1", enc(html.to_str().unwrap())))
-                .body(Body::empty()).unwrap(),
+                .uri(format!(
+                    "/api/file/raw?path={}&download=1",
+                    enc(html.to_str().unwrap())
+                ))
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(h["content-type"], "text/html; charset=utf-8");
-        assert_eq!(h["content-disposition"], "attachment; filename=\"report.html\"");
+        assert_eq!(
+            h["content-disposition"],
+            "attachment; filename=\"report.html\""
+        );
     }
 
     #[tokio::test]
@@ -2074,14 +2362,21 @@ pub(crate) mod tests {
         // nonexistent but allowed → 404
         assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
         let home = std::env::var("HOME").unwrap();
-        let (status, v) = get(&app, &format!("/api/file/raw?path={}", enc(&format!("{home}/.ssh/id_rsa")))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/file/raw?path={}", enc(&format!("{home}/.ssh/id_rsa"))),
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(v["error"], "access denied");
         // wrong method → python's generic 404
         let (status, _, body) = send(
             &app,
-            HttpRequest::builder().method("POST").uri("/api/file/raw?path=/tmp/x")
-                .body(Body::empty()).unwrap(),
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/api/file/raw?path=/tmp/x")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -2098,7 +2393,11 @@ pub(crate) mod tests {
 
         let md = dir.path().join("doc.md");
         std::fs::write(&md, "# hi\n").unwrap();
-        let (status, v) = get(&app, &format!("/api/file?path={}", enc(md.to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(md.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["content"], "# hi\n");
         assert_eq!(v["is_markdown"], true);
@@ -2109,21 +2408,36 @@ pub(crate) mod tests {
         // 200KB char truncation with the python suffix.
         let big = dir.path().join("big.txt");
         std::fs::write(&big, "a".repeat(200_001)).unwrap();
-        let (_, v) = get(&app, &format!("/api/file?path={}", enc(big.to_str().unwrap()))).await;
+        let (_, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(big.to_str().unwrap())),
+        )
+        .await;
         let content = v["content"].as_str().unwrap();
         assert!(content.ends_with("\n\n... (truncated at 200KB)"));
-        assert_eq!(content.chars().count(), 200_000 + "\n\n... (truncated at 200KB)".chars().count());
+        assert_eq!(
+            content.chars().count(),
+            200_000 + "\n\n... (truncated at 200KB)".chars().count()
+        );
 
         // CSV keeps 5MB and flags is_csv.
         let csv = dir.path().join("t.csv");
         std::fs::write(&csv, "a,b\n1,2\n").unwrap();
-        let (_, v) = get(&app, &format!("/api/file?path={}", enc(csv.to_str().unwrap()))).await;
+        let (_, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(csv.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(v["is_csv"], true);
 
         // NUL byte → binary card.
         let bin = dir.path().join("blob.dat");
         std::fs::write(&bin, b"abc\x00def").unwrap();
-        let (_, v) = get(&app, &format!("/api/file?path={}", enc(bin.to_str().unwrap()))).await;
+        let (_, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(bin.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(v["is_binary"], true);
         assert_eq!(v["size"], 7);
         assert_eq!(v["ext"], ".dat");
@@ -2131,10 +2445,17 @@ pub(crate) mod tests {
         // Small image inlines as a data_url.
         let img = dir.path().join("i.png");
         std::fs::write(&img, b"\x89PNG-not-really").unwrap();
-        let (_, v) = get(&app, &format!("/api/file?path={}", enc(img.to_str().unwrap()))).await;
+        let (_, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(img.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(v["is_image"], true);
         assert_eq!(v["mime"], "image/png");
-        assert!(v["data_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(v["data_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
         assert!(v.get("raw_url").is_none());
 
         // Large image streams: raw_url, no data_url (AMUX-2344).
@@ -2142,7 +2463,11 @@ pub(crate) mod tests {
         let f = std::fs::File::create(&big_img).unwrap();
         f.set_len(2_000_001).unwrap();
         drop(f);
-        let (_, v) = get(&app, &format!("/api/file?path={}", enc(big_img.to_str().unwrap()))).await;
+        let (_, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(big_img.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(v["is_image"], true);
         assert!(v.get("data_url").is_none());
         assert_eq!(
@@ -2153,9 +2478,21 @@ pub(crate) mod tests {
         // Video card carries srt + sidecar profile/task.
         let vid = dir.path().join("run.mp4");
         std::fs::write(&vid, b"not-actually-mp4").unwrap();
-        std::fs::write(dir.path().join("run.srt"), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
-        std::fs::write(dir.path().join("run.json"), r#"{"profile":"default","task":"demo"}"#).unwrap();
-        let (_, v) = get(&app, &format!("/api/file?path={}", enc(vid.to_str().unwrap()))).await;
+        std::fs::write(
+            dir.path().join("run.srt"),
+            "1\n00:00:01,000 --> 00:00:02,000\nhi\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("run.json"),
+            r#"{"profile":"default","task":"demo"}"#,
+        )
+        .unwrap();
+        let (_, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(vid.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(v["is_video"], true);
         assert_eq!(v["mime"], "video/mp4");
         assert_eq!(v["srt"], dir.path().join("run.srt").to_str().unwrap());
@@ -2163,7 +2500,11 @@ pub(crate) mod tests {
         assert_eq!(v["task"], "demo");
 
         // Directory → 404 file not found (python p.is_file()).
-        let (status, v) = get(&app, &format!("/api/file?path={}", enc(dir.path().to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(dir.path().to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
         assert_eq!(v["error"], "file not found");
     }
@@ -2218,7 +2559,11 @@ pub(crate) mod tests {
         // naming the missing capability — never a fake success.
         let epub = dir.path().join("book.epub");
         std::fs::write(&epub, b"PK-zip-ish").unwrap();
-        let (status, v) = get(&app, &format!("/api/file?path={}", enc(epub.to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(epub.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{v}");
         assert!(v["error"].as_str().unwrap().contains("no rust port"), "{v}");
         assert_eq!(v["is_ebook"], true);
@@ -2226,7 +2571,11 @@ pub(crate) mod tests {
         // Proprietary format: the download card python also serves.
         let azw3 = dir.path().join("book.azw3");
         std::fs::write(&azw3, b"BOOKMOBI").unwrap();
-        let (status, v) = get(&app, &format!("/api/file?path={}", enc(azw3.to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/file?path={}", enc(azw3.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["is_binary"], true);
         assert_eq!(v["is_ebook"], true);
@@ -2243,7 +2592,9 @@ pub(crate) mod tests {
         let target = dir.path().join("new/notes.md");
         let (status, _, body) = send(
             &app,
-            HttpRequest::builder().method("PUT").uri("/api/file")
+            HttpRequest::builder()
+                .method("PUT")
+                .uri("/api/file")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({"path": target.to_str().unwrap(), "content": "hello"}).to_string(),
@@ -2271,14 +2622,21 @@ pub(crate) mod tests {
         .await;
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status, StatusCode::OK, "mdai must be writable: {v}");
-        assert_eq!(std::fs::read_to_string(&mdai).unwrap(), "---\nsources: []\n---\nbody");
+        assert_eq!(
+            std::fs::read_to_string(&mdai).unwrap(),
+            "---\nsources: []\n---\nbody"
+        );
 
         // Unlisted extension → 400 with python's message.
         let exe = dir.path().join("x.exe");
         let (status, _, body) = send(
             &app,
-            HttpRequest::builder().method("PUT").uri("/api/file")
-                .body(Body::from(json!({"path": exe.to_str().unwrap(), "content": ""}).to_string()))
+            HttpRequest::builder()
+                .method("PUT")
+                .uri("/api/file")
+                .body(Body::from(
+                    json!({"path": exe.to_str().unwrap(), "content": ""}).to_string(),
+                ))
                 .unwrap(),
         )
         .await;
@@ -2290,8 +2648,12 @@ pub(crate) mod tests {
         let ak = dir.path().join("authorized_keys");
         let (status, _, body) = send(
             &app,
-            HttpRequest::builder().method("PUT").uri("/api/file")
-                .body(Body::from(json!({"path": ak.to_str().unwrap(), "content": "ssh-ed25519 X"}).to_string()))
+            HttpRequest::builder()
+                .method("PUT")
+                .uri("/api/file")
+                .body(Body::from(
+                    json!({"path": ak.to_str().unwrap(), "content": "ssh-ed25519 X"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await;
@@ -2313,7 +2675,8 @@ pub(crate) mod tests {
             &app,
             HttpRequest::builder()
                 .uri(format!("/api/file/vtt?path={}", enc(srt.to_str().unwrap())))
-                .body(Body::empty()).unwrap(),
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2346,18 +2709,32 @@ pub(crate) mod tests {
         // running + stale heartbeat = the restart orphan: MUST restart, not
         // report a progress number nobody is advancing.
         assert_eq!(
-            prep_decision(Some(&row("running", 42.3, "", now - JOB_STALE_S - 1)), false, now),
+            prep_decision(
+                Some(&row("running", 42.3, "", now - JOB_STALE_S - 1)),
+                false,
+                now
+            ),
             PrepDecision::StartNew
         );
         // error reports once (caller clears the row for retry)
         assert_eq!(
-            prep_decision(Some(&row("error", 0.0, "ffmpeg exit 1: boom", now)), false, now),
+            prep_decision(
+                Some(&row("error", 0.0, "ffmpeg exit 1: boom", now)),
+                false,
+                now
+            ),
             PrepDecision::ErrorOnce("ffmpeg exit 1: boom".into())
         );
         // done + file present = ready; done + file GONE (pruned) restarts
         // instead of pointing at nothing forever.
-        assert_eq!(prep_decision(Some(&row("done", 100.0, "", now)), true, now), PrepDecision::Ready);
-        assert_eq!(prep_decision(Some(&row("done", 100.0, "", now)), false, now), PrepDecision::StartNew);
+        assert_eq!(
+            prep_decision(Some(&row("done", 100.0, "", now)), true, now),
+            PrepDecision::Ready
+        );
+        assert_eq!(
+            prep_decision(Some(&row("done", 100.0, "", now)), false, now),
+            PrepDecision::StartNew
+        );
     }
 
     #[test]
@@ -2385,7 +2762,9 @@ pub(crate) mod tests {
         *MEDIA_CACHE_OVERRIDE.lock().unwrap() = Some(cache.path().to_path_buf());
 
         let st = state();
-        let app = Router::new().nest("/api/file", routes()).with_state(st.clone());
+        let app = Router::new()
+            .nest("/api/file", routes())
+            .with_state(st.clone());
         let dir = tempfile::tempdir().unwrap();
         // Tiny lavfi-generated MKV — never a user file.
         let Some(src) = gen_fixture(dir.path(), "clip.mkv", &["-c:v", "libx264", "-c:a", "aac"])
@@ -2407,9 +2786,16 @@ pub(crate) mod tests {
             .store
             .read()
             .unwrap()
-            .query_row("SELECT status FROM _amux_media_jobs WHERE key=?1", [&key], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM _amux_media_jobs WHERE key=?1",
+                [&key],
+                |r| r.get(0),
+            )
             .expect("durable job row exists");
-        assert!(row_status == "running" || row_status == "done", "{row_status}");
+        assert!(
+            row_status == "running" || row_status == "done",
+            "{row_status}"
+        );
 
         // Poll to completion.
         let mut ready = false;
@@ -2439,7 +2825,11 @@ pub(crate) mod tests {
         let (status, v) = get(&app, "/api/file/prepare?path=").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "missing path");
-        let (status, _) = get(&app, &format!("/api/file/prepare?path={}", enc("/nope/x.mkv"))).await;
+        let (status, _) = get(
+            &app,
+            &format!("/api/file/prepare?path={}", enc("/nope/x.mkv")),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -2462,7 +2852,10 @@ pub(crate) mod tests {
             assert_eq!(status, StatusCode::OK, "{name}: {v}");
             assert_eq!(v["ready"], false, "{name}: {v}");
             assert_eq!(v["reason"], "unsupported type", "{name}: {v}");
-            assert!(v.get("error").is_none(), "{name} must not surface an ffmpeg error: {v}");
+            assert!(
+                v.get("error").is_none(),
+                "{name} must not surface an ffmpeg error: {v}"
+            );
         }
     }
 
@@ -2484,14 +2877,21 @@ pub(crate) mod tests {
         let (status, h, body) = send(
             &app,
             HttpRequest::builder()
-                .uri(format!("/api/file/transcode?path={}", enc(src.to_str().unwrap())))
-                .body(Body::empty()).unwrap(),
+                .uri(format!(
+                    "/api/file/transcode?path={}",
+                    enc(src.to_str().unwrap())
+                ))
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(h["content-type"], "video/mp4");
         assert_eq!(h["cache-control"], "no-store");
-        assert!(h.get("content-length").is_none(), "live pipe must not claim a length");
+        assert!(
+            h.get("content-length").is_none(),
+            "live pipe must not claim a length"
+        );
         // Fragmented MP4 starts with an ftyp box.
         assert!(body.len() > 8, "got {} bytes", body.len());
         assert_eq!(&body[4..8], b"ftyp");
@@ -2516,7 +2916,11 @@ pub(crate) mod tests {
                <meta name="calibre:series" content="Dune Chronicles"/></metadata></package>"#,
         )
         .unwrap();
-        let (status, v) = get(&app, &format!("/api/library?path={}", enc(dir.path().to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/library?path={}", enc(dir.path().to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{v}");
         assert_eq!(v["is_library"], true);
         assert_eq!(v["source"], "opf");
@@ -2531,14 +2935,21 @@ pub(crate) mod tests {
         assert_eq!(b["formats"][1]["fmt"], "MOBI");
         assert_eq!(b["formats"][1]["size"], 2);
         assert!(b["cover"].as_str().unwrap().ends_with("cover.jpg"));
-        assert_eq!(v["facets"]["authors"][0], json!({"name": "Frank Herbert", "count": 1}));
+        assert_eq!(
+            v["facets"]["authors"][0],
+            json!({"name": "Frank Herbert", "count": 1})
+        );
         assert_eq!(v["facets"]["formats"].as_array().unwrap().len(), 2);
 
         // Filename heuristics without an opf.
         let plain = dir.path().join("loose");
         std::fs::create_dir_all(&plain).unwrap();
         std::fs::write(plain.join("Neuromancer - William Gibson.epub"), b"x").unwrap();
-        let (_, v) = get(&app, &format!("/api/library?path={}", enc(plain.to_str().unwrap()))).await;
+        let (_, v) = get(
+            &app,
+            &format!("/api/library?path={}", enc(plain.to_str().unwrap())),
+        )
+        .await;
         let b = &v["books"][0];
         assert_eq!(b["title"], "Neuromancer");
         assert_eq!(b["authors"], json!(["William Gibson"]));
@@ -2546,7 +2957,11 @@ pub(crate) mod tests {
         // Empty dir: honest not-a-library.
         let empty = dir.path().join("empty");
         std::fs::create_dir_all(&empty).unwrap();
-        let (status, v) = get(&app, &format!("/api/library?path={}", enc(empty.to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/library?path={}", enc(empty.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["is_library"], false);
         assert_eq!(v["count"], 0);
@@ -2599,10 +3014,17 @@ pub(crate) mod tests {
         std::fs::write(bdir.join("Dune - Frank Herbert.epub"), b"e").unwrap();
         std::fs::write(bdir.join("cover.jpg"), b"jpg").unwrap();
 
-        let (status, v) = get(&app, &format!("/api/library?path={}", enc(root.to_str().unwrap()))).await;
+        let (status, v) = get(
+            &app,
+            &format!("/api/library?path={}", enc(root.to_str().unwrap())),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{v}");
         assert_eq!(v["source"], "calibre");
-        assert_eq!(v["count"], 1, "book with no on-disk file must be dropped: {v}");
+        assert_eq!(
+            v["count"], 1,
+            "book with no on-disk file must be dropped: {v}"
+        );
         let b = &v["books"][0];
         assert_eq!(b["id"], 1);
         assert_eq!(b["title"], "Dune");

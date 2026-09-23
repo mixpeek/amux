@@ -23,14 +23,12 @@
 //! the stream — per Invariant 34 the correct move after a gap is to re-read
 //! current state from the store, which the next full event write does.
 
-use crate::db::{PendingEvent, SharedStore, WriteOutcome};
 use crate::db::{commands, queries};
+use crate::db::{PendingEvent, SharedStore, WriteOutcome};
 use crate::opencode::AgentProtocol;
 use amux_core::ids::{TaskId, WorkerId};
 use amux_core::limits::AttemptRecord;
-use amux_core::protocol::{
-    CommandState, CommandTransition, WorkerCommand, WorkerEvent,
-};
+use amux_core::protocol::{CommandState, CommandTransition, WorkerCommand, WorkerEvent};
 use amux_core::revision::{EntityType, MutationKind};
 use amux_core::session::ExitReason;
 use amux_core::worker::WorkerState;
@@ -123,8 +121,11 @@ pub fn apply_event(
             // record it with a NULL session_id rather than dropping it.
             let ses_id = queries::live_session_for(conn, wid)?.map(|s| s.id);
             if ses_id.is_none() {
-                tracing::warn!(worker = wid, turn = turn_id.as_str(),
-                    "turn started with no live session row; recorded with NULL session_id");
+                tracing::warn!(
+                    worker = wid,
+                    turn = turn_id.as_str(),
+                    "turn started with no live session row; recorded with NULL session_id"
+                );
             }
             let task_id = commands::in_flight(conn, worker)?.and_then(|cmd| match cmd.command {
                 WorkerCommand::ExecuteTask(task) => Some(task.to_string()),
@@ -137,11 +138,17 @@ pub fn apply_event(
                 params![turn_id.as_str(), ses_id, wid, task_id, now_s],
             )?;
             if n > 0 {
-                events.push(ev(EntityType::Turn, turn_id.as_str(), MutationKind::Created));
+                events.push(ev(
+                    EntityType::Turn,
+                    turn_id.as_str(),
+                    MutationKind::Created,
+                ));
             } else {
                 tracing::warn!(turn = turn_id.as_str(), "duplicate TurnStarted ignored");
             }
-            let state = WorkerState::Active { turn: Some(turn_id.clone()) };
+            let state = WorkerState::Active {
+                turn: Some(turn_id.clone()),
+            };
             write_state(conn, prior_state.as_ref(), wid, &state, &now_s, &mut events)?;
         }
 
@@ -183,10 +190,16 @@ pub fn apply_event(
                 params![res.turn_id.as_str(), now_s, outcome_json],
             )?;
             if n > 0 {
-                events.push(ev(EntityType::Turn, res.turn_id.as_str(), MutationKind::Updated));
+                events.push(ev(
+                    EntityType::Turn,
+                    res.turn_id.as_str(),
+                    MutationKind::Updated,
+                ));
             } else {
-                tracing::warn!(turn = res.turn_id.as_str(),
-                    "TurnCompleted for a turn with no open ledger row (missed TurnStarted?)");
+                tracing::warn!(
+                    turn = res.turn_id.as_str(),
+                    "TurnCompleted for a turn with no open ledger row (missed TurnStarted?)"
+                );
             }
             let state = WorkerState::Idle { since: now };
             write_state(conn, prior_state.as_ref(), wid, &state, &now_s, &mut events)?;
@@ -230,17 +243,18 @@ pub fn apply_event(
                                 .as_ref()
                                 .map(|checkpoint| checkpoint.completed_steps.clone())
                                 .unwrap_or_default();
-                            completed_steps.push(format!(
-                                "turn {} completed: {}",
-                                res.turn_id, res.outcome
-                            ));
-                            let artifacts = crate::db::artifact_store::list_for_task(conn, &row.id)?
-                                .into_iter()
-                                .filter(|artifact| {
-                                    !crate::db::artifact_store::is_retired_state(&artifact.state)
-                                })
-                                .map(|artifact| artifact.ref_value)
-                                .collect();
+                            completed_steps
+                                .push(format!("turn {} completed: {}", res.turn_id, res.outcome));
+                            let artifacts =
+                                crate::db::artifact_store::list_for_task(conn, &row.id)?
+                                    .into_iter()
+                                    .filter(|artifact| {
+                                        !crate::db::artifact_store::is_retired_state(
+                                            &artifact.state,
+                                        )
+                                    })
+                                    .map(|artifact| artifact.ref_value)
+                                    .collect();
                             let next_action = row
                                 .next_action
                                 .clone()
@@ -296,13 +310,17 @@ pub fn apply_event(
                 }
                 WorkerState::Idle { since }
             } else {
-                WorkerState::Waiting { reason: w.reason.clone() }
+                WorkerState::Waiting {
+                    reason: w.reason.clone(),
+                }
             };
             write_state(conn, prior_state.as_ref(), wid, &state, &now_s, &mut events)?;
         }
 
         WorkerEvent::RateLimited(rl) => {
-            let state = WorkerState::RateLimited { reset_at: rl.reset_at };
+            let state = WorkerState::RateLimited {
+                reset_at: rl.reset_at,
+            };
             write_state(conn, prior_state.as_ref(), wid, &state, &now_s, &mut events)?;
         }
 
@@ -315,13 +333,18 @@ pub fn apply_event(
                 commands::transition(
                     conn,
                     &cmd.id,
-                    CommandTransition::Fail { reason: f.reason.clone() },
+                    CommandTransition::Fail {
+                        reason: f.reason.clone(),
+                    },
                     MAX_ATTEMPTS,
                 )?;
                 events.push(ev(
                     EntityType::Other("command".into()),
                     cmd.id.as_str(),
-                    MutationKind::StatusChanged { from: from.into(), to: "failed".into() },
+                    MutationKind::StatusChanged {
+                        from: from.into(),
+                        to: "failed".into(),
+                    },
                 ));
                 if let WorkerCommand::ExecuteTask(t) = &cmd.command {
                     task_for_attempt = Some(t.clone());
@@ -362,8 +385,9 @@ pub fn apply_event(
                     params![task.as_str(), wid],
                     |r| r.get(0),
                 )?;
-                let semantic_task = crate::orchestrator::context::issue_by_internal_id(conn, &task)?
-                    .map(|row| row.id);
+                let semantic_task =
+                    crate::orchestrator::context::issue_by_internal_id(conn, &task)?
+                        .map(|row| row.id);
                 let rejected_evidence = semantic_task
                     .as_deref()
                     .map(|id| {
@@ -390,7 +414,11 @@ pub fn apply_event(
                     "SELECT COUNT(*) FROM _amux_tool_events
                      WHERE task_id=?1 AND worker_id=?2
                        AND created_at >= COALESCE(?3, created_at)",
-                    params![task.as_str(), wid, open.as_ref().map(|(started, _)| started)],
+                    params![
+                        task.as_str(),
+                        wid,
+                        open.as_ref().map(|(started, _)| started)
+                    ],
                     |r| r.get(0),
                 )?;
                 let cost_microusd = semantic_task
@@ -455,7 +483,9 @@ pub fn apply_event(
                     "worker failure with no in-flight ExecuteTask; no attempt row written");
             }
 
-            let state = WorkerState::Error { detail: f.reason.clone() };
+            let state = WorkerState::Error {
+                detail: f.reason.clone(),
+            };
             write_state(conn, prior_state.as_ref(), wid, &state, &now_s, &mut events)?;
         }
 
@@ -467,18 +497,30 @@ pub fn apply_event(
                 let reason = if status.code == Some(0) {
                     ExitReason::Completed
                 } else {
-                    ExitReason::Crashed { signal: status.signal }
+                    ExitReason::Crashed {
+                        signal: status.signal,
+                    }
                 };
                 let n = queries::end_session(conn, &ses.id, &reason, &now_s)?;
                 if n > 0 {
                     events.push(ev(
                         EntityType::Session,
                         &ses.id,
-                        MutationKind::StatusChanged { from: "running".into(), to: "ended".into() },
+                        MutationKind::StatusChanged {
+                            from: "running".into(),
+                            to: "ended".into(),
+                        },
                     ));
                 }
             }
-            write_state(conn, prior_state.as_ref(), wid, &WorkerState::Stopped, &now_s, &mut events)?;
+            write_state(
+                conn,
+                prior_state.as_ref(),
+                wid,
+                &WorkerState::Stopped,
+                &now_s,
+                &mut events,
+            )?;
         }
 
         // Started: liveness, no durable consequence yet (the session row is
@@ -523,7 +565,10 @@ pub fn apply_event(
 
     // `applied` mirrors the events: every real write above pushes one, so an
     // event that changed nothing does not bump the revision (Invariant 37).
-    Ok(WriteOutcome { applied: !events.is_empty(), events })
+    Ok(WriteOutcome {
+        applied: !events.is_empty(),
+        events,
+    })
 }
 
 /// If an ExecuteTask turn completed WITHOUT the worker writing its board
@@ -633,9 +678,12 @@ pub fn spawn_event_processor(
                     // is reconstructed from the stream — after a gap the
                     // truth is the store, not inference (Invariant 34's
                     // gap-detection rule).
-                    tracing::warn!(worker = worker.as_str(), missed,
+                    tracing::warn!(
+                        worker = worker.as_str(),
+                        missed,
                         "worker event channel lagged: {missed} events dropped; \
-                         event-derived state has a hole — trust the store, not the stream");
+                         event-derived state has a hole — trust the store, not the stream"
+                    );
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
@@ -668,7 +716,10 @@ pub async fn supervise_once(
         if live.contains(w) {
             true
         } else {
-            tracing::info!(worker = w.as_str(), "session ended; stopping event processor");
+            tracing::info!(
+                worker = w.as_str(),
+                "session ended; stopping event processor"
+            );
             h.abort();
             false
         }
@@ -784,7 +835,10 @@ mod tests {
                         exit_reason: None,
                     },
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         ses_ret
@@ -798,7 +852,10 @@ mod tests {
 
     fn worker_state(store: &SharedStore) -> WorkerState {
         let conn = store.read().unwrap();
-        queries::get_worker(&conn, wid().as_str()).unwrap().unwrap().state
+        queries::get_worker(&conn, wid().as_str())
+            .unwrap()
+            .unwrap()
+            .state
     }
 
     fn enqueue_and_deliver(store: &SharedStore, cmd: WorkerCommand) -> CommandId {
@@ -807,12 +864,21 @@ mod tests {
         store
             .write(move |conn| {
                 commands::enqueue(
-                    conn, id_w.clone(), &wid(), &cmd, id_w.as_str(),
-                    &DeliveryTiming::AtTurnBoundary, None, Utc::now(),
+                    conn,
+                    id_w.clone(),
+                    &wid(),
+                    &cmd,
+                    id_w.as_str(),
+                    &DeliveryTiming::AtTurnBoundary,
+                    None,
+                    Utc::now(),
                 )?;
                 commands::transition(conn, &id_w, CommandTransition::Dispatch, 3)?;
                 commands::transition(conn, &id_w, CommandTransition::Deliver, 3)?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         id
@@ -923,12 +989,19 @@ mod tests {
         apply(&store, WorkerEvent::TurnStarted { turn_id: trn(2) });
         apply(
             &store,
-            WorkerEvent::TurnCompleted(TurnResult { turn_id: trn(2), outcome: "done".into() }),
+            WorkerEvent::TurnCompleted(TurnResult {
+                turn_id: trn(2),
+                outcome: "done".into(),
+            }),
         );
 
         let conn = store.read().unwrap();
         let cmd = commands::by_id(&conn, &cmd_id).unwrap().unwrap();
-        assert_eq!(cmd.state, CommandState::Confirmed, "Invariant 34: TurnCompleted confirms");
+        assert_eq!(
+            cmd.state,
+            CommandState::Confirmed,
+            "Invariant 34: TurnCompleted confirms"
+        );
     }
 
     #[test]
@@ -941,7 +1014,10 @@ mod tests {
         apply(&store, WorkerEvent::TurnStarted { turn_id: trn(3) });
         apply(
             &store,
-            WorkerEvent::Progress(ProgressReport { summary: "s".into(), tokens_used: Some(500) }),
+            WorkerEvent::Progress(ProgressReport {
+                summary: "s".into(),
+                tokens_used: Some(500),
+            }),
         );
         apply(
             &store,
@@ -952,7 +1028,10 @@ mod tests {
         );
         apply(
             &store,
-            WorkerEvent::Failed(Failure { reason: "api blew up".into(), retryable: true }),
+            WorkerEvent::Failed(Failure {
+                reason: "api blew up".into(),
+                retryable: true,
+            }),
         );
 
         let conn = store.read().unwrap();
@@ -974,8 +1053,14 @@ mod tests {
         assert_eq!(attempt, 1);
         let record: AttemptRecord = serde_json::from_str(&record_json).unwrap();
         assert_eq!(record.failure_reason, "api blew up");
-        assert_eq!(record.tokens_spent, 500, "tokens from the open turn's report");
-        assert_eq!(record.tool_calls, 1, "tool calls come from the event ledger");
+        assert_eq!(
+            record.tokens_spent, 500,
+            "tokens from the open turn's report"
+        );
+        assert_eq!(
+            record.tool_calls, 1,
+            "tool calls come from the event ledger"
+        );
         drop(conn);
         // Worker landed in Error.
         assert!(matches!(worker_state(&store), WorkerState::Error { .. }));
@@ -1049,7 +1134,10 @@ mod tests {
             .unwrap();
         assert_eq!(checkpoint.context_hash.as_deref(), Some("ctx-abc"));
         assert_eq!(checkpoint.input_hash, "ctx-abc");
-        assert_eq!(checkpoint.last_result.as_deref(), Some("implemented and tested"));
+        assert_eq!(
+            checkpoint.last_result.as_deref(),
+            Some("implemented and tested")
+        );
         assert_eq!(checkpoint.next_action, "Run independent verification");
     }
 
@@ -1058,7 +1146,13 @@ mod tests {
         let store = store();
         let ses = seed(&store);
 
-        apply(&store, WorkerEvent::Exited(ExitStatus { code: Some(0), signal: None }));
+        apply(
+            &store,
+            WorkerEvent::Exited(ExitStatus {
+                code: Some(0),
+                signal: None,
+            }),
+        );
 
         let conn = store.read().unwrap();
         let (ended, reason): (Option<String>, Option<String>) = conn
@@ -1079,7 +1173,13 @@ mod tests {
 
         // A second Exited finds no live session, so the ORIGINAL exit
         // reason survives (end exactly once — the record is the record).
-        apply(&store, WorkerEvent::Exited(ExitStatus { code: None, signal: Some(9) }));
+        apply(
+            &store,
+            WorkerEvent::Exited(ExitStatus {
+                code: None,
+                signal: Some(9),
+            }),
+        );
         let conn = store.read().unwrap();
         let reason: String = conn
             .query_row(
@@ -1133,7 +1233,10 @@ mod tests {
                     1_700_000_000, // 2023: well before "now"
                 )?;
                 *out_w.lock().unwrap() = row.id;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         let sem = out.lock().unwrap().clone();
@@ -1177,7 +1280,11 @@ mod tests {
 
         let conn = store.read().unwrap();
         let cmd = commands::by_id(&conn, &cmd_id).unwrap().unwrap();
-        assert_eq!(cmd.state, CommandState::Confirmed, "confirmation still happens");
+        assert_eq!(
+            cmd.state,
+            CommandState::Confirmed,
+            "confirmation still happens"
+        );
         drop(conn);
         let log = issue_col(&store, &sem, "log");
         assert!(
@@ -1209,7 +1316,10 @@ mod tests {
                     "UPDATE issues SET updated = ?1 WHERE id = ?2",
                     params![Utc::now().timestamp() + 5, sem_w],
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         apply(
@@ -1231,7 +1341,13 @@ mod tests {
         let store = store();
         seed(&store);
         let protocol = Arc::new(MockProtocol::new());
-        protocol.register(wid(), AgentState::Working { turn: None, progress: None });
+        protocol.register(
+            wid(),
+            AgentState::Working {
+                turn: None,
+                progress: None,
+            },
+        );
 
         let handle = spawn_event_processor(store.clone(), protocol.clone(), wid());
 
@@ -1252,7 +1368,10 @@ mod tests {
         }
         protocol.emit(
             &wid(),
-            WorkerEvent::TurnCompleted(TurnResult { turn_id: trn(9), outcome: "done".into() }),
+            WorkerEvent::TurnCompleted(TurnResult {
+                turn_id: trn(9),
+                outcome: "done".into(),
+            }),
         );
         {
             let s = store.clone();
@@ -1260,7 +1379,10 @@ mod tests {
                 matches!(
                     {
                         let conn = s.read().unwrap();
-                        queries::get_worker(&conn, wid().as_str()).unwrap().unwrap().state
+                        queries::get_worker(&conn, wid().as_str())
+                            .unwrap()
+                            .unwrap()
+                            .state
                     },
                     WorkerState::Idle { .. }
                 )
@@ -1289,7 +1411,10 @@ mod tests {
         store
             .write(move |conn| {
                 queries::end_session(conn, &ses, &ExitReason::Killed, "2026-08-09T01:00:00+00:00")?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         supervise_once(&store, &protocol, &mut procs).await.unwrap();
@@ -1324,10 +1449,12 @@ mod tests {
                 assert!(matches!(worker_state(&store), WorkerState::Idle {..}), "{provider} recovered question: {:?}", worker_state(&store));
             }
         }
-        let store = store(); seed(&store);
+        let store = store();
+        seed(&store);
         let adapter = TerminalAdapter::new(ProviderId::new("claude"));
-        for event in adapter.scan("⏺ API Error: 529 Overloaded\n❯\n? for shortcuts") { apply(&store, event); }
-        assert!(matches!(worker_state(&store), WorkerState::Error {..}));
+        for event in adapter.scan("⏺ API Error: 529 Overloaded\n❯\n? for shortcuts") {
+            apply(&store, event);
+        }
+        assert!(matches!(worker_state(&store), WorkerState::Error { .. }));
     }
-
 }

@@ -115,7 +115,15 @@ fn candidate_text(row: &IssueRow) -> String {
         s.push_str(r);
         s.push('\n');
     }
-    let desc_tail: String = row.desc.chars().rev().take(DESC_TAIL_CHARS).collect::<String>().chars().rev().collect();
+    let desc_tail: String = row
+        .desc
+        .chars()
+        .rev()
+        .take(DESC_TAIL_CHARS)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     s.push_str(&desc_tail);
     s
 }
@@ -151,8 +159,10 @@ async fn audit(State(state): State<AppState>) -> Response {
                 .into_response()
         }
     };
-    let status_by_id: HashMap<&str, &str> =
-        all_rows.iter().map(|r| (r.id.as_str(), r.status.as_str())).collect();
+    let status_by_id: HashMap<&str, &str> = all_rows
+        .iter()
+        .map(|r| (r.id.as_str(), r.status.as_str()))
+        .collect();
 
     let candidates: Vec<&IssueRow> = all_rows
         .iter()
@@ -242,7 +252,14 @@ mod tests {
     #[test]
     fn several_tokens_in_one_blob_are_all_found() {
         let got = extract_id_tokens("depends on MG-1829, MC-2063 and also ETHAN-77");
-        assert_eq!(got, HashSet::from(["MG-1829".to_string(), "MC-2063".to_string(), "ETHAN-77".to_string()]));
+        assert_eq!(
+            got,
+            HashSet::from([
+                "MG-1829".to_string(),
+                "MC-2063".to_string(),
+                "ETHAN-77".to_string()
+            ])
+        );
     }
 
     #[test]

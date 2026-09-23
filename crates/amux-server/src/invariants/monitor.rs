@@ -5,10 +5,10 @@
 //! negative controls can inject failures without a live fleet; this module is
 //! the only place that touches the world.
 
-use std::collections::BTreeSet;
 use super::{checks, store, Confidence, InvariantResult, Status};
 use crate::api::AppState;
 use serde_json::json;
+use std::collections::BTreeSet;
 
 /// Tick interval. 30s is chosen against the spec's SLOs (§31: backend/DB worker
 /// drift < 10s, stuck command < 30s) for the checks that are cheap; anything
@@ -65,7 +65,12 @@ struct SectionTimer {
 impl SectionTimer {
     fn new() -> Self {
         let now = std::time::Instant::now();
-        Self { started: now, last: now, prev_len: 0, sections: Vec::new() }
+        Self {
+            started: now,
+            last: now,
+            prev_len: 0,
+            sections: Vec::new(),
+        }
     }
 
     fn mark(&mut self, out: &[InvariantResult], label: &'static str) {
@@ -106,7 +111,11 @@ impl SectionTimer {
 /// breakdown that has never been measured must not be served as one that
 /// measured nothing (ethos rule 4).
 pub fn last_section_timing() -> Option<SectionTiming> {
-    SECTION_MS.get_or_init(Default::default).lock().ok().and_then(|g| g.clone())
+    SECTION_MS
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
 }
 
 /// Fold two recency readings into the NEWEST (AMUX-4753).
@@ -260,10 +269,18 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
         if let Ok(rd) = std::fs::read_dir(&sessions_dir) {
             for e in rd.flatten() {
                 let p = e.path();
-                let Some(fname) = p.file_name().and_then(|f| f.to_str()) else { continue };
-                let Some(name) = fname.strip_suffix(".meta.json") else { continue };
-                let Ok(text) = std::fs::read_to_string(&p) else { continue };
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                let Some(fname) = p.file_name().and_then(|f| f.to_str()) else {
+                    continue;
+                };
+                let Some(name) = fname.strip_suffix(".meta.json") else {
+                    continue;
+                };
+                let Ok(text) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    continue;
+                };
                 if let Some(c) = v.get("cc_conversation_id").and_then(|c| c.as_str()) {
                     if !c.trim().is_empty() {
                         pairs.push((name.to_string(), c.trim().to_string()));
@@ -298,10 +315,12 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // AF-504: a stale index.lock is nobody's card, so a 20-minute stall went
     // unreported while every lane routed around it. This is the fleet-visible
     // half; AF-503 shipped the half that reaches the blocked lane.
-    out.extend(git_index_lock_check(std::path::Path::new(
-        &std::env::var("AMUX_REPO_ROOT").unwrap_or_else(|_| "/Users/ethan/Dev/amux".into()),
-    ))
-    .await);
+    out.extend(
+        git_index_lock_check(std::path::Path::new(
+            &std::env::var("AMUX_REPO_ROOT").unwrap_or_else(|_| "/Users/ethan/Dev/amux".into()),
+        ))
+        .await,
+    );
 
     tm.mark(&out, "2. config provenance");
     // -- 3. queue liveness: is anything queued in front of an IDLE target?
@@ -356,10 +375,13 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
                 .args(["-C", &dir.to_string_lossy(), "show", &format!("HEAD:{rel}")])
                 .output()
                 .ok()?;
-            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
         };
         let read_worktree = |rel: &str| -> Option<String> {
-            repo.as_ref().and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+            repo.as_ref()
+                .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
         };
         let amux_home = crate::config::ServerConfig::from_process_env().amux_home;
         let runtime = std::fs::read_to_string(amux_home.join("hooks/git-shared-guard.py"))
@@ -383,8 +405,8 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             env!("CARGO_MANIFEST_DIR"),
             "/../../scripts/hooks/hook-report.sh"
         ));
-        let runtime = std::fs::read_to_string(amux_home.join("hook-report.sh"))
-            .map_err(|e| e.to_string());
+        let runtime =
+            std::fs::read_to_string(amux_home.join("hook-report.sh")).map_err(|e| e.to_string());
         let head = read_head(checks::REPORT_HOOK.committed_path);
         let wt = read_worktree(checks::REPORT_HOOK.committed_path);
         out.extend(checks::installed_script_matches_committed(
@@ -604,18 +626,23 @@ fn f64_roundtrip_probes() -> Vec<(f64, f64)> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    [1788887412.4197621_f64, 1788859526.4033027_f64, now, now - 10.0]
-        .into_iter()
-        .map(|wrote| {
-            // A round trip that ERRORS is a failed round trip, not a skip:
-            // NAN compares unequal, so it reaches the check as a drift.
-            let read = serde_json::to_string(&wrote)
-                .ok()
-                .and_then(|t| serde_json::from_str::<f64>(&t).ok())
-                .unwrap_or(f64::NAN);
-            (wrote, read)
-        })
-        .collect()
+    [
+        1788887412.4197621_f64,
+        1788859526.4033027_f64,
+        now,
+        now - 10.0,
+    ]
+    .into_iter()
+    .map(|wrote| {
+        // A round trip that ERRORS is a failed round trip, not a skip:
+        // NAN compares unequal, so it reaches the check as a drift.
+        let read = serde_json::to_string(&wrote)
+            .ok()
+            .and_then(|t| serde_json::from_str::<f64>(&t).ok())
+            .unwrap_or(f64::NAN);
+        (wrote, read)
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -656,7 +683,12 @@ fn decomposition_detail_check(state: &AppState) -> Vec<InvariantResult> {
               AND COALESCE(i.archived,0)=0 ORDER BY i.created,i.id",
     ) {
         Ok(stmt) => stmt,
-        Err(e) => return vec![InvariantResult::unknown(ID, format!("query prepare failed: {e}"))],
+        Err(e) => {
+            return vec![InvariantResult::unknown(
+                ID,
+                format!("query prepare failed: {e}"),
+            )]
+        }
     };
     let rows = match stmt
         .query_map([], |r| {
@@ -715,18 +747,18 @@ fn alert_channel_check(state: &AppState) -> Vec<InvariantResult> {
     // stale. It is a proxy, not a live refresh, but the sender now tries EVERY
     // account newest-first, so actual delivery is more robust than this check.
     const EMAIL_TOKEN_STALE_S: u64 = 14 * 24 * 3600;
-    let email_reachable = crate::integrations::email::newest_token_age_secs_in(
-        &home,
-        std::time::SystemTime::now(),
-    )
-    .map(|age| age < EMAIL_TOKEN_STALE_S)
-    .unwrap_or(false);
+    let email_reachable =
+        crate::integrations::email::newest_token_age_secs_in(&home, std::time::SystemTime::now())
+            .map(|age| age < EMAIL_TOKEN_STALE_S)
+            .unwrap_or(false);
 
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
     let push_sub_count: usize = conn
-        .query_row("SELECT COUNT(*) FROM push_subscriptions", [], |r| r.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM push_subscriptions", [], |r| {
+            r.get::<_, i64>(0)
+        })
         .map(|n| n.max(0) as usize)
         .unwrap_or(0);
     // owner_alerts written in the last 24h, and how many reached zero channels. A
@@ -739,9 +771,9 @@ fn alert_channel_check(state: &AppState) -> Vec<InvariantResult> {
         if let Ok(mut stmt) = conn.prepare(
             "SELECT channels, deduped FROM owner_alerts WHERE ts > (strftime('%s','now') - 86400)",
         ) {
-            if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            }) {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            {
                 for (channels, deduped) in rows.flatten() {
                     if deduped != 0 {
                         continue;
@@ -909,7 +941,9 @@ fn cadence_seconds(expr: &str) -> Option<i64> {
     let mut at = chrono::Local::now();
     let mut widest = 0i64;
     for _ in 0..8 {
-        let Some(next) = parsed.next_run_after(at) else { break };
+        let Some(next) = parsed.next_run_after(at) else {
+            break;
+        };
         widest = widest.max((next - at).num_seconds());
         at = next;
     }
@@ -1032,7 +1066,10 @@ fn provider_launch_check() -> Vec<InvariantResult> {
 fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "pipeline.user_prompts_card";
     let env_i = |k: &str, d: i64| -> i64 {
-        std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
     };
     // WINDOW_H is now a CEILING, not the window itself: the real horizon is this
     // BUILD's uptime (capture_lookback_s), so residue a prior — buggy — build left
@@ -1196,8 +1233,9 @@ fn scan_timestamp_shaped(conn: &rusqlite::Connection, found: &mut Vec<(String, S
                 || c == "time"
                 || c == "timestamp";
             let up = ty.to_ascii_uppercase();
-            let numeric =
-                ["INT", "REAL", "NUM", "FLOA", "DOUB"].iter().any(|k| up.contains(k));
+            let numeric = ["INT", "REAL", "NUM", "FLOA", "DOUB"]
+                .iter()
+                .any(|k| up.contains(k));
             if name_matches && numeric {
                 found.push((t.clone(), c));
             }
@@ -1352,7 +1390,10 @@ fn timestamp_units_check(state: &AppState) -> Vec<InvariantResult> {
     const SAMPLE: usize = 500;
     let mut observed: Vec<(String, Option<f64>)> = Vec::new();
     for (t, c, _) in checks::TIMESTAMP_COLUMNS {
-        observed.push((format!("{t}.{c}"), sampled_timestamp_max(&conn, t, c, SAMPLE)));
+        observed.push((
+            format!("{t}.{c}"),
+            sampled_timestamp_max(&conn, t, c, SAMPLE),
+        ));
     }
     let now = crate::runtime_jobs::registry::unix_now();
     checks::timestamp_units_are_what_readers_assume(&observed, &undeclared, now, SAMPLE)
@@ -1394,12 +1435,15 @@ const LOCK_STALE_AFTER_S: i64 = 900;
 
 async fn lsof_holder(path: &std::path::Path) -> checks::LockHolder {
     use checks::LockHolder;
-    let exe = std::env::var("AMUX_LSOF").ok().filter(|s| !s.is_empty()).or_else(|| {
-        ["/usr/sbin/lsof", "/usr/bin/lsof", "/bin/lsof"]
-            .iter()
-            .find(|c| std::path::Path::new(c).exists())
-            .map(|c| (*c).to_string())
-    });
+    let exe = std::env::var("AMUX_LSOF")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            ["/usr/sbin/lsof", "/usr/bin/lsof", "/bin/lsof"]
+                .iter()
+                .find(|c| std::path::Path::new(c).exists())
+                .map(|c| (*c).to_string())
+        });
     let Some(exe) = exe else {
         return LockHolder::Unmeasured("lsof not found; holder unknown, NOT unheld".into());
     };
@@ -1408,7 +1452,10 @@ async fn lsof_holder(path: &std::path::Path) -> checks::LockHolder {
         async move {
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                tokio::process::Command::new(&exe).args(&args).kill_on_drop(true).output(),
+                tokio::process::Command::new(&exe)
+                    .args(&args)
+                    .kill_on_drop(true)
+                    .output(),
             )
             .await
         }
@@ -1462,7 +1509,10 @@ fn arrival_follows_boot_check(state: &AppState) -> Vec<InvariantResult> {
         Ok((with_boot, before)) => {
             checks::request_arrival_follows_boot(with_boot, before, WINDOW_H)
         }
-        Err(e) => vec![InvariantResult::unknown(ID, format!("request log unreadable: {e}"))],
+        Err(e) => vec![InvariantResult::unknown(
+            ID,
+            format!("request log unreadable: {e}"),
+        )],
     }
 }
 
@@ -1477,7 +1527,10 @@ fn status_pane_check(state: &AppState) -> Vec<InvariantResult> {
         // what a failed `tmux list-sessions` looks like — and that has shipped
         // here before, serving running=0 for 116 live cards. Do not call it a
         // pass.
-        return vec![InvariantResult::unknown(ID, "no running tmux sessions visible")];
+        return vec![InvariantResult::unknown(
+            ID,
+            "no running tmux sessions visible",
+        )];
     }
     signals.capture_panes();
     let lanes: Vec<checks::LaneTruth> = signals
@@ -1521,11 +1574,8 @@ async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult
     // fleet, not one per lane: the verdict needs to distinguish a dead
     // registration holding nothing from one holding a card claimed as `doing`,
     // and re-deriving that by hand was the whole cost of triaging this check.
-    let held: Option<std::collections::HashMap<String, checks::HeldWork>> = state
-        .store
-        .read()
-        .ok()
-        .and_then(|conn| {
+    let held: Option<std::collections::HashMap<String, checks::HeldWork>> =
+        state.store.read().ok().and_then(|conn| {
             conn.prepare(
                 "SELECT COALESCE(session,''), \
                         SUM(CASE WHEN status='doing' THEN 1 ELSE 0 END), COUNT(*) \
@@ -1538,7 +1588,10 @@ async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult
                 st.query_map([], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
-                        checks::HeldWork { doing: r.get::<_, i64>(1)?, open: r.get::<_, i64>(2)? },
+                        checks::HeldWork {
+                            doing: r.get::<_, i64>(1)?,
+                            open: r.get::<_, i64>(2)?,
+                        },
                     ))
                 })
                 .map(|it| it.flatten().collect())
@@ -1549,9 +1602,15 @@ async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult
     for name in names {
         let is_running = crate::api::session_verbs::is_running(&name).await;
         let held = held.as_ref().map(|m| {
-            m.get(&name).copied().unwrap_or(checks::HeldWork { open: 0, doing: 0 })
+            m.get(&name)
+                .copied()
+                .unwrap_or(checks::HeldWork { open: 0, doing: 0 })
         });
-        lanes.push(checks::LaneRunState { name, is_running, held });
+        lanes.push(checks::LaneRunState {
+            name,
+            is_running,
+            held,
+        });
     }
     checks::registered_lanes_are_running(&lanes)
 }
@@ -1614,7 +1673,10 @@ fn self_reports_check(state: &AppState) -> Vec<InvariantResult> {
     if signals.running.is_empty() {
         // Same reasoning as status_pane_check: no fleet is a real state but also
         // what a failed `tmux list-sessions` looks like. Not a pass.
-        return vec![InvariantResult::unknown(ID, "no running tmux sessions visible")];
+        return vec![InvariantResult::unknown(
+            ID,
+            "no running tmux sessions visible",
+        )];
     }
     // NAMESPACE: `signals.running` holds the tmux session names, which are the
     // `amux-<n>` form; `signals.reports` is keyed by the BARE `AMUX_SESSION`
@@ -1643,7 +1705,11 @@ fn self_reports_check(state: &AppState) -> Vec<InvariantResult> {
                 .and_then(|r| r["state"].as_str())
                 .unwrap_or("")
                 .to_string();
-            checks::LaneReport { name: n.to_string(), report_age_s: age, last_state }
+            checks::LaneReport {
+                name: n.to_string(),
+                report_age_s: age,
+                last_state,
+            }
         })
         .collect();
     // Policy in config, not baked in (ethos D4). Defaults: a fleet of >=10 lanes
@@ -1823,7 +1889,11 @@ mod report_hook_wiring_tests {
             "every canonical report hook must be selected"
         );
         assert_eq!(
-            got.iter().find(|e| e.event == "PostToolUse").unwrap().matcher.as_deref(),
+            got.iter()
+                .find(|e| e.event == "PostToolUse")
+                .unwrap()
+                .matcher
+                .as_deref(),
             Some(".*"),
             "the matcher lives on the GROUP, not the hook — reading the wrong level \
              reports every tool entry as matcher-less"
@@ -1836,7 +1906,11 @@ mod report_hook_wiring_tests {
                             \"$AMUX_URL/api/sessions/$AMUX_SESSION/report\""}]}]
         }});
         let got = extract_report_hooks(&forked);
-        assert_eq!(got.len(), 1, "an inline fork must be IN the denominator, not filtered out");
+        assert_eq!(
+            got.len(),
+            1,
+            "an inline fork must be IN the denominator, not filtered out"
+        );
         assert_eq!(
             checks::report_hooks_wired(Ok(got))[0].status,
             Status::Fail,
@@ -1848,7 +1922,10 @@ mod report_hook_wiring_tests {
             "PostToolUse": [{"matcher": "Write|Edit", "hooks": [{"type": "command",
                 "command": "bash .claude/check-and-commit.sh"}]}]
         }});
-        assert!(extract_report_hooks(&unrelated).is_empty(), "unrelated hooks must not be selected");
+        assert!(
+            extract_report_hooks(&unrelated).is_empty(),
+            "unrelated hooks must not be selected"
+        );
     }
 
     /// Wiring, on the REAL file. Vacuous where there is no settings.json (CI),
@@ -1861,10 +1938,15 @@ mod report_hook_wiring_tests {
         let path = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join(".claude/settings.json");
         let Ok(text) = std::fs::read_to_string(&path) else {
-            eprintln!("no {} — vacuous here, real on a fleet machine", path.display());
+            eprintln!(
+                "no {} — vacuous here, real on a fleet machine",
+                path.display()
+            );
             return;
         };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return;
+        };
         if extract_report_hooks(&v).is_empty() {
             eprintln!("no report hooks configured — vacuous here");
             return;
@@ -1929,7 +2011,10 @@ fn kernel_panic_check() -> Vec<InvariantResult> {
                 continue;
             }
             if let Ok(mt) = e.metadata().and_then(|md| md.modified()) {
-                let age_s = now.duration_since(mt).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                let age_s = now
+                    .duration_since(mt)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
                 files.push((name, age_s));
             }
         }
@@ -1956,7 +2041,10 @@ fn result_log_bounded_check(state: &AppState) -> Vec<InvariantResult> {
         .unwrap_or(500_000);
     match super::store::result_log_stats(&state.store) {
         Ok((rows, oldest_age_s)) => checks::result_log_bounded(rows, budget, oldest_age_s),
-        Err(e) => vec![InvariantResult::unknown(ID, format!("could not count the log: {e}"))],
+        Err(e) => vec![InvariantResult::unknown(
+            ID,
+            format!("could not count the log: {e}"),
+        )],
     }
 }
 
@@ -1986,21 +2074,33 @@ fn result_log_bounded_check(state: &AppState) -> Vec<InvariantResult> {
 /// its own SQL.
 fn task_graph_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "board.graph_integrity";
-    let result = state.store.read().and_then(|conn| crate::db::task_graph_store::verify_graph(&conn));
+    let result = state
+        .store
+        .read()
+        .and_then(|conn| crate::db::task_graph_store::verify_graph(&conn));
     match result {
         Ok((n, verification)) => {
             let evidence = json!({"measured":true,"n_considered":n,"findings":verification.findings,
                 "dependency_cycles":verification.dependencies.cycles,
                 "unbuildable_count":verification.dependencies.unbuildable.len(),
                 "lineage_cycles":verification.lineage.cycles});
-            let row = if verification.valid { InvariantResult::pass(ID) } else {
-                InvariantResult::fail(ID, "resolvable, acyclic task dependencies and parent lineage",
-                    format!("{} graph findings; GET /api/graph/board", verification.findings.len()))
+            let row = if verification.valid {
+                InvariantResult::pass(ID)
+            } else {
+                InvariantResult::fail(
+                    ID,
+                    "resolvable, acyclic task dependencies and parent lineage",
+                    format!(
+                        "{} graph findings; GET /api/graph/board",
+                        verification.findings.len()
+                    ),
+                )
             };
             vec![row.evidence(evidence)]
         }
-        Err(error) => vec![InvariantResult::unknown(ID, error.to_string())
-            .evidence(json!({"measured":false,"n_considered":0,"why_unmeasured":error.to_string()}))],
+        Err(error) => vec![InvariantResult::unknown(ID, error.to_string()).evidence(
+            json!({"measured":false,"n_considered":0,"why_unmeasured":error.to_string()}),
+        )],
     }
 }
 
@@ -2058,13 +2158,19 @@ fn card_type_vocabulary_check(state: &AppState) -> Vec<InvariantResult> {
         .collect();
     let rows: Result<Vec<(String, String)>, _> = conn.prepare(&sql).and_then(|mut st| {
         st.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1).unwrap_or_default()))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1).unwrap_or_default(),
+            ))
         })
         .map(|it| it.flatten().collect())
     });
     match rows {
         Ok(offenders) => checks::card_types_are_in_vocabulary(&offenders),
-        Err(e) => vec![InvariantResult::unknown(ID, format!("could not read card types: {e}"))],
+        Err(e) => vec![InvariantResult::unknown(
+            ID,
+            format!("could not read card types: {e}"),
+        )],
     }
 }
 
@@ -2102,11 +2208,20 @@ fn frustration_ledger_check(state: &AppState) -> Vec<InvariantResult> {
     // warning about one function up.
     let load = |name: &str, baked: &'static str| -> (String, &'static str) {
         repo.as_ref()
-            .and_then(|d| std::fs::read_to_string(d.join(name)).ok().map(|s| (s, "worktree")))
+            .and_then(|d| {
+                std::fs::read_to_string(d.join(name))
+                    .ok()
+                    .map(|s| (s, "worktree"))
+            })
             .or_else(|| {
                 let dir = repo.as_ref()?;
                 let out = std::process::Command::new("git")
-                    .args(["-C", &dir.to_string_lossy(), "show", &format!("HEAD:{name}")])
+                    .args([
+                        "-C",
+                        &dir.to_string_lossy(),
+                        "show",
+                        &format!("HEAD:{name}"),
+                    ])
                     .output()
                     .ok()?;
                 out.status
@@ -2117,8 +2232,10 @@ fn frustration_ledger_check(state: &AppState) -> Vec<InvariantResult> {
     };
     let (md, source) = load("frustrations.md", BAKED);
     let (archive_md, archive_source) = load("frustrations-archive.md", BAKED_ARCHIVE);
-    let archive_titles: Vec<String> =
-        checks::parse_frustration_entries(&archive_md).into_iter().map(|e| e.1).collect();
+    let archive_titles: Vec<String> = checks::parse_frustration_entries(&archive_md)
+        .into_iter()
+        .map(|e| e.1)
+        .collect();
     // AF-434: the second key. Title alone missed a chimera (one entry's heading
     // over another's archived body); prose alone would miss the 17 AF-430
     // resurrections whose authors had revised the text before signing off.
@@ -2164,7 +2281,8 @@ fn frustration_ledger_check(state: &AppState) -> Vec<InvariantResult> {
     let local_prefixes: BTreeSet<String> = conn
         .prepare("SELECT DISTINCT substr(id, 1, instr(id,'-')-1) FROM issues WHERE instr(id,'-')>1")
         .and_then(|mut st| {
-            st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect())
+            st.query_map([], |r| r.get::<_, String>(0))
+                .map(|it| it.flatten().collect())
         })
         .unwrap_or_default();
     let mut rows: Vec<checks::LedgerRow> = Vec::new();
@@ -2222,7 +2340,11 @@ fn frustration_ledger_check(state: &AppState) -> Vec<InvariantResult> {
         &archive_titles,
         &ledger_prints,
         &archive_prints,
-        if source == archive_source { source } else { "ledger and archive from different sources" },
+        if source == archive_source {
+            source
+        } else {
+            "ledger and archive from different sources"
+        },
     ));
     out
 }
@@ -2275,9 +2397,15 @@ fn archived_terminal_check(state: &AppState) -> Vec<InvariantResult> {
     // The list is built from the const rather than inlined, so adding a status
     // there cannot leave this check quietly measuring the old set.
     let live_statuses = non_terminal_statuses();
-    let placeholders = live_statuses.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let params: Vec<&dyn rusqlite::ToSql> =
-        live_statuses.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let placeholders = live_statuses
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = live_statuses
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
 
     let by_status: Result<Vec<(String, i64)>, _> = conn
         .prepare(&format!(
@@ -2292,8 +2420,10 @@ fn archived_terminal_check(state: &AppState) -> Vec<InvariantResult> {
     let Ok(by_status) = by_status else {
         return vec![InvariantResult::unknown(ID, "archived-status query failed")];
     };
-    let params2: Vec<&dyn rusqlite::ToSql> =
-        live_statuses.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let params2: Vec<&dyn rusqlite::ToSql> = live_statuses
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
     let worst = conn
         .prepare(&format!(
             "SELECT COALESCE(session,'<unassigned>'), COUNT(*) FROM issues              WHERE deleted IS NULL AND COALESCE(archived,0)=1              AND status IN ({placeholders}) GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
@@ -2312,7 +2442,11 @@ fn repeat_offer_check(state: &AppState) -> Vec<InvariantResult> {
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
-    let cut = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0) - REPEAT_OFFER_WINDOW_S as f64;
+    let cut = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+        - REPEAT_OFFER_WINDOW_S as f64;
     // json_extract in SQL rather than pulling 1279 rows into Rust to group them:
     // the store can do this, and ethos rule 2 says not to spend the process on
     // string manipulation a GROUP BY already does.
@@ -2347,12 +2481,14 @@ fn repeat_offer_check(state: &AppState) -> Vec<InvariantResult> {
     let pairs: Vec<checks::RepeatOfferPair> = all
         .into_iter()
         .filter(|(_, _, n, _)| *n >= REPEAT_OFFER_THRESHOLD)
-        .map(|(lane, card, claims, card_closed)| checks::RepeatOfferPair {
-            lane,
-            card,
-            claims,
-            card_closed,
-        })
+        .map(
+            |(lane, card, claims, card_closed)| checks::RepeatOfferPair {
+                lane,
+                card,
+                claims,
+                card_closed,
+            },
+        )
         .collect();
     checks::repeat_offers_are_visible(&pairs, total, REPEAT_OFFER_THRESHOLD)
 }
@@ -2408,8 +2544,7 @@ async fn served_commit_check() -> Vec<InvariantResult> {
         return checks::served_commit_is_current(None, &why, checks::deploy_lag_threshold_s());
     };
     let range = format!("{served}..origin/main");
-    let Some(behind) = git(vec!["rev-list".into(), "--count".into(), range.clone()]).await
-    else {
+    let Some(behind) = git(vec!["rev-list".into(), "--count".into(), range.clone()]).await else {
         // The served commit is not in this repo — an unpushed or foreign build.
         // That is unmeasurable here, not healthy.
         let why = format!("the served commit {served} is not present in {repo}");
@@ -2448,8 +2583,9 @@ async fn served_commit_check() -> Vec<InvariantResult> {
                 // pruned reflog, or a served build that never came from
                 // origin/main. Fall back to committer time, which is the old
                 // behaviour and can over-report, and SAY SO in the evidence.
-                let stamps =
-                    git(vec!["log".into(), "--format=%ct".into(), range]).await.unwrap_or_default();
+                let stamps = git(vec!["log".into(), "--format=%ct".into(), range])
+                    .await
+                    .unwrap_or_default();
                 let age = stamps
                     .lines()
                     .last()
@@ -2477,11 +2613,10 @@ async fn served_commit_check() -> Vec<InvariantResult> {
 
 async fn argv_secret_check() -> Vec<InvariantResult> {
     const ID: &str = "security.no_secrets_in_process_argv";
-    let output =
-        tokio::process::Command::new("ps")
-            .args(["-axww", "-o", "pid=,etime=,command="])
-            .output()
-            .await;
+    let output = tokio::process::Command::new("ps")
+        .args(["-axww", "-o", "pid=,etime=,command="])
+        .output()
+        .await;
     match output {
         Ok(out) if out.status.success() => {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -2501,7 +2636,9 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                 let (etime, rest) = rest.split_once(' ').unwrap_or((rest, ""));
                 let age_s = crate::runtime_jobs::mac_health::parse_etime(etime);
                 for token in rest.split_whitespace() {
-                    let Some((key, value)) = token.split_once('=') else { continue };
+                    let Some((key, value)) = token.split_once('=') else {
+                        continue;
+                    };
                     // ENV-VAR SHAPE, not merely identifier shape (AMUX-4964).
                     // Identifier shape alone matched `jsonwebtoken`, an npm
                     // package whose name uppercases to contain TOKEN.
@@ -2522,7 +2659,10 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
         }
         Ok(out) => vec![InvariantResult::unknown(
             ID,
-            format!("ps exited {} — cannot confirm no argv carries a credential", out.status),
+            format!(
+                "ps exited {} — cannot confirm no argv carries a credential",
+                out.status
+            ),
         )],
         Err(e) => vec![InvariantResult::unknown(
             ID,
@@ -2619,10 +2759,10 @@ mod stranded_lanes_tests {
 
     fn lanes() -> Vec<(String, i64)> {
         vec![
-            ("".to_string(), 3),          // AF-137's case, not this check's
-            ("amux".to_string(), 123),    // isolated -> stranded
-            ("mvs-infra".to_string(), 16),// dispatched -> fine
-            ("byo-ray".to_string(), 40),  // isolated -> stranded, and BIGGER than amux? no: sorts under
+            ("".to_string(), 3),           // AF-137's case, not this check's
+            ("amux".to_string(), 123),     // isolated -> stranded
+            ("mvs-infra".to_string(), 16), // dispatched -> fine
+            ("byo-ray".to_string(), 40), // isolated -> stranded, and BIGGER than amux? no: sorts under
         ]
     }
 
@@ -2636,8 +2776,11 @@ mod stranded_lanes_tests {
         // fake rather than because of the `!lane.is_empty()` guard, and deleting
         // that guard would leave the suite green. Measured — it did, until this
         // line changed.
-        let out =
-            stranded_lanes(lanes(), &|l| l.is_empty() || l == "amux" || l == "byo-ray", &|_| false);
+        let out = stranded_lanes(
+            lanes(),
+            &|l| l.is_empty() || l == "amux" || l == "byo-ray",
+            &|_| false,
+        );
         assert_eq!(
             out,
             vec![("amux".to_string(), 123), ("byo-ray".to_string(), 40)],
@@ -2712,7 +2855,8 @@ fn autofix_dispatchable_check(state: &AppState) -> Vec<InvariantResult> {
              AND desc LIKE '%Filed automatically by amux%' ORDER BY created DESC",
         )
         .and_then(|mut st| {
-            st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect())
+            st.query_map([], |r| r.get::<_, String>(0))
+                .map(|it| it.flatten().collect())
         });
     match rows {
         Ok(ids) => {
@@ -2734,7 +2878,12 @@ fn reports_attributed_check(state: &AppState) -> Vec<InvariantResult> {
          FROM _amux_request_log \
          WHERE method='POST' AND path LIKE '/api/sessions/%/report' AND ts >= ?1",
         [since],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            ))
+        },
     );
     match row {
         Ok((total, unattr)) => checks::reports_are_attributed(total, unattr),
@@ -2784,7 +2933,12 @@ fn guard_reach_check(state: &AppState) -> Vec<InvariantResult> {
     let checkouts: Vec<checks::GuardCheckout> = match rows {
         Ok(it) => match it.collect::<Result<Vec<_>, _>>() {
             Ok(v) => v,
-            Err(e) => return vec![InvariantResult::unknown(ID, format!("row decode failed: {e}"))],
+            Err(e) => {
+                return vec![InvariantResult::unknown(
+                    ID,
+                    format!("row decode failed: {e}"),
+                )]
+            }
         },
         Err(e) => return vec![InvariantResult::unknown(ID, format!("query failed: {e}"))],
     };
@@ -2808,9 +2962,11 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
             return vec![InvariantResult::unknown(ID, "store unreadable")];
         };
         let reports = conn
-            .query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT value FROM prefs WHERE key='session_reports'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| json!({}));
@@ -2825,7 +2981,13 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
             return vec![InvariantResult::unknown(ID, "steering_queue unreadable")];
         };
         let rows: Vec<(String, f64, usize)> = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)? as usize)))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, i64>(2)? as usize,
+                ))
+            })
             .map(|it| it.flatten().collect())
             .unwrap_or_default();
         (reports, rows)
@@ -2880,14 +3042,22 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
     // 300s: comfortably more than several delivery ticks, so a normal
     // busy->idle transition never trips it, but far below the 2h6m the real
     // incident reached.
-    let mut out =
-        checks::queue_has_live_consumer(&items, now, 300.0, crate::api::session_verbs::steer_dead_letter_s());
+    let mut out = checks::queue_has_live_consumer(
+        &items,
+        now,
+        300.0,
+        crate::api::session_verbs::steer_dead_letter_s(),
+    );
     // Second question, same rows: `has_live_consumer` asks whether the REAPER
     // failed, and answers "no" for every deliberate hold. That is right and it
     // is why 61 messages parked up to 9.1 days behind paused lanes all read as
     // PASS (AMUX-5006). This one asks whether anything still expects them to
     // arrive.
-    out.extend(checks::queue_parked_behind_hold(&items, now, checks::queue_parked_max_s()));
+    out.extend(checks::queue_parked_behind_hold(
+        &items,
+        now,
+        checks::queue_parked_max_s(),
+    ));
     out
 }
 
@@ -2915,7 +3085,10 @@ fn extract_caller_paths() -> Vec<checks::CallerPath> {
     // would check whatever `amux` happens to be sitting in the checkout —
     // possibly a peer's mid-edit — instead of the source this binary was built
     // from. Same reason the e2e harness builds HEAD (AMUX-2924).
-    out.extend(scan_shell_calls(include_str!("../../../../amux"), "cli:amux"));
+    out.extend(scan_shell_calls(
+        include_str!("../../../../amux"),
+        "cli:amux",
+    ));
     out
 }
 
@@ -3055,7 +3228,9 @@ fn scan_shell_calls(sh: &str, source: &str) -> Vec<checks::CallerPath> {
         // follows a shell operator, so the character immediately before the
         // token decides it. Borrowed rather than re-derived — two spellings of
         // "is this a real invocation" is how they drift.
-        let Some(curl_at) = rfind_curl_invocation(window) else { continue };
+        let Some(curl_at) = rfind_curl_invocation(window) else {
+            continue;
+        };
         let cmd = &window[curl_at..];
 
         let method = if let Some(x) = cmd.find("-X ") {
@@ -3174,7 +3349,9 @@ fn scan_js_calls(js: &str, source: &str) -> Vec<checks::CallerPath> {
     let mut i = 0;
     while let Some(p) = js[i..].find("'/api/") {
         let start = i + p + 1;
-        let Some(endrel) = js[start..].find('\'') else { break };
+        let Some(endrel) = js[start..].find('\'') else {
+            break;
+        };
         let end = start + endrel;
         let raw = &js[start..end];
         i = end;
@@ -3182,7 +3359,11 @@ fn scan_js_calls(js: &str, source: &str) -> Vec<checks::CallerPath> {
         // and skip if that leaves nothing addressable. Guessing at an
         // interpolated path produces phantom failures, and a check that cries
         // wolf gets turned off.
-        let path = raw.split(['?', '$', '`']).next().unwrap_or("").trim_end_matches('/');
+        let path = raw
+            .split(['?', '$', '`'])
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/');
         if path.len() < 5 || !path.starts_with("/api/") {
             continue;
         }
@@ -3230,9 +3411,7 @@ fn scan_js_calls(js: &str, source: &str) -> Vec<checks::CallerPath> {
         let find_m = |hay: &str| {
             ["POST", "PATCH", "DELETE", "PUT"]
                 .iter()
-                .find(|m| {
-                    hay.contains(&format!("'{m}'")) || hay.contains(&format!("\"{m}\""))
-                })
+                .find(|m| hay.contains(&format!("'{m}'")) || hay.contains(&format!("\"{m}\"")))
                 .map(|m| m.to_string())
         };
         let observed = find_m(fwd).or_else(|| find_m(back));
@@ -3263,7 +3442,11 @@ pub async fn tick(state: &AppState) -> (Confidence, usize) {
     super::record_confidence(conf, chrono::Utc::now().timestamp() as f64);
     let opened = store::record(&state.store, results, t0.elapsed().as_millis() as i64).await;
     if opened > 0 {
-        tracing::warn!(opened, confidence = conf.as_str(), "invariant incidents opened");
+        tracing::warn!(
+            opened,
+            confidence = conf.as_str(),
+            "invariant incidents opened"
+        );
     }
     (conf, opened)
 }
@@ -3349,13 +3532,33 @@ mod tests {
     fn folding_recency_keeps_the_newest_reading_in_either_order() {
         use super::newest;
         let (old, new) = (1_000.0, 2_000.0);
-        assert_eq!(newest(Some(old), Some(new)), Some(new), "newest arriving last");
-        assert_eq!(newest(Some(new), Some(old)), Some(new), "newest arriving first");
+        assert_eq!(
+            newest(Some(old), Some(new)),
+            Some(new),
+            "newest arriving last"
+        );
+        assert_eq!(
+            newest(Some(new), Some(old)),
+            Some(new),
+            "newest arriving first"
+        );
         // ABSENCE IS NOT ZERO. A path with no timestamp must not drag a shape's
         // recency back to the epoch, and it must not erase one already known.
-        assert_eq!(newest(Some(new), None), Some(new), "an unmeasured row erases nothing");
-        assert_eq!(newest(None, Some(old)), Some(old), "the first reading is adopted");
-        assert_eq!(newest(None, None), None, "nothing measured stays nothing measured");
+        assert_eq!(
+            newest(Some(new), None),
+            Some(new),
+            "an unmeasured row erases nothing"
+        );
+        assert_eq!(
+            newest(None, Some(old)),
+            Some(old),
+            "the first reading is adopted"
+        );
+        assert_eq!(
+            newest(None, None),
+            None,
+            "nothing measured stays nothing measured"
+        );
     }
 
     /// AMUX-4734: the tick BOOKENDS the pass, and only a completed pass ticks.
@@ -3379,26 +3582,41 @@ mod tests {
         // Third instance of that trap in this codebase today.
         let body_start = src.find("async fn one_pass(").expect("one_pass exists");
         let rest = &src[body_start..];
-        let body = &rest[..rest.find("\n}\n").map(|i| i + 2).expect("one_pass is closed")];
+        let body = &rest[..rest
+            .find("\n}\n")
+            .map(|i| i + 2)
+            .expect("one_pass is closed")];
 
-        let start_at = body.find("tick_start(").expect("the pass is bracketed with tick_start");
-        let spawn_at = body.find("tokio::spawn(").expect("the pass runs in a spawned task");
+        let start_at = body
+            .find("tick_start(")
+            .expect("the pass is bracketed with tick_start");
+        let spawn_at = body
+            .find("tokio::spawn(")
+            .expect("the pass runs in a spawned task");
         let end_at = body.find("tick_end(").expect("the pass records a tick_end");
-        let ok_at = body.find("Ok(_) =>").expect("the completed arm is matched explicitly");
+        let ok_at = body
+            .find("Ok(_) =>")
+            .expect("the completed arm is matched explicitly");
 
         assert!(start_at < spawn_at, "tick_start must precede the pass");
-        assert!(spawn_at < end_at,
+        assert!(
+            spawn_at < end_at,
             "tick_end must come AFTER the pass: a tick taken first means a pass that was \
-             STARTED, while every reader takes ticks to mean a pass that is DONE");
-        assert!(ok_at < end_at,
+             STARTED, while every reader takes ticks to mean a pass that is DONE"
+        );
+        assert!(
+            ok_at < end_at,
             "tick_end must sit in the Ok arm: a panicking pass that still ticks makes a dead \
-             monitor indistinguishable from a working one");
+             monitor indistinguishable from a working one"
+        );
 
         // The one-shot `registry::tick(` sets last_start and last_end to the
         // same instant, so it can neither express a duration nor separate
         // start from finish. Using it here is what the fix replaced.
-        assert!(!body.contains("registry::tick("),
-            "one_pass must not use the one-shot tick; it cannot distinguish started from done");
+        assert!(
+            !body.contains("registry::tick("),
+            "one_pass must not use the one-shot tick; it cannot distinguish started from done"
+        );
     }
 
     /// AMUX-4734: by the time a pass returns, its verdicts are ALREADY durable.
@@ -3424,11 +3642,15 @@ mod tests {
     #[tokio::test]
     async fn record_returns_only_after_its_verdicts_are_readable() {
         let dir = tempfile::tempdir().unwrap();
-        let store = std::sync::Arc::new(
-            crate::db::Store::open(&dir.path().join("inv.db")).unwrap());
+        let store =
+            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("inv.db")).unwrap());
 
-        let before: i64 = store.read().unwrap()
-            .query_row("SELECT COUNT(*) FROM _amux_invariant_result", [], |r| r.get(0))
+        let before: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM _amux_invariant_result", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(before, 0, "set-up: the fixture store starts empty");
 
@@ -3442,11 +3664,17 @@ mod tests {
         // IMMEDIATELY, with no sleep and no retry. A poll loop here would pass
         // against the very bug this pins, which is the difference between
         // testing durability and waiting for it.
-        let after: i64 = store.read().unwrap()
-            .query_row("SELECT COUNT(*) FROM _amux_invariant_result", [], |r| r.get(0))
+        let after: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM _amux_invariant_result", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(after, 2,
-            "record returned but its rows are not readable yet: {after} of 2");
+        assert_eq!(
+            after, 2,
+            "record returned but its rows are not readable yet: {after} of 2"
+        );
     }
 
     /// AMUX-4673: an all-zero sample must read as UNKNOWN, never as a FAIL.
@@ -3514,27 +3742,45 @@ mod tests {
     #[test]
     fn graph_invariant_distinguishes_corruption_from_an_unmeasured_probe() {
         let dir = tempfile::tempdir().unwrap();
-        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("graph.db")).unwrap());
-        let state = crate::api::AppState { store:store.clone(), started:std::time::Instant::now(),
-            build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let store =
+            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("graph.db")).unwrap());
+        let state = crate::api::AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
         let result = super::task_graph_check(&state);
-        assert_eq!(result[0].status,crate::invariants::Status::Pass);
-        assert_eq!(result[0].evidence["measured"],true);
-        store.write(|conn| {
-            conn.execute_batch("INSERT INTO issues(id,title,status,created,updated,depends_on) VALUES \
-                ('G-1','cycle','todo',1,1,'[\"G-1\"]')")?;
-            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
-        }).unwrap();
+        assert_eq!(result[0].status, crate::invariants::Status::Pass);
+        assert_eq!(result[0].evidence["measured"], true);
+        store
+            .write(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO issues(id,title,status,created,updated,depends_on) VALUES \
+                ('G-1','cycle','todo',1,1,'[\"G-1\"]')",
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let result = super::task_graph_check(&state);
-        assert_eq!(result[0].status,crate::invariants::Status::Fail);
-        assert_eq!(result[0].evidence["n_considered"],1);
-        store.write(|conn| {
-            conn.execute_batch("ALTER TABLE issues RENAME TO broken_issues")?;
-            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
-        }).unwrap();
+        assert_eq!(result[0].status, crate::invariants::Status::Fail);
+        assert_eq!(result[0].evidence["n_considered"], 1);
+        store
+            .write(|conn| {
+                conn.execute_batch("ALTER TABLE issues RENAME TO broken_issues")?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let result = super::task_graph_check(&state);
-        assert_eq!(result[0].status,crate::invariants::Status::Unknown);
-        assert_eq!(result[0].evidence["measured"],false);
+        assert_eq!(result[0].status, crate::invariants::Status::Unknown);
+        assert_eq!(result[0].evidence["measured"], false);
     }
 
     // ── AF-317 fallout: the board's own readability had no invariant ────────
@@ -3568,8 +3814,13 @@ mod tests {
         // does.
         store
             .write(|conn| {
-                conn.execute_batch("DROP TABLE IF EXISTS issues; CREATE TABLE issues (nope TEXT);")?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS issues; CREATE TABLE issues (nope TEXT);",
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .expect("break the table");
         let state = AppState {
@@ -3577,7 +3828,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let rs = super::board_list_read_check(&state);
         let r = rs
@@ -3614,10 +3865,13 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let rs = super::board_list_read_check(&state);
-        let r = rs.iter().find(|r| r.invariant_id == "board.list_read_succeeds").unwrap();
+        let r = rs
+            .iter()
+            .find(|r| r.invariant_id == "board.list_read_succeeds")
+            .unwrap();
         assert_eq!(
             r.status,
             crate::invariants::Status::Pass,
@@ -3649,7 +3903,10 @@ mod tests {
                     "INSERT INTO issue_tags (issue_id,tag,added_at) VALUES ('D-1','p0',1)",
                     [],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         let state = AppState {
@@ -3679,7 +3936,8 @@ mod tests {
         let rs = provider_launch_check();
         assert!(!rs.is_empty(), "the binding must reach a verdict");
         assert!(
-            rs.iter().all(|r| r.invariant_id == "provider.launch_matches_adapter"),
+            rs.iter()
+                .all(|r| r.invariant_id == "provider.launch_matches_adapter"),
             "the sweep contract greps for this exact id"
         );
         let fails: Vec<_> = rs
@@ -3765,7 +4023,10 @@ mod tests {
                      VALUES ('ZZ-1', 't', 'todo', 1, 0, 0)",
                     [],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .expect("seed an ARCHIVED card");
         let state = AppState {
@@ -3773,7 +4034,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
 
         let rs = frustration_ledger_check(&state);
@@ -3804,7 +4065,10 @@ mod tests {
             .store
             .write(|conn| {
                 conn.execute("UPDATE issues SET archived=0 WHERE id='ZZ-1'", [])?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .expect("unarchive");
         let rs2 = frustration_ledger_check(&state);
@@ -3829,7 +4093,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let rs = status_pane_check(&state);
         assert!(!rs.is_empty(), "the binding must always reach a verdict");
@@ -3872,10 +4136,15 @@ mod tests {
         let rs = guard_reach_check(&state);
         assert!(!rs.is_empty(), "the binding must always reach a verdict");
         assert!(
-            rs.iter().all(|r| r.invariant_id == "hooks.guard_reaches_every_checkout"),
+            rs.iter()
+                .all(|r| r.invariant_id == "hooks.guard_reaches_every_checkout"),
             "unexpected invariant id — the sweep contract greps for this exact string"
         );
-        assert_eq!(rs[0].status, crate::invariants::Status::Unknown, "empty table must not read as healthy");
+        assert_eq!(
+            rs[0].status,
+            crate::invariants::Status::Unknown,
+            "empty table must not read as healthy"
+        );
         assert_eq!(rs[0].evidence["measured"], serde_json::json!(false));
     }
 
@@ -3907,7 +4176,10 @@ mod tests {
     fn extract_shell_path_keeps_a_mid_path_param_suffix() {
         let (p, _, interp) = extract_shell_path("/api/board/$id/claim\"");
         assert_eq!(p, "/api/board/:id/claim");
-        assert!(!interp, "a whole path with a param is NOT an interpolated prefix");
+        assert!(
+            !interp,
+            "a whole path with a param is NOT an interpolated prefix"
+        );
         let (p, _, interp) = extract_shell_path("/api/board/${card}/archive ");
         assert_eq!(p, "/api/board/:id/archive");
         assert!(!interp);
@@ -3996,13 +4268,19 @@ mod tests {
         let d: Vec<_> = got.iter().filter(|c| c.path == "/api/dictate").collect();
         assert!(!d.is_empty(), "the path must still be extracted");
         for c in &d {
-            assert!(!c.method_known, "no verb is in this statement — it must not be claimed as observed");
+            assert!(
+                !c.method_known,
+                "no verb is in this statement — it must not be claimed as observed"
+            );
         }
         // A verb in the SAME statement is still observed.
         let js2 = "await fetch(API + '/api/dictate', {method:'POST'});";
         let got2 = scan_js_calls(js2, "t");
         let d2: Vec<_> = got2.iter().filter(|c| c.path == "/api/dictate").collect();
-        assert!(d2.iter().all(|c| c.method_known && c.method == "POST"), "{got2:?}");
+        assert!(
+            d2.iter().all(|c| c.method_known && c.method == "POST"),
+            "{got2:?}"
+        );
     }
 
     #[test]
@@ -4012,14 +4290,21 @@ mod tests {
                     await fetch('/api/layout-presets/' + name, {method:'DELETE'});\n\
                   }";
         let got = scan_js_calls(js, "t");
-        let base: Vec<_> = got.iter().filter(|c| c.path == "/api/layout-presets" && !c.interpolated).collect();
+        let base: Vec<_> = got
+            .iter()
+            .filter(|c| c.path == "/api/layout-presets" && !c.interpolated)
+            .collect();
         assert!(!base.is_empty(), "the plain GET must still be extracted");
         for c in &base {
-            assert_eq!(c.method, "GET", "a later {{method:'DELETE'}} must not become this call's verb");
+            assert_eq!(
+                c.method, "GET",
+                "a later {{method:'DELETE'}} must not become this call's verb"
+            );
         }
         // ...and the real DELETE is still found, as an interpolated prefix.
         assert!(
-            got.iter().any(|c| c.path == "/api/layout-presets" && c.interpolated && c.method == "DELETE"),
+            got.iter()
+                .any(|c| c.path == "/api/layout-presets" && c.interpolated && c.method == "DELETE"),
             "the parameterised DELETE must still be extracted: {got:?}"
         );
     }
@@ -4029,7 +4314,9 @@ mod tests {
         let js = r#"fetch(API + '/api/workers/' + name + '/send', {method:'POST'})"#;
         let calls = scan_js_calls(js, "t");
         assert!(
-            calls.iter().all(|c| !c.path.contains("${") && !c.path.contains('`')),
+            calls
+                .iter()
+                .all(|c| !c.path.contains("${") && !c.path.contains('`')),
             "must not emit interpolation fragments as paths"
         );
     }
@@ -4045,7 +4332,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod shell_scanner_tests {
     use super::*;
@@ -4060,8 +4346,10 @@ mod shell_scanner_tests {
           curl -sk -d "$json" "$AMUX_URL/api/alert/owner"
           curl -sk -X DELETE "$AMUX_URL/api/schedules/SCHED-1"
         "#;
-        let got: Vec<(String, String)> =
-            scan_shell_calls(sh, "t").into_iter().map(|c| (c.method, c.path)).collect();
+        let got: Vec<(String, String)> = scan_shell_calls(sh, "t")
+            .into_iter()
+            .map(|c| (c.method, c.path))
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -4147,7 +4435,11 @@ mod shell_scanner_tests {
         let punct = "_curl -sk \"$AMUX_URL/api/client-debug\",\n";
         let p = scan_shell_calls(punct, "cli:amux");
         assert_eq!(p.len(), 1);
-        assert!(p[0].path.ends_with("client-debug"), "trailing comma must be gone: {:?}", p[0].path);
+        assert!(
+            p[0].path.ends_with("client-debug"),
+            "trailing comma must be gone: {:?}",
+            p[0].path
+        );
     }
 
     /// The anchor is what stops help text and comments being reported as live
@@ -4159,7 +4451,10 @@ mod shell_scanner_tests {
           # see also /api/does-not-exist for the old contract
           echo "  try: $AMUX_URL/api/also-not-real"
         "#;
-        assert!(scan_shell_calls(sh, "t").is_empty(), "comments and echoes are not call sites");
+        assert!(
+            scan_shell_calls(sh, "t").is_empty(),
+            "comments and echoes are not call sites"
+        );
     }
 
     /// `$` cuts the literal, so `/api/board/$id` is a PREFIX. Treating it as an
@@ -4189,7 +4484,10 @@ EOH
             "a glob is documentation: {:?}",
             got.iter().map(|c| &c.path).collect::<Vec<_>>()
         );
-        assert!(got.iter().any(|c| c.path == "/api/crm/contacts"), "the real call still counts");
+        assert!(
+            got.iter().any(|c| c.path == "/api/crm/contacts"),
+            "the real call still counts"
+        );
     }
 
     /// The real CLI must yield real call sites — an extractor that finds
@@ -4197,7 +4495,11 @@ EOH
     #[test]
     fn the_real_cli_yields_call_sites() {
         let found = scan_shell_calls(include_str!("../../../../amux"), "cli:amux");
-        assert!(found.len() > 20, "only {} call sites scraped from the CLI", found.len());
+        assert!(
+            found.len() > 20,
+            "only {} call sites scraped from the CLI",
+            found.len()
+        );
         assert!(
             found.iter().any(|c| c.path.starts_with("/api/board")),
             "the CLI certainly calls /api/board"
@@ -4250,7 +4552,10 @@ mod section_timing_tests {
         tm.mark(&out, "third-adds-none");
         let t = tm.into_timing();
         let counts: Vec<(&str, usize)> = t.sections.iter().map(|(l, _, n)| (*l, *n)).collect();
-        assert_eq!(counts, vec![("first", 2), ("second", 1), ("third-adds-none", 0)]);
+        assert_eq!(
+            counts,
+            vec![("first", 2), ("second", 1), ("third-adds-none", 0)]
+        );
         // The parts cannot exceed the whole. A cheap arithmetic control: if
         // `mark` ever measured from `started` instead of `last`, the sum would
         // run away from the total.
@@ -4274,15 +4579,20 @@ mod section_timing_tests {
             .1;
         let body = body.split_once("\n}\n").expect("its closing brace").0;
         let sections = body.lines().filter(|l| l.starts_with("    // -- ")).count();
-        let marks = body.lines().filter(|l| l.trim_start().starts_with("tm.mark(&out,")).count();
-        assert!(sections > 0, "the section-comment convention changed; this check is now blind");
+        let marks = body
+            .lines()
+            .filter(|l| l.trim_start().starts_with("tm.mark(&out,"))
+            .count();
+        assert!(
+            sections > 0,
+            "the section-comment convention changed; this check is now blind"
+        );
         assert_eq!(
             marks, sections,
             "{sections} sections but {marks} marks — an unmarked section's cost is charged to \
              whichever section happens to precede it"
         );
     }
-
 }
 
 /// AMUX-4805. `cadence_seconds` is the deadline the unrecorded-outcome check
@@ -4321,7 +4631,11 @@ mod cadence_seconds_tests {
     #[test]
     fn a_weekday_schedule_is_measured_by_its_weekend_gap() {
         let got = cadence_seconds("every weekday at 09:00").expect("weekday parses");
-        assert_eq!(got, 3 * 86_400, "Friday to Monday is the gap that matters, got {got}s");
+        assert_eq!(
+            got,
+            3 * 86_400,
+            "Friday to Monday is the gap that matters, got {got}s"
+        );
     }
 
     /// An expression nobody can parse yields no deadline, and the check treats

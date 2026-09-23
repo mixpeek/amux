@@ -24,7 +24,7 @@ async fn debug_scan_is_mounted_and_returns_200() {
         build_hash: "test".into(),
         // Public route (mounted outside require_bearer), and None disables auth.
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let res = app
@@ -44,7 +44,9 @@ async fn debug_scan_is_mounted_and_returns_200() {
         "GET /api/debug/scan must be mounted and answer 200, not the SPA catch-all's 404"
     );
 
-    let body = axum::body::to_bytes(res.into_body(), 256 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 256 * 1024)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body)
         .expect("a mounted /api/debug/scan answers JSON, not the SPA HTML shell");
     // Present in BOTH the has-run and never-run branches, so this asserts the

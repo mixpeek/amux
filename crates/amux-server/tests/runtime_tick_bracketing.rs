@@ -50,7 +50,9 @@ fn one_shot_sites() -> Vec<(String, usize, String)> {
     let mut out = Vec::new();
     let mut stack = vec![src_root().join("src")];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -60,7 +62,9 @@ fn one_shot_sites() -> Vec<(String, usize, String)> {
             if p.extension().and_then(|x| x.to_str()) != Some("rs") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             for (i, line) in text.lines().enumerate() {
                 let t = line.trim_start();
                 if t.starts_with("//") || t.starts_with("///") {

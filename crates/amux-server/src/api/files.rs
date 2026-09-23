@@ -41,7 +41,10 @@ pub fn routes() -> Router<AppState> {
         .route("/download", get(download))
         // Slack above the cap so the explicit 413 below (with a JSON body
         // naming the limit) fires before the layer's bare-text rejection.
-        .route("/upload", post(upload).layer(DefaultBodyLimit::max(MAX_BYTES + 64 * 1024)))
+        .route(
+            "/upload",
+            post(upload).layer(DefaultBodyLimit::max(MAX_BYTES + 64 * 1024)),
+        )
 }
 
 fn err(status: StatusCode, body: Value) -> Response {
@@ -52,7 +55,11 @@ fn err(status: StatusCode, body: Value) -> Response {
 fn files_root() -> PathBuf {
     std::env::var("AMUX_FILES_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| "/".into()))
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| "/".into())
+        })
 }
 
 /// Resolve a request path that must EXIST (list/download): join, canonicalize
@@ -68,9 +75,15 @@ pub fn resolve_existing(root: &Path, rel: &str) -> Result<PathBuf, String> {
     } else {
         let p = Path::new(rel);
         // Absolute paths are allowed but get the identical containment check.
-        if p.is_absolute() { p.to_path_buf() } else { canon_root.join(p) }
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            canon_root.join(p)
+        }
     };
-    let canon = joined.canonicalize().map_err(|_| format!("no such path: {rel}"))?;
+    let canon = joined
+        .canonicalize()
+        .map_err(|_| format!("no such path: {rel}"))?;
     if !canon.starts_with(&canon_root) {
         return Err("path escapes the files root".into());
     }
@@ -137,7 +150,9 @@ pub fn list_dir(dir: &Path) -> std::io::Result<Vec<FileEntry>> {
         let e = e?;
         // symlink_metadata so a symlink is reported AS a symlink instead of
         // silently followed into whatever it points at.
-        let Ok(meta) = e.path().symlink_metadata() else { continue };
+        let Ok(meta) = e.path().symlink_metadata() else {
+            continue;
+        };
         out.push(FileEntry {
             name: e.file_name().to_string_lossy().into_owned(),
             size: meta.len(),
@@ -165,12 +180,25 @@ async fn list(Query(q): Query<PathParam>) -> Response {
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
     };
     if !dir.is_dir() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "not a directory", "path": q.path }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "not a directory", "path": q.path }),
+        );
     }
     let entries = match crate::db::interactions::spawn_blocking(move || list_dir(&dir)).await {
         Ok(Ok(entries)) => entries,
-        Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Ok(Err(e)) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
     };
     Json(json!({ "path": q.path, "entries": entries })).into_response()
 }
@@ -182,7 +210,10 @@ async fn download(Query(q): Query<PathParam>) -> Response {
         Err(e) => return err(StatusCode::NOT_FOUND, json!({ "error": e })),
     };
     if !file.is_file() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "not a regular file", "path": q.path }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "not a regular file", "path": q.path }),
+        );
     }
     match file.metadata() {
         Ok(m) if m.len() > MAX_BYTES as u64 => {
@@ -197,7 +228,12 @@ async fn download(Query(q): Query<PathParam>) -> Response {
                 }),
             );
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
         _ => {}
     }
     let name = file
@@ -216,7 +252,10 @@ async fn download(Query(q): Query<PathParam>) -> Response {
             bytes,
         )
             .into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        ),
     }
 }
 
@@ -234,12 +273,20 @@ async fn upload(Query(q): Query<PathParam>, body: Bytes) -> Response {
     };
     let canon_root = match root.canonicalize() {
         Ok(r) => r,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
     };
     let target = canon_root.join(&rel);
     if let Some(parent) = target.parent() {
         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
         }
         // Post-create containment check: the lexical filter above blocks
         // `..`, but a symlink INSIDE the root can still point outside it —
@@ -252,13 +299,22 @@ async fn upload(Query(q): Query<PathParam>, body: Bytes) -> Response {
                     json!({ "error": "upload path resolves outside the files root (symlink)" }),
                 )
             }
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": e.to_string() }),
+                )
+            }
         }
     }
     let size = body.len();
     match tokio::fs::write(&target, body).await {
-        Ok(()) => Json(json!({ "ok": true, "path": rel.display().to_string(), "size": size })).into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Ok(()) => Json(json!({ "ok": true, "path": rel.display().to_string(), "size": size }))
+            .into_response(),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        ),
     }
 }
 
@@ -288,11 +344,17 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("/etc", dir.path().join("sneaky")).unwrap();
-            assert!(resolve_existing(dir.path(), "sneaky/hosts").is_err(), "symlink escape");
+            assert!(
+                resolve_existing(dir.path(), "sneaky/hosts").is_err(),
+                "symlink escape"
+            );
         }
         // ...while honest paths resolve.
         assert!(resolve_existing(dir.path(), "inside.txt").is_ok());
-        assert!(resolve_existing(dir.path(), "").is_ok(), "empty path = root");
+        assert!(
+            resolve_existing(dir.path(), "").is_ok(),
+            "empty path = root"
+        );
     }
 
     #[test]
@@ -325,7 +387,10 @@ mod tests {
         #[cfg(unix)]
         {
             let link = entries.iter().find(|e| e.name == "link").unwrap();
-            assert_eq!(link.kind, "symlink", "symlinks reported as symlinks, not followed");
+            assert_eq!(
+                link.kind, "symlink",
+                "symlinks reported as symlinks, not followed"
+            );
         }
     }
 }

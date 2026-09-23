@@ -27,25 +27,44 @@ fn app() -> (axum::Router, Arc<Store>, tempfile::TempDir) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), store, dir)
 }
 
 async fn get(app: &axum::Router, path: &str) -> (StatusCode, Value) {
-    let req = Request::builder().method("GET").uri(path).body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .body(Body::empty())
+        .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn sources(v: &Value) -> Vec<&str> {
-    v["sources"].as_array().unwrap().iter().map(|s| s["table"].as_str().unwrap()).collect()
+    v["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["table"].as_str().unwrap())
+        .collect()
 }
 
 fn kinds(v: &Value) -> Vec<&str> {
-    v["timeline"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect()
+    v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +104,19 @@ async fn a_card_with_history_gets_a_cited_timeline() {
     assert_eq!(v["subject"]["title"], "fix the thing");
 
     // Every trail that could speak, did.
-    for t in ["issues", "issues.log", "_amux_state_events", "_amux_request_log", "_amux_turns", "interaction_log"] {
-        assert!(sources(&v).contains(&t), "source {t} must be listed: {:?}", sources(&v));
+    for t in [
+        "issues",
+        "issues.log",
+        "_amux_state_events",
+        "_amux_request_log",
+        "_amux_turns",
+        "interaction_log",
+    ] {
+        assert!(
+            sources(&v).contains(&t),
+            "source {t} must be listed: {:?}",
+            sources(&v)
+        );
     }
     let ks = kinds(&v);
     for k in ["entity", "card_log", "state_event", "request"] {
@@ -97,7 +127,10 @@ async fn a_card_with_history_gets_a_cited_timeline() {
     // cites a table so it can be re-checked with one SELECT.
     for e in v["timeline"].as_array().unwrap() {
         assert!(
-            e["source"]["table"].as_str().map(|t| !t.is_empty()).unwrap_or(false),
+            e["source"]["table"]
+                .as_str()
+                .map(|t| !t.is_empty())
+                .unwrap_or(false),
             "every timeline line must cite its source table: {e}"
         );
     }
@@ -111,15 +144,23 @@ async fn a_card_with_history_gets_a_cited_timeline() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["kind"] == "state_event" && e["summary"].as_str().unwrap_or("").contains("status:"))
+        .find(|e| {
+            e["kind"] == "state_event" && e["summary"].as_str().unwrap_or("").contains("status:")
+        })
         .expect("a status transition must be named from the journal payloads");
     assert!(
-        transition["summary"].as_str().unwrap().contains("todo") && transition["summary"].as_str().unwrap().contains("doing"),
+        transition["summary"].as_str().unwrap().contains("todo")
+            && transition["summary"].as_str().unwrap().contains("doing"),
         "{transition}"
     );
 
     // Attribution comes from the request log, not from a guess.
-    let req = v["timeline"].as_array().unwrap().iter().find(|e| e["kind"] == "request").unwrap();
+    let req = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "request")
+        .unwrap();
     assert_eq!(req["actor"], "lane-a", "{req}");
 }
 
@@ -140,10 +181,18 @@ async fn card_log_lines_are_not_given_invented_timestamps() {
         })
         .unwrap();
     let (_, v) = get(&app, "/api/why/task/AM-2").await;
-    let log_lines: Vec<&Value> = v["timeline"].as_array().unwrap().iter().filter(|e| e["kind"] == "card_log").collect();
+    let log_lines: Vec<&Value> = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "card_log")
+        .collect();
     assert_eq!(log_lines.len(), 2, "{v}");
     for l in &log_lines {
-        assert!(l["at_epoch"].is_null(), "a dateless log line must not carry an epoch: {l}");
+        assert!(
+            l["at_epoch"].is_null(),
+            "a dateless log line must not carry an epoch: {l}"
+        );
         assert_eq!(l["ordering"], "append-order");
     }
     // …and the limitation is stated where a reader will see it.
@@ -170,7 +219,11 @@ async fn a_subject_that_does_not_exist_says_cannot_tell_and_names_the_table() {
     assert_eq!(v["verdict"], "cannot_tell", "{v}");
     assert!(sources(&v).contains(&"issues"));
     assert!(
-        v["gaps"].as_array().unwrap().iter().any(|g| g.as_str().unwrap().contains("issues")),
+        v["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g.as_str().unwrap().contains("issues")),
         "the gap must name where it looked: {v}"
     );
 }
@@ -188,14 +241,28 @@ async fn a_source_that_matched_nothing_is_still_reported_with_its_predicate() {
                  VALUES ('AM-3','lonely card','',  'todo','x',1785000000,1785000000)",
                 [],
             )?;
-            Ok(WriteOutcome { applied: false, events: vec![] })
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .unwrap();
     let (_, v) = get(&app, "/api/why/task/AM-3").await;
-    let turns = v["sources"].as_array().unwrap().iter().find(|s| s["table"] == "_amux_turns").unwrap();
+    let turns = v["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["table"] == "_amux_turns")
+        .unwrap();
     assert_eq!(turns["rows"], 0);
-    assert!(turns["query"].as_str().unwrap().contains("AM-3"), "the predicate must be published: {turns}");
-    assert!(turns["note"].as_str().is_some(), "an empty source must explain itself: {turns}");
+    assert!(
+        turns["query"].as_str().unwrap().contains("AM-3"),
+        "the predicate must be published: {turns}"
+    );
+    assert!(
+        turns["note"].as_str().is_some(),
+        "an empty source must explain itself: {turns}"
+    );
     // Some trail spoke (the issues row itself), so the verdict is partial,
     // not cannot_tell — the distinction is the point.
     assert_eq!(v["verdict"], "partial", "{v}");
@@ -231,14 +298,33 @@ async fn schedule_runs_name_their_source_so_a_manual_fire_is_not_a_cron_fire() {
 
     let (_, v) = get(&app, "/api/why/schedule/SCHED-9").await;
     assert!(v["found"].as_bool().unwrap(), "{v}");
-    let runs: Vec<&Value> = v["timeline"].as_array().unwrap().iter().filter(|e| e["kind"] == "schedule_run").collect();
+    let runs: Vec<&Value> = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "schedule_run")
+        .collect();
     assert_eq!(runs.len(), 2);
     let actors: Vec<&str> = runs.iter().map(|r| r["actor"].as_str().unwrap()).collect();
-    assert!(actors.contains(&"cron") && actors.contains(&"manual"), "{actors:?}");
+    assert!(
+        actors.contains(&"cron") && actors.contains(&"manual"),
+        "{actors:?}"
+    );
     // The audit row carries WHO, which is the other half of "why".
-    let audit = v["timeline"].as_array().unwrap().iter().find(|e| e["kind"] == "schedule_audit").unwrap();
+    let audit = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "schedule_audit")
+        .unwrap();
     assert_eq!(audit["actor"], "lane-b", "{audit}");
-    assert!(audit["summary"].as_str().unwrap().contains("enabled: 1 -> 0"), "{audit}");
+    assert!(
+        audit["summary"]
+            .as_str()
+            .unwrap()
+            .contains("enabled: 1 -> 0"),
+        "{audit}"
+    );
 }
 
 #[tokio::test]
@@ -252,14 +338,29 @@ async fn a_deleted_schedule_still_explains_itself_from_its_runs() {
                  VALUES ('SCHED-GONE', 1785000100, 'error', 'session was not running', 'cron')",
                 [],
             )?;
-            Ok(WriteOutcome { applied: false, events: vec![] })
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .unwrap();
     let (_, v) = get(&app, "/api/why/schedule/SCHED-GONE").await;
     assert!(!v["found"].as_bool().unwrap());
-    let runs: Vec<&Value> = v["timeline"].as_array().unwrap().iter().filter(|e| e["kind"] == "schedule_run").collect();
-    assert_eq!(runs.len(), 1, "the surviving run rows must still be reported: {v}");
-    assert!(runs[0]["summary"].as_str().unwrap().contains("session was not running"));
+    let runs: Vec<&Value> = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "schedule_run")
+        .collect();
+    assert_eq!(
+        runs.len(),
+        1,
+        "the surviving run rows must still be reported: {v}"
+    );
+    assert!(runs[0]["summary"]
+        .as_str()
+        .unwrap()
+        .contains("session was not running"));
 }
 
 #[tokio::test]
@@ -300,7 +401,10 @@ async fn an_unknown_worker_names_what_it_searched() {
     let (_, v) = get(&app, "/api/why/worker/ghost").await;
     assert_eq!(v["verdict"], "cannot_tell");
     let gap = v["gaps"].as_array().unwrap()[0].as_str().unwrap();
-    assert!(gap.contains("id") && gap.contains("alias"), "the gap must say how it looked: {gap}");
+    assert!(
+        gap.contains("id") && gap.contains("alias"),
+        "the gap must say how it looked: {gap}"
+    );
 }
 
 #[tokio::test]
@@ -315,7 +419,8 @@ async fn an_integration_with_no_durable_trail_says_so_instead_of_narrating() {
     assert!(v["timeline"].as_array().unwrap().is_empty());
     let gaps = v["gaps"].as_array().unwrap();
     assert!(
-        gaps.iter().any(|g| g.as_str().unwrap().contains("no integrations registry")),
+        gaps.iter()
+            .any(|g| g.as_str().unwrap().contains("no integrations registry")),
         "the missing SUBSTRATE must be named, not just the empty result: {gaps:?}"
     );
     // Both trails it consulted are listed, so the claim is checkable.
@@ -339,7 +444,10 @@ async fn an_integration_with_request_traffic_is_explained_from_it() {
     let (_, v) = get(&app, "/api/why/integration/gmail").await;
     assert!(v["found"].as_bool().unwrap(), "{v}");
     let e = &v["timeline"].as_array().unwrap()[0];
-    assert!(e["summary"].as_str().unwrap().contains("token expired"), "{e}");
+    assert!(
+        e["summary"].as_str().unwrap().contains("token expired"),
+        "{e}"
+    );
     assert_eq!(e["actor"], "lane-a");
 }
 
@@ -350,7 +458,8 @@ async fn a_session_with_no_attributed_writes_says_the_attribution_is_missing() {
     assert_eq!(v["verdict"], "cannot_tell");
     let gaps = v["gaps"].as_array().unwrap();
     assert!(
-        gaps.iter().any(|g| g.as_str().unwrap().contains("X-Amux-Session")),
+        gaps.iter()
+            .any(|g| g.as_str().unwrap().contains("X-Amux-Session")),
         "an unattributed write is invisible here BY CONSTRUCTION and that has to be said: {gaps:?}"
     );
 }
@@ -378,13 +487,38 @@ async fn window_mode_reports_failures_and_says_it_omitted_the_successes() {
     let (st, v) = get(&app, "/api/why?since=1785000000&until=1785000200").await;
     assert_eq!(st, StatusCode::OK);
     assert!(v["found"].as_bool().unwrap(), "{v}");
-    let summaries: Vec<&str> = v["timeline"].as_array().unwrap().iter().map(|e| e["summary"].as_str().unwrap()).collect();
-    assert!(summaries.iter().any(|s| s.contains("boom")), "{summaries:?}");
-    assert!(summaries.iter().any(|s| s.contains("no such session")), "{summaries:?}");
-    assert!(!summaries.iter().any(|s| s.contains("-> 200")), "successes are deliberately omitted: {summaries:?}");
+    let summaries: Vec<&str> = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["summary"].as_str().unwrap())
+        .collect();
+    assert!(
+        summaries.iter().any(|s| s.contains("boom")),
+        "{summaries:?}"
+    );
+    assert!(
+        summaries.iter().any(|s| s.contains("no such session")),
+        "{summaries:?}"
+    );
+    assert!(
+        !summaries.iter().any(|s| s.contains("-> 200")),
+        "successes are deliberately omitted: {summaries:?}"
+    );
     // …and the omission announces itself rather than being silent.
-    let probe = v["sources"].as_array().unwrap().iter().find(|s| s["query"].as_str().unwrap().contains("FAILURES ONLY")).unwrap();
-    assert!(probe["note"].as_str().unwrap().contains("deliberately not listed"), "{probe}");
+    let probe = v["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["query"].as_str().unwrap().contains("FAILURES ONLY"))
+        .unwrap();
+    assert!(
+        probe["note"]
+            .as_str()
+            .unwrap()
+            .contains("deliberately not listed"),
+        "{probe}"
+    );
 }
 
 #[tokio::test]
@@ -417,7 +551,11 @@ async fn the_contract_lists_every_kind_the_router_actually_answers() {
     assert!(!kinds.is_empty());
     for k in kinds {
         let (st, v) = get(&app, &format!("/api/why/{k}/probe-id")).await;
-        assert_eq!(st, StatusCode::OK, "contract advertises `{k}` but the router rejects it: {v}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "contract advertises `{k}` but the router rejects it: {v}"
+        );
         assert!(v["verdict"].is_string(), "{v}");
     }
 }
@@ -443,10 +581,25 @@ async fn payloadless_journal_events_are_reported_as_unreconstructable() {
         })
         .unwrap();
     let (_, v) = get(&app, "/api/why/task/AM-4").await;
-    let ev = v["timeline"].as_array().unwrap().iter().find(|e| e["kind"] == "state_event").unwrap();
-    assert!(ev["summary"].as_str().unwrap().contains("no snapshot recorded"), "{ev}");
+    let ev = v["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "state_event")
+        .unwrap();
     assert!(
-        v["gaps"].as_array().unwrap().iter().any(|g| g.as_str().unwrap().contains("post-mutation snapshot")),
+        ev["summary"]
+            .as_str()
+            .unwrap()
+            .contains("no snapshot recorded"),
+        "{ev}"
+    );
+    assert!(
+        v["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g.as_str().unwrap().contains("post-mutation snapshot")),
         "{v}"
     );
 }
@@ -501,14 +654,26 @@ async fn a_card_older_than_the_journal_floor_is_told_its_trail_is_a_tail() {
             .to_string()
     };
     let gaps_text = |v: &Value| -> String {
-        v["gaps"].as_array().unwrap().iter().filter_map(|g| g.as_str()).collect::<Vec<_>>().join(" | ")
+        v["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|g| g.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
     };
 
     // OLD: predates the floor. It has an event, so the old zero-row arm never
     // fired; this is exactly the row count that used to read as complete.
     let (_, old) = get(&app, "/api/why/task/AM-OLD").await;
-    let n = old["sources"].as_array().unwrap().iter()
-        .find(|s| s["table"] == "_amux_state_events").unwrap()["rows"].as_i64().unwrap();
+    let n = old["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["table"] == "_amux_state_events")
+        .unwrap()["rows"]
+        .as_i64()
+        .unwrap();
     assert_eq!(n, 1, "the fixture must produce a NON-empty journal probe, or this pins the zero-row arm that was already correct: {old}");
     assert!(
         journal_note(&old).contains("surviving TAIL"),

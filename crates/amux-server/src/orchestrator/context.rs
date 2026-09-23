@@ -230,9 +230,8 @@ pub fn assemble_context_with_budget(
         }
     }
 
-    let mut attempt_stmt = conn.prepare(
-        "SELECT record FROM _amux_attempts WHERE task_id=?1 ORDER BY attempt ASC",
-    )?;
+    let mut attempt_stmt =
+        conn.prepare("SELECT record FROM _amux_attempts WHERE task_id=?1 ORDER BY attempt ASC")?;
     let attempts: Vec<String> = attempt_stmt
         .query_map([task.id.as_str()], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
@@ -326,7 +325,11 @@ fn trim_to_budget(mut fragments: Vec<ContextFragment>, max_chars: usize) -> Vec<
         total = total.saturating_sub(removed.content.chars().count());
         let mut h = Sha256::new();
         h.update(removed.content.as_bytes());
-        omitted.push(format!("{}:{}", removed.source, hex::encode(&h.finalize()[..6])));
+        omitted.push(format!(
+            "{}:{}",
+            removed.source,
+            hex::encode(&h.finalize()[..6])
+        ));
     }
     if !omitted.is_empty() {
         fragments.push(ContextFragment {
@@ -490,9 +493,8 @@ pub fn record_snapshot(
     worker_id: &WorkerId,
     snap: &ContextSnapshot,
 ) -> rusqlite::Result<bool> {
-    let fragments = serde_json::to_string(&snap.fragments).map_err(|e| {
-        rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-    })?;
+    let fragments = serde_json::to_string(&snap.fragments)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     let semantic = issue_by_internal_id(conn, task_id)?.map(|r| r.id);
     let checkpoint_version = semantic
         .as_deref()
@@ -601,7 +603,9 @@ mod tests {
             tid(n),
             "Fix the login redirect loop",
             amux_core::board::ItemType::Code,
-            Actor::Human { name: "ethan".into() },
+            Actor::Human {
+                name: "ethan".into(),
+            },
             "2026-08-01T00:00:00Z".parse().unwrap(),
         );
         t.desc = "Users bounce between /login and /".into();
@@ -615,8 +619,20 @@ mod tests {
         let (w, g) = (wid(1), gid(2));
         seed_worker_in_group(&c, &w, &g);
         seed_memory(&c, 10, Scope::Global, "house-rules", "no em-dashes");
-        seed_memory(&c, 11, Scope::Group { id: g.clone() }, "team-notes", "deploy fridays");
-        seed_memory(&c, 12, Scope::Worker { id: w.clone() }, "my-notes", "auth in src/auth.rs");
+        seed_memory(
+            &c,
+            11,
+            Scope::Group { id: g.clone() },
+            "team-notes",
+            "deploy fridays",
+        );
+        seed_memory(
+            &c,
+            12,
+            Scope::Worker { id: w.clone() },
+            "my-notes",
+            "auth in src/auth.rs",
+        );
         // Another worker's memory must NOT appear in this context.
         seed_memory(&c, 13, Scope::Worker { id: wid(99) }, "not-mine", "secret");
 
@@ -679,7 +695,10 @@ mod tests {
         let snap = assemble_context(&c, &w, &t).unwrap();
         let key = format!("{}:{}:1", t.id, w);
 
-        assert!(record_snapshot(&c, &key, &t.id, &w, &snap).unwrap(), "first: recorded");
+        assert!(
+            record_snapshot(&c, &key, &t.id, &w, &snap).unwrap(),
+            "first: recorded"
+        );
         assert!(
             !record_snapshot(&c, &key, &t.id, &w, &snap).unwrap(),
             "second: same key, NOT re-recorded"

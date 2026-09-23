@@ -126,10 +126,7 @@ impl CapabilityRule {
     pub fn matches(&self, ctx: &ActionContext) -> bool {
         (self.actions.is_empty() || self.actions.contains(&ctx.action))
             && (self.actors.is_empty() || self.actors.iter().any(|a| a == &ctx.actor))
-            && (self.roles.is_empty()
-                || ctx
-                    .role
-                    .is_some_and(|role| self.roles.contains(&role)))
+            && (self.roles.is_empty() || ctx.role.is_some_and(|role| self.roles.contains(&role)))
             && (self.resource_prefixes.is_empty()
                 || self
                     .resource_prefixes
@@ -204,7 +201,10 @@ impl CapabilityPolicy {
         let mut ids = std::collections::BTreeSet::new();
         for rule in &self.rules {
             if rule.id.trim().is_empty() || !ids.insert(rule.id.as_str()) {
-                return Err(format!("policy rule ids must be non-empty and unique: {}", rule.id));
+                return Err(format!(
+                    "policy rule ids must be non-empty and unique: {}",
+                    rule.id
+                ));
             }
             if rule.rationale.trim().is_empty() {
                 return Err(format!("policy rule {} requires a rationale", rule.id));
@@ -237,8 +237,10 @@ impl CapabilityPolicy {
             || ctx.resource.starts_with("/api/harness/planning-nodes")
             || ctx.resource.starts_with("/api/harness/handoffs");
         if ctx.role.is_some_and(AgentRole::is_planner)
-            && (!matches!(ctx.action, ActionClass::Read | ActionClass::CapabilityChange)
-                || (ctx.action == ActionClass::CapabilityChange && !planner_control_plane))
+            && (!matches!(
+                ctx.action,
+                ActionClass::Read | ActionClass::CapabilityChange
+            ) || (ctx.action == ActionClass::CapabilityChange && !planner_control_plane))
         {
             return CapabilityDecision {
                 effect: CapabilityEffect::Deny,

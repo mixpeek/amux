@@ -37,7 +37,9 @@ pub enum AgentState {
     WaitingForInput,
     RateLimited(RateLimit),
     Paused,
-    Exited { code: Option<i32> },
+    Exited {
+        code: Option<i32>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,7 +69,8 @@ pub trait AgentProtocol: Send + Sync {
 }
 
 // The same protocol instance drives the command pump and lifecycle API.
-static PROCESS_PROTOCOL: std::sync::RwLock<Option<std::sync::Arc<dyn AgentProtocol>>> = std::sync::RwLock::new(None);
+static PROCESS_PROTOCOL: std::sync::RwLock<Option<std::sync::Arc<dyn AgentProtocol>>> =
+    std::sync::RwLock::new(None);
 pub fn set_process_protocol(protocol: std::sync::Arc<dyn AgentProtocol>) {
     *PROCESS_PROTOCOL.write().unwrap() = Some(protocol);
 }

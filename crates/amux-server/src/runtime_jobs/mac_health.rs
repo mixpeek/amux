@@ -174,14 +174,13 @@ pub(crate) fn parse_etime(s: &str) -> Option<u64> {
     };
     let parts: Vec<&str> = rest.split(':').collect();
     match parts.as_slice() {
-        [mm, ss] => {
-            Some(days * 86400 + mm.parse::<u64>().ok()? * 60 + ss.parse::<u64>().ok()?)
-        }
-        [hh, mm, ss] => {
-            Some(days * 86400 + hh.parse::<u64>().ok()? * 3600
+        [mm, ss] => Some(days * 86400 + mm.parse::<u64>().ok()? * 60 + ss.parse::<u64>().ok()?),
+        [hh, mm, ss] => Some(
+            days * 86400
+                + hh.parse::<u64>().ok()? * 3600
                 + mm.parse::<u64>().ok()? * 60
-                + ss.parse::<u64>().ok()?)
-        }
+                + ss.parse::<u64>().ok()?,
+        ),
         _ => None,
     }
 }
@@ -239,7 +238,13 @@ fn health_process_rows(text: &str) -> Vec<HealthProcess> {
             if command.is_empty() {
                 return None;
             }
-            Some(HealthProcess { pid, ppid, state, elapsed_s, command })
+            Some(HealthProcess {
+                pid,
+                ppid,
+                state,
+                elapsed_s,
+                command,
+            })
         })
         .collect()
 }
@@ -275,7 +280,10 @@ fn owned_zombie_children(
 ) -> (Vec<u32>, Vec<HealthProcess>) {
     let mut owned = Vec::new();
     let mut visible = Vec::new();
-    for child in rows.iter().filter(|p| p.state.starts_with('Z') && p.elapsed_s >= grace_s) {
+    for child in rows
+        .iter()
+        .filter(|p| p.state.starts_with('Z') && p.elapsed_s >= grace_s)
+    {
         visible.push(child.clone());
         if child.ppid == server_pid {
             owned.push(child.pid);
@@ -355,7 +363,8 @@ fn orphaned_playwright_chromes(grace_s: u64) -> (Vec<(u32, u64)>, usize) {
         let cmd = cmd_owned.as_str();
         // Must be a Chrome process with a Playwright temp-profile user-data-dir.
         let is_chrome = cmd.contains("Google Chrome") || cmd.contains("Chromium");
-        let has_playwright_tmpdir = cmd.contains("/T/.tmp") && cmd.contains("playwright-auth/profile");
+        let has_playwright_tmpdir =
+            cmd.contains("/T/.tmp") && cmd.contains("playwright-auth/profile");
         if !is_chrome || !has_playwright_tmpdir {
             continue;
         }
@@ -380,7 +389,10 @@ fn orphaned_playwright_chromes(grace_s: u64) -> (Vec<(u32, u64)>, usize) {
 /// `claude_count=0 max_claude=60` while the host sat at 95% swap and macOS was
 /// killing workers. A check that cannot fail is not a check (ethos rule 7).
 fn check_claude_count(max: usize) -> Option<usize> {
-    let out = std::process::Command::new("pgrep").args(["-x", "claude"]).output().ok()?;
+    let out = std::process::Command::new("pgrep")
+        .args(["-x", "claude"])
+        .output()
+        .ok()?;
     // pgrep exits 1 with no output when nothing matches, which IS a real zero.
     // Any other failure is an un-measured count and must stay None.
     let code = out.status.code().unwrap_or(-1);
@@ -392,7 +404,10 @@ fn check_claude_count(max: usize) -> Option<usize> {
         );
         return None;
     }
-    let count = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).count();
+    let count = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
     if count > max {
         tracing::warn!(
             job = JOB,
@@ -423,7 +438,12 @@ fn swap_used_pct() -> Option<f64> {
     // is why only this one broke.
     let out = SYSCTL_PATHS
         .iter()
-        .find_map(|bin| std::process::Command::new(bin).args(["-n", "vm.swapusage"]).output().ok())
+        .find_map(|bin| {
+            std::process::Command::new(bin)
+                .args(["-n", "vm.swapusage"])
+                .output()
+                .ok()
+        })
         .filter(|o| o.status.success())?;
     parse_swap_pct(&String::from_utf8_lossy(&out.stdout))
 }
@@ -485,7 +505,9 @@ fn stale_test_panes(grace_s: u64) -> Vec<String> {
         .args(["list-sessions", "-F", "#{session_name} #{session_created}"])
         .output();
     let Ok(out) = out else { return Vec::new() };
-    if !out.status.success() { return Vec::new(); }
+    if !out.status.success() {
+        return Vec::new();
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -495,7 +517,9 @@ fn stale_test_panes(grace_s: u64) -> Vec<String> {
         .filter_map(|line| {
             let (name, created) = line.rsplit_once(' ')?;
             let bare = name.strip_prefix("amux-")?;
-            if !HARNESS.iter().any(|p| bare.starts_with(p)) { return None; }
+            if !HARNESS.iter().any(|p| bare.starts_with(p)) {
+                return None;
+            }
             let age = now.saturating_sub(created.trim().parse::<u64>().ok()?);
             (age >= grace_s).then(|| name.to_string())
         })
@@ -503,11 +527,17 @@ fn stale_test_panes(grace_s: u64) -> Vec<String> {
 }
 
 fn test_pane_grace_s() -> u64 {
-    std::env::var("AMUX_TEST_PANE_GRACE_S").ok().and_then(|v| v.parse().ok()).unwrap_or(1800)
+    std::env::var("AMUX_TEST_PANE_GRACE_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1800)
 }
 
 fn mem_reap_swap_pct() -> f64 {
-    std::env::var("AMUX_MEM_REAP_SWAP_PCT").ok().and_then(|v| v.parse().ok()).unwrap_or(85.0)
+    std::env::var("AMUX_MEM_REAP_SWAP_PCT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(85.0)
 }
 
 /// SIP-protected indexing daemons worth watching — the same list procwarden's
@@ -515,11 +545,20 @@ fn mem_reap_swap_pct() -> f64 {
 /// so these are prefix-matched (`ecosystemanalyti`, not the full
 /// `ecosystemanalyticsd`).
 const INDEXING_DAEMON_NAMES: [&str; 7] = [
-    "fseventsd", "ecosystemd", "ecosystemanalyti", "mds", "mds_stores", "mdworker", "mdworker_shared",
+    "fseventsd",
+    "ecosystemd",
+    "ecosystemanalyti",
+    "mds",
+    "mds_stores",
+    "mdworker",
+    "mdworker_shared",
 ];
 
 fn indexing_daemon_cpu_above() -> f64 {
-    std::env::var("AMUX_MAC_HEALTH_DAEMON_CPU_ABOVE").ok().and_then(|v| v.parse().ok()).unwrap_or(80.0)
+    std::env::var("AMUX_MAC_HEALTH_DAEMON_CPU_ABOVE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(80.0)
 }
 
 /// `ps comm` truncates long names, so this is a prefix match against
@@ -550,14 +589,21 @@ fn spotlight_exclusion_can_reach(name: &str) -> bool {
 /// `(name, %cpu)` for every watched indexing daemon currently above the
 /// threshold. CPU discovery is separate from the compressed-memory snapshot.
 fn hot_indexing_daemons(above: f64) -> Vec<(String, f64)> {
-    let Ok(out) = std::process::Command::new("ps").args(["-eo", "%cpu=,comm="]).output() else {
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-eo", "%cpu=,comm="])
+        .output()
+    else {
         return Vec::new();
     };
     let mut out_rows = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let line = line.trim();
-        let Some((cpu, comm)) = line.split_once(char::is_whitespace) else { continue };
-        let Ok(cpu) = cpu.trim().parse::<f64>() else { continue };
+        let Some((cpu, comm)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(cpu) = cpu.trim().parse::<f64>() else {
+            continue;
+        };
         let name = comm.trim().rsplit('/').next().unwrap_or(comm.trim());
         if cpu > above && is_indexing_daemon(name) {
             out_rows.push((name.to_string(), cpu));
@@ -591,7 +637,9 @@ fn spotlight_exclude_paths() -> Vec<std::path::PathBuf> {
         std::path::PathBuf::from(format!("{home}/.amux")),
     ];
     if let Some(uid) = uid {
-        v.push(std::path::PathBuf::from(format!("/private/tmp/claude-{uid}")));
+        v.push(std::path::PathBuf::from(format!(
+            "/private/tmp/claude-{uid}"
+        )));
     }
     v
 }
@@ -616,7 +664,9 @@ fn ensure_spotlight_excluded(dir: &std::path::Path) -> Result<bool, String> {
     if sentinel.exists() {
         return Ok(false);
     }
-    std::fs::File::create(&sentinel).map(|_| true).map_err(|e| e.to_string())
+    std::fs::File::create(&sentinel)
+        .map(|_| true)
+        .map_err(|e| e.to_string())
 }
 
 fn one_pass() {
@@ -641,13 +691,18 @@ fn one_pass() {
                     job = JOB, pid, age_s, cmd = %cmd,
                     "mac-health: SIGTERM orphaned ray:: worker"
                 );
-                let _ = std::process::Command::new("kill").args([&pid.to_string()]).output();
+                let _ = std::process::Command::new("kill")
+                    .args([&pid.to_string()])
+                    .output();
             }
         } else {
             tracing::debug!(job = JOB, "mac-health: no orphaned ray:: workers");
         }
     } else {
-        tracing::debug!(job = JOB, "mac-health: raylet running, skipping ray orphan sweep");
+        tracing::debug!(
+            job = JOB,
+            "mac-health: raylet running, skipping ray orphan sweep"
+        );
     }
 
     // --- Orphaned rustc + true zombie sweep ---
@@ -670,8 +725,7 @@ fn one_pass() {
             }
             rustc_reaped = rustc.len();
 
-            let (owned, zombies) =
-                owned_zombie_children(&rows, zombie_grace, std::process::id());
+            let (owned, zombies) = owned_zombie_children(&rows, zombie_grace, std::process::id());
             zombies_seen = zombies.len();
             if !zombies.is_empty() {
                 let foreign = zombies.len().saturating_sub(owned.len());
@@ -733,10 +787,14 @@ fn one_pass() {
         );
         for (pid, age_s) in &pw_orphans {
             tracing::info!(
-                job = JOB, pid, age_s,
+                job = JOB,
+                pid,
+                age_s,
                 "mac-health: SIGTERM orphaned Playwright Chrome root"
             );
-            let _ = std::process::Command::new("kill").args([&pid.to_string()]).output();
+            let _ = std::process::Command::new("kill")
+                .args([&pid.to_string()])
+                .output();
         }
     } else {
         tracing::debug!(
@@ -877,11 +935,25 @@ mod tests {
     /// every process whose name happens to contain a substring.
     #[test]
     fn indexing_daemon_matching_is_prefix_not_substring() {
-        for name in ["fseventsd", "ecosystemd", "ecosystemanalyticsd", "mds", "mds_stores", "mdworker", "mdworker_shared"] {
-            assert!(is_indexing_daemon(name), "{name} must match — it's what this arm exists to find");
+        for name in [
+            "fseventsd",
+            "ecosystemd",
+            "ecosystemanalyticsd",
+            "mds",
+            "mds_stores",
+            "mdworker",
+            "mdworker_shared",
+        ] {
+            assert!(
+                is_indexing_daemon(name),
+                "{name} must match — it's what this arm exists to find"
+            );
         }
         for name in ["rustc", "Chrome", "claude", "xecosystemd", "notmds"] {
-            assert!(!is_indexing_daemon(name), "{name} must NOT match — a substring hit would exclude the wrong host state");
+            assert!(
+                !is_indexing_daemon(name),
+                "{name} must NOT match — a substring hit would exclude the wrong host state"
+            );
         }
     }
 
@@ -912,7 +984,10 @@ mod tests {
     fn shellexpand_home_only_touches_a_leading_tilde_slash() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/ethan".into());
         assert_eq!(shellexpand_home("~/Dev"), format!("{home}/Dev"));
-        assert_eq!(shellexpand_home("/private/tmp/claude-501"), "/private/tmp/claude-501");
+        assert_eq!(
+            shellexpand_home("/private/tmp/claude-501"),
+            "/private/tmp/claude-501"
+        );
         // A bare `~` with no trailing slash is not the pattern this function
         // promises to handle — must pass through unchanged, not panic.
         assert_eq!(shellexpand_home("~"), "~");
@@ -939,23 +1014,36 @@ mod tests {
         // Real workers, including ones whose names merely CONTAIN a harness
         // word — a prefix test and a substring test differ exactly here.
         for lane in [
-            "amux", "backend", "mixpeek-orchestrator", "amux-testing-e2e",
-            "gtm-e2e-runner", "my-callback-b-worker",
+            "amux",
+            "backend",
+            "mixpeek-orchestrator",
+            "amux-testing-e2e",
+            "gtm-e2e-runner",
+            "my-callback-b-worker",
         ] {
-            assert!(!eligible(lane), "{lane} is a real lane and must never be reaped");
+            assert!(
+                !eligible(lane),
+                "{lane} is a real lane and must never be reaped"
+            );
         }
         for harness in [
             "e2e-life-desktop-1788996104537",
             "board-reviewer-ios-safari-1788976843246",
             "callback-b-desktop-1788849272894",
         ] {
-            assert!(eligible(harness), "{harness} is harness scaffolding and should be eligible");
+            assert!(
+                eligible(harness),
+                "{harness} is harness scaffolding and should be eligible"
+            );
         }
 
         // Age gates independently of the name: a pane from a RUNNING test is
         // not stale, and reaping it would kill the run that owns it.
         let grace = test_pane_grace_s();
-        assert!(grace > 0, "a zero grace would reap panes belonging to a live run");
+        assert!(
+            grace > 0,
+            "a zero grace would reap panes belonging to a live run"
+        );
         assert!(mem_reap_swap_pct() > 0.0 && mem_reap_swap_pct() <= 100.0);
     }
 
@@ -983,7 +1071,11 @@ mod tests {
     fn a_host_with_no_swap_file_reports_zero_percent_not_unmeasurable() {
         // What this machine actually prints, verbatim.
         let real = "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)";
-        assert_eq!(parse_swap_pct(real), Some(0.0), "no swap configured is 0% in use, not blind");
+        assert_eq!(
+            parse_swap_pct(real),
+            Some(0.0),
+            "no swap configured is 0% in use, not blind"
+        );
     }
 
     #[test]
@@ -1023,7 +1115,10 @@ mod tests {
              104 1 S 00:20 /toolchain/bin/rustc crate.rs --out-dir /repo/target/debug/deps",
         );
         let selected = orphaned_debug_rustc(&rows, 600);
-        assert_eq!(selected.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![101]);
+        assert_eq!(
+            selected.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![101]
+        );
     }
 
     #[test]
@@ -1038,7 +1133,10 @@ mod tests {
         );
         let (owned, zombies) = owned_zombie_children(&rows, 60, 200);
         assert_eq!(owned, vec![201]);
-        assert_eq!(zombies.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![201, 301, 401]);
+        assert_eq!(
+            zombies.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![201, 301, 401]
+        );
     }
 
     #[test]
@@ -1055,7 +1153,10 @@ mod tests {
         let sample = zombie_log_sample(&rows);
         assert_eq!(sample.split(", ").count(), ZOMBIE_LOG_SAMPLE);
         assert!(sample.contains("pid=100/ppid=200/age=300s"));
-        assert!(!sample.contains("pid=108/"), "the log sample must stay bounded: {sample}");
+        assert!(
+            !sample.contains("pid=108/"),
+            "the log sample must stay bounded: {sample}"
+        );
     }
 
     #[test]
@@ -1107,7 +1208,10 @@ mod ps_row_tests {
         assert_eq!(pid, 5923);
         assert_eq!(ppid, 1);
         assert_eq!(etime, "10:41");
-        assert!(cmd.starts_with("/Applications/Google Chrome.app/"), "cmd was: {cmd}");
+        assert!(
+            cmd.starts_with("/Applications/Google Chrome.app/"),
+            "cmd was: {cmd}"
+        );
         // The command must survive intact through the re-join, or the reaper's
         // `contains` checks silently stop matching.
         assert!(cmd.contains("playwright-auth/profile"), "cmd was: {cmd}");
@@ -1137,7 +1241,13 @@ mod ps_row_tests {
         assert!(!spotlight_exclusion_can_reach("fseventsd_foo"));
         // The mds family IS reachable — that is why the arm still exists, and a
         // change that made this blanket-false would quietly disable a real fix.
-        for reachable in ["mds", "mds_stores", "mdworker", "mdworker_shared", "ecosystemd"] {
+        for reachable in [
+            "mds",
+            "mds_stores",
+            "mdworker",
+            "mdworker_shared",
+            "ecosystemd",
+        ] {
             assert!(
                 spotlight_exclusion_can_reach(reachable),
                 "{reachable} is addressable by a Spotlight exclusion and must stay so"
@@ -1149,6 +1259,9 @@ mod ps_row_tests {
     fn rows_without_a_command_are_rejected_rather_than_half_parsed() {
         assert!(ps_row("  123   1   00:01").is_none(), "no command field");
         assert!(ps_row("").is_none());
-        assert!(ps_row("not a ps row at all").is_none(), "pid must be numeric");
+        assert!(
+            ps_row("not a ps row at all").is_none(),
+            "pid must be numeric"
+        );
     }
 }

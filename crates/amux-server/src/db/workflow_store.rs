@@ -25,8 +25,14 @@ fn builtin_semantics(id: &str) -> Option<(ColumnRole, TerminalBehavior)> {
         "doing" => (ColumnRole::Active, TerminalBehavior::NonTerminal),
         "review" => (ColumnRole::Review, TerminalBehavior::NonTerminal),
         "done" => (ColumnRole::CompletionClaim, TerminalBehavior::NonTerminal),
-        "verified" => (ColumnRole::VerifiedTerminal, TerminalBehavior::SuccessfulTerminal),
-        "discarded" => (ColumnRole::DiscardedTerminal, TerminalBehavior::AbandonedTerminal),
+        "verified" => (
+            ColumnRole::VerifiedTerminal,
+            TerminalBehavior::SuccessfulTerminal,
+        ),
+        "discarded" => (
+            ColumnRole::DiscardedTerminal,
+            TerminalBehavior::AbandonedTerminal,
+        ),
         // Not built-in: caller falls back to Custom/NonTerminal.
         _ => return None,
     })
@@ -45,7 +51,7 @@ pub fn load_workflow(conn: &Connection) -> Option<BoardWorkflow> {
             "SELECT id, label, position, COALESCE(gate,''), COALESCE(mode,'implicit'), \
              purpose, entry_conditions, responsible_role, allowed_actions, \
              required_outputs, failure_transition, target_sla_seconds \
-             FROM statuses ORDER BY position"
+             FROM statuses ORDER BY position",
         )
         .ok()?;
     let cols: Vec<BoardColumn> = stmt
@@ -62,34 +68,56 @@ pub fn load_workflow(conn: &Connection) -> Option<BoardWorkflow> {
             let required_outputs_json: Option<String> = r.get(9)?;
             let failure_transition: Option<String> = r.get(10)?;
             let target_sla_seconds: Option<i64> = r.get(11)?;
-            Ok((id, label, position, gate_json, purpose, entry_conditions,
-                responsible_role, allowed_actions_json, required_outputs_json,
-                failure_transition, target_sla_seconds))
-        })
-        .ok()?
-        .flatten()
-        .map(|(id, label, position, gate_json, purpose, entry_conditions,
-               responsible_role, allowed_actions_json, required_outputs_json,
-               failure_transition, target_sla_seconds)| {
-            let (role, terminal) = builtin_semantics(&id)
-                .unwrap_or((ColumnRole::Custom, TerminalBehavior::NonTerminal));
-            BoardColumn {
-                id: ColumnId::new(&id),
+            Ok((
+                id,
                 label,
                 position,
-                role,
-                terminal,
-                gate_criteria: parse_gate_json(&gate_json),
-                applies_to_types: None,
+                gate_json,
                 purpose,
                 entry_conditions,
                 responsible_role,
-                allowed_actions: parse_string_array_json(allowed_actions_json.as_deref()),
-                required_outputs: parse_string_array_json(required_outputs_json.as_deref()),
-                failure_transition: failure_transition.map(ColumnId::new),
+                allowed_actions_json,
+                required_outputs_json,
+                failure_transition,
                 target_sla_seconds,
-            }
+            ))
         })
+        .ok()?
+        .flatten()
+        .map(
+            |(
+                id,
+                label,
+                position,
+                gate_json,
+                purpose,
+                entry_conditions,
+                responsible_role,
+                allowed_actions_json,
+                required_outputs_json,
+                failure_transition,
+                target_sla_seconds,
+            )| {
+                let (role, terminal) = builtin_semantics(&id)
+                    .unwrap_or((ColumnRole::Custom, TerminalBehavior::NonTerminal));
+                BoardColumn {
+                    id: ColumnId::new(&id),
+                    label,
+                    position,
+                    role,
+                    terminal,
+                    gate_criteria: parse_gate_json(&gate_json),
+                    applies_to_types: None,
+                    purpose,
+                    entry_conditions,
+                    responsible_role,
+                    allowed_actions: parse_string_array_json(allowed_actions_json.as_deref()),
+                    required_outputs: parse_string_array_json(required_outputs_json.as_deref()),
+                    failure_transition: failure_transition.map(ColumnId::new),
+                    target_sla_seconds,
+                }
+            },
+        )
         .collect();
     if cols.is_empty() {
         return None;
@@ -144,9 +172,24 @@ mod tests {
         for (id, label, pos, gate) in [
             ("backlog", "Backlog", 0, ""),
             ("todo", "To Do", 1, ""),
-            ("doing", "In Progress", 2, r#"["Scope & acceptance criteria are clear"]"#),
-            ("review", "In Review", 3, r#"["Implemented and self-tested"]"#),
-            ("done", "Done", 4, r#"["Implemented and merged","Tests / lint pass"]"#),
+            (
+                "doing",
+                "In Progress",
+                2,
+                r#"["Scope & acceptance criteria are clear"]"#,
+            ),
+            (
+                "review",
+                "In Review",
+                3,
+                r#"["Implemented and self-tested"]"#,
+            ),
+            (
+                "done",
+                "Done",
+                4,
+                r#"["Implemented and merged","Tests / lint pass"]"#,
+            ),
             ("verified", "Verified", 5, r#"["CI/CD green (incl. e2e)"]"#),
             ("discarded", "Discarded", 6, ""),
         ] {
@@ -192,7 +235,11 @@ mod tests {
         .unwrap();
         let w = load_workflow(&c).unwrap();
         let done = w.get(&ColumnId::new("done")).unwrap();
-        let descs: Vec<_> = done.gate_criteria.iter().map(|g| g.description.as_str()).collect();
+        let descs: Vec<_> = done
+            .gate_criteria
+            .iter()
+            .map(|g| g.description.as_str())
+            .collect();
         assert_eq!(
             descs,
             vec!["Security scan green", "Customer sign-off"],
@@ -205,11 +252,8 @@ mod tests {
     #[test]
     fn custom_columns_become_first_class_stages() {
         let c = seeded();
-        c.execute(
-            "UPDATE statuses SET position = 9 WHERE id = 'verified'",
-            [],
-        )
-        .unwrap();
+        c.execute("UPDATE statuses SET position = 9 WHERE id = 'verified'", [])
+            .unwrap();
         c.execute(
             "INSERT INTO statuses (id,label,position,is_builtin,gate) VALUES
              ('security-review','Security Review',7,0,'[\"Security scan green\"]')",
@@ -217,14 +261,32 @@ mod tests {
         )
         .unwrap();
         let w = load_workflow(&c).unwrap();
-        let sr = w.get(&ColumnId::new("security-review")).expect("custom column present");
+        let sr = w
+            .get(&ColumnId::new("security-review"))
+            .expect("custom column present");
         assert_eq!(sr.role, ColumnRole::Custom);
-        assert_eq!(sr.terminal, TerminalBehavior::NonTerminal, "custom must never be terminal by accident");
+        assert_eq!(
+            sr.terminal,
+            TerminalBehavior::NonTerminal,
+            "custom must never be terminal by accident"
+        );
         assert_eq!(sr.gate_criteria.len(), 1);
-        assert!(sr.role.is_dispatchable(), "a custom stage must not be a dead end");
+        assert!(
+            sr.role.is_dispatchable(),
+            "a custom stage must not be a dead end"
+        );
         // ...and it participates in ordering: done(4) -> security-review(7) -> verified(9).
-        assert_eq!(w.next_column(&ColumnId::new("done")).unwrap().id.0, "security-review");
-        assert_eq!(w.next_column(&ColumnId::new("security-review")).unwrap().id.0, "verified");
+        assert_eq!(
+            w.next_column(&ColumnId::new("done")).unwrap().id.0,
+            "security-review"
+        );
+        assert_eq!(
+            w.next_column(&ColumnId::new("security-review"))
+                .unwrap()
+                .id
+                .0,
+            "verified"
+        );
     }
 
     /// A failed read must be None, not an empty workflow — an empty workflow
@@ -233,7 +295,10 @@ mod tests {
     #[test]
     fn a_missing_table_is_none_not_an_empty_workflow() {
         let c = Connection::open_in_memory().unwrap();
-        assert!(load_workflow(&c).is_none(), "unreadable must not look like an ordered empty board");
+        assert!(
+            load_workflow(&c).is_none(),
+            "unreadable must not look like an ordered empty board"
+        );
     }
 }
 
@@ -309,7 +374,10 @@ mod invisibility_tests {
         // A modelled column is untouched — the mapping must not swallow real
         // statuses on its way past.
         let row = row_in_status("doing");
-        assert_eq!(row.to_task().unwrap().status, amux_core::board::TaskStatus::Doing);
+        assert_eq!(
+            row.to_task().unwrap().status,
+            amux_core::board::TaskStatus::Doing
+        );
     }
 
     /// Every status value present in the LIVE production board parses today.
@@ -321,8 +389,17 @@ mod invisibility_tests {
     #[test]
     fn every_live_production_status_parses_today() {
         for raw in [
-            "verified", "done", "discarded", "backlog", "todo", "review", "doing", "needsyou",
-            "blocked", "armed", "resolved",
+            "verified",
+            "done",
+            "discarded",
+            "backlog",
+            "todo",
+            "review",
+            "doing",
+            "needsyou",
+            "blocked",
+            "armed",
+            "resolved",
         ] {
             assert!(
                 parse_status(raw).is_some(),

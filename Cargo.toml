@@ -22,7 +22,11 @@ serde = { version = "1", features = ["derive"] }
 # `invariants::checks::f64_survives_json_roundtrip` fails loudly if this is
 # ever dropped, because a Cargo feature is otherwise invisible at runtime.
 serde_json = { version = "1", features = ["float_roundtrip"] }
-tokio = { version = "1", features = ["full"] }
+# Keep Tokio's feature set explicit. `full` enables Tokio's optional `parking_lot`
+# parker; on macOS debug branch servers we measured that path panicking inside
+# `parking_lot_core::thread_parker::unix` and taking the whole UI offline as a
+# sync error. amux uses these capabilities but not Tokio's parking_lot backend.
+tokio = { version = "1", features = ["fs", "io-util", "io-std", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 axum = { version = "0.8", features = ["http2"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

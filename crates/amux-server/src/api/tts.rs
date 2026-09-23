@@ -73,18 +73,29 @@ fn say_bin() -> Option<String> {
         return Some("/usr/bin/say".to_string());
     }
     // PATH fallback (say -v '?' exits 0 and is cheap).
-    if Command::new("say").arg("-v").arg("?").output().map(|o| o.status.success()).unwrap_or(false) {
+    if Command::new("say")
+        .arg("-v")
+        .arg("?")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
         return Some("say".to_string());
     }
     None
 }
 
 fn piper_bin() -> Option<String> {
-    let explicit = std::env::var("AMUX_TTS_PIPER_BIN").ok().filter(|s| !s.is_empty());
+    let explicit = std::env::var("AMUX_TTS_PIPER_BIN")
+        .ok()
+        .filter(|s| !s.is_empty());
     if let Some(p) = explicit {
         return std::path::Path::new(&p).exists().then_some(p);
     }
-    bin_path("piper", &["/usr/local/bin/piper", "/opt/homebrew/bin/piper"])
+    bin_path(
+        "piper",
+        &["/usr/local/bin/piper", "/opt/homebrew/bin/piper"],
+    )
 }
 
 /// Resolve which engine to use, honoring the env override then availability.
@@ -94,9 +105,9 @@ fn resolve_engine() -> Result<&'static str, String> {
         "say" => say_bin()
             .map(|_| "say")
             .ok_or_else(|| "AMUX_TTS_ENGINE=say but macOS `say` is not present".to_string()),
-        "piper" => piper_bin()
-            .map(|_| "piper")
-            .ok_or_else(|| "AMUX_TTS_ENGINE=piper but no piper binary (set AMUX_TTS_PIPER_BIN)".to_string()),
+        "piper" => piper_bin().map(|_| "piper").ok_or_else(|| {
+            "AMUX_TTS_ENGINE=piper but no piper binary (set AMUX_TTS_PIPER_BIN)".to_string()
+        }),
         _ => {
             // auto: local, OSS-spirit first.
             if say_bin().is_some() {
@@ -140,11 +151,17 @@ fn say_synth(bin: &str, text: &str, voice: &str) -> Result<(Vec<u8>, String, Str
         used_voice = voice.to_string();
     }
     cmd.arg("-f").arg(&txt_path);
-    let out = cmd.output().map_err(|e| format!("say failed to run: {e}"))?;
+    let out = cmd
+        .output()
+        .map_err(|e| format!("say failed to run: {e}"))?;
     let _ = std::fs::remove_file(&txt_path);
     if !out.status.success() {
         let _ = std::fs::remove_file(&path);
-        return Err(format!("say exited {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!(
+            "say exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     let bytes = std::fs::read(&path).map_err(|e| format!("could not read say output: {e}"))?;
     let _ = std::fs::remove_file(&path);
@@ -165,7 +182,9 @@ fn piper_synth(bin: &str, text: &str, voice: &str) -> Result<(Vec<u8>, String, S
         std::env::var("AMUX_TTS_PIPER_VOICE").unwrap_or_default()
     };
     if model.is_empty() {
-        return Err("piper needs a voice model — set AMUX_TTS_PIPER_VOICE to a .onnx path".to_string());
+        return Err(
+            "piper needs a voice model — set AMUX_TTS_PIPER_VOICE to a .onnx path".to_string(),
+        );
     }
     let path = tmp_wav();
     use std::io::Write;
@@ -182,10 +201,16 @@ fn piper_synth(bin: &str, text: &str, voice: &str) -> Result<(Vec<u8>, String, S
     if let Some(mut si) = child.stdin.take() {
         let _ = si.write_all(text.as_bytes());
     }
-    let out = child.wait_with_output().map_err(|e| format!("piper wait failed: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("piper wait failed: {e}"))?;
     if !out.status.success() {
         let _ = std::fs::remove_file(&path);
-        return Err(format!("piper exited {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!(
+            "piper exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     let bytes = std::fs::read(&path).map_err(|e| format!("could not read piper output: {e}"))?;
     let _ = std::fs::remove_file(&path);
@@ -241,7 +266,12 @@ fn say_voices(bin: &str) -> Vec<Value> {
 
 /// `POST /api/tts` — synth `text` to audio, returned as a `data:` URL.
 pub async fn synth(State(_state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let raw = body.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let raw = body
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if raw.is_empty() {
         return err(StatusCode::BAD_REQUEST, json!({ "error": "text required" }));
     }
@@ -339,7 +369,11 @@ mod tests {
                 (!name.is_empty()).then_some((name, locale))
             })
             .collect();
-        assert_eq!(rows.len(), 3, "3 parseable rows (the no-locale line still has 4 tokens)");
+        assert_eq!(
+            rows.len(),
+            3,
+            "3 parseable rows (the no-locale line still has 4 tokens)"
+        );
         assert_eq!(rows[0], ("Samantha".into(), "en_US".into()));
         assert_eq!(rows[1], ("Grandma (Enhanced)".into(), "en_US".into()));
     }

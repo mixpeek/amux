@@ -144,7 +144,7 @@ async fn route_table_matches_the_real_router_both_directions() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     let twin_candidates = ["DELETE", "PUT", "PATCH", "POST", "GET"];
@@ -186,8 +186,7 @@ async fn route_table_matches_the_real_router_both_directions() {
             entry.path
         );
         let allow = allow_set(&res);
-        let claimed: BTreeSet<String> =
-            entry.methods.iter().map(|m| m.to_uppercase()).collect();
+        let claimed: BTreeSet<String> = entry.methods.iter().map(|m| m.to_uppercase()).collect();
         assert_eq!(
             allow, claimed,
             "{}: table methods disagree with the router's Allow set",
@@ -212,7 +211,10 @@ async fn route_table_matches_the_real_router_both_directions() {
                 )
                 .await
                 .unwrap_or_else(|_| {
-                    panic!("GET {}: 404 body did not finish in {FIRE_BUDGET:?} (AF-129)", entry.path)
+                    panic!(
+                        "GET {}: 404 body did not finish in {FIRE_BUDGET:?} (AF-129)",
+                        entry.path
+                    )
                 })
                 .unwrap();
                 let body = String::from_utf8_lossy(&body);
@@ -279,8 +281,7 @@ const KNOWN_UNTABLED: &[&str] = &[];
 #[test]
 fn every_directly_routed_api_path_is_in_the_table() {
     let src = include_str!("../src/api/mod.rs");
-    let tabled: std::collections::HashSet<&str> =
-        ROUTE_TABLE.iter().map(|e| e.path).collect();
+    let tabled: std::collections::HashSet<&str> = ROUTE_TABLE.iter().map(|e| e.path).collect();
     // SCANS THE WHOLE SOURCE, NOT LINE BY LINE. The first version of this test
     // read one line at a time and so missed every multi-line declaration —
     //     .route(
@@ -297,8 +298,12 @@ fn every_directly_routed_api_path_is_in_the_table() {
         rest = &rest[i + ".route(".len()..];
         // Skip whitespace/newlines between `.route(` and the path literal.
         let after = rest.trim_start();
-        let Some(stripped) = after.strip_prefix('"') else { continue };
-        let Some(end) = stripped.find('"') else { continue };
+        let Some(stripped) = after.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = stripped.find('"') else {
+            continue;
+        };
         let path = &stripped[..end];
         if path.starts_with("/api/") && !tabled.contains(path) {
             missing.push(path.to_string());
@@ -490,7 +495,9 @@ fn every_directly_routed_api_path_is_in_the_table() {
         while let Some(j) = rest.find(".route(") {
             rest = &rest[j + ".route(".len()..];
             let a = rest.trim_start();
-            let Some(st) = a.strip_prefix('"') else { continue };
+            let Some(st) = a.strip_prefix('"') else {
+                continue;
+            };
             let Some(e) = st.find('"') else { continue };
             let handler_end = st[e..].find(')').map(|k| e + k).unwrap_or(st.len());
             out.push((st[..e].to_string(), st[e..handler_end].to_string()));
@@ -598,12 +605,18 @@ fn every_directly_routed_api_path_is_in_the_table() {
     while let Some(i) = src[pos..].find(".nest(") {
         let open = pos + i + ".nest(".len() - 1;
         pos = open + 1;
-        let Some(close) = matching_paren(src, open) else { continue };
+        let Some(close) = matching_paren(src, open) else {
+            continue;
+        };
         nest_spans.push((open, close));
         let arg = &src[open + 1..close];
         let a = arg.trim_start();
-        let Some(stripped) = a.strip_prefix('"') else { continue };
-        let Some(end) = stripped.find('"') else { continue };
+        let Some(stripped) = a.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = stripped.find('"') else {
+            continue;
+        };
         let prefix = &stripped[..end];
         if !prefix.starts_with("/api/") {
             continue;
@@ -627,7 +640,9 @@ fn every_directly_routed_api_path_is_in_the_table() {
                 // Previously a silent `continue`, which is the same silence the
                 // whole test exists to remove: a renamed router fn would have
                 // turned the check off rather than red.
-                missing.push(format!("<no fn {func}() found for nest {prefix} -> {callee}>"));
+                missing.push(format!(
+                    "<no fn {func}() found for nest {prefix} -> {callee}>"
+                ));
                 continue;
             };
             let module = callee.rsplit("::").nth(1).unwrap();
@@ -639,8 +654,11 @@ fn every_directly_routed_api_path_is_in_the_table() {
                 if sub.starts_with("/api/") || is_404_answerer(&handler) {
                     continue;
                 }
-                let full =
-                    if sub == "/" { prefix.to_string() } else { format!("{}{}", prefix, sub) };
+                let full = if sub == "/" {
+                    prefix.to_string()
+                } else {
+                    format!("{}{}", prefix, sub)
+                };
                 if !tabled.contains(full.as_str()) {
                     missing.push(full.clone());
                 }
@@ -658,7 +676,9 @@ fn every_directly_routed_api_path_is_in_the_table() {
         if nest_spans.iter().any(|(s, e)| open > *s && open < *e) {
             continue;
         }
-        let Some(close) = matching_paren(src, open) else { continue };
+        let Some(close) = matching_paren(src, open) else {
+            continue;
+        };
         for callee in callees_of(&src[open + 1..close]) {
             let Some(msrc) = module_source(&api_dir, &callee) else {
                 missing.push(format!("<unreadable module for merge {callee}>"));
@@ -693,9 +713,18 @@ fn every_directly_routed_api_path_is_in_the_table() {
     // goes unwatched again. The shape is named next to each one.
     for (shape, canary) in [
         ("`.nest()` into a sub-router", "/api/workers/{id}/peek"),
-        ("`.merge()` INSIDE a `.nest()`", "/api/workers/{id}/dead-letters"),
-        ("top-level `.merge()` of a module outside src/api", "/api/debug/storage"),
-        ("`.nest()` inside a sub-router's function", "/api/browser/ios/action"),
+        (
+            "`.merge()` INSIDE a `.nest()`",
+            "/api/workers/{id}/dead-letters",
+        ),
+        (
+            "top-level `.merge()` of a module outside src/api",
+            "/api/debug/storage",
+        ),
+        (
+            "`.nest()` inside a sub-router's function",
+            "/api/browser/ios/action",
+        ),
     ] {
         assert!(
             mounted.iter().any(|m| m == canary),
@@ -706,22 +735,32 @@ fn every_directly_routed_api_path_is_in_the_table() {
         );
     }
 
-    missing.extend(mounted.iter().filter(|p| !tabled.contains(p.as_str())).cloned());
+    missing.extend(
+        mounted
+            .iter()
+            .filter(|p| !tabled.contains(p.as_str()))
+            .cloned(),
+    );
     missing.sort();
     missing.dedup();
 
     // The mirror, so the allowlist cannot rot: a path that has since been
     // tabled must be dropped from KNOWN_UNTABLED, or the list slowly becomes a
     // place where real gaps hide.
-    let stale: Vec<&str> =
-        KNOWN_UNTABLED.iter().copied().filter(|k| !missing.iter().any(|m| m == k)).collect();
+    let stale: Vec<&str> = KNOWN_UNTABLED
+        .iter()
+        .copied()
+        .filter(|k| !missing.iter().any(|m| m == k))
+        .collect();
     assert!(
         stale.is_empty(),
         "KNOWN_UNTABLED lists paths that are now tabled (or gone) — delete them: {stale:?}"
     );
 
-    let missing: Vec<String> =
-        missing.into_iter().filter(|m| !KNOWN_UNTABLED.contains(&m.as_str())).collect();
+    let missing: Vec<String> = missing
+        .into_iter()
+        .filter(|m| !KNOWN_UNTABLED.contains(&m.as_str()))
+        .collect();
     assert!(
         missing.is_empty(),
         "mounted in api/mod.rs but absent from ROUTE_TABLE — the route census reads \

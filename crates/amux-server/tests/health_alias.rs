@@ -20,25 +20,39 @@ fn app() -> axum::Router {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     })
 }
 
 async fn get(path: &str) -> (u16, serde_json::Value) {
     let res = app()
-        .oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let st = res.status().as_u16();
-    let b = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
-    (st, serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null))
+    let b = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (
+        st,
+        serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null),
+    )
 }
 
 #[tokio::test]
 async fn api_health_is_an_alias_and_not_a_second_implementation() {
     let (canon_status, canon) = get("/health").await;
     let (alias_status, alias) = get("/api/health").await;
-    assert_eq!(canon_status, 200, "the canonical route must answer: {canon}");
+    assert_eq!(
+        canon_status, 200,
+        "the canonical route must answer: {canon}"
+    );
     assert_eq!(alias_status, 200, "the alias must answer, not 404: {alias}");
 
     // SAME HANDLER, not a second one that drifts. Compare the keys rather than
@@ -46,24 +60,37 @@ async fn api_health_is_an_alias_and_not_a_second_implementation() {
     // comparison here would be flaky for a reason that has nothing to do with
     // what this pins.
     let keys = |v: &serde_json::Value| {
-        v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()
+        v.as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
     };
-    assert_eq!(keys(&canon), keys(&alias), "the alias must serve the same payload shape");
+    assert_eq!(
+        keys(&canon),
+        keys(&alias),
+        "the alias must serve the same payload shape"
+    );
     assert_eq!(alias["status"], canon["status"]);
 
     // CONTROL: a neighbouring made-up path under the same prefix still 404s, so
     // this test would fail if the router had started answering everything.
     let (bogus, _) = get("/api/health-not-a-route").await;
-    assert_eq!(bogus, 404, "the alias must be one route, not a prefix catch-all");
+    assert_eq!(
+        bogus, 404,
+        "the alias must be one route, not a prefix catch-all"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn exhausted_read_pool_keeps_health_identity_and_runtime_responsive() {
     let dir = tempfile::tempdir().unwrap();
-    let store = std::sync::Arc::new(amux_server::db::Store::open(&dir.path().join("health.db")).unwrap());
+    let store =
+        std::sync::Arc::new(amux_server::db::Store::open(&dir.path().join("health.db")).unwrap());
     let state = AppState {
-        store: store.clone(), started: std::time::Instant::now(), build_hash: "pinned-image".into(),
-        auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        store: store.clone(),
+        started: std::time::Instant::now(),
+        build_hash: "pinned-image".into(),
+        auth_token: None,
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     // AF-933: `min_idle(1)` (AMUX-4739) means the pool starts with ONE real
     // connection and grows the rest lazily, on demand, the first time each
@@ -88,8 +115,14 @@ async fn exhausted_read_pool_keeps_health_identity_and_runtime_responsive() {
     let mut consecutive_misses = 0;
     while consecutive_misses < 20 {
         match store.try_read() {
-            Some(conn) => { held.push(conn); consecutive_misses = 0; }
-            None => { consecutive_misses += 1; std::thread::sleep(std::time::Duration::from_millis(5)); }
+            Some(conn) => {
+                held.push(conn);
+                consecutive_misses = 0;
+            }
+            None => {
+                consecutive_misses += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
     assert!(!held.is_empty());
@@ -108,54 +141,87 @@ async fn exhausted_read_pool_keeps_health_identity_and_runtime_responsive() {
     let ((status, axum::Json(body)), heartbeat_delay) = tokio::join!(request, heartbeat);
     let elapsed = started.elapsed();
     release.join().unwrap();
-    assert!(elapsed < std::time::Duration::from_millis(250), "health waited for fleet work: {elapsed:?}");
-    assert!(heartbeat_delay < std::time::Duration::from_millis(250), "health blocked the runtime: {heartbeat_delay:?}");
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "health waited for fleet work: {elapsed:?}"
+    );
+    assert!(
+        heartbeat_delay < std::time::Duration::from_millis(250),
+        "health blocked the runtime: {heartbeat_delay:?}"
+    );
     assert_eq!(status.as_u16(), 503);
     assert_eq!(body.build, "pinned-image");
     assert!(!body.board.measured);
     assert_eq!(body.board.error.as_deref(), Some("read_pool_exhausted"));
-    let (status, axum::Json(body)) = amux_server::api::health::health(axum::extract::State(state)).await;
+    let (status, axum::Json(body)) =
+        amux_server::api::health::health(axum::extract::State(state)).await;
     assert_eq!(status.as_u16(), 200);
     assert!(body.board.measured && body.board.ok);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn late_probe_success_remains_visible_during_the_next_slow_probe() {
-    use std::{sync::{Arc, mpsc}, time::Duration};
+    use std::{
+        sync::{mpsc, Arc},
+        time::Duration,
+    };
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(amux_server::db::Store::open(&dir.path().join("progress.db")).unwrap());
     let state = AppState {
-        store:store.clone(), started:std::time::Instant::now(), build_hash:"probe-progress".into(),
-        auth_token:None, reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        store: store.clone(),
+        started: std::time::Instant::now(),
+        build_hash: "probe-progress".into(),
+        auth_token: None,
+        reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let block_writer = || {
         let (ready_tx, ready_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let db = store.clone();
-        let thread = std::thread::spawn(move || db.write(move |_| {
-            ready_tx.send(()).unwrap();
-            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            Ok(amux_server::db::WriteOutcome {applied:false,events:vec![]})
-        }).unwrap());
+        let thread = std::thread::spawn(move || {
+            db.write(move |_| {
+                ready_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(amux_server::db::WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                })
+            })
+            .unwrap()
+        });
         ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        (release_tx,thread)
+        (release_tx, thread)
     };
     let (release, thread) = block_writer();
-    let (status, axum::Json(body)) = amux_server::api::health::health(axum::extract::State(state.clone())).await;
-    assert_eq!(status.as_u16(),503);
-    assert_eq!(body.board.error.as_deref(),Some("probe_deadline_exceeded"));
+    let (status, axum::Json(body)) =
+        amux_server::api::health::health(axum::extract::State(state.clone())).await;
+    assert_eq!(status.as_u16(), 503);
+    assert_eq!(body.board.error.as_deref(), Some("probe_deadline_exceeded"));
     assert!(!body.board.measured);
-    assert_eq!(body.store_probe.last_success_age_ms,None,"never claim a measurement before completion");
+    assert_eq!(
+        body.store_probe.last_success_age_ms, None,
+        "never claim a measurement before completion"
+    );
     assert!(body.store_probe.in_flight_age_ms.is_some());
-    release.send(()).unwrap(); thread.join().unwrap();
+    release.send(()).unwrap();
+    thread.join().unwrap();
     // The detached work must publish its success even though its HTTP caller
     // already received 503. A new healthy response alone does not prove this.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let (release, thread) = block_writer();
-    let (status, axum::Json(body)) = amux_server::api::health::health(axum::extract::State(state)).await;
-    release.send(()).unwrap(); thread.join().unwrap();
-    assert_eq!(status.as_u16(),503);
-    assert!(!body.board.measured,"the current request is still unmeasured");
-    assert!(body.store_probe.last_success_age_ms.is_some_and(|age| age < 5000),
-        "the earlier detached probe completed successfully; a watchdog must see that progress");
+    let (status, axum::Json(body)) =
+        amux_server::api::health::health(axum::extract::State(state)).await;
+    release.send(()).unwrap();
+    thread.join().unwrap();
+    assert_eq!(status.as_u16(), 503);
+    assert!(
+        !body.board.measured,
+        "the current request is still unmeasured"
+    );
+    assert!(
+        body.store_probe
+            .last_success_age_ms
+            .is_some_and(|age| age < 5000),
+        "the earlier detached probe completed successfully; a watchdog must see that progress"
+    );
 }

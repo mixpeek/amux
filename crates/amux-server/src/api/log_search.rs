@@ -25,9 +25,7 @@ fn default_max() -> usize {
 fn logs_dir() -> PathBuf {
     let home = std::env::var("AMUX_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
-        });
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"));
     home.join("logs")
 }
 
@@ -40,10 +38,7 @@ pub async fn search(Query(q): Query<SearchQuery>) -> Response {
 
     let result = tokio::task::spawn_blocking(move || {
         let ql = query.to_lowercase();
-        let ansi_re = regex::Regex::new(
-            r"\x1b\[[0-9;?]*[a-zA-Z]",
-        )
-        .unwrap();
+        let ansi_re = regex::Regex::new(r"\x1b\[[0-9;?]*[a-zA-Z]").unwrap();
 
         let mut matches: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         let dir = logs_dir();
@@ -104,13 +99,11 @@ pub async fn search(Query(q): Query<SearchQuery>) -> Response {
 
     match result {
         Ok((matches, query)) => Json(json!({"matches": matches, "q": query})).into_response(),
-        Err(e) => {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                json!({"error": e.to_string()}).to_string(),
-            )
-                .into_response()
-        }
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error": e.to_string()}).to_string(),
+        )
+            .into_response(),
     }
 }
 
@@ -124,10 +117,17 @@ mod tests {
     fn truncation_never_splits_a_multibyte_character() {
         let line = "─".repeat(400); // 3 bytes each: byte 500 lands mid-character
         let truncated: String = line.chars().take(500).collect();
-        assert_eq!(truncated.chars().count(), 400, "shorter than the cap: unchanged");
+        assert_eq!(
+            truncated.chars().count(),
+            400,
+            "shorter than the cap: unchanged"
+        );
         let long = "─".repeat(700);
         let t2: String = long.chars().take(500).collect();
         assert_eq!(t2.chars().count(), 500, "capped in CHARS, not bytes");
-        assert!(t2.len() > 500, "and the byte length exceeds the cap, which is why byte-slicing panicked");
+        assert!(
+            t2.len() > 500,
+            "and the byte length exceeds the cap, which is why byte-slicing panicked"
+        );
     }
 }

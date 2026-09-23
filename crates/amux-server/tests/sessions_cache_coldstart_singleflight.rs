@@ -85,9 +85,14 @@ fn cold_sessions_cache_has_exactly_one_builder_and_does_not_lease_the_request_po
     // so a regression that falls through to a duplicate build is caught and a
     // rename of the error machinery is not.
     let busy_arm = {
-        let at = SRC.find("match acquired {").expect("the single-flight acquire is in this file");
+        let at = SRC
+            .find("match acquired {")
+            .expect("the single-flight acquire is in this file");
         let tail = &SRC[at..];
-        &tail[..tail.find("\n        }\n").map(|i| i + 10).unwrap_or(tail.len())]
+        &tail[..tail
+            .find("\n        }\n")
+            .map(|i| i + 10)
+            .unwrap_or(tail.len())]
     };
     assert!(
         busy_arm.contains("None => {"),
@@ -136,7 +141,8 @@ fn runtime_updates_preserve_the_last_structurally_safe_snapshot() {
     assert!(snapshot.contains("let runtime_epoch_start ="));
     assert!(snapshot.contains("let arr = build_array(&conn)?;"));
     assert!(
-        snapshot.find("let runtime_epoch_start =") < snapshot.find("let arr = build_array(&conn)?;"),
+        snapshot.find("let runtime_epoch_start =")
+            < snapshot.find("let arr = build_array(&conn)?;"),
         "runtime epoch must be captured before the data it describes is read"
     );
     assert!(

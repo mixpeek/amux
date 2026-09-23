@@ -81,8 +81,9 @@ const COLS: &str = "chat_id, session, telegram_username, linked_at, last_message
                      last_routed_session, last_relayed_hash, chat_type";
 
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<TelegramMapping>> {
-    let mut stmt =
-        conn.prepare(&format!("SELECT {COLS} FROM telegram_mappings ORDER BY linked_at DESC"))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM telegram_mappings ORDER BY linked_at DESC"
+    ))?;
     let rows = stmt.query_map([], row_to_mapping)?;
     rows.collect()
 }
@@ -188,12 +189,19 @@ pub fn touch_last_message(conn: &Connection, chat_id: i64) -> rusqlite::Result<(
 }
 
 pub fn remove(conn: &Connection, chat_id: i64) -> rusqlite::Result<bool> {
-    let n = conn.execute("DELETE FROM telegram_mappings WHERE chat_id = ?1", params![chat_id])?;
+    let n = conn.execute(
+        "DELETE FROM telegram_mappings WHERE chat_id = ?1",
+        params![chat_id],
+    )?;
     Ok(n > 0)
 }
 
 pub fn last_update_id(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT last_update_id FROM telegram_poll_state WHERE id = 1", [], |r| r.get(0))
+    conn.query_row(
+        "SELECT last_update_id FROM telegram_poll_state WHERE id = 1",
+        [],
+        |r| r.get(0),
+    )
 }
 
 pub fn set_last_update_id(conn: &Connection, id: i64) -> rusqlite::Result<()> {

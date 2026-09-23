@@ -248,8 +248,7 @@ fn usage_stale_window() -> Duration {
 /// A probe as an injectable dependency, so tests exercise the real handler —
 /// cache, shaping and all — against fixtures, and never touch the network or
 /// this machine's keychain.
-pub type ProbeFn =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = UsageProbe> + Send>> + Send + Sync>;
+pub type ProbeFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = UsageProbe> + Send>> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 enum ProviderProbe {
@@ -292,10 +291,14 @@ pub fn routes() -> Router<AppState> {
 /// old tests stay hermetic while the response still proves total coverage.
 pub fn routes_with(probe: ProbeFn) -> Router<AppState> {
     let unavailable = |provider: &'static str| -> ProviderProbeFn {
-        Arc::new(move || Box::pin(async move { ProviderProbe::Unavailable {
-            cause: "test_probe_not_configured",
-            reason: format!("{provider} usage test probe is not configured"),
-        }}))
+        Arc::new(move || {
+            Box::pin(async move {
+                ProviderProbe::Unavailable {
+                    cause: "test_probe_not_configured",
+                    reason: format!("{provider} usage test probe is not configured"),
+                }
+            })
+        })
     };
     routes_with_probes(UsageProbes {
         claude: probe,
@@ -331,7 +334,9 @@ async fn get_usage(
         let (claude, codex, gemini) =
             tokio::join!((probes.claude)(), (probes.codex)(), (probes.gemini)());
         let shaped = shape_all_providers(claude, codex, gemini);
-        if shaped.get("available") == Some(&json!(true)) && shaped.get("stale") != Some(&json!(true)) {
+        if shaped.get("available") == Some(&json!(true))
+            && shaped.get("stale") != Some(&json!(true))
+        {
             c.last_good = Some(shaped.clone());
             c.last_good_at = Some(Instant::now());
         }
@@ -349,7 +354,11 @@ async fn get_usage(
     let mut stale_reason: Option<Value> = None;
     if body.get("available") != Some(&json!(true))
         && body.get("cache_managed") != Some(&json!(true))
-        && matches!(body.get("cause").and_then(Value::as_str), Some("rate_limited" | "probe_failed" | "unexpected_shape")) {
+        && matches!(
+            body.get("cause").and_then(Value::as_str),
+            Some("rate_limited" | "probe_failed" | "unexpected_shape")
+        )
+    {
         let stale_window = usage_stale_window();
         if let (Some(good), Some(at)) = (&c.last_good, c.last_good_at) {
             if !stale_window.is_zero() && at.elapsed() < stale_window {
@@ -358,7 +367,9 @@ async fn get_usage(
                 // that happened to accompany the last Claude success.
                 let providers = body.get("providers").cloned();
                 body = good.clone();
-                if let Some(providers) = providers { body["providers"] = providers; }
+                if let Some(providers) = providers {
+                    body["providers"] = providers;
+                }
                 age = at.elapsed();
             }
         }
@@ -382,7 +393,9 @@ async fn get_usage(
     // Keep the provider row's age/recovery metadata alongside its own numbers.
     let claude = shape_claude_provider(&body);
     if let Some(providers) = body.get_mut("providers").and_then(Value::as_array_mut) {
-        if let Some(row) = providers.iter_mut().find(|p| p["id"] == "claude") { *row = claude; }
+        if let Some(row) = providers.iter_mut().find(|p| p["id"] == "claude") {
+            *row = claude;
+        }
     }
     Json(body).into_response()
 }
@@ -417,12 +430,20 @@ async fn probe_codex_usage() -> ProviderProbe {
         .spawn()
     {
         Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return provider_probe_unavailable(
-            "codex", "shell_missing", "The user's login shell is unavailable, so Codex usage cannot be read.",
-        ),
-        Err(_) => return provider_probe_unavailable(
-            "codex", "probe_failed", "Codex account usage probe could not start.",
-        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_probe_unavailable(
+                "codex",
+                "shell_missing",
+                "The user's login shell is unavailable, so Codex usage cannot be read.",
+            )
+        }
+        Err(_) => {
+            return provider_probe_unavailable(
+                "codex",
+                "probe_failed",
+                "Codex account usage probe could not start.",
+            )
+        }
     };
     let request = concat!(
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":",
@@ -431,22 +452,34 @@ async fn probe_codex_usage() -> ProviderProbe {
         "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}\n",
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"account/rateLimits/read\",\"params\":null}\n",
     );
-    let Some(mut stdin) = child.stdin.take() else { return provider_probe_unavailable(
-        "codex", "probe_failed", "Codex account usage probe has no input channel.",
-    ) };
-    let Some(stdout) = child.stdout.take() else { return provider_probe_unavailable(
-        "codex", "probe_failed", "Codex account usage probe has no output channel.",
-    ) };
+    let Some(mut stdin) = child.stdin.take() else {
+        return provider_probe_unavailable(
+            "codex",
+            "probe_failed",
+            "Codex account usage probe has no input channel.",
+        );
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return provider_probe_unavailable(
+            "codex",
+            "probe_failed",
+            "Codex account usage probe has no output channel.",
+        );
+    };
     if stdin.write_all(request.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
         let _ = child.kill().await;
         return provider_probe_unavailable(
-            "codex", "probe_failed", "Codex account usage request could not be sent.",
+            "codex",
+            "probe_failed",
+            "Codex account usage request could not be sent.",
         );
     }
     let read = async {
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines.next_line().await? {
-            let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
             if message.get("id") == Some(&json!(2)) {
                 return Ok::<Option<Value>, std::io::Error>(message.get("result").cloned());
             }
@@ -463,10 +496,14 @@ async fn probe_codex_usage() -> ProviderProbe {
             ProviderProbe::Ok(body)
         }
         Ok(Ok(None)) => provider_probe_unavailable(
-            "codex", "unexpected_shape", "Codex account usage returned no rate-limit snapshot.",
+            "codex",
+            "unexpected_shape",
+            "Codex account usage returned no rate-limit snapshot.",
         ),
         Ok(Err(_)) | Err(_) => provider_probe_unavailable(
-            "codex", "probe_failed", "Codex account usage probe timed out or disconnected.",
+            "codex",
+            "probe_failed",
+            "Codex account usage probe timed out or disconnected.",
         ),
     }
 }
@@ -483,19 +520,29 @@ async fn probe_gemini_usage() -> ProviderProbe {
         .spawn()
     {
         Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return provider_probe_unavailable(
-            "gemini", "runtime_missing", "Node.js is not installed, so Gemini CLI quota cannot be read.",
-        ),
-        Err(_) => return provider_probe_unavailable(
-            "gemini", "probe_failed", "Gemini account usage probe could not start.",
-        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return provider_probe_unavailable(
+                "gemini",
+                "runtime_missing",
+                "Node.js is not installed, so Gemini CLI quota cannot be read.",
+            )
+        }
+        Err(_) => {
+            return provider_probe_unavailable(
+                "gemini",
+                "probe_failed",
+                "Gemini account usage probe could not start.",
+            )
+        }
     };
     let script = include_str!("../../../../scripts/provider-usage-gemini.mjs");
     if let Some(mut stdin) = child.stdin.take() {
         if stdin.write_all(script.as_bytes()).await.is_err() {
             let _ = child.kill().await;
             return provider_probe_unavailable(
-                "gemini", "probe_failed", "Gemini account usage request could not be sent.",
+                "gemini",
+                "probe_failed",
+                "Gemini account usage request could not be sent.",
             );
         }
     }
@@ -515,16 +562,22 @@ async fn probe_gemini_usage() -> ProviderProbe {
                     Some("quota_project_unavailable") => "quota_project_unavailable",
                     _ => "probe_failed",
                 };
-                let reason = body.get("reason").and_then(Value::as_str)
+                let reason = body
+                    .get("reason")
+                    .and_then(Value::as_str)
                     .unwrap_or("Gemini account usage is unavailable.");
                 provider_probe_unavailable("gemini", cause, reason)
             }
             Err(_) => provider_probe_unavailable(
-                "gemini", "unexpected_shape", "Gemini account usage returned an unexpected response.",
+                "gemini",
+                "unexpected_shape",
+                "Gemini account usage returned an unexpected response.",
             ),
         },
         Ok(Err(_)) | Err(_) => provider_probe_unavailable(
-            "gemini", "probe_failed", "Gemini account usage probe timed out or disconnected.",
+            "gemini",
+            "probe_failed",
+            "Gemini account usage probe timed out or disconnected.",
         ),
     }
 }
@@ -535,7 +588,10 @@ fn provider_probe_unavailable(
     reason: &str,
 ) -> ProviderProbe {
     tracing::warn!(target: "amux::usage_probe", provider, cause, verdict = "unavailable", "{reason}");
-    ProviderProbe::Unavailable { cause, reason: reason.to_string() }
+    ProviderProbe::Unavailable {
+        cause,
+        reason: reason.to_string(),
+    }
 }
 
 fn shape_all_providers(
@@ -571,10 +627,12 @@ fn shape_all_providers(
         }),
     ];
     if let Some(obj) = body.as_object_mut() {
-        let measured = providers.iter()
+        let measured = providers
+            .iter()
             .filter(|provider| provider.get("metered") != Some(&json!(false)))
             .any(|provider| provider.get("measured") == Some(&json!(true)));
-        let n_considered = providers.iter()
+        let n_considered = providers
+            .iter()
             .filter_map(|provider| provider.get("n_considered").and_then(Value::as_u64))
             .sum::<u64>();
         obj.insert("measured".into(), json!(measured));
@@ -597,17 +655,24 @@ fn shape_claude_provider(body: &Value) -> Value {
             "windows": [],
         });
     }
-    let windows = body.get("limits").and_then(Value::as_array).into_iter().flatten()
+    let windows = body
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|limit| {
             let used = limit.get("percent")?.as_f64()?;
             let kind = limit.get("kind").and_then(Value::as_str).unwrap_or("limit");
-            let model = limit.pointer("/scope/model/display_name").and_then(Value::as_str);
+            let model = limit
+                .pointer("/scope/model/display_name")
+                .and_then(Value::as_str);
             let label = if kind == "session" || kind == "worker" {
                 "5-hour session".to_string()
             } else if let Some(model) = model {
                 format!("{model} · weekly")
             } else if kind.starts_with("weekly")
-                || limit.get("group").and_then(Value::as_str) == Some("weekly") {
+                || limit.get("group").and_then(Value::as_str) == Some("weekly")
+            {
                 "Weekly · all models".to_string()
             } else {
                 kind.replace('_', " ")
@@ -621,7 +686,8 @@ fn shape_claude_provider(body: &Value) -> Value {
                 "severity": limit.get("severity").cloned().unwrap_or(Value::Null),
                 "active": limit.get("is_active").cloned().unwrap_or(Value::Null),
             }))
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     json!({
         "id": "claude", "label": "Claude", "available": true, "measured": true,
         "n_considered": windows.len(), "metered": true,
@@ -637,29 +703,42 @@ fn shape_claude_provider(body: &Value) -> Value {
 fn shape_codex_provider(probe: ProviderProbe) -> Value {
     let body = match probe {
         ProviderProbe::Ok(body) => body,
-        ProviderProbe::Unavailable { cause, reason } => return json!({
-            "id": "codex", "label": "Codex", "available": false,
-            "measured": false, "n_considered": 0,
-            "cause": cause, "reason": reason, "windows": [],
-        }),
+        ProviderProbe::Unavailable { cause, reason } => {
+            return json!({
+                "id": "codex", "label": "Codex", "available": false,
+                "measured": false, "n_considered": 0,
+                "cause": cause, "reason": reason, "windows": [],
+            })
+        }
     };
     let fallback;
-    let buckets = if let Some(map) = body.get("rateLimitsByLimitId").and_then(Value::as_object)
-        .filter(|map| !map.is_empty()) {
+    let buckets = if let Some(map) = body
+        .get("rateLimitsByLimitId")
+        .and_then(Value::as_object)
+        .filter(|map| !map.is_empty())
+    {
         map
     } else {
         fallback = serde_json::Map::from_iter([(
-            "codex".to_string(), body.get("rateLimits").cloned().unwrap_or_else(|| json!({})),
+            "codex".to_string(),
+            body.get("rateLimits").cloned().unwrap_or_else(|| json!({})),
         )]);
         &fallback
     };
     let mut windows = Vec::new();
     let mut details = Vec::new();
     for (bucket_id, snapshot) in buckets {
-        let name = snapshot.get("limitName").and_then(Value::as_str).unwrap_or(bucket_id);
+        let name = snapshot
+            .get("limitName")
+            .and_then(Value::as_str)
+            .unwrap_or(bucket_id);
         for (position, key) in [("primary", "primary"), ("secondary", "secondary")] {
-            let Some(window) = snapshot.get(key).and_then(Value::as_object) else { continue };
-            let Some(used) = window.get("usedPercent").and_then(Value::as_f64) else { continue };
+            let Some(window) = snapshot.get(key).and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(used) = window.get("usedPercent").and_then(Value::as_f64) else {
+                continue;
+            };
             let minutes = window.get("windowDurationMins").and_then(Value::as_i64);
             let duration = match minutes {
                 Some(300) => "5-hour".to_string(),
@@ -669,7 +748,11 @@ fn shape_codex_provider(probe: ProviderProbe) -> Value {
                 Some(mins) => format!("{mins}-minute"),
                 None => position.to_string(),
             };
-            let label = if name == "codex" { duration } else { format!("{name} · {duration}") };
+            let label = if name == "codex" {
+                duration
+            } else {
+                format!("{name} · {duration}")
+            };
             windows.push(json!({
                 "label": label, "kind": position, "limit_id": bucket_id,
                 "limit_name": snapshot.get("limitName").cloned().unwrap_or(Value::Null),
@@ -688,8 +771,14 @@ fn shape_codex_provider(probe: ProviderProbe) -> Value {
             "rate_limit_reached_type": snapshot.get("rateLimitReachedType").cloned().unwrap_or(Value::Null),
         }));
     }
-    let plan = body.pointer("/rateLimits/planType").cloned()
-        .or_else(|| details.iter().find_map(|bucket| bucket.get("plan_type").cloned()))
+    let plan = body
+        .pointer("/rateLimits/planType")
+        .cloned()
+        .or_else(|| {
+            details
+                .iter()
+                .find_map(|bucket| bucket.get("plan_type").cloned())
+        })
         .unwrap_or(Value::Null);
     json!({
         "id": "codex", "label": "Codex", "available": true, "measured": true,
@@ -703,16 +792,25 @@ fn shape_codex_provider(probe: ProviderProbe) -> Value {
 fn shape_gemini_provider(probe: ProviderProbe) -> Value {
     let body = match probe {
         ProviderProbe::Ok(body) => body,
-        ProviderProbe::Unavailable { cause, reason } => return json!({
-            "id": "gemini", "label": "Gemini", "available": false,
-            "measured": false, "n_considered": 0,
-            "cause": cause, "reason": reason, "windows": [],
-        }),
+        ProviderProbe::Unavailable { cause, reason } => {
+            return json!({
+                "id": "gemini", "label": "Gemini", "available": false,
+                "measured": false, "n_considered": 0,
+                "cause": cause, "reason": reason, "windows": [],
+            })
+        }
     };
-    let windows = body.pointer("/quota/buckets").and_then(Value::as_array).into_iter().flatten()
+    let windows = body
+        .pointer("/quota/buckets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|bucket| {
             let remaining = bucket.get("remainingFraction")?.as_f64()?.clamp(0.0, 1.0);
-            let model = bucket.get("modelId").and_then(Value::as_str).unwrap_or("Model");
+            let model = bucket
+                .get("modelId")
+                .and_then(Value::as_str)
+                .unwrap_or("Model");
             Some(json!({
                 "label": model, "kind": "model",
                 "used_percent": (1.0 - remaining) * 100.0,
@@ -720,7 +818,8 @@ fn shape_gemini_provider(probe: ProviderProbe) -> Value {
                 "remaining_amount": bucket.get("remainingAmount").cloned().unwrap_or(Value::Null),
                 "resets_at": bucket.get("resetTime").cloned().unwrap_or(Value::Null),
             }))
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     json!({
         "id": "gemini", "label": "Gemini", "available": true, "measured": true,
         "n_considered": windows.len(), "metered": true,
@@ -741,7 +840,12 @@ fn shape_gemini_provider(probe: ProviderProbe) -> Value {
 /// spelled the way `loadUsage()` reads them.
 fn shape_probe(probe: UsageProbe) -> Value {
     match probe {
-        UsageProbe::Snapshot { body, observed_at, retry_at, failure } => {
+        UsageProbe::Snapshot {
+            body,
+            observed_at,
+            retry_at,
+            failure,
+        } => {
             let mut shaped = shape_probe(UsageProbe::Ok(body));
             shaped["cache_managed"] = json!(true);
             shaped["observed_at"] = json!(observed_at);
@@ -792,13 +896,11 @@ fn shape_probe(probe: UsageProbe) -> Value {
         // own, and telling someone to re-login would be actively wrong.
         UsageProbe::Http(429) => degraded(
             "rate_limited",
-            "Anthropic paused usage refreshes (HTTP 429). amux will retry automatically."
-                .into(),
+            "Anthropic paused usage refreshes (HTTP 429). amux will retry automatically.".into(),
         ),
-        UsageProbe::Http(code) => degraded(
-            "probe_failed",
-            format!("Usage fetch failed (HTTP {code})"),
-        ),
+        UsageProbe::Http(code) => {
+            degraded("probe_failed", format!("Usage fetch failed (HTTP {code})"))
+        }
         UsageProbe::Transport(what) => degraded(
             "probe_failed",
             format!("Usage fetch failed (network: {what})"),
@@ -1005,7 +1107,12 @@ fn pct(part: f64, total: f64) -> String {
 }
 
 /// One grouped breakdown: `(label, cost, tokens, turns)` rows, already sorted.
-fn md_table(title: &str, key_header: &str, rows: &[(String, f64, i64, i64)], total_cost: f64) -> String {
+fn md_table(
+    title: &str,
+    key_header: &str,
+    rows: &[(String, f64, i64, i64)],
+    total_cost: f64,
+) -> String {
     let mut s = format!("\n## {title}\n\n| {key_header} | Cost | Share | Tokens | Turns |\n|---|---:|---:|---:|---:|\n");
     if rows.is_empty() {
         s.push_str("| (none in window) | | | | |\n");
@@ -1048,7 +1155,12 @@ fn grouped(
 }
 
 /// Render the report. Pure over a connection so a test can pin its shape.
-pub(crate) fn render_usage_report(conn: &rusqlite::Connection, days: i64, limit: usize, now: i64) -> rusqlite::Result<String> {
+pub(crate) fn render_usage_report(
+    conn: &rusqlite::Connection,
+    days: i64,
+    limit: usize,
+    now: i64,
+) -> rusqlite::Result<String> {
     let cutoff = now - days * 86_400;
     let total_rows: i64 = conn.query_row("SELECT COUNT(*) FROM token_ledger", [], |r| r.get(0))?;
     let (total_cost, total_tokens, turns): (f64, i64, i64) = conn.query_row(
@@ -1056,7 +1168,8 @@ pub(crate) fn render_usage_report(conn: &rusqlite::Connection, days: i64, limit:
         [cutoff],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let fresh: Option<i64> = conn.query_row("SELECT MAX(ts) FROM token_ledger", [], |r| r.get(0))?;
+    let fresh: Option<i64> =
+        conn.query_row("SELECT MAX(ts) FROM token_ledger", [], |r| r.get(0))?;
     let (cache_read, input_side): (i64, i64) = conn.query_row(
         "SELECT COALESCE(SUM(cache_read),0), COALESCE(SUM(input + cache_read + cache_write),0) FROM token_ledger WHERE ts > ?1",
         [cutoff],
@@ -1071,21 +1184,43 @@ pub(crate) fn render_usage_report(conn: &rusqlite::Connection, days: i64, limit:
         turns,
         md_tokens(total_tokens)
     ));
-    md.push_str(&format!("- **Cache hit:** {} of input-side tokens were cache reads\n", pct(cache_read as f64, input_side as f64)));
+    md.push_str(&format!(
+        "- **Cache hit:** {} of input-side tokens were cache reads\n",
+        pct(cache_read as f64, input_side as f64)
+    ));
     md.push_str(&format!(
         "- **Measured:** {} ledger rows in window of {} total; ledger fresh through {}\n",
         turns,
         total_rows,
-        fresh.map(|t| chrono::DateTime::from_timestamp(t, 0).map(|d| d.to_rfc3339()).unwrap_or_default()).unwrap_or_else(|| "never".into())
+        fresh
+            .map(|t| chrono::DateTime::from_timestamp(t, 0)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default())
+            .unwrap_or_else(|| "never".into())
     ));
     md.push_str("- **Cost basis:** list price per model from runtime_jobs/token_ledger.rs (or ~/.amux/prices.json), not the plan invoice\n");
 
-    md.push_str(&md_table("By worker", "Worker", &grouped(conn, "session", cutoff, limit)?, total_cost));
-    md.push_str(&md_table("By model", "Model", &grouped(conn, "model", cutoff, limit)?, total_cost));
+    md.push_str(&md_table(
+        "By worker",
+        "Worker",
+        &grouped(conn, "session", cutoff, limit)?,
+        total_cost,
+    ));
+    md.push_str(&md_table(
+        "By model",
+        "Model",
+        &grouped(conn, "model", cutoff, limit)?,
+        total_cost,
+    ));
     md.push_str(&md_table(
         "Main conversation vs subagents",
         "Kind",
-        &grouped(conn, "CASE WHEN conversation LIKE 'agent-%' THEN 'subagent' ELSE 'main' END", cutoff, limit)?,
+        &grouped(
+            conn,
+            "CASE WHEN conversation LIKE 'agent-%' THEN 'subagent' ELSE 'main' END",
+            cutoff,
+            limit,
+        )?,
         total_cost,
     ));
 
@@ -1100,9 +1235,16 @@ pub(crate) fn render_usage_report(conn: &rusqlite::Connection, days: i64, limit:
         ),
     )?;
     let sources: Vec<(String, f64, i64, i64)> = st
-        .query_map([cutoff], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .query_map([cutoff], |r| {
+            Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
-    md.push_str(&md_table("By what triggered the turn", "Source (prompt or steering guard)", &sources, total_cost));
+    md.push_str(&md_table(
+        "By what triggered the turn",
+        "Source (prompt or steering guard)",
+        &sources,
+        total_cost,
+    ));
 
     // By card: attributed rows only; the stale task_windows problem is named.
     md.push_str(&md_table(
@@ -1145,7 +1287,6 @@ pub(crate) fn render_usage_report(conn: &rusqlite::Connection, days: i64, limit:
     Ok(md)
 }
 
-
 /// GET /api/usage/report.md?days=N&limit=M (AMUX-4584). `days` 1..365 (default 7),
 /// `limit` rows per breakdown 1..200 (default 25). text/markdown.
 async fn get_usage_report_md(
@@ -1157,13 +1298,21 @@ async fn get_usage_report_md(
     let store = state.store.clone();
     let out = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         let conn = store.read()?;
-        Ok(render_usage_report(&conn, days, limit, chrono::Utc::now().timestamp())?)
+        Ok(render_usage_report(
+            &conn,
+            days,
+            limit,
+            chrono::Utc::now().timestamp(),
+        )?)
     })
     .await;
     match out {
         Ok(Ok(md)) => (
             StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/markdown; charset=utf-8",
+            )],
             md,
         )
             .into_response(),
@@ -1243,7 +1392,8 @@ const PROMPT_SOURCE_TRIG: &str = "CASE WHEN src.s_ts IS NOT NULL AND (src.c_ts I
 
 /// Who or what sent it, for the named-offenders list: the steering sender when
 /// steering won, the cmd_history origin otherwise.
-const PROMPT_SOURCE_ORIGIN: &str = "CASE WHEN src.s_ts IS NOT NULL AND (src.c_ts IS NULL OR src.s_ts > src.c_ts) \
+const PROMPT_SOURCE_ORIGIN: &str =
+    "CASE WHEN src.s_ts IS NOT NULL AND (src.c_ts IS NULL OR src.s_ts > src.c_ts) \
    THEN src.s_sender ELSE COALESCE(src.c_origin, '') END";
 
 fn trigger_label(t: &str) -> &'static str {
@@ -1335,7 +1485,10 @@ mod tests {
     fn the_reserve_pauses_at_the_threshold_and_fails_open_on_an_unknown() {
         // Ethan's 30: pause at 70 and above, run below it.
         assert!(!super::background_should_pause(Some(69), 30));
-        assert!(super::background_should_pause(Some(70), 30), "the boundary is inclusive");
+        assert!(
+            super::background_should_pause(Some(70), 30),
+            "the boundary is inclusive"
+        );
         assert!(super::background_should_pause(Some(99), 30));
 
         // THE CELL THAT MATTERS. An unknown reading must NOT pause. The usage
@@ -1357,8 +1510,14 @@ mod tests {
         // A larger reserve bites earlier; a smaller one later. Pinned so the
         // arithmetic cannot invert without a red test — the direction is the
         // whole meaning of the number.
-        assert!(super::background_should_pause(Some(51), 50), "50% reserve pauses at 50");
-        assert!(!super::background_should_pause(Some(51), 20), "20% reserve does not");
+        assert!(
+            super::background_should_pause(Some(51), 50),
+            "50% reserve pauses at 50"
+        );
+        assert!(
+            !super::background_should_pause(Some(51), 20),
+            "20% reserve does not"
+        );
     }
 
     use super::*;
@@ -1375,8 +1534,14 @@ mod tests {
         let command = command.as_std();
         assert_eq!(command.get_program(), "/bin/example-shell");
         assert_eq!(
-            command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>(),
-            ["-lc", "exec codex app-server --stdio --disable remote_control"]
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "-lc",
+                "exec codex app-server --stdio --disable remote_control"
+            ]
         );
     }
 
@@ -1441,10 +1606,16 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let app = axum::Router::new()
-            .nest("/api/usage", routes_with(probe_fn(UsageProbe::Ok(json!({})), Arc::new(AtomicUsize::new(0)))))
+            .nest(
+                "/api/usage",
+                routes_with(probe_fn(
+                    UsageProbe::Ok(json!({})),
+                    Arc::new(AtomicUsize::new(0)),
+                )),
+            )
             .with_state(state);
         let res = app
             .oneshot(
@@ -1456,7 +1627,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
 
         // 1. The money is in the right buckets, and the labels are for a human.
@@ -1464,7 +1637,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| (r["source"].as_str().unwrap().to_string(), r["cost_usd"].as_f64().unwrap()))
+            .map(|r| {
+                (
+                    r["source"].as_str().unwrap().to_string(),
+                    r["cost_usd"].as_f64().unwrap(),
+                )
+            })
             .collect();
         assert_eq!(by.get("user"), Some(&1.0), "the human's turn: {v}");
         assert_eq!(by.get("schedule"), Some(&5.0), "the schedule's turn: {v}");
@@ -1483,7 +1661,11 @@ mod tests {
         // direction that matters: AMUX-3542 is a customer whose plan window was
         // eaten by background work, and the instrument built to prove it was
         // crediting some of that work to their own typing.
-        assert_eq!(by.get("pickup"), Some(&7.0), "the pickup's turn is its own bucket: {v}");
+        assert_eq!(
+            by.get("pickup"),
+            Some(&7.0),
+            "the pickup's turn is its own bucket: {v}"
+        );
         let pickup_row = v["by_source"]
             .as_array()
             .unwrap()
@@ -1496,7 +1678,10 @@ mod tests {
             "amux handing a lane a card is not the human typing: {pickup_row}"
         );
         assert!(
-            pickup_row["label"].as_str().unwrap().contains("amux handed"),
+            pickup_row["label"]
+                .as_str()
+                .unwrap()
+                .contains("amux handed"),
             "the label is read by someone wondering where their credits went: {pickup_row}"
         );
         assert_eq!(
@@ -1542,18 +1727,22 @@ mod tests {
         //    against the version where no row has it at all.
         for r in top {
             assert!(
-                r.get("is_background").map(|b| b.is_boolean()).unwrap_or(false),
+                r.get("is_background")
+                    .map(|b| b.is_boolean())
+                    .unwrap_or(false),
                 "every top_origins row must carry a boolean is_background — its ABSENCE is \
                  what made the client's filter match everything: {r}"
             );
         }
         assert!(
-            top.iter().any(|r| r["source"] == "user" && r["is_background"] == json!(false)),
+            top.iter()
+                .any(|r| r["source"] == "user" && r["is_background"] == json!(false)),
             "the human's own row must be present AND flagged not-background, so a consumer \
              can exclude it: {v}"
         );
         assert!(
-            top.iter().any(|r| r["source"] == "schedule" && r["is_background"] == json!(true)),
+            top.iter()
+                .any(|r| r["source"] == "schedule" && r["is_background"] == json!(true)),
             "a schedule's row must be flagged background: {v}"
         );
     }
@@ -1622,23 +1811,36 @@ mod tests {
         let app = axum::Router::new()
             .nest(
                 "/api/usage",
-                routes_with(probe_fn(UsageProbe::Ok(json!({})), Arc::new(AtomicUsize::new(0)))),
+                routes_with(probe_fn(
+                    UsageProbe::Ok(json!({})),
+                    Arc::new(AtomicUsize::new(0)),
+                )),
             )
             .with_state(state);
         let res = app
             .oneshot(
-                Request::builder().uri("/api/usage/attribution?hours=1").body(Body::empty()).unwrap(),
+                Request::builder()
+                    .uri("/api/usage/attribution?hours=1")
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         let by: std::collections::HashMap<String, f64> = v["by_source"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| (r["source"].as_str().unwrap_or("").to_string(), r["cost_usd"].as_f64().unwrap_or(0.0)))
+            .map(|r| {
+                (
+                    r["source"].as_str().unwrap_or("").to_string(),
+                    r["cost_usd"].as_f64().unwrap_or(0.0),
+                )
+            })
             .collect();
         assert_eq!(
             by.get("session"),
@@ -1671,7 +1873,9 @@ mod tests {
         })
     }
 
-    fn app(probe: ProbeFn) -> axum::Router { app_routes(routes_with(probe)) }
+    fn app(probe: ProbeFn) -> axum::Router {
+        app_routes(routes_with(probe))
+    }
     fn app_routes(routes: Router<AppState>) -> axum::Router {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("usage-test.db")).unwrap();
@@ -1681,11 +1885,9 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        Router::new()
-            .nest("/api/usage", routes)
-            .with_state(state)
+        Router::new().nest("/api/usage", routes).with_state(state)
     }
 
     async fn get(app: &axum::Router) -> (StatusCode, Value) {
@@ -1765,21 +1967,32 @@ mod tests {
             ProviderProbe::Ok(gemini),
         );
         let providers = body["providers"].as_array().expect("provider rows");
-        let mut response_ids = providers.iter()
+        let mut response_ids = providers
+            .iter()
             .map(|provider| provider["id"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
         response_ids.sort();
-        let mut registry_ids = crate::provider::default_registry().ids().into_iter()
+        let mut registry_ids = crate::provider::default_registry()
+            .ids()
+            .into_iter()
             .map(|id| match id.as_str() {
                 "claude-code" => "claude".to_string(),
                 other => other.to_string(),
-            }).collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         registry_ids.sort();
-        assert_eq!(response_ids, registry_ids, "every shipped provider needs a Settings row");
+        assert_eq!(
+            response_ids, registry_ids,
+            "every shipped provider needs a Settings row"
+        );
         assert_eq!(body["provider_count"], json!(providers.len()));
 
-        let provider = |id: &str| providers.iter().find(|provider| provider["id"] == id)
-            .unwrap_or_else(|| panic!("missing {id}: {body}"));
+        let provider = |id: &str| {
+            providers
+                .iter()
+                .find(|provider| provider["id"] == id)
+                .unwrap_or_else(|| panic!("missing {id}: {body}"))
+        };
         let codex = provider("codex");
         assert_eq!(codex["windows"].as_array().unwrap().len(), 4);
         assert!(codex["windows"].as_array().unwrap().iter().any(|window| {
@@ -1796,8 +2009,14 @@ mod tests {
         assert_eq!(provider("ollama")["metered"], false);
         assert_eq!(body["n_considered"], 9);
         let wire = serde_json::to_string(&body).unwrap();
-        assert!(!wire.contains("must-never-reach-settings"), "account identity leaked: {wire}");
-        assert!(!wire.contains("accountId"), "account identity field leaked: {wire}");
+        assert!(
+            !wire.contains("must-never-reach-settings"),
+            "account identity leaked: {wire}"
+        );
+        assert!(
+            !wire.contains("accountId"),
+            "account identity field leaked: {wire}"
+        );
     }
 
     #[test]
@@ -1815,7 +2034,10 @@ mod tests {
         );
         let providers = body["providers"].as_array().unwrap();
         assert_eq!(providers.len(), 5);
-        assert_eq!(providers.iter().filter(|p| p["available"] == false).count(), 3);
+        assert_eq!(
+            providers.iter().filter(|p| p["available"] == false).count(),
+            3
+        );
         assert_eq!(
             providers.iter().find(|p| p["id"] == "ollama").unwrap()["available"],
             true,
@@ -1834,10 +2056,7 @@ mod tests {
     #[tokio::test]
     async fn success_passes_anthropics_body_through_verbatim() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(probe_fn(
-            UsageProbe::Ok(live_shaped_body()),
-            calls.clone(),
-        ));
+        let app = app(probe_fn(UsageProbe::Ok(live_shaped_body()), calls.clone()));
         let (st, v) = get(&app).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["available"], json!(true));
@@ -1854,10 +2073,7 @@ mod tests {
         assert_eq!(limits[1]["group"], json!("weekly"));
         // The per-model row the SPA labels "<model> · weekly": normalized
         // windows discard this entirely.
-        assert_eq!(
-            limits[2]["scope"]["model"]["display_name"],
-            json!("Opus")
-        );
+        assert_eq!(limits[2]["scope"]["model"]["display_name"], json!("Opus"));
         // Top-level windows pass through untouched too.
         assert_eq!(v["five_hour"]["utilization"], json!(34.4));
     }
@@ -1955,10 +2171,7 @@ mod tests {
         // Reads AMUX_USAGE_TTL_S; five sibling tests set it to "0" (AMUX-4963).
         let _env = default_env().await;
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(probe_fn(
-            UsageProbe::Ok(live_shaped_body()),
-            calls.clone(),
-        ));
+        let app = app(probe_fn(UsageProbe::Ok(live_shaped_body()), calls.clone()));
         let (_, first) = get(&app).await;
         let (_, second) = get(&app).await;
         let (_, third) = get(&app).await;
@@ -2030,58 +2243,93 @@ mod tests {
             assert_eq!(second["limits"], first["limits"]);
             // ...and says so, with the live failure attached.
             assert_eq!(second["stale"], json!(true));
-            assert!(second["stale_reason"]
-                .as_str()
-                .unwrap()
-                .contains("429"));
+            assert!(second["stale_reason"].as_str().unwrap().contains("429"));
         })
         .await;
     }
 
     #[test]
     fn dated_snapshot_reaches_the_provider_row_and_cold_retry_has_no_numbers() {
-        let body=shape_probe(UsageProbe::Snapshot { body:live_shaped_body(), observed_at:1000,
-            retry_at:1660, failure:Some(Box::new(UsageProbe::Http(429))) });
-        let row=shape_claude_provider(&body);
-        assert_eq!(row["observed_at"],1000); assert_eq!(row["retry_at"],1660);
-        assert_eq!(row["stale"],true); assert_eq!(row["windows"].as_array().unwrap().len(),3);
-        let cold=shape_claude_provider(&shape_probe(UsageProbe::Deferred { failure:Box::new(UsageProbe::Http(429)),retry_at:1660 }));
-        assert_eq!(cold["available"],false); assert_eq!(cold["retry_at"],1660);
+        let body = shape_probe(UsageProbe::Snapshot {
+            body: live_shaped_body(),
+            observed_at: 1000,
+            retry_at: 1660,
+            failure: Some(Box::new(UsageProbe::Http(429))),
+        });
+        let row = shape_claude_provider(&body);
+        assert_eq!(row["observed_at"], 1000);
+        assert_eq!(row["retry_at"], 1660);
+        assert_eq!(row["stale"], true);
+        assert_eq!(row["windows"].as_array().unwrap().len(), 3);
+        let cold = shape_claude_provider(&shape_probe(UsageProbe::Deferred {
+            failure: Box::new(UsageProbe::Http(429)),
+            retry_at: 1660,
+        }));
+        assert_eq!(cold["available"], false);
+        assert_eq!(cold["retry_at"], 1660);
         assert!(cold["windows"].as_array().unwrap().is_empty());
     }
     #[tokio::test]
     async fn route_cache_cannot_resurrect_previous_credentials_reading() {
-        let (probe,_) = probe_sequence(vec![
+        let (probe, _) = probe_sequence(vec![
             UsageProbe::Ok(live_shaped_body()),
-            UsageProbe::Deferred { failure:Box::new(UsageProbe::Http(429)), retry_at:1660 },
+            UsageProbe::Deferred {
+                failure: Box::new(UsageProbe::Http(429)),
+                retry_at: 1660,
+            },
             UsageProbe::NoToken,
         ]);
-        let app=app(probe);
-        temp_env_ttl("0",||async {
-            let (_,first)=get(&app).await; assert_eq!(first["available"],true);
+        let app = app(probe);
+        temp_env_ttl("0", || async {
+            let (_, first) = get(&app).await;
+            assert_eq!(first["available"], true);
             for _ in 0..2 {
-                let (_,next)=get(&app).await;
-                assert_eq!(next["available"],false);
-                assert!(next["providers"][0]["windows"].as_array().unwrap().is_empty());
+                let (_, next) = get(&app).await;
+                assert_eq!(next["available"], false);
+                assert!(next["providers"][0]["windows"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty());
             }
-        }).await;
+        })
+        .await;
     }
     #[tokio::test]
     async fn claude_stale_fallback_does_not_rewind_other_providers() {
-        let (claude,_) = probe_sequence(vec![UsageProbe::Ok(live_shaped_body()),UsageProbe::Http(429)]);
-        let n=Arc::new(AtomicUsize::new(0));
-        let codex:ProviderProbeFn=Arc::new(move || {
-            let used=n.fetch_add(1,Ordering::SeqCst)*20;
-            Box::pin(async move { ProviderProbe::Ok(json!({"rateLimits":{"primary":{"usedPercent":used,"windowDurationMins":300}}})) })
+        let (claude, _) = probe_sequence(vec![
+            UsageProbe::Ok(live_shaped_body()),
+            UsageProbe::Http(429),
+        ]);
+        let n = Arc::new(AtomicUsize::new(0));
+        let codex: ProviderProbeFn = Arc::new(move || {
+            let used = n.fetch_add(1, Ordering::SeqCst) * 20;
+            Box::pin(async move {
+                ProviderProbe::Ok(
+                    json!({"rateLimits":{"primary":{"usedPercent":used,"windowDurationMins":300}}}),
+                )
+            })
         });
-        let probes=UsageProbes { claude,codex,gemini:Arc::new(||Box::pin(async { ProviderProbe::Unavailable{cause:"test",reason:"test".into()} })) };
-        let app=app_routes(routes_with_probes(probes));
-        temp_env_ttl("0",||async {
-            let (_,first)=get(&app).await; let (_,second)=get(&app).await;
-            assert_eq!(first["providers"][1]["windows"][0]["used_percent"],0.0);
-            assert_eq!(second["providers"][1]["windows"][0]["used_percent"],20.0);
-            assert_eq!(second["providers"][0]["stale"],true);
-        }).await;
+        let probes = UsageProbes {
+            claude,
+            codex,
+            gemini: Arc::new(|| {
+                Box::pin(async {
+                    ProviderProbe::Unavailable {
+                        cause: "test",
+                        reason: "test".into(),
+                    }
+                })
+            }),
+        };
+        let app = app_routes(routes_with_probes(probes));
+        temp_env_ttl("0", || async {
+            let (_, first) = get(&app).await;
+            let (_, second) = get(&app).await;
+            assert_eq!(first["providers"][1]["windows"][0]["used_percent"], 0.0);
+            assert_eq!(second["providers"][1]["windows"][0]["used_percent"], 20.0);
+            assert_eq!(second["providers"][0]["stale"], true);
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -2127,10 +2375,7 @@ mod tests {
         // The env knob has to actually reach the handler; a knob that reads
         // the env once at startup would pass a weaker test than this.
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = app(probe_fn(
-            UsageProbe::Ok(live_shaped_body()),
-            calls.clone(),
-        ));
+        let app = app(probe_fn(UsageProbe::Ok(live_shaped_body()), calls.clone()));
         temp_env_ttl("0", || async {
             get(&app).await;
             get(&app).await;
@@ -2223,7 +2468,14 @@ mod usage_report_tests {
         .unwrap();
     }
 
-    fn steering_delivery(conn: &rusqlite::Connection, id: &str, session: &str, ts_secs: i64, guard: &str, sender: &str) {
+    fn steering_delivery(
+        conn: &rusqlite::Connection,
+        id: &str,
+        session: &str,
+        ts_secs: i64,
+        guard: &str,
+        sender: &str,
+    ) {
         conn.execute(
             "INSERT INTO steering_history (id, session, text, queued_at, delivered_at, guard, sender) \
              VALUES (?1, ?2, 'nudge text', ?3, ?4, ?5, ?6)",
@@ -2240,8 +2492,14 @@ mod usage_report_tests {
         section
             .lines()
             .filter(|l| l.starts_with("| ") && !l.contains("---"))
-            .skip(1)   // the table's own header row is not a source
-            .map(|l| l.trim_start_matches("| ").split(" |").next().unwrap_or("").to_string())
+            .skip(1) // the table's own header row is not a source
+            .map(|l| {
+                l.trim_start_matches("| ")
+                    .split(" |")
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })
             .collect()
     }
 
@@ -2273,19 +2531,37 @@ mod usage_report_tests {
 
         let md = render_usage_report(&conn, 1, 25, now).unwrap();
         let keys = source_keys(&md);
-        assert!(keys.contains(&"steer:board-drive".to_string()), "the nudge is its own source: {keys:?}");
-        assert!(keys.contains(&"steer:sched".to_string()), "sched:SCHED-456 groups as its family: {keys:?}");
-        assert!(keys.contains(&"user".to_string()), "a genuinely human-prompted turn still reads user: {keys:?}");
-        assert!(!keys.iter().any(|k| k.contains("SCHED-456")), "not one bucket per schedule id: {keys:?}");
+        assert!(
+            keys.contains(&"steer:board-drive".to_string()),
+            "the nudge is its own source: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"steer:sched".to_string()),
+            "sched:SCHED-456 groups as its family: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"user".to_string()),
+            "a genuinely human-prompted turn still reads user: {keys:?}"
+        );
+        assert!(
+            !keys.iter().any(|k| k.contains("SCHED-456")),
+            "not one bucket per schedule id: {keys:?}"
+        );
 
         // And the money moved with it: $4 of nudge-driven spend that used to be
         // filed under the human prompt.
         let section = md.split("## By what triggered the turn").nth(1).unwrap();
         let section = section.split("\n## ").next().unwrap_or(section);
-        let nudge_line = section.lines().find(|l| l.starts_with("| steer:board-drive")).unwrap();
+        let nudge_line = section
+            .lines()
+            .find(|l| l.starts_with("| steer:board-drive"))
+            .unwrap();
         assert!(nudge_line.contains("$4.00"), "{nudge_line}");
         let human_line = section.lines().find(|l| l.starts_with("| user")).unwrap();
-        assert!(human_line.contains("$1.00"), "only the lane that really typed it: {human_line}");
+        assert!(
+            human_line.contains("$1.00"),
+            "only the lane that really typed it: {human_line}"
+        );
     }
 
     /// A steering row OLDER than the lane's newest prompt must not win: the rule
@@ -2298,23 +2574,36 @@ mod usage_report_tests {
         typed_prompt(&conn, "amux", now - 120, "user");
         ledger_row(&conn, "amux", now - 60, 3.0);
         let keys = source_keys(&render_usage_report(&conn, 1, 25, now).unwrap());
-        assert_eq!(keys, vec!["user".to_string()], "the human typed after the nudge: {keys:?}");
+        assert_eq!(
+            keys,
+            vec!["user".to_string()],
+            "the human typed after the nudge: {keys:?}"
+        );
     }
 
     #[test]
     fn every_steering_family_reads_as_itself_and_an_unknown_one_still_reads_as_a_nudge() {
-        assert_eq!(trigger_label("steer:board-drive"), "amux nudged this lane about a card");
+        assert_eq!(
+            trigger_label("steer:board-drive"),
+            "amux nudged this lane about a card"
+        );
         assert_eq!(trigger_label("steer:sched"), "a schedule fired");
         assert_eq!(trigger_label("steer:commit-nudge"), "the commit nudge");
         assert_eq!(trigger_label("steer:auto-compact"), "an auto-compact");
-        assert_eq!(trigger_label("steer:task-callback"), "a task callback from a peer");
+        assert_eq!(
+            trigger_label("steer:task-callback"),
+            "a task callback from a peer"
+        );
         // A guard nobody has taught this table still reads as amux, not "other":
         // the question is "did amux hand me this", and the answer is yes.
         assert_eq!(trigger_label("steer:some-future-job"), "an amux nudge");
         assert_eq!(trigger_label("user"), "you typed it");
         // Both spellings of the same thing read the same: cmd_history writes
         // `task-callback`, steering writes the guard.
-        assert_eq!(trigger_label("task-callback"), trigger_label("steer:task-callback"));
+        assert_eq!(
+            trigger_label("task-callback"),
+            trigger_label("steer:task-callback")
+        );
     }
 
     #[test]
@@ -2340,14 +2629,29 @@ mod usage_report_tests {
         ).unwrap();
         let md = render_usage_report(&conn, 1, 25, now).unwrap();
         assert!(md.starts_with("# Token usage, last 1 day(s)"), "{md}");
-        assert!(md.contains("$15.00 across 3 API responses"), "window excludes the old row: {md}");
-        assert!(md.contains("3 ledger rows in window of 4 total"), "population stated: {md}");
+        assert!(
+            md.contains("$15.00 across 3 API responses"),
+            "window excludes the old row: {md}"
+        );
+        assert!(
+            md.contains("3 ledger rows in window of 4 total"),
+            "population stated: {md}"
+        );
         let worker = md.split("## By worker").nth(1).unwrap();
         let studio = worker.find("studio-plg").unwrap();
         let amux = worker.find("| amux |").unwrap();
-        assert!(studio < amux, "sorted by cost, the $9 worker first: {worker}");
-        assert!(md.contains("| subagent | $1.00 |"), "subagent vs main split: {md}");
-        assert!(!md.contains("| old |"), "the out-of-window worker is absent");
+        assert!(
+            studio < amux,
+            "sorted by cost, the $9 worker first: {worker}"
+        );
+        assert!(
+            md.contains("| subagent | $1.00 |"),
+            "subagent vs main split: {md}"
+        );
+        assert!(
+            !md.contains("| old |"),
+            "the out-of-window worker is absent"
+        );
         assert!(md.contains("## Known limits of these numbers"));
         // Deterministic: the same ledger renders the same bytes.
         assert_eq!(md, render_usage_report(&conn, 1, 25, now).unwrap());

@@ -42,7 +42,10 @@ fn default_doc() -> Value {
 }
 
 fn pins_len(v: &Value) -> usize {
-    v.get("pins").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0)
+    v.get("pins")
+        .and_then(|p| p.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
 }
 
 async fn get_map(State(_): State<AppState>) -> Response {
@@ -51,9 +54,7 @@ async fn get_map(State(_): State<AppState>) -> Response {
         data = default_doc();
     }
     let obj = data.as_object_mut().expect("map doc is an object");
-    let settings = obj
-        .entry("settings")
-        .or_insert_with(|| json!({}));
+    let settings = obj.entry("settings").or_insert_with(|| json!({}));
     if let Some(s) = settings.as_object_mut() {
         s.insert(
             "googleMapsKey".into(),
@@ -103,7 +104,10 @@ async fn post_map(
     }
     match std::fs::write(map_path(), body.to_string()) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
             .into_response(),
     }
 }
@@ -129,10 +133,14 @@ async fn post_pin(State(_): State<AppState>, Json(body): Json<Value>) -> Respons
     {
         let p = pin.as_object_mut().expect("pin is an object");
         let falsy = |v: Option<&Value>| {
-            v.map(|x| x.is_null() || x.as_str().is_some_and(str::is_empty)).unwrap_or(true)
+            v.map(|x| x.is_null() || x.as_str().is_some_and(str::is_empty))
+                .unwrap_or(true)
         };
         if falsy(p.get("id")) {
-            p.insert("id".into(), json!(format!("pin_{}", chrono::Utc::now().timestamp_millis())));
+            p.insert(
+                "id".into(),
+                json!(format!("pin_{}", chrono::Utc::now().timestamp_millis())),
+            );
         }
         if !p.contains_key("name") {
             let name = p
@@ -164,7 +172,10 @@ async fn post_pin(State(_): State<AppState>, Json(body): Json<Value>) -> Respons
     };
     match std::fs::write(map_path(), data.to_string()) {
         Ok(()) => Json(json!({ "ok": true, "pin": pin, "total_pins": total })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
             .into_response(),
     }
 }
@@ -246,7 +257,11 @@ async fn google_places(
         }
     };
     let mut results = Vec::new();
-    for place in data.get("places").and_then(|p| p.as_array()).unwrap_or(&Vec::new()) {
+    for place in data
+        .get("places")
+        .and_then(|p| p.as_array())
+        .unwrap_or(&Vec::new())
+    {
         let loc = &place["location"];
         let mut r = json!({
             "name": place["displayName"]["text"].as_str().unwrap_or(""),
@@ -339,7 +354,10 @@ mod tests {
     #[test]
     fn quote_matches_python_urllib_defaults() {
         // urllib.parse.quote keeps '/' by default; spaces become %20.
-        assert_eq!(urlencoding_encode("cafe near 5th/main"), "cafe%20near%205th/main");
+        assert_eq!(
+            urlencoding_encode("cafe near 5th/main"),
+            "cafe%20near%205th/main"
+        );
         assert_eq!(urlencoding_encode("naïve"), "na%C3%AFve");
     }
 

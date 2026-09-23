@@ -112,7 +112,12 @@ fn the_child_liveness_probe_is_one_subprocess_not_one_per_lane() {
     assert!(end > from, "could not find the end of the loop body");
     let body = &SRC[from..end];
 
-    for spawner in ["Command::new", "run_bounded", "run_bounded_output", "capture_pane_bounded"] {
+    for spawner in [
+        "Command::new",
+        "run_bounded",
+        "run_bounded_output",
+        "capture_pane_bounded",
+    ] {
         assert!(
             !body.contains(spawner),
             "`{spawner}` is back INSIDE the per-lane loop. That is one subprocess per lane, \
@@ -126,17 +131,34 @@ fn the_child_liveness_probe_is_one_subprocess_not_one_per_lane() {
     // above passes against a file that simply stopped probing at all — which
     // would read every shell-foreground lane as not-running.
     let outside = SRC[..at].to_string() + &SRC[end..];
-    let probe_start = outside.find("let ps_probe = {").expect("single process snapshot is missing");
+    let probe_start = outside
+        .find("let ps_probe = {")
+        .expect("single process snapshot is missing");
     let probe = outside[probe_start..].split("};").next().unwrap();
-    assert_eq!(probe.matches(r#"Command::new("ps")"#).count(), 1, "snapshot must run ps once");
-    let args = probe.lines().find(|line| line.trim_start().starts_with("c.args("))
+    assert_eq!(
+        probe.matches(r#"Command::new("ps")"#).count(),
+        1,
+        "snapshot must run ps once"
+    );
+    let args = probe
+        .lines()
+        .find(|line| line.trim_start().starts_with("c.args("))
         .expect("process snapshot has no argument list");
     let literals: Vec<_> = args.split('"').skip(1).step_by(2).collect();
-    assert!(literals.contains(&"-eo"), "snapshot must enumerate the full process population");
-    assert!(literals.iter().any(|columns| columns.split(',').any(|c| c == "ppid=")),
-        "snapshot must contain parent identity; additional process fields are allowed: {args}");
-    assert!(probe.contains(r#"run_bounded(c, probe_budget(), "ps/ppid")"#),
-        "the single process snapshot must retain its deadline and diagnostic identity");
+    assert!(
+        literals.contains(&"-eo"),
+        "snapshot must enumerate the full process population"
+    );
+    assert!(
+        literals
+            .iter()
+            .any(|columns| columns.split(',').any(|c| c == "ppid=")),
+        "snapshot must contain parent identity; additional process fields are allowed: {args}"
+    );
+    assert!(
+        probe.contains(r#"run_bounded(c, probe_budget(), "ps/ppid")"#),
+        "the single process snapshot must retain its deadline and diagnostic identity"
+    );
     eprintln!("gate_probe verdict=bounded_fleet_process_snapshot measured=true n_considered=1 args={args}");
     assert!(
         outside.contains("sessions_with_codex_tool_children(&pane_roots, out)"),

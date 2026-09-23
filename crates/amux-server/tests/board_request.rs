@@ -39,14 +39,33 @@ fn fleet_home() -> &'static std::path::Path {
         std::fs::create_dir_all(&sessions).expect("sessions dir");
         std::fs::write(sessions.join("lane-a.env"), "CC_DIR=/tmp\n").expect("lane-a");
         std::fs::write(sessions.join("lane-b.env"), "CC_DIR=/tmp\n").expect("lane-b");
-        std::fs::write(sessions.join("lane-paused.env"), "CC_DIR=/tmp\nCC_PAUSED=1\n").expect("paused");
-        std::fs::write(sessions.join("lane-archived.env"), "CC_DIR=/tmp\nCC_ARCHIVED=1\n").expect("archived");
-        std::fs::write(sessions.join("lane-iso.env"), "CC_DIR=/tmp\nCC_ISOLATED=1\n").expect("isolated");
+        std::fs::write(
+            sessions.join("lane-paused.env"),
+            "CC_DIR=/tmp\nCC_PAUSED=1\n",
+        )
+        .expect("paused");
+        std::fs::write(
+            sessions.join("lane-archived.env"),
+            "CC_DIR=/tmp\nCC_ARCHIVED=1\n",
+        )
+        .expect("archived");
+        std::fs::write(
+            sessions.join("lane-iso.env"),
+            "CC_DIR=/tmp\nCC_ISOLATED=1\n",
+        )
+        .expect("isolated");
         // An explicit EMPTY allow-list is the visible deny (AMUX-4015/4018), and
         // it is the axis the first cut of request_to dropped entirely.
-        std::fs::write(sessions.join("lane-muted.env"), "CC_DIR=/tmp\nCC_GROUPS=alpha\nCC_SEND_ALLOW=\n")
-            .expect("muted");
-        std::fs::write(sessions.join("lane-other.env"), "CC_DIR=/tmp\nCC_GROUPS=beta\n").expect("other");
+        std::fs::write(
+            sessions.join("lane-muted.env"),
+            "CC_DIR=/tmp\nCC_GROUPS=alpha\nCC_SEND_ALLOW=\n",
+        )
+        .expect("muted");
+        std::fs::write(
+            sessions.join("lane-other.env"),
+            "CC_DIR=/tmp\nCC_GROUPS=beta\n",
+        )
+        .expect("other");
         std::env::set_var("AMUX_HOME", dir.path());
         std::env::set_var("AMUX_APPROVAL_TYPES", "*");
         // This suite pins the explicitly opted-in legacy delegation contract.
@@ -80,7 +99,9 @@ async fn post_as(app: &axum::Router, worker: &str, body: Value) -> (StatusCode, 
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, v)
 }
@@ -95,7 +116,9 @@ async fn patch_as(app: &axum::Router, worker: &str, id: &str, body: Value) -> (S
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, v)
 }
@@ -148,7 +171,10 @@ async fn a_request_lands_on_the_target_board_attributed_and_armed() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(dispatchable, 1, "the target's dispatch query must return it");
+    assert_eq!(
+        dispatchable, 1,
+        "the target's dispatch query must return it"
+    );
 }
 
 /// The relaxation is for the request shape ALONE. A plain cross-board create
@@ -168,7 +194,10 @@ async fn a_plain_cross_board_create_is_still_refused() {
     assert_eq!(v["code"], json!("cross_board_create_forbidden"), "{v}");
     // The default remedy is to retain ownership, not to route around it.
     let how = v["how_to_fix"].as_str().unwrap_or_default();
-    assert!(how.contains("own board"), "the refusal must preserve ownership: {how}");
+    assert!(
+        how.contains("own board"),
+        "the refusal must preserve ownership: {how}"
+    );
 }
 
 /// `requested_by` comes from the verified header and NEVER from the body.
@@ -228,9 +257,21 @@ async fn a_request_target_must_be_a_lane_that_can_receive_one() {
     for (target, want_status, want_code) in [
         ("lane-nobody", StatusCode::NOT_FOUND, "unknown_lane"),
         ("../escaped", StatusCode::BAD_REQUEST, "invalid_lane_name"),
-        ("lane-iso", StatusCode::FORBIDDEN, "peer_interaction_refused"),
-        ("lane-archived", StatusCode::FORBIDDEN, "peer_interaction_refused"),
-        ("lane-paused", StatusCode::FORBIDDEN, "peer_interaction_refused"),
+        (
+            "lane-iso",
+            StatusCode::FORBIDDEN,
+            "peer_interaction_refused",
+        ),
+        (
+            "lane-archived",
+            StatusCode::FORBIDDEN,
+            "peer_interaction_refused",
+        ),
+        (
+            "lane-paused",
+            StatusCode::FORBIDDEN,
+            "peer_interaction_refused",
+        ),
     ] {
         let (st, v) = post_as(
             &app,
@@ -249,7 +290,10 @@ async fn a_request_target_must_be_a_lane_that_can_receive_one() {
         if want_code == "peer_interaction_refused" {
             assert!(v["target_lifecycle"].is_string(), "{target}: {v}");
         } else {
-            assert!(v.get("target_lifecycle").is_none(), "no lane was judged: {target}: {v}");
+            assert!(
+                v.get("target_lifecycle").is_none(),
+                "no lane was judged: {target}: {v}"
+            );
         }
     }
 
@@ -263,7 +307,11 @@ async fn a_request_target_must_be_a_lane_that_can_receive_one() {
         json!({ "title": "waits for nothing", "request_to": "lane-paused" }),
     )
     .await;
-    assert_eq!(v["target_lifecycle"], json!("paused"), "branch without matching prose: {v}");
+    assert_eq!(
+        v["target_lifecycle"],
+        json!("paused"),
+        "branch without matching prose: {v}"
+    );
     assert!(
         v["error"].as_str().unwrap_or_default().contains("paused"),
         "the resolver writes the refusal, so a request reads what a send reads: {v}"
@@ -292,7 +340,11 @@ async fn a_request_target_must_be_a_lane_that_can_receive_one() {
     .await;
     assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
     assert_eq!(v["code"], json!("peer_interaction_refused"), "{v}");
-    assert_eq!(v["target_lifecycle"], json!("active"), "not a lifecycle refusal: {v}");
+    assert_eq!(
+        v["target_lifecycle"],
+        json!("active"),
+        "not a lifecycle refusal: {v}"
+    );
 
     // Routing to yourself is a plain create with extra steps, and accepting it
     // would arm a callback from a lane to itself.
@@ -355,8 +407,15 @@ async fn a_routed_request_keeps_its_own_record_rather_than_folding() {
         json!({ "title": "ship the bundle installer", "request_to": "lane-b" }),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED, "a repeat is its own record: {again}");
-    assert_ne!(first["id"], again["id"], "a fold would have returned the first id");
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "a repeat is its own record: {again}"
+    );
+    assert_ne!(
+        first["id"], again["id"],
+        "a fold would have returned the first id"
+    );
     assert_eq!(again["intake"]["action"], json!("create"), "{again}");
     assert_eq!(
         again["intake"]["comparison"]["decision"]["reason"],
@@ -391,7 +450,12 @@ async fn a_review_handoff_records_a_reviewer_it_cannot_reach() {
     ]);
 
     // UNREACHABLE: a paused lane receives nothing (AMUX-4566).
-    let (st, card) = post_as(&app, "lane-a", json!({"title": "hand to a paused reviewer"})).await;
+    let (st, card) = post_as(
+        &app,
+        "lane-a",
+        json!({"title": "hand to a paused reviewer"}),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{card}");
     let id = card["id"].as_str().expect("id").to_string();
     let (st, v) = patch_as(

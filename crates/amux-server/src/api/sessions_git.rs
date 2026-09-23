@@ -206,7 +206,8 @@ fn ok(v: Value, disposition: &str) -> Response {
 /// beside it: rewording the Display text must not silently turn a retryable
 /// race into a permanent failure.
 fn is_discovery_race(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<super::sessions_legacy::DiscoveryRaced>().is_some()
+    e.downcast_ref::<super::sessions_legacy::DiscoveryRaced>()
+        .is_some()
 }
 
 /// The session list, retrying ONCE when discovery raced a structural change.
@@ -279,9 +280,11 @@ async fn recompute(state: &AppState) -> anyhow::Result<Value> {
         .collect();
     let mut repos: BTreeMap<String, String> = BTreeMap::new();
     for chunk in dirs.chunks(GIT_CONCURRENCY) {
-        let results = futures::future::join_all(chunk.iter().map(|d| async move {
-            (d.clone(), git_toplevel(d).await)
-        }))
+        let results = futures::future::join_all(
+            chunk
+                .iter()
+                .map(|d| async move { (d.clone(), git_toplevel(d).await) }),
+        )
         .await;
         for (d, top) in results {
             if let Some(t) = top {
@@ -292,7 +295,9 @@ async fn recompute(state: &AppState) -> anyhow::Result<Value> {
 
     let mut out = Map::new();
     for (name, dir, branch) in rows {
-        let Some(repo) = repos.get(&dir) else { continue };
+        let Some(repo) = repos.get(&dir) else {
+            continue;
+        };
         out.insert(
             name.clone(),
             json!({"name": name, "branch": branch, "repo": repo}),
@@ -321,10 +326,15 @@ mod tests {
     #[test]
     fn the_retry_is_decided_on_the_type_and_not_on_the_wording() {
         let raced: anyhow::Error = super::super::sessions_legacy::DiscoveryRaced.into();
-        assert!(is_discovery_race(&raced), "the documented retryable race must be retried");
+        assert!(
+            is_discovery_race(&raced),
+            "the documented retryable race must be retried"
+        );
         // ...and it survives being wrapped, which is how it actually arrives:
         // `recompute` adds context before any caller sees it.
-        assert!(is_discovery_race(&raced.context("session list unavailable")));
+        assert!(is_discovery_race(
+            &raced.context("session list unavailable")
+        ));
 
         // THE CONTROL, and the reason this cell exists rather than a string
         // compare. An error carrying the IDENTICAL words but not the type is a
@@ -403,7 +413,9 @@ mod tests {
             *CACHE.lock().unwrap() = Some((Instant::now(), json!({"a": 1})));
         };
 
-        let hs: Vec<_> = (0..4).map(|_| tokio::spawn(one(computes.clone()))).collect();
+        let hs: Vec<_> = (0..4)
+            .map(|_| tokio::spawn(one(computes.clone())))
+            .collect();
         for h in hs {
             h.await.unwrap();
         }
@@ -413,7 +425,10 @@ mod tests {
             "four concurrent misses must recompute ONCE — the other three exist to \
              serve the winner's result, not to queue behind it"
         );
-        assert!(cached().is_some(), "and the result must be cached for the next caller");
+        assert!(
+            cached().is_some(),
+            "and the result must be cached for the next caller"
+        );
         *CACHE.lock().unwrap() = None;
     }
 
@@ -436,7 +451,10 @@ mod tests {
         assert!(cached().is_none(), "premise: the entry is expired");
         // The lock must be acquirable again, or every later miss deadlocks.
         let g = tokio::time::timeout(Duration::from_secs(2), REFRESH.lock()).await;
-        assert!(g.is_ok(), "REFRESH was never released — later misses would hang");
+        assert!(
+            g.is_ok(),
+            "REFRESH was never released — later misses would hang"
+        );
         drop(g);
         *CACHE.lock().unwrap() = None;
     }
@@ -456,7 +474,10 @@ mod tests {
         assert!(cached().is_some(), "fresh entry should be served");
         {
             let mut g = CACHE.lock().unwrap();
-            *g = Some((Instant::now() - CACHE_TTL - Duration::from_secs(1), json!({"a": 1})));
+            *g = Some((
+                Instant::now() - CACHE_TTL - Duration::from_secs(1),
+                json!({"a": 1}),
+            ));
         }
         assert!(cached().is_none(), "expired entry must not be served");
         *CACHE.lock().unwrap() = None;
@@ -494,7 +515,10 @@ mod tests {
 
         // CONTROL: a FRESH entry never takes the stale path at all.
         set_age(Duration::from_secs(0));
-        assert!(cached().is_some(), "a fresh entry is served by the hit path");
+        assert!(
+            cached().is_some(),
+            "a fresh entry is served by the hit path"
+        );
 
         *CACHE.lock().unwrap() = None;
     }
@@ -526,7 +550,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
 
         // Seed a KNOWN-WRONG value with an old timestamp, the way a stale entry
@@ -536,19 +560,28 @@ mod tests {
             Instant::now() - CACHE_TTL - Duration::from_secs(1),
             sentinel.clone(),
         ));
-        assert!(cached().is_none(), "set-up: the seeded value must be EXPIRED");
+        assert!(
+            cached().is_none(),
+            "set-up: the seeded value must be EXPIRED"
+        );
 
         // Run the same function the background task runs.
         let fresh = recompute(&state).await.expect("recompute");
 
         let (age, now_cached) = cached_any().expect("cache must be populated");
-        assert!(age < CACHE_TTL, "recompute must stamp it FRESH, not leave it stale");
+        assert!(
+            age < CACHE_TTL,
+            "recompute must stamp it FRESH, not leave it stale"
+        );
         assert_ne!(
             now_cached, sentinel,
             "the cached value did not move — 'serve stale' degenerated into 'never refresh', \
              which passes every other cell in this module"
         );
-        assert_eq!(now_cached, fresh, "the cache must hold what recompute returned");
+        assert_eq!(
+            now_cached, fresh,
+            "the cache must hold what recompute returned"
+        );
 
         *CACHE.lock().unwrap() = None;
     }
@@ -581,7 +614,7 @@ mod tests {
             started: Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let disposition = |r: &Response| {
             r.headers()
@@ -598,8 +631,10 @@ mod tests {
 
         // EXPIRED but inside the ceiling -> served IMMEDIATELY as stale. This is
         // the whole point of the card: the caller does not wait on the fan-out.
-        *CACHE.lock().unwrap() =
-            Some((Instant::now() - CACHE_TTL - Duration::from_secs(1), json!({"a": 1})));
+        *CACHE.lock().unwrap() = Some((
+            Instant::now() - CACHE_TTL - Duration::from_secs(1),
+            json!({"a": 1}),
+        ));
         let r = sessions_git(State(state.clone())).await;
         assert_eq!(
             disposition(&r),
@@ -609,8 +644,10 @@ mod tests {
 
         // PAST the ceiling -> the caller WAITS for real data. Never "stale".
         // Without this the fix is "serve whatever we have, forever".
-        *CACHE.lock().unwrap() =
-            Some((Instant::now() - STALE_CEILING - Duration::from_secs(1), json!({"a": 1})));
+        *CACHE.lock().unwrap() = Some((
+            Instant::now() - STALE_CEILING - Duration::from_secs(1),
+            json!({"a": 1}),
+        ));
         let r = sessions_git(State(state.clone())).await;
         assert_ne!(
             disposition(&r),
@@ -623,7 +660,11 @@ mod tests {
         // be serving a value it does not have.
         *CACHE.lock().unwrap() = None;
         let r = sessions_git(State(state.clone())).await;
-        assert_eq!(disposition(&r), "miss", "a cold start has no stale value to serve");
+        assert_eq!(
+            disposition(&r),
+            "miss",
+            "a cold start has no stale value to serve"
+        );
 
         *CACHE.lock().unwrap() = None;
     }

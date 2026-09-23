@@ -74,11 +74,13 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
     // evidence, the largest single blob 19 KB. Every millisecond of that was
     // added to every non-GET request in the fleet, which awaits `record_receipt`
     // in `policy::enforce` before its handler runs.
-    let results: Vec<(InvariantResult, String)> =
-        results.into_iter().map(|r| {
+    let results: Vec<(InvariantResult, String)> = results
+        .into_iter()
+        .map(|r| {
             let evidence = r.evidence.to_string();
             (r, evidence)
-        }).collect();
+        })
+        .collect();
     // Also hoisted: it is the same value for every row and was a call per row.
     let build = crate::build_hash();
     let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -275,7 +277,9 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                          WHERE status = 'pass' AND ts < ?1
                          LIMIT ?2)",
                 )
-                .and_then(|mut s| s.execute(rusqlite::params![ts - PASS_RETAIN_SECS, TRIM_BATCH_ROWS]));
+                .and_then(|mut s| {
+                    s.execute(rusqlite::params![ts - PASS_RETAIN_SECS, TRIM_BATCH_ROWS])
+                });
             let _ = conn
                 .prepare_cached(
                     "DELETE FROM _amux_invariant_result WHERE rowid IN (
@@ -283,8 +287,13 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                          WHERE ts < ?1
                          LIMIT ?2)",
                 )
-                .and_then(|mut s| s.execute(rusqlite::params![ts - RESULT_RETAIN_SECS, TRIM_BATCH_ROWS]));
-            Ok(WriteOutcome { applied: true, events: vec![] })
+                .and_then(|mut s| {
+                    s.execute(rusqlite::params![ts - RESULT_RETAIN_SECS, TRIM_BATCH_ROWS])
+                });
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     opened.load(std::sync::atomic::Ordering::Relaxed)
@@ -394,7 +403,8 @@ pub fn latest_per_invariant(store: &SharedStore) -> anyhow::Result<Vec<serde_jso
             if row["status"] != "pass" {
                 let raw: String = r.get(6)?;
                 if !raw.trim().is_empty() && raw.trim() != "{}" {
-                    row["evidence"] = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+                    row["evidence"] =
+                        serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
                 }
             }
             Ok(row)
@@ -427,21 +437,37 @@ mod tests {
         let (s, _d) = store();
         // Production measures identity at startup before starting jobs too.
         let build = crate::build_hash();
-        let rows = (0..128).map(|n| {
-            let mut r=InvariantResult::pass("test.writer_latency");
-            r.entity_key=n.to_string(); r
-        }).collect();
-        let recording_store=s.clone();
-        let recording=tokio::spawn(async move {record(&recording_store,rows,0).await});
+        let rows = (0..128)
+            .map(|n| {
+                let mut r = InvariantResult::pass("test.writer_latency");
+                r.entity_key = n.to_string();
+                r
+            })
+            .collect();
+        let recording_store = s.clone();
+        let recording = tokio::spawn(async move { record(&recording_store, rows, 0).await });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        let started=std::time::Instant::now();
-        s.write_async(|_|Ok(WriteOutcome {applied:false,events:vec![]})).await.unwrap();
-        assert!(started.elapsed()<std::time::Duration::from_secs(1),
-            "interactive write waited {:?} behind invariant recording",started.elapsed());
+        let started = std::time::Instant::now();
+        s.write_async(|_| {
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
+        })
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "interactive write waited {:?} behind invariant recording",
+            started.elapsed()
+        );
         recording.await.unwrap();
-        let c=s.read().unwrap();
+        let c = s.read().unwrap();
         let stamped:i64=c.query_row("SELECT count(*) FROM _amux_invariant_result WHERE invariant_id='test.writer_latency' AND build=?1",[build],|r|r.get(0)).unwrap();
-        assert_eq!(stamped,128,"every result retains the executing image identity");
+        assert_eq!(
+            stamped, 128,
+            "every result retains the executing image identity"
+        );
     }
 
     /// AMUX-4538. A failing check's stored evidence reaches the reader through
@@ -453,19 +479,34 @@ mod tests {
         record(
             &s,
             vec![
-                InvariantResult::fail("test.evidence_fail", "every card complete", "2 of 5 incomplete")
-                    .evidence(json!({"sample": [{"id": "A-1", "gaps": ["priority"]}], "n_considered": 5})),
+                InvariantResult::fail(
+                    "test.evidence_fail",
+                    "every card complete",
+                    "2 of 5 incomplete",
+                )
+                .evidence(
+                    json!({"sample": [{"id": "A-1", "gaps": ["priority"]}], "n_considered": 5}),
+                ),
                 InvariantResult::pass("test.evidence_pass").evidence(json!({"n_considered": 9})),
             ],
             1,
         )
         .await;
         let rows = latest_per_invariant(&s).unwrap();
-        let fail = rows.iter().find(|r| r["invariant_id"] == "test.evidence_fail").expect("fail row");
+        let fail = rows
+            .iter()
+            .find(|r| r["invariant_id"] == "test.evidence_fail")
+            .expect("fail row");
         assert_eq!(fail["evidence"]["sample"][0]["id"], "A-1", "{fail}");
         assert_eq!(fail["evidence"]["n_considered"], 5, "{fail}");
-        let pass = rows.iter().find(|r| r["invariant_id"] == "test.evidence_pass").expect("pass row");
-        assert!(pass.get("evidence").is_none(), "pass rows stay small: {pass}");
+        let pass = rows
+            .iter()
+            .find(|r| r["invariant_id"] == "test.evidence_pass")
+            .expect("pass row");
+        assert!(
+            pass.get("evidence").is_none(),
+            "pass rows stay small: {pass}"
+        );
     }
 
     fn store() -> (SharedStore, tempfile::TempDir) {
@@ -485,7 +526,10 @@ mod tests {
                  VALUES (?1,?2,?3,?4,'','','{}',0)",
                 rusqlite::params![ts, id, status, entity],
             )?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
         .unwrap();
@@ -509,11 +553,14 @@ mod tests {
     async fn an_unknown_resolves_an_incident_without_claiming_it_healed() {
         let (s, _d) = store();
         let res = |st: &str| {
-            let mut r = InvariantResult::new("schema.timestamp_units_declared", match st {
-                "fail" => Status::Fail,
-                "pass" => Status::Pass,
-                _ => Status::Unknown,
-            });
+            let mut r = InvariantResult::new(
+                "schema.timestamp_units_declared",
+                match st {
+                    "fail" => Status::Fail,
+                    "pass" => Status::Pass,
+                    _ => Status::Unknown,
+                },
+            );
             r.entity_key = "waitlist.ts".into();
             r
         };
@@ -529,7 +576,10 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(status, "fail", "precondition: the incident must actually be open");
+        assert_eq!(
+            status, "fail",
+            "precondition: the incident must actually be open"
+        );
         assert!(resolved.is_none(), "precondition: and unresolved");
 
         record(&s, vec![res("unknown")], 0).await;
@@ -586,18 +636,27 @@ mod tests {
 
         let got = latest_per_invariant(&s).unwrap();
 
-        let a: Vec<_> = got.iter().filter(|r| r["invariant_id"] == "a.check").collect();
-        assert_eq!(a.len(), 3, "every entity of the newest batch must appear: {got:?}");
+        let a: Vec<_> = got
+            .iter()
+            .filter(|r| r["invariant_id"] == "a.check")
+            .collect();
+        assert_eq!(
+            a.len(),
+            3,
+            "every entity of the newest batch must appear: {got:?}"
+        );
         assert!(
             a.iter().all(|r| r["checked_at"].as_f64().unwrap() == 200.0),
             "the older generation must be gone: {got:?}"
         );
-        let mut ents: Vec<&str> =
-            a.iter().map(|r| r["entity"].as_str().unwrap()).collect();
+        let mut ents: Vec<&str> = a.iter().map(|r| r["entity"].as_str().unwrap()).collect();
         ents.sort();
         assert_eq!(ents, vec!["e1", "e2", "e3"]);
 
-        let b: Vec<_> = got.iter().filter(|r| r["invariant_id"] == "b.check").collect();
+        let b: Vec<_> = got
+            .iter()
+            .filter(|r| r["invariant_id"] == "b.check")
+            .collect();
         assert_eq!(b.len(), 1, "b.check has one entity: {got:?}");
         assert_eq!(
             b[0]["checked_at"].as_f64().unwrap(),
@@ -652,22 +711,42 @@ mod tests {
         let (s, _d) = store();
         let fail = || vec![InvariantResult::fail("x.count", "a", "b").entity("w1")];
 
-        assert_eq!(record(&s, fail(), 1).await, 1, "the first failure opens an incident");
+        assert_eq!(
+            record(&s, fail(), 1).await,
+            1,
+            "the first failure opens an incident"
+        );
         // THE LEG THAT CATCHES A DEAD RETURNING: the fallback value is 1.
-        assert_eq!(record(&s, fail(), 1).await, 0, "a repeat failure opens nothing");
+        assert_eq!(
+            record(&s, fail(), 1).await,
+            0,
+            "a repeat failure opens nothing"
+        );
         assert_eq!(record(&s, fail(), 1).await, 0);
 
         // A different entity is a different incident, so it opens.
         assert_eq!(
-            record(&s, vec![InvariantResult::fail("x.count", "a", "b").entity("w2")], 1).await,
+            record(
+                &s,
+                vec![InvariantResult::fail("x.count", "a", "b").entity("w2")],
+                1
+            )
+            .await,
             1
         );
         // A pass opens nothing at all.
-        assert_eq!(record(&s, vec![InvariantResult::pass("x.count").entity("w1")], 1).await, 0);
+        assert_eq!(
+            record(&s, vec![InvariantResult::pass("x.count").entity("w1")], 1).await,
+            0
+        );
         // And a REOPEN is not an open: the row already exists with a count
         // above 1. Preserved behaviour, asserted here because the rewrite could
         // silently have changed it.
-        assert_eq!(record(&s, fail(), 1).await, 0, "a reopened incident is not a new one");
+        assert_eq!(
+            record(&s, fail(), 1).await,
+            0,
+            "a reopened incident is not a new one"
+        );
         assert_eq!(live_incidents(&s).unwrap().len(), 2);
     }
 
@@ -676,8 +755,18 @@ mod tests {
     #[tokio::test]
     async fn distinct_entities_are_distinct_incidents() {
         let (s, _d) = store();
-        record(&s, vec![InvariantResult::fail("x", "a", "b").entity("w1")], 1).await;
-        record(&s, vec![InvariantResult::fail("x", "a", "b").entity("w2")], 1).await;
+        record(
+            &s,
+            vec![InvariantResult::fail("x", "a", "b").entity("w1")],
+            1,
+        )
+        .await;
+        record(
+            &s,
+            vec![InvariantResult::fail("x", "a", "b").entity("w2")],
+            1,
+        )
+        .await;
         assert_eq!(live_incidents(&s).unwrap().len(), 2);
     }
 
@@ -686,16 +775,29 @@ mod tests {
     #[tokio::test]
     async fn pass_resolves_and_a_later_failure_reopens() {
         let (s, _d) = store();
-        record(&s, vec![InvariantResult::fail("x", "a", "b").entity("w1")], 1).await;
+        record(
+            &s,
+            vec![InvariantResult::fail("x", "a", "b").entity("w1")],
+            1,
+        )
+        .await;
         assert_eq!(live_incidents(&s).unwrap().len(), 1);
 
         record(&s, vec![InvariantResult::pass("x").entity("w1")], 1).await;
         assert_eq!(live_incidents(&s).unwrap().len(), 0, "pass must resolve it");
 
-        record(&s, vec![InvariantResult::fail("x", "a", "b").entity("w1")], 1).await;
+        record(
+            &s,
+            vec![InvariantResult::fail("x", "a", "b").entity("w1")],
+            1,
+        )
+        .await;
         let inc = live_incidents(&s).unwrap();
         assert_eq!(inc.len(), 1, "a re-failure must reopen, not stay closed");
-        assert_eq!(inc[0]["occurrences"], 2, "history is preserved across the flap");
+        assert_eq!(
+            inc[0]["occurrences"], 2,
+            "history is preserved across the flap"
+        );
     }
 
     /// Unknown must NOT open an incident (it is a gap in observation, not a
@@ -703,8 +805,17 @@ mod tests {
     #[tokio::test]
     async fn unknown_records_but_does_not_page() {
         let (s, _d) = store();
-        record(&s, vec![InvariantResult::unknown("x", "probe down").entity("w1")], 1).await;
-        assert_eq!(live_incidents(&s).unwrap().len(), 0, "unknown must not open an incident");
+        record(
+            &s,
+            vec![InvariantResult::unknown("x", "probe down").entity("w1")],
+            1,
+        )
+        .await;
+        assert_eq!(
+            live_incidents(&s).unwrap().len(),
+            0,
+            "unknown must not open an incident"
+        );
         let latest = latest_per_invariant(&s).unwrap();
         assert_eq!(latest.len(), 1, "...but it must still be recorded");
         assert_eq!(latest[0]["status"], "unknown");
@@ -751,6 +862,9 @@ mod tests {
 
         let (rows, oldest) = result_log_stats(&s).unwrap();
         assert_eq!(rows, 2);
-        assert!(oldest >= 7000.0, "oldest_age_s must reflect the surviving fail row, got {oldest}");
+        assert!(
+            oldest >= 7000.0,
+            "oldest_age_s must reflect the surviving fail row, got {oldest}"
+        );
     }
 }

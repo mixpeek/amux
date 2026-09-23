@@ -15,9 +15,7 @@ use std::path::PathBuf;
 fn channels_dir() -> PathBuf {
     let home = std::env::var("AMUX_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
-        });
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"));
     home.join("channels")
 }
 
@@ -111,10 +109,7 @@ fn channel_list_for(session: &str) -> Vec<serde_json::Value> {
                 count += 1;
             }
         }
-        let last_ts = last
-            .as_ref()
-            .and_then(|l| l["ts"].as_i64())
-            .unwrap_or(0);
+        let last_ts = last.as_ref().and_then(|l| l["ts"].as_i64()).unwrap_or(0);
         let last_from = last
             .as_ref()
             .and_then(|l| l["from"].as_str())
@@ -169,8 +164,7 @@ async fn list_channels(Query(q): Query<ListQuery>) -> Response {
         )
             .into_response();
     }
-    let result =
-        tokio::task::spawn_blocking(move || channel_list_for(&sess)).await;
+    let result = tokio::task::spawn_blocking(move || channel_list_for(&sess)).await;
     match result {
         Ok(channels) => Json(json!({"channels": channels})).into_response(),
         Err(e) => (
@@ -274,15 +268,14 @@ async fn post_message(
          curl -sk -X POST $AMUX_URL/api/channels/$AMUX_SESSION/{safe_sender}/messages \
          -H 'Content-Type: application/json' -d '{{\"text\":\"YOUR REPLY HERE\"}}'"
     );
-    let (delivered, delivery_status) =
-        session_verbs::send_text(
-            &state,
-            &recipient,
-            &wrapped,
-            true,
-            session_verbs::SendOrigin::Automation,
-        )
-        .await;
+    let (delivered, delivery_status) = session_verbs::send_text(
+        &state,
+        &recipient,
+        &wrapped,
+        true,
+        session_verbs::SendOrigin::Automation,
+    )
+    .await;
 
     Json(json!({
         "ok": true,
@@ -309,9 +302,8 @@ async fn end_channel(
     let other = b;
     let safe_closer = closer.clone();
 
-    let notice = format!(
-        "[channel ended by @{safe_closer}] no reply needed — the channel has been closed."
-    );
+    let notice =
+        format!("[channel ended by @{safe_closer}] no reply needed — the channel has been closed.");
     if session_verbs::is_running(&other).await {
         let _ = session_verbs::send_text(
             &state,

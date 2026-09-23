@@ -69,7 +69,9 @@ pub(crate) fn chat_files(root: &Path) -> Vec<PathBuf> {
         if depth > 4 {
             return;
         }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -80,7 +82,9 @@ pub(crate) fn chat_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(root) else { return out };
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
     for e in rd.flatten() {
         let chats = e.path().join("chats");
         if chats.is_dir() {
@@ -106,7 +110,9 @@ pub(crate) fn chat_files(root: &Path) -> Vec<PathBuf> {
 /// 55 files; the header carries the whole thing.
 pub(crate) fn conversation_key(path: &Path) -> String {
     let id = header_field(path, "sessionId").unwrap_or_else(|| {
-        path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
     });
     format!("gemini:{id}")
 }
@@ -186,9 +192,18 @@ pub(crate) fn parse_gemini_from(path: &Path, offset: u64) -> (u64, Vec<GeminiTur
         if line.is_empty() {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        let Some(tokens) = v.get("tokens").and_then(serde_json::Value::as_object) else { continue };
-        let n = |k: &str| tokens.get(k).and_then(serde_json::Value::as_i64).unwrap_or(0);
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(tokens) = v.get("tokens").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        let n = |k: &str| {
+            tokens
+                .get(k)
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0)
+        };
         let cached = n("cached");
         // `input` INCLUDES `cached` (derived over 82 rows; see the module doc),
         // so the fresh part is the difference. `thoughts` and `tool` are billed
@@ -200,7 +215,9 @@ pub(crate) fn parse_gemini_from(path: &Path, offset: u64) -> (u64, Vec<GeminiTur
         if slots.iter().all(|x| *x == 0) {
             continue;
         }
-        let Some(message_id) = v.get("id").and_then(serde_json::Value::as_str) else { continue };
+        let Some(message_id) = v.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
         out.push(GeminiTurn {
             ts: v
                 .get("timestamp")
@@ -282,7 +299,12 @@ pub(crate) async fn index_once_at(
                 }
             })
             .collect();
-        batches.push(LedgerFileBatch { conversation, offset: new_off, mtime, rows });
+        batches.push(LedgerFileBatch {
+            conversation,
+            offset: new_off,
+            mtime,
+            rows,
+        });
     }
 
     token_ledger::warn_unpriced("gemini", &table, &batches);
@@ -343,20 +365,40 @@ mod tests {
     #[test]
     fn cached_input_is_not_billed_twice_and_thinking_is_output() {
         let dir = tempfile::tempdir().unwrap();
-        let p = chat(dir.path(), "amux", "deadbeef", &msg("m1", "2026-09-15T10:39:10Z", 41944, 36716, 55, 98));
+        let p = chat(
+            dir.path(),
+            "amux",
+            "deadbeef",
+            &msg("m1", "2026-09-15T10:39:10Z", 41944, 36716, 55, 98),
+        );
         let (_, turns) = parse_gemini_from(&p, 0);
         assert_eq!(turns.len(), 1, "{turns:?}");
         let t = &turns[0];
-        assert_eq!(t.tokens[0], 41944 - 36716, "fresh input excludes the cached part");
+        assert_eq!(
+            t.tokens[0],
+            41944 - 36716,
+            "fresh input excludes the cached part"
+        );
         assert_eq!(t.tokens[1], 36716, "the cached part is cache_read");
         assert_eq!(t.tokens[2], 0, "gemini reports no cache-write bucket");
-        assert_eq!(t.tokens[3], 55 + 98, "thoughts are billed as output and are not inside it");
+        assert_eq!(
+            t.tokens[3],
+            55 + 98,
+            "thoughts are billed as output and are not inside it"
+        );
         // NOTHING IS LOST AND NOTHING IS DOUBLED. The four slots must sum to the
         // transcript's own total, which is the invariant the wrong relation broke.
-        assert_eq!(t.tokens.iter().sum::<i64>(), 42097, "the slots must reconstruct total: {t:?}");
+        assert_eq!(
+            t.tokens.iter().sum::<i64>(),
+            42097,
+            "the slots must reconstruct total: {t:?}"
+        );
         assert_eq!(t.message_id, "m1");
         assert_eq!(t.model, "gemini-2.5-pro");
-        assert!(t.ts > 1_700_000_000, "the timestamp is parsed, not zero: {t:?}");
+        assert!(
+            t.ts > 1_700_000_000,
+            "the timestamp is parsed, not zero: {t:?}"
+        );
     }
 
     /// A message with no spend is skipped, and one with only cached input is
@@ -373,8 +415,16 @@ mod tests {
         let p = chat(dir.path(), "amux", "deadbeef", &body);
         let (_, turns) = parse_gemini_from(&p, 0);
         let ids: Vec<&str> = turns.iter().map(|t| t.message_id.as_str()).collect();
-        assert_eq!(ids, vec!["c"], "only the cache-only turn survives: {turns:?}");
-        assert_eq!(turns[0].tokens, [0, 500, 0, 0], "all of it was cache_read: {turns:?}");
+        assert_eq!(
+            ids,
+            vec!["c"],
+            "only the cache-only turn survives: {turns:?}"
+        );
+        assert_eq!(
+            turns[0].tokens,
+            [0, 500, 0, 0],
+            "all of it was cache_read: {turns:?}"
+        );
     }
 
     /// A HALF-WRITTEN FINAL LINE IS DEFERRED, not billed and not skipped.
@@ -397,21 +447,39 @@ mod tests {
         let p = chats.join("session-2026-09-15T10-39-6e64f2da.jsonl");
         let whole = msg("m1", "2026-09-15T10:39:10Z", 1000, 0, 50, 0);
         let partial = &msg("m2", "2026-09-15T10:39:20Z", 2000, 0, 60, 0)[..40];
-        std::fs::write(&p, format!("{}\n{}\n{}", header("deadbeef"), whole, partial)).unwrap();
+        std::fs::write(
+            &p,
+            format!("{}\n{}\n{}", header("deadbeef"), whole, partial),
+        )
+        .unwrap();
 
         let (off, turns) = parse_gemini_from(&p, 0);
         assert_eq!(turns.len(), 1, "only the terminated message: {turns:?}");
         assert_eq!(turns[0].message_id, "m1");
         let total = std::fs::metadata(&p).unwrap().len();
-        assert!(off < total, "the cursor stops before the partial line: {off} of {total}");
+        assert!(
+            off < total,
+            "the cursor stops before the partial line: {off} of {total}"
+        );
 
         // FINISH THE LINE. The next pass must pick it up, or a deferral is just
         // a slower version of dropping it.
-        std::fs::write(&p, format!("{}\n{}\n{}\n", header("deadbeef"), whole,
-            msg("m2", "2026-09-15T10:39:20Z", 2000, 0, 60, 0))).unwrap();
+        std::fs::write(
+            &p,
+            format!(
+                "{}\n{}\n{}\n",
+                header("deadbeef"),
+                whole,
+                msg("m2", "2026-09-15T10:39:20Z", 2000, 0, 60, 0)
+            ),
+        )
+        .unwrap();
         let (_, turns2) = parse_gemini_from(&p, off);
         assert_eq!(turns2.len(), 1, "{turns2:?}");
-        assert_eq!(turns2[0].message_id, "m2", "the once-partial message, now whole");
+        assert_eq!(
+            turns2[0].message_id, "m2",
+            "the once-partial message, now whole"
+        );
     }
 
     /// The lane comes from sha256 of its own workdir, matching the transcript's
@@ -434,11 +502,19 @@ mod tests {
 
         let mut workdirs = BTreeMap::new();
         workdirs.insert("solo".to_string(), "/Users/ethan/Dev/amux".to_string());
-        workdirs.insert("shared-a".to_string(), "/Users/ethan/Dev/mixpeek".to_string());
-        workdirs.insert("shared-b".to_string(), "/Users/ethan/Dev/mixpeek".to_string());
+        workdirs.insert(
+            "shared-a".to_string(),
+            "/Users/ethan/Dev/mixpeek".to_string(),
+        );
+        workdirs.insert(
+            "shared-b".to_string(),
+            "/Users/ethan/Dev/mixpeek".to_string(),
+        );
         let owners = owners_by_hash(&workdirs);
         assert_eq!(
-            owners.get(&project_hash("/Users/ethan/Dev/amux")).map(String::as_str),
+            owners
+                .get(&project_hash("/Users/ethan/Dev/amux"))
+                .map(String::as_str),
             Some("solo")
         );
         assert!(
@@ -454,8 +530,16 @@ mod tests {
     #[test]
     fn the_conversation_key_uses_the_full_session_id() {
         let dir = tempfile::tempdir().unwrap();
-        let p = chat(dir.path(), "amux", "deadbeef", &msg("m1", "2026-09-15T10:39:10Z", 10, 0, 5, 0));
-        assert_eq!(conversation_key(&p), "gemini:6e64f2da-206c-4f4d-83bc-bd8e43673d40");
+        let p = chat(
+            dir.path(),
+            "amux",
+            "deadbeef",
+            &msg("m1", "2026-09-15T10:39:10Z", 10, 0, 5, 0),
+        );
+        assert_eq!(
+            conversation_key(&p),
+            "gemini:6e64f2da-206c-4f4d-83bc-bd8e43673d40"
+        );
         assert!(
             conversation_key(&p).starts_with("gemini:"),
             "prefixed, or a uuid collision with codex would cross the providers' cursors"
@@ -478,7 +562,9 @@ mod tests {
         let mut workdirs = BTreeMap::new();
         workdirs.insert("lane-amux".to_string(), "/w/amux".to_string());
 
-        let n = index_once_at(&st, home.path(), root.path(), &workdirs).await.unwrap();
+        let n = index_once_at(&st, home.path(), root.path(), &workdirs)
+            .await
+            .unwrap();
         assert_eq!(n, 2, "two messages carried tokens");
 
         let rows: Vec<(String, String, i64, i64, i64)> = {
@@ -494,16 +580,26 @@ mod tests {
             r.flatten().collect()
         };
         assert_eq!(rows.len(), 2, "{rows:?}");
-        assert_eq!(rows[0].0, "lane-amux", "billed to the lane whose workdir hashes to it");
-        assert_eq!((rows[0].2, rows[0].3, rows[0].4), (600, 400, 60), "{rows:?}");
+        assert_eq!(
+            rows[0].0, "lane-amux",
+            "billed to the lane whose workdir hashes to it"
+        );
+        assert_eq!(
+            (rows[0].2, rows[0].3, rows[0].4),
+            (600, 400, 60),
+            "{rows:?}"
+        );
 
         // THE RE-READ. The cursor is at EOF, so this must add nothing. Without
         // it a restart would re-bill every historical turn on this box.
-        let again = index_once_at(&st, home.path(), root.path(), &workdirs).await.unwrap();
+        let again = index_once_at(&st, home.path(), root.path(), &workdirs)
+            .await
+            .unwrap();
         assert_eq!(again, 0, "an unchanged file has nothing new");
         let total: i64 = {
             let conn = st.read().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM token_ledger", [], |r| r.get(0)).unwrap()
+            conn.query_row("SELECT COUNT(*) FROM token_ledger", [], |r| r.get(0))
+                .unwrap()
         };
         assert_eq!(total, 2, "and no duplicate rows");
     }
@@ -523,7 +619,12 @@ mod tests {
         );
         let mut workdirs = BTreeMap::new();
         workdirs.insert("lane-amux".to_string(), "/w/amux".to_string());
-        assert_eq!(index_once_at(&st, home.path(), root.path(), &workdirs).await.unwrap(), 1);
+        assert_eq!(
+            index_once_at(&st, home.path(), root.path(), &workdirs)
+                .await
+                .unwrap(),
+            1
+        );
 
         let mut text = std::fs::read_to_string(&p).unwrap();
         text.push_str(&msg("m2", "2026-09-15T10:39:30Z", 3000, 0, 90, 0));
@@ -531,14 +632,17 @@ mod tests {
         std::fs::write(&p, text).unwrap();
 
         assert_eq!(
-            index_once_at(&st, home.path(), root.path(), &workdirs).await.unwrap(),
+            index_once_at(&st, home.path(), root.path(), &workdirs)
+                .await
+                .unwrap(),
             1,
             "the appended message, and only it"
         );
         let ids: Vec<String> = {
             let conn = st.read().unwrap();
-            let mut stmt =
-                conn.prepare("SELECT message_id FROM token_ledger ORDER BY message_id").unwrap();
+            let mut stmt = conn
+                .prepare("SELECT message_id FROM token_ledger ORDER BY message_id")
+                .unwrap();
             let r = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
             r.flatten().collect()
         };

@@ -157,7 +157,9 @@ fn extract_json_array(s: &str) -> Option<Value> {
                 depth -= 1;
                 if depth == 0 {
                     let cand = &s[start..=i];
-                    return serde_json::from_str::<Value>(cand).ok().filter(Value::is_array);
+                    return serde_json::from_str::<Value>(cand)
+                        .ok()
+                        .filter(Value::is_array);
                 }
             }
             _ => {}
@@ -175,14 +177,19 @@ pub async fn plan(State(state): State<AppState>, Json(body): Json<Value>) -> Res
         .trim()
         .to_string();
     if transcript.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "transcript is required" })))
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "transcript is required" })),
+        )
             .into_response();
     }
     let home = crate::api::groups::amux_home();
     let roster = fleet_roster(&home);
     if roster.is_empty() {
-        return Json(json!({ "plan": [], "transcript": transcript, "note": "no workers available" }))
-            .into_response();
+        return Json(
+            json!({ "plan": [], "transcript": transcript, "note": "no workers available" }),
+        )
+        .into_response();
     }
     let prompt = build_prompt(&roster, &transcript);
     // TIME THE MODEL SEPARATELY FROM THE REQUEST (AMUX-3818). This endpoint's
@@ -194,7 +201,11 @@ pub async fn plan(State(state): State<AppState>, Json(body): Json<Value>) -> Res
     let (via, answer) = match crate::api::lookup::helper_answer(&prompt).await {
         Ok(x) => x,
         Err((code, msg)) => {
-            return (code, Json(json!({ "error": msg, "transcript": transcript }))).into_response()
+            return (
+                code,
+                Json(json!({ "error": msg, "transcript": transcript })),
+            )
+                .into_response()
         }
     };
     let model_ms = model_started.elapsed().as_millis();
@@ -215,7 +226,8 @@ pub async fn plan(State(state): State<AppState>, Json(body): Json<Value>) -> Res
     };
     // Validate every routed name against the live roster: the model may never
     // invent a recipient. Dropped names are REPORTED, not swallowed.
-    let names: std::collections::HashSet<&str> = roster.iter().map(|(n, _, _)| n.as_str()).collect();
+    let names: std::collections::HashSet<&str> =
+        roster.iter().map(|(n, _, _)| n.as_str()).collect();
     let open_cards = live_card_ids(&state);
     let mut v = Validation::default();
     let out_plan = validate_plan(&arr, &names, open_cards.as_ref(), &mut v);
@@ -295,7 +307,11 @@ fn validate_plan(
 ) -> Vec<Value> {
     let mut out: Vec<Value> = vec![];
     for item in arr.as_array().into_iter().flatten() {
-        let w = item.get("worker").and_then(Value::as_str).unwrap_or("").trim();
+        let w = item
+            .get("worker")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if w.is_empty() {
             continue;
         }
@@ -307,8 +323,18 @@ fn validate_plan(
         // Absent `action` is a SEND. The router shipped send-only for two weeks
         // and a model that omits the field is describing the old shape, not an
         // unknown one.
-        let action = item.get("action").and_then(Value::as_str).unwrap_or("send").trim();
-        let s = |k: &str| item.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let action = item
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("send")
+            .trim();
+        let s = |k: &str| {
+            item.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
         match action {
             "board" => {
                 let card = s("card");
@@ -377,8 +403,21 @@ fn validate_plan(
 /// be told from an INVENTED one. Kept beside [`VOICE_VERBS`] rather than
 /// derived from the dispatcher, and the test says why that is a known gap.
 const ALL_KNOWN_VERBS: &[&str] = &[
-    "start", "stop", "clear", "duplicate", "clone", "archive", "wake", "reset", "commit-report",
-    "report", "apply-template", "delete", "rename", "deploy", "send",
+    "start",
+    "stop",
+    "clear",
+    "duplicate",
+    "clone",
+    "archive",
+    "wake",
+    "reset",
+    "commit-report",
+    "report",
+    "apply-template",
+    "delete",
+    "rename",
+    "deploy",
+    "send",
 ];
 
 #[cfg(test)]
@@ -390,7 +429,8 @@ mod tests {
         // Bare array.
         assert!(extract_json_array(r#"[{"worker":"a","message":"go"}]"#).is_some());
         // Fenced + prose around it.
-        let fenced = "Here is the plan:\n```json\n[{\"worker\":\"a\",\"message\":\"do [x]\"}]\n```\nDone.";
+        let fenced =
+            "Here is the plan:\n```json\n[{\"worker\":\"a\",\"message\":\"do [x]\"}]\n```\nDone.";
         let v = extract_json_array(fenced).expect("must find the fenced array");
         assert_eq!(v.as_array().unwrap().len(), 1);
         // A ']' inside a string value must not close the array early.
@@ -432,7 +472,12 @@ mod tests {
 
         assert_eq!(out.len(), 5, "five valid actions survive: {out:#?}");
         assert_eq!(out[0]["action"], json!("send"));
-        assert_eq!(out[1]["action"], json!("send"), "an absent action is a send: {:?}", out[1]);
+        assert_eq!(
+            out[1]["action"],
+            json!("send"),
+            "an absent action is a send: {:?}",
+            out[1]
+        );
         assert_eq!(out[2]["title"], json!("new card"));
         assert_eq!(out[3]["card"], json!("AMUX-1"));
         assert_eq!(out[4]["verb"], json!("stop"));
@@ -457,20 +502,34 @@ mod tests {
     #[test]
     fn a_spoken_command_can_never_propose_a_destructive_verb() {
         for bad in ["delete", "archive", "reset", "clear", "rename", "deploy"] {
-            assert!(ALL_KNOWN_VERBS.contains(&bad), "{bad} must be a real verb or this proves nothing");
-            assert!(!VOICE_VERBS.contains(&bad), "{bad} must not be voice-proposable");
+            assert!(
+                ALL_KNOWN_VERBS.contains(&bad),
+                "{bad} must be a real verb or this proves nothing"
+            );
+            assert!(
+                !VOICE_VERBS.contains(&bad),
+                "{bad} must not be voice-proposable"
+            );
             let arr = json!([{"action":"verb","worker":"amux","verb":bad}]);
             let mut v = Validation::default();
             let out = validate_plan(&arr, &names(), None, &mut v);
             assert!(out.is_empty(), "{bad} must not reach the plan: {out:#?}");
-            assert_eq!(v.refused_verbs, vec![bad], "and must be reported as REFUSED, not lost");
+            assert_eq!(
+                v.refused_verbs,
+                vec![bad],
+                "and must be reported as REFUSED, not lost"
+            );
         }
         // THE CONTROL: the three that ARE allowed must get through, or this
         // test would pass with an empty allow-list and no verb support at all.
         for good in VOICE_VERBS {
             let arr = json!([{"action":"verb","worker":"amux","verb":good}]);
             let mut v = Validation::default();
-            assert_eq!(validate_plan(&arr, &names(), None, &mut v).len(), 1, "{good} must plan");
+            assert_eq!(
+                validate_plan(&arr, &names(), None, &mut v).len(),
+                1,
+                "{good} must plan"
+            );
         }
     }
 
@@ -490,7 +549,11 @@ mod tests {
         ]);
         let mut v = Validation::default();
         let out = validate_plan(&arr, &names(), None, &mut v);
-        assert_eq!(v.refused_verbs, vec!["delete"], "the refusal must survive to the response");
+        assert_eq!(
+            v.refused_verbs,
+            vec!["delete"],
+            "the refusal must survive to the response"
+        );
         // CONTROL 1: a refusal is NOT a plan entry — it must never become
         // something the human can tick and run.
         assert_eq!(out.len(), 1, "only the send is runnable: {out:#?}");
@@ -498,7 +561,10 @@ mod tests {
         // CONTROL 2: the prompt has to ask for the marker, or the model never
         // emits one and this branch is dead code that tests green forever.
         let p = build_prompt(&[("amux".into(), vec![], "d".into())], "delete amux");
-        assert!(p.contains("\"action\":\"refused\""), "the prompt must request it: {p}");
+        assert!(
+            p.contains("\"action\":\"refused\""),
+            "the prompt must request it: {p}"
+        );
     }
 
     /// An UNREADABLE board is not a clean board (ethos rule 4).
@@ -532,18 +598,31 @@ mod tests {
     /// the allow-list would read as a broken feature rather than a policy.
     #[test]
     fn the_prompt_names_the_verbs_it_will_accept_and_the_ones_it_will_not() {
-        let p = build_prompt(&[("backend".into(), vec![], "api".into())], "stop the backend");
+        let p = build_prompt(
+            &[("backend".into(), vec![], "api".into())],
+            "stop the backend",
+        );
         for v in VOICE_VERBS {
             assert!(p.contains(v), "the prompt must offer {v}: {p}");
         }
-        assert!(p.contains("delete"), "and must name what it will not take: {p}");
-        assert!(p.contains("\"action\":\"board\""), "the board shape must be in the schema");
+        assert!(
+            p.contains("delete"),
+            "and must name what it will not take: {p}"
+        );
+        assert!(
+            p.contains("\"action\":\"board\""),
+            "the board shape must be in the schema"
+        );
     }
 
     #[test]
     fn build_prompt_lists_workers_with_groups_and_desc() {
         let roster = vec![
-            ("backend".into(), vec!["ops".into()], "The backend API".into()),
+            (
+                "backend".into(),
+                vec!["ops".into()],
+                "The backend API".into(),
+            ),
             ("gtm".into(), vec![], "".into()),
         ];
         let p = build_prompt(&roster, "ship the thing");

@@ -209,8 +209,11 @@ async fn a_failed_graph_probe_never_reports_an_empty_success() {
 #[tokio::test]
 async fn preflight_matches_export_without_loading_task_contents() {
     let (app, store, _dir) = app();
-    seed(&store, "INSERT INTO issues(id,title,status,created,updated,depends_on,desc) VALUES \
-        ('G-1','large evidence','todo',1,1,'[]',hex(zeroblob(1000000)))");
+    seed(
+        &store,
+        "INSERT INTO issues(id,title,status,created,updated,depends_on,desc) VALUES \
+        ('G-1','large evidence','todo',1,1,'[]',hex(zeroblob(1000000)))",
+    );
     let (_, full) = request(&app, "GET", "/api/graph/board", Value::Null).await;
     let (status, thin) = request(&app, "GET", "/api/graph/board/verify", Value::Null).await;
     assert_eq!(status, 200, "{thin}");
@@ -325,11 +328,14 @@ async fn graph_cli_check_distinguishes_valid_invalid_and_unmeasured() {
             );
         } else if expected != 2 {
             let summary = String::from_utf8(out.stdout).unwrap();
-            assert!(summary.starts_with(if expected == 0 {
-                "Task graph: valid"
-            } else {
-                "Task graph: INVALID"
-            }), "{summary}");
+            assert!(
+                summary.starts_with(if expected == 0 {
+                    "Task graph: valid"
+                } else {
+                    "Task graph: INVALID"
+                }),
+                "{summary}"
+            );
             assert!(summary.contains("tasks | revision"), "{summary}");
         }
     }

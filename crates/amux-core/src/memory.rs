@@ -170,7 +170,9 @@ impl MemoryEntry {
         at: DateTime<Utc>,
     ) -> Result<bool, MemoryError> {
         if self.is_deleted() {
-            return Err(MemoryError::AlreadyDeleted { id: self.id.clone() });
+            return Err(MemoryError::AlreadyDeleted {
+                id: self.id.clone(),
+            });
         }
         let mut changed = false;
         if let Some(content) = content {
@@ -221,10 +223,7 @@ impl MemoryEntry {
 /// memory is visible to all (Invariant 42). This is the only visibility
 /// predicate — context assembly, the API, and projections all call it, so
 /// they cannot drift apart.
-pub fn visible<'a>(
-    entries: &'a [MemoryEntry],
-    target: &ResolutionTarget,
-) -> Vec<&'a MemoryEntry> {
+pub fn visible<'a>(entries: &'a [MemoryEntry], target: &ResolutionTarget) -> Vec<&'a MemoryEntry> {
     entries
         .iter()
         .filter(|e| !e.is_deleted() && e.scope.applies_to(target))
@@ -329,8 +328,14 @@ mod tests {
         let a = worker("01JGXV0000000000000000AAAA");
         let b = worker("01JGXV0000000000000000BBBB");
         let entries = vec![
-            entry_for(Scope::Worker { id: a.clone() }, "01JGXV0000000000000000AAAA"),
-            entry_for(Scope::Worker { id: b.clone() }, "01JGXV0000000000000000BBBB"),
+            entry_for(
+                Scope::Worker { id: a.clone() },
+                "01JGXV0000000000000000AAAA",
+            ),
+            entry_for(
+                Scope::Worker { id: b.clone() },
+                "01JGXV0000000000000000BBBB",
+            ),
             entry_for(Scope::Global, "01JGXV0000000000000000TEST"),
         ];
 
@@ -344,7 +349,9 @@ mod tests {
         assert!(seen
             .iter()
             .all(|e| e.scope != Scope::Worker { id: b.clone() }));
-        assert!(seen.iter().any(|e| e.scope == Scope::Worker { id: a.clone() }));
+        assert!(seen
+            .iter()
+            .any(|e| e.scope == Scope::Worker { id: a.clone() }));
         assert!(seen.iter().any(|e| e.scope == Scope::Global));
     }
 

@@ -131,7 +131,10 @@ fn the_guard_still_catches_a_real_hang_and_leaves_prose_alone() {
         // failure handler happens to mention curl.
         r#"  curl -sk "$api/x" || die "cannot reach the server (curl exit $rc)""#,
     ] {
-        assert!(line_offends(line), "a curl that can hang must be caught: {line}");
+        assert!(
+            line_offends(line),
+            "a curl that can hang must be caught: {line}"
+        );
     }
     // MUST NOT FIRE.
     for line in [
@@ -142,7 +145,10 @@ fn the_guard_still_catches_a_real_hang_and_leaves_prose_alone() {
         // The AMUX-3761 specimen, verbatim in shape.
         r#"  [[ "$rc" -eq 0 ]] || die "cannot reach the amux server at $api (curl exit $rc) — NOTHING was changed""#,
     ] {
-        assert!(!line_offends(line), "prose and wrapped calls must be left alone: {line}");
+        assert!(
+            !line_offends(line),
+            "prose and wrapped calls must be left alone: {line}"
+        );
     }
 }
 

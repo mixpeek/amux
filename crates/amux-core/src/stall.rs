@@ -180,7 +180,11 @@ mod tests {
             };
             assert!(!covered_state.is_empty());
         }
-        assert_eq!(all_waits().len(), 7, "new variant? add it to all_waits() too");
+        assert_eq!(
+            all_waits().len(),
+            7,
+            "new variant? add it to all_waits() too"
+        );
     }
 
     /// Mirror doc for the failure side: every stall is a harness bug with a
@@ -197,7 +201,11 @@ mod tests {
             };
             assert!(!fix_direction.is_empty());
         }
-        assert_eq!(all_stalls().len(), 5, "new variant? add it to all_stalls() too");
+        assert_eq!(
+            all_stalls().len(),
+            5,
+            "new variant? add it to all_stalls() too"
+        );
     }
 
     #[test]

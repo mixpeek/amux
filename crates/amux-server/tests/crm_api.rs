@@ -27,12 +27,17 @@ fn app() -> (axum::Router, tempfile::TempDir) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), dir)
 }
 
-async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let b = Request::builder().method(method).uri(path);
     let req = match body {
         Some(v) => b
@@ -43,7 +48,9 @@ async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>)
     };
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, v)
 }
@@ -57,8 +64,13 @@ async fn the_documented_endpoints_are_actually_mounted() {
     assert_eq!(st, StatusCode::OK, "GET /api/crm/contacts must be routed");
     let (st, _) = send(&app, "GET", "/api/crm/followups", None).await;
     assert_eq!(st, StatusCode::OK, "GET /api/crm/followups must be routed");
-    let (st, body) =
-        send(&app, "POST", "/api/crm/contacts", Some(json!({"name": "Ada Lovelace"}))).await;
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/api/crm/contacts",
+        Some(json!({"name": "Ada Lovelace"})),
+    )
+    .await;
     assert_eq!(
         st,
         StatusCode::CREATED,
@@ -81,14 +93,21 @@ async fn a_contact_round_trips_with_tags_and_interactions() {
     .await;
     assert_eq!(st, StatusCode::CREATED);
     let id = created["id"].as_str().expect("id").to_string();
-    assert!(id.starts_with("PPL-"), "ids keep the python PPL- shape, got {id}");
+    assert!(
+        id.starts_with("PPL-"),
+        "ids keep the python PPL- shape, got {id}"
+    );
 
     let (st, c) = send(&app, "GET", &format!("/api/crm/contacts/{id}"), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(c["name"], "Grace Hopper");
     assert_eq!(c["company"], "USN");
     // The empty tag is dropped, not stored — python trims and skips falsey.
-    assert_eq!(c["tags"], json!(["compilers", "navy"]), "empty tags must not be stored");
+    assert_eq!(
+        c["tags"],
+        json!(["compilers", "navy"]),
+        "empty tags must not be stored"
+    );
     assert_eq!(c["interactions"], json!([]));
 
     let (st, ix) = send(
@@ -110,17 +129,32 @@ async fn a_contact_round_trips_with_tags_and_interactions() {
 
     // The list view's correlated subqueries must surface the interaction.
     let (_, list) = send(&app, "GET", "/api/crm/contacts", None).await;
-    let row = list.as_array().unwrap().iter().find(|r| r["id"] == id.as_str()).expect("in list");
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .expect("in list");
     assert_eq!(row["last_date"], "2026-08-01");
     assert_eq!(row["next_followup"], "2026-09-01");
     assert_eq!(row["next_followup_note"], "send the spec");
 
     let (_, f) = send(&app, "GET", "/api/crm/followups", None).await;
-    assert_eq!(f.as_array().unwrap().len(), 1, "the pending follow-up must appear");
+    assert_eq!(
+        f.as_array().unwrap().len(),
+        1,
+        "the pending follow-up must appear"
+    );
     assert_eq!(f[0]["name"], "Grace Hopper");
 
     // Interactions HARD delete (python parity — no `deleted` column exists).
-    let (st, _) = send(&app, "DELETE", &format!("/api/crm/interactions/{ix_id}"), None).await;
+    let (st, _) = send(
+        &app,
+        "DELETE",
+        &format!("/api/crm/interactions/{ix_id}"),
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     let (_, c) = send(&app, "GET", &format!("/api/crm/contacts/{id}"), None).await;
     assert_eq!(c["interactions"], json!([]));
@@ -132,7 +166,13 @@ async fn a_contact_round_trips_with_tags_and_interactions() {
 #[tokio::test]
 async fn an_absent_follow_up_date_is_null_not_empty_string() {
     let (app, _d) = app();
-    let (_, c) = send(&app, "POST", "/api/crm/contacts", Some(json!({"name": "No Followup"}))).await;
+    let (_, c) = send(
+        &app,
+        "POST",
+        "/api/crm/contacts",
+        Some(json!({"name": "No Followup"})),
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
     send(
         &app,
@@ -143,12 +183,24 @@ async fn an_absent_follow_up_date_is_null_not_empty_string() {
     .await;
 
     let (_, f) = send(&app, "GET", "/api/crm/followups", None).await;
-    assert_eq!(f.as_array().unwrap().len(), 0, "no follow-up date means no follow-up row");
+    assert_eq!(
+        f.as_array().unwrap().len(),
+        0,
+        "no follow-up date means no follow-up row"
+    );
     let (_, list) = send(&app, "GET", "/api/crm/contacts", None).await;
-    let row = list.as_array().unwrap().iter().find(|r| r["id"] == id.as_str()).unwrap();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .unwrap();
     assert_eq!(row["next_followup"], Value::Null);
     // The date defaulted to today rather than being left empty.
-    assert!(row["last_date"].as_str().unwrap_or("").len() == 10, "date defaults to today (ISO)");
+    assert!(
+        row["last_date"].as_str().unwrap_or("").len() == 10,
+        "date defaults to today (ISO)"
+    );
 }
 
 #[tokio::test]
@@ -175,11 +227,19 @@ async fn patch_writes_only_whitelisted_fields_and_replaces_tags() {
     assert_eq!(st, StatusCode::OK);
 
     let (st, c) = send(&app, "GET", &format!("/api/crm/contacts/{id}"), None).await;
-    assert_eq!(st, StatusCode::OK, "the row must still be reachable under its original id");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the row must still be reachable under its original id"
+    );
     assert_eq!(c["id"], id.as_str(), "id is not writable");
     assert_eq!(c["company"], "NPL");
     assert_eq!(c["name"], "Alan", "unmentioned fields are untouched");
-    assert_eq!(c["tags"], json!(["new", "shiny"]), "tags are replaced wholesale");
+    assert_eq!(
+        c["tags"],
+        json!(["new", "shiny"]),
+        "tags are replaced wholesale"
+    );
 }
 
 /// Contacts SOFT delete: gone from every read, row still present. Python's
@@ -187,17 +247,31 @@ async fn patch_writes_only_whitelisted_fields_and_replaces_tags() {
 #[tokio::test]
 async fn deleting_a_contact_is_soft_and_hides_it_from_reads() {
     let (app, _d) = app();
-    let (_, c) = send(&app, "POST", "/api/crm/contacts", Some(json!({"name": "Ephemeral"}))).await;
+    let (_, c) = send(
+        &app,
+        "POST",
+        "/api/crm/contacts",
+        Some(json!({"name": "Ephemeral"})),
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
 
     let (st, _) = send(&app, "DELETE", &format!("/api/crm/contacts/{id}"), None).await;
     assert_eq!(st, StatusCode::OK);
 
     let (st, _) = send(&app, "GET", &format!("/api/crm/contacts/{id}"), None).await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "a soft-deleted contact reads as 404");
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "a soft-deleted contact reads as 404"
+    );
     let (_, list) = send(&app, "GET", "/api/crm/contacts", None).await;
     assert!(
-        !list.as_array().unwrap().iter().any(|r| r["id"] == id.as_str()),
+        !list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == id.as_str()),
         "a soft-deleted contact is not listed"
     );
 }
@@ -226,10 +300,24 @@ async fn search_matches_name_company_and_role_only() {
         "name/company/role match; notes deliberately does NOT (python parity)"
     );
     // A control, so a filter that matched EVERYTHING could not pass this test.
-    let (_, none) = send(&app, "GET", "/api/crm/contacts?q=zzzz-no-such-contact", None).await;
-    assert_eq!(none.as_array().unwrap().len(), 0, "a non-matching search returns nothing");
+    let (_, none) = send(
+        &app,
+        "GET",
+        "/api/crm/contacts?q=zzzz-no-such-contact",
+        None,
+    )
+    .await;
+    assert_eq!(
+        none.as_array().unwrap().len(),
+        0,
+        "a non-matching search returns nothing"
+    );
     let (_, all) = send(&app, "GET", "/api/crm/contacts", None).await;
-    assert_eq!(all.as_array().unwrap().len(), 4, "no query returns everything");
+    assert_eq!(
+        all.as_array().unwrap().len(),
+        4,
+        "no query returns everything"
+    );
 }
 
 #[tokio::test]
@@ -277,6 +365,9 @@ fn the_owner_notification_dedupes_per_pair_not_globally() {
     let b = format!("ownerA|committerC|{}", std::process::id());
     assert!(notify_once(&a), "first sighting notifies");
     assert!(!notify_once(&a), "a retried hook must NOT notify again");
-    assert!(notify_once(&b), "a DIFFERENT committer is a different notice");
+    assert!(
+        notify_once(&b),
+        "a DIFFERENT committer is a different notice"
+    );
     assert!(!notify_once(&b));
 }

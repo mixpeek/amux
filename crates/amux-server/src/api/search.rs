@@ -208,7 +208,8 @@ fn render_snippet(raw: &str) -> String {
 fn types_in_index(conn: &Connection) -> Vec<String> {
     conn.prepare("SELECT DISTINCT entity_type FROM search_docs ORDER BY 1")
         .and_then(|mut st| {
-            st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect())
+            st.query_map([], |r| r.get::<_, String>(0))
+                .map(|it| it.flatten().collect())
         })
         .unwrap_or_default()
 }
@@ -223,7 +224,11 @@ fn types_in_index(conn: &Connection) -> Vec<String> {
 /// the defect with the measurement ... a control built from the same mistaken
 /// assumption as the measurement cannot fail."
 fn types_missing_from(requested: &[String], have: &[String]) -> Vec<String> {
-    requested.iter().filter(|t| !have.contains(t)).cloned().collect()
+    requested
+        .iter()
+        .filter(|t| !have.contains(t))
+        .cloned()
+        .collect()
 }
 
 fn parse_types(raw: &Option<String>) -> Vec<String> {
@@ -306,7 +311,11 @@ async fn search(State(st): State<AppState>, Query(p): Query<SearchParams>) -> Re
             // So the zero path, and only the zero path, pays one COUNT: an
             // index with no documents cannot answer any query, and returning
             // 200 with an empty list is the lie. That case is now a 503.
-            let indexed = if hits.is_empty() { index_doc_count(&conn) } else { None };
+            let indexed = if hits.is_empty() {
+                index_doc_count(&conn)
+            } else {
+                None
+            };
             if hits.is_empty() && indexed == Some(0) {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -358,7 +367,10 @@ async fn search(State(st): State<AppState>, Query(p): Query<SearchParams>) -> Re
 /// taken. `None` is deliberately not `0`: "I could not measure" and "there is
 /// nothing there" send a reader to different places.
 fn index_doc_count(conn: &Connection) -> Option<i64> {
-    conn.query_row("SELECT COUNT(*) FROM search_docs", [], |r| r.get::<_, i64>(0)).ok()
+    conn.query_row("SELECT COUNT(*) FROM search_docs", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .ok()
 }
 
 /// The ranked query. bm25 weights `title` 10x `body`, which is what makes a
@@ -427,7 +439,8 @@ fn run_search(
     // ("gate", >1000 matches) went 52ms -> 12ms by dropping the join, which is
     // the difference between missing and meeting the plan's <50ms target.
     let count_sql = if types.is_empty() {
-        "SELECT COUNT(*) FROM (SELECT 1 FROM search_fts WHERE search_fts MATCH ?1 LIMIT ?2)".to_string()
+        "SELECT COUNT(*) FROM (SELECT 1 FROM search_fts WHERE search_fts MATCH ?1 LIMIT ?2)"
+            .to_string()
     } else {
         format!(
             "SELECT COUNT(*) FROM (
@@ -465,7 +478,11 @@ pub fn index_status(conn: &Connection) -> rusqlite::Result<Value> {
         // A source table can legitimately be absent on a partially-migrated
         // file; report that instead of failing the whole status call.
         let live: Option<i64> = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {pred}"), [], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE {pred}"),
+                [],
+                |r| r.get(0),
+            )
             .ok();
         let agrees = live.map(|l| l == indexed).unwrap_or(false);
         if !agrees {
@@ -694,29 +711,46 @@ mod tests {
         let sql = include_str!("../../migrations/0077_search_docs_prompt_seconds.sql");
         conn.execute_batch(sql).expect("0077 applies");
         let after: i64 = conn
-            .query_row("SELECT updated_at FROM search_docs WHERE doc_id='prompt:legacy'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT updated_at FROM search_docs WHERE doc_id='prompt:legacy'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(after, ms / 1000, "the legacy millisecond row must be converted");
+        assert_eq!(
+            after,
+            ms / 1000,
+            "the legacy millisecond row must be converted"
+        );
 
         // IDEMPOTENT. The guard is on magnitude, so a second run must not
         // divide again — a migration that re-runs on a repaired database would
         // put these rows in 1970.
         conn.execute_batch(sql).expect("0077 re-applies");
         let twice: i64 = conn
-            .query_row("SELECT updated_at FROM search_docs WHERE doc_id='prompt:legacy'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT updated_at FROM search_docs WHERE doc_id='prompt:legacy'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(twice, after, "a second run must be a no-op, not a second division");
+        assert_eq!(
+            twice, after,
+            "a second run must be a no-op, not a second division"
+        );
 
         let control: i64 = conn
-            .query_row("SELECT updated_at FROM search_docs WHERE doc_id='task:control'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT updated_at FROM search_docs WHERE doc_id='task:control'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(control, ms / 1000, "a seconds row of another family must be untouched");
+        assert_eq!(
+            control,
+            ms / 1000,
+            "a seconds row of another family must be untouched"
+        );
     }
 
     /// `search_docs.updated_at` HOLDS ONE UNIT, AND BOTH PROMPT WRITERS AGREE
@@ -752,7 +786,11 @@ mod tests {
 
         // 1. The TRIGGER path, which is what runs in production.
         let via_trigger: i64 = conn
-            .query_row("SELECT updated_at FROM search_docs WHERE doc_id='prompt:1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT updated_at FROM search_docs WHERE doc_id='prompt:1'",
+                [],
+                |r| r.get(0),
+            )
             .expect("the trigger indexed it");
         assert_eq!(
             via_trigger, want,
@@ -761,7 +799,8 @@ mod tests {
         );
 
         // 2. The REINDEX path, over the same row.
-        conn.execute("DELETE FROM search_docs WHERE doc_id='prompt:1'", []).unwrap();
+        conn.execute("DELETE FROM search_docs WHERE doc_id='prompt:1'", [])
+            .unwrap();
         let sql = BACKFILL_SQL
             .iter()
             .find(|(etype, _)| *etype == "prompt")
@@ -769,7 +808,11 @@ mod tests {
             .expect("the prompt family is in BACKFILL_SQL");
         conn.execute(sql, []).expect("backfill runs");
         let via_backfill: i64 = conn
-            .query_row("SELECT updated_at FROM search_docs WHERE doc_id='prompt:1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT updated_at FROM search_docs WHERE doc_id='prompt:1'",
+                [],
+                |r| r.get(0),
+            )
             .expect("the backfill indexed it");
         assert_eq!(
             via_backfill, via_trigger,
@@ -780,11 +823,16 @@ mod tests {
         //    in it is millisecond-shaped. Asserted over the whole table rather
         //    than the one row, because the defect was one family among seven.
         let ms_shaped: i64 = conn
-            .query_row("SELECT COUNT(*) FROM search_docs WHERE updated_at > 100000000000", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM search_docs WHERE updated_at > 100000000000",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(ms_shaped, 0, "no row in search_docs.updated_at may be millisecond-shaped");
+        assert_eq!(
+            ms_shaped, 0,
+            "no row in search_docs.updated_at may be millisecond-shaped"
+        );
     }
 
     /// AF-547. A `types=` value the index does not hold returns a clean 200 with
@@ -809,23 +857,41 @@ mod tests {
         .expect("seed");
 
         let have = types_in_index(&conn);
-        assert_eq!(have, vec!["prompt".to_string(), "task".to_string()], "read from the DATA, sorted");
+        assert_eq!(
+            have,
+            vec!["prompt".to_string(), "task".to_string()],
+            "read from the DATA, sorted"
+        );
 
         // The reported shape: a family name carried from another endpoint.
         let requested = vec!["kind".to_string()];
         let missing = types_missing_from(&requested, &have);
-        assert_eq!(missing, vec!["kind".to_string()], "an absent family must be NAMED, not silently empty");
+        assert_eq!(
+            missing,
+            vec!["kind".to_string()],
+            "an absent family must be NAMED, not silently empty"
+        );
 
         // CONTROL 1: a real family must NOT be reported missing. Without this the
         // rule is satisfiable by flagging everything, which would put a false
         // "not in index" on every correct query.
         let ok = types_missing_from(&["prompt".to_string()], &have);
-        assert!(ok.is_empty(), "a family the index holds is not missing: {ok:?}");
+        assert!(
+            ok.is_empty(),
+            "a family the index holds is not missing: {ok:?}"
+        );
 
         // CONTROL 2: mixed — the real one passes, only the bogus one is named.
-        let req: Vec<String> = ["prompt", "kind", "task"].iter().map(|s| s.to_string()).collect();
+        let req: Vec<String> = ["prompt", "kind", "task"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let mixed = types_missing_from(&req, &have);
-        assert_eq!(mixed, vec!["kind".to_string()], "only the absent one: {mixed:?}");
+        assert_eq!(
+            mixed,
+            vec!["kind".to_string()],
+            "only the absent one: {mixed:?}"
+        );
     }
 
     /// An EMPTY index must report an empty vocabulary rather than crashing or
@@ -834,14 +900,16 @@ mod tests {
     #[test]
     fn an_empty_index_has_an_empty_vocabulary() {
         let conn = Connection::open_in_memory().expect("mem db");
-        conn.execute_batch(
-            "CREATE TABLE search_docs (doc_id TEXT, entity_type TEXT);",
-        ).expect("seed");
+        conn.execute_batch("CREATE TABLE search_docs (doc_id TEXT, entity_type TEXT);")
+            .expect("seed");
         assert!(types_in_index(&conn).is_empty());
         // And a missing TABLE must not panic — the helper is called on every
         // filtered search and an unreadable index is not a crash.
         let bare = Connection::open_in_memory().expect("mem db");
-        assert!(types_in_index(&bare).is_empty(), "no table -> empty, not a panic");
+        assert!(
+            types_in_index(&bare).is_empty(),
+            "no table -> empty, not a panic"
+        );
     }
 
     #[test]

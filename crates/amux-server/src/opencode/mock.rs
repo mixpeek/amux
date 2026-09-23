@@ -15,12 +15,19 @@ use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordedCall {
-    SendPrompt { worker: WorkerId, prompt: Prompt },
+    SendPrompt {
+        worker: WorkerId,
+        prompt: Prompt,
+    },
     /// `body` is recorded so tests can assert the REAL message text reached
     /// the agent — delivering the right MessageId with an empty body is
     /// exactly the bug RR-0066 fixes, and a recorder blind to the body
     /// could not fail on it (ethos rule 7).
-    DeliverMessage { worker: WorkerId, msg: MessageId, body: String },
+    DeliverMessage {
+        worker: WorkerId,
+        msg: MessageId,
+        body: String,
+    },
     Cancel(WorkerId),
     Pause(WorkerId),
     Resume(WorkerId),

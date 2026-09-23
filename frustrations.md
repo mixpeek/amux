@@ -3760,3 +3760,350 @@ CARD: AMUX-4972
 SYMPTOM: `scripts/git-hooks/pre-push` refuses the two-field `<sha>:<session>` author-consent form for any author it verifies as ISOLATED, with "its author consent cannot have been obtained". The comment at ~795 states the model: isolated lanes "cannot be asked or nudged". Isolation blocks INBOUND sends; it does not stop an isolated lane from INITIATING. Today amux-helper sent this lane an unprompted message, server-stamped `[amux-origin: amux-helper - server-verified from the sender's session identity]`, asking to push origin/main and naming both unpushed commits by sha. That is the yes the guard asserts cannot exist, obtained by the one route isolation leaves open, and the guard has no field that can carry it. All four printed exits were untrue in that state: the author was already asked and had answered; `<sha>:<session>` was refused server-side though its assertion was true; `<sha>:<session>:owner` asserts an owner grant nobody made; `AMUX_ALLOW_FOREIGN=1` asserts the human said ship-regardless. Ethos rule 3.
 COST: a7eca7d3 is the fix for a bug ETHAN HIMSELF reported this morning (black screen on the iOS app over Tailscale, MSG-68366). It is committed, gated on a detached worktree at the exact pushed head (cargo check --workspace clean, 49/49 node tests, APP_VER and CACHE paired) and cannot ship. Both directions are deadlocked, not just mine: if amux-helper pushes, it carries MY commit as foreign, the guard tells it to ask me, and my reply is refused because the channel is one-way. Neither lane can move without the owner, for two commits whose authors both agree. The honest move was to stop, so the owner pays for the round trip on a bug he is the one seeing.
 FIX: not fixed. Shape proposed on AMUX-4972: let consent cite the verified message, `<sha>:<session>:msg:<MSG-id>`, and have the guard resolve that id against the message store, confirming both the sender identity and that it postdates the commit. That preserves the property the guard is defending, no unverifiable yes, without forcing the caller to assert a grant nobody gave. NOTE the entry immediately above this one, AMUX-4934, closed today: an invariant that used `session_is_isolated` as a proxy for "unreachable" and spent 15 days red on lanes that were working. Same wrong equation, different subsystem, same day. Two instances is the argument that `isolated` is being read fleet-wide as "cannot participate" when it means "cannot receive a peer send", and the audit worth running is every call site of that flag rather than these two fixes.
+
+## Private bootstrap worker CLI routed to the default home and endpoint
+AREA: cli
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-1
+SYMPTOM: The server launched a private worker with AMUX_URL but without authoritative CC_HOME/AMUX_API. amux board show attempted the default CLI transport log and default endpoint; the private AAB-1 assignment was initially inaccessible.
+COST: Two resume attempts stopped without the full assignment; explicit private CLI variables and a provider restart were needed to continue.
+FIX: AAB-1 forwards both home and endpoint variable pairs on fresh/resumed launches and exports them after env sources. Runtime logs announce both decisions. Focused fixture and real provider acceptance evidence are tracked separately; no production changes or new cards.
+
+## Codex linked worktrees omit writable Git metadata
+AREA: cli
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-1
+SYMPTOM: Parent review found the Codex launcher only adds root/.git when it is a directory. A linked worktree has a .git pointer file, leaving its common object database and per-worktree index outside workspace-write.
+COST: Live project executor acceptance requires an additional launcher fix and real linked-worktree regression before executors can commit their artifacts.
+FIX: AAB-1 resolves only the launched repository's git-common-dir and git-dir, adds those metadata directories, and logs codex_git_write_paths. The private parent runtime will independently validate real provider execution.
+
+## Codex diagnostic items rejected successful project interpretation
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-2
+SYMPTOM: The private live project intake exhausted receipt 6 on unexpected item: error. Exact parent reproduction exited 0 with two configuration diagnostic items, valid final JSON and usage. The helper treated every diagnostic as execution and discarded paid usage on rejection.
+COST: Two failed live interpretations, a paused acceptance project and one parent diagnostic call; nested sandbox reproduction could not initialize the app server.
+FIX: Recognize completed diagnostic items while requiring a successful data-only final; retain fatal/quota/execution refusals, bounded codex_helper_diagnostics logs and observed usage on rejected responses. Parent live acceptance remains pending.
+
+## Exhausted project intake had no supported retry of the original receipt
+AREA: ui
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-2
+SYMPTOM: A preserved provider failure was labeled Intake needs clarification and could not be retried after its two-attempt budget without rewriting database state or replacing the request.
+COST: Live acceptance could not resume after repairing the provider boundary.
+FIX: Explicit operator Retry intake grants one attempt with idempotency and attempt/revision checks; retains prior result, receipt and cumulative attempts, preserves pause/budgets, logs grants and refusals, and labels exhaustion accurately. No live receipt mutation by this worker.
+
+## Unstyled Codex footer blocked idle-boundary delivery
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-2
+SYMPTOM: Codex 0.153.4 displayed a dim empty prompt followed by an unstyled model/path footer. Composer parsing labeled the footer typed input and steering held MSG-7 at not-at-turn-boundary.
+COST: Parent manually delivered the bootstrap repair assignment and disabled bootstrap lifecycle; actual project executor delivery still needs live proof.
+FIX: Recognize the final unstyled path-bearing footer only beside a dim empty Codex placeholder. Busy and draft controls remain blocked. Log codex_plain_footer_recognized on first observed frame; regression covers actual layout and negative cases.
+
+## Project output arrival cannot wake an explicit operational wait
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Live PAA-3 correctly failed its candidate-relative browser gate without PAA-2 backend source, then its second attempt reported an operational wait. The free-text wait had no typed output reference or automatic continuation when PAA-2 became Verified.
+COST: Existing committed Studio work stopped behind its own project output and required another harness repair; the first failed browser gate and second-attempt waiting evidence must remain inspectable.
+FIX: Add an explicit same-project required-output declaration on existing task dependency edges, exact old-wait acknowledgement and idempotency. Recheck the shared planner in the writer, reserve a fresh delivery generation without another repair attempt, preserve failure/attempt history, and announce project.outputs_declared/continued/refused. Arbitrary operational and authorization waits do not auto-resume. Parent live acceptance remains pending.
+
+## Project continuation and display need the same durable execution truth
+AREA: runtime
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: A project task with Doing status but a waiting execution projected into Working while its provider was idle. Review also found continuation attribution needed its own bounded claim interval rather than reopening old attempt history or relying on a historical claim fallback.
+COST: The UI implied work was progressing and continuation usage could be absent or assigned outside its true interval.
+FIX: Project planner projects Waiting from its waiting decision; UI consumes that phase. Durable continuation events define bounded ledger intervals with inside/before/after negative controls; prior attempt history remains immutable.
+
+## Codex named footer displayed idle without a recognized delivery boundary
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: A resumed interrupted bootstrap pane appeared idle but blocked queued delivery. The shared adapter required the footer's final middle-dot segment to be a filesystem path; current Codex adds a session label after that path. Composer and boundary parsing disagreed.
+COST: Supervisor recorded an explicit Send now intervention after observing idle.
+FIX: Read the structural model/location segments with an optional session label, require no active spinner or typed draft for pane boundary, and retain measured fallback-boundary logging. Tests cover interrupted idle, working, draft and foreign-provider shapes. Live unattended acceptance remains separate.
+
+## Project steering, retry and evidence lacked durable boundaries
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Project worker Send now re-entered legacy intake instead of its current task; treating task steering as outcome receipts inflated usage denominators. Task retry reset attempt counters. Shared parent CC_DIR left distinct Codex worktrees unowned. Report paths were inert prose and repeated criterion checks reran identical suites.
+COST: A redundant legacy receipt remained pending, the original steering remained queued, actual task spend was unowned and human verification assets could not be opened after disposal.
+FIX: One project routing authority with durable task steering and genuine-outcome receipt filters; operator cancellation preserves receipt history. One bounded idempotent retry grant preserves monotonic attempts. Validated active/retired workspace identity recovers only unowned exact matches. Explicit hashed passive assets are retained and registered before Verified/disposal, with read-only Projects links. Deduplicate byte-identical checks within each immutable phase. Logs: project.within_task_steering, project.legacy_intake_held, project.legacy_receipt_cancelled, project.retry_granted/refused, codex_workspace_usage_recovered, project.assets_retained, project.asset_retention_failed and project.verification_commands. Final parent Rust/browser checks and isolated live acceptance remain pending.
+
+## Live project telemetry and resumed boot sends made false confirmations
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Private project showed 77 turns/6,536,939 tokens with estimated cost 0 despite unpriced Astra. Executor-owned steering usage fell outside attempt windows. Bootstrap resume/send returned confirmed while a timer left an unsubmitted, truncated/duplicated paste draft. Legacy normalization repeatedly attempted project-row mutation; unchanged Codex ownership repair occupied the writer for ~1.5s every tick.
+COST: Unknown costs looked free, budget coverage missed execution outside attempt windows, one manual Enter intervention was needed, and unnecessary legacy/writer work repeated.
+FIX: Reuse ledger prices/coverage with null unknown cost and truthful known zero; account validated dedicated executor rows separately without changing task attribution. Share project pause/budget predicates at steering claim and typing. Durable boot queue, single claim, fresh empty-frame readiness and draft preservation replace paste timers. Shared legacy normalization predicate excludes project rows; bounded indexed row-ID ownership repair skips no-op writer transactions. Logs: project.cost_unmeasured, boot_delivery_queued/enqueue_failed/start_failed, steering_draft_preserved and existing ownership/delivery verdicts. Parent Rust/native checks pending; no paid call or live project mutation performed.
+
+## Deferred transport holds became 500 and plain Codex completion stayed blocked
+AREA: runtime
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent broad transport suite reported 332 pass, 2 fail, 2 ignored: five deliberate boot/draft/project-budget holds lacked send_failure_status arms; finished plain Codex background frame was classified as a typed composer.
+COST: Recoverable queued delivery looked like a server fault, and a completed background terminal could hold steering indefinitely.
+FIX: Shared failure classifier returns actionable 409 holds with retained-message/draft guidance; real hard failures remain 500. Shared composer parser recognizes the complete ANSI-free Codex exact placeholder/final-footer layout, retaining dim-proof requirements for styled captures. Draft, multiline input, paste, foreground/background work and partially styled negative controls remain. Log signal: codex_plain_capture_placeholder plus existing HTTP status and steering_draft_preserved/held delivery diagnostics. Parent rerun pending; no live project mutation.
+
+## Failed Review retry, canonical fixture input, and hidden pending Resume
+AREA: runtime / UI / test harness
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Failed integration in Review was excluded from explicit retry. Canonical fake CLI lost long executor instruction lines although queue history reported sent. Native Resume looked enabled during pause refresh, and the offline warning overlapped Send.
+COST: Genuine failed work lacked recovery, full lifecycle acceptance stopped at first delivery, and visible controls misrepresented pending/reachable actions.
+FIX: Shared server/UI retry eligibility for failed Doing/Review; immutable retry history and exact identity retained. Noncanonical bracketed-paste fixture with full receipt logs and real PTY positive/negative control. Shared worker action inventory exposes pending disabled state; terminal respects --sw-fail-h. Signals: existing project.retry_granted/refused, fixture-input.jsonl exact byte receipts, lifecycle API/status diagnostics and retained SW error diagnostics. Worker PTY/syntax/diff checks pass; parent Rust/Chromium/full lifecycle reruns pending. No live state changes.
+
+## Retry packets repeated full hook diagnostics
+AREA: project execution
+SEVERITY: friction
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Measured failed-integration waiting evidence contained 25,045 characters of hook output; claim retained it as last_failure and every repair packet repeated it verbatim.
+COST: Repeated prompt tokens for diagnostics already retained durably.
+FIX: Shared packet previous_result uses existing UTF-8-safe head/tail preview above2,048 characters, explicit original sizes/truncation and exact existing project GET/field retrieval instructions. Full state and requirements remain unchanged. Log verdict project.retry_diagnostic_preview records original size without body. Unicode/short/full-read/no-mutation regression added; parent Rust run pending.
+
+## Project executor assignment mistaken for dependency ownership (AAB-3)
+AREA: board storage / project intake
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Distinct Recheck alpha request failed cross_board_dependency_forbidden when a completed epic referenced two same-project Verified tasks assigned to retired px executors. Evidence: extractor-case-run/project-reverify-owner-failure.json and lifecycle-ui-b559-settled.
+COST: Valid canonical re-verification consumed an intake attempt without progressing despite every required output belonging to the project.
+FIX: One BoardOwner representation distinguishes durable project ownership from legacy worker boards. Shared outgoing/incoming checks, API validation and atomic migration/rollback ownership validation reuse it. Same-project assignment changes preserve edges; cross-project/project-legacy/missing/deleted references remain refused. Logs project_dependency_owner_validated and cross_board_dependency_refused. Real-DB actual-intake fanout/reverify and ownership negative controls added; parent execution pending. No live row rewrites, provider retries, build or deployment.
+
+Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. The 50 passing project tests include actual intake reverify after executor retirement and dependency-owner negative controls; the 11-scenario full UI includes the canonical recheck and migration rollback. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
+
+
+## Slow legacy starts stretched project progression (AAB-3)
+AREA: runtime scheduling
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: The full lifecycle fixture passed ten scenarios then exhausted its dirty-checkout observation while a rolled-back legacy source repeatedly failed provider startup. Both project packets and reports were retained; legacy sweeps stretched project ticks to roughly 14 seconds.
+COST: A 90-second acceptance timeout despite successful delivery, plus diagnosis of a misleading reserved-state snapshot.
+FIX: One cancellable legacy sweep with independent configured project cadence, retaining project runner exclusion and pause gates; signal project_tick_during_legacy_wait. Migration-only fixture disables pickup/standing orders via supported config and checks rollback retention without bypassing protected-source refusal. Nonbillable progress/pause/cancellation/serial-negative tests added; parent execution pending.
+
+Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. The project cadence/pause/cancellation tests pass; restoring serial cadence failed the named progress assertion (exit 101), and exact restoration passed all 50 project tests. The full UI now passes dirty-checkout retention as scenario 11. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
+
+
+## Source-checkout command refused after expensive earlier checks (AAB-3)
+AREA: project verification
+SEVERITY: friction
+STATUS: fixed
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Backend generation 5 reached criterion 6 before rejecting its original-checkout venv command. This was late candidate-command validation, not a generation-5 Git push failure.
+COST: Earlier expensive verification commands ran before a deterministic configuration refusal that admission could already detect.
+FIX: Reuse the same source-path validator at report admission and preflight all distinct checks plus the project gate before executing any. Invalid admission leaves report/status/attempt unchanged for corrected same-generation resubmission. Canonical repository identity accepts policy aliases without weakening source-path guards. Signals project.report_commands_refused and fanout_verification_source_path; API/DB and real-Git no-execution regressions added, parent Rust run pending.
+
+Validation (amux-astra-bootstrap, parent evidence reviewed): fixed in runtime `7ee3eb6f313b3bbbd26a7a31e692dabfff2b256b`. Report admission and complete-set preflight tests plus the existing source-path guard pass; restoring late validation failed the sentinel assertion (exit 101), and exact restoration passed all 50 project tests. The full UI passes all 11 scenarios. Evidence: `/private/tmp/amux-astra-20260920/logs/aab3-cadence-parent2-results.json`, `aab3-cadence-preflight-negative-results.json`, and `../extractor-case-run/lifecycle-ui-7ee3eb6f313b/{results,completion-proof}.json`; see [revision validation](docs/refactors/project-lifecycle-validation.md#aab-3-validated-runtime-revision-7ee3eb6f313b). Original implementation-time pending notes and failure prose above are retained as history. This closes this measured harness defect, not the still-verifying extractor project.
+
+
+## Owner steering could execute outside a project attempt (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent observed owner /send input execute on PAA-2 generation 6 while execution.stage was waiting; the steering gate checked policy/budget but not the active working claim.
+COST: Model/tool work occurred outside the authorized attempt boundary during real acceptance.
+FIX: One shared hold predicate at queue claim and typing, original-task queue binding, current requirements/generation and policy/hold checks; retained notes wait for a sanctioned working claim. Existing queue/UI show reasons; idempotent message.held and measured project_steering_held signal once per message/reason. Real queue tests and isolated UI retry scenario added; parent validation pending. No live state or retry grants changed.
+
+## Passing stdout prefix displayed as a failed task status (AAB-3)
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-20
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: PAA-2 failure summary showed tree-revert because the UI split retained hook output beginning tree-revert: OK at its first colon.
+COST: The short status concealed the actual failed verification behind an unrelated passing check.
+FIX: Harness-owned waiting_label derived from execution state and exact known reason tokens; full failure output remains unchanged in details, including exact budget labels. New transitions log project_verification_failed. Rust and browser regression cover a passing prefix before refusal; parent validation pending, no historical record rewrite.
+
+
+## Stale boot idle consumed a project repair attempt (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Fresh isolated lifecycle-ui-f557-held-note-boundary expected two executor calls but recorded three. PU-2's new delivery receipt was paired with old boot-idle evidence; repair followed delivery by 57ms, rejecting the valid first report and dispatching attempt 2.
+COST: One unnecessary nonbillable fixture execution and failed full acceptance run; the same race could consume a real model attempt.
+FIX: Current packet submission event, receipt-before-fresh-probe ordering, final writer identity/report/in-flight revalidation, and bounded stopped-before-submission recovery retaining the unsent packet. Measured project_stale_idle_held and project_current_turn_ended_without_result signals. Deterministic timing/negative tests added; parent checks pending. Full failed run and readonly fixture amux-project-ua8ko2u_ retained; source/handoff in aab3-stale-idle-{manifest,handoff}.json. No live attempt or retry grant changed.
+
+
+## Send now duplicated a project owner note instead of delivering it (AAB-3)
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent source review found _steeringSendNow re-posted queued text without its identity while the project send branch ignored deliver_now and created a fresh project-owner ID. The unsupported action could duplicate a held note without sending either.
+COST: One confirmed shared UI/API policy mismatch; no extra live execution trial performed.
+FIX: Remove Send now for project-steering rows, retain Cancel/held reason and explain Automatic next turn. Reject project deliver_now before dedup/enqueue/history mutation with project_next_turn_only and measured project_send_now_refused log. Real send-handler regression preserves exact queue/task/history records across repeated refusals while held and working; full UI preserves explicit retry then exactly-once automatic delivery. Parent final checks pending; legacy Send now unchanged.
+
+
+## Superseded unsent project packet blocked verified retirement (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent observed PAA-4 attempt3 retaining its attempt1 execution packet with project_claim_delivery_stale. Retirement correctly refuses every pending queue row, so permanent supersession left an otherwise finished worker unable to retire.
+COST: One retained real execution packet identified before retirement, plus one cleanup compile failure from an invalid IssueRow.deleted access; the failed log is preserved.
+FIX: Normal steering reconciliation atomically proves supersession and moves exact packet identity/text to existing history with void:project-execution-superseded; never cancels owner/current/in-flight/foreign/unproven rows. Shared get_issue SQL excludes deleted rows in the writer; regression asserts that contract. Measured project_execution_packet_superseded/message.voided signal settlement. project_packet_reconciliation_failed retains unsafe input without vetoing unrelated queues. Helper, actual retirement predicate and injected-failure isolation regressions added; parent cleanup tests/negative controls pending in aab3-final-runtime2 handoff. No live cancellation, retry or retirement performed.
+
+
+## Long verification gate exhausted fixed timeout without a checks-only retry (AAB-3)
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Parent observed PAA-4 generation3 independent verification stop at exactly 600 seconds after backend and Studio/build checks; fresh browser proof never ran. The report was retained, but the existing retry action authorized another model execution rather than rerunning checks.
+COST: One real independent gate attempt failed; no further paid/provider trial or real retry was requested by this worker. Full original API snapshot paa4-g3-independent-observation.json retained.
+FIX: Snapshot patch adds bounded project-configured verification_timeout_secs (default600, 1–3600), one shared per-command source/merged runner, and explicit operator Rerun checks through existing retry authority with report/input/revision/idempotency binding and unchanged model attempts/history. Failure stays waiting; no automatic repair loop from a checks-only grant. candidate_verification_command and project.verification_retry_granted emit measured evidence. Focused API/process/negative tests and isolated full UI extension await parent; no live state or accepted output changed.
+
+
+## Shell startup reported started after truncated launch input (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: Full isolated 424 UI run reached ten scenarios, then PRU-1 never entered its nonbillable provider. start_session recorded started despite a childless shell; its exact execution packet stayed unsent and the observer correctly held executor_stopped_before_result. Prompt polling accepted scrollback and ignored timeouts. A private tmux/Bash probe proved input loss while setup occupied the terminal: 1,916 submitted bytes lost Enter and retained only 908 of 1,800 payload bytes after an extra Enter, measured through argv rather than rendered text.
+COST: One full isolated UI run failed before a report; no real project retry or model call was made for diagnosis. Original 424 failure and read-only fixture evidence retained.
+FIX: Source short private temporary scripts in the existing shell, acknowledge each setup command with a unique filesystem receipt, and stop on submission failure/nonzero status/timeout before sending more input. Initial and existing fallback launches share this transport. A stopped provider cannot produce session.started; durable start_error and measured shell_start_failed expose the failure, while a live slow startup remains allowed. Private positive proof preserved all 4,096 payload bytes, cwd and environment. Focused production-helper regressions added; parent Rust/full UI validation pending. No deployment or live project changes.
+Validation update (2026-09-21): runtime ab2b73576000cd5808e8b583269f9b2e144b65e5 passed startup/cwd/env/pause and 65 project tests, both entry/late mutation controls with exact restoration, workspace check and strict Clippy. Full exact-image isolated UI: 13 PASS, zero uncaught errors, 14 fixture intake/13 execution calls; restart identity and cleanup verified. Evidence: ../extractor-case-run/astra-slow-setup-results.json and lifecycle-ui-ab2b73576000/completion-proof.json. Private post-deploy audit 48/48 and retained-report UI passed; original real acceptance gates remain the 182 run. Prior 424/fb31 failures are retained. This updates measured validation only; no entry retirement or main-merge claim.
+
+
+## Healthy shell profiles exceeded the submission acknowledgement window (AAB-3)
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-3
+SYMPTOM: The fb31 isolated UI passed two scenarios, then PU-5 held shell command receipt timed out without provider input. The short script did execute; its late receipt found the already-disposed directory. A private no-provider probe measured 11.8 seconds before script entry and 14.6 more seconds sourcing the existing profile (26.4 total). The 10-second per-command acknowledgement conflated slow shell initialization/profile execution with missing input.
+COST: One fresh exact-image UI run stopped before its repair scenario; prior focused gates and long-input/stale-UI mutation results remain valid only for their scope. No real project/model retry was granted for diagnosis.
+FIX: One bounded 60-second budget across shell setup/submission, separate entered/completed receipts, no advancement on entry alone, and stage/elapsed diagnostics in shell_command_entered/shell_command_settled plus durable shell_start_failed. Completion after expiry does not recreate or write into disposed receipt storage; later provider submission remains refused. Real shared-helper tests cover delayed entry, a controlled held profile, timeout stage, zero remaining budget, late completion and unchanged exact input/env/cwd guards. Private controlled probes passed; parent Rust/mutation/full UI remain pending. Final docs stay outside the checkout.
+Validation update (2026-09-21): runtime ab2b73576000cd5808e8b583269f9b2e144b65e5 passed startup/cwd/env/pause and 65 project tests, both entry/late mutation controls with exact restoration, workspace check and strict Clippy. Full exact-image isolated UI: 13 PASS, zero uncaught errors, 14 fixture intake/13 execution calls; restart identity and cleanup verified. Evidence: ../extractor-case-run/astra-slow-setup-results.json and lifecycle-ui-ab2b73576000/completion-proof.json. Private post-deploy audit 48/48 and retained-report UI passed; original real acceptance gates remain the 182 run. Prior 424/fb31 failures are retained. This updates measured validation only; no entry retirement or main-merge claim.
+
+## Local certificate failure prevents reaching connection repair (AAB-9)
+AREA: browser
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-9
+SYMPTOM: Parent's browser received ERR_CERT_AUTHORITY_INVALID at private localhost:18972 before the app loaded. offline_origin inferred trust from TLS filenames; the only withheld-auth action navigated with the owner token in the query string.
+COST: Parent could not reach the normal configuration UI for the isolated acceptance instance; existing status could not distinguish loaded certificate, saved certificate and browser trust.
+FIX: Native AAB-9 source adds shared Connect recovery via explicit-token POST/HttpOnly session, validated atomic certificate configuration, active resolver metadata and read-only localhost first-access guidance. Shared outbox excludes sensitive security mutations. Focused route/TLS and desktop/mobile regressions authored; parent compilation/browser/OS-trust validation pending. No runtime/trust-store changes by worker. No retirement or production success claimed.
+
+## Project completion could hide missing evidence and retired executors (AAB-10)
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-10
+SYMPTOM: New project leaf reports could move into review with exact commit/checks but no retained human-reviewable artifact, and successfully retired project executors named `px-*` disappeared from the existing Expired accordion because the UI only recognized missing workers whose names contained `-eph-`.
+COST: A project could look complete without a durable report/screenshot/video for human review, and historical executor attempt evidence became harder to inspect after safe retirement. No live PAA/Mixpeek state was changed by this fix.
+FIX: New project report admission now requires at least one explicit retained Markdown/JSON/PNG/WebM asset and logs `project.report_contract_refused` before state mutation when the contract is missing or malformed. The Expired accordion now measures the existing orchestration inventory for `lifecycle=expired`, projects retired `px-*` workers without a Start affordance, and logs measured inventory refreshes. Parent validation pending; historical reports remain readable.
+
+## Project cards re-rendered every 2s, collapsing open evidence, beside three launch surfaces (AAB-11)
+AREA: dashboard
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-21
+SESSION: amux-astra-bootstrap
+CARD: AAB-11
+SYMPTOM: Opening a task's Criteria and evidence in Projects closed it again within 2 seconds, because `_projectRender` replaced `#project-cards` innerHTML on every fetch. Project work also had three competing entry points (Projects, global Orchestrations with its own launch, Board Launch priorities), and cards carried raw JSON and exception text of tens of kilobytes.
+COST: Evidence could not be read while a project was running, focus and drafts were at risk on every tick, and users had to understand orchestrator/fan-out topology to start work the project harness already schedules with disposable executors.
+FIX: Native AAB-11 source renders the board with a keyed, signature-checked patch that leaves unchanged nodes alone, adds one task inspector whose open state, scroll, focus and selection persist per project, aborts and ignores stale cross-project reads, and keeps unsaved settings until Save or Cancel. The Orchestrations tab and Board launch form are removed as creation paths (history and APIs kept; Board labelled Legacy; retired tab ids cannot be recreated by saved tab state). Refresh failures log `project_refresh_failed` with `measured:false` and stop polling after 3 consecutive failures until the visible Retry is used. Parent browser validation and screenshots pending; no retirement claimed.
+
+## Long referenced goal specs silently lost their tail and collapsed into one executor (AAB-10)
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-22
+SESSION: codex-amux-project-lifecycle
+CARD: AAB-10
+SYMPTOM: The single-minimal-image request referenced a 30,111-character goal spec with twenty indexed outcomes, but project intake exposed only a 16,000-character preview to decomposition. T12 through T20 disappeared, and a model response that put the visible scope into one task was accepted, so the project produced one executor instead of accountable parallel outcomes.
+COST: A project presented incomplete work as a complete decomposition; nine named outcomes had no card, owner, worker or terminal gate, and the single-image case had to be reconstructed manually.
+FIX: 8eefc9f0 indexes every Tn heading from the full referenced file outside the token-bounded preview, requires every marker exactly once, rejects more than one indexed outcome on a task, records the source file and covered section on each task, and keeps model context conservative. A 20-section, greater-than-16k regression proves T20 cannot disappear or duplicate.
+
+## Runtime prose and task verification could publish before human review (AAB-10)
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-22
+SESSION: codex-amux-project-lifecycle
+CARD: AAB-10
+SYMPTOM: The single-image verifier searched Markdown for phrases such as object and document counts, so historical prose could satisfy an end-to-end claim. Separately, each task's verification path merged its head to main before whole-project runtime and human acceptance, making review approval informational rather than authoritative.
+COST: Amux could label a Docker lifecycle verified without launching the candidate image, and could publish worker commits before a person reviewed the exact combined result.
+FIX: 8eefc9f0 requires runtime claims to use a fresh execution receipt bound to invocation, candidate SHA, timestamps, subject and named machine-evidence stages; historical receipts are refused. Verified worker heads now compose into one unpublished candidate, acceptance runs there, human approval fingerprints it, and closeout publishes only that exact candidate before expiring workers and deleting worktrees. Focused tests cover a real verifier subprocess, two-worker composition, unchanged main before approval and publication after approval.
+
+## Isolated project server vanished and scoped T7 intake expanded to all twenty goals
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: single-image-gs7
+SYMPTOM: The advertised 18972 server was down while a direct Rust acceptance test was described as harness progress. Its prior home lived under `/private/tmp/amux-astra-20260920`, which disappeared, and the process had no restart supervisor. After restoring a durable server, project request 501 explicitly scoped to the Mixpeek T7 slice still loaded all twenty indexed goal-spec sections, spent two gpt-5.5-low intake attempts, and remained pending with no board tasks or workers. The acceptance tick also warned every cadence about missing candidate heads on an empty project.
+COST: The browser could not show the allegedly running project or its evidence; the direct Docker proof never entered project state. The new live request wasted model calls and stalled before execution, while normal pending state polluted failure logs.
+FIX: Moved the isolated 18972 home to durable workspace storage under a KeepAlive launch agent with the required CLI paths and existing trusted certificates. The branch now narrows indexed spec coverage and model context only when the operator explicitly requests a Tn slice, retains full-spec coverage otherwise, warns when AMUX_HOME is volatile, and skips candidate-head inspection until tasks settle. Live retry, worker execution, and acceptance evidence are still under verification.

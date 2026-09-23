@@ -142,7 +142,10 @@ impl WorkerRow {
             // Rows are only ever written from valid `GroupId`s, so a parse
             // failure here means DB corruption; dropping to None is the
             // read-side containment (the write path never accepts bad ids).
-            group: self.group_id.as_deref().and_then(|g| GroupId::parse(g).ok()),
+            group: self
+                .group_id
+                .as_deref()
+                .and_then(|g| GroupId::parse(g).ok()),
         }
     }
 }
@@ -336,13 +339,18 @@ pub fn list_workers_by_lifecycle(
     if lifecycles.is_empty() {
         return list_workers(conn, offset, limit);
     }
-    let placeholders: Vec<String> = lifecycles.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let placeholders: Vec<String> = lifecycles
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
     let filter = format!("lifecycle IN ({})", placeholders.join(", "));
     let mut count_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     for lc in lifecycles {
         count_params.push(Box::new(lc.as_str().to_string()));
     }
-    let count_refs: Vec<&dyn rusqlite::types::ToSql> = count_params.iter().map(|b| b.as_ref()).collect();
+    let count_refs: Vec<&dyn rusqlite::types::ToSql> =
+        count_params.iter().map(|b| b.as_ref()).collect();
     let total: i64 = conn.query_row(
         &format!("SELECT COUNT(*) FROM _amux_workers WHERE {filter}"),
         count_refs.as_slice(),
@@ -355,7 +363,8 @@ pub fn list_workers_by_lifecycle(
     let lp_len = list_params.len();
     list_params.push(Box::new(limit as i64));
     list_params.push(Box::new(offset as i64));
-    let list_refs: Vec<&dyn rusqlite::types::ToSql> = list_params.iter().map(|b| b.as_ref()).collect();
+    let list_refs: Vec<&dyn rusqlite::types::ToSql> =
+        list_params.iter().map(|b| b.as_ref()).collect();
     let mut stmt = conn.prepare(&format!(
         "SELECT {WORKER_COLS} FROM _amux_workers WHERE {filter} \
          ORDER BY created_at, id LIMIT ?{} OFFSET ?{}",
@@ -376,8 +385,9 @@ pub fn list_workers_by_lifecycle(
 /// must compare against the WHOLE table, not the resolvable subset the
 /// NOT_DELETED filter serves everywhere else.
 pub fn all_workers_for_replay(conn: &Connection) -> rusqlite::Result<Vec<WorkerRow>> {
-    let mut stmt =
-        conn.prepare(&format!("SELECT {WORKER_COLS} FROM _amux_workers ORDER BY id"))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {WORKER_COLS} FROM _amux_workers ORDER BY id"
+    ))?;
     let rows = stmt.query_map([], worker_from_row)?;
     let mut out = Vec::new();
     for row in rows {
@@ -452,7 +462,11 @@ pub fn update_worker_lifecycle(
     if from.is_empty() {
         return Ok(0);
     }
-    let placeholders: Vec<String> = from.iter().enumerate().map(|(i, _)| format!("?{}", i + 4)).collect();
+    let placeholders: Vec<String> = from
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 4))
+        .collect();
     let sql = format!(
         "UPDATE _amux_workers SET lifecycle = ?2, updated_at = ?3 \
          WHERE id = ?1 AND lifecycle IN ({})",
@@ -476,7 +490,11 @@ pub fn soft_delete_worker(conn: &Connection, id: &str, now: &str) -> rusqlite::R
     update_worker_lifecycle(
         conn,
         id,
-        &[WorkerLifecycle::Active, WorkerLifecycle::Paused, WorkerLifecycle::Archived],
+        &[
+            WorkerLifecycle::Active,
+            WorkerLifecycle::Paused,
+            WorkerLifecycle::Archived,
+        ],
         WorkerLifecycle::Deleted,
         now,
     )
@@ -548,7 +566,10 @@ pub fn end_session(
 /// The worker's live session, if any (`ended_at IS NULL`). At most one
 /// should exist by construction; ties break to the newest so an
 /// inconsistency at least resolves to the session most likely to be real.
-pub fn live_session_for(conn: &Connection, worker_id: &str) -> rusqlite::Result<Option<SessionRow>> {
+pub fn live_session_for(
+    conn: &Connection,
+    worker_id: &str,
+) -> rusqlite::Result<Option<SessionRow>> {
     conn.query_row(
         "SELECT id, worker_id, backend, backend_ref, pid, started_at, ended_at, exit_reason \
          FROM _amux_sessions WHERE worker_id = ?1 AND ended_at IS NULL \
@@ -608,7 +629,9 @@ mod tests {
         assert_eq!(by_name.state, WorkerState::Stopped);
         // Unknowns are None, not errors.
         assert!(get_worker(&conn, "nope").unwrap().is_none());
-        assert!(get_worker(&conn, "wrk_01JGXV0000000000000000ZZZZ").unwrap().is_none());
+        assert!(get_worker(&conn, "wrk_01JGXV0000000000000000ZZZZ")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -659,13 +682,21 @@ mod tests {
         let conn = test_conn();
         let row = insert_new(&conn, "w");
         let starting = WorkerState::Starting;
-        assert_eq!(update_worker_state(&conn, &row.id, &starting, T1).unwrap(), 1);
+        assert_eq!(
+            update_worker_state(&conn, &row.id, &starting, T1).unwrap(),
+            1
+        );
         let back = get_worker(&conn, &row.id).unwrap().unwrap();
         assert_eq!(back.state, WorkerState::Starting);
         assert_eq!(back.version, 0); // state is telemetry, not a config edit
 
-        let waiting = WorkerState::Waiting { reason: "gate review".into() };
-        assert_eq!(update_worker_state(&conn, &row.id, &waiting, T1).unwrap(), 1);
+        let waiting = WorkerState::Waiting {
+            reason: "gate review".into(),
+        };
+        assert_eq!(
+            update_worker_state(&conn, &row.id, &waiting, T1).unwrap(),
+            1
+        );
         assert_eq!(get_worker(&conn, &row.id).unwrap().unwrap().state, waiting);
     }
 
@@ -691,8 +722,14 @@ mod tests {
         // must not be reportable as a fresh change).
         assert_eq!(soft_delete_worker(&conn, &row.id, T1).unwrap(), 0);
         // And a deleted worker cannot be mutated back to life.
-        assert_eq!(update_worker_state(&conn, &row.id, &WorkerState::Starting, T1).unwrap(), 0);
-        assert_eq!(update_worker_config(&conn, &row.id, &cfg("doomed"), 0, T1).unwrap(), 0);
+        assert_eq!(
+            update_worker_state(&conn, &row.id, &WorkerState::Starting, T1).unwrap(),
+            0
+        );
+        assert_eq!(
+            update_worker_config(&conn, &row.id, &cfg("doomed"), 0, T1).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -729,7 +766,10 @@ mod tests {
         let live = live_session_for(&conn, &w.id).unwrap().unwrap();
         assert_eq!(live, ses);
 
-        assert_eq!(end_session(&conn, &ses.id, &ExitReason::Killed, T1).unwrap(), 1);
+        assert_eq!(
+            end_session(&conn, &ses.id, &ExitReason::Killed, T1).unwrap(),
+            1
+        );
         assert!(live_session_for(&conn, &w.id).unwrap().is_none());
 
         // End exactly once: a second end changes nothing, so the original

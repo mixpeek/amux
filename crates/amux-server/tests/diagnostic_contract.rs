@@ -35,7 +35,10 @@ use tower::ServiceExt;
 /// Family prefixes, not an enumeration of endpoints: `/api/debug/x` added
 /// tomorrow is covered without anyone editing this file.
 fn is_diagnostic(path: &str) -> bool {
-    path.starts_with("/api/debug/") || path == "/api/logs" || path.starts_with("/api/logs/") || path == "/api/health/invariants"
+    path.starts_with("/api/debug/")
+        || path == "/api/logs"
+        || path.starts_with("/api/logs/")
+        || path == "/api/health/invariants"
 }
 
 /// Diagnostic GET routes with no path parameter — the ones a caller can hit
@@ -67,7 +70,7 @@ fn app() -> axum::Router {
         build_hash: "test".into(),
         // None disables auth, so protected diagnostics answer here too.
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     })
 }
 
@@ -76,16 +79,17 @@ fn app() -> axum::Router {
 /// A diagnostic over an EMPTY store answers 0 to everything, and 0 satisfies
 /// most arithmetic. A cell that needs to tell a real computation from a constant
 /// has to hand the probe something to count.
-fn app_with(
-    seed: impl FnOnce(&rusqlite::Connection) + Send + 'static,
-) -> axum::Router {
+fn app_with(seed: impl FnOnce(&rusqlite::Connection) + Send + 'static) -> axum::Router {
     let dir = tempfile::tempdir().unwrap();
     let dir = Box::leak(Box::new(dir));
     let store = amux_server::db::Store::open(&dir.path().join("diag.db")).unwrap();
     store
         .write(move |conn| {
             seed(conn);
-            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
     router(AppState {
@@ -100,21 +104,37 @@ fn app_with(
 async fn get_json_on(app: &axum::Router, path: &str) -> (u16, Option<Value>) {
     let res = app
         .clone()
-        .oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = res.status().as_u16();
-    let body = axum::body::to_bytes(res.into_body(), 32 * 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 32 * 1024 * 1024)
+        .await
+        .unwrap();
     (status, serde_json::from_slice(&body).ok())
 }
 
 async fn get_json(path: &str) -> (u16, Option<Value>) {
     let res = app()
-        .oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = res.status().as_u16();
-    let body = axum::body::to_bytes(res.into_body(), 32 * 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 32 * 1024 * 1024)
+        .await
+        .unwrap();
     (status, serde_json::from_slice(&body).ok())
 }
 
@@ -162,7 +182,9 @@ async fn a_diagnostic_that_reports_a_window_honours_since_h() {
     for p in &paths {
         let (_s1, narrow) = get_json(&format!("{p}?since_h=1")).await;
         let (_s2, wide) = get_json(&format!("{p}?since_h=500")).await;
-        let (Some(a), Some(b)) = (narrow, wide) else { continue };
+        let (Some(a), Some(b)) = (narrow, wide) else {
+            continue;
+        };
         let (Some(wa), Some(wb)) = (reported_window(&a), reported_window(&b)) else {
             // Reports no window. Nothing to honour, nothing to check.
             continue;
@@ -240,7 +262,10 @@ async fn the_duplicate_probe_reports_announced_against_happened() {
         Some(1),
         "premise: the seeded duplicate pair must be counted, or this cell proves nothing"
     );
-    assert_eq!(total, 0, "premise: nothing announced it, so total must be 0");
+    assert_eq!(
+        total, 0,
+        "premise: nothing announced it, so total must be 0"
+    );
     assert_eq!(
         v["unannounced"].as_i64(),
         Some(1),
@@ -250,7 +275,9 @@ async fn the_duplicate_probe_reports_announced_against_happened() {
     let pairs = v["pairs_in_history"].as_i64().expect(
         "pairs_in_history must be present: without a denominator `total` is a lower          bound that reads as a finding (AF-483)",
     );
-    let unannounced = v["unannounced"].as_i64().expect("unannounced must be present");
+    let unannounced = v["unannounced"]
+        .as_i64()
+        .expect("unannounced must be present");
 
     // THE ARITHMETIC, which is what stops the trio being three decorative
     // fields. On an empty store all three are 0 and this still holds.
@@ -334,7 +361,10 @@ fn the_unmeasured_arm_is_a_real_shape_not_a_constant() {
     );
     assert_eq!(v["measured"], Value::Bool(false));
     assert_eq!(v["n_considered"], serde_json::json!(0));
-    assert_eq!(v["why_unmeasured"], serde_json::json!("the log file does not exist yet"));
+    assert_eq!(
+        v["why_unmeasured"],
+        serde_json::json!("the log file does not exist yet")
+    );
     // The report's own fields survive the stamp — a wrapper that replaced the
     // body would make every caller's zero unreadable in a different way.
     assert_eq!(v["total_errors"], serde_json::json!(0));

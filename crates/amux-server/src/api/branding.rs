@@ -100,29 +100,27 @@ type BrandPrefsAndAssets = (Vec<(String, String)>, Vec<(String, String)>);
 /// asset URLs and should not pay for ten stats to render a PWA manifest.
 async fn brand_prefs_and_assets(state: &AppState) -> Result<BrandPrefsAndAssets, String> {
     let store = state.store.clone();
-    tokio::task::spawn_blocking(
-        move || -> anyhow::Result<BrandPrefsAndAssets> {
-            let conn = store.read()?;
-            let mut stmt = conn.prepare("SELECT key, value FROM prefs WHERE key LIKE 'brand_%'")?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                .collect::<Result<Vec<_>, _>>()?;
-            let dir = branding_dir();
-            let mut assets = Vec::new();
-            for asset in ASSETS {
-                for ext in EXTS {
-                    if dir.join(format!("{asset}{ext}")).exists() {
-                        assets.push((
-                            format!("{asset}_url"),
-                            format!("/api/branding/{asset}{ext}"),
-                        ));
-                        break;
-                    }
+    tokio::task::spawn_blocking(move || -> anyhow::Result<BrandPrefsAndAssets> {
+        let conn = store.read()?;
+        let mut stmt = conn.prepare("SELECT key, value FROM prefs WHERE key LIKE 'brand_%'")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let dir = branding_dir();
+        let mut assets = Vec::new();
+        for asset in ASSETS {
+            for ext in EXTS {
+                if dir.join(format!("{asset}{ext}")).exists() {
+                    assets.push((
+                        format!("{asset}_url"),
+                        format!("/api/branding/{asset}{ext}"),
+                    ));
+                    break;
                 }
             }
-            Ok((rows, assets))
-        },
-    )
+        }
+        Ok((rows, assets))
+    })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
@@ -210,13 +208,18 @@ pub async fn post_branding(State(state): State<AppState>, body: Option<Json<Valu
             })
             .await;
         if let Err(e) = res {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
         }
     }
 
     // Image assets (base64, data-URL or raw).
     for asset in ASSETS {
-        let Some(b64_raw) = body.get(asset).and_then(Value::as_str) else { continue };
+        let Some(b64_raw) = body.get(asset).and_then(Value::as_str) else {
+            continue;
+        };
         if b64_raw.is_empty() {
             continue;
         }
@@ -225,10 +228,16 @@ pub async fn post_branding(State(state): State<AppState>, body: Option<Json<Valu
             None => b64_raw,
         };
         let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) else {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": format!("invalid base64 for {asset}") }));
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("invalid base64 for {asset}") }),
+            );
         };
         if data.len() > 5 * 1024 * 1024 {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": format!("{asset} too large (max 5 MB)") }));
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("{asset} too large (max 5 MB)") }),
+            );
         }
         let Some(ext) = sniff_ext(&data) else {
             return err(
@@ -238,7 +247,10 @@ pub async fn post_branding(State(state): State<AppState>, body: Option<Json<Valu
         };
         let dir = branding_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
         }
         // Remove any older extension of this asset, then write the new one.
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -249,9 +261,15 @@ pub async fn post_branding(State(state): State<AppState>, body: Option<Json<Valu
             }
         }
         if let Err(e) = std::fs::write(dir.join(format!("{asset}{ext}")), &data) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
         }
-        saved.insert(format!("{asset}_url"), json!(format!("/api/branding/{asset}{ext}")));
+        saved.insert(
+            format!("{asset}_url"),
+            json!(format!("/api/branding/{asset}{ext}")),
+        );
     }
 
     let mut out = Map::new();
@@ -279,7 +297,10 @@ pub async fn delete_branding(State(state): State<AppState>) -> Response {
         })
         .await;
     if let Err(e) = res {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        );
     }
     if let Ok(entries) = std::fs::read_dir(branding_dir()) {
         for e in entries.flatten() {
@@ -317,7 +338,11 @@ pub async fn manifest(State(state): State<AppState>) -> Response {
     // Best-effort override, like Python's try/except: a prefs read failure
     // serves the stock manifest rather than failing the PWA install.
     if let Ok(rows) = brand_prefs(&state).await {
-        let get = |k: &str| rows.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        let get = |k: &str| {
+            rows.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.clone())
+        };
         if let Some(name) = get("brand_name") {
             manifest["short_name"] = json!(name);
             manifest["name"] = match get("brand_tagline") {
@@ -362,12 +387,14 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         Router::new()
             .route(
                 "/api/branding",
-                axum::routing::get(get_branding).post(post_branding).delete(delete_branding),
+                axum::routing::get(get_branding)
+                    .post(post_branding)
+                    .delete(delete_branding),
             )
             .route("/api/branding/{fname}", axum::routing::get(serve_asset))
             .route("/manifest.json", axum::routing::get(manifest))
@@ -375,7 +402,12 @@ mod tests {
             .with_state(state)
     }
 
-    async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Vec<u8>) {
+    async fn send(
+        app: &Router,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Vec<u8>) {
         let b = Request::builder().method(method).uri(path);
         let req = match body {
             Some(v) => b
@@ -386,11 +418,18 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         (status, bytes.to_vec())
     }
 
-    async fn send_json(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+    async fn send_json(
+        app: &Router,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let (st, bytes) = send(app, method, path, body).await;
         (st, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
@@ -476,8 +515,10 @@ mod tests {
             &app,
             "POST",
             "/api/branding",
-            Some(json!({ "name": "AcmeOps", "tagline": "Ops Console", "color": "#ff8800",
-                          "icon": png_data_url() })),
+            Some(
+                json!({ "name": "AcmeOps", "tagline": "Ops Console", "color": "#ff8800",
+                          "icon": png_data_url() }),
+            ),
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
@@ -511,7 +552,10 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["icon_url"], json!("/api/branding/icon.jpg"));
-        assert!(!dir.path().join("branding/icon.png").exists(), "old asset must be replaced");
+        assert!(
+            !dir.path().join("branding/icon.png").exists(),
+            "old asset must be replaced"
+        );
         assert!(dir.path().join("branding/icon.jpg").exists());
 
         // DELETE clears prefs and files.
@@ -529,8 +573,13 @@ mod tests {
         let _guard = test_env::set_home(dir.path());
         let app = app();
 
-        let (st, v) =
-            send_json(&app, "POST", "/api/branding", Some(json!({ "icon": "%%%not-base64%%%" }))).await;
+        let (st, v) = send_json(
+            &app,
+            "POST",
+            "/api/branding",
+            Some(json!({ "icon": "%%%not-base64%%%" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], json!("invalid base64 for icon"));
 
@@ -539,7 +588,9 @@ mod tests {
             &app,
             "POST",
             "/api/branding",
-            Some(json!({ "logo": base64::engine::general_purpose::STANDARD.encode(b"GIF89a-nope") })),
+            Some(
+                json!({ "logo": base64::engine::general_purpose::STANDARD.encode(b"GIF89a-nope") }),
+            ),
         )
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
@@ -603,7 +654,13 @@ mod tests {
 
         // Name without tagline: name == short_name (Python's else branch).
         let (_, _) = send_json(&app, "DELETE", "/api/branding", None).await;
-        let (_, r) = send_json(&app, "POST", "/api/branding", Some(json!({ "name": "Solo" }))).await;
+        let (_, r) = send_json(
+            &app,
+            "POST",
+            "/api/branding",
+            Some(json!({ "name": "Solo" })),
+        )
+        .await;
         assert_eq!(r["ok"], json!(true));
         let (_, v) = send_json(&app, "GET", "/manifest.json", None).await;
         assert_eq!(v["name"], json!("Solo"));
@@ -617,7 +674,10 @@ mod tests {
         let mut webp = b"RIFF\x00\x00\x00\x00WEBP".to_vec();
         webp.extend_from_slice(b"VP8 ");
         assert_eq!(sniff_ext(&webp), Some(".webp"));
-        assert_eq!(sniff_ext(b"<?xml version=\"1.0\"?><svg xmlns=\"x\"/>"), Some(".svg"));
+        assert_eq!(
+            sniff_ext(b"<?xml version=\"1.0\"?><svg xmlns=\"x\"/>"),
+            Some(".svg")
+        );
         assert_eq!(sniff_ext(b"GIF89a"), None);
         // <svg deeper than 500 bytes is NOT sniffed (Python checks data[:500]).
         let mut late_svg = vec![b' '; 600];

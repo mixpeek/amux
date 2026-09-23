@@ -57,7 +57,7 @@ const ALLOWED_BARE_SPAWNS: &[(&str, &str)] = &[
          A death mid-shot is visible as `reconciled: false` on /health, so registering the \
          shot would only add a job that exits immediately by design (same as AMUX-2888)",
     ),
-    ];
+];
 
 /// Every `tokio::spawn(` in `src` that is not on the allow-list, returned with
 /// its byte offset so a failure names where to look.
@@ -70,7 +70,10 @@ fn unregistered_spawns(src: &str) -> Vec<(usize, String)> {
         // call) is inside the spawned block. A backward window would land in
         // the comment above it, which is prose and would match anything.
         let win = &src[pos..src.len().min(pos + 400)];
-        if !ALLOWED_BARE_SPAWNS.iter().any(|(needle, _)| win.contains(needle)) {
+        if !ALLOWED_BARE_SPAWNS
+            .iter()
+            .any(|(needle, _)| win.contains(needle))
+        {
             let line = src[..pos].matches('\n').count() + 1;
             out.push((line, win.lines().take(3).collect::<Vec<_>>().join(" ")));
         }
@@ -88,7 +91,8 @@ fn every_background_loop_in_lib_rs_goes_through_the_registry() {
     // way. So: doctor the real source with a spawn that is obviously not on
     // the allow-list, and require the scanner to catch it. If this assert ever
     // fails, the verdict below is meaningless.
-    let doctored = format!("{src}\nfn later() {{ tokio::spawn(async move {{ forever().await; }}); }}\n");
+    let doctored =
+        format!("{src}\nfn later() {{ tokio::spawn(async move {{ forever().await; }}); }}\n");
     let caught = unregistered_spawns(&doctored);
     assert!(
         !caught.is_empty(),
@@ -144,7 +148,10 @@ fn every_id_constant_is_enumerated_in_all_ids() {
         };
         // Bounded on the CODE (the module's closing brace at column 0), not on
         // an arbitrary character count that a long comment would overrun.
-        let end = src[start..].find("\n}\n").map(|i| start + i).unwrap_or(src.len());
+        let end = src[start..]
+            .find("\n}\n")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
         src[start..end]
             .lines()
             .filter_map(|l| l.trim().strip_prefix("pub const "))
@@ -165,7 +172,10 @@ fn every_id_constant_is_enumerated_in_all_ids() {
     );
 
     let names = const_names(src);
-    assert!(names.len() >= 10, "scan found only {names:?} — it is not reading the ids module");
+    assert!(
+        names.len() >= 10,
+        "scan found only {names:?} — it is not reading the ids module"
+    );
     // Every constant NAME must appear in the ALL_IDS list body. Comparing
     // names (not values) on purpose: ALL_IDS is written as `ids::NAME`, so
     // that is the text a forgotten entry is missing.
@@ -198,7 +208,9 @@ async fn get_json(app: &axum::Router, path: &str) -> (u16, Value) {
         .await
         .unwrap();
     let status = res.status().as_u16();
-    let body = axum::body::to_bytes(res.into_body(), 2 * 1024 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
@@ -210,7 +222,7 @@ fn test_app() -> (axum::Router, tempfile::TempDir) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
     (app, dir)
 }
@@ -231,7 +243,11 @@ async fn system_jobs_lists_every_documented_job_and_reports_unspawned_ones() {
             .iter()
             .find(|j| j["id"] == d.id)
             .unwrap_or_else(|| panic!("{} documented but absent from the payload", d.id));
-        assert_eq!(j["purpose"], d.purpose, "{}: purpose must reach the client", d.id);
+        assert_eq!(
+            j["purpose"], d.purpose,
+            "{}: purpose must reach the client",
+            d.id
+        );
         assert_eq!(j["documented"], true);
         // Nothing was spawned in this process, so every one of them must say
         // so. If this ever comes back "ok", the endpoint is inventing health.
@@ -242,7 +258,10 @@ async fn system_jobs_lists_every_documented_job_and_reports_unspawned_ones() {
             d.id
         );
     }
-    assert!(body["unhealthy"].as_u64().unwrap_or(0) > 0, "unspawned jobs must count as unhealthy");
+    assert!(
+        body["unhealthy"].as_u64().unwrap_or(0) > 0,
+        "unspawned jobs must count as unhealthy"
+    );
     // No mutation verbs: these are machinery, not user data.
     assert!(body.get("run_now").is_none());
 }
@@ -259,7 +278,10 @@ async fn system_jobs_lists_every_documented_job_and_reports_unspawned_ones() {
 #[tokio::test]
 async fn a_spawned_periodic_job_reports_ok_with_real_ticks() {
     const ID: &str = "test-only-undocumented-job";
-    assert!(!CATALOG.iter().any(|d| d.id == ID), "this test needs an id with no doc row");
+    assert!(
+        !CATALOG.iter().any(|d| d.id == ID),
+        "this test needs an id with no doc row"
+    );
     let (app, _dir) = test_app();
     let t = amux_server::runtime_jobs::spawn_periodic_every(
         ID,
@@ -279,7 +301,10 @@ async fn a_spawned_periodic_job_reports_ok_with_real_ticks() {
     assert_eq!(j["status"], "ok", "{j}");
     assert_eq!(j["kind"], "periodic");
     assert_eq!(j["documented"], false);
-    assert!(j["purpose"].is_null(), "an undocumented job's purpose is a visible blank");
+    assert!(
+        j["purpose"].is_null(),
+        "an undocumented job's purpose is a visible blank"
+    );
     assert!(j["ticks"].as_u64().unwrap_or(0) >= 2, "{j}");
     assert!(j["last_tick_age_s"].as_f64().unwrap_or(1e9) < 1.0, "{j}");
     assert!(j["instrumented"].as_bool().unwrap_or(false));
@@ -309,13 +334,29 @@ async fn only_prefs_are_editable_env_controls_are_readouts() {
     let mut editable = Vec::new();
     for j in body["jobs"].as_array().unwrap() {
         for e in j["env"].as_array().into_iter().flatten() {
-            assert_eq!(e["editable"], false, "{}: env control claims to be editable", j["id"]);
-            assert!(e["var"].is_string(), "{}: env control must name its var", j["id"]);
+            assert_eq!(
+                e["editable"], false,
+                "{}: env control claims to be editable",
+                j["id"]
+            );
+            assert!(
+                e["var"].is_string(),
+                "{}: env control must name its var",
+                j["id"]
+            );
         }
         let p = &j["pref"];
         if p.get("kind").and_then(|k| k.as_str()) == Some("pref") {
-            assert_eq!(p["editable"], true, "{}: a pref control must be editable", j["id"]);
-            assert!(p["key"].is_string(), "{}: a pref control must name its key", j["id"]);
+            assert_eq!(
+                p["editable"], true,
+                "{}: a pref control must be editable",
+                j["id"]
+            );
+            assert!(
+                p["key"].is_string(),
+                "{}: a pref control must name its key",
+                j["id"]
+            );
             editable.push(j["id"].as_str().unwrap_or("").to_string());
         }
     }

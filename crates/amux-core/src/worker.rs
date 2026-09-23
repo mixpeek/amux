@@ -309,18 +309,20 @@ pub fn apply_config(
 ) -> (Worker, ConfigChangeResult) {
     let mode = classify_config_change(&worker.config, &new_config, caps);
 
-    let (session_replaced, old_session, new_session, state) =
-        match (mode, current_session) {
-            (ConfigApplyMode::SessionRestart, Some(old)) => {
-                let new = mint_replacement();
-                // A session that "replaces" itself would be a lie in the audit
-                // trail; ULID minting makes collision practically impossible,
-                // and this guards the tests' fixed-id world too.
-                debug_assert!(old != new, "replacement session id must differ from the old one");
-                (true, Some(old), Some(new), WorkerState::Starting)
-            }
-            (_, _) => (false, None, None, worker.state.clone()),
-        };
+    let (session_replaced, old_session, new_session, state) = match (mode, current_session) {
+        (ConfigApplyMode::SessionRestart, Some(old)) => {
+            let new = mint_replacement();
+            // A session that "replaces" itself would be a lie in the audit
+            // trail; ULID minting makes collision practically impossible,
+            // and this guards the tests' fixed-id world too.
+            debug_assert!(
+                old != new,
+                "replacement session id must differ from the old one"
+            );
+            (true, Some(old), Some(new), WorkerState::Starting)
+        }
+        (_, _) => (false, None, None, worker.state.clone()),
+    };
 
     let worker = Worker {
         id: worker.id, // moved, never rewritten — the only field with no path to change

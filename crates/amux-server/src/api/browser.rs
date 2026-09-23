@@ -521,7 +521,12 @@ fn summarize_pages(targets: &[Value]) -> Vec<(String, String)> {
         .iter()
         .filter(|t| t.get("type").and_then(Value::as_str) == Some("page"))
         .map(|t| {
-            let title = t.get("title").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let title = t
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let url = t.get("url").and_then(Value::as_str).unwrap_or("");
             // Host only. Parsing by hand rather than pulling a URL crate in for
             // one field; anything unrecognisable degrades to the scheme-ish
@@ -530,7 +535,11 @@ fn summarize_pages(targets: &[Value]) -> Vec<(String, String)> {
                 .split_once("://")
                 .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or("").to_string())
                 .unwrap_or_else(|| url.split(['/', '?', '#']).next().unwrap_or("").to_string());
-            let title = if title.is_empty() { "(untitled)".to_string() } else { title };
+            let title = if title.is_empty() {
+                "(untitled)".to_string()
+            } else {
+                title
+            };
             (title, host)
         })
         .collect()
@@ -698,7 +707,10 @@ mod af419_start_origin_tests {
         ]);
         match lookup_start_origin(&s, 1060) {
             StartOrigin::Found { ip, ua } => {
-                assert_eq!(ip, "100.66.26.84", "must be the UNATTRIBUTED row, not the nearer one");
+                assert_eq!(
+                    ip, "100.66.26.84",
+                    "must be the UNATTRIBUTED row, not the nearer one"
+                );
                 assert!(ua.contains("Mozilla"), "got {ua}");
             }
             other => panic!("expected the unattributed row, got {}", other.label()),
@@ -737,7 +749,10 @@ mod af419_start_origin_tests {
     #[test]
     fn the_window_still_bounds_the_search() {
         let s = store_with(&[(900.0, "10.0.0.1", "too-old", "")]);
-        assert!(matches!(lookup_start_origin(&s, 1060), StartOrigin::NotFound));
+        assert!(matches!(
+            lookup_start_origin(&s, 1060),
+            StartOrigin::NotFound
+        ));
     }
 }
 
@@ -758,7 +773,10 @@ mod launch_latency_tests {
         // CONTROL 1 — a create with NO url launches nothing, so launch_ms is 0
         // and it can never qualify however slow it is. If profile creation
         // itself starts taking ten seconds, that is amux and must file.
-        assert!(!dominated_by_external(10_489, 0), "no launch means no excuse");
+        assert!(
+            !dominated_by_external(10_489, 0),
+            "no launch means no excuse"
+        );
 
         // CONTROL 2 — a fast launch inside a slow request leaves time that is
         // amux's own. Without this the declaration is a route exemption wearing
@@ -786,17 +804,29 @@ mod idle_takeover_tests {
         // CONTROL 1 — a single real page is STATE. The refusal's own history is
         // that "4 tabs" was two omnibox popups, an iframe, and one live Google
         // sign-in; destroying that is not recoverable by reopening a tab.
-        assert!(!auto_takes(false, true, 66_240, 600), "an open page must still refuse");
+        assert!(
+            !auto_takes(false, true, 66_240, 600),
+            "an open page must still refuse"
+        );
 
         // CONTROL 2 — CDP SILENCE IS NOT ZERO. This file draws that distinction
         // deliberately ("that is not the same as zero"); unknown must refuse.
-        assert!(!auto_takes(true, false, 66_240, 600), "unknown tab count must still refuse");
+        assert!(
+            !auto_takes(true, false, 66_240, 600),
+            "unknown tab count must still refuse"
+        );
 
         // CONTROL 3 — the grace window. A browser started seconds ago has not
         // opened its first tab yet; without this, two concurrent starts resolve
         // by stomping each other.
-        assert!(!auto_takes(true, true, 30, 600), "inside the grace window must still refuse");
-        assert!(!auto_takes(true, true, 600, 600), "at the boundary, not past it");
+        assert!(
+            !auto_takes(true, true, 30, 600),
+            "inside the grace window must still refuse"
+        );
+        assert!(
+            !auto_takes(true, true, 600, 600),
+            "at the boundary, not past it"
+        );
         assert!(auto_takes(true, true, 601, 600), "one second past is past");
     }
 }
@@ -817,21 +847,40 @@ mod takeover_wording_tests {
     #[test]
     fn the_refusal_names_what_a_takeover_actually_destroys() {
         let v = takeover_refusal(
-            "default", "tubescience", 1_000, 42, Some(0), &[], 1_000 + 65_160,
-            Some("amux"), StartOrigin::NotLooked,
+            "default",
+            "tubescience",
+            1_000,
+            42,
+            Some(0),
+            &[],
+            1_000 + 65_160,
+            Some("amux"),
+            StartOrigin::NotLooked,
         );
         let err = v["error"].as_str().unwrap_or_default();
         assert!(
             !err.contains("staged logins"),
             "the headline must not claim on-disk logins are lost: {err}"
         );
-        assert!(err.contains("OPEN TABS"), "it must name what IS lost: {err}");
+        assert!(
+            err.contains("OPEN TABS"),
+            "it must name what IS lost: {err}"
+        );
         // CONTROLS: the refusal still refuses, and still carries the evidence
         // that makes it judgeable. A fix that softened it into an approval, or
         // dropped the idle facts, would pass the assertions above.
-        assert!(err.contains("already running"), "it must still refuse: {err}");
-        assert!(err.contains("ZERO tabs"), "and still carry the evidence: {err}");
-        assert!(err.contains("takeover"), "and still name the deliberate escape: {err}");
+        assert!(
+            err.contains("already running"),
+            "it must still refuse: {err}"
+        );
+        assert!(
+            err.contains("ZERO tabs"),
+            "and still carry the evidence: {err}"
+        );
+        assert!(
+            err.contains("takeover"),
+            "and still name the deliberate escape: {err}"
+        );
     }
 }
 
@@ -866,7 +915,11 @@ fn takeover_refusal(
         .iter()
         .map(|(t, h)| {
             let t: String = t.chars().take(60).collect();
-            if h.is_empty() { format!("\"{t}\"") } else { format!("\"{t}\" ({h})") }
+            if h.is_empty() {
+                format!("\"{t}\"")
+            } else {
+                format!("\"{t}\" ({h})")
+            }
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -1045,13 +1098,18 @@ fn cdp_status(e: &anyhow::Error) -> StatusCode {
 }
 
 /// Resolve session → page → connected CDP client, or the mapped error.
-async fn connect_session(session: &str, create_url: Option<&str>) -> Result<(chrome::DriverPage, chrome::CdpClient), Response> {
+async fn connect_session(
+    session: &str,
+    create_url: Option<&str>,
+) -> Result<(chrome::DriverPage, chrome::CdpClient), Response> {
     // A server restart leaves the browser running and the in-process handle
     // empty (AC-325). Re-adopt lazily HERE, on the path every verb takes, so a
     // sequence that spans a rebuild continues instead of reporting "no
     // amux-launched browser is running" about a browser that is right there.
     chrome::adopt_if_orphaned(&chrome::amux_home()).await;
-    let page = chrome::resolve_page(session, create_url).await.map_err(driver_err)?;
+    let page = chrome::resolve_page(session, create_url)
+        .await
+        .map_err(driver_err)?;
     let first = match chrome::CdpClient::connect(&page.ws_url).await {
         Ok(cdp) => return Ok((page, cdp)),
         Err(e) => e,
@@ -1085,7 +1143,10 @@ async fn connect_session(session: &str, create_url: Option<&str>) -> Result<(chr
          did not recover: {first}",
         page.target_id
     );
-    Err(err(StatusCode::BAD_GATEWAY, json!({ "error": with_cause(&first) })))
+    Err(err(
+        StatusCode::BAD_GATEWAY,
+        json!({ "error": with_cause(&first) }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,8 +1207,10 @@ async fn start(
     // Viewport request validated BEFORE launching — a 400 must not cost a
     // Chrome start, and the contract wording matches the viewport action's.
     let dev = body.device.as_deref().unwrap_or("").trim().to_lowercase();
-    let named =
-        VIEWPORT_DEVICES.iter().find(|(n, ..)| *n == dev).map(|(_, w, h)| (*w, *h));
+    let named = VIEWPORT_DEVICES
+        .iter()
+        .find(|(n, ..)| *n == dev)
+        .map(|(_, w, h)| (*w, *h));
     if !dev.is_empty() && named.is_none() {
         let mut names: Vec<&str> = VIEWPORT_DEVICES.iter().map(|(n, ..)| *n).collect();
         names.sort_unstable();
@@ -1191,7 +1254,9 @@ async fn start(
         // unattributed caller matches nothing — anonymity forfeits the
         // shortcut, including against an unattributed owner (two anonymous
         // callers are not one session).
-        let same = attrib.as_deref().is_some_and(|a| !r_owner.is_empty() && a == r_owner);
+        let same = attrib
+            .as_deref()
+            .is_some_and(|a| !r_owner.is_empty() && a == r_owner);
         if !same && !body.takeover {
             // ASK THE BROWSER WHAT IT IS DOING (AMUX-3610). The refusal used to
             // name an owner and stop, which leaves a caller facing an
@@ -1246,28 +1311,28 @@ async fn start(
                      idle grace window, so the start proceeded without asking (AMUX-3828)"
                 );
             } else {
-            return err(
-                StatusCode::CONFLICT,
-                takeover_refusal(
-                    &r_profile,
-                    &r_owner,
-                    r_started,
-                    r_pid,
-                    tabs,
-                    &pages,
-                    now_epoch(),
-                    attrib.as_deref(),
-                    // Only for an UNATTRIBUTED holder. A named one is already
-                    // messageable, so a db read there would buy nothing and the
-                    // NotLooked state says exactly that rather than implying a
-                    // lookup came back empty.
-                    if r_owner.trim().is_empty() {
-                        lookup_start_origin(&state.store, r_started)
-                    } else {
-                        StartOrigin::NotLooked
-                    },
-                ),
-            );
+                return err(
+                    StatusCode::CONFLICT,
+                    takeover_refusal(
+                        &r_profile,
+                        &r_owner,
+                        r_started,
+                        r_pid,
+                        tabs,
+                        &pages,
+                        now_epoch(),
+                        attrib.as_deref(),
+                        // Only for an UNATTRIBUTED holder. A named one is already
+                        // messageable, so a db read there would buy nothing and the
+                        // NotLooked state says exactly that rather than implying a
+                        // lookup came back empty.
+                        if r_owner.trim().is_empty() {
+                            lookup_start_origin(&state.store, r_started)
+                        } else {
+                            StartOrigin::NotLooked
+                        },
+                    ),
+                );
             }
         }
         if !same {
@@ -1278,8 +1343,15 @@ async fn start(
             );
         }
     }
-    match chrome::start(&home, &body.profile, &body.url, &session, attrib.as_deref().unwrap_or(""), body.headless.unwrap_or(true))
-        .await
+    match chrome::start(
+        &home,
+        &body.profile,
+        &body.url,
+        &session,
+        attrib.as_deref().unwrap_or(""),
+        body.headless.unwrap_or(true),
+    )
+    .await
     {
         Ok(info) => {
             let mut v = serde_json::to_value(&info).unwrap_or_else(|_| json!({}));
@@ -1500,12 +1572,20 @@ async fn status() -> Response {
         let since_verb_s = now_f - *last_verb as f64;
         let ttl_remaining_s = if ttl > 0 {
             let r = ttl as f64 - age_s;
-            if r > 0.0 { Some(r.round()) } else { Some(0.0) }
+            if r > 0.0 {
+                Some(r.round())
+            } else {
+                Some(0.0)
+            }
         } else {
             None
         };
         let activity_reap = crate::runtime_jobs::browser_reaper::activity_reap_s();
-        let activity_reap_val = if activity_reap == 0 { Value::Null } else { json!(activity_reap) };
+        let activity_reap_val = if activity_reap == 0 {
+            Value::Null
+        } else {
+            json!(activity_reap)
+        };
         browsers.push(json!({
             "profile": p,
             "started_by": o,
@@ -1605,9 +1685,16 @@ mod headed_pointer_tests {
 
     #[test]
     fn a_headed_start_is_told_how_to_point_at_the_window_it_opened() {
-        let p = headed_launch_pointer(false, false, "hubspot").expect("a headed start opens a window");
-        assert!(p.contains("amux browser identify"), "the pointer names no verb: {p}");
-        assert!(p.contains("hubspot"), "the pointer does not name the profile: {p}");
+        let p =
+            headed_launch_pointer(false, false, "hubspot").expect("a headed start opens a window");
+        assert!(
+            p.contains("amux browser identify"),
+            "the pointer names no verb: {p}"
+        );
+        assert!(
+            p.contains("hubspot"),
+            "the pointer does not name the profile: {p}"
+        );
         assert!(
             p.contains("WITHOUT that bar is theirs"),
             "the pointer never says what an unlabelled window means, which is the answer"
@@ -1679,7 +1766,10 @@ mod identify_scope_tests {
     #[test]
     fn nothing_running_is_its_own_answer_and_never_an_error() {
         assert_eq!(identify_scope(None, &[]), IdentifyScope::NothingRunning);
-        assert_eq!(identify_scope(Some("default"), &[]), IdentifyScope::NothingRunning);
+        assert_eq!(
+            identify_scope(Some("default"), &[]),
+            IdentifyScope::NothingRunning
+        );
     }
 
     #[test]
@@ -1697,7 +1787,10 @@ mod identify_scope_tests {
     fn a_named_profile_that_is_not_running_still_names_what_is() {
         assert_eq!(
             identify_scope(Some("hubspot"), &v(&["default"])),
-            IdentifyScope::NotRunning { asked: "hubspot".into(), running: v(&["default"]) }
+            IdentifyScope::NotRunning {
+                asked: "hubspot".into(),
+                running: v(&["default"])
+            }
         );
     }
 
@@ -1705,7 +1798,10 @@ mod identify_scope_tests {
     fn one_browser_and_no_name_is_labelled_and_raised() {
         assert_eq!(
             identify_scope(None, &v(&["default"])),
-            IdentifyScope::All { profiles: v(&["default"]), raise: true }
+            IdentifyScope::All {
+                profiles: v(&["default"]),
+                raise: true
+            }
         );
     }
 
@@ -1717,7 +1813,10 @@ mod identify_scope_tests {
     fn several_browsers_and_no_name_labels_every_one_and_raises_none() {
         assert_eq!(
             identify_scope(None, &v(&["default", "hubspot", "gmail"])),
-            IdentifyScope::All { profiles: v(&["default", "hubspot", "gmail"]), raise: false }
+            IdentifyScope::All {
+                profiles: v(&["default", "hubspot", "gmail"]),
+                raise: false
+            }
         );
     }
 
@@ -1728,7 +1827,10 @@ mod identify_scope_tests {
     fn a_blank_profile_reads_as_unset() {
         assert_eq!(
             identify_scope(Some("   "), &v(&["default"])),
-            IdentifyScope::All { profiles: v(&["default"]), raise: true }
+            IdentifyScope::All {
+                profiles: v(&["default"]),
+                raise: true
+            }
         );
     }
 }
@@ -1741,7 +1843,12 @@ mod identify_scope_tests {
 /// RESULT (`raised` came back 0). A summary a reader takes as the result of the
 /// lines above must be computed from those lines, or it is an independent claim
 /// sitting beside them that cannot disagree with them.
-fn identify_verdict(labeled: usize, browsers: usize, raised: usize, raise_attempted: bool) -> String {
+fn identify_verdict(
+    labeled: usize,
+    browsers: usize,
+    raised: usize,
+    raise_attempted: bool,
+) -> String {
     if labeled == 0 {
         return "no window could be labelled — read `errors` on each browser below".into();
     }
@@ -1774,7 +1881,10 @@ mod identify_verdict_tests {
         let v = identify_verdict(1, 1, 0, true);
         assert!(!v.contains("in front,"), "{v}");
         assert!(v.contains("could NOT be brought to the front"), "{v}");
-        assert!(v.contains("raise_error"), "the reader is not told where the reason is: {v}");
+        assert!(
+            v.contains("raise_error"),
+            "the reader is not told where the reason is: {v}"
+        );
     }
 
     #[test]
@@ -1791,7 +1901,10 @@ mod identify_verdict_tests {
         let v = identify_verdict(3, 3, 0, false);
         assert!(v.contains("all 3 amux windows"), "{v}");
         assert!(v.contains("WITHOUT one is your own"), "{v}");
-        assert!(!v.contains("front"), "no raise was attempted, so none should be mentioned: {v}");
+        assert!(
+            !v.contains("front"),
+            "no raise was attempted, so none should be mentioned: {v}"
+        );
     }
 
     #[test]
@@ -1851,8 +1964,7 @@ async fn identify(headers: HeaderMap, body: Option<Json<IdentifyBody>>) -> Respo
 
     let mut identified = Vec::new();
     for name in &targets {
-        let Some((_, started_by, _, pid, port, _)) =
-            all.iter().find(|(p, ..)| p == name).cloned()
+        let Some((_, started_by, _, pid, port, _)) = all.iter().find(|(p, ..)| p == name).cloned()
         else {
             continue;
         };
@@ -1914,18 +2026,28 @@ fn resolve_stop_target(
     let hit = running
         .iter()
         .find(|(p, _, _, _, _, _)| want_profile.is_some() && Some(p.as_str()) == want_profile)
-        .or_else(|| running.iter().find(|(_, _, _, pid, _, _)| want_pid.is_some() && Some(*pid) == want_pid))
         .or_else(|| {
-            let mut owned = running
+            running
                 .iter()
-                .filter(|(_, by, _, _, _, _)| want_session.is_some() && Some(by.as_str()) == want_session);
+                .find(|(_, _, _, pid, _, _)| want_pid.is_some() && Some(*pid) == want_pid)
+        })
+        .or_else(|| {
+            let mut owned = running.iter().filter(|(_, by, _, _, _, _)| {
+                want_session.is_some() && Some(by.as_str()) == want_session
+            });
             match (owned.next(), owned.next()) {
                 (Some(one), None) => Some(one),
                 _ => None,
             }
         })
         // A bare stop is unambiguous only when there is exactly one browser.
-        .or_else(|| if running.len() == 1 { running.first() } else { None })?;
+        .or_else(|| {
+            if running.len() == 1 {
+                running.first()
+            } else {
+                None
+            }
+        })?;
     Some((hit.0.clone(), hit.1.clone(), hit.3))
 }
 
@@ -1959,9 +2081,17 @@ async fn stop(
     // for internal callers and tests". That was not true of this caller, which
     // is why the fallback arm was doing the fleet's stopping.
     let running = chrome::running_all();
-    let want_profile = body.get("profile").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let want_profile = body
+        .get("profile")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let want_pid = body.get("pid").and_then(Value::as_u64).map(|p| p as u32);
-    let want_session = body.get("session").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let want_session = body
+        .get("session")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let target = resolve_stop_target(&running, want_profile, want_pid, want_session);
 
     let Some((profile, owner_of_target, target_pid)) = target else {
@@ -2054,7 +2184,9 @@ struct ProfilesQuery {
 /// Read-only and copy-first: the live DB is never opened in place, because a
 /// listing must not be able to disturb a login.
 fn profile_contents(dir: &std::path::Path) -> (Option<i64>, Vec<String>) {
-    let Some(db) = profile_cookie_db(dir) else { return (Some(0), Vec::new()) };
+    let Some(db) = profile_cookie_db(dir) else {
+        return (Some(0), Vec::new());
+    };
     let tmp = std::env::temp_dir().join(format!("amux-profile-peek-{}.sqlite", std::process::id()));
     if std::fs::copy(&db, &tmp).is_err() {
         // Absent, not zero: an unreadable jar is not an empty one, and the two
@@ -2082,13 +2214,21 @@ fn profile_contents(dir: &std::path::Path) -> (Option<i64>, Vec<String>) {
 }
 
 async fn profiles(Query(q): Query<ProfilesQuery>) -> Response {
-    let with_sizes = q.sizes.as_deref().is_some_and(|s| !s.is_empty() && s != "0");
+    let with_sizes = q
+        .sizes
+        .as_deref()
+        .is_some_and(|s| !s.is_empty() && s != "0");
     let home = chrome::amux_home();
     // Size walks touch a few hundred files per profile — off the runtime.
     let list =
         match tokio::task::spawn_blocking(move || chrome::list_profiles(&home, with_sizes)).await {
             Ok(l) => l,
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) })),
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": with_cause(&e) }),
+                )
+            }
         };
     let chrome_profiles = chrome::list_chrome_profiles();
     // THE TTL AND THE COUNTDOWN, BESIDE THE THING THEY DELETE. A reaper whose
@@ -2121,12 +2261,18 @@ async fn profiles(Query(q): Query<ProfilesQuery>) -> Response {
             };
             let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
             if let Some(o) = v.as_object_mut() {
-                o.insert("age_days".into(), json!(age_days.map(|d| (d * 10.0).round() / 10.0)));
+                o.insert(
+                    "age_days".into(),
+                    json!(age_days.map(|d| (d * 10.0).round() / 10.0)),
+                );
                 o.insert("reap_exempt_reason".into(), json!(exempt));
                 // DERIVED, so discovery never depends on anyone having
                 // remembered to describe a profile.
                 let dir = crate::integrations::browser::resolve_profile_dir(
-                    &chrome::amux_home(), &chrome::chrome_user_data_dir(), &p.name);
+                    &chrome::amux_home(),
+                    &chrome::chrome_user_data_dir(),
+                    &p.name,
+                );
                 let (cookies, hosts) = profile_contents(&dir);
                 o.insert("cookies".into(), json!(cookies));
                 o.insert("cookies_measured".into(), json!(cookies.is_some()));
@@ -2135,17 +2281,21 @@ async fn profiles(Query(q): Query<ProfilesQuery>) -> Response {
                 // One sentence a human can read in a list, without launching
                 // anything. The label stays authoritative when somebody set
                 // one; this only fills the silence.
-                o.insert("summary".into(), json!(match (cookies, hosts.first()) {
-                    (Some(0), _) => "empty — no logins, nothing to reuse".to_string(),
-                    (None, _) => "could not read this profile's cookie jar".to_string(),
-                    (Some(n), Some(top)) => format!(
-                        "{n} cookie(s) across {} site(s); mainly {top}", hosts.len()),
-                    (Some(n), None) => format!("{n} cookie(s), no host could be read"),
-                }));
+                o.insert(
+                    "summary".into(),
+                    json!(match (cookies, hosts.first()) {
+                        (Some(0), _) => "empty — no logins, nothing to reuse".to_string(),
+                        (None, _) => "could not read this profile's cookie jar".to_string(),
+                        (Some(n), Some(top)) =>
+                            format!("{n} cookie(s) across {} site(s); mainly {top}", hosts.len()),
+                        (Some(n), None) => format!("{n} cookie(s), no host could be read"),
+                    }),
+                );
                 o.insert(
                     "reap_in_days".into(),
                     json!(match (exempt, age_days) {
-                        (None, Some(d)) => json!(((ttl_days as f64 - d).max(0.0) * 10.0).round() / 10.0),
+                        (None, Some(d)) =>
+                            json!(((ttl_days as f64 - d).max(0.0) * 10.0).round() / 10.0),
                         _ => Value::Null,
                     }),
                 );
@@ -2195,7 +2345,11 @@ struct CombineBody {
 /// never been opened (a created-but-unused profile has no `Default/`).
 fn profile_cookie_db(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let c = dir.join("Default").join("Cookies");
-    if c.is_file() { Some(c) } else { None }
+    if c.is_file() {
+        Some(c)
+    } else {
+        None
+    }
 }
 
 /// POST /profile/combine — build ONE profile carrying several profiles' logins.
@@ -2221,7 +2375,9 @@ async fn profile_combine(
     let _ = (&state, &headers);
     let name = body.name.trim().to_string();
     if name.is_empty()
-        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
         return err(
             StatusCode::BAD_REQUEST,
@@ -2234,8 +2390,12 @@ async fn profile_combine(
             json!({ "error": "refusing to overwrite 'default' — combine into a new name" }),
         );
     }
-    let sources: Vec<String> =
-        body.sources.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let sources: Vec<String> = body
+        .sources
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     if sources.len() < 2 {
         return err(
             StatusCode::BAD_REQUEST,
@@ -2296,7 +2456,10 @@ async fn profile_combine(
             );
         }
         if let Err(e) = std::fs::remove_dir_all(&dest) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": with_cause(&e) }),
+            );
         }
     }
 
@@ -2411,11 +2574,17 @@ async fn profile_combine(
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             let _ = std::fs::remove_dir_all(&dest);
-            return err(StatusCode::UNPROCESSABLE_ENTITY, json!({ "error": with_cause(&e) }));
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": with_cause(&e) }),
+            );
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dest);
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": with_cause(&e) }),
+            );
         }
     };
 
@@ -2450,7 +2619,9 @@ async fn profile_create(
     let started = std::time::Instant::now();
     let name = body.name.trim().to_string();
     if name.is_empty()
-        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
         return err(
             StatusCode::BAD_REQUEST,
@@ -2458,7 +2629,10 @@ async fn profile_create(
         );
     }
     if name == "default" {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "'default' already exists" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "'default' already exists" }),
+        );
     }
     let home = chrome::amux_home();
     // Create in the amux-owned location so create-path == use-path (the L7
@@ -2466,7 +2640,10 @@ async fn profile_create(
     // it here from now on because the dir exists.
     let dir = home.join("playwright-auth").join("profiles").join(&name);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) }));
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": with_cause(&e) }),
+        );
     }
     // A sign-in URL means "open a headed window on the new profile so a
     // human can log in" — same intent as the Python create flow.
@@ -2483,11 +2660,17 @@ async fn profile_create(
         let session = resolve_session(body.session.as_deref(), &headers);
         let attrib = explicit_session(body.session.as_deref(), &headers);
         let launch_started = std::time::Instant::now();
-        match chrome::start(&home, &name, body.url.trim(), &session, attrib.as_deref().unwrap_or(""),
+        match chrome::start(
+            &home,
+            &name,
+            body.url.trim(),
+            &session,
+            attrib.as_deref().unwrap_or(""),
             // create-profile launches headfully by definition: its purpose is a
             // human logging in (AMUX-3508's headless is for REUSING the result).
-            false)
-            .await
+            false,
+        )
+        .await
         {
             Ok(_) => launched = true,
             Err(e) => launch_error = json!(with_cause(&e)),
@@ -2535,15 +2718,18 @@ async fn profile_delete(Path(name): Path<String>) -> Response {
     // Python's route regex admits [A-Za-z0-9._-]+ only; anything else falls
     // through to its catalog 404. Same here.
     if name.is_empty()
-        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
         return catalog_body(&format!("/api/browser/profile/{name}"));
     }
     match chrome::delete_profile(&chrome::amux_home(), &name) {
         Ok(v) => Json(v).into_response(),
-        Err((code, v)) => {
-            err(StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), v)
-        }
+        Err((code, v)) => err(
+            StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            v,
+        ),
     }
 }
 
@@ -2688,7 +2874,10 @@ async fn screenshot_file(headers: HeaderMap, Query(q): Query<SessionQuery>) -> R
     let session = resolve_session(q.session.as_deref(), &headers);
     let file = chrome::amux_home()
         .join("browser-screenshots")
-        .join(format!("native-{}.png", chrome::safe_file_component(&session)));
+        .join(format!(
+            "native-{}.png",
+            chrome::safe_file_component(&session)
+        ));
     match tokio::fs::read(&file).await {
         Ok(bytes) => (
             [
@@ -2721,9 +2910,16 @@ async fn state_payload(cdp: &mut chrome::CdpClient, session: &str) -> Result<Val
         .eval(&chrome::state_js(), 20)
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, json!({ "error": with_cause(&e) })))?;
-    let text = v.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let text = v
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if let Some(o) = v.as_object_mut() {
-        o.insert("text".into(), json!(chrome::obs_cap(&text, chrome::obs_state_cap())));
+        o.insert(
+            "text".into(),
+            json!(chrome::obs_cap(&text, chrome::obs_state_cap())),
+        );
         o.insert("ok".into(), json!(true));
         o.insert("backend".into(), json!("native"));
         o.insert("session".into(), json!(session));
@@ -2843,7 +3039,13 @@ const VIEWPORT_DEVICES: &[(&str, u32, u32)] = &[
 // Keep the file schema independent of CDP: positive schema controls must not
 // attach their fixture to whichever real browser happens to be running.
 fn validate_file_action(body: &Value) -> Result<(), String> {
-    if body.get("selector").and_then(Value::as_str).map(str::trim).unwrap_or("").is_empty() {
+    if body
+        .get("selector")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
         return Err("files needs a selector for the <input type=file>".into());
     }
     let paths = body.get("files").and_then(Value::as_array);
@@ -2921,7 +3123,11 @@ async fn action_inner(
     body: Option<Json<Value>>,
 ) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let action = body.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let session = resolve_session(body.get("session").and_then(Value::as_str), &headers);
     let actor = explicit_session(body.get("session").and_then(Value::as_str), &headers);
 
@@ -2946,20 +3152,32 @@ async fn action_inner(
             }
         }
         "eval" => {
-            if get_str("script").map(|s| s.trim().is_empty()).unwrap_or(true) {
-                return err(StatusCode::BAD_REQUEST, json!({ "error": "script required" }));
+            if get_str("script")
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "script required" }),
+                );
             }
         }
         "input" => {
             if get_usize("index").is_none() || get_str("text").is_none() {
-                return err(StatusCode::BAD_REQUEST, json!({ "error": "input needs index and text" }));
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "input needs index and text" }),
+                );
             }
         }
         "key" => {
             let k = get_str("key").unwrap_or_default();
             if !chrome::CDP_KEYS.iter().any(|(n, ..)| *n == k) {
-                let supported =
-                    chrome::CDP_KEYS.iter().map(|(n, ..)| *n).collect::<Vec<_>>().join(", ");
+                let supported = chrome::CDP_KEYS
+                    .iter()
+                    .map(|(n, ..)| *n)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return err(
                     StatusCode::BAD_REQUEST,
                     json!({ "error": format!("unsupported key {k:?} (supported: {supported})") }),
@@ -2968,8 +3186,14 @@ async fn action_inner(
         }
         "viewport" => {
             let dev = get_str("device").unwrap_or_default().trim().to_lowercase();
-            let named = VIEWPORT_DEVICES.iter().find(|(n, ..)| *n == dev).map(|(_, w, h)| (*w, *h));
-            let explicit = match (body.get("width").and_then(Value::as_u64), body.get("height").and_then(Value::as_u64)) {
+            let named = VIEWPORT_DEVICES
+                .iter()
+                .find(|(n, ..)| *n == dev)
+                .map(|(_, w, h)| (*w, *h));
+            let explicit = match (
+                body.get("width").and_then(Value::as_u64),
+                body.get("height").and_then(Value::as_u64),
+            ) {
                 (Some(w), Some(h)) => Some((w as u32, h as u32)),
                 _ => None,
             };
@@ -2986,19 +3210,29 @@ async fn action_inner(
         "wait" => {
             let has = |k: &str| get_str(k).map(|s| !s.trim().is_empty()).unwrap_or(false);
             if !has("selector") && !has("text") {
-                return err(StatusCode::BAD_REQUEST, json!({ "error": "wait needs selector or text" }));
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": "wait needs selector or text" }),
+                );
             }
         }
         "files" => {
             if let Err(error) = validate_file_action(&body) {
-                tracing::warn!(verdict = "browser_files_schema_rejected", measured = true,
-                    n_considered = 1, "{error}");
+                tracing::warn!(
+                    verdict = "browser_files_schema_rejected",
+                    measured = true,
+                    n_considered = 1,
+                    "{error}"
+                );
                 return err(StatusCode::BAD_REQUEST, json!({ "error": error }));
             }
         }
         "type" | "scroll" | "back" | "extract" => {}
         other => {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": format!("unknown action: {other}") }))
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("unknown action: {other}") }),
+            )
         }
     }
 
@@ -3047,9 +3281,14 @@ async fn action_inner(
         }
         "type" => {
             let text = get_str("text").unwrap_or_default();
-            match cdp.call("Input.insertText", json!({ "text": text }), ten).await {
-                Ok(_) => Json(json!({ "ok": true, "typed": text.chars().count(), "backend": "native" }))
-                    .into_response(),
+            match cdp
+                .call("Input.insertText", json!({ "text": text }), ten)
+                .await
+            {
+                Ok(_) => {
+                    Json(json!({ "ok": true, "typed": text.chars().count(), "backend": "native" }))
+                        .into_response()
+                }
                 Err(e) => err(cdp_status(&e), json!({ "error": with_cause(&e) })),
             }
         }
@@ -3075,7 +3314,10 @@ async fn action_inner(
                 );
                 audited_return!(err(StatusCode::BAD_REQUEST, v));
             }
-            match cdp.call("Input.insertText", json!({ "text": text }), ten).await {
+            match cdp
+                .call("Input.insertText", json!({ "text": text }), ten)
+                .await
+            {
                 Ok(_) => Json(json!({ "ok": true, "index": idx, "typed": text.chars().count() }))
                     .into_response(),
                 Err(e) => err(cdp_status(&e), json!({ "error": with_cause(&e) })),
@@ -3160,7 +3402,12 @@ async fn action_inner(
             let files: Vec<String> = body
                 .get("files")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default();
             match chrome::set_input_files(&mut cdp, &selector, &files).await {
                 Ok(v) if v.get("error").is_some() => err(StatusCode::BAD_REQUEST, v),
@@ -3180,20 +3427,27 @@ async fn action_inner(
             Err(r) => r,
         },
         "wait" => {
-            let timeout_ms =
-                body.get("timeout").and_then(Value::as_u64).unwrap_or(5000).min(60_000);
-            let (what, probe) = if let Some(sel) = get_str("selector").filter(|s| !s.trim().is_empty()) {
-                (format!("selector {sel:?}"), format!("!!document.querySelector({})", json!(sel)))
-            } else {
-                let text = get_str("text").unwrap_or_default();
-                (
-                    format!("text {text:?}"),
-                    format!(
-                        "(((document.body&&document.body.innerText)||'').indexOf({}) !== -1)",
-                        json!(text)
-                    ),
-                )
-            };
+            let timeout_ms = body
+                .get("timeout")
+                .and_then(Value::as_u64)
+                .unwrap_or(5000)
+                .min(60_000);
+            let (what, probe) =
+                if let Some(sel) = get_str("selector").filter(|s| !s.trim().is_empty()) {
+                    (
+                        format!("selector {sel:?}"),
+                        format!("!!document.querySelector({})", json!(sel)),
+                    )
+                } else {
+                    let text = get_str("text").unwrap_or_default();
+                    (
+                        format!("text {text:?}"),
+                        format!(
+                            "(((document.body&&document.body.innerText)||'').indexOf({}) !== -1)",
+                            json!(text)
+                        ),
+                    )
+                };
             let started = std::time::Instant::now();
             let deadline = started + Duration::from_millis(timeout_ms);
             // Declares requested-wait semantics to the request log
@@ -3313,7 +3567,11 @@ async fn inspect(headers: HeaderMap, Query(q): Query<InspectQuery>) -> Response 
     }
 }
 
-async fn inspect_payload(cdp: &mut chrome::CdpClient, clear: bool, limit: usize) -> Result<Value, Response> {
+async fn inspect_payload(
+    cdp: &mut chrome::CdpClient,
+    clear: bool,
+    limit: usize,
+) -> Result<Value, Response> {
     // Install the capture shim first (idempotent per page) so counts start
     // accruing from the first inspect even when nobody navigated natively;
     // Resource Timing back-fills earlier requests either way.
@@ -3600,7 +3858,13 @@ async fn save_profile(
             guard
                 .values()
                 .find(|r| !session.is_empty() && r.started_by == session)
-                .or_else(|| if guard.len() == 1 { guard.values().next() } else { None })
+                .or_else(|| {
+                    if guard.len() == 1 {
+                        guard.values().next()
+                    } else {
+                        None
+                    }
+                })
                 .map(|r| r.profile.clone())
                 .unwrap_or_default()
         };
@@ -3644,7 +3908,10 @@ async fn save_profile(
             }))
             .into_response()
         }
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) })),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": with_cause(&e) }),
+        ),
     }
 }
 
@@ -3740,19 +4007,39 @@ mod tests {
         // (profile, started_by, started_at, pid, cdp_port, last_verb_at).
         // beta is NEWER than alpha, so "newest" and "oldest" disagree here.
         let running = vec![
-            ("alpha".to_string(), "tubescience".to_string(), 100i64, 111u32, 9001u16, 0i64),
-            ("beta".to_string(), "mixpeek-homepage-claude".to_string(), 200i64, 222u32, 9002u16, 0i64),
+            (
+                "alpha".to_string(),
+                "tubescience".to_string(),
+                100i64,
+                111u32,
+                9001u16,
+                0i64,
+            ),
+            (
+                "beta".to_string(),
+                "mixpeek-homepage-claude".to_string(),
+                200i64,
+                222u32,
+                9002u16,
+                0i64,
+            ),
         ];
 
         // BY PROFILE: the caller's own, not the other lane's.
         let got = super::resolve_stop_target(&running, Some("beta"), None, None);
-        assert_eq!(got, Some(("beta".into(), "mixpeek-homepage-claude".into(), 222)),
-            "a named profile must select that browser");
+        assert_eq!(
+            got,
+            Some(("beta".into(), "mixpeek-homepage-claude".into(), 222)),
+            "a named profile must select that browser"
+        );
 
         // BY PID: the exact failure reported — body named the caller's own pid.
         let got = super::resolve_stop_target(&running, None, Some(222), None);
-        assert_eq!(got, Some(("beta".into(), "mixpeek-homepage-claude".into(), 222)),
-            "a named pid must select that browser, not the oldest");
+        assert_eq!(
+            got,
+            Some(("beta".into(), "mixpeek-homepage-claude".into(), 222)),
+            "a named pid must select that browser, not the oldest"
+        );
 
         // The other lane is still reachable ON PURPOSE: a wedged browser must
         // be cleanable by whoever notices. What changed is that it happens only
@@ -3767,28 +4054,66 @@ mod tests {
         // AMBIGUOUS: two running, nothing named. Stopping nothing is the whole
         // fix; the old code stopped the oldest and told the caller it had
         // stopped the newest's owner.
-        assert_eq!(super::resolve_stop_target(&running, None, None, None), None,
-            "a bare stop with two browsers running must resolve to nothing");
+        assert_eq!(
+            super::resolve_stop_target(&running, None, None, None),
+            None,
+            "a bare stop with two browsers running must resolve to nothing"
+        );
 
         // AMBIGUOUS: one lane owns both. Picking either is what the bug did.
         let two_on_one = vec![
-            ("alpha".to_string(), "same-lane".to_string(), 100i64, 111u32, 9001u16, 0i64),
-            ("beta".to_string(), "same-lane".to_string(), 200i64, 222u32, 9002u16, 0i64),
+            (
+                "alpha".to_string(),
+                "same-lane".to_string(),
+                100i64,
+                111u32,
+                9001u16,
+                0i64,
+            ),
+            (
+                "beta".to_string(),
+                "same-lane".to_string(),
+                200i64,
+                222u32,
+                9002u16,
+                0i64,
+            ),
         ];
-        assert_eq!(super::resolve_stop_target(&two_on_one, None, None, Some("same-lane")), None,
-            "a lane owning two browsers does not name one of them");
+        assert_eq!(
+            super::resolve_stop_target(&two_on_one, None, None, Some("same-lane")),
+            None,
+            "a lane owning two browsers does not name one of them"
+        );
 
         // A name that matches nothing resolves to nothing, rather than falling
         // through to some other browser.
-        assert_eq!(super::resolve_stop_target(&running, Some("ghost"), None, None), None);
-        assert_eq!(super::resolve_stop_target(&running, None, Some(999), None), None);
+        assert_eq!(
+            super::resolve_stop_target(&running, Some("ghost"), None, None),
+            None
+        );
+        assert_eq!(
+            super::resolve_stop_target(&running, None, Some(999), None),
+            None
+        );
 
         // A BARE stop with exactly one running is still unambiguous.
-        let one = vec![("solo".to_string(), "lane".to_string(), 1i64, 7u32, 9000u16, 0i64)];
-        assert_eq!(super::resolve_stop_target(&one, None, None, None),
-            Some(("solo".into(), "lane".into(), 7)));
-        assert_eq!(super::resolve_stop_target(&[], None, None, None), None,
-            "nothing running resolves to nothing");
+        let one = vec![(
+            "solo".to_string(),
+            "lane".to_string(),
+            1i64,
+            7u32,
+            9000u16,
+            0i64,
+        )];
+        assert_eq!(
+            super::resolve_stop_target(&one, None, None, None),
+            Some(("solo".into(), "lane".into(), 7))
+        );
+        assert_eq!(
+            super::resolve_stop_target(&[], None, None, None),
+            None,
+            "nothing running resolves to nothing"
+        );
     }
 
     use super::*;
@@ -3831,7 +4156,9 @@ mod tests {
         let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
         let status = res.status();
         let proxied = res.headers().get("x-amux-answered-by").is_some();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, v, proxied)
     }
@@ -3860,8 +4187,13 @@ mod tests {
         // The seed stamps last_verb_at = 0, so a clock that did not move would
         // report an age of ~now rather than ~0. This is the assertion that the
         // route DID something.
-        let age = touched[0]["seconds_since_verb"].as_i64().unwrap_or(i64::MAX);
-        assert!(age <= 2, "the activity clock was not reset: age {age} in {v}");
+        let age = touched[0]["seconds_since_verb"]
+            .as_i64()
+            .unwrap_or(i64::MAX);
+        assert!(
+            age <= 2,
+            "the activity clock was not reset: age {age} in {v}"
+        );
         assert!(v["n_considered"].as_u64().unwrap_or(0) >= 1, "{v}");
 
         // A LANE WITH NO BROWSER MUST NOT READ AS PROTECTED. Two running
@@ -3877,7 +4209,10 @@ mod tests {
             "lane-z owns no browser and there is not exactly one: {v}"
         );
         assert!(
-            v["note"].as_str().unwrap_or_default().contains("NO BROWSER WAS TOUCHED"),
+            v["note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("NO BROWSER WAS TOUCHED"),
             "the answer must say nothing happened: {v}"
         );
         crate::integrations::browser::test_clear_running();
@@ -3893,7 +4228,10 @@ mod tests {
         assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
         let routes = v["routes"].as_array().cloned().unwrap_or_default();
         assert!(
-            routes.iter().any(|r| r.as_str().unwrap_or_default().contains("/api/browser/keepalive")),
+            routes.iter().any(|r| r
+                .as_str()
+                .unwrap_or_default()
+                .contains("/api/browser/keepalive")),
             "the catalog must name it: {v}"
         );
     }
@@ -4069,10 +4407,17 @@ mod tests {
             "CREATE TABLE cookies(host_key TEXT, name TEXT, path TEXT, value TEXT);",
         )
         .unwrap();
-        for (host, n) in [(".netsuite.com", 5), (".google.com", 2), (".example.test", 1)] {
+        for (host, n) in [
+            (".netsuite.com", 5),
+            (".google.com", 2),
+            (".example.test", 1),
+        ] {
             for i in 0..n {
-                conn.execute("INSERT INTO cookies VALUES(?1,?2,'/','v')",
-                    rusqlite::params![host, format!("c{i}")]).unwrap();
+                conn.execute(
+                    "INSERT INTO cookies VALUES(?1,?2,'/','v')",
+                    rusqlite::params![host, format!("c{i}")],
+                )
+                .unwrap();
             }
         }
         drop(conn);
@@ -4084,11 +4429,16 @@ mod tests {
         assert!(hosts.contains(&"google.com".to_string()));
         // The leading dot is a cookie-domain detail, not something a human
         // picking a profile should have to read past.
-        assert!(hosts.iter().all(|h| !h.starts_with('.')), "hosts must be presented plainly");
+        assert!(
+            hosts.iter().all(|h| !h.starts_with('.')),
+            "hosts must be presented plainly"
+        );
 
         // The source jar is untouched: a listing must never disturb a login.
         let after = Connection::open(used.join("Default").join("Cookies")).unwrap();
-        let still: i64 = after.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
+        let still: i64 = after
+            .query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(still, 8, "reading a profile must not mutate it");
 
         // Unreadable is NOT empty. A corrupt jar must report absence so the
@@ -4096,15 +4446,22 @@ mod tests {
         let broken = tmp.path().join("broken");
         std::fs::create_dir_all(broken.join("Default")).unwrap();
         std::fs::write(broken.join("Default").join("Cookies"), b"not a database").unwrap();
-        assert_eq!(super::profile_contents(&broken).0, None,
-            "an unreadable jar must report absence, never a comfortable zero");
+        assert_eq!(
+            super::profile_contents(&broken).0,
+            None,
+            "an unreadable jar must report absence, never a comfortable zero"
+        );
     }
 
     #[test]
     fn combining_profiles_copies_the_tree_and_merges_cookie_rows() {
         use rusqlite::Connection;
         let tmp = tempfile::tempdir().unwrap();
-        let (a, b, dest) = (tmp.path().join("a"), tmp.path().join("b"), tmp.path().join("dest"));
+        let (a, b, dest) = (
+            tmp.path().join("a"),
+            tmp.path().join("b"),
+            tmp.path().join("dest"),
+        );
 
         // Two profiles shaped like Chrome user-data-dirs.
         for (dir, host) in [(&a, "alpha.test"), (&b, "beta.test")] {
@@ -4131,7 +4488,10 @@ mod tests {
         // The base is copied WHOLE: a merge that only moved cookies would lose
         // `Local State` and the result would not start.
         super::copy_tree(&a, &dest).unwrap();
-        assert!(dest.join("Local State").is_file(), "base profile skeleton must be copied");
+        assert!(
+            dest.join("Local State").is_file(),
+            "base profile skeleton must be copied"
+        );
         assert!(super::profile_cookie_db(&dest).is_some());
         assert!(
             super::profile_cookie_db(&tmp.path().join("never-opened")).is_none(),
@@ -4139,13 +4499,14 @@ mod tests {
         );
 
         let dc = Connection::open(dest.join("Default").join("Cookies")).unwrap();
-        let before: i64 = dc.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
-        dc.execute("ATTACH DATABASE ?1 AS src", [b
-            .join("Default")
-            .join("Cookies")
-            .to_string_lossy()
-            .as_ref()])
+        let before: i64 = dc
+            .query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))
             .unwrap();
+        dc.execute(
+            "ATTACH DATABASE ?1 AS src",
+            [b.join("Default").join("Cookies").to_string_lossy().as_ref()],
+        )
+        .unwrap();
         // The shipped statements: a source takes each of its hosts WHOLE.
         // Merging name-by-name instead unions two accounts on a shared host
         // and produces a jar that is a session for neither — measured
@@ -4156,34 +4517,64 @@ mod tests {
                 [],
             )
             .unwrap();
-        dc.execute_batch("INSERT INTO main.cookies SELECT * FROM src.cookies").unwrap();
-        let after: i64 = dc.query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0)).unwrap();
+        dc.execute_batch("INSERT INTO main.cookies SELECT * FROM src.cookies")
+            .unwrap();
+        let after: i64 = dc
+            .query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))
+            .unwrap();
 
         // alpha's own row survives, beta's is added: that is the point of
         // combining, and a copy alone would not do it.
         assert_eq!(after - before, 1, "beta's distinct host is added");
         let _ = &shared_probe;
         let alpha: String = dc
-            .query_row("SELECT value FROM cookies WHERE host_key='alpha.test'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM cookies WHERE host_key='alpha.test'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(alpha, "from-alpha.test", "the base profile keeps its own login");
+        assert_eq!(
+            alpha, "from-alpha.test",
+            "the base profile keeps its own login"
+        );
         let beta: String = dc
-            .query_row("SELECT value FROM cookies WHERE host_key='beta.test'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM cookies WHERE host_key='beta.test'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(beta, "from-beta.test", "the merged profile's login is present");
+        assert_eq!(
+            beta, "from-beta.test",
+            "the merged profile's login is present"
+        );
         // The documented conflict rule, asserted rather than described.
         let shared: String = dc
-            .query_row("SELECT value FROM cookies WHERE host_key='shared.test'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM cookies WHERE host_key='shared.test'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(shared, "from-beta.test", "later sources win a contested host");
         assert_eq!(
-            dc.query_row("SELECT COUNT(*) FROM cookies WHERE host_key='shared.test'", [], |r| r
-                .get::<_, i64>(0))
+            shared, "from-beta.test",
+            "later sources win a contested host"
+        );
+        assert_eq!(
+            dc.query_row(
+                "SELECT COUNT(*) FROM cookies WHERE host_key='shared.test'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
             .unwrap(),
             1,
             "a contested host must hold ONE profile's jar, not a union of two"
         );
-        assert_eq!(shared_probe, 1, "taking a host whole must evict the rows it replaces");
+        assert_eq!(
+            shared_probe, 1,
+            "taking a host whole must evict the rows it replaces"
+        );
     }
 
     #[test]
@@ -4198,7 +4589,10 @@ mod tests {
             "client error (Connect)",
             "Connection refused (os error 61)",
         ] {
-            assert!(rendered.contains(frame), "with_cause dropped {frame:?}: {rendered}");
+            assert!(
+                rendered.contains(frame),
+                "with_cause dropped {frame:?}: {rendered}"
+            );
         }
         // CONTROL: the thing this replaced keeps ONLY the outermost frame. If
         // this stops holding, plain Display started carrying causes and the
@@ -4208,7 +4602,10 @@ mod tests {
             !plain.contains("Connection refused"),
             "the control has stopped holding: plain Display now carries the cause ({plain})"
         );
-        assert!(rendered.len() > plain.len(), "the chain must ADD to the message");
+        assert!(
+            rendered.len() > plain.len(),
+            "the chain must ADD to the message"
+        );
     }
 
     /// AMUX-3672. A wedged browser and a rejected call must not share a status,
@@ -4251,8 +4648,11 @@ mod tests {
         // context freely on this path, and a downcast inspecting only the
         // outermost error would silently regress to 502 the first time someone
         // wrote `.context(...)`.
-        let wrapped = anyhow::Error::new(chrome::CdpTimeout { method: "X".into(), secs: 1 })
-            .context("while resizing the viewport");
+        let wrapped = anyhow::Error::new(chrome::CdpTimeout {
+            method: "X".into(),
+            secs: 1,
+        })
+        .context("while resizing the viewport");
         assert_eq!(cdp_status(&wrapped), StatusCode::GATEWAY_TIMEOUT);
     }
 
@@ -4309,9 +4709,15 @@ mod tests {
         assert_eq!(body["spawned"], false);
         assert_eq!(body["lock_owner_pid"], 97230);
         assert_eq!(body["profile"], "ethan-tubescience");
-        assert!(body["use_instead"]["live_browser"].as_str().unwrap().contains("/chrome-cdp"));
+        assert!(body["use_instead"]["live_browser"]
+            .as_str()
+            .unwrap()
+            .contains("/chrome-cdp"));
         let error = body["error"].as_str().unwrap();
-        assert!(error.contains("every retry would open another tab"), "{error}");
+        assert!(
+            error.contains("every retry would open another tab"),
+            "{error}"
+        );
         assert!(error.contains("Do not retry"), "{error}");
     }
 
@@ -4328,9 +4734,14 @@ mod tests {
             chrome::import_chrome_profile(home.path(), &chrome_dir, "no-such-profile").unwrap_err();
         assert_eq!(start_status(&missing), StatusCode::NOT_FOUND);
         let message = missing.to_string();
-        assert!(message.starts_with("Chrome profile \"no-such-profile\" does not exist at "), "{message}");
         assert!(
-            message.ends_with("; create an amux profile with POST /api/browser/profile/create instead"),
+            message.starts_with("Chrome profile \"no-such-profile\" does not exist at "),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "; create an amux profile with POST /api/browser/profile/create instead"
+            ),
             "{message}"
         );
         let wrapped = chrome::import_chrome_profile(home.path(), &chrome_dir, "no-such-profile")
@@ -4361,8 +4772,14 @@ mod tests {
         );
         // The CONTROL: a real launch failure must not read as delegation, or
         // every broken start answers 409 and stops alerting.
-        assert!(!chrome::is_delegation_exit(&code(1)), "exit 1 is a genuine launch failure");
-        assert!(!chrome::is_delegation_exit(&code(127)), "exit 127 is a genuine launch failure");
+        assert!(
+            !chrome::is_delegation_exit(&code(1)),
+            "exit 1 is a genuine launch failure"
+        );
+        assert!(
+            !chrome::is_delegation_exit(&code(127)),
+            "exit 127 is a genuine launch failure"
+        );
     }
 
     /// AMUX-4939. The two causes behind "Chrome died before CDP" need OPPOSITE
@@ -4455,7 +4872,10 @@ mod tests {
         assert_eq!(cdp_status(&protocol), StatusCode::BAD_GATEWAY);
 
         // CONTROL: a timeout still wins over both of the above.
-        let timeout = anyhow::Error::new(chrome::CdpTimeout { method: "Y".into(), secs: 2 });
+        let timeout = anyhow::Error::new(chrome::CdpTimeout {
+            method: "Y".into(),
+            secs: 2,
+        });
         assert_eq!(cdp_status(&timeout), StatusCode::GATEWAY_TIMEOUT);
 
         // CONTROL: a PageException wrapped in CONTEXT is still a
@@ -4477,8 +4897,16 @@ mod tests {
         .unwrap();
         let mut extras: Vec<&String> = b.extra.keys().collect();
         extras.sort();
-        assert_eq!(extras, ["emulate", "viewport"], "unknown fields must be captured for echo");
-        assert_eq!(b.device.as_deref(), Some("iphone"), "device is a real start field now");
+        assert_eq!(
+            extras,
+            ["emulate", "viewport"],
+            "unknown fields must be captured for echo"
+        );
+        assert_eq!(
+            b.device.as_deref(),
+            Some("iphone"),
+            "device is a real start field now"
+        );
     }
 
     /// AMUX-3063 incident replay: the EXACT anonymous curl that destroyed
@@ -4553,13 +4981,20 @@ mod tests {
         // sign-in URL carries continue= and state=. The host answers the
         // question; the query string only leaks.
         let whole = serde_json::to_string(&v).unwrap();
-        assert!(!whole.contains("SECRET"), "the state parameter must not reach the body: {whole}");
+        assert!(
+            !whole.contains("SECRET"),
+            "the state parameter must not reach the body: {whole}"
+        );
         // Scoped to the `pages` array and the sentence, NOT the whole body: the
         // first draft asserted on the whole body and went red against correct
         // code, because `pages_note` says the words "continue=" while EXPLAINING
         // that it omits them. A probe that cannot tell a leak from a note about
         // leaks reports working code as broken.
-        let rendered = format!("{}{}", serde_json::to_string(&v["running"]["pages"]).unwrap(), e);
+        let rendered = format!(
+            "{}{}",
+            serde_json::to_string(&v["running"]["pages"]).unwrap(),
+            e
+        );
         for leak in ["continue=", "state=", "?", "/v3/signin"] {
             assert!(
                 !rendered.contains(leak),
@@ -4580,7 +5015,17 @@ mod tests {
 
         // AND the abandoned case must still read as abandoned, or this fix would
         // just have inverted the bias instead of removing it.
-        let abandoned = takeover_refusal("default", "", started, 9999, Some(4), &[], started + 66_600, None, StartOrigin::NotLooked);
+        let abandoned = takeover_refusal(
+            "default",
+            "",
+            started,
+            9999,
+            Some(4),
+            &[],
+            started + 66_600,
+            None,
+            StartOrigin::NotLooked,
+        );
         let ae = abandoned["error"].as_str().unwrap();
         assert!(
             ae.contains("ZERO real pages") && ae.contains("no page state to lose"),
@@ -4597,8 +5042,14 @@ mod tests {
         // i.e. a person. Under "(unattributed)" it is indistinguishable from a
         // curl on loopback, and the caller is asked to decide anyway.
         let human = takeover_refusal(
-            "default", "", started, 7623, Some(2),
-            &[("Sign in".into(), "accounts.google.com".into())], now, Some("amux"),
+            "default",
+            "",
+            started,
+            7623,
+            Some(2),
+            &[("Sign in".into(), "accounts.google.com".into())],
+            now,
+            Some("amux"),
             StartOrigin::Found {
                 ip: "100.66.26.84".into(),
                 ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)".into(),
@@ -4624,8 +5075,18 @@ mod tests {
 
         // The cheap case must read differently, or the verdict is decoration.
         let agent = takeover_refusal(
-            "default", "", started, 7623, Some(0), &[], now, Some("amux"),
-            StartOrigin::Found { ip: "127.0.0.1".into(), ua: "curl/8.7.1".into() },
+            "default",
+            "",
+            started,
+            7623,
+            Some(0),
+            &[],
+            now,
+            Some("amux"),
+            StartOrigin::Found {
+                ip: "127.0.0.1".into(),
+                ua: "curl/8.7.1".into(),
+            },
         );
         let ae = agent["error"].as_str().unwrap();
         assert!(
@@ -4643,12 +5104,28 @@ mod tests {
         // found nothing" is evidence about the holder; "we did not look" is
         // evidence about us. Rendering both as no-origin is the one-output-
         // two-states failure the `attribution` field already guards one level up.
-        let missing =
-            takeover_refusal("default", "", started, 7623, Some(0), &[], now, None,
-                             StartOrigin::NotFound);
-        let absent =
-            takeover_refusal("default", "", started, 7623, Some(0), &[], now, None,
-                             StartOrigin::NotLooked);
+        let missing = takeover_refusal(
+            "default",
+            "",
+            started,
+            7623,
+            Some(0),
+            &[],
+            now,
+            None,
+            StartOrigin::NotFound,
+        );
+        let absent = takeover_refusal(
+            "default",
+            "",
+            started,
+            7623,
+            Some(0),
+            &[],
+            now,
+            None,
+            StartOrigin::NotLooked,
+        );
 
         assert_ne!(
             missing["running"]["origin_source"], absent["running"]["origin_source"],
@@ -4656,7 +5133,10 @@ mod tests {
         );
         assert_eq!(absent["running"]["origin"], json!(null));
         assert!(
-            missing["error"].as_str().unwrap().contains("no matching start row"),
+            missing["error"]
+                .as_str()
+                .unwrap()
+                .contains("no matching start row"),
             "when the log cannot recover the origin the refusal says so, rather than \
              falling back to a bare '(unattributed)' that hides which of the two happened"
         );
@@ -4668,15 +5148,30 @@ mod tests {
     fn an_unattributed_holder_is_judgeable_from_the_refusal() {
         let started = 1_787_494_071i64; // 2026-08-23T10:07:51, the reported hold
         let now = started + 66_600; // 18.5h later
-        let v = takeover_refusal("default", "", started, 7623, Some(0), &[], now, None, StartOrigin::NotLooked);
+        let v = takeover_refusal(
+            "default",
+            "",
+            started,
+            7623,
+            Some(0),
+            &[],
+            now,
+            None,
+            StartOrigin::NotLooked,
+        );
 
         assert_eq!(v["running"]["tabs_open"], json!(0));
         assert_eq!(v["running"]["held_h"], json!(18.5), "{v}");
         let e = v["error"].as_str().unwrap();
-        assert!(e.contains("18.5h") && e.contains("ZERO tabs"),
-                "the idle evidence must be in the SENTENCE — a caller who prints only .error \
-                 is the caller who filed this: {e}");
-        assert!(e.contains("takeover"), "the escape must survive in the sentence too: {e}");
+        assert!(
+            e.contains("18.5h") && e.contains("ZERO tabs"),
+            "the idle evidence must be in the SENTENCE — a caller who prints only .error \
+                 is the caller who filed this: {e}"
+        );
+        assert!(
+            e.contains("takeover"),
+            "the escape must survive in the sentence too: {e}"
+        );
 
         // ONE OUTPUT, TWO STATES. An empty `started_by` reads identically to a
         // session whose name is empty; `attribution` has to say which.
@@ -4720,11 +5215,29 @@ mod tests {
             ne.contains("Docs") && ne.contains("docs.example.com"),
             "the sentence must name what is open, not merely how much: {ne}"
         );
-        assert_eq!(named["running"]["tabs_open"], json!(3), "the target count is still reported: {named}");
-        assert_eq!(named["running"]["pages_open"], json!(1), "1 page out of 3 targets: {named}");
+        assert_eq!(
+            named["running"]["tabs_open"],
+            json!(3),
+            "the target count is still reported: {named}"
+        );
+        assert_eq!(
+            named["running"]["pages_open"],
+            json!(1),
+            "1 page out of 3 targets: {named}"
+        );
 
         // CDP SILENT: must not read as zero.
-        let quiet = takeover_refusal("default", "", started, 7623, None, &[], now, None, StartOrigin::NotLooked);
+        let quiet = takeover_refusal(
+            "default",
+            "",
+            started,
+            7623,
+            None,
+            &[],
+            now,
+            None,
+            StartOrigin::NotLooked,
+        );
         assert!(quiet["running"]["tabs_open"].is_null(), "{quiet}");
         let qe = quiet["error"].as_str().unwrap();
         assert!(
@@ -4749,8 +5262,13 @@ mod tests {
         // caller has to respect.
         chrome::test_seed_running("netsuite", "amux-gtm", 424242);
         let app = app();
-        let (status, _v, _) =
-            send(&app, "POST", "/api/browser/start", Some(r#"{"profile":"default"}"#)).await;
+        let (status, _v, _) = send(
+            &app,
+            "POST",
+            "/api/browser/start",
+            Some(r#"{"profile":"default"}"#),
+        )
+        .await;
         // The victim is UNHARMED — that is the property AMUX-3063 wanted, and
         // asserting it is worth more than asserting the 409 that used to stand
         // in for it.
@@ -4760,7 +5278,11 @@ mod tests {
             Some("amux-gtm".to_string()),
             "a start on ANOTHER profile must leave the staged browser alone (status {status})"
         );
-        assert_eq!(survivor.map(|x| x.3), Some(424242), "same process, not a replacement");
+        assert_eq!(
+            survivor.map(|x| x.3),
+            Some(424242),
+            "same process, not a replacement"
+        );
 
         // STOP WHAT THIS TEST ACTUALLY STARTED (AMUX-3973).
         //
@@ -4799,8 +5321,13 @@ mod tests {
         // have quietly become "no protection at all".
         chrome::test_clear_running();
         chrome::test_seed_running("netsuite", "amux-gtm", 424242);
-        let (status, v, _) =
-            send(&app, "POST", "/api/browser/start", Some(r#"{"profile":"netsuite"}"#)).await;
+        let (status, v, _) = send(
+            &app,
+            "POST",
+            "/api/browser/start",
+            Some(r#"{"profile":"netsuite"}"#),
+        )
+        .await;
         chrome::test_clear_running();
         assert_eq!(status, StatusCode::CONFLICT, "{v}");
         assert_eq!(v["running"]["started_by"], json!("amux-gtm"), "{v}");
@@ -4851,7 +5378,10 @@ mod tests {
 
         // An UNKNOWN verb is still what the caller sent, and a 400 the log
         // should be able to group.
-        assert_eq!(verb_header(&app, r#"{"action":"dance"}"#).await.as_deref(), Some("dance"));
+        assert_eq!(
+            verb_header(&app, r#"{"action":"dance"}"#).await.as_deref(),
+            Some("dance")
+        );
 
         // A body with no action at all records an empty verb rather than a
         // stale or invented one. request_log drops the empty value, so the row
@@ -4874,7 +5404,9 @@ mod tests {
         // survives which could terminate or extend a header.
         let hostile = truncate_verb("click\r\nX-Injected: 1");
         assert!(
-            !hostile.chars().any(|c| c.is_control() || c == ':' || c == ' '),
+            !hostile
+                .chars()
+                .any(|c| c.is_control() || c == ':' || c == ' '),
             "a header value cannot carry CR, LF, a colon or a space: {hostile:?}"
         );
         assert!(
@@ -4893,21 +5425,45 @@ mod tests {
         for (body, needle) in [
             (r#"{"action":"click"}"#, "selector, index, or x,y"),
             (r#"{"action":"eval"}"#, "script required"),
-            (r#"{"action":"input","text":"x"}"#, "input needs index and text"),
+            (
+                r#"{"action":"input","text":"x"}"#,
+                "input needs index and text",
+            ),
             (r#"{"action":"key","key":"F13"}"#, "unsupported key"),
-            (r#"{"action":"viewport"}"#, "viewport needs width+height, or device"),
+            (
+                r#"{"action":"viewport"}"#,
+                "viewport needs width+height, or device",
+            ),
             (r#"{"action":"wait"}"#, "wait needs selector or text"),
             (r#"{"action":"dance"}"#, "unknown action: dance"),
             // TUBES-2343.
-            (r#"{"action":"files","files":["/tmp/x"]}"#, "files needs a selector"),
-            (r##"{"action":"files","selector":"#f"}"##, "non-empty `files` array"),
-            (r##"{"action":"files","selector":"#f","files":[]}"##, "non-empty `files` array"),
-            (r##"{"action":"files","selector":"#f","files":[""]}"##, "must be a non-empty string"),
+            (
+                r#"{"action":"files","files":["/tmp/x"]}"#,
+                "files needs a selector",
+            ),
+            (
+                r##"{"action":"files","selector":"#f"}"##,
+                "non-empty `files` array",
+            ),
+            (
+                r##"{"action":"files","selector":"#f","files":[]}"##,
+                "non-empty `files` array",
+            ),
+            (
+                r##"{"action":"files","selector":"#f","files":[""]}"##,
+                "must be a non-empty string",
+            ),
             // RELATIVE PATHS ARE REFUSED, and the message says why: CDP
             // resolves them against the BROWSER's cwd, so the attach would
             // silently succeed against the wrong file.
-            (r##"{"action":"files","selector":"#f","files":["fixture.png"]}"##, "must be absolute"),
-            (r##"{"action":"files","selector":"#f","files":["./fixture.png"]}"##, "must be absolute"),
+            (
+                r##"{"action":"files","selector":"#f","files":["fixture.png"]}"##,
+                "must be absolute",
+            ),
+            (
+                r##"{"action":"files","selector":"#f","files":["./fixture.png"]}"##,
+                "must be absolute",
+            ),
         ] {
             let (status, v, proxied) = send(&app, "POST", "/api/browser/action", Some(body)).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {v}");
@@ -4930,7 +5486,10 @@ mod tests {
         );
         let (status, v, _) = send(&app, "POST", "/api/browser/action", Some(&body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
-        assert!(v["error"].as_str().unwrap_or("").contains("no such file"), "{v}");
+        assert!(
+            v["error"].as_str().unwrap_or("").contains("no such file"),
+            "{v}"
+        );
 
         // CONTROL: exercise the handler's actual schema without connecting to
         // a live browser. A valid request may legitimately receive a later 400
@@ -4938,8 +5497,11 @@ mod tests {
         let present = fixtures.path().join("present.png");
         std::fs::write(&present, b"x").expect("write fixture");
         let body = json!({"action":"files", "selector":"#f", "files":[present]});
-        assert_eq!(validate_file_action(&body), Ok(()),
-            "a valid files request must clear the schema without browser I/O");
+        assert_eq!(
+            validate_file_action(&body),
+            Ok(()),
+            "a valid files request must clear the schema without browser I/O"
+        );
 
         // AND THE ACTION IS DISCOVERABLE. An action the contract does not list
         // reaches nobody, which is the gap this card was filed about — the
@@ -4947,7 +5509,12 @@ mod tests {
         // upload path could not be driven (ethos rule 1).
         let (_, v, _) = send(&app, "GET", "/api/browser", None).await;
         assert!(
-            v["actions"].as_array().map(|a| a.iter().any(|x| x.as_str().unwrap_or("").starts_with("files"))).unwrap_or(false),
+            v["actions"]
+                .as_array()
+                .map(|a| a
+                    .iter()
+                    .any(|x| x.as_str().unwrap_or("").starts_with("files")))
+                .unwrap_or(false),
             "the contract must list `files`: {v}"
         );
 
@@ -4959,7 +5526,10 @@ mod tests {
         ] {
             let (status, v, _) = send(&app, "POST", "/api/browser/start", Some(body)).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {v}");
-            assert!(v["error"].as_str().unwrap_or("").contains(needle), "{body}: {v}");
+            assert!(
+                v["error"].as_str().unwrap_or("").contains(needle),
+                "{body}: {v}"
+            );
         }
         // navigate's own required field.
         let (status, v, _) = send(&app, "POST", "/api/browser/navigate", Some("{}")).await;
@@ -5008,22 +5578,42 @@ mod tests {
             ("GET", "/api/browser/screenshot?session=t1", None),
             ("GET", "/api/browser/inspect?session=t1", None),
             ("GET", "/api/browser/search?q=rust", None),
-            ("POST", "/api/browser/action", Some(r#"{"action":"click","selector":"a","session":"t1"}"#)),
-            ("POST", "/api/browser/navigate", Some(r#"{"url":"https://example.com","session":"t1"}"#)),
-            ("POST", "/api/browser/inspect/clear", Some(r#"{"session":"t1"}"#)),
+            (
+                "POST",
+                "/api/browser/action",
+                Some(r#"{"action":"click","selector":"a","session":"t1"}"#),
+            ),
+            (
+                "POST",
+                "/api/browser/navigate",
+                Some(r#"{"url":"https://example.com","session":"t1"}"#),
+            ),
+            (
+                "POST",
+                "/api/browser/inspect/clear",
+                Some(r#"{"session":"t1"}"#),
+            ),
         ] {
             let (status, v, proxied) = send(&app, method, uri, body).await;
             assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}: {v}");
             assert!(!proxied, "{method} {uri} must not proxy");
             assert!(
-                v["error"].as_str().unwrap_or("").contains("/api/browser/start"),
+                v["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("/api/browser/start"),
                 "{method} {uri}: 409 must point at /start: {v}"
             );
         }
 
         // /agent: honest 501 naming the native verbs, never a proxy hop.
-        let (status, v, proxied) =
-            send(&app, "POST", "/api/browser/agent", Some(r#"{"task":"buy milk"}"#)).await;
+        let (status, v, proxied) = send(
+            &app,
+            "POST",
+            "/api/browser/agent",
+            Some(r#"{"task":"buy milk"}"#),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{v}");
         assert!(!proxied);
         assert!(v["use_instead"].is_array(), "{v}");
@@ -5034,7 +5624,10 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(!proxied);
         assert!(
-            v["error"].as_str().unwrap().starts_with("browser route not found"),
+            v["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("browser route not found"),
             "{v}"
         );
         assert!(v["routes"].is_array() && v["actions"].is_array(), "{v}");

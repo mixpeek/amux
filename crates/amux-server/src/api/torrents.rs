@@ -139,7 +139,9 @@ impl Aria2Rpc for HttpAria2 {
                 .unwrap_or_else(|| err.to_string());
             return Err(RpcError::Rpc(msg));
         }
-        body.get("result").cloned().ok_or_else(|| RpcError::Rpc("no result in RPC reply".into()))
+        body.get("result")
+            .cloned()
+            .ok_or_else(|| RpcError::Rpc("no result in RPC reply".into()))
     }
 }
 
@@ -177,7 +179,10 @@ fn err(status: StatusCode, body: Value) -> Response {
 }
 
 fn route_not_found() -> Response {
-    err(StatusCode::NOT_FOUND, json!({ "error": "torrent route not found" }))
+    err(
+        StatusCode::NOT_FOUND,
+        json!({ "error": "torrent route not found" }),
+    )
 }
 
 /// The honest degradation every RPC-touching route promises.
@@ -200,11 +205,18 @@ fn as_i64(v: Option<&Value>) -> i64 {
 
 /// Python route regex: `[a-f0-9]+`. A miss falls to the module 404.
 fn valid_gid(gid: &str) -> bool {
-    !gid.is_empty() && gid.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    !gid.is_empty()
+        && gid
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
 }
 
 fn body_str(body: &Value, k: &str) -> String {
-    body.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    body.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn expanduser(p: &str) -> PathBuf {
@@ -244,7 +256,11 @@ pub async fn list_torrents(Extension(ctx): Extension<Arc<TorrentsCtx>>) -> Respo
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let files_in = t.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
+            let files_in = t
+                .get("files")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if name.is_empty() {
                 if let Some(f0) = files_in.first() {
                     name = f0
@@ -292,7 +308,10 @@ pub async fn add_torrent(
     let uri = body_str(&body, "uri");
     let torrent_path = body_str(&body, "file");
     if uri.is_empty() && torrent_path.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "uri or file required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "uri or file required" }),
+        );
     }
     let call = if !torrent_path.is_empty() && std::path::Path::new(&torrent_path).is_file() {
         match std::fs::read(&torrent_path) {
@@ -301,7 +320,12 @@ pub async fn add_torrent(
                 let b64 = crate::integrations::email::base64_std(&bytes);
                 ctx.rpc.call("aria2.addTorrent", json!([b64])).await
             }
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+            Err(e) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": e.to_string() }),
+                )
+            }
         }
     } else {
         // magnet: and plain URLs take the same call (Python's two branches
@@ -325,16 +349,30 @@ pub async fn torrent_action(
         return route_not_found();
     }
     let outcome = match action.as_str() {
-        "pause" => ctx.rpc.call("aria2.forcePause", json!([gid])).await.map(|_| ()),
-        "resume" => ctx.rpc.call("aria2.unpause", json!([gid])).await.map(|_| ()),
-        _ => match ctx.rpc.call("aria2.forceRemove", json!([gid.clone()])).await {
+        "pause" => ctx
+            .rpc
+            .call("aria2.forcePause", json!([gid]))
+            .await
+            .map(|_| ()),
+        "resume" => ctx
+            .rpc
+            .call("aria2.unpause", json!([gid]))
+            .await
+            .map(|_| ()),
+        _ => match ctx
+            .rpc
+            .call("aria2.forceRemove", json!([gid.clone()]))
+            .await
+        {
             Ok(_) => Ok(()),
             Err(RpcError::Unreachable(e)) => Err(RpcError::Unreachable(e)),
             // Python: a failed forceRemove (already-finished download) falls
             // back to clearing the download result.
-            Err(RpcError::Rpc(_)) => {
-                ctx.rpc.call("aria2.removeDownloadResult", json!([gid])).await.map(|_| ())
-            }
+            Err(RpcError::Rpc(_)) => ctx
+                .rpc
+                .call("aria2.removeDownloadResult", json!([gid]))
+                .await
+                .map(|_| ()),
         },
     };
     match outcome {
@@ -353,14 +391,20 @@ pub async fn delete_torrent(
     if !valid_gid(&gid) {
         return route_not_found();
     }
-    match ctx.rpc.call("aria2.forceRemove", json!([gid.clone()])).await {
+    match ctx
+        .rpc
+        .call("aria2.forceRemove", json!([gid.clone()]))
+        .await
+    {
         Ok(_) => {}
         Err(RpcError::Unreachable(_)) => return aria2_down(&ctx),
         Err(RpcError::Rpc(_)) => {
             // Python swallows BOTH failures and answers ok — deleting an
             // already-gone torrent is not an error the SPA can act on.
-            if let Err(RpcError::Unreachable(_)) =
-                ctx.rpc.call("aria2.removeDownloadResult", json!([gid])).await
+            if let Err(RpcError::Unreachable(_)) = ctx
+                .rpc
+                .call("aria2.removeDownloadResult", json!([gid]))
+                .await
             {
                 return aria2_down(&ctx);
             }
@@ -382,11 +426,17 @@ pub async fn set_config(
 ) -> Response {
     let new_dir = body_str(&body, "download_dir");
     if new_dir.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "download_dir required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "download_dir required" }),
+        );
     }
     let expanded = expanduser(&new_dir);
     if let Err(e) = std::fs::create_dir_all(&expanded) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        );
     }
     *ctx.download_dir.lock().expect("download_dir") = expanded.clone();
     // Best-effort, exactly Python's try/except pass — a dead daemon picks
@@ -412,7 +462,13 @@ pub struct FileParams {
 const CHUNK: u64 = 1024 * 1024;
 
 fn content_type_for(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         "mp4" | "m4v" => "video/mp4",
         "mkv" => "video/x-matroska",
         "avi" => "video/x-msvideo",
@@ -457,7 +513,12 @@ pub async fn serve_file(
     let ct = content_type_for(&real);
     let fsize = match std::fs::metadata(&real) {
         Ok(m) => m.len(),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
     };
 
     // Single-range support (Python: `bytes=(\d+)-(\d*)`).
@@ -468,25 +529,40 @@ pub async fn serve_file(
         .and_then(|r| {
             let (a, b) = r.split_once('-')?;
             let start: u64 = a.parse().ok()?;
-            let end: u64 = if b.is_empty() { fsize.saturating_sub(1) } else { b.parse().ok()? };
+            let end: u64 = if b.is_empty() {
+                fsize.saturating_sub(1)
+            } else {
+                b.parse().ok()?
+            };
             Some((start, end.min(fsize.saturating_sub(1))))
         });
 
     let (status, start, length, content_range) = match range {
-        Some((start, end)) if start <= end && start < fsize => {
-            (StatusCode::PARTIAL_CONTENT, start, end - start + 1, Some(format!("bytes {start}-{end}/{fsize}")))
-        }
+        Some((start, end)) if start <= end && start < fsize => (
+            StatusCode::PARTIAL_CONTENT,
+            start,
+            end - start + 1,
+            Some(format!("bytes {start}-{end}/{fsize}")),
+        ),
         _ => (StatusCode::OK, 0, fsize, None),
     };
 
     let mut file = match tokio::fs::File::open(&real).await {
         Ok(f) => f,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
     };
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     if start > 0 {
         if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
         }
     }
     // 1MB-chunk stream (Python `_stream_file_body`): player aborts drop the
@@ -501,7 +577,10 @@ pub async fn serve_file(
             Ok(0) => None,
             Ok(n) => {
                 buf.truncate(n);
-                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(buf)), (f, remaining - n as u64)))
+                Some((
+                    Ok::<_, std::io::Error>(axum::body::Bytes::from(buf)),
+                    (f, remaining - n as u64),
+                ))
             }
             Err(e) => Some((Err(e), (f, 0))),
         }
@@ -515,11 +594,19 @@ pub async fn serve_file(
     if let Some(cr) = content_range {
         builder = builder.header("Content-Range", cr);
     } else {
-        builder = builder
-            .header("Content-Disposition", format!("inline; filename=\"{}\"", real.file_name().and_then(|n| n.to_str()).unwrap_or("file")));
+        builder = builder.header(
+            "Content-Disposition",
+            format!(
+                "inline; filename=\"{}\"",
+                real.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+            ),
+        );
     }
     builder.body(Body::from_stream(stream)).unwrap_or_else(|e| {
-        err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }))
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        )
     })
 }
 
@@ -546,7 +633,10 @@ mod tests {
             Arc::new(Self {
                 calls: Mutex::new(Vec::new()),
                 script: Mutex::new(
-                    script.into_iter().map(|(m, r)| (m.to_string(), r)).collect(),
+                    script
+                        .into_iter()
+                        .map(|(m, r)| (m.to_string(), r))
+                        .collect(),
                 ),
             })
         }
@@ -558,7 +648,10 @@ mod tests {
     #[async_trait::async_trait]
     impl Aria2Rpc for MockRpc {
         async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-            self.calls.lock().unwrap().push((method.to_string(), params));
+            self.calls
+                .lock()
+                .unwrap()
+                .push((method.to_string(), params));
             let mut script = self.script.lock().unwrap();
             if let Some(pos) = script.iter().position(|(m, _)| m == method) {
                 return script.remove(pos).1;
@@ -575,7 +668,10 @@ mod tests {
     /// Router<AppState> signature honest. The returned TempDir guard must
     /// outlive the requests.
     fn app_with(rpc: Arc<MockRpc>, dir: PathBuf) -> (axum::Router, tempfile::TempDir) {
-        let ctx = Arc::new(TorrentsCtx { rpc, download_dir: Mutex::new(dir) });
+        let ctx = Arc::new(TorrentsCtx {
+            rpc,
+            download_dir: Mutex::new(dir),
+        });
         let state_dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&state_dir.path().join("t.db")).unwrap();
         let state = AppState {
@@ -583,9 +679,14 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        (Router::new().nest("/api/torrents", routes_with(ctx)).with_state(state), state_dir)
+        (
+            Router::new()
+                .nest("/api/torrents", routes_with(ctx))
+                .with_state(state),
+            state_dir,
+        )
     }
 
     async fn send(
@@ -609,7 +710,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let hdrs = res.headers().clone();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         (status, hdrs, bytes.to_vec())
     }
 
@@ -659,7 +762,10 @@ mod tests {
         assert_eq!(arr[0]["completed"], json!(52428800));
         assert_eq!(arr[0]["speed"], json!(1048576));
         // Empty-path file dropped; complete = completedLength >= length.
-        assert_eq!(arr[0]["files"], json!([{ "path": "/dl/ubuntu.iso", "size": 104857600, "complete": true }]));
+        assert_eq!(
+            arr[0]["files"],
+            json!([{ "path": "/dl/ubuntu.iso", "size": 104857600, "complete": true }])
+        );
         // Name falls back to the first file's basename.
         assert_eq!(arr[1]["name"], json!("movie.mp4"));
         assert_eq!(arr[1]["files"][0]["complete"], json!(false));
@@ -680,7 +786,11 @@ mod tests {
         let (app, _sd) = app_with(rpc, PathBuf::from("/tmp/dl"));
         for (method, path, body) in [
             ("GET", "/api/torrents", None),
-            ("POST", "/api/torrents", Some(json!({ "uri": "magnet:?xt=urn:btih:aa" }))),
+            (
+                "POST",
+                "/api/torrents",
+                Some(json!({ "uri": "magnet:?xt=urn:btih:aa" })),
+            ),
             ("POST", "/api/torrents/abc123/pause", None),
         ] {
             let (st, _, bytes) = send(&app, method, path, body, &[]).await;
@@ -746,7 +856,10 @@ mod tests {
     async fn remove_falls_back_to_remove_download_result() {
         // Action remove: forceRemove fails (finished download) -> fallback.
         let rpc = MockRpc::new(vec![
-            ("aria2.forceRemove", Err(RpcError::Rpc("Active Download not found".into()))),
+            (
+                "aria2.forceRemove",
+                Err(RpcError::Rpc("Active Download not found".into())),
+            ),
             ("aria2.removeDownloadResult", Ok(json!("ok"))),
         ]);
         let (app, _sd) = app_with(rpc.clone(), default_download_dir());
@@ -754,13 +867,19 @@ mod tests {
         assert_eq!(st, StatusCode::OK, "{}", as_json(&b));
         assert_eq!(as_json(&b), json!({ "ok": true }));
         let names: Vec<String> = rpc.calls().iter().map(|(m, _)| m.clone()).collect();
-        assert_eq!(names, vec!["aria2.forceRemove", "aria2.removeDownloadResult"]);
+        assert_eq!(
+            names,
+            vec!["aria2.forceRemove", "aria2.removeDownloadResult"]
+        );
 
         // DELETE swallows even a double failure (Python's nested pass) —
         // but still owes the ok.
         let rpc2 = MockRpc::new(vec![
             ("aria2.forceRemove", Err(RpcError::Rpc("gone".into()))),
-            ("aria2.removeDownloadResult", Err(RpcError::Rpc("also gone".into()))),
+            (
+                "aria2.removeDownloadResult",
+                Err(RpcError::Rpc("also gone".into())),
+            ),
         ]);
         let (app2, _sd2) = app_with(rpc2, default_download_dir());
         let (st, _, b) = send(&app2, "DELETE", "/api/torrents/abc123", None, &[]).await;
@@ -778,7 +897,10 @@ mod tests {
 
         let (st, _, b) = send(&app, "GET", "/api/torrents/config", None, &[]).await;
         assert_eq!(st, StatusCode::OK);
-        assert_eq!(as_json(&b)["download_dir"], json!(dl.path().display().to_string()));
+        assert_eq!(
+            as_json(&b)["download_dir"],
+            json!(dl.path().display().to_string())
+        );
 
         let (st, _, b) = send(
             &app,
@@ -789,11 +911,17 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{}", as_json(&b));
-        assert_eq!(as_json(&b)["download_dir"], json!(target.display().to_string()));
+        assert_eq!(
+            as_json(&b)["download_dir"],
+            json!(target.display().to_string())
+        );
         assert!(target.is_dir(), "config POST must create the dir");
         assert_eq!(
             rpc.calls()[0],
-            ("aria2.changeGlobalOption".into(), json!([{ "dir": target.display().to_string() }]))
+            (
+                "aria2.changeGlobalOption".into(),
+                json!([{ "dir": target.display().to_string() }])
+            )
         );
 
         let (st, _, b) = send(&app, "POST", "/api/torrents/config", Some(json!({})), &[]).await;

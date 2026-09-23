@@ -133,7 +133,10 @@ async fn explicit_subject_task_gets_commit_and_file_rows_not_newest_doing_task()
         repo.path(),
         &["add", "-f", "customers/tubescience/.env", "src/output.rs"],
     );
-    git(repo.path(), &["commit", "-q", "-m", &format!("capture outputs ({exact})")]);
+    git(
+        repo.path(),
+        &["commit", "-q", "-m", &format!("capture outputs ({exact})")],
+    );
     let full_sha = git(repo.path(), &["rev-parse", "HEAD"]);
 
     let (status, report) = request(
@@ -161,12 +164,19 @@ async fn explicit_subject_task_gets_commit_and_file_rows_not_newest_doing_task()
         .iter()
         .map(|artifact| artifact["ref"].as_str().unwrap())
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(refs.len(), 3, "files and full commit must be durable rows: {exact_detail}");
+    assert_eq!(
+        refs.len(),
+        3,
+        "files and full commit must be durable rows: {exact_detail}"
+    );
     assert!(refs.contains("customers/tubescience/.env"));
     assert!(refs.contains("src/output.rs"));
     assert!(refs.contains(full_sha.as_str()));
     assert!(
-        exact_detail["log"].as_str().unwrap_or("").contains(&full_sha),
+        exact_detail["log"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&full_sha),
         "the exact task must retain the commit activity: {exact_detail}"
     );
     let resolved = exact_detail["artifacts"]
@@ -184,9 +194,16 @@ async fn explicit_subject_task_gets_commit_and_file_rows_not_newest_doing_task()
     );
 
     let (_, wrong_detail) = request(&app, "GET", &format!("/api/board/{wrong}"), None, lane).await;
-    assert_eq!(wrong_detail["artifacts"], json!([]), "newest Doing task stole outputs: {wrong_detail}");
+    assert_eq!(
+        wrong_detail["artifacts"],
+        json!([]),
+        "newest Doing task stole outputs: {wrong_detail}"
+    );
     assert!(
-        !wrong_detail["log"].as_str().unwrap_or("").contains(&full_sha),
+        !wrong_detail["log"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&full_sha),
         "the commit activity must stay off the guessed task: {wrong_detail}"
     );
 }
@@ -200,7 +217,10 @@ async fn no_explicit_task_with_multiple_current_cards_refuses_to_guess() {
     let second = create_card(&app, lane, "second current task", "doing").await;
     std::fs::write(repo.path().join("ambiguous.txt"), "no task id\n").unwrap();
     git(repo.path(), &["add", "ambiguous.txt"]);
-    git(repo.path(), &["commit", "-q", "-m", "capture ambiguous output"]);
+    git(
+        repo.path(),
+        &["commit", "-q", "-m", "capture ambiguous output"],
+    );
     let sha = git(repo.path(), &["rev-parse", "HEAD"]);
 
     let (status, report) = request(
@@ -211,10 +231,18 @@ async fn no_explicit_task_with_multiple_current_cards_refuses_to_guess() {
         lane,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "ambiguity must not silently attach: {report}");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "ambiguity must not silently attach: {report}"
+    );
     assert_eq!(report["code"], json!("commit_task_ambiguous"));
     for id in [first, second] {
         let (_, detail) = request(&app, "GET", &format!("/api/board/{id}"), None, lane).await;
-        assert_eq!(detail["artifacts"], json!([]), "refused report still wrote to {id}: {detail}");
+        assert_eq!(
+            detail["artifacts"],
+            json!([]),
+            "refused report still wrote to {id}: {detail}"
+        );
     }
 }

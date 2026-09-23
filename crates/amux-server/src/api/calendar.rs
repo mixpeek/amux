@@ -57,7 +57,9 @@ impl CalendarCtx {
         Arc::new(CalendarCtx {
             publisher,
             registry: integrations::global_registry().clone(),
-            s3_bucket: std::env::var("AMUX_S3_BUCKET").ok().filter(|s| !s.trim().is_empty()),
+            s3_bucket: std::env::var("AMUX_S3_BUCKET")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
         })
     }
 }
@@ -69,7 +71,10 @@ pub fn routes() -> Router<AppState> {
 pub fn routes_with(ctx: Arc<CalendarCtx>) -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
-        .route("/{id}", axum::routing::patch(patch_event).delete(delete_event))
+        .route(
+            "/{id}",
+            axum::routing::patch(patch_event).delete(delete_event),
+        )
         .layer(Extension(ctx))
 }
 
@@ -158,7 +163,8 @@ fn push_ical(state: &AppState, ctx: &CalendarCtx) {
         Ok(()) => ctx.registry.set("calendar_s3", IntegrationState::Available),
         Err(e) => {
             tracing::warn!(error = %e, "ical publish failed");
-            ctx.registry.set("calendar_s3", IntegrationState::Degraded { reason: e });
+            ctx.registry
+                .set("calendar_s3", IntegrationState::Degraded { reason: e });
         }
     }
 }
@@ -190,20 +196,35 @@ pub async fn create(
     Extension(ctx): Extension<Arc<CalendarCtx>>,
     Json(body): Json<Value>,
 ) -> Response {
-    let get_trim =
-        |k: &str| body.get(k).and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
+    let get_trim = |k: &str| {
+        body.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
     let title = get_trim("title");
     let start = get_trim("start");
     if title.is_empty() || start.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "title and start are required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "title and start are required" }),
+        );
     }
     // Python: `body.get("end") or None` — falsy strings become NULL.
     let opt = |k: &str| -> Option<String> {
-        body.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from)
+        body.get(k)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
     };
     let all_day = body.get("all_day").map(truthy).unwrap_or(false) as i64;
-    let (end, location, description, rrule) =
-        (opt("end"), opt("location"), opt("description"), opt("rrule"));
+    let (end, location, description, rrule) = (
+        opt("end"),
+        opt("location"),
+        opt("description"),
+        opt("rrule"),
+    );
 
     let slot: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -237,8 +258,15 @@ use super::py_truthy as truthy;
 
 // ---- PATCH /api/cal-events/{id} -------------------------------------------
 
-const PATCH_ALLOWED: [&str; 7] =
-    ["title", "start", "end", "all_day", "location", "description", "rrule"];
+const PATCH_ALLOWED: [&str; 7] = [
+    "title",
+    "start",
+    "end",
+    "all_day",
+    "location",
+    "description",
+    "rrule",
+];
 
 pub async fn patch_event(
     State(state): State<AppState>,
@@ -271,7 +299,10 @@ pub async fn patch_event(
         vals.push(stored);
     }
     if sets.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "no updatable fields" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "no updatable fields" }),
+        );
     }
 
     let slot: Arc<Mutex<Option<Option<Value>>>> = Arc::new(Mutex::new(None));
@@ -281,8 +312,10 @@ pub async fn patch_event(
         .store
         .write_async(move |conn| {
             let now = chrono::Utc::now().timestamp();
-            let sql =
-                format!("UPDATE cal_events SET {},updated=? WHERE id=?", sets.join(","));
+            let sql = format!(
+                "UPDATE cal_events SET {},updated=? WHERE id=?",
+                sets.join(",")
+            );
             let mut params: Vec<rusqlite::types::Value> = vals;
             params.push(rusqlite::types::Value::Integer(now));
             params.push(rusqlite::types::Value::Text(id_w.clone()));
@@ -291,7 +324,11 @@ pub async fn patch_event(
             *slot_w.lock().expect("slot") = Some(row);
             Ok(WriteOutcome {
                 applied: n > 0,
-                events: if n > 0 { vec![ev(&id_w, MutationKind::Updated)] } else { vec![] },
+                events: if n > 0 {
+                    vec![ev(&id_w, MutationKind::Updated)]
+                } else {
+                    vec![]
+                },
             })
         })
         .await;
@@ -325,7 +362,11 @@ pub async fn delete_event(
             )?;
             Ok(WriteOutcome {
                 applied: n > 0,
-                events: if n > 0 { vec![ev(&id_w, MutationKind::Deleted)] } else { vec![] },
+                events: if n > 0 {
+                    vec![ev(&id_w, MutationKind::Deleted)]
+                } else {
+                    vec![]
+                },
             })
         })
         .await;
@@ -406,7 +447,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let registry = Arc::new(IntegrationRegistry::new());
         let ctx = Arc::new(CalendarCtx {
@@ -441,7 +482,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
@@ -468,7 +511,13 @@ mod tests {
         assert!(row["created"].as_i64().is_some());
 
         // Missing title/start -> Python's exact 400.
-        let (st, e) = send(&app, "POST", "/api/cal-events", Some(json!({ "title": "x" }))).await;
+        let (st, e) = send(
+            &app,
+            "POST",
+            "/api/cal-events",
+            Some(json!({ "title": "x" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(e["error"], json!("title and start are required"));
     }
@@ -530,22 +579,35 @@ mod tests {
         .await;
         let id = row["id"].as_str().unwrap().to_string();
         // Python: body[k] or None -> "" becomes NULL.
-        let (st, patched) =
-            send(&app, "PATCH", &format!("/api/cal-events/{id}"), Some(json!({ "location": "" })))
-                .await;
+        let (st, patched) = send(
+            &app,
+            "PATCH",
+            &format!("/api/cal-events/{id}"),
+            Some(json!({ "location": "" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(patched["location"], Value::Null);
 
         // No updatable fields -> Python's exact 400.
-        let (st, e) =
-            send(&app, "PATCH", &format!("/api/cal-events/{id}"), Some(json!({ "bogus": 1 })))
-                .await;
+        let (st, e) = send(
+            &app,
+            "PATCH",
+            &format!("/api/cal-events/{id}"),
+            Some(json!({ "bogus": 1 })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(e["error"], json!("no updatable fields"));
 
         // Unknown id -> 404 {"error":"not found"}.
-        let (st, e) =
-            send(&app, "PATCH", "/api/cal-events/EVT-999", Some(json!({ "title": "x" }))).await;
+        let (st, e) = send(
+            &app,
+            "PATCH",
+            "/api/cal-events/EVT-999",
+            Some(json!({ "title": "x" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert_eq!(e["error"], json!("not found"));
     }
@@ -580,7 +642,10 @@ mod tests {
             Some(json!({ "title": "Feed check", "start": "2026-08-10T10:00:00" })),
         )
         .await;
-        let req = Request::builder().uri("/api/calendar.ics").body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/api/calendar.ics")
+            .body(Body::empty())
+            .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
@@ -591,7 +656,9 @@ mod tests {
             res.headers().get(header::CONTENT_DISPOSITION).unwrap(),
             "inline; filename=\"amux.ics\""
         );
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let feed = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(feed.starts_with("BEGIN:VCALENDAR\r\n"));
         assert!(feed.contains("SUMMARY:Feed check"));
@@ -621,7 +688,9 @@ mod tests {
 
     #[tokio::test]
     async fn configured_publisher_receives_feed_and_reports_available() {
-        let publisher = Arc::new(RecordingPublisher { published: Mutex::new(Vec::new()) });
+        let publisher = Arc::new(RecordingPublisher {
+            published: Mutex::new(Vec::new()),
+        });
         let (app, _dir, reg) = app_with(Some("some-bucket"), publisher.clone());
         let (_, _) = send(
             &app,
@@ -638,7 +707,9 @@ mod tests {
 
     #[tokio::test]
     async fn no_bucket_means_no_publish_attempt_and_no_registry_noise() {
-        let publisher = Arc::new(RecordingPublisher { published: Mutex::new(Vec::new()) });
+        let publisher = Arc::new(RecordingPublisher {
+            published: Mutex::new(Vec::new()),
+        });
         let (app, _dir, reg) = app_with(None, publisher.clone());
         let (_, _) = send(
             &app,

@@ -200,8 +200,7 @@ struct DigestQuery {
 }
 
 fn digest_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join("Dev/amux/docs/weekly-review")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Dev/amux/docs/weekly-review")
 }
 
 async fn digest(Query(q): Query<DigestQuery>) -> Response {
@@ -209,11 +208,7 @@ async fn digest(Query(q): Query<DigestQuery>) -> Response {
 
     if !q.file.is_empty() {
         // Serve a specific digest file
-        let safe_name = q
-            .file
-            .replace(['/', '\\', '\0'], "")
-            .trim()
-            .to_string();
+        let safe_name = q.file.replace(['/', '\\', '\0'], "").trim().to_string();
         let path = dir.join(&safe_name);
         match std::fs::read_to_string(&path) {
             Ok(content) => {

@@ -13,14 +13,24 @@ type Board = Vec<(String, i64)>;
 pub(crate) enum Outcome {
     Deferred,
     NeedsIntegration,
+    ReviewHeld,
     Expired,
 }
 
+fn flag(env: &std::collections::BTreeMap<String, String>, key: &str) -> bool {
+    env.get(key).is_some_and(|v| v == "1")
+}
+
 fn enabled(env: &std::collections::BTreeMap<String, String>) -> bool {
-    env.get("CC_EPHEMERAL").is_some_and(|v| v == "1")
-        && ["CC_PAUSED", "CC_ARCHIVED", "CC_ISOLATED"]
-            .iter()
-            .all(|k| env.get(*k).is_none_or(|v| v != "1"))
+    if !flag(env, "CC_EPHEMERAL") || flag(env, "CC_ARCHIVED") || flag(env, "CC_ISOLATED") {
+        return false;
+    }
+    // A project executor can be paused because it is held after verified work
+    // until human artifact review accepts the current project. Once accepted,
+    // retirement must still be able to remove the worktree and expire the
+    // worker; otherwise review-held executors accumulate forever in Paused.
+    // Ordinary paused work is preserved because it lacks CC_REVIEW_HELD.
+    !flag(env, "CC_PAUSED") || flag(env, "CC_REVIEW_HELD")
 }
 
 /// Done for another item type is deliberately insufficient for auto-disposal.
@@ -73,12 +83,23 @@ pub(crate) async fn retire<F: Fleet>(
         expired.clone()
     };
     let env_bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
-    if !enabled(&crate::config::parse_env_file(&source)) || fleet.is_isolated(name) {
+    let env = crate::config::parse_env_file(&source);
+    if !enabled(&env) || fleet.is_isolated(name) {
         return Ok(Outcome::Deferred);
     }
+    let review_held_while_paused = flag(&env, "CC_PAUSED") && flag(&env, "CC_REVIEW_HELD");
     let Some(snapshot) = board(state, name)? else {
         return Ok(Outcome::Deferred);
     };
+    if review_held_while_paused {
+        tracing::info!(
+            session = name,
+            verdict = "fanout_retirement_review_pause_allowed",
+            measured = true,
+            n_considered = 1,
+            "review-held paused project executor is eligible for retirement after acceptance"
+        );
+    }
     if fleet.active_child_work(name)
         || (fleet.is_running(name).await && !fleet.at_boundary(name).await)
     {
@@ -92,6 +113,68 @@ pub(crate) async fn retire<F: Fleet>(
             Outcome::Deferred
         });
     }
+    if env.contains_key("CC_PROJECT") && env.get("CC_WORKTREE").is_some_and(|v| v == "0") {
+        if source == expired {
+            return Ok(Outcome::Deferred);
+        }
+        let lock = crate::api::session_verbs::session_op_lock(name);
+        let Ok(_op) = lock.try_lock() else {
+            return Ok(Outcome::Deferred);
+        };
+        let still_current = || -> Result<bool, String> {
+            Ok(active.exists()
+                && std::fs::read(&active).ok().as_deref() == Some(env_bytes.as_slice())
+                && board(state, name)?.as_ref() == Some(&snapshot))
+        };
+        if fleet.is_running(name).await {
+            fleet.stop_for_retirement(name).await?;
+        }
+        if fleet.is_running(name).await {
+            return Err("provider did not stop; shared checkout worker retained".into());
+        }
+        if !still_current()? {
+            return Ok(Outcome::Deferred);
+        }
+        if let Some(project) = env.get("CC_PROJECT") {
+            let gate = {
+                let conn = state.store.read().map_err(|e| e.to_string())?;
+                crate::project_execution::acceptance::retirement_allowed(&conn, project)
+                    .map_err(|e| e.to_string())?
+            };
+            if gate["allowed"] != true {
+                crate::api::session_verbs::set_review_hold_at(&active, true)?;
+                tracing::info!(session=name,project,state=%gate["state"],fingerprint=%gate["fingerprint"],verdict="project_executor_review_held",measured=true,n_considered=1,
+                    "verified shared-checkout executor stopped and retained until human artifact review accepts the current project");
+                return Ok(Outcome::ReviewHeld);
+            }
+        }
+        let worker = name.to_string();
+        let old_env = env_bytes;
+        let expected_board = snapshot;
+        let retired_head = receipt["head"].as_str().unwrap_or("").to_string();
+        let retired_main = receipt["merged"].as_str().unwrap_or("").to_string();
+        let finalized = state.store.write_async(move |conn| {
+            if !active.exists()
+                || verified_board(conn,&worker)?.as_ref() != Some(&expected_board)
+                || std::fs::read(&active).ok().as_deref() != Some(old_env.as_slice()) {
+                return Ok(crate::db::WriteOutcome {applied:false,events:vec![]});
+            }
+            conn.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,'fanout.decommissioned',?3,'board-drive')",
+                rusqlite::params![crate::config::now_f64(),worker,serde_json::json!({"head":retired_head,"main":retired_main,"cards":expected_board,"worktree_removed":false,"mode":"shared_checkout"}).to_string()])?;
+            std::fs::rename(&active,&expired).map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).await;
+        return match finalized {
+            Ok(outcome) if outcome.applied => {
+                crate::api::session_verbs::dispose_verified_worker_terminal(name).await;
+                crate::api::sessions_legacy::invalidate_sessions_cache();
+                tracing::info!(session=name,verdict="project_shared_executor_decommissioned",measured=true,worktree_removed=false,
+                    "fully verified shared-checkout project executor expired after confirming integration and review");
+                Ok(Outcome::Expired)
+            }
+            result => result.map(|_| Outcome::Deferred).map_err(|e| e.to_string()),
+        };
+    }
     let w = workspace::load(home, name).ok_or("verified worker has no workspace record")?;
     let head = receipt["head"]
         .as_str()
@@ -99,7 +182,7 @@ pub(crate) async fn retire<F: Fleet>(
         .ok_or("integration receipt has no head")?
         .to_string();
     // A corrupt/mispointed record must never delete a shared checkout.
-    let expected = home.join("worktrees").join(name);
+    let expected = workspace::expected_path(&w.repo, name);
     if Path::new(&w.path) != expected || w.branch != format!("amux/fanout/{name}") {
         return Err("workspace record does not name this worker's own path and branch".into());
     }
@@ -142,7 +225,9 @@ pub(crate) async fn retire<F: Fleet>(
         git(&w.repo, &["worktree", "add", &w.path, &w.branch]).await?;
     }
     check_checkout(&w, &head).await?;
-    fleet.stop_for_retirement(name).await?;
+    if fleet.is_running(name).await {
+        fleet.stop_for_retirement(name).await?;
+    }
     if fleet.is_running(name).await {
         return Err("provider did not stop; workspace retained".into());
     }
@@ -178,8 +263,25 @@ pub(crate) async fn retire<F: Fleet>(
         return Ok(Outcome::Deferred);
     }
     check_checkout(&w, &head).await?;
+    if let Some(project) = env.get("CC_PROJECT") {
+        let gate = {
+            let conn = state.store.read().map_err(|e| e.to_string())?;
+            crate::project_execution::acceptance::retirement_allowed(&conn, project)
+                .map_err(|e| e.to_string())?
+        };
+        if gate["allowed"] != true {
+            crate::api::session_verbs::set_review_hold_at(&source, true)?;
+            tracing::info!(session=name,project,state=%gate["state"],fingerprint=%gate["fingerprint"],verdict="project_executor_review_held",measured=true,n_considered=1,
+                "verified executor stopped; worktree and worker retained until human artifact review accepts the current project");
+            return Ok(Outcome::ReviewHeld);
+        }
+    }
     // Only our durable worktree lock is released. Never force, rm -rf, or
     // globally prune registrations: new drafts must make Git refuse removal.
+    // The harness receipt is local control-plane state that was already
+    // ingested before human acceptance; remove only that exact file so Git can
+    // still protect any real draft or generated artifact.
+    discard_harness_receipts(&w)?;
     let _ = git(&w.repo, &["worktree", "unlock", &w.path]).await;
     git(&w.repo, &["worktree", "remove", &w.path]).await?;
     if expected.exists()
@@ -213,6 +315,7 @@ pub(crate) async fn retire<F: Fleet>(
     }).await;
     match finalized {
         Ok(outcome) if outcome.applied => {
+            crate::api::session_verbs::dispose_verified_worker_terminal(name).await;
             crate::api::sessions_legacy::invalidate_sessions_cache();
             tracing::info!(session=name,verdict="fanout_decommissioned",measured=true,worktree_removed=true,
                 "fully verified worker expired after confirming remote main and removing its worktree");
@@ -259,12 +362,22 @@ async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), Stri
     {
         return Err("workspace belongs to another repository".into());
     }
-    if !git(&w.path, &["status", "--porcelain", "--untracked-files=all"])
-        .await?
-        .is_empty()
-    {
+    if !workspace::project_clean_status(&w.path).await?.is_empty() {
         return Err("workspace has uncommitted or untracked work; preserved".into());
     }
+    Ok(())
+}
+
+fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), String> {
+    for name in ["project-report.json", "project-wait.json"] {
+        let receipt = Path::new(&w.path).join(".amux").join(name);
+        match std::fs::remove_file(&receipt) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let _ = std::fs::remove_dir(Path::new(&w.path).join(".amux"));
     Ok(())
 }
 
@@ -428,6 +541,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn project_superseded_packet_history_unblocks_only_verified_retirement() {
+        use crate::project_execution::{planner, store};
+        let (_dir, db, _) = crate::project_execution::outputs::tests::fixture();
+        db.write(|c| {
+            let row=crate::db::board_store::get_issue(c,"A")?.unwrap();
+            let mut current=planner::execution(c,"A").unwrap();
+            let old:String=c.query_row("SELECT json_extract(data,'$.execution.delivery_id') FROM session_events WHERE type='project.claimed' AND json_extract(data,'$.task')='A' ORDER BY id LIMIT 1",[],|r|r.get(0))?;
+            assert_ne!(old,current.delivery_id);
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES(?1,?2,'old unsent packet',1,'project-execution')",rusqlite::params![old,current.worker])?;
+            // Normal recovery is not retirement, even after stale input settles.
+            assert!(verified_board(c,&current.worker)?.is_none());
+            current.stage="verified".into();current.waiting=None;
+            c.execute("UPDATE issues SET status='verified' WHERE id='A'",[])?;
+            planner::save_execution(c,&row,&current,"project.verified").map_err(store::sql_error)?;
+            assert!(verified_board(c,&current.worker)?.is_none(),"old pending packet really blocks retirement");
+            assert!(planner::settle_superseded_packets(c)?.applied);
+            assert!(verified_board(c,&current.worker)?.is_some(),"non-sent settlement releases existing retirement predicate");
+            assert_eq!(c.query_row("SELECT text,outcome FROM steering_history WHERE id=?1",[&old],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?,("old unsent packet".into(),"void:project-execution-superseded".into()));
+            c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('owner-note',?1,'retained owner input',2,'project-steering')",[&current.worker])?;
+            assert!(!planner::settle_superseded_packets(c)?.applied);
+            assert!(verified_board(c,&current.worker)?.is_none(),"owner note still blocks disposal");
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
+
     #[tokio::test]
     async fn verified_published_board_stops_idle_provider_removes_worktree_and_expires_with_history(
     ) {
@@ -436,6 +575,12 @@ mod tests {
         git(&f.w.repo, &["worktree", "lock", &f.w.path])
             .await
             .unwrap();
+        std::fs::create_dir_all(Path::new(&f.w.path).join(".amux")).unwrap();
+        std::fs::write(
+            Path::new(&f.w.path).join(".amux/project-report.json"),
+            r#"{"generation":1,"input_hash":"test","report":{"head":"ignored"}}"#,
+        )
+        .unwrap();
         assert_eq!(f.retire(&fleet).await.unwrap(), Outcome::Expired);
         assert_eq!(fleet.stops.load(Ordering::SeqCst), 1);
         assert!(!Path::new(&f.w.path).exists());
@@ -473,6 +618,71 @@ mod tests {
             1
         );
         assert_eq!(f.retire(&fleet).await.unwrap(), Outcome::Deferred);
+    }
+    #[tokio::test]
+    async fn project_executor_is_stopped_but_kept_until_human_review_then_expires() {
+        use crate::project_execution::{acceptance, store};
+        let f = Fixture::new().await;
+        std::fs::write(f.env(), "CC_EPHEMERAL=1\nCC_PROJECT=review-project\n").unwrap();
+        let repo = f.w.repo.clone();
+        let head = f.head.clone();
+        f.state.store.write(move |c| {
+            c.execute("UPDATE issues SET project_group='review-project' WHERE id='C-1'", [])?;
+            let policy: amux_core::project::ExecutionPolicy = serde_json::from_value(serde_json::json!({
+                "repository":repo,"coordinator":{"provider":"claude","model":"haiku"},
+                "executor":{"provider":"claude","model":"sonnet"},"verify_command":"true","enabled":true,
+                "acceptance":{"criteria":[{"id":"owner","requirement":"Owner reviews produced artifacts",
+                    "verifier":{"type":"human","id":"owner-review","instructions":"Inspect the retained task artifacts"}}]}
+            })).unwrap();
+            store::save(c,"review-project",0,&policy,"test").map_err(store::sql_error)?;
+            let p=store::get(c,"review-project").map_err(store::sql_error)?.unwrap();
+            acceptance::observe(c,&p,&head,&head,&[]).map_err(store::sql_error)?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let fleet = TestFleet::default();
+        assert_eq!(f.retire(&fleet).await.unwrap(), Outcome::ReviewHeld);
+        assert_eq!(fleet.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            crate::config::parse_env_file(&f.env())
+                .get("CC_REVIEW_HELD")
+                .map(String::as_str),
+            Some("1")
+        );
+        let held = std::fs::read_to_string(f.env()).unwrap();
+        std::fs::write(
+            f.env(),
+            format!(
+                "{held}CC_PROJECT_PAUSED=1
+CC_PAUSED=1
+"
+            ),
+        )
+        .unwrap();
+        f.kept();
+        assert!(
+            Path::new(&f.w.path).exists(),
+            "review retains the exact executor checkout"
+        );
+        let head = f.head.clone();
+        f.state.store.write(move |c| {
+            let current=store::get(c,"review-project").map_err(store::sql_error)?.unwrap();
+            let contract=current.policy.acceptance.as_ref().unwrap();
+            let status=acceptance::status(c,&current).map_err(store::sql_error)?;
+            let fp=status["fingerprint"].as_str().unwrap().to_string();
+            let intent=acceptance::intent_revision(c,"review-project").map_err(store::sql_error)?;
+            let receipt=serde_json::json!({"fingerprint":fp,"contract_revision":contract.revision,"main":head,
+                "intent":intent,"state":"awaiting_human","finished":1.0,"results":[{"criterion":"owner","verifier":"owner-review","type":"human","state":"pending_human"}],
+                "publish_gate":{"state":"passed","signature":"retirement-fixture"}});
+            acceptance::record(c,"review-project",contract,&intent,&receipt).map_err(store::sql_error)?;
+            acceptance::approve(c,&current,&acceptance::Approval{criterion:"owner".into(),fingerprint:fp,decision:"approve".into(),note:"Reviewed retained evidence".into()}).map_err(store::sql_error)?;
+            assert_eq!(acceptance::status(c,&current).map_err(store::sql_error)?["state"],"accepted");
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        assert_eq!(f.retire(&fleet).await.unwrap(), Outcome::Expired);
+        assert!(!Path::new(&f.w.path).exists());
+        assert!(f.env().with_extension("env.reaped").exists());
+        // Acceptance doesn't wake or spend tokens: the already-stopped executor remains stopped.
+        assert_eq!(fleet.stops.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
     async fn every_card_must_be_verified_including_non_code_and_epics() {

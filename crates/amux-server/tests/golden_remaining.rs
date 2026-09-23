@@ -40,8 +40,8 @@ use amux_core::session::BackendId;
 use amux_core::worker::{WorkerConfig as CoreWorkerConfig, WorkerState};
 use amux_server::api::{router, AppState};
 use amux_server::backend::{
-    backend_ref, herdr::HerdrBackend, tmux::TmuxBackend, BackendStatus, ProcessRef,
-    SessionBackend, SessionSpec,
+    backend_ref, herdr::HerdrBackend, tmux::TmuxBackend, BackendStatus, ProcessRef, SessionBackend,
+    SessionSpec,
 };
 use amux_server::db::board_store;
 use amux_server::db::queries::{self, SessionRow, WorkerRow};
@@ -94,7 +94,7 @@ fn rig() -> Rig {
         started: std::time::Instant::now(),
         build_hash: "golden-remaining-test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     Rig {
         app: router(state),
@@ -271,7 +271,10 @@ fn failed_count(store: &SharedStore, worker: &WorkerId) -> i64 {
 
 fn worker_durable_state(store: &SharedStore, worker: &WorkerId) -> WorkerState {
     let conn = store.read().unwrap();
-    queries::get_worker(&conn, worker.as_str()).unwrap().unwrap().state
+    queries::get_worker(&conn, worker.as_str())
+        .unwrap()
+        .unwrap()
+        .state
 }
 
 /// Live (unexpired) leases as (task_id, worker_id).
@@ -312,7 +315,10 @@ fn expire_lease(store: &SharedStore, task_id: &str) {
                 "UPDATE _amux_leases SET expires_at = ?2 WHERE task_id = ?1",
                 params![t, (Utc::now() - chrono::Duration::hours(1)).to_rfc3339()],
             )?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
 }
@@ -341,9 +347,7 @@ fn worker_status_seq(events: &[StateEvent], wid: &WorkerId) -> Vec<String> {
 fn lease_seq(events: &[StateEvent], task_id: &str) -> Vec<String> {
     events
         .iter()
-        .filter(|e| {
-            e.entity_type == EntityType::Other("lease".into()) && e.entity_id == task_id
-        })
+        .filter(|e| e.entity_type == EntityType::Other("lease".into()) && e.entity_id == task_id)
         .map(|e| match &e.mutation {
             MutationKind::Created => "created".to_string(),
             MutationKind::StatusChanged { to, .. } => to.clone(),
@@ -386,8 +390,11 @@ async fn golden_rate_limit_recovery() {
     let mut journal: Vec<StateEvent> = Vec::new();
 
     let wid = register_worker(app, &rig.protocol, "limited-worker").await;
-    let sem_a =
-        create_task_with(app, json!({ "title": "task cut short by the weekly limit", "session": "limited-worker" })).await;
+    let sem_a = create_task_with(
+        app,
+        json!({ "title": "task cut short by the weekly limit", "session": "limited-worker" }),
+    )
+    .await;
     let tid_a = board_store::internal_id(&sem_a);
     let rt = mock_runtime(&rig);
 
@@ -410,13 +417,21 @@ async fn golden_rate_limit_recovery() {
     let turn_a = TurnId::from_ulid(ulid::Ulid::new());
     rig.protocol.set_state(
         &wid,
-        AgentState::Working { turn: Some(turn_a.clone()), progress: None },
-        Some(WorkerEvent::TurnStarted { turn_id: turn_a.clone() }),
+        AgentState::Working {
+            turn: Some(turn_a.clone()),
+            progress: None,
+        },
+        Some(WorkerEvent::TurnStarted {
+            turn_id: turn_a.clone(),
+        }),
     );
     {
         let (store, wid) = (rig.store.clone(), wid.clone());
         wait_until(move || {
-            matches!(worker_durable_state(&store, &wid), WorkerState::Active { .. })
+            matches!(
+                worker_durable_state(&store, &wid),
+                WorkerState::Active { .. }
+            )
         })
         .await;
     }
@@ -447,7 +462,10 @@ async fn golden_rate_limit_recovery() {
     {
         let (store, wid) = (rig.store.clone(), wid.clone());
         wait_until(move || {
-            matches!(worker_durable_state(&store, &wid), WorkerState::RateLimited { .. })
+            matches!(
+                worker_durable_state(&store, &wid),
+                WorkerState::RateLimited { .. }
+            )
         })
         .await;
     }
@@ -484,8 +502,11 @@ async fn golden_rate_limit_recovery() {
     expire_lease(&rig.store, tid_a.as_str());
 
     // Fresh work arrives WHILE the limit holds.
-    let sem_b =
-        create_task_with(app, json!({ "title": "task delivered after recovery", "session": "limited-worker" })).await;
+    let sem_b = create_task_with(
+        app,
+        json!({ "title": "task delivered after recovery", "session": "limited-worker" }),
+    )
+    .await;
     let tid_b = board_store::internal_id(&sem_b);
 
     // Guard: if the 2s window already lapsed, the next tick would measure
@@ -509,9 +530,16 @@ async fn golden_rate_limit_recovery() {
         1,
         "NO new deliveries to a rate-limited worker"
     );
-    assert_eq!(command_rows(&rig.store, &wid).len(), 1, "no new command enqueued");
+    assert_eq!(
+        command_rows(&rig.store, &wid).len(),
+        1,
+        "no new command enqueued"
+    );
     assert!(
-        matches!(worker_durable_state(&rig.store, &wid), WorkerState::RateLimited { .. }),
+        matches!(
+            worker_durable_state(&rig.store, &wid),
+            WorkerState::RateLimited { .. }
+        ),
         "recovery must not fire before reset_at"
     );
 
@@ -524,7 +552,10 @@ async fn golden_rate_limit_recovery() {
     rt.tick_once(false).await.unwrap();
     journal.extend(drain(&mut rx));
     assert!(
-        matches!(worker_durable_state(&rig.store, &wid), WorkerState::Idle { .. }),
+        matches!(
+            worker_durable_state(&rig.store, &wid),
+            WorkerState::Idle { .. }
+        ),
         "RR-0072: worker must auto-recover once the reset passes"
     );
     let recoveries = journal
@@ -549,16 +580,29 @@ async fn golden_rate_limit_recovery() {
     );
     rt.tick_once(false).await.unwrap();
     let texts = sendprompt_texts(&rig.protocol);
-    assert_eq!(texts.len(), 2, "pump resumed delivery after recovery: {texts:?}");
+    assert_eq!(
+        texts.len(),
+        2,
+        "pump resumed delivery after recovery: {texts:?}"
+    );
     assert!(texts[1].contains(tid_b.as_str()), "{}", texts[1]);
-    assert!(texts[1].contains("task delivered after recovery"), "{}", texts[1]);
+    assert!(
+        texts[1].contains("task delivered after recovery"),
+        "{}",
+        texts[1]
+    );
 
     // The resumed turn completes through the real path; command B confirms.
     let turn_b = TurnId::from_ulid(ulid::Ulid::new());
     rig.protocol.set_state(
         &wid,
-        AgentState::Working { turn: Some(turn_b.clone()), progress: None },
-        Some(WorkerEvent::TurnStarted { turn_id: turn_b.clone() }),
+        AgentState::Working {
+            turn: Some(turn_b.clone()),
+            progress: None,
+        },
+        Some(WorkerEvent::TurnStarted {
+            turn_id: turn_b.clone(),
+        }),
     );
     rig.protocol.set_state(
         &wid,
@@ -588,12 +632,17 @@ async fn golden_rate_limit_recovery() {
     );
     // Lease arc: A leased then reclaimed (expired during the limit); B
     // leased after recovery and still live.
-    assert_eq!(lease_seq(&journal, tid_a.as_str()), vec!["created", "reclaimed"]);
+    assert_eq!(
+        lease_seq(&journal, tid_a.as_str()),
+        vec!["created", "reclaimed"]
+    );
     assert_eq!(lease_seq(&journal, tid_b.as_str()), vec!["created"]);
     // Command arc: A's ExecuteTask failed with the limit; B's confirmed.
     assert!(
-        journal.iter().any(|e| e.entity_type == EntityType::Other("command".into())
-            && matches!(&e.mutation, MutationKind::StatusChanged { to, .. } if to == "failed")),
+        journal
+            .iter()
+            .any(|e| e.entity_type == EntityType::Other("command".into())
+                && matches!(&e.mutation, MutationKind::StatusChanged { to, .. } if to == "failed")),
         "command-failed event missing"
     );
     assert!(
@@ -626,11 +675,17 @@ async fn golden_scoped_gates() {
     let code_done = board_store::default_gates_for("code", TaskStatus::Done);
     assert_eq!(
         code_done,
-        vec!["Implemented and merged".to_string(), "Tests / lint pass".to_string()],
+        vec![
+            "Implemented and merged".to_string(),
+            "Tests / lint pass".to_string()
+        ],
         "the fleet acks these exact strings — a drift here breaks every ack"
     );
     let chore_done = board_store::default_gates_for("chore", TaskStatus::Done);
-    assert!(!chore_done.is_empty(), "chore's done gate must exist (an ungated done is a lie)");
+    assert!(
+        !chore_done.is_empty(),
+        "chore's done gate must exist (an ungated done is a lie)"
+    );
     assert_ne!(
         chore_done, code_done,
         "chore's gate must be its own, not code's — that difference IS type scoping"
@@ -643,13 +698,23 @@ async fn golden_scoped_gates() {
     let (st, v) = patch_raw(app, &code_sem, json!({ "status": "doing" }), actor).await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], json!("gate not acknowledged"), "{v}");
-    let v = patch_ok(app, &code_sem, json!({ "status": "doing", "gate_ack": true }), actor).await;
+    let v = patch_ok(
+        app,
+        &code_sem,
+        json!({ "status": "doing", "gate_ack": true }),
+        actor,
+    )
+    .await;
     assert_eq!(v["status"], json!("doing"), "{v}");
     // done WITHOUT gate_checked: 409 naming the exact type-derived strings.
     let (st, v) = patch_raw(app, &code_sem, json!({ "status": "done" }), actor).await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], json!("gate not acknowledged"), "{v}");
-    assert_eq!(v["gate"], json!(code_done), "the 409 must name the effective gate: {v}");
+    assert_eq!(
+        v["gate"],
+        json!(code_done),
+        "the 409 must name the effective gate: {v}"
+    );
     assert_eq!(v["attempted_status"], json!("done"), "{v}");
     assert_eq!(v["item_type"], json!("code"), "{v}");
     // A PARTIAL ack is not an ack: matching is by exact string, per
@@ -662,7 +727,11 @@ async fn golden_scoped_gates() {
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
-    assert_eq!(v["error"], json!("gate_checked does not match the gate"), "{v}");
+    assert_eq!(
+        v["error"],
+        json!("gate_checked does not match the gate"),
+        "{v}"
+    );
     assert_eq!(v["missing"], json!([code_done[1]]), "{v}");
     // The exact strings pass.
     let v = patch_ok(
@@ -685,14 +754,28 @@ async fn golden_scoped_gates() {
     assert_eq!(v["gate"], json!(custom), "override stored on the card: {v}");
     // The override guards every gated target for THIS card (card rung
     // outranks the type rung in the precedence chain).
-    let v = patch_ok(app, &over_sem, json!({ "status": "doing", "gate_ack": true }), actor).await;
+    let v = patch_ok(
+        app,
+        &over_sem,
+        json!({ "status": "doing", "gate_ack": true }),
+        actor,
+    )
+    .await;
     assert_eq!(v["status"], json!("doing"), "{v}");
     let (st, v) = patch_raw(app, &over_sem, json!({ "status": "done" }), actor).await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], json!("gate not acknowledged"), "{v}");
-    assert_eq!(v["gate"], json!(custom), "the 409 names ITS criteria, not the type's: {v}");
+    assert_eq!(
+        v["gate"],
+        json!(custom),
+        "the 409 names ITS criteria, not the type's: {v}"
+    );
     assert!(
-        !v["gate"].as_array().unwrap().iter().any(|c| c == &json!(code_done[0])),
+        !v["gate"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == &json!(code_done[0])),
         "the override REPLACED the type gate, it did not extend it: {v}"
     );
     // Acking the TYPE gate's strings is not acking THIS card's gate.
@@ -720,7 +803,13 @@ async fn golden_scoped_gates() {
         json!({ "title": "chore-typed card", "session": actor, "type": "chore", "desc": "artifact: crates/amux-server/src/api/board.rs" }),
     )
     .await;
-    let v = patch_ok(app, &chore_sem, json!({ "status": "doing", "gate_ack": true }), actor).await;
+    let v = patch_ok(
+        app,
+        &chore_sem,
+        json!({ "status": "doing", "gate_ack": true }),
+        actor,
+    )
+    .await;
     assert_eq!(v["status"], json!("doing"), "{v}");
     let (st, v) = patch_raw(app, &chore_sem, json!({ "status": "done" }), actor).await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
@@ -820,7 +909,11 @@ impl FleetProtocol {
 
 #[async_trait::async_trait]
 impl AgentProtocol for FleetProtocol {
-    async fn send_prompt(&self, worker: &WorkerId, prompt: Prompt) -> amux_server::opencode::Result<()> {
+    async fn send_prompt(
+        &self,
+        worker: &WorkerId,
+        prompt: Prompt,
+    ) -> amux_server::opencode::Result<()> {
         let p = self.route(worker)?;
         self.prompts
             .lock()
@@ -972,13 +1065,18 @@ async fn golden_multi_provider_fleet() {
     // Assemble the fleet: (name, provider config). `None` = MockProtocol;
     // Some((cli, binary override, memory file)) = a real structured CLI.
     type RealCli = (CliProvider, Option<std::path::PathBuf>, &'static str);
-    let mut specs: Vec<(&'static str, Option<RealCli>)> = vec![
-        ("prov-claude", Some((CliProvider::ClaudeCode, None, "CLAUDE.md"))),
-    ];
+    let mut specs: Vec<(&'static str, Option<RealCli>)> = vec![(
+        "prov-claude",
+        Some((CliProvider::ClaudeCode, None, "CLAUDE.md")),
+    )];
     if have_gemini {
         specs.push((
             "prov-gemini",
-            Some((CliProvider::GeminiCli, Some(gemini_shim.clone()), "GEMINI.md")),
+            Some((
+                CliProvider::GeminiCli,
+                Some(gemini_shim.clone()),
+                "GEMINI.md",
+            )),
         ));
     }
     specs.push(("prov-mock", None)); // MockProtocol stands in for a third provider
@@ -1020,7 +1118,7 @@ async fn golden_multi_provider_fleet() {
                         cwd: ws.path().to_path_buf(),
                         binary: binary.clone(),
                         model: None, // structured::WorkerConfig grew `model` mid-flight (other lane); None = CLI default
-            conversation: None, // and `conversation` with AMUX-2613; None = fresh
+                        conversation: None, // and `conversation` with AMUX-2613; None = fresh
                     },
                 );
                 routes.insert(wid.clone(), structured.clone());
@@ -1047,7 +1145,10 @@ async fn golden_multi_provider_fleet() {
             rig.store
                 .write(move |conn| {
                     queries::insert_session(conn, &row)?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
@@ -1081,14 +1182,15 @@ async fn golden_multi_provider_fleet() {
         workspaces.push(ws);
     }
 
-    let fleet = Arc::new(FleetProtocol { routes, prompts: Mutex::new(Vec::new()) });
+    let fleet = Arc::new(FleetProtocol {
+        routes,
+        prompts: Mutex::new(Vec::new()),
+    });
     // One event processor per worker, through the SAME protocol the runtime
     // uses (subscribe-before-emit is inside spawn_event_processor).
     let processors: Vec<_> = members
         .iter()
-        .map(|m| {
-            wevents::spawn_event_processor(rig.store.clone(), fleet.clone(), m.wid.clone())
-        })
+        .map(|m| wevents::spawn_event_processor(rig.store.clone(), fleet.clone(), m.wid.clone()))
         .collect();
 
     let rt = runtime_with(rig.store.clone(), Some(fleet.clone()), vec![]);
@@ -1096,7 +1198,11 @@ async fn golden_multi_provider_fleet() {
     // Tick 1: three owned tasks -> three leases + three ExecuteTask commands.
     rt.tick_once(false).await.unwrap();
     let leases = live_leases(&rig.store);
-    assert_eq!(leases.len(), members.len(), "one lease per fleet member: {leases:?}");
+    assert_eq!(
+        leases.len(),
+        members.len(),
+        "one lease per fleet member: {leases:?}"
+    );
     for m in &members {
         assert!(
             leases.contains(&(m.tid.to_string(), m.wid.as_str().to_string())),
@@ -1118,17 +1224,19 @@ async fn golden_multi_provider_fleet() {
         // standing in for a third provider's model.
         if !mock_worked {
             if let Some(m) = members.iter().find(|m| m.is_mock) {
-                let delivered = fleet
-                    .recorded_prompts()
-                    .iter()
-                    .any(|(w, _)| w == &m.wid);
+                let delivered = fleet.recorded_prompts().iter().any(|(w, _)| w == &m.wid);
                 if delivered {
                     std::fs::write(&m.out_path, format!("{}\n", m.marker)).unwrap();
                     let turn = TurnId::from_ulid(ulid::Ulid::new());
                     rig.protocol.set_state(
                         &m.wid,
-                        AgentState::Working { turn: Some(turn.clone()), progress: None },
-                        Some(WorkerEvent::TurnStarted { turn_id: turn.clone() }),
+                        AgentState::Working {
+                            turn: Some(turn.clone()),
+                            progress: None,
+                        },
+                        Some(WorkerEvent::TurnStarted {
+                            turn_id: turn.clone(),
+                        }),
                     );
                     rig.protocol.set_state(
                         &m.wid,
@@ -1179,9 +1287,8 @@ async fn golden_multi_provider_fleet() {
 
     // Each artifact was written BY its own provider in its own cwd.
     for m in &members {
-        let content = std::fs::read_to_string(&m.out_path).unwrap_or_else(|e| {
-            panic!("[{}] {} missing ({e})", m.name, m.out_path.display())
-        });
+        let content = std::fs::read_to_string(&m.out_path)
+            .unwrap_or_else(|e| panic!("[{}] {} missing ({e})", m.name, m.out_path.display()));
         assert!(
             content.contains(&m.marker),
             "[{}] artifact lacks {}: {content:?}",
@@ -1225,7 +1332,13 @@ async fn golden_multi_provider_fleet() {
     // done on the gate, verified on file_exists against the provider's own
     // artifact — the full loop closed per member.
     for m in &members {
-        let v = patch_ok(app, &m.sem, json!({ "status": "doing", "gate_ack": true }), m.name).await;
+        let v = patch_ok(
+            app,
+            &m.sem,
+            json!({ "status": "doing", "gate_ack": true }),
+            m.name,
+        )
+        .await;
         assert_eq!(v["status"], json!("doing"), "{v}");
         let v = patch_ok(
             app,
@@ -1419,7 +1532,10 @@ async fn traced_live_backend_lifecycle(
                         exit_reason: None,
                     },
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -1436,13 +1552,19 @@ async fn traced_live_backend_lifecycle(
         .spawn(&spec)
         .await
         .unwrap_or_else(|e| panic!("[{label}] spawn failed: {e}"));
-    assert_eq!(proc.backend_ref, ref_, "[{label}] spawn must return the canonical ref");
+    assert_eq!(
+        proc.backend_ref, ref_,
+        "[{label}] spawn must return the canonical ref"
+    );
 
     // Everything until terminate is collected, never panicked (guard idiom):
     // a mid-lifecycle failure must not leak a live claude session.
     let mid: Result<amux_server::orchestrator::scan::ScanReport, String> = async {
         wait_for_claude_ui(&backend, &proc, Duration::from_secs(60)).await?;
-        eprintln!("[{label}] claude UI up at t+{:.1}s", t0.elapsed().as_secs_f32());
+        eprintln!(
+            "[{label}] claude UI up at t+{:.1}s",
+            t0.elapsed().as_secs_f32()
+        );
 
         // The scan loop: no structured protocol session, so this worker must
         // be SCANNED (the scraper is its only voice), never demoted.
@@ -1551,8 +1673,7 @@ async fn golden_backend_interchangeability() {
     };
 
     // The SAME lifecycle, once per backend.
-    let tmux_trace =
-        traced_live_backend_lifecycle(Arc::new(TmuxBackend::new()), "tmux").await;
+    let tmux_trace = traced_live_backend_lifecycle(Arc::new(TmuxBackend::new()), "tmux").await;
     let herdr_trace =
         traced_live_backend_lifecycle(Arc::new(HerdrBackend::new(session)), "herdr").await;
 
@@ -1561,14 +1682,33 @@ async fn golden_backend_interchangeability() {
     // that are identical because BOTH observed nothing (ethos rule 7: a
     // check must be able to fail).
     for (label, t) in [("tmux", &tmux_trace), ("herdr", &herdr_trace)] {
-        assert!(t.scan_scanned_self, "[{label}] scan must reach the worker: {t:?}");
-        assert_eq!(t.scan_demoted, 0, "[{label}] nothing to demote (no protocol wired): {t:?}");
-        assert_eq!(t.scan_capture_failures, 0, "[{label}] capture must succeed: {t:?}");
-        assert_eq!(t.reconcile_probe_failures, 0, "[{label}] probe must answer: {t:?}");
-        assert!(t.reconcile_interrupted_self, "[{label}] reconcile must mark it interrupted: {t:?}");
-        assert!(t.session_ended, "[{label}] session row must be ended: {t:?}");
         assert!(
-            t.event_kinds.contains(&"session:running->interrupted".to_string()),
+            t.scan_scanned_self,
+            "[{label}] scan must reach the worker: {t:?}"
+        );
+        assert_eq!(
+            t.scan_demoted, 0,
+            "[{label}] nothing to demote (no protocol wired): {t:?}"
+        );
+        assert_eq!(
+            t.scan_capture_failures, 0,
+            "[{label}] capture must succeed: {t:?}"
+        );
+        assert_eq!(
+            t.reconcile_probe_failures, 0,
+            "[{label}] probe must answer: {t:?}"
+        );
+        assert!(
+            t.reconcile_interrupted_self,
+            "[{label}] reconcile must mark it interrupted: {t:?}"
+        );
+        assert!(
+            t.session_ended,
+            "[{label}] session row must be ended: {t:?}"
+        );
+        assert!(
+            t.event_kinds
+                .contains(&"session:running->interrupted".to_string()),
             "[{label}] the interruption StateEvent must be in the trace: {t:?}"
         );
     }

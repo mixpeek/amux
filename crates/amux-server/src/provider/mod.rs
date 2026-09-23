@@ -306,7 +306,10 @@ mod tests {
     fn resolve_accepts_the_worker_row_default_spelling() {
         let reg = default_registry();
         // The exact ids all resolve...
-        assert_eq!(reg.resolve("claude-code").unwrap().id().as_str(), "claude-code");
+        assert_eq!(
+            reg.resolve("claude-code").unwrap().id().as_str(),
+            "claude-code"
+        );
         assert_eq!(reg.resolve("gemini").unwrap().id().as_str(), "gemini");
         assert_eq!(reg.resolve("muse").unwrap().id().as_str(), "muse");
         // ...and the schema-default legacy spelling lands on claude-code.

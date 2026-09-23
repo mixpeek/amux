@@ -25,10 +25,9 @@
 use super::AppState;
 use crate::db::{PendingEvent, WriteOutcome};
 use crate::runtime_jobs::scheduler::{
-    self, fmt_minute, get_schedule, insert_audit, insert_schedule, legacy_next_run,
-    list_schedules, mint_schedule_id, record_run, skip_next_run, soft_delete_schedule,
-    update_schedule, Deliverer, DurableSchedule, LiveDeliverer, RunOutcome, ScheduleExpr,
-    AUDIT_FIELDS,
+    self, fmt_minute, get_schedule, insert_audit, insert_schedule, legacy_next_run, list_schedules,
+    mint_schedule_id, record_run, skip_next_run, soft_delete_schedule, update_schedule, Deliverer,
+    DurableSchedule, LiveDeliverer, RunOutcome, ScheduleExpr, AUDIT_FIELDS,
 };
 use amux_core::revision::{EntityType, MutationKind};
 use axum::extract::{Path, Query, State};
@@ -46,10 +45,7 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list).post(create))
         .route("/runs", get(recent_runs))
         .route("/audit", get(audit_trail))
-        .route(
-            "/{id}",
-            get(get_one).patch(patch).delete(delete_schedule),
-        )
+        .route("/{id}", get(get_one).patch(patch).delete(delete_schedule))
         .route("/{id}/run", post(run_now))
         .route("/{id}/skip", post(skip_next))
 }
@@ -134,7 +130,12 @@ fn armed_unhonoured(body: &ScheduleBody) -> Vec<&'static str> {
         out.push("done_pattern");
     }
     // "disable" is the inert default the editor sends on every save.
-    if body.done_action.as_deref().map(str::trim).is_some_and(|s| !s.is_empty() && s != "disable") {
+    if body
+        .done_action
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty() && s != "disable")
+    {
         out.push("done_action");
     }
     if set(&body.trigger_on) {
@@ -208,11 +209,18 @@ fn finish<T>(
 }
 
 fn no_write() -> WriteOutcome {
-    WriteOutcome { applied: false, events: Vec::new() }
+    WriteOutcome {
+        applied: false,
+        events: Vec::new(),
+    }
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name).and_then(|v| v.to_str().ok()).map(str::trim).filter(|s| !s.is_empty())
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 /// Python's `_sched_mutation_by`, minus the client-IP tail (see module
@@ -243,7 +251,13 @@ fn mutation_by(headers: &HeaderMap, claimed: Option<&str>) -> String {
 fn audit_str(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => "None".into(),
-        Some(Value::Bool(b)) => if *b { "True".into() } else { "False".into() },
+        Some(Value::Bool(b)) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         Some(Value::Number(n)) => n.to_string(),
         Some(Value::String(s)) => s.clone(),
         Some(other) => other.to_string(),
@@ -258,9 +272,7 @@ fn de_flag<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
         None | Some(Value::Null) => None,
         Some(Value::Bool(b)) => Some(b as i64),
         Some(Value::Number(n)) => Some((n.as_f64().unwrap_or(0.0) != 0.0) as i64),
-        Some(Value::String(s)) => {
-            Some(matches!(s.as_str(), "1" | "true" | "yes" | "True") as i64)
-        }
+        Some(Value::String(s)) => Some(matches!(s.as_str(), "1" | "true" | "yes" | "True") as i64),
         Some(_) => return Err(serde::de::Error::custom("expected a boolean or number")),
     })
 }
@@ -410,7 +422,11 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
                     );
                 }
             }
-            ([("x-amux-unhonoured-fields", UNHONOURED_FIELDS_HEADER)], Json(v)).into_response()
+            (
+                [("x-amux-unhonoured-fields", UNHONOURED_FIELDS_HEADER)],
+                Json(v),
+            )
+                .into_response()
         }
         Ok(Ok(None)) => not_found(),
         Ok(Err(e)) => internal(e),
@@ -542,7 +558,12 @@ pub async fn create(
 ) -> Response {
     let title = match body.title.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => t.to_string(),
-        _ => return err(StatusCode::BAD_REQUEST, json!({ "error": "title is required" })),
+        _ => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "title is required" }),
+            )
+        }
     };
     // Refuse to arm a behaviour this server does not have (AMUX-2680).
     let dead = armed_unhonoured(&body);
@@ -556,12 +577,19 @@ pub async fn create(
 
     // next_run — prefer schedule_expr (forces recurring), like Python; but
     // an unparseable expr is a 400 naming the grammar, not a quiet mis-arm.
-    let expr = body.schedule_expr.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let expr = body
+        .schedule_expr
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let (sched_type, next_run) = match expr {
         Some(e) => match ScheduleExpr::parse(e) {
             Ok(parsed) => (
                 "recurring".to_string(),
-                parsed.next_run_after(now).map(fmt_minute).unwrap_or_else(|| run_at.clone()),
+                parsed
+                    .next_run_after(now)
+                    .map(fmt_minute)
+                    .unwrap_or_else(|| run_at.clone()),
             ),
             Err(perr) => return bad_expr(e, &perr),
         },
@@ -575,8 +603,14 @@ pub async fn create(
 
     let mut m = Map::new();
     m.insert("title".into(), json!(title));
-    m.insert("session".into(), json!(body.session.clone().unwrap_or_default()));
-    m.insert("command".into(), json!(body.command.clone().unwrap_or_default()));
+    m.insert(
+        "session".into(),
+        json!(body.session.clone().unwrap_or_default()),
+    );
+    m.insert(
+        "command".into(),
+        json!(body.command.clone().unwrap_or_default()),
+    );
     // KIND DEFAULTS TO `tmux`, WHICH IS THE EXPENSIVE ONE, AND THE CALLER IS NOW
     // TOLD (AF-216). `tmux` delivers the command to a lane as a PROMPT and wakes a
     // full turn-loop; `shell` runs it directly and costs nothing.
@@ -595,7 +629,13 @@ pub async fn create(
     let kind_defaulted = body.kind.is_none();
     m.insert("kind".into(), json!(kind));
     m.insert("sched_type".into(), json!(sched_type));
-    m.insert("recurrence".into(), body.recurrence.clone().map(Value::from).unwrap_or(Value::Null));
+    m.insert(
+        "recurrence".into(),
+        body.recurrence
+            .clone()
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
     m.insert("run_at".into(), json!(run_at));
     m.insert("next_run".into(), json!(next_run));
     m.insert("last_run".into(), Value::Null);
@@ -603,17 +643,55 @@ pub async fn create(
     // discarded seeded `enabled:0` and burned a prospect's trial budget).
     m.insert("enabled".into(), json!(body.enabled.unwrap_or(1)));
     m.insert("run_count".into(), json!(0));
-    m.insert("schedule_expr".into(), expr.map(Value::from).unwrap_or(Value::Null));
+    m.insert(
+        "schedule_expr".into(),
+        expr.map(Value::from).unwrap_or(Value::Null),
+    );
     m.insert("watch".into(), json!(body.watch.unwrap_or(0)));
-    m.insert("watch_timeout".into(), json!(body.watch_timeout.unwrap_or(120)));
-    m.insert("done_pattern".into(), body.done_pattern.clone().map(Value::from).unwrap_or(Value::Null));
-    m.insert("done_action".into(), json!(body.done_action.clone().unwrap_or_else(|| "disable".into())));
-    m.insert("trigger_on".into(), body.trigger_on.clone().filter(|s| !s.trim().is_empty()).map(Value::from).unwrap_or(Value::Null));
-    m.insert("trigger_cooldown".into(), json!(body.trigger_cooldown.unwrap_or(120)));
-    m.insert("trigger_sessions".into(), body.trigger_sessions.clone().filter(|s| !s.trim().is_empty()).map(Value::from).unwrap_or(Value::Null));
+    m.insert(
+        "watch_timeout".into(),
+        json!(body.watch_timeout.unwrap_or(120)),
+    );
+    m.insert(
+        "done_pattern".into(),
+        body.done_pattern
+            .clone()
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    m.insert(
+        "done_action".into(),
+        json!(body.done_action.clone().unwrap_or_else(|| "disable".into())),
+    );
+    m.insert(
+        "trigger_on".into(),
+        body.trigger_on
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
+    m.insert(
+        "trigger_cooldown".into(),
+        json!(body.trigger_cooldown.unwrap_or(120)),
+    );
+    m.insert(
+        "trigger_sessions".into(),
+        body.trigger_sessions
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
     m.insert("worktree".into(), json!(body.worktree.unwrap_or(0)));
     m.insert("fan_out".into(), json!(body.fan_out.unwrap_or(0)));
-    m.insert("fan_out_model".into(), body.fan_out_model.clone().map(Value::from).unwrap_or(Value::Null));
+    m.insert(
+        "fan_out_model".into(),
+        body.fan_out_model
+            .clone()
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+    );
     m.insert(
         "exit_actions".into(),
         match &body.exit_actions {
@@ -647,9 +725,24 @@ pub async fn create(
                 "enabled": row.i64_field("enabled", 1),
                 "kind": row.str_field("kind"),
             });
-            insert_audit(conn, &id, "created", "", &summary.to_string(), "api-create", &by_w)?;
+            insert_audit(
+                conn,
+                &id,
+                "created",
+                "",
+                &summary.to_string(),
+                "api-create",
+                &by_w,
+            )?;
             let events = vec![ev(&id, MutationKind::Created)];
-            finish(&slot_w, row.to_json(), WriteOutcome { applied: true, events })
+            finish(
+                &slot_w,
+                row.to_json(),
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
+            )
         })
         .await;
     match write {
@@ -660,8 +753,16 @@ pub async fn create(
             // scheduler section of CLAUDE.md did not list the field either — so
             // the expensive default was unanimous and uninformed.
             if let Value::Object(o) = &mut body {
-                let expr = o.get("schedule_expr").and_then(Value::as_str).unwrap_or("").to_string();
-                let kind = o.get("kind").and_then(Value::as_str).unwrap_or("tmux").to_string();
+                let expr = o
+                    .get("schedule_expr")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let kind = o
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tmux")
+                    .to_string();
                 if let Some(n) = cadence_note(&expr, &kind) {
                     o.insert("cadence_note".into(), n);
                 }
@@ -736,7 +837,12 @@ pub async fn patch(
     // the writer thread is touched). A stored legacy/garbage expr on a row
     // this PATCH does not touch falls back like Python instead of bricking
     // the update.
-    if let Some(e) = body.schedule_expr.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(e) = body
+        .schedule_expr
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if let Err(perr) = ScheduleExpr::parse(e) {
             return bad_expr(e, &perr);
         }
@@ -752,7 +858,10 @@ pub async fn patch(
 
     enum Outcome {
         NotFound,
-        Tombstone { deleted_at: i64, deleted_by: Option<String> },
+        Tombstone {
+            deleted_at: i64,
+            deleted_by: Option<String>,
+        },
         Applied(Value),
     }
     let slot: Arc<Mutex<Option<Outcome>>> = Arc::new(Mutex::new(None));
@@ -794,29 +903,72 @@ pub async fn patch(
             }
             let old_vals: Map<String, Value> = AUDIT_FIELDS
                 .iter()
-                .map(|k| (k.to_string(), s.raw().get(*k).cloned().unwrap_or(Value::Null)))
+                .map(|k| {
+                    (
+                        k.to_string(),
+                        s.raw().get(*k).cloned().unwrap_or(Value::Null),
+                    )
+                })
                 .collect();
 
             // Apply provided fields (Python's writable-field list).
-            if let Some(v) = &body.title { s.set("title", json!(v)); }
-            if let Some(v) = &body.session { s.set("session", json!(v)); }
-            if let Some(v) = &body.command { s.set("command", json!(v)); }
-            if let Some(v) = &body.kind { s.set("kind", json!(v)); }
-            if let Some(v) = &body.sched_type { s.set("sched_type", json!(v)); }
-            if let Some(v) = &body.recurrence { s.set("recurrence", json!(v)); }
-            if let Some(v) = &body.run_at { s.set("run_at", json!(v)); }
-            if let Some(v) = body.enabled { s.set("enabled", json!(v)); }
-            if let Some(v) = &body.schedule_expr { s.set("schedule_expr", json!(v)); }
-            if let Some(v) = body.watch { s.set("watch", json!(v)); }
-            if let Some(v) = body.watch_timeout { s.set("watch_timeout", json!(v)); }
-            if let Some(v) = &body.done_pattern { s.set("done_pattern", json!(v)); }
-            if let Some(v) = &body.done_action { s.set("done_action", json!(v)); }
-            if let Some(v) = &body.trigger_on { s.set("trigger_on", json!(v)); }
-            if let Some(v) = body.trigger_cooldown { s.set("trigger_cooldown", json!(v)); }
-            if let Some(v) = &body.trigger_sessions { s.set("trigger_sessions", json!(v)); }
-            if let Some(v) = body.worktree { s.set("worktree", json!(v)); }
-            if let Some(v) = body.fan_out { s.set("fan_out", json!(v)); }
-            if let Some(v) = &body.fan_out_model { s.set("fan_out_model", json!(v)); }
+            if let Some(v) = &body.title {
+                s.set("title", json!(v));
+            }
+            if let Some(v) = &body.session {
+                s.set("session", json!(v));
+            }
+            if let Some(v) = &body.command {
+                s.set("command", json!(v));
+            }
+            if let Some(v) = &body.kind {
+                s.set("kind", json!(v));
+            }
+            if let Some(v) = &body.sched_type {
+                s.set("sched_type", json!(v));
+            }
+            if let Some(v) = &body.recurrence {
+                s.set("recurrence", json!(v));
+            }
+            if let Some(v) = &body.run_at {
+                s.set("run_at", json!(v));
+            }
+            if let Some(v) = body.enabled {
+                s.set("enabled", json!(v));
+            }
+            if let Some(v) = &body.schedule_expr {
+                s.set("schedule_expr", json!(v));
+            }
+            if let Some(v) = body.watch {
+                s.set("watch", json!(v));
+            }
+            if let Some(v) = body.watch_timeout {
+                s.set("watch_timeout", json!(v));
+            }
+            if let Some(v) = &body.done_pattern {
+                s.set("done_pattern", json!(v));
+            }
+            if let Some(v) = &body.done_action {
+                s.set("done_action", json!(v));
+            }
+            if let Some(v) = &body.trigger_on {
+                s.set("trigger_on", json!(v));
+            }
+            if let Some(v) = body.trigger_cooldown {
+                s.set("trigger_cooldown", json!(v));
+            }
+            if let Some(v) = &body.trigger_sessions {
+                s.set("trigger_sessions", json!(v));
+            }
+            if let Some(v) = body.worktree {
+                s.set("worktree", json!(v));
+            }
+            if let Some(v) = body.fan_out {
+                s.set("fan_out", json!(v));
+            }
+            if let Some(v) = &body.fan_out_model {
+                s.set("fan_out_model", json!(v));
+            }
             if let Some(v) = &body.exit_actions {
                 let stored = match v {
                     Value::Object(o) => Value::String(Value::Object(o.clone()).to_string()),
@@ -865,7 +1017,14 @@ pub async fn patch(
                     o.insert("resurrected".into(), json!(true));
                 }
             }
-            finish(&slot_w, Outcome::Applied(out), WriteOutcome { applied: true, events })
+            finish(
+                &slot_w,
+                Outcome::Applied(out),
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
+            )
         })
         .await;
     match write {
@@ -876,10 +1035,16 @@ pub async fn patch(
             // deletes and recreates to go from hourly to every 10m.
             Some(Outcome::Applied(mut v)) => {
                 if let Value::Object(o) = &mut v {
-                    let expr =
-                        o.get("schedule_expr").and_then(Value::as_str).unwrap_or("").to_string();
-                    let kind =
-                        o.get("kind").and_then(Value::as_str).unwrap_or("tmux").to_string();
+                    let expr = o
+                        .get("schedule_expr")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = o
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tmux")
+                        .to_string();
                     if let Some(n) = cadence_note(&expr, &kind) {
                         o.insert("cadence_note".into(), n);
                     }
@@ -887,9 +1052,10 @@ pub async fn patch(
                 Json(v).into_response()
             }
             Some(Outcome::NotFound) => not_found(),
-            Some(Outcome::Tombstone { deleted_at, deleted_by }) => {
-                tombstone_refusal(&id, "PATCH", deleted_at, deleted_by.as_deref())
-            }
+            Some(Outcome::Tombstone {
+                deleted_at,
+                deleted_by,
+            }) => tombstone_refusal(&id, "PATCH", deleted_at, deleted_by.as_deref()),
             None => internal("patch produced no outcome"),
         },
         Err(e) => internal(e),
@@ -941,15 +1107,32 @@ pub async fn delete_schedule(
                 "enabled": s.i64_field("enabled", 0),
                 "expr": s.schedule_expr().unwrap_or(s.str_field("run_at")),
             });
-            insert_audit(conn, s.id(), "deleted", &old.to_string(), &now_ts.to_string(), "api-delete", &by)?;
+            insert_audit(
+                conn,
+                s.id(),
+                "deleted",
+                &old.to_string(),
+                &now_ts.to_string(),
+                "api-delete",
+                &by,
+            )?;
             let events = vec![ev(s.id(), MutationKind::Deleted)];
-            finish(&slot_w, Outcome::Deleted, WriteOutcome { applied: true, events })
+            finish(
+                &slot_w,
+                Outcome::Deleted,
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
+            )
         })
         .await;
     match write {
         Ok(_) => match slot.lock().expect("slot").take() {
             Some(Outcome::Deleted) => Json(json!({ "deleted": id })).into_response(),
-            Some(Outcome::Already) => Json(json!({ "deleted": id, "already": true })).into_response(),
+            Some(Outcome::Already) => {
+                Json(json!({ "deleted": id, "already": true })).into_response()
+            }
             Some(Outcome::NotFound) => not_found(),
             None => internal("delete produced no outcome"),
         },
@@ -986,7 +1169,10 @@ pub async fn skip_next(
 
     enum Outcome {
         NotFound,
-        Tombstone { deleted_at: i64, deleted_by: Option<String> },
+        Tombstone {
+            deleted_at: i64,
+            deleted_by: Option<String>,
+        },
         Once,
         NoNext(String),
         Skipped(Value),
@@ -1032,7 +1218,15 @@ pub async fn skip_next(
             // Python skipped unattributed. Moving a fire time is exactly the
             // mutation AMUX-1812 was about ("why did this not run at 9?"), so
             // it leaves the same by_who trail as a PATCH.
-            insert_audit(conn, s.id(), "next_run", &skipped, &new_next, "api-skip", &by)?;
+            insert_audit(
+                conn,
+                s.id(),
+                "next_run",
+                &skipped,
+                &new_next,
+                "api-skip",
+                &by,
+            )?;
             let body = json!({
                 "ok": true,
                 "id": s.id(),
@@ -1044,16 +1238,24 @@ pub async fn skip_next(
                 "enabled": s.i64_field("enabled", 0),
             });
             let events = vec![ev(s.id(), MutationKind::Updated)];
-            finish(&slot_w, Outcome::Skipped(body), WriteOutcome { applied: true, events })
+            finish(
+                &slot_w,
+                Outcome::Skipped(body),
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
+            )
         })
         .await;
     match write {
         Ok(_) => match slot.lock().expect("slot").take() {
             Some(Outcome::Skipped(v)) => Json(v).into_response(),
             Some(Outcome::NotFound) => not_found(),
-            Some(Outcome::Tombstone { deleted_at, deleted_by }) => {
-                tombstone_refusal(&id, "skip", deleted_at, deleted_by.as_deref())
-            }
+            Some(Outcome::Tombstone {
+                deleted_at,
+                deleted_by,
+            }) => tombstone_refusal(&id, "skip", deleted_at, deleted_by.as_deref()),
             Some(Outcome::Once) => err(
                 StatusCode::BAD_REQUEST,
                 json!({
@@ -1176,7 +1378,10 @@ pub async fn run_now(
                     Vec::new()
                 };
                 *claim_slot_w.lock().expect("shell claim slot poisoned") = Some(claim);
-                Ok(WriteOutcome { applied: claim.started(), events })
+                Ok(WriteOutcome {
+                    applied: claim.started(),
+                    events,
+                })
             })
             .await;
         if let Err(e) = claim_write {
@@ -1206,9 +1411,7 @@ pub async fn run_now(
                             events: vec![
                                 ev(&sid_done, MutationKind::Updated),
                                 PendingEvent {
-                                    entity_type: EntityType::Other(
-                                        "schedule_manual_run".into(),
-                                    ),
+                                    entity_type: EntityType::Other("schedule_manual_run".into()),
                                     entity_id: sid_done,
                                     mutation: MutationKind::StatusChanged {
                                         from: "running".into(),
@@ -1278,7 +1481,10 @@ pub async fn run_now(
                     payload: None,
                 },
             ];
-            Ok(WriteOutcome { applied: true, events })
+            Ok(WriteOutcome {
+                applied: true,
+                events,
+            })
         })
         .await;
     if let Err(e) = write {
@@ -1337,7 +1543,10 @@ pub async fn recent_runs(
     // rejected rather than ignored when malformed, matching audit_trail below
     // (AC-228: a filter that silently matches everything answers confidently
     // and wrongly).
-    let sched_filter = q.get("schedule_id").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let sched_filter = q
+        .get("schedule_id")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let limit: i64 = match q.get("limit") {
         None => 50,
         Some(v) => match v.trim().parse::<i64>() {
@@ -1350,8 +1559,10 @@ pub async fn recent_runs(
             }
         },
     };
-    let unknown: Vec<&String> =
-        q.keys().filter(|k| !matches!(k.as_str(), "schedule_id" | "limit")).collect();
+    let unknown: Vec<&String> = q
+        .keys()
+        .filter(|k| !matches!(k.as_str(), "schedule_id" | "limit"))
+        .collect();
     if !unknown.is_empty() {
         return err(
             StatusCode::BAD_REQUEST,
@@ -1367,7 +1578,11 @@ pub async fn recent_runs(
                     sr.delivery, sr.submission, s.title
              FROM schedule_runs sr LEFT JOIN schedules s ON s.id = sr.schedule_id
              {} ORDER BY sr.ran_at DESC LIMIT ?1",
-            if sched_filter.is_some() { "WHERE sr.schedule_id = ?2" } else { "" }
+            if sched_filter.is_some() {
+                "WHERE sr.schedule_id = ?2"
+            } else {
+                ""
+            }
         );
         let mut stmt = conn.prepare(&sql)?;
         let bound: Vec<&dyn rusqlite::ToSql> = match &sched_filter {
@@ -1411,8 +1626,11 @@ pub async fn audit_trail(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     const KNOWN: [&str; 4] = ["id", "field", "limit", "full"];
-    let mut bad: Vec<&str> =
-        q.keys().map(String::as_str).filter(|k| !KNOWN.contains(k)).collect();
+    let mut bad: Vec<&str> = q
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !KNOWN.contains(k))
+        .collect();
     if !bad.is_empty() {
         bad.sort_unstable();
         return err(
@@ -1425,8 +1643,15 @@ pub async fn audit_trail(
     }
     let sid = q.get("id").cloned().unwrap_or_default();
     let field = q.get("field").cloned().unwrap_or_default();
-    let full = matches!(q.get("full").map(String::as_str), Some("1") | Some("true") | Some("yes"));
-    let limit: i64 = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(100).min(500);
+    let full = matches!(
+        q.get("full").map(String::as_str),
+        Some("1") | Some("true") | Some("yes")
+    );
+    let limit: i64 = q
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100)
+        .min(500);
 
     let store = state.store.clone();
     let sid2 = sid.clone();
@@ -1483,7 +1708,10 @@ pub async fn audit_trail(
     .await;
     match joined {
         Ok(Ok(rows)) => (
-            [("x-amux-audit-full", "add ?full=1 (or ?id=SCHED-N) for untruncated values")],
+            [(
+                "x-amux-audit-full",
+                "add ?full=1 (or ?id=SCHED-N) for untruncated values",
+            )],
             Json(Value::Array(rows)),
         )
             .into_response(),
@@ -1508,7 +1736,10 @@ mod tests {
         let n = super::cadence_note("every 15m", "tmux").expect("countable");
         let t = n.as_str().unwrap();
         assert!(t.contains("96"), "the RATE is the fact nobody had: {t}");
-        assert!(t.contains("576"), "96 fires x ~$6 = $576/day, and that is the point: {t}");
+        assert!(
+            t.contains("576"),
+            "96 fires x ~$6 = $576/day, and that is the point: {t}"
+        );
         assert!(
             t.contains("Nothing is refused"),
             "the card is explicit that a 10-minute poll is a legitimate thing to want: {t}"
@@ -1520,7 +1751,10 @@ mod tests {
         let sh = super::cadence_note("every 15m", "shell").expect("countable");
         let st = sh.as_str().unwrap();
         assert!(st.contains("96"), "the rate is still worth stating: {st}");
-        assert!(!st.contains('$'), "a shell schedule costs nothing per fire: {st}");
+        assert!(
+            !st.contains('$'),
+            "a shell schedule costs nothing per fire: {st}"
+        );
 
         // CONTROL: an expression that cannot be parsed produces NO note rather
         // than a note with a wrong number in it. A confident zero is worse than
@@ -1528,7 +1762,6 @@ mod tests {
         assert!(super::cadence_note("not an expression", "tmux").is_none());
         assert!(super::cadence_note("", "tmux").is_none());
     }
-
 
     #[test]
     fn dashboard_worker_field_aliases_to_session() {
@@ -1564,9 +1797,11 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        let router = Router::new().nest("/api/schedules", routes()).with_state(state);
+        let router = Router::new()
+            .nest("/api/schedules", routes())
+            .with_state(state);
         (router, dir)
     }
 
@@ -1590,7 +1825,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = if bytes.is_empty() {
             Value::Null
         } else {
@@ -1631,7 +1868,10 @@ mod tests {
         // Python field names, plus the Rust parser's own computation.
         assert_eq!(arr[0]["title"], json!("Morning digest"));
         assert_eq!(arr[0]["session"], json!("alpha"));
-        assert!(arr[0]["computed_next_run"].as_str().unwrap().contains("T09:00"));
+        assert!(arr[0]["computed_next_run"]
+            .as_str()
+            .unwrap()
+            .contains("T09:00"));
 
         // The create is audited WITH attribution from the header.
         let (st, audit) = send(&app, "GET", "/api/schedules/audit?id=SCHED-1", None, &[]).await;
@@ -1708,9 +1948,19 @@ mod tests {
         assert_eq!(patched["enabled"], json!(0));
         assert!(patched["next_run"].as_str().unwrap().contains("T18:00"));
 
-        let (_, audit) = send(&app, "GET", &format!("/api/schedules/audit?id={id}"), None, &[]).await;
+        let (_, audit) = send(
+            &app,
+            "GET",
+            &format!("/api/schedules/audit?id={id}"),
+            None,
+            &[],
+        )
+        .await;
         let rows = audit.as_array().unwrap();
-        let enabled_row = rows.iter().find(|r| r["field"] == json!("enabled")).unwrap();
+        let enabled_row = rows
+            .iter()
+            .find(|r| r["field"] == json!("enabled"))
+            .unwrap();
         assert_eq!(enabled_row["old_value"], json!("1"));
         assert_eq!(enabled_row["new_value"], json!("0"));
         assert_eq!(enabled_row["by_who"], json!("tester-session"));
@@ -1726,7 +1976,14 @@ mod tests {
             &SES,
         )
         .await;
-        let (_, audit2) = send(&app, "GET", &format!("/api/schedules/audit?id={id}"), None, &[]).await;
+        let (_, audit2) = send(
+            &app,
+            "GET",
+            &format!("/api/schedules/audit?id={id}"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(audit2.as_array().unwrap().len(), before);
     }
 
@@ -1800,7 +2057,13 @@ mod tests {
         assert_eq!(body["blocked"], json!(true));
         assert!(body["deleted_at"].as_i64().unwrap() > 0, "{body}");
         assert_eq!(body["deleted_by"], json!("tester-session"));
-        assert!(body["how"]["resurrect"].as_str().unwrap().contains("resurrect"), "{body}");
+        assert!(
+            body["how"]["resurrect"]
+                .as_str()
+                .unwrap()
+                .contains("resurrect"),
+            "{body}"
+        );
 
         // The refused write did NOT land, and the tombstone says what it is
         // in words — the raw row's enabled:1 next to deleted:<ts> is exactly
@@ -1808,10 +2071,20 @@ mod tests {
         let (_, one) = send(&app, "GET", &format!("/api/schedules/{id}"), None, &[]).await;
         assert_eq!(one["command"], json!("orig"), "{one}");
         assert_eq!(one["tombstone"], json!(true), "{one}");
-        assert!(one["note"].as_str().unwrap().contains("never fires"), "{one}");
+        assert!(
+            one["note"].as_str().unwrap().contains("never fires"),
+            "{one}"
+        );
 
         // Skip is a write too — same refusal, not a bare 404.
-        let (st, sk) = send(&app, "POST", &format!("/api/schedules/{id}/skip"), None, &SES).await;
+        let (st, sk) = send(
+            &app,
+            "POST",
+            &format!("/api/schedules/{id}/skip"),
+            None,
+            &SES,
+        )
+        .await;
         assert_eq!(st, StatusCode::CONFLICT, "{sk}");
         assert!(sk["error"].as_str().unwrap().contains("deleted"), "{sk}");
 
@@ -1831,9 +2104,14 @@ mod tests {
         let (_, list) = send(&app, "GET", "/api/schedules", None, &[]).await;
         assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
         // Audited: delete + resurrect are both rows on the `deleted` field.
-        let (_, audit) =
-            send(&app, "GET", &format!("/api/schedules/audit?id={id}&field=deleted"), None, &[])
-                .await;
+        let (_, audit) = send(
+            &app,
+            "GET",
+            &format!("/api/schedules/audit?id={id}&field=deleted"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(audit.as_array().unwrap().len(), 2, "{audit}");
     }
 
@@ -1855,7 +2133,14 @@ mod tests {
         .await;
         let id = created["id"].as_str().unwrap().to_string();
 
-        let (st, body) = send(&app, "POST", &format!("/api/schedules/{id}/run"), None, &SES).await;
+        let (st, body) = send(
+            &app,
+            "POST",
+            &format!("/api/schedules/{id}/run"),
+            None,
+            &SES,
+        )
+        .await;
         assert_eq!(st, StatusCode::CONFLICT);
         assert_eq!(body["error"], json!("rust scheduler is in shadow mode"));
         assert_eq!(body["enable"], json!("AMUX_RS_SCHEDULER=1"));
@@ -1882,7 +2167,10 @@ mod tests {
             record_run(
                 &conn,
                 &id,
-                &RunOutcome::Delivered { submission: "confirmed".into(), detail: "sent".into() },
+                &RunOutcome::Delivered {
+                    submission: "confirmed".into(),
+                    detail: "sent".into(),
+                },
                 "manual:tester-session",
             )
             .unwrap();
@@ -1890,7 +2178,10 @@ mod tests {
                 &conn,
                 &id,
                 chrono::Utc::now().timestamp() + 1,
-                &RunOutcome::Queued { queue_id: "steer-1".into(), detail: "queued (steering)".into() },
+                &RunOutcome::Queued {
+                    queue_id: "steer-1".into(),
+                    detail: "queued (steering)".into(),
+                },
                 "cron-rs",
                 None,
             )
@@ -1906,11 +2197,17 @@ mod tests {
         // The delivery verdict reaches the CONSUMER, not just the column
         // (ethos rule 4): the runs list is where a human looks, so `queued`
         // must be visibly different from `delivered` here.
-        let cron = rows.iter().find(|r| r["source"] == json!("cron-rs")).unwrap();
+        let cron = rows
+            .iter()
+            .find(|r| r["source"] == json!("cron-rs"))
+            .unwrap();
         assert_eq!(cron["status"], json!("queued"));
         assert_eq!(cron["delivery"], json!("queued"));
         assert_eq!(cron["submission"], json!("deferred"));
-        let manual = rows.iter().find(|r| r["source"] == json!("manual:tester-session")).unwrap();
+        let manual = rows
+            .iter()
+            .find(|r| r["source"] == json!("manual:tester-session"))
+            .unwrap();
         assert_eq!(manual["status"], json!("delivered"));
         assert_eq!(manual["submission"], json!("confirmed"));
     }
@@ -1944,10 +2241,20 @@ mod tests {
         // Unknown audit query param: rejected, not silently ignored (AC-228).
         let (st, body) = send(&app, "GET", "/api/schedules/audit?fied=enabled", None, &[]).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
-        assert!(body["error"].as_str().unwrap().contains("unknown query param"));
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown query param"));
 
         // Missing title.
-        let (st, _) = send(&app, "POST", "/api/schedules", Some(json!({ "command": "x" })), &SES).await;
+        let (st, _) = send(
+            &app,
+            "POST",
+            "/api/schedules",
+            Some(json!({ "command": "x" })),
+            &SES,
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
     }
 
@@ -1964,7 +2271,14 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::CREATED);
         let id = created["id"].as_str().unwrap();
-        let (_, audit) = send(&app, "GET", &format!("/api/schedules/audit?id={id}"), None, &[]).await;
+        let (_, audit) = send(
+            &app,
+            "GET",
+            &format!("/api/schedules/audit?id={id}"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(
             audit.as_array().unwrap()[0]["by_who"],
             json!("real-session (claimed impostor)")
@@ -1995,12 +2309,22 @@ mod tests {
         let id = created["id"].as_str().unwrap().to_string();
         let armed = created["next_run"].as_str().unwrap().to_string();
 
-        let (st, body) =
-            send(&app, "POST", &format!("/api/schedules/{id}/skip"), None, &SES).await;
+        let (st, body) = send(
+            &app,
+            "POST",
+            &format!("/api/schedules/{id}/skip"),
+            None,
+            &SES,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "the Skip route must be mounted: {body}");
         // Names WHAT WAS GIVEN UP as well as where it resumes — a toast that
         // can only say "next in 15m" is unfalsifiable on a 15m cadence.
-        assert_eq!(body["skipped"], json!(armed), "the response must name the dropped occurrence");
+        assert_eq!(
+            body["skipped"],
+            json!(armed),
+            "the response must name the dropped occurrence"
+        );
         assert_eq!(
             body["next_run"].as_str().unwrap(),
             scheduler::skip_next_run(&DurableSchedule::from_map(
@@ -2016,14 +2340,25 @@ mod tests {
         // Skip does not fire, disable, or count as a run.
         assert_eq!(row["enabled"], json!(1));
         assert_eq!(row["run_count"], json!(0));
-        assert!(row["last_run"].is_null(), "skip must not bump last_run — nothing ran");
+        assert!(
+            row["last_run"].is_null(),
+            "skip must not bump last_run — nothing ran"
+        );
         let (_, runs) = send(&app, "GET", "/api/schedules/runs", None, &[]).await;
-        assert!(runs.as_array().unwrap().is_empty(), "skip must not write a run row: {runs}");
+        assert!(
+            runs.as_array().unwrap().is_empty(),
+            "skip must not write a run row: {runs}"
+        );
 
         // Attributed (python left this mutation unattributed — AMUX-1812).
-        let (_, audit) =
-            send(&app, "GET", &format!("/api/schedules/audit?id={id}&field=next_run"), None, &[])
-                .await;
+        let (_, audit) = send(
+            &app,
+            "GET",
+            &format!("/api/schedules/audit?id={id}&field=next_run"),
+            None,
+            &[],
+        )
+        .await;
         let a = &audit.as_array().unwrap()[0];
         assert_eq!(a["source"], json!("api-skip"));
         assert_eq!(a["by_who"], json!("tester-session"));
@@ -2040,17 +2375,31 @@ mod tests {
             &app,
             "POST",
             "/api/schedules",
-            Some(json!({ "title": "one shot", "sched_type": "once", "run_at": "2026-08-10T09:00" })),
+            Some(
+                json!({ "title": "one shot", "sched_type": "once", "run_at": "2026-08-10T09:00" }),
+            ),
             &SES,
         )
         .await;
         assert_eq!(st, StatusCode::CREATED);
         let id = created["id"].as_str().unwrap().to_string();
-        let (st, body) =
-            send(&app, "POST", &format!("/api/schedules/{id}/skip"), None, &SES).await;
+        let (st, body) = send(
+            &app,
+            "POST",
+            &format!("/api/schedules/{id}/skip"),
+            None,
+            &SES,
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["error"], json!("only recurring schedules can be skipped"));
-        assert!(body["detail"].is_string(), "a refusal must name the way out");
+        assert_eq!(
+            body["error"],
+            json!("only recurring schedules can be skipped")
+        );
+        assert!(
+            body["detail"].is_string(),
+            "a refusal must name the way out"
+        );
 
         let (st, _) = send(&app, "POST", "/api/schedules/SCHED-9999/skip", None, &SES).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
@@ -2074,14 +2423,20 @@ mod tests {
             "watch_timeout": 120, "trigger_on": "", "trigger_cooldown": 120,
             "trigger_sessions": "", "by": "dashboard"
         });
-        let (st, body) =
-            send(&app, "POST", "/api/schedules", Some(loop_with_stop), &SES).await;
+        let (st, body) = send(&app, "POST", "/api/schedules", Some(loop_with_stop), &SES).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
-        let dead: Vec<&str> =
-            body["unhonoured"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let dead: Vec<&str> = body["unhonoured"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(dead, vec!["watch", "done_pattern"]);
         assert_eq!(body["card"], json!("AMUX-2680"));
-        assert!(body["instead"].is_string(), "a refusal must point somewhere real");
+        assert!(
+            body["instead"].is_string(),
+            "a refusal must point somewhere real"
+        );
 
         // The editor's trigger-mode payload.
         let (st, body) = send(
@@ -2097,7 +2452,10 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(body["unhonoured"], json!(["trigger_on", "trigger_sessions"]));
+        assert_eq!(
+            body["unhonoured"],
+            json!(["trigger_on", "trigger_sessions"])
+        );
 
         // PATCH is the OTHER way the editor armed these — guarding only
         // create would leave the hole open on every existing row.
@@ -2118,10 +2476,19 @@ mod tests {
             json!({ "trigger_on": "board" }),
             json!({ "trigger_sessions": "alpha" }),
         ] {
-            let (st, body) =
-                send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(arming.clone()), &SES)
-                    .await;
-            assert_eq!(st, StatusCode::BAD_REQUEST, "PATCH {arming} must be refused: {body}");
+            let (st, body) = send(
+                &app,
+                "PATCH",
+                &format!("/api/schedules/{id}"),
+                Some(arming.clone()),
+                &SES,
+            )
+            .await;
+            assert_eq!(
+                st,
+                StatusCode::BAD_REQUEST,
+                "PATCH {arming} must be refused: {body}"
+            );
         }
     }
 
@@ -2143,8 +2510,7 @@ mod tests {
         // per-schedule query reaches rows the global window hides, and going
         // through the fire path would test the scheduler instead.
         {
-            let conn =
-                rusqlite::Connection::open(_d.path().join("sched-api-test.db")).unwrap();
+            let conn = rusqlite::Connection::open(_d.path().join("sched-api-test.db")).unwrap();
             for (sched, base) in [("SCHED-A", 1_000_000i64), ("SCHED-B", 2_000_000i64)] {
                 for i in 0..60i64 {
                     conn.execute(
@@ -2163,12 +2529,24 @@ mod tests {
 
         // THE CELL THIS EXISTS FOR: SCHED-A's older runs are past the global
         // window (60 B-runs are newer) and must still be reachable.
-        let (_, mine) =
-            send(&app, "GET", "/api/schedules/runs?schedule_id=SCHED-A&limit=100", None, &[]).await;
+        let (_, mine) = send(
+            &app,
+            "GET",
+            "/api/schedules/runs?schedule_id=SCHED-A&limit=100",
+            None,
+            &[],
+        )
+        .await;
         let rows = mine.as_array().unwrap();
-        assert_eq!(rows.len(), 60, "per-schedule filter did not reach past the 50 window");
-        assert!(rows.iter().all(|r| r["schedule_id"] == "SCHED-A"),
-                "the filter leaked another schedule's runs");
+        assert_eq!(
+            rows.len(),
+            60,
+            "per-schedule filter did not reach past the 50 window"
+        );
+        assert!(
+            rows.iter().all(|r| r["schedule_id"] == "SCHED-A"),
+            "the filter leaked another schedule's runs"
+        );
     }
 
     /// A malformed filter is REJECTED, not ignored. An ignored `limit` returns
@@ -2177,10 +2555,12 @@ mod tests {
     #[tokio::test]
     async fn a_bad_runs_filter_is_refused_rather_than_silently_dropped() {
         let (app, _d) = app();
-        for bad in ["/api/schedules/runs?limit=abc",
-                    "/api/schedules/runs?limit=0",
-                    "/api/schedules/runs?limit=99999",
-                    "/api/schedules/runs?scheduleid=SCHED-A"] {
+        for bad in [
+            "/api/schedules/runs?limit=abc",
+            "/api/schedules/runs?limit=0",
+            "/api/schedules/runs?limit=99999",
+            "/api/schedules/runs?scheduleid=SCHED-A",
+        ] {
             let (st, _) = send(&app, "GET", bad, None, &[]).await;
             assert_eq!(st, StatusCode::BAD_REQUEST, "silently accepted {bad}");
         }

@@ -48,7 +48,7 @@ fn primitive(path: &str) -> (&str, &str) {
         "board" => "board",
         "schedules" => "scheduler",
         "files" | "file" | "fs" | "upload" => "filesystem",
-        "groups" => "group",
+        "groups" | "projects" => "group",
         "memory" | "memories" => "memory",
         "messages" => "message",
         _ => "environment",

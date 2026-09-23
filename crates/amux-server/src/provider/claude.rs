@@ -41,8 +41,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use amux_core::provider::{
-    ProviderCapabilities, ProviderId, ProviderUsage, UsageConfidence, UsageProvenance,
-    UsageWindow, UsageWindowKind,
+    ProviderCapabilities, ProviderId, ProviderUsage, UsageConfidence, UsageProvenance, UsageWindow,
+    UsageWindowKind,
 };
 use async_trait::async_trait;
 
@@ -166,14 +166,27 @@ pub enum UsageProbe {
     /// 2xx, but the body was not JSON we could read.
     BadShape,
     /// A dated reading, possibly historical. Routing accepts only failure=None.
-    Snapshot { body: serde_json::Value, observed_at: i64, retry_at: i64, failure: Option<Box<UsageProbe>> },
+    Snapshot {
+        body: serde_json::Value,
+        observed_at: i64,
+        retry_at: i64,
+        failure: Option<Box<UsageProbe>>,
+    },
     /// No reading yet; the shared probe has scheduled its next attempt.
-    Deferred { failure: Box<UsageProbe>, retry_at: i64 },
+    Deferred {
+        failure: Box<UsageProbe>,
+        retry_at: i64,
+    },
 }
 impl UsageProbe {
     pub(crate) fn exact_body(&self) -> Option<&serde_json::Value> {
         match self {
-            Self::Ok(body) | Self::Snapshot { body, failure: None, .. } => Some(body),
+            Self::Ok(body)
+            | Self::Snapshot {
+                body,
+                failure: None,
+                ..
+            } => Some(body),
             _ => None,
         }
     }
@@ -185,18 +198,24 @@ impl UsageProbe {
 /// keychain-then-file credential order, same expiry check.
 pub async fn probe_usage_raw() -> UsageProbe {
     use sha2::{Digest, Sha256};
-    static CACHE: tokio::sync::Mutex<Option<usage_cache::UsageCache>> = tokio::sync::Mutex::const_new(None);
+    static CACHE: tokio::sync::Mutex<Option<usage_cache::UsageCache>> =
+        tokio::sync::Mutex::const_new(None);
     // Hold the lock through the request: dashboard, routing and reserve share
     // the same in-flight result rather than issuing competing account probes.
     let mut guard = CACHE.lock().await;
-    let Some(token) = oauth_token().await else { return UsageProbe::NoToken; };
+    let Some(token) = oauth_token().await else {
+        return UsageProbe::NoToken;
+    };
     if token.expires_at_ms > 0 && chrono::Utc::now().timestamp_millis() > token.expires_at_ms {
         return UsageProbe::Expired;
     }
     let credential = format!("{:x}", Sha256::digest(token.access_token.as_bytes()));
     let now = chrono::Utc::now().timestamp();
     let path = usage_cache::cache_path();
-    if guard.as_ref().is_none_or(|c| !c.credential_matches(&credential)) {
+    if guard
+        .as_ref()
+        .is_none_or(|c| !c.credential_matches(&credential))
+    {
         *guard = Some(usage_cache::UsageCache::load(&path, &credential, now));
     }
     let cache = guard.as_mut().expect("initialized usage cache");
@@ -207,10 +226,13 @@ async fn fetch_usage(token: &OauthToken) -> (UsageProbe, Option<u64>) {
     let Ok(client) = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() else {
         return (UsageProbe::Transport("client"), None);
     };
-    let resp = client.get(USAGE_URL)
+    let resp = client
+        .get(USAGE_URL)
         .header("Authorization", format!("Bearer {}", token.access_token))
         .header("anthropic-beta", "oauth-2025-04-20")
-        .header("anthropic-version", "2023-06-01").send().await;
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await;
     let resp = match resp {
         Ok(r) => r,
         Err(e) if e.is_timeout() => return (UsageProbe::Transport("timeout"), None),
@@ -218,10 +240,20 @@ async fn fetch_usage(token: &OauthToken) -> (UsageProbe, Option<u64>) {
         Err(_) => return (UsageProbe::Transport("request"), None),
     };
     let status = resp.status();
-    let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok().or_else(|| chrono::DateTime::parse_from_rfc2822(v).ok()
-            .map(|at| (at.timestamp() - chrono::Utc::now().timestamp()).max(0) as u64)));
-    if !status.is_success() { return (UsageProbe::Http(status.as_u16()), retry_after); }
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.parse::<u64>().ok().or_else(|| {
+                chrono::DateTime::parse_from_rfc2822(v)
+                    .ok()
+                    .map(|at| (at.timestamp() - chrono::Utc::now().timestamp()).max(0) as u64)
+            })
+        });
+    if !status.is_success() {
+        return (UsageProbe::Http(status.as_u16()), retry_after);
+    }
     match resp.json::<serde_json::Value>().await {
         Ok(body) if !map_usage_response(&body).is_empty() => (UsageProbe::Ok(body), None),
         _ => (UsageProbe::BadShape, None),
@@ -248,10 +280,7 @@ fn parse_credentials_json(raw: &str) -> Option<OauthToken> {
     if access_token.is_empty() {
         return None;
     }
-    let expires_at_ms = oauth
-        .get("expiresAt")
-        .and_then(|e| e.as_i64())
-        .unwrap_or(0);
+    let expires_at_ms = oauth.get("expiresAt").and_then(|e| e.as_i64()).unwrap_or(0);
     Some(OauthToken {
         access_token,
         expires_at_ms,
@@ -279,7 +308,9 @@ async fn keychain_token() -> Option<OauthToken> {
 
 fn file_token() -> Option<OauthToken> {
     let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".claude").join(".credentials.json");
+    let path = PathBuf::from(home)
+        .join(".claude")
+        .join(".credentials.json");
     parse_credentials_json(&std::fs::read_to_string(path).ok()?)
 }
 
@@ -346,8 +377,7 @@ fn map_usage_response(v: &serde_json::Value) -> Vec<UsageWindow> {
             } else {
                 continue; // unclassifiable: skip, never guess
             };
-            if let Some(w) =
-                window_from_percent(entry.get("percent"), entry.get("resets_at"), kind)
+            if let Some(w) = window_from_percent(entry.get("percent"), entry.get("resets_at"), kind)
             {
                 windows.push(w);
             }
@@ -577,7 +607,12 @@ mod tests {
             UsageProbe::Http(c) => format!("http_{c}"),
             UsageProbe::Transport(w) => format!("transport_{w}"),
             UsageProbe::BadShape => "bad_shape".into(),
-            UsageProbe::Snapshot { failure, .. } => if failure.is_some() { "last_known" } else { "fresh" }.into(),
+            UsageProbe::Snapshot { failure, .. } => if failure.is_some() {
+                "last_known"
+            } else {
+                "fresh"
+            }
+            .into(),
             UsageProbe::Deferred { .. } => "retry_scheduled".into(),
         };
         eprintln!("live probe outcome: {tag}");

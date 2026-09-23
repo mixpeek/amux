@@ -98,7 +98,10 @@ fn no_browser_error_body_renders_without_its_cause() {
             // `profile.to_string()` ends in "e.to_string()"; require the binding
             // to start at a word boundary.
             let boundary = at == 0
-                || !line[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                || !line[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
             if boundary {
                 offenders.push(format!("{}:{}: {}", FILE, lineno, line.trim()));
             }

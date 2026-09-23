@@ -96,7 +96,11 @@ mod tests {
         let m = measured(json!({"groups": [], "total_errors": 0}), 4210);
         assert_eq!(m["measured"], json!(true));
         assert_eq!(m["n_considered"], json!(4210));
-        assert_eq!(m["total_errors"], json!(0), "the report's own fields survive");
+        assert_eq!(
+            m["total_errors"],
+            json!(0),
+            "the report's own fields survive"
+        );
         assert!(m.get("why_unmeasured").is_none());
 
         let u = unmeasured(json!({"groups": [], "total_errors": 0}), "no log on disk");
@@ -110,8 +114,14 @@ mod tests {
     #[test]
     fn an_empty_result_and_an_unrun_probe_are_distinguishable() {
         let nothing_wrong = measured(json!({"failures": []}), 312);
-        let never_ran = unmeasured(json!({"failures": []}), "the invariant monitor is not running");
-        assert_eq!(nothing_wrong["failures"], never_ran["failures"], "identical where anyone looks");
+        let never_ran = unmeasured(
+            json!({"failures": []}),
+            "the invariant monitor is not running",
+        );
+        assert_eq!(
+            nothing_wrong["failures"], never_ran["failures"],
+            "identical where anyone looks"
+        );
         assert_ne!(nothing_wrong["measured"], never_ran["measured"]);
         assert_ne!(nothing_wrong["n_considered"], never_ran["n_considered"]);
     }
@@ -141,6 +151,9 @@ mod tests {
         let v = measured_unknown_population(json!({"verdict": "ok"}), "the source is a stream");
         assert_eq!(v["measured"], json!(true));
         assert_eq!(v["n_considered"], json!(0));
-        assert_eq!(v["n_considered_unknown_because"], json!("the source is a stream"));
+        assert_eq!(
+            v["n_considered_unknown_because"],
+            json!("the source is a stream")
+        );
     }
 }

@@ -135,7 +135,13 @@ mod tests {
     fn wrong_prefix_rejected() {
         let id = WorkerId::from_ulid(fixed_ulid());
         let err = SessionId::parse(id.as_str()).unwrap_err();
-        assert!(matches!(err, IdError::WrongPrefix { expected: "ses", .. }));
+        assert!(matches!(
+            err,
+            IdError::WrongPrefix {
+                expected: "ses",
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -46,7 +46,10 @@ const JOB: &str = super::registry::ids::DISK_WATCH;
 const TICK_SECS: u64 = 3600;
 
 fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Minimum gap between watcher-initiated scans.
@@ -215,7 +218,11 @@ pub(crate) fn growth_for(
                 .ok()
                 .map(|b| b as u64)
             });
-            Growth { path, bytes: bytes.max(0) as u64, was }
+            Growth {
+                path,
+                bytes: bytes.max(0) as u64,
+                was,
+            }
         })
         .collect()
 }
@@ -323,7 +330,9 @@ fn report_regenerable_growth(store: &crate::db::SharedStore) {
         }
 
         let started = std::time::Instant::now();
-        let Some((bytes, files)) = du_bytes(&path) else { continue };
+        let Some((bytes, files)) = du_bytes(&path) else {
+            continue;
+        };
         let walk_s = started.elapsed().as_secs_f64();
         let gb = bytes as f64 / 1_073_741_824.0;
 
@@ -385,7 +394,10 @@ fn record_sample(store: &crate::db::SharedStore, path: &str, ts: f64, bytes: u64
         )?;
         // Never bump the global revision from a measurement — SSE delta-sync
         // hangs off it, and nothing user-visible changed.
-        Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        Ok(crate::db::WriteOutcome {
+            applied: false,
+            events: vec![],
+        })
     });
 }
 
@@ -400,7 +412,11 @@ fn record_sample(store: &crate::db::SharedStore, path: &str, ts: f64, bytes: u64
 fn watched_regenerable_paths() -> Vec<std::path::PathBuf> {
     let mut v = vec![crate::config::amux_home().join("rust-build-target")];
     if let Ok(extra) = std::env::var("AMUX_DISK_WATCH_PATHS") {
-        for p in extra.split([':', ',']).map(str::trim).filter(|p| !p.is_empty()) {
+        for p in extra
+            .split([':', ','])
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
             v.push(std::path::PathBuf::from(p));
         }
     }
@@ -420,7 +436,9 @@ fn du_bytes(root: &std::path::Path) -> Option<(u64, u64)> {
     let mut stack = vec![root.to_path_buf()];
     let mut read_any = false;
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         read_any = true;
         for e in entries.flatten() {
             let Ok(md) = e.metadata() else { continue };
@@ -459,7 +477,10 @@ fn du_bytes(root: &std::path::Path) -> Option<(u64, u64)> {
 fn report_disk_pressure() {
     let h = crate::api::health::disk_health();
     let Some(free) = h.free_gb else {
-        tracing::warn!(job = JOB, "disk pressure UNKNOWN — the volume could not be read");
+        tracing::warn!(
+            job = JOB,
+            "disk pressure UNKNOWN — the volume could not be read"
+        );
         return;
     };
     match h.state {
@@ -571,7 +592,10 @@ async fn tick(state: AppState) {
         .write_async(move |conn| {
             // Re-checked inside the writer so two ticks cannot race a double file.
             if already_filed(conn, &scan_id) {
-                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                return Ok(crate::db::WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
             }
             let new = bs::NewIssue {
                 acceptance_criteria: None,
@@ -725,7 +749,14 @@ mod tests {
     /// fails on a first boot.
     #[test]
     fn a_volume_never_scanned_is_scanned_whatever_the_disk_says() {
-        assert!(super::should_scan(1_000_000, None, Some(PLENTY), LOW, WEEK, GRACE));
+        assert!(super::should_scan(
+            1_000_000,
+            None,
+            Some(PLENTY),
+            LOW,
+            WEEK,
+            GRACE
+        ));
         assert!(super::should_scan(1_000_000, None, None, LOW, WEEK, GRACE));
     }
     use super::*;
@@ -759,7 +790,10 @@ mod tests {
                  VALUES (?1,'build',?2,?3,1,0,?4,'')",
                 rusqlite::params![scan, path, (gib * 1_073_741_824) as i64, regen as i64],
             )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
     }
@@ -780,7 +814,11 @@ mod tests {
         let conn = s.read().unwrap();
         let rows = growth_for(&conn, "S2", Some("S1"), 25 * 1_073_741_824);
 
-        assert_eq!(rows.len(), 1, "floor and regenerable must both bite: {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "floor and regenerable must both bite: {rows:?}"
+        );
         assert_eq!(rows[0].path, "/big");
         assert_eq!(rows[0].was, Some(40 * 1_073_741_824));
         assert!((rows[0].delta_gib().unwrap() - 15.0).abs() < 0.01);
@@ -802,7 +840,11 @@ mod tests {
     /// fabricated trend, and it is the number a reader would act on.
     #[test]
     fn a_path_with_no_previous_reading_is_not_reported_as_growth() {
-        let g = Growth { path: "/new".into(), bytes: 82 * 1_073_741_824, was: None };
+        let g = Growth {
+            path: "/new".into(),
+            bytes: 82 * 1_073_741_824,
+            was: None,
+        };
         let out = render("S9", &[g], 100.0, 1000.0);
         assert!(out.contains("no previous reading"), "{out}");
         assert!(!out.contains("+82"), "must not invent a delta: {out}");
@@ -826,7 +868,10 @@ mod tests {
         seed_finding(&s, "CANCELLED", "/a", 7, true);
 
         let conn = s.read().unwrap();
-        let got: Vec<String> = last_two_completed(&conn).into_iter().map(|(id, _)| id).collect();
+        let got: Vec<String> = last_two_completed(&conn)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(
             got,
             vec!["CANCELLED".to_string(), "STALLED".to_string()],
@@ -848,7 +893,10 @@ mod tests {
         seed_scan(&s, "EMPTY", "interrupted", 175);
 
         let conn = s.read().unwrap();
-        let got: Vec<String> = last_two_completed(&conn).into_iter().map(|(id, _)| id).collect();
+        let got: Vec<String> = last_two_completed(&conn)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(got, vec!["REAL".to_string()], "got {got:?}");
     }
 
@@ -862,7 +910,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let now = crate::api::reclaim::now_secs();
         seed_scan(&s, "S1", "done", now);
@@ -913,7 +961,10 @@ mod tests {
             before, after,
             "a hardlink adds a NAME, not bytes — {before} -> {after} means du semantics are wrong"
         );
-        assert_eq!(files_before, files_after, "and it must not double-count the file either");
+        assert_eq!(
+            files_before, files_after,
+            "and it must not double-count the file either"
+        );
     }
 
     /// …while a genuinely new file DOES count, or the test above is satisfied by
@@ -925,7 +976,10 @@ mod tests {
         let (before, _) = du_bytes(d.path()).unwrap();
         std::fs::write(d.path().join("c"), vec![9u8; 8192]).unwrap();
         let (after, _) = du_bytes(d.path()).unwrap();
-        assert!(after > before, "a distinct file must add bytes: {before} -> {after}");
+        assert!(
+            after > before,
+            "a distinct file must add bytes: {before} -> {after}"
+        );
     }
 
     /// An unreadable path is None, never Some(0). Reporting a missing tree as
@@ -956,7 +1010,10 @@ mod tests {
         let shared = crate::config::amux_home().join("rust-build-target");
         let watched = watched_regenerable_paths();
         if shared.exists() {
-            assert!(watched.contains(&shared), "shared target dir must be watched: {watched:?}");
+            assert!(
+                watched.contains(&shared),
+                "shared target dir must be watched: {watched:?}"
+            );
         }
         // Every returned path must exist — a non-existent entry would log a
         // baseline of nothing, forever.
@@ -989,7 +1046,11 @@ mod tests {
         let b = rows.iter().find(|g| g.path == "/b").expect("/b present");
 
         // /a was in both -> a real delta.
-        assert_eq!(a.was, Some(10 * 1_073_741_824), "/a should compare against the partial");
+        assert_eq!(
+            a.was,
+            Some(10 * 1_073_741_824),
+            "/a should compare against the partial"
+        );
         // /b was NEVER VISITED by the partial scan. The feared behaviour is that it
         // reads as "shrunk to nothing". It must instead read as "no previous reading".
         assert_eq!(
@@ -1004,8 +1065,14 @@ mod tests {
         }
         // The rendered card must SAY so rather than fabricate a trend.
         let out = render("FULL", &rows, 100.0, 1000.0);
-        assert!(out.contains("/b` is **50.0 GiB** (no previous reading to compare)"), "{out}");
-        assert!(!out.contains("-50.0"), "no fabricated shrink in the card: {out}");
+        assert!(
+            out.contains("/b` is **50.0 GiB** (no previous reading to compare)"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("-50.0"),
+            "no fabricated shrink in the card: {out}"
+        );
     }
 
     /// The mirror: a PARTIAL scan as the CURRENT one reports only what it reached.
@@ -1042,7 +1109,10 @@ mod tests {
                 include_str!("../../migrations/0035_regenerable_samples.sql"),
             )
             .unwrap();
-            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .unwrap();
         (s, d)
@@ -1072,9 +1142,18 @@ mod tests {
     fn a_stale_sample_lets_the_walk_run_again() {
         let (s, _d) = samples_db();
         let now = crate::runtime_jobs::registry::unix_now();
-        record_sample(&s, "/some/tree", now - (sample_interval_secs() as f64 + 60.0), 42, 7);
+        record_sample(
+            &s,
+            "/some/tree",
+            now - (sample_interval_secs() as f64 + 60.0),
+            42,
+            7,
+        );
         let (ts, _, _) = last_sample(&s, "/some/tree").unwrap();
-        assert!(now - ts >= sample_interval_secs() as f64, "must read as stale");
+        assert!(
+            now - ts >= sample_interval_secs() as f64,
+            "must read as stale"
+        );
     }
 
     /// The persistence is the whole point: the reading has to OUTLIVE the

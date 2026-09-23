@@ -69,10 +69,20 @@ async fn inbox(
 ) -> Response {
     let label = {
         let l = qp(&q, "label");
-        if l.is_empty() { "INBOX" } else { l }
+        if l.is_empty() {
+            "INBOX"
+        } else {
+            l
+        }
     };
     let out = client
-        .list_messages(qp(&q, "account"), label, qp(&q, "page_token"), qp(&q, "q"), 50)
+        .list_messages(
+            qp(&q, "account"),
+            label,
+            qp(&q, "page_token"),
+            qp(&q, "q"),
+            50,
+        )
         .await;
     Json(out).into_response()
 }
@@ -91,7 +101,12 @@ async fn send(
     body: Option<Json<Value>>,
 ) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let s = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let s = |k: &str| {
+        body.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     let (account, to) = (s("account"), s("to"));
     let reply_id = s("reply_to_message_id");
     let result = client

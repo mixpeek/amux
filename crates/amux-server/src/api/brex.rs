@@ -6,7 +6,13 @@
 use super::AppState;
 use crate::db::WriteOutcome;
 use crate::integrations::brex::{BrexClient, BrexConfig, Tallies, Verdict};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::{json, Value};
 
 pub fn routes() -> Router<AppState> {
@@ -34,7 +40,11 @@ fn window_cutoffs(now: chrono::DateTime<chrono::Local>) -> (i64, i64, i64) {
     (ms(midnight), ms(week_start), ms(month_start))
 }
 
-fn tallies_for(conn: &rusqlite::Connection, card_id: &str, now: chrono::DateTime<chrono::Local>) -> rusqlite::Result<Tallies> {
+fn tallies_for(
+    conn: &rusqlite::Connection,
+    card_id: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> rusqlite::Result<Tallies> {
     let (day, week, month) = window_cutoffs(now);
     let sum = |cutoff: i64| -> rusqlite::Result<i64> {
         // The table is created lazily by the webhook; before the first charge it
@@ -49,22 +59,32 @@ fn tallies_for(conn: &rusqlite::Connection, card_id: &str, now: chrono::DateTime
             Err(e) => Err(e),
         }
     };
-    Ok(Tallies { today: sum(day)?, week: sum(week)?, month: sum(month)? })
+    Ok(Tallies {
+        today: sum(day)?,
+        week: sum(week)?,
+        month: sum(month)?,
+    })
 }
 
 async fn status(State(state): State<AppState>) -> Response {
     let cfg = BrexConfig::from_env();
     let card = cfg.card_id.clone();
-    let spend = match (&card, tokio::task::spawn_blocking({
-        let store = state.store.clone();
-        let card = card.clone();
-        move || -> anyhow::Result<Option<Tallies>> {
-            let Some(card) = card else { return Ok(None) };
-            let conn = store.read()?;
-            Ok(Some(tallies_for(&conn, &card, chrono::Local::now())?))
+    let spend = match (
+        &card,
+        tokio::task::spawn_blocking({
+            let store = state.store.clone();
+            let card = card.clone();
+            move || -> anyhow::Result<Option<Tallies>> {
+                let Some(card) = card else { return Ok(None) };
+                let conn = store.read()?;
+                Ok(Some(tallies_for(&conn, &card, chrono::Local::now())?))
+            }
+        })
+        .await,
+    ) {
+        (_, Ok(Ok(Some(t)))) => {
+            json!({"today_cents": t.today, "week_cents": t.week, "month_cents": t.month})
         }
-    }).await) {
-        (_, Ok(Ok(Some(t)))) => json!({"today_cents": t.today, "week_cents": t.week, "month_cents": t.month}),
         _ => json!(null),
     };
     Json(json!({
@@ -84,10 +104,22 @@ async fn create_card(State(_state): State<AppState>, body: Option<Json<Value>>) 
     if !cfg.live() {
         return (StatusCode::CONFLICT, Json(json!({"ok": false, "error": "brex disabled; set AMUX_BREX_ENABLED=1 and AMUX_BREX_TOKEN", "measured": true, "n_considered": 1}))).into_response();
     }
-    let holder = body.as_ref().and_then(|b| b.0.get("holder_name")).and_then(Value::as_str).unwrap_or("worker").to_string();
-    match BrexClient::new(cfg.clone()).create_virtual_card(&holder, cfg.limits.monthly).await {
+    let holder = body
+        .as_ref()
+        .and_then(|b| b.0.get("holder_name"))
+        .and_then(Value::as_str)
+        .unwrap_or("worker")
+        .to_string();
+    match BrexClient::new(cfg.clone())
+        .create_virtual_card(&holder, cfg.limits.monthly)
+        .await
+    {
         Ok(v) => Json(json!({"ok": true, "card": v})).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -98,14 +130,35 @@ async fn webhook(State(state): State<AppState>, Json(body): Json<Value>) -> Resp
     let cfg = BrexConfig::from_env();
     // Accept both a bare transaction and Brex's {data:{...}} envelope.
     let tx = body.get("data").unwrap_or(&body);
-    let txn_id = tx.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-    let card_id = tx.get("card_id").and_then(Value::as_str).or(cfg.card_id.as_deref()).unwrap_or("").to_string();
+    let txn_id = tx
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let card_id = tx
+        .get("card_id")
+        .and_then(Value::as_str)
+        .or(cfg.card_id.as_deref())
+        .unwrap_or("")
+        .to_string();
     // Brex amounts are in the account currency's minor units; accept a couple of shapes.
-    let amount_cents = tx.get("amount").and_then(|a| a.get("amount")).and_then(Value::as_i64)
+    let amount_cents = tx
+        .get("amount")
+        .and_then(|a| a.get("amount"))
+        .and_then(Value::as_i64)
         .or_else(|| tx.get("amount_cents").and_then(Value::as_i64))
         .unwrap_or(0);
-    let merchant = tx.get("merchant").and_then(|m| m.get("raw_descriptor").or_else(|| m.get("name"))).and_then(Value::as_str).unwrap_or("").to_string();
-    let posted_at = tx.get("posted_at_date").and_then(Value::as_str).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp_millis())
+    let merchant = tx
+        .get("merchant")
+        .and_then(|m| m.get("raw_descriptor").or_else(|| m.get("name")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let posted_at = tx
+        .get("posted_at_date")
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.timestamp_millis())
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     if txn_id.is_empty() || card_id.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "webhook missing transaction id or card id", "measured": true, "n_considered": 1}))).into_response();
@@ -133,7 +186,11 @@ async fn webhook(State(state): State<AppState>, Json(body): Json<Value>) -> Resp
     }).await;
     if let Err(e) = inserted {
         tracing::warn!(target: "amux::brex", %e, "brex webhook: could not record transaction");
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "could not record transaction"}))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ok": false, "error": "could not record transaction"})),
+        )
+            .into_response();
     }
 
     // Evaluate the four-window guard on the totals INCLUDING this charge.
@@ -151,16 +208,31 @@ async fn webhook(State(state): State<AppState>, Json(body): Json<Value>) -> Resp
                 week: tallies.week - amount_cents.max(0),
                 month: tallies.month - amount_cents.max(0),
             };
-            Ok(BrexConfig::from_env().guard().evaluate(before, amount_cents))
+            Ok(BrexConfig::from_env()
+                .guard()
+                .evaluate(before, amount_cents))
         }
-    }).await.map(|r| r.unwrap_or(Verdict::Allow)).unwrap_or(Verdict::Allow);
+    })
+    .await
+    .map(|r| r.unwrap_or(Verdict::Allow))
+    .unwrap_or(Verdict::Allow);
 
-    if let Verdict::Freeze { dimension, limit_cents, would_be_cents } = verdict {
+    if let Verdict::Freeze {
+        dimension,
+        limit_cents,
+        would_be_cents,
+    } = verdict
+    {
         tracing::warn!(target: "amux::brex", card_id=%card_id, dimension, limit_cents, would_be_cents, txn_id=%txn_id,
             measured=true, n_considered=1, "brex budget guard: freezing card: window would be crossed");
         if cfg.live() {
-            let reason = format!("amux budget guard: {dimension} cap {limit_cents}c would become {would_be_cents}c");
-            if let Err(e) = BrexClient::new(cfg.clone()).freeze_card(&card_id, &reason).await {
+            let reason = format!(
+                "amux budget guard: {dimension} cap {limit_cents}c would become {would_be_cents}c"
+            );
+            if let Err(e) = BrexClient::new(cfg.clone())
+                .freeze_card(&card_id, &reason)
+                .await
+            {
                 tracing::warn!(target: "amux::brex", %e, card_id=%card_id, "brex freeze call failed after guard verdict");
             }
         }

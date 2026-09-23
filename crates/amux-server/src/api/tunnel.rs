@@ -73,7 +73,10 @@ async fn start(State(_state): State<AppState>, body: Option<Json<Value>>) -> Res
     let port = body
         .as_ref()
         .and_then(|Json(b)| b.get("port").cloned())
-        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        })
         .and_then(|p| u16::try_from(p).ok());
     match tun::start(port).await {
         Ok(s) => (
@@ -86,14 +89,22 @@ async fn start(State(_state): State<AppState>, body: Option<Json<Value>>) -> Res
         // 400, not 500: the self-port case and the missing-token case are both
         // amux DECLINING with a stated remedy, and a 5xx would file them as
         // faults with the automated detector.
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": e }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": e })),
+        )
+            .into_response(),
     }
 }
 
 async fn stop(State(_state): State<AppState>) -> Response {
     tun::stop();
     tun::set_proxy_id(None);
-    (StatusCode::OK, Json(json!({ "ok": true, "running": false }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "running": false })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -108,8 +119,15 @@ mod tests {
         let b = status_body();
         assert_eq!(b["ok"], json!(true));
         assert_eq!(b["running"], json!(false), "nothing started in a unit test");
-        assert!(b["configured"].is_boolean(), "configured must be a measurement: {b}");
-        assert_eq!(b["ported"], json!(true), "the relay is ported now (AMUX-2888)");
+        assert!(
+            b["configured"].is_boolean(),
+            "configured must be a measurement: {b}"
+        );
+        assert_eq!(
+            b["ported"],
+            json!(true),
+            "the relay is ported now (AMUX-2888)"
+        );
         // The policy the Proxies tab renders must come from the same place the
         // limiter reads, or the UI shows a cap the relay does not enforce.
         assert_eq!(b["rate_per_min"], json!(tun::rate_per_min()));
@@ -134,7 +152,9 @@ mod tests {
             eprintln!("AMUX_TUNNEL_TOKEN is set here; the no-token arm is not exercised");
             return;
         }
-        let e = tun::start(Some(3000)).await.expect_err("no token must refuse");
+        let e = tun::start(Some(3000))
+            .await
+            .expect_err("no token must refuse");
         assert!(e.contains("AMUX_TUNNEL_TOKEN"), "name the var to set: {e}");
     }
 }

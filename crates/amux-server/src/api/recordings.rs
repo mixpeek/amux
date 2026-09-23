@@ -79,7 +79,10 @@ pub fn routes() -> Router<AppState> {
         .route("/config", get(get_config).post(post_config))
         // Body limit off: the handler reads up to MAX_UPLOAD_BYTES itself and
         // must be the one to answer, like /api/dictate.
-        .route("/upload", post(upload).layer(axum::extract::DefaultBodyLimit::disable()))
+        .route(
+            "/upload",
+            post(upload).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/{id}", get(get_one))
         .route("/{id}/transcribe", post(retranscribe))
 }
@@ -87,12 +90,17 @@ pub fn routes() -> Router<AppState> {
 // ---- folder ----------------------------------------------------------------
 
 fn env_dir() -> Option<String> {
-    std::env::var(ENV_DIR).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(ENV_DIR)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn pref_dir(conn: &rusqlite::Connection) -> Option<String> {
     let raw: String = conn
-        .query_row("SELECT value FROM prefs WHERE key=?1", [PREF_DIR], |r| r.get(0))
+        .query_row("SELECT value FROM prefs WHERE key=?1", [PREF_DIR], |r| {
+            r.get(0)
+        })
         .ok()?;
     // Tolerate a JSON-quoted value, which is how the generic prefs API stores strings.
     let v = serde_json::from_str::<String>(&raw).unwrap_or(raw);
@@ -128,10 +136,16 @@ pub(crate) fn validate_dir(raw: &str) -> Result<PathBuf, (StatusCode, String)> {
     }
     let p = expanduser(t);
     if !p.is_absolute() {
-        return Err((StatusCode::BAD_REQUEST, format!("use an absolute path or one starting with ~/: {t}")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("use an absolute path or one starting with ~/: {t}"),
+        ));
     }
     if !is_path_allowed(&p) || is_dangerous_write(&p) {
-        return Err((StatusCode::FORBIDDEN, format!("amux will not write recordings into {t}")));
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("amux will not write recordings into {t}"),
+        ));
     }
     if p.exists() && !p.is_dir() {
         return Err((StatusCode::BAD_REQUEST, format!("not a folder: {t}")));
@@ -208,43 +222,88 @@ fn embeddable(ext: &str) -> bool {
 }
 
 fn valid_id(id: &str) -> bool {
-    (6..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    (6..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn num<T: std::str::FromStr>(v: &Option<String>) -> Option<T> {
-    v.as_deref().map(str::trim).filter(|s| !s.is_empty()).and_then(|s| s.parse().ok())
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
 }
 
-pub(crate) fn parse_meta(q: &UploadQuery, content_type: &str, now: i64) -> Result<RecordingMeta, (StatusCode, String)> {
+pub(crate) fn parse_meta(
+    q: &UploadQuery,
+    content_type: &str,
+    now: i64,
+) -> Result<RecordingMeta, (StatusCode, String)> {
     let bad = |m: String| (StatusCode::BAD_REQUEST, m);
     let id = q.id.as_deref().unwrap_or("").trim().to_string();
     if !valid_id(&id) {
         return Err(bad("id must be 6 to 64 letters, digits, - or _".into()));
     }
-    let started: i64 = num(&q.started_at).ok_or_else(|| bad("started_at (epoch ms) required".into()))?;
+    let started: i64 =
+        num(&q.started_at).ok_or_else(|| bad("started_at (epoch ms) required".into()))?;
     // 2000-01-01 up to a day ahead: a clock further off would misfile the recording.
     if !(946_684_800_000..=now + 86_400_000).contains(&started) {
-        return Err(bad(format!("started_at {started} is not a plausible recording time")));
+        return Err(bad(format!(
+            "started_at {started} is not a plausible recording time"
+        )));
     }
     let dur_q: Option<i64> = num::<i64>(&q.dur_ms).filter(|d| *d >= 0);
-    let ended = num::<i64>(&q.ended_at).filter(|e| *e >= started).or(dur_q.map(|d| started + d)).unwrap_or(started);
+    let ended = num::<i64>(&q.ended_at)
+        .filter(|e| *e >= started)
+        .or(dur_q.map(|d| started + d))
+        .unwrap_or(started);
     let dur = dur_q.unwrap_or(ended - started);
     let tz: i32 = num(&q.tz_offset_min).unwrap_or(0);
     if !(-840..=840).contains(&tz) {
         return Err(bad(format!("tz_offset_min {tz} is out of range")));
     }
-    let mime_raw = q.mime.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(content_type);
-    let mime = mime_raw.split(';').next().unwrap_or("").trim().to_lowercase();
-    let ext = ext_for_mime(&mime)
-        .ok_or_else(|| (StatusCode::UNSUPPORTED_MEDIA_TYPE, format!("unsupported audio type {mime:?}")))?;
+    let mime_raw = q
+        .mime
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(content_type);
+    let mime = mime_raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let ext = ext_for_mime(&mime).ok_or_else(|| {
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!("unsupported audio type {mime:?}"),
+        )
+    })?;
     let location = match (num::<f64>(&q.lat), num::<f64>(&q.lon)) {
-        (Some(lat), Some(lon)) if lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0 => {
-            Some(Location { lat, lon, accuracy_m: num::<f64>(&q.accuracy_m).filter(|a| a.is_finite() && *a >= 0.0) })
+        (Some(lat), Some(lon))
+            if lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0 =>
+        {
+            Some(Location {
+                lat,
+                lon,
+                accuracy_m: num::<f64>(&q.accuracy_m).filter(|a| a.is_finite() && *a >= 0.0),
+            })
         }
         _ => None,
     };
-    let device: String = q.device.as_deref().unwrap_or("").chars().filter(|c| !c.is_control()).take(200).collect();
-    let recovered = matches!(q.recovered.as_deref().map(str::trim), Some("1" | "true" | "yes"));
+    let device: String = q
+        .device
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    let recovered = matches!(
+        q.recovered.as_deref().map(str::trim),
+        Some("1" | "true" | "yes")
+    );
     Ok(RecordingMeta {
         id,
         started_at_ms: started,
@@ -272,7 +331,11 @@ fn local_of(ms: i64, tz_offset_min: i32) -> chrono::DateTime<chrono::FixedOffset
 }
 
 pub(crate) fn base_name(meta: &RecordingMeta) -> String {
-    format!("{}_{}", local_of(meta.started_at_ms, meta.tz_offset_min).format("%Y-%m-%d_%H-%M-%S"), meta.id)
+    format!(
+        "{}_{}",
+        local_of(meta.started_at_ms, meta.tz_offset_min).format("%Y-%m-%d_%H-%M-%S"),
+        meta.id
+    )
 }
 
 /// ISO 6709, the form QuickTime and ffmpeg's mp4 `location` tag use.
@@ -300,14 +363,32 @@ pub(crate) fn stamp_times(path: &Path, ms: i64) -> std::io::Result<()> {
 /// the device sent one) without re-encoding the audio.
 pub(crate) fn metadata_args(meta: &RecordingMeta, input: &Path, output: &Path) -> Vec<String> {
     let local = local_of(meta.started_at_ms, meta.tz_offset_min);
-    let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-i"].iter().map(|s| s.to_string()).collect();
+    let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-i"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     a.push(input.display().to_string());
-    a.extend(["-map", "0:a", "-c", "copy", "-map_metadata", "-1"].iter().map(|s| s.to_string()));
+    a.extend(
+        ["-map", "0:a", "-c", "copy", "-map_metadata", "-1"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
     let mut tags = vec![
-        ("creation_time", utc_of(meta.started_at_ms).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+        (
+            "creation_time",
+            utc_of(meta.started_at_ms)
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
+        ),
         ("date", local.format("%Y-%m-%d").to_string()),
-        ("title", format!("Recording {}", local.format("%Y-%m-%d %H:%M"))),
-        ("comment", format!("amux recording {} started {}", meta.id, local.to_rfc3339())),
+        (
+            "title",
+            format!("Recording {}", local.format("%Y-%m-%d %H:%M")),
+        ),
+        (
+            "comment",
+            format!("amux recording {} started {}", meta.id, local.to_rfc3339()),
+        ),
     ];
     if let Some(l) = &meta.location {
         tags.push(("location", iso6709(l.lat, l.lon)));
@@ -329,7 +410,10 @@ pub(crate) fn metadata_args(meta: &RecordingMeta, input: &Path, output: &Path) -
 /// never fill a pipe and hang.
 fn run_bounded(bin: &Path, args: &[String], timeout: Duration) -> Result<(), String> {
     use std::io::{Read, Seek};
-    let name = bin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = bin
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut errf = tempfile::tempfile().map_err(|e| format!("{name}: {e}"))?;
     let child_err = errf.try_clone().map_err(|e| format!("{name}: {e}"))?;
     let mut child = std::process::Command::new(bin)
@@ -367,7 +451,10 @@ fn run_bounded(bin: &Path, args: &[String], timeout: Duration) -> Result<(), Str
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp"));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
@@ -384,7 +471,9 @@ fn read_json(path: &Path) -> Option<Value> {
 /// Every recording sidecar in `dir`, newest recording first. Other JSON files
 /// in the folder are left alone.
 pub(crate) fn read_sidecars(dir: &Path) -> Vec<(PathBuf, Value)> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut out: Vec<(PathBuf, Value)> = rd
         .flatten()
         .filter(|e| is_sidecar_name(&e.file_name().to_string_lossy()))
@@ -413,8 +502,9 @@ fn find_sidecar(dir: &Path, id: &str) -> Option<(PathBuf, Value)> {
 /// as it is on disk.
 fn set_transcript(path: &Path, transcript: Value) -> std::io::Result<Value> {
     let _g = folder_lock();
-    let mut v = read_json(path)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "unreadable sidecar"))?;
+    let mut v = read_json(path).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "unreadable sidecar")
+    })?;
     v["transcript"] = transcript;
     write_atomic(path, &serde_json::to_vec_pretty(&v).unwrap_or_default())?;
     if let Some(ms) = v["started_at"].as_i64() {
@@ -425,7 +515,10 @@ fn set_transcript(path: &Path, transcript: Value) -> std::io::Result<Value> {
 
 #[derive(Debug)]
 pub(crate) enum StoreError {
-    Conflict { existing_sha256: String, file: String },
+    Conflict {
+        existing_sha256: String,
+        file: String,
+    },
     Io(String),
 }
 
@@ -454,7 +547,10 @@ pub(crate) fn store_upload(
             return Ok((existing, true));
         }
         let file = existing["file"].as_str().unwrap_or("").to_string();
-        return Err(StoreError::Conflict { existing_sha256: have, file });
+        return Err(StoreError::Conflict {
+            existing_sha256: have,
+            file,
+        });
     }
     let base = base_name(meta);
     let audio = dir.join(format!("{base}.{}", meta.ext));
@@ -465,7 +561,9 @@ pub(crate) fn store_upload(
             let out_tmp = dir.join(format!(".{base}.meta.{}", meta.ext));
             let budget = Duration::from_secs(60 + (bytes.len() as u64 >> 20) * 2);
             let ran = run_bounded(ff, &metadata_args(meta, &upload_tmp, &out_tmp), budget);
-            let wrote = std::fs::metadata(&out_tmp).map(|m| m.len() > 0).unwrap_or(false);
+            let wrote = std::fs::metadata(&out_tmp)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
             if ran.is_ok() && wrote {
                 std::fs::rename(&out_tmp, &audio)?;
                 let _ = std::fs::remove_file(&upload_tmp);
@@ -473,25 +571,36 @@ pub(crate) fn store_upload(
             } else {
                 let _ = std::fs::remove_file(&out_tmp);
                 std::fs::rename(&upload_tmp, &audio)?;
-                let why = ran.err().unwrap_or_else(|| "ffmpeg wrote an empty file".into());
+                let why = ran
+                    .err()
+                    .unwrap_or_else(|| "ffmpeg wrote an empty file".into());
                 tracing::warn!("[recordings] metadata not embedded for {}: {why}; stored the audio as uploaded", meta.id);
                 (false, Some(why))
             }
         }
         Some(_) => {
             std::fs::rename(&upload_tmp, &audio)?;
-            let why = format!(".{} files cannot carry these tags; the datetime is on the file and in the sidecar", meta.ext);
+            let why = format!(
+                ".{} files cannot carry these tags; the datetime is on the file and in the sidecar",
+                meta.ext
+            );
             (false, Some(why))
         }
         None => {
             std::fs::rename(&upload_tmp, &audio)?;
-            tracing::warn!("[recordings] ffmpeg not found, so {} was stored without embedded metadata", meta.id);
+            tracing::warn!(
+                "[recordings] ffmpeg not found, so {} was stored without embedded metadata",
+                meta.id
+            );
             (false, Some("ffmpeg not found".into()))
         }
     };
     stamp_times(&audio, meta.started_at_ms)?;
     let final_bytes = std::fs::metadata(&audio)?.len();
-    let file = audio.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let file = audio
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let sidecar = json!({
         "kind": SIDECAR_KIND,
         "schema": 1,
@@ -519,7 +628,10 @@ pub(crate) fn store_upload(
         "transcript": { "status": "pending", "attempts": 0 },
     });
     let sidecar_path = dir.join(format!("{base}.json"));
-    write_atomic(&sidecar_path, &serde_json::to_vec_pretty(&sidecar).unwrap_or_default())?;
+    write_atomic(
+        &sidecar_path,
+        &serde_json::to_vec_pretty(&sidecar).unwrap_or_default(),
+    )?;
     let _ = stamp_times(&sidecar_path, meta.started_at_ms);
     Ok((sidecar, false))
 }
@@ -542,7 +654,9 @@ fn model_path() -> PathBuf {
         return expanduser(&raw);
     }
     let stem = raw.trim_start_matches("ggml-").trim_end_matches(".bin");
-    crate::config::amux_home().join("models").join(format!("ggml-{stem}.bin"))
+    crate::config::amux_home()
+        .join("models")
+        .join(format!("ggml-{stem}.bin"))
 }
 
 /// The local engine, or why there is none, in words a person can act on.
@@ -560,8 +674,15 @@ pub(crate) fn transcriber() -> Result<Transcriber, String> {
             model.display()
         ));
     }
-    let threads = std::thread::available_parallelism().map(|n| n.get() / 2).unwrap_or(4).clamp(1, 8);
-    Ok(Transcriber { bin, model, threads })
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() / 2)
+        .unwrap_or(4)
+        .clamp(1, 8);
+    Ok(Transcriber {
+        bin,
+        model,
+        threads,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -611,15 +732,34 @@ fn human_duration(ms: i64) -> String {
 /// The transcript file. Front matter carries the recording's own datetime, so
 /// a notes app orders it by when it was said; then one line per segment with
 /// its offset into the audio.
-pub(crate) fn render_transcript(sidecar: &Value, segments: &[Segment], model: &str, transcribed_at: &str) -> String {
+pub(crate) fn render_transcript(
+    sidecar: &Value,
+    segments: &[Segment],
+    model: &str,
+    transcribed_at: &str,
+) -> String {
     let mut s = String::from("---\n");
-    let _ = writeln!(s, "recorded_at: {}", sidecar["recorded_at_local"].as_str().unwrap_or(""));
-    let _ = writeln!(s, "duration: {}", human_duration(sidecar["dur_ms"].as_i64().unwrap_or(0)));
-    if let (Some(lat), Some(lon)) = (sidecar["location"]["lat"].as_f64(), sidecar["location"]["lon"].as_f64()) {
+    let _ = writeln!(
+        s,
+        "recorded_at: {}",
+        sidecar["recorded_at_local"].as_str().unwrap_or("")
+    );
+    let _ = writeln!(
+        s,
+        "duration: {}",
+        human_duration(sidecar["dur_ms"].as_i64().unwrap_or(0))
+    );
+    if let (Some(lat), Some(lon)) = (
+        sidecar["location"]["lat"].as_f64(),
+        sidecar["location"]["lon"].as_f64(),
+    ) {
         let _ = writeln!(s, "location: {lat:.5}, {lon:.5}");
     }
     let _ = writeln!(s, "audio: {}", sidecar["file"].as_str().unwrap_or(""));
-    let _ = writeln!(s, "engine: whisper.cpp\nmodel: {model}\ntranscribed_at: {transcribed_at}\n---\n");
+    let _ = writeln!(
+        s,
+        "engine: whisper.cpp\nmodel: {model}\ntranscribed_at: {transcribed_at}\n---\n"
+    );
     if segments.is_empty() {
         s.push_str("(no speech detected)\n");
     }
@@ -631,14 +771,24 @@ pub(crate) fn render_transcript(sidecar: &Value, segments: &[Segment], model: &s
 
 fn strip_front_matter(s: &str) -> &str {
     s.strip_prefix("---\n")
-        .and_then(|rest| rest.find("\n---\n").map(|i| rest[i + 5..].trim_start_matches('\n')))
+        .and_then(|rest| {
+            rest.find("\n---\n")
+                .map(|i| rest[i + 5..].trim_start_matches('\n'))
+        })
         .unwrap_or(s)
 }
 
 /// Transcribe one stored recording and return the transcript state to record.
-pub(crate) fn transcribe_one(dir: &Path, sidecar: &Value, tr: &Transcriber, ffmpeg: &Path) -> Result<Value, String> {
+pub(crate) fn transcribe_one(
+    dir: &Path,
+    sidecar: &Value,
+    tr: &Transcriber,
+    ffmpeg: &Path,
+) -> Result<Value, String> {
     let t0 = Instant::now();
-    let file = sidecar["file"].as_str().ok_or("the sidecar names no audio file")?;
+    let file = sidecar["file"]
+        .as_str()
+        .ok_or("the sidecar names no audio file")?;
     let audio = dir.join(file);
     if !audio.is_file() {
         return Err(format!("the audio file is missing: {}", audio.display()));
@@ -646,35 +796,63 @@ pub(crate) fn transcribe_one(dir: &Path, sidecar: &Value, tr: &Transcriber, ffmp
     let work = tempfile::tempdir().map_err(|e| e.to_string())?;
     let wav = work.path().join("audio.wav");
     let dur_s = (sidecar["dur_ms"].as_i64().unwrap_or(0) / 1000).max(0) as u64;
-    let mut fargs: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-i"].iter().map(|s| s.to_string()).collect();
+    let mut fargs: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-i"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     fargs.push(audio.display().to_string());
-    fargs.extend(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"].iter().map(|s| s.to_string()));
+    fargs.extend(
+        ["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
     fargs.push(wav.display().to_string());
     run_bounded(ffmpeg, &fargs, Duration::from_secs(120 + dur_s / 4))?;
-    let model_name = tr.model.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let lang = if model_name.ends_with(".en") { "en" } else { "auto" };
+    let model_name = tr
+        .model
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lang = if model_name.ends_with(".en") {
+        "en"
+    } else {
+        "auto"
+    };
     let out = work.path().join("out");
     let wargs: Vec<String> = vec![
-        "-m".into(), tr.model.display().to_string(),
-        "-f".into(), wav.display().to_string(),
+        "-m".into(),
+        tr.model.display().to_string(),
+        "-f".into(),
+        wav.display().to_string(),
         // The long form on purpose: tests/tmux_target_audit.rs reads every short
         // t-flag argument in server source as a tmux target, and this value is
         // a thread count (AMUX-4629).
-        "--threads".into(), tr.threads.to_string(),
-        "-l".into(), lang.into(),
-        "-np".into(), "-oj".into(),
-        "-of".into(), out.display().to_string(),
+        "--threads".into(),
+        tr.threads.to_string(),
+        "-l".into(),
+        lang.into(),
+        "-np".into(),
+        "-oj".into(),
+        "-of".into(),
+        out.display().to_string(),
     ];
     // Three times real time plus model load. base.en ran 2.4x FASTER than real time here.
     run_bounded(&tr.bin, &wargs, Duration::from_secs(300 + dur_s * 3))?;
-    let raw = std::fs::read(work.path().join("out.json")).map_err(|e| format!("whisper-cli wrote no JSON: {e}"))?;
-    let v: Value = serde_json::from_slice(&raw).map_err(|e| format!("whisper-cli JSON is unreadable: {e}"))?;
+    let raw = std::fs::read(work.path().join("out.json"))
+        .map_err(|e| format!("whisper-cli wrote no JSON: {e}"))?;
+    let v: Value =
+        serde_json::from_slice(&raw).map_err(|e| format!("whisper-cli JSON is unreadable: {e}"))?;
     let segments = parse_whisper_json(&v);
     let base = file.rsplit_once('.').map(|(b, _)| b).unwrap_or(file);
     let started = sidecar["started_at"].as_i64().unwrap_or(0);
     let tz = sidecar["tz_offset_min"].as_i64().unwrap_or(0) as i32;
     let md_name = format!("{base}.md");
-    let md = render_transcript(sidecar, &segments, &model_name, &local_of(now_ms(), tz).to_rfc3339());
+    let md = render_transcript(
+        sidecar,
+        &segments,
+        &model_name,
+        &local_of(now_ms(), tz).to_rfc3339(),
+    );
     write_atomic(&dir.join(&md_name), md.as_bytes()).map_err(|e| e.to_string())?;
     let _ = stamp_times(&dir.join(&md_name), started);
     let seg_name = format!("{base}.transcript.json");
@@ -685,9 +863,17 @@ pub(crate) fn transcribe_one(dir: &Path, sidecar: &Value, tr: &Transcriber, ffmp
         "language": v["result"]["language"],
         "segments": segments.iter().map(|s| json!({"from_ms": s.from_ms, "to_ms": s.to_ms, "text": s.text})).collect::<Vec<_>>(),
     });
-    write_atomic(&dir.join(&seg_name), &serde_json::to_vec_pretty(&seg_json).unwrap_or_default()).map_err(|e| e.to_string())?;
+    write_atomic(
+        &dir.join(&seg_name),
+        &serde_json::to_vec_pretty(&seg_json).unwrap_or_default(),
+    )
+    .map_err(|e| e.to_string())?;
     let _ = stamp_times(&dir.join(&seg_name), started);
-    let text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+    let text = segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     Ok(json!({
         "status": "done",
         "engine": "whisper.cpp",
@@ -720,14 +906,20 @@ pub(crate) fn mark_unavailable(owed: &[(PathBuf, Value)], why: &str) {
     {
         let mut last = LAST_UNAVAILABLE.lock().unwrap_or_else(|p| p.into_inner());
         if *last != why {
-            tracing::warn!("[recordings] transcription unavailable: {why} ({} recordings waiting)", owed.len());
+            tracing::warn!(
+                "[recordings] transcription unavailable: {why} ({} recordings waiting)",
+                owed.len()
+            );
             *last = why.to_string();
         }
     }
     for (path, v) in owed {
         let t = &v["transcript"];
         if t["status"] != "unavailable" || t["error"] != why {
-            let _ = set_transcript(path, json!({"status": "unavailable", "error": why, "attempts": t["attempts"]}));
+            let _ = set_transcript(
+                path,
+                json!({"status": "unavailable", "error": why, "attempts": t["attempts"]}),
+            );
         }
     }
 }
@@ -737,8 +929,10 @@ pub(crate) fn mark_unavailable(owed: &[(PathBuf, Value)], why: &str) {
 /// transcripts were written.
 pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
     let now = now_ms();
-    let mut owed: Vec<(PathBuf, Value)> =
-        read_sidecars(dir).into_iter().filter(|(_, v)| needs_transcription(&v["transcript"], now)).collect();
+    let mut owed: Vec<(PathBuf, Value)> = read_sidecars(dir)
+        .into_iter()
+        .filter(|(_, v)| needs_transcription(&v["transcript"], now))
+        .collect();
     if owed.is_empty() {
         return 0;
     }
@@ -753,7 +947,10 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
             return 0;
         }
     };
-    LAST_UNAVAILABLE.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    LAST_UNAVAILABLE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
     let t0 = Instant::now();
     let mut done = 0;
     for (path, v) in owed {
@@ -762,13 +959,22 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
         }
         let id = v["id"].as_str().unwrap_or("").to_string();
         let attempts = v["transcript"]["attempts"].as_i64().unwrap_or(0) + 1;
-        if set_transcript(&path, json!({"status": "running", "running_since": now_ms(), "attempts": attempts})).is_err() {
+        if set_transcript(
+            &path,
+            json!({"status": "running", "running_since": now_ms(), "attempts": attempts}),
+        )
+        .is_err()
+        {
             continue;
         }
         match transcribe_one(dir, &v, &tr, &ffmpeg) {
             Ok(mut t) => {
                 t["attempts"] = json!(attempts);
-                tracing::info!("[recordings] transcribed {id}: {} words in {}s", t["words"], t["secs"]);
+                tracing::info!(
+                    "[recordings] transcribed {id}: {} words in {}s",
+                    t["words"],
+                    t["secs"]
+                );
                 let _ = set_transcript(&path, t);
                 done += 1;
             }
@@ -776,7 +982,10 @@ pub(crate) fn transcribe_pending_in(dir: &Path, budget: Duration) -> usize {
                 tracing::warn!(
                     "[recordings] transcription failed for {id} (attempt {attempts} of {MAX_TRANSCRIBE_ATTEMPTS}): {e}"
                 );
-                let _ = set_transcript(&path, json!({"status": "failed", "error": e, "attempts": attempts, "finished_at": now_ms()}));
+                let _ = set_transcript(
+                    &path,
+                    json!({"status": "failed", "error": e, "attempts": attempts, "finished_at": now_ms()}),
+                );
             }
         }
     }
@@ -800,9 +1009,13 @@ pub async fn transcribe_pending(state: AppState) {
 async fn config_json(state: &AppState) -> anyhow::Result<Value> {
     let (dir, source) = current_dir(state).await?;
     let (engine, ffmpeg) =
-        tokio::task::spawn_blocking(|| (transcriber(), super::file_viewer::find_bin("ffmpeg"))).await?;
+        tokio::task::spawn_blocking(|| (transcriber(), super::file_viewer::find_bin("ffmpeg")))
+            .await?;
     let model = model_path();
-    let model_name = model.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let model_name = model
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let transcriber = match (engine, ffmpeg.is_some()) {
         (Ok(t), true) => json!({
             "available": true, "engine": "whisper.cpp", "bin": t.bin.display().to_string(),
@@ -847,7 +1060,10 @@ async fn post_config(State(state): State<AppState>, body: axum::body::Bytes) -> 
         Err((s, m)) => return err(s, m),
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return err(StatusCode::BAD_REQUEST, format!("could not create {}: {e}", dir.display()));
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("could not create {}: {e}", dir.display()),
+        );
     }
     let value = dir.display().to_string();
     let write = state
@@ -886,9 +1102,16 @@ async fn list(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Resp
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
-    let limit = q.limit.as_deref().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(100).clamp(1, 1000);
+    let limit = q
+        .limit
+        .as_deref()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
     let d = dir.clone();
-    let rows = tokio::task::spawn_blocking(move || read_sidecars(&d)).await.unwrap_or_default();
+    let rows = tokio::task::spawn_blocking(move || read_sidecars(&d))
+        .await
+        .unwrap_or_default();
     Json(json!({
         "dir": dir.display().to_string(),
         "dir_source": source,
@@ -941,12 +1164,19 @@ async fn retranscribe(State(state): State<AppState>, AxPath(id): AxPath<String>)
     .await
     .ok()
     .flatten();
-    let Some(v) = reset else { return err(StatusCode::NOT_FOUND, "no such recording") };
+    let Some(v) = reset else {
+        return err(StatusCode::NOT_FOUND, "no such recording");
+    };
     let triggered = registry::trigger(registry::ids::RECORDINGS_TRANSCRIBE);
-    Json(json!({"ok": true, "id": id, "transcript": v["transcript"], "triggered": triggered})).into_response()
+    Json(json!({"ok": true, "id": id, "transcript": v["transcript"], "triggered": triggered}))
+        .into_response()
 }
 
-async fn upload(State(state): State<AppState>, Query(q): Query<UploadQuery>, req: Request) -> Response {
+async fn upload(
+    State(state): State<AppState>,
+    Query(q): Query<UploadQuery>,
+    req: Request,
+) -> Response {
     let ctype = req
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -962,7 +1192,10 @@ async fn upload(State(state): State<AppState>, Query(q): Query<UploadQuery>, req
         Err(e) => {
             return err(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                format!("could not read the audio (limit {} MB): {e}", MAX_UPLOAD_BYTES >> 20),
+                format!(
+                    "could not read the audio (limit {} MB): {e}",
+                    MAX_UPLOAD_BYTES >> 20
+                ),
             )
         }
     };
@@ -974,7 +1207,10 @@ async fn upload(State(state): State<AppState>, Query(q): Query<UploadQuery>, req
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     if let Err((s, m)) = validate_dir(&dir.display().to_string()) {
-        return err(s, format!("the recordings folder ({source}) is refused: {m}"));
+        return err(
+            s,
+            format!("the recordings folder ({source}) is refused: {m}"),
+        );
     }
     let id = meta.id.clone();
     let stored = tokio::task::spawn_blocking(move || {
@@ -999,7 +1235,10 @@ async fn upload(State(state): State<AppState>, Query(q): Query<UploadQuery>, req
             out["transcribe_triggered"] = json!(triggered);
             Json(out).into_response()
         }
-        Ok(Err(StoreError::Conflict { existing_sha256, file })) => {
+        Ok(Err(StoreError::Conflict {
+            existing_sha256,
+            file,
+        })) => {
             tracing::warn!("[recordings] upload refused: {id} is already stored as {file} with different bytes");
             (
                 StatusCode::CONFLICT,
@@ -1014,7 +1253,10 @@ async fn upload(State(state): State<AppState>, Query(q): Query<UploadQuery>, req
         }
         Ok(Err(StoreError::Io(e))) => {
             tracing::warn!("[recordings] could not store {id}: {e}");
-            err(StatusCode::INTERNAL_SERVER_ERROR, format!("could not store the recording: {e}"))
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not store the recording: {e}"),
+            )
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
@@ -1045,12 +1287,22 @@ mod tests {
     }
 
     fn mtime_ms(p: &Path) -> i64 {
-        std::fs::metadata(p).unwrap().modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+        std::fs::metadata(p)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
     }
 
     /// Parsed by the same extractor the handler uses.
     fn q(pairs: &[(&str, &str)]) -> UploadQuery {
-        let s = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
+        let s = pairs
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
         let uri: axum::http::Uri = format!("/upload?{s}").parse().unwrap();
         Query::<UploadQuery>::try_from_uri(&uri).unwrap().0
     }
@@ -1058,16 +1310,27 @@ mod tests {
     #[test]
     fn an_upload_is_named_by_its_local_start_time_and_the_file_carries_that_time() {
         let dir = tempfile::tempdir().unwrap();
-        let (sc, deduped) = store_upload(dir.path(), &meta("rTest01"), b"not really audio", None).unwrap();
+        let (sc, deduped) =
+            store_upload(dir.path(), &meta("rTest01"), b"not really audio", None).unwrap();
         assert!(!deduped);
         assert_eq!(sc["file"], "2026-09-14_18-51-03_rTest01.webm");
         assert_eq!(sc["recorded_at_local"], "2026-09-14T18:51:03-04:00");
         assert_eq!(sc["recorded_at_utc"], "2026-09-14T22:51:03.000Z");
-        assert_eq!(sc["upload_sha256"], hex::encode(sha2::Sha256::digest(b"not really audio")));
+        assert_eq!(
+            sc["upload_sha256"],
+            hex::encode(sha2::Sha256::digest(b"not really audio"))
+        );
         assert_eq!(sc["transcript"]["status"], "pending");
-        assert_eq!(sc["metadata_embedded"], false, "no ffmpeg was passed, so nothing was embedded: {sc}");
+        assert_eq!(
+            sc["metadata_embedded"], false,
+            "no ffmpeg was passed, so nothing was embedded: {sc}"
+        );
         let audio = dir.path().join("2026-09-14_18-51-03_rTest01.webm");
-        assert_eq!(mtime_ms(&audio), T0, "the audio file's modified time is the recording start");
+        assert_eq!(
+            mtime_ms(&audio),
+            T0,
+            "the audio file's modified time is the recording start"
+        );
         assert_eq!(std::fs::read(&audio).unwrap(), b"not really audio");
         let on_disk = read_json(&dir.path().join("2026-09-14_18-51-03_rTest01.json")).unwrap();
         assert_eq!(on_disk["id"], "rTest01");
@@ -1092,33 +1355,86 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         store_upload(dir.path(), &meta("rClash1"), b"first", None).unwrap();
         match store_upload(dir.path(), &meta("rClash1"), b"second", None) {
-            Err(StoreError::Conflict { existing_sha256, .. }) => {
+            Err(StoreError::Conflict {
+                existing_sha256, ..
+            }) => {
                 assert_eq!(existing_sha256, hex::encode(sha2::Sha256::digest(b"first")))
             }
             other => panic!("expected a conflict, got {other:?}"),
         }
-        assert_eq!(std::fs::read(dir.path().join("2026-09-14_18-51-03_rClash1.webm")).unwrap(), b"first");
+        assert_eq!(
+            std::fs::read(dir.path().join("2026-09-14_18-51-03_rClash1.webm")).unwrap(),
+            b"first"
+        );
     }
 
     #[test]
     fn upload_parameters_are_validated_and_location_is_optional() {
         let now = T0;
         let ok = parse_meta(
-            &q(&[("id", "rParse1"), ("started_at", "1789426263000"), ("dur_ms", "5000"), ("tz_offset_min", "-240"),
-                 ("lat", "40.7128"), ("lon", "-74.006"), ("accuracy_m", "12")]),
+            &q(&[
+                ("id", "rParse1"),
+                ("started_at", "1789426263000"),
+                ("dur_ms", "5000"),
+                ("tz_offset_min", "-240"),
+                ("lat", "40.7128"),
+                ("lon", "-74.006"),
+                ("accuracy_m", "12"),
+            ]),
             "audio/mp4",
             now,
         )
         .unwrap();
-        assert_eq!((ok.ext, ok.ended_at_ms, ok.tz_offset_min), ("m4a", T0 + 5000, -240));
-        assert_eq!(ok.location, Some(Location { lat: 40.7128, lon: -74.006, accuracy_m: Some(12.0) }));
-        let no_loc = parse_meta(&q(&[("id", "rParse2"), ("started_at", "1789426263000"), ("lat", "40")]), "audio/webm;codecs=opus", now).unwrap();
-        assert_eq!((no_loc.ext, no_loc.location), ("webm", None), "a latitude without a longitude is no location");
+        assert_eq!(
+            (ok.ext, ok.ended_at_ms, ok.tz_offset_min),
+            ("m4a", T0 + 5000, -240)
+        );
+        assert_eq!(
+            ok.location,
+            Some(Location {
+                lat: 40.7128,
+                lon: -74.006,
+                accuracy_m: Some(12.0)
+            })
+        );
+        let no_loc = parse_meta(
+            &q(&[
+                ("id", "rParse2"),
+                ("started_at", "1789426263000"),
+                ("lat", "40"),
+            ]),
+            "audio/webm;codecs=opus",
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            (no_loc.ext, no_loc.location),
+            ("webm", None),
+            "a latitude without a longitude is no location"
+        );
         let code = |pairs: &[(&str, &str)], ct: &str| parse_meta(&q(pairs), ct, now).unwrap_err().0;
-        assert_eq!(code(&[("id", "../x"), ("started_at", "1789426263000")], "audio/mp4"), StatusCode::BAD_REQUEST);
-        assert_eq!(code(&[("id", "rParse3")], "audio/mp4"), StatusCode::BAD_REQUEST);
-        assert_eq!(code(&[("id", "rParse4"), ("started_at", "1789426263000")], "text/plain"), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        assert_eq!(code(&[("id", "rParse5"), ("started_at", "12")], "audio/mp4"), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            code(
+                &[("id", "../x"), ("started_at", "1789426263000")],
+                "audio/mp4"
+            ),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            code(&[("id", "rParse3")], "audio/mp4"),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            code(
+                &[("id", "rParse4"), ("started_at", "1789426263000")],
+                "text/plain"
+            ),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        assert_eq!(
+            code(&[("id", "rParse5"), ("started_at", "12")], "audio/mp4"),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[test]
@@ -1127,13 +1443,27 @@ mod tests {
         m.ext = "m4a";
         let args = metadata_args(&m, Path::new("/in.m4a"), Path::new("/out.m4a"));
         let joined = args.join(" ");
-        assert!(args.contains(&"creation_time=2026-09-14T22:51:03.000Z".to_string()), "{joined}");
+        assert!(
+            args.contains(&"creation_time=2026-09-14T22:51:03.000Z".to_string()),
+            "{joined}"
+        );
         assert!(args.contains(&"date=2026-09-14".to_string()), "{joined}");
         assert!(joined.contains("-c copy"), "never re-encode: {joined}");
-        assert!(!joined.contains("location="), "no location was recorded: {joined}");
-        m.location = Some(Location { lat: 40.7128, lon: -74.006, accuracy_m: None });
+        assert!(
+            !joined.contains("location="),
+            "no location was recorded: {joined}"
+        );
+        m.location = Some(Location {
+            lat: 40.7128,
+            lon: -74.006,
+            accuracy_m: None,
+        });
         let args = metadata_args(&m, Path::new("/in.m4a"), Path::new("/out.m4a"));
-        assert!(args.contains(&"location=+40.7128-074.0060/".to_string()), "{}", args.join(" "));
+        assert!(
+            args.contains(&"location=+40.7128-074.0060/".to_string()),
+            "{}",
+            args.join(" ")
+        );
         assert_eq!(iso6709(-5.1, 7.25), "-05.1000+007.2500/");
     }
 
@@ -1141,21 +1471,39 @@ mod tests {
     /// recording's datetime back out of the stored file.
     #[test]
     fn with_ffmpeg_present_the_stored_file_reports_the_recording_time() {
-        let (Some(ff), Some(fp)) = (super::super::file_viewer::find_bin("ffmpeg"), super::super::file_viewer::find_bin("ffprobe")) else {
+        let (Some(ff), Some(fp)) = (
+            super::super::file_viewer::find_bin("ffmpeg"),
+            super::super::file_viewer::find_bin("ffprobe"),
+        ) else {
             eprintln!("SKIPPED: ffmpeg/ffprobe not installed, embedding was not exercised");
             return;
         };
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src.webm");
         let made = std::process::Command::new(&ff)
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "libopus"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "libopus",
+            ])
             .arg(&src)
             .status()
             .unwrap();
         assert!(made.success());
         let store = dir.path().join("store");
         let mut m = meta("rProbe1");
-        m.location = Some(Location { lat: 40.7128, lon: -74.006, accuracy_m: None });
+        m.location = Some(Location {
+            lat: 40.7128,
+            lon: -74.006,
+            accuracy_m: None,
+        });
         let (sc, _) = store_upload(&store, &m, &std::fs::read(&src).unwrap(), Some(&ff)).unwrap();
         assert_eq!(sc["metadata_embedded"], true, "{sc}");
         let audio = store.join(sc["file"].as_str().unwrap());
@@ -1165,8 +1513,14 @@ mod tests {
             .output()
             .unwrap();
         let tags: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(tags["format"]["tags"]["creation_time"], "2026-09-14T22:51:03.000000Z", "{tags}");
-        assert_eq!(tags["format"]["tags"]["LOCATION"], "+40.7128-074.0060/", "{tags}");
+        assert_eq!(
+            tags["format"]["tags"]["creation_time"], "2026-09-14T22:51:03.000000Z",
+            "{tags}"
+        );
+        assert_eq!(
+            tags["format"]["tags"]["LOCATION"], "+40.7128-074.0060/",
+            "{tags}"
+        );
         assert_eq!(mtime_ms(&audio), T0);
     }
 
@@ -1174,7 +1528,11 @@ mod tests {
     fn a_transcript_carries_the_recording_datetime_and_segment_offsets() {
         let dir = tempfile::tempdir().unwrap();
         let mut m = meta("rText01");
-        m.location = Some(Location { lat: 40.7128, lon: -74.006, accuracy_m: None });
+        m.location = Some(Location {
+            lat: 40.7128,
+            lon: -74.006,
+            accuracy_m: None,
+        });
         let (sc, _) = store_upload(dir.path(), &m, b"x", None).unwrap();
         let whisper = json!({"result": {"language": "en"}, "transcription": [
             {"offsets": {"from": 0, "to": 4000}, "text": " Pick up the van keys."},
@@ -1185,8 +1543,14 @@ mod tests {
         assert_eq!(segs.len(), 2, "blank segments are dropped");
         let md = render_transcript(&sc, &segs, "ggml-base.en", "2026-09-14T19:00:00-04:00");
         assert!(md.starts_with("---\nrecorded_at: 2026-09-14T18:51:03-04:00\nduration: 12s\nlocation: 40.71280, -74.00600\n"), "{md}");
-        assert!(md.contains("\n[00:00] Pick up the van keys.\n[01:05] Then call the landlord.\n"), "{md}");
-        assert_eq!(strip_front_matter(&md), "[00:00] Pick up the van keys.\n[01:05] Then call the landlord.\n");
+        assert!(
+            md.contains("\n[00:00] Pick up the van keys.\n[01:05] Then call the landlord.\n"),
+            "{md}"
+        );
+        assert_eq!(
+            strip_front_matter(&md),
+            "[00:00] Pick up the van keys.\n[01:05] Then call the landlord.\n"
+        );
     }
 
     #[test]
@@ -1197,25 +1561,52 @@ mod tests {
         mark_unavailable(&owed, "no local model at /nowhere/ggml-base.en.bin");
         let (_, v) = find_sidecar(dir.path(), "rWait01").unwrap();
         assert_eq!(v["transcript"]["status"], "unavailable");
-        assert_eq!(v["transcript"]["error"], "no local model at /nowhere/ggml-base.en.bin");
+        assert_eq!(
+            v["transcript"]["error"],
+            "no local model at /nowhere/ggml-base.en.bin"
+        );
         assert_eq!(v["started_at"], T0, "the rest of the sidecar is untouched");
         let now = now_ms();
-        assert!(needs_transcription(&v["transcript"], now), "picked up again once a model exists");
+        assert!(
+            needs_transcription(&v["transcript"], now),
+            "picked up again once a model exists"
+        );
         assert!(!needs_transcription(&json!({"status": "done"}), now));
-        assert!(!needs_transcription(&json!({"status": "failed", "attempts": 3}), now));
-        assert!(needs_transcription(&json!({"status": "failed", "attempts": 1}), now));
-        assert!(!needs_transcription(&json!({"status": "running", "running_since": now}), now));
-        assert!(needs_transcription(&json!({"status": "running", "running_since": now - RUNNING_STALE_MS - 1}), now));
+        assert!(!needs_transcription(
+            &json!({"status": "failed", "attempts": 3}),
+            now
+        ));
+        assert!(needs_transcription(
+            &json!({"status": "failed", "attempts": 1}),
+            now
+        ));
+        assert!(!needs_transcription(
+            &json!({"status": "running", "running_since": now}),
+            now
+        ));
+        assert!(needs_transcription(
+            &json!({"status": "running", "running_since": now - RUNNING_STALE_MS - 1}),
+            now
+        ));
     }
 
     #[test]
     fn the_folder_setting_refuses_secret_and_executable_locations() {
         let home = std::env::var("HOME").unwrap();
         assert_eq!(validate_dir("~/.ssh").unwrap_err().0, StatusCode::FORBIDDEN);
-        assert_eq!(validate_dir("~/Library/LaunchAgents").unwrap_err().0, StatusCode::FORBIDDEN);
-        assert_eq!(validate_dir("relative/dir").unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            validate_dir("~/Library/LaunchAgents").unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            validate_dir("relative/dir").unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(validate_dir("").unwrap_err().0, StatusCode::BAD_REQUEST);
-        assert_eq!(validate_dir("~/Recordings").unwrap(), PathBuf::from(home).join("Recordings"));
+        assert_eq!(
+            validate_dir("~/Recordings").unwrap(),
+            PathBuf::from(home).join("Recordings")
+        );
     }
 
     fn app() -> (Router, tempfile::TempDir) {
@@ -1228,51 +1619,119 @@ mod tests {
             auth_token: None,
             reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        (Router::new().nest("/api/recordings", routes()).with_state(state), dir)
+        (
+            Router::new()
+                .nest("/api/recordings", routes())
+                .with_state(state),
+            dir,
+        )
     }
 
-    async fn call(app: &Router, method: &str, uri: &str, ctype: &str, body: Vec<u8>) -> (StatusCode, Value) {
-        let req = axum::http::Request::builder().method(method).uri(uri).header("content-type", ctype).body(Body::from(body)).unwrap();
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        ctype: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Value) {
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", ctype)
+            .body(Body::from(body))
+            .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     /// The shipped routes end to end: choose a folder, upload twice, list, read one.
     #[tokio::test]
     async fn a_device_upload_lands_in_the_chosen_folder_once_and_is_listed() {
         if env_dir().is_some() {
-            eprintln!("SKIPPED: {ENV_DIR} is set in this environment and would win over the test folder");
+            eprintln!(
+                "SKIPPED: {ENV_DIR} is set in this environment and would win over the test folder"
+            );
             return;
         }
         let (app, tmp) = app();
         let folder = tmp.path().join("Recordings");
-        let body = json!({"dir": folder.display().to_string()}).to_string().into_bytes();
-        let (st, cfg) = call(&app, "POST", "/api/recordings/config", "application/json", body).await;
+        let body = json!({"dir": folder.display().to_string()})
+            .to_string()
+            .into_bytes();
+        let (st, cfg) = call(
+            &app,
+            "POST",
+            "/api/recordings/config",
+            "application/json",
+            body,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{cfg}");
         assert_eq!(cfg["dir_source"], "pref");
         assert!(folder.is_dir(), "saving the setting creates the folder");
-        let (st, bad) = call(&app, "POST", "/api/recordings/config", "application/json", br#"{"dir":"~/.ssh"}"#.to_vec()).await;
+        let (st, bad) = call(
+            &app,
+            "POST",
+            "/api/recordings/config",
+            "application/json",
+            br#"{"dir":"~/.ssh"}"#.to_vec(),
+        )
+        .await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{bad}");
 
         let uri = "/api/recordings/upload?id=rRoute1&started_at=1789426263000&dur_ms=3000&tz_offset_min=-240";
         let (st, up) = call(&app, "POST", uri, "audio/mp4", b"fake m4a bytes".to_vec()).await;
         assert_eq!(st, StatusCode::OK, "{up}");
-        assert_eq!((up["deduped"].as_bool(), up["file"].as_str()), (Some(false), Some("2026-09-14_18-51-03_rRoute1.m4a")));
+        assert_eq!(
+            (up["deduped"].as_bool(), up["file"].as_str()),
+            (Some(false), Some("2026-09-14_18-51-03_rRoute1.m4a"))
+        );
         assert!(folder.join("2026-09-14_18-51-03_rRoute1.m4a").is_file());
         let (st, again) = call(&app, "POST", uri, "audio/mp4", b"fake m4a bytes".to_vec()).await;
-        assert_eq!((st, again["deduped"].as_bool()), (StatusCode::OK, Some(true)), "{again}");
+        assert_eq!(
+            (st, again["deduped"].as_bool()),
+            (StatusCode::OK, Some(true)),
+            "{again}"
+        );
         let (st, clash) = call(&app, "POST", uri, "audio/mp4", b"other bytes".to_vec()).await;
-        assert_eq!((st, clash["kind"].as_str()), (StatusCode::CONFLICT, Some("id_conflict")), "{clash}");
+        assert_eq!(
+            (st, clash["kind"].as_str()),
+            (StatusCode::CONFLICT, Some("id_conflict")),
+            "{clash}"
+        );
 
         let (st, listed) = call(&app, "GET", "/api/recordings", "application/json", vec![]).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(listed["n"], 1, "{listed}");
         assert_eq!(listed["recordings"][0]["id"], "rRoute1");
-        let (st, one) = call(&app, "GET", "/api/recordings/rRoute1", "application/json", vec![]).await;
-        assert_eq!((st, one["recorded_at_local"].as_str()), (StatusCode::OK, Some("2026-09-14T18:51:03-04:00")), "{one}");
-        let (st, _) = call(&app, "GET", "/api/recordings/rMissing", "application/json", vec![]).await;
+        let (st, one) = call(
+            &app,
+            "GET",
+            "/api/recordings/rRoute1",
+            "application/json",
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            (st, one["recorded_at_local"].as_str()),
+            (StatusCode::OK, Some("2026-09-14T18:51:03-04:00")),
+            "{one}"
+        );
+        let (st, _) = call(
+            &app,
+            "GET",
+            "/api/recordings/rMissing",
+            "application/json",
+            vec![],
+        )
+        .await;
         assert_eq!(st, StatusCode::NOT_FOUND);
     }
 }

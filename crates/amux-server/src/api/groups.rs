@@ -39,10 +39,10 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::{Json, Router};
+use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use rusqlite::Connection;
 
 /// Nested at /api/groups: the list plus the /config sub-resource. ONE
 /// wildcard route dispatching on the sub-path, exactly like Python's
@@ -51,7 +51,9 @@ use rusqlite::Connection;
 /// the static SPA catch-all in the full composition (AMUX-2594), so the
 /// regex-shaped dispatch is both the faithful and the mountable form.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/", any(list_groups)).route("/{*rest}", any(groups_subpath))
+    Router::new()
+        .route("/", any(list_groups))
+        .route("/{*rest}", any(groups_subpath))
 }
 
 /// `<name>/config` → the config resource; anything else under /api/groups
@@ -73,7 +75,9 @@ async fn groups_subpath(
 /// Nested at /api/tags: same list handler; every sub-path is the generic
 /// 404 (Python's tags spelling has no /config).
 pub fn tags_routes() -> Router<AppState> {
-    Router::new().route("/", any(list_groups)).route("/{*rest}", any(not_found))
+    Router::new()
+        .route("/", any(list_groups))
+        .route("/{*rest}", any(not_found))
 }
 
 fn j(status: u16, v: Value) -> Response {
@@ -144,7 +148,11 @@ fn scan_session_tags(home: &Path) -> Vec<(String, Vec<String>)> {
         let tags: Vec<String> = env
             .get("CC_TAGS")
             .map(|t| {
-                t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+                t.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
             })
             .unwrap_or_default();
         out.push((name, tags));
@@ -186,14 +194,18 @@ fn scan_worker_groups(conn: &Connection) -> Vec<(String, Vec<String>)> {
             if g.trim().is_empty() {
                 return None;
             }
-            let label = if w.display_name.trim().is_empty() { w.id } else { w.display_name };
+            let label = if w.display_name.trim().is_empty() {
+                w.id
+            } else {
+                w.display_name
+            };
             Some((label, vec![g]))
         })
         .collect()
 }
 
 /// `_caller_scope` (py:15208-15224): (scoped, caller_tags_lowercased, name).
-fn caller_scope(home: &Path, headers: &HeaderMap) -> (bool, BTreeSet<String>, String) {
+pub(crate) fn caller_scope(home: &Path, headers: &HeaderMap) -> (bool, BTreeSet<String>, String) {
     let name = hdr_worker(headers);
     if name.is_empty() {
         return (false, BTreeSet::new(), String::new());
@@ -266,8 +278,7 @@ fn build_group_list(
                 return true;
             }
             name == cname
-                || (!ctags.is_empty()
-                    && tags.iter().any(|t| ctags.contains(&t.to_lowercase())))
+                || (!ctags.is_empty() && tags.iter().any(|t| ctags.contains(&t.to_lowercase())))
         })
         .collect();
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
@@ -308,7 +319,11 @@ fn build_group_list(
     })
 }
 
-async fn list_groups(State(state): State<AppState>, method: Method, headers: HeaderMap) -> Response {
+async fn list_groups(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
     // Python answers this list for GET only; any other method falls through
     // the (rewritten) route table to the generic 404.
     if method != Method::GET {
@@ -511,7 +526,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -519,8 +534,11 @@ mod tests {
         let sd = dir.join("sessions");
         std::fs::create_dir_all(&sd).unwrap();
         for (name, tags) in sessions {
-            std::fs::write(sd.join(format!("{name}.env")), format!("CC_TAGS=\"{tags}\"\n"))
-                .unwrap();
+            std::fs::write(
+                sd.join(format!("{name}.env")),
+                format!("CC_TAGS=\"{tags}\"\n"),
+            )
+            .unwrap();
         }
     }
 
@@ -543,7 +561,11 @@ mod tests {
         assert_eq!(rows.len(), 4, "blocked session excluded");
 
         // Dashboard (unscoped): count desc, then name asc.
-        let v = build_group_list(&rows, &(false, Default::default(), String::new()), &Default::default());
+        let v = build_group_list(
+            &rows,
+            &(false, Default::default(), String::new()),
+            &Default::default(),
+        );
         assert_eq!(
             v["groups"],
             json!([{"name": "gtm", "workers": 2}, {"name": "ops", "workers": 2}]),
@@ -565,7 +587,11 @@ mod tests {
         );
 
         // Untagged caller: self only → no tags → empty groups.
-        let v = build_group_list(&rows, &(true, Default::default(), "d".into()), &Default::default());
+        let v = build_group_list(
+            &rows,
+            &(true, Default::default(), "d".into()),
+            &Default::default(),
+        );
         assert_eq!(v["groups"], json!([]));
         assert_eq!(v["total"], 0);
     }
@@ -602,13 +628,20 @@ mod tests {
         };
         let res = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     #[tokio::test]
     async fn config_get_patch_roundtrip_with_python_null_semantics() {
-        let app: Router = Router::new().nest("/api/groups", routes()).with_state(state());
+        let app: Router = Router::new()
+            .nest("/api/groups", routes())
+            .with_state(state());
         // Missing row → all defaults, 200 (py:66126-66128).
         let (st, v) = call(&app, "GET", "/api/groups/gtm/config", None).await;
         assert_eq!(st, StatusCode::OK);
@@ -647,16 +680,31 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(
-            v["error"].as_str().unwrap_or("").contains("NOT NULL constraint failed"),
+            v["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("NOT NULL constraint failed"),
             "{v}"
         );
         let (_, v) = call(&app, "GET", "/api/groups/gtm/config", None).await;
-        assert_eq!(v["department"], "Sales", "failed PATCH left the row untouched");
+        assert_eq!(
+            v["department"], "Sales",
+            "failed PATCH left the row untouched"
+        );
 
-        let (st, _) = call(&app, "PATCH", "/api/groups/gtm/config", Some(json!({"goal": "only goal"}))).await;
+        let (st, _) = call(
+            &app,
+            "PATCH",
+            "/api/groups/gtm/config",
+            Some(json!({"goal": "only goal"})),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         let (_, v) = call(&app, "GET", "/api/groups/gtm/config", None).await;
-        assert_eq!(v["department"], "", "absent key RESETS (faithful to Python)");
+        assert_eq!(
+            v["department"], "",
+            "absent key RESETS (faithful to Python)"
+        );
         assert_eq!(v["kpis"], json!([]));
 
         // Other methods: Python's explicit 405.
@@ -710,7 +758,10 @@ mod tests {
         store
             .write(move |conn| {
                 crate::db::queries::insert_worker(conn, &row)?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -723,8 +774,18 @@ mod tests {
         insert_worker_with_group(&store, "ungrouped", None);
         let conn = store.read().unwrap();
         let rows = scan_worker_groups(&conn);
-        assert_eq!(rows.len(), 1, "the ungrouped worker must not appear: {rows:?}");
-        assert_eq!(rows[0], ("grouped".to_string(), vec!["grp_01JAAAAAAAAAAAAAAAAAAAAAAA".to_string()]));
+        assert_eq!(
+            rows.len(),
+            1,
+            "the ungrouped worker must not appear: {rows:?}"
+        );
+        assert_eq!(
+            rows[0],
+            (
+                "grouped".to_string(),
+                vec!["grp_01JAAAAAAAAAAAAAAAAAAAAAAA".to_string()]
+            )
+        );
     }
 
     #[test]
@@ -738,7 +799,11 @@ mod tests {
         insert_worker_with_group(&store, "w2", Some("grp_01JBBBBBBBBBBBBBBBBBBBBBBB"));
         let conn = store.read().unwrap();
         let rows = scan_worker_groups(&conn);
-        let v = build_group_list(&rows, &(false, Default::default(), String::new()), &Default::default());
+        let v = build_group_list(
+            &rows,
+            &(false, Default::default(), String::new()),
+            &Default::default(),
+        );
         assert_eq!(
             v["groups"],
             json!([{"name": "grp_01JBBBBBBBBBBBBBBBBBBBBBBB", "workers": 2}]),
@@ -754,7 +819,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _guard = crate::api::settings::test_env::set_home(dir.path());
         let st = state();
-        insert_worker_with_group(&st.store, "rust-worker", Some("grp_01JCCCCCCCCCCCCCCCCCCCCCCC"));
+        insert_worker_with_group(
+            &st.store,
+            "rust-worker",
+            Some("grp_01JCCCCCCCCCCCCCCCCCCCCCCC"),
+        );
         let app: Router = Router::new().nest("/api/groups", routes()).with_state(st);
         let (status, v) = call(&app, "GET", "/api/groups", None).await;
         assert_eq!(status, StatusCode::OK, "{v}");

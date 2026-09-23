@@ -68,8 +68,8 @@ fn exit_status_survives(body: &str, shell: Option<&str>) -> bool {
 fn steps() -> Vec<(String, String, String, Option<String>)> {
     let dir = workspace_root().join(".github/workflows");
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    let entries =
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("yml") {
@@ -105,7 +105,10 @@ fn steps() -> Vec<(String, String, String, Option<String>)> {
             }
         }
     }
-    assert!(!out.is_empty(), "found no run: steps at all — the scan is broken");
+    assert!(
+        !out.is_empty(),
+        "found no run: steps at all — the scan is broken"
+    );
     out
 }
 

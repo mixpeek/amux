@@ -211,7 +211,10 @@ fn count_by_session_status(conn: &rusqlite::Connection) -> Vec<StatusCount> {
 /// lines once it is replaced.
 fn strip_prior_auto_aged_lines(desc: &str) -> String {
     const MARKER: &str = "Auto-aged: this card has been in needsyou for";
-    let kept: Vec<&str> = desc.lines().filter(|line| !line.starts_with(MARKER)).collect();
+    let kept: Vec<&str> = desc
+        .lines()
+        .filter(|line| !line.starts_with(MARKER))
+        .collect();
     let mut out = String::new();
     let mut prev_blank = true; // suppress leading blank lines too
     for line in kept {
@@ -237,7 +240,9 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
     LAST_NEEDSYOU_RUN.store(now_secs, std::sync::atomic::Ordering::Relaxed);
 
     let cards = {
-        let Ok(conn) = state.store.read() else { return (0, 0) };
+        let Ok(conn) = state.store.read() else {
+            return (0, 0);
+        };
         find_needsyou_cards(&conn, now_secs)
     };
 
@@ -291,7 +296,10 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                         "UPDATE issues SET \"desc\" = ?1, log = ?2, updated = ?3 WHERE id = ?4",
                         rusqlite::params![new_desc, new_log, now_secs, &id],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .await;
             tracing::info!(
@@ -305,9 +313,7 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
         } else if card.age_days >= NEEDSYOU_DISCARD_DAYS {
             let id = card.id.clone();
             let age = card.age_days;
-            let note = format!(
-                "Auto-discarded: {age} days in needsyou with no resolution"
-            );
+            let note = format!("Auto-discarded: {age} days in needsyou with no resolution");
             let hhmm = chrono::Utc::now().format("%H:%M").to_string();
             let _ = state
                 .store
@@ -337,7 +343,10 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                          updated = ?3 WHERE id = ?4",
                         rusqlite::params![new_desc, new_log, now_secs, &id],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .await;
             tracing::info!(
@@ -350,9 +359,7 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
         } else {
             let id = card.id.clone();
             let age = card.age_days;
-            let note = format!(
-                "Auto-aged: this card has been in needsyou for {age} days"
-            );
+            let note = format!("Auto-aged: this card has been in needsyou for {age} days");
             let hhmm = chrono::Utc::now().format("%H:%M").to_string();
             let _ = state
                 .store
@@ -387,7 +394,10 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                         "UPDATE issues SET \"desc\" = ?1, log = ?2, updated = ?3 WHERE id = ?4",
                         rusqlite::params![new_desc, new_log, now_secs, &id],
                     )?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .await;
             tracing::info!(
@@ -406,7 +416,9 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
 /// Run the stale card sweep. Returns (autofix_discarded, backlog_flagged).
 async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
     let (autofix_cards, backlog_cards, status_counts) = {
-        let Ok(conn) = state.store.read() else { return (0, 0) };
+        let Ok(conn) = state.store.read() else {
+            return (0, 0);
+        };
         (
             find_stale_autofix_cards(&conn, now_secs),
             find_stale_backlog_cards(&conn, now_secs),
@@ -435,7 +447,10 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                     "UPDATE issues SET status = 'discarded', log = ?1, updated = ?2 WHERE id = ?3",
                     rusqlite::params![new_log, now_secs, &id],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await;
         tracing::info!(
@@ -467,7 +482,10 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                     .unwrap_or_default();
                 // Only append if we haven't already flagged this card
                 if old_desc.contains("Stale review:") {
-                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
                 }
                 let new_desc = if old_desc.trim().is_empty() {
                     note.clone()
@@ -486,7 +504,10 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
                     "UPDATE issues SET \"desc\" = ?1, log = ?2, updated = ?3 WHERE id = ?4",
                     rusqlite::params![new_desc, new_log, now_secs, &id],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await;
         tracing::info!(
@@ -580,7 +601,10 @@ mod tests {
     fn strip_prior_auto_aged_lines_removes_only_the_stamp() {
         let desc = "the real ask: which pricing tier?\n\
                      Auto-aged: this card has been in needsyou for 14 days";
-        assert_eq!(strip_prior_auto_aged_lines(desc), "the real ask: which pricing tier?");
+        assert_eq!(
+            strip_prior_auto_aged_lines(desc),
+            "the real ask: which pricing tier?"
+        );
     }
 
     #[test]
@@ -588,11 +612,17 @@ mod tests {
         let mut desc = "the real ask: which pricing tier?".to_string();
         for n in [14, 15, 16, 17, 20, 21] {
             desc.push('\n');
-            desc.push_str(&format!("Auto-aged: this card has been in needsyou for {n} days"));
+            desc.push_str(&format!(
+                "Auto-aged: this card has been in needsyou for {n} days"
+            ));
         }
         let stripped = strip_prior_auto_aged_lines(&desc);
         assert_eq!(stripped, "the real ask: which pricing tier?");
-        assert_eq!(stripped.matches("Auto-aged").count(), 0, "every historical stamp must be gone");
+        assert_eq!(
+            stripped.matches("Auto-aged").count(),
+            0,
+            "every historical stamp must be gone"
+        );
     }
 
     #[test]
@@ -793,7 +823,10 @@ mod tests {
         let typed = cards.iter().find(|c| c.id == "NY-5").expect("NY-5 found");
         assert_eq!(typed.ask_actor, "ethan");
         let untyped = cards.iter().find(|c| c.id == "NY-6").expect("NY-6 found");
-        assert_eq!(untyped.ask_actor, "", "a NULL ask_actor must read as empty, not error");
+        assert_eq!(
+            untyped.ask_actor, "",
+            "a NULL ask_actor must read as empty, not error"
+        );
     }
 
     fn hygiene_state() -> (AppState, tempfile::TempDir) {
@@ -832,7 +865,9 @@ mod tests {
             .store
             .read()
             .unwrap()
-            .query_row("SELECT status FROM issues WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT status FROM issues WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .unwrap()
     }
 
@@ -841,7 +876,11 @@ mod tests {
             .store
             .read()
             .unwrap()
-            .query_row("SELECT COALESCE(\"desc\",'') FROM issues WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT COALESCE(\"desc\",'') FROM issues WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap()
     }
 
@@ -881,13 +920,23 @@ mod tests {
         seed_needsyou(&state, "GE-408", 46, Some("ethan"), now);
 
         let (warned, discarded) = needsyou_sweep(&state, now).await;
-        assert_eq!(discarded, 0, "a typed ask must never be counted as discarded");
+        assert_eq!(
+            discarded, 0,
+            "a typed ask must never be counted as discarded"
+        );
         assert_eq!(warned, 1);
-        assert_eq!(card_status(&state, "GE-408"), "needsyou", "must stay open, not discarded");
+        assert_eq!(
+            card_status(&state, "GE-408"),
+            "needsyou",
+            "must stay open, not discarded"
+        );
         let desc = card_desc(&state, "GE-408");
         assert!(desc.contains("waiting on ethan"), "{desc}");
         assert!(desc.contains("AF-702"), "{desc}");
-        assert!(!desc.contains("no resolution"), "must not blame the lane: {desc}");
+        assert!(
+            !desc.contains("no resolution"),
+            "must not blame the lane: {desc}"
+        );
     }
 
     /// CONTROL: an untyped legacy ask (predates the needsyou_requires_typed_ask
@@ -922,6 +971,9 @@ mod tests {
         assert_eq!(warned, 1);
         assert_eq!(card_status(&state, "NY-7"), "needsyou");
         let desc = card_desc(&state, "NY-7");
-        assert!(desc.contains("Auto-aged: this card has been in needsyou for 20 days"), "{desc}");
+        assert!(
+            desc.contains("Auto-aged: this card has been in needsyou for 20 days"),
+            "{desc}"
+        );
     }
 }

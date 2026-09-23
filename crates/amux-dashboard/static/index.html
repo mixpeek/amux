@@ -428,6 +428,27 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         </div>
         </div>
         <div class="settings-tab-panel" id="stab-integrations" data-stab="integrations">
+        <section class="settings-section" id="connection-security">
+          <div class="settings-section-label">Connection &amp; security</div>
+          <p>These actions apply only to this server. Tokens and keys are never saved in the connection list.</p>
+          <pre id="connection-security-status">Open Connect to read active security status.</pre>
+          <button class="btn" onclick="_connectionSecurityLoad()">Refresh security status</button>
+          <p class="connection-help">Use <code>auth_token</code> from this server’s active Amux home. This is not a provider API key or invite token.</p>
+          <label class="connection-control">Owner token
+            <input id="connection-owner-token" type="password" autocomplete="off" spellcheck="false" class="search-input" onkeydown="if(event.key==='Enter')_connectionSignIn()">
+          </label>
+          <button class="btn" id="connection-sign-in" onclick="_connectionSignIn()">Sign in on this server</button>
+          <fieldset id="connection-certificate-form" disabled>
+            <legend>Server certificate · owner only</legend>
+            <label class="connection-control">Certificate PEM <input id="connection-certificate" type="file" accept=".pem,.crt"></label>
+            <label class="connection-control">Private key PEM <input id="connection-private-key" type="file" accept=".pem,.key"></label>
+            <p class="connection-help">Use a matching, currently valid server certificate for this hostname. Never upload a CA private key. Saving requires an operator restart; Tailscale SNI remains separate.</p>
+            <button class="btn" id="connection-certificate-save" onclick="_connectionCertificateSave()">Validate and save certificate</button>
+          </fieldset>
+          <p id="connection-security-error" role="status"></p>
+          <details><summary>Browser blocks HTTPS before sign-in?</summary><p>On the server machine, open <code>http://localhost:&lt;this server's port&gt;/connection-setup</code> for local trust and install instructions. This page cannot grant OS/browser trust. Ask the operator to provide a trusted certificate; do not disable TLS checks.</p></details>
+        </section>
+        <div class="settings-sep"></div>
         <div class="settings-section" id="settings-apikeys-section">
           <div class="settings-section-label">API Keys</div>
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Also used to fetch each vendor's own live model list instead of amux's static fallback.</div>
@@ -566,6 +587,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <div class="tab-bar-outer">
 <div class="tab-bar">
+  <button id="tab-projects" onclick="switchView('projects')"><span class="tab-ico">◈</span><span class="tab-lbl">Projects</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
@@ -589,7 +611,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-torrents" onclick="switchView('torrents')"><span class="tab-ico">↓</span><span class="tab-lbl">Torrents</span></button>
   <button id="tab-terminal" onclick="switchView('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
   <button id="tab-browser" onclick="switchView('browser')"><span class="tab-ico">◳</span><span class="tab-lbl">Browser</span></button>
-  <button id="tab-orchestrations" onclick="switchView('orchestrations')"><span class="tab-ico">&#x2B53;</span><span class="tab-lbl">Orchestrations</span></button>
 </div>
 <div class="tab-customize-wrap">
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
@@ -629,6 +650,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <div id="pinned-notes-home" class="pinned-notes-home"></div>
 <div id="cards" class="cards"></div>
+<div id="review-section"></div>
 <div id="paused-section"></div>
 <div id="expired-section"></div>
 <div id="archived-section"></div>
@@ -637,41 +659,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="groups-container"></div>
 </div>
 <div id="board-view" style="display:none;">
-  <div class="board-page-heading"><div><h1>Board</h1><p>Turn work into outcomes</p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
-  <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
-  <!-- Launch bar: type priorities, auto-fan-out to ephemeral workers -->
-  <div class="board-launch-bar" id="board-launch-bar">
-    <div class="launch-header" onclick="_toggleLaunchBar()">
-      <span class="launch-ico">&#x1F680;</span>
-      <span class="launch-title">Launch priorities</span>
-      <span class="launch-caret" id="launch-caret">&#x25B6;</span>
-    </div>
-    <div class="launch-body" id="launch-body" style="display:none;">
-      <textarea id="launch-input" class="input launch-textarea" oninput="_launchInputChanged()" placeholder="Type priorities, one per line:&#10;1. Consolidate GKE clusters to zero budget&#10;2. Search parity with browser validation&#10;3. Single Docker image of full platform" rows="4" spellcheck="false"></textarea>
-      <label class="launch-workspace">Workspace from<select id="launch-session" class="input" onchange="_saveLaunchDraft()"><option value="">Choose a worker workspace…</option></select></label>
-      <div class="launch-roles">
-        <fieldset class="launch-role"><legend>Orchestrator</legend><p>One coordinating worker owns the epic, answers questions, and checks the combined outcome.</p>
-          <div class="launch-profile-fields">
-            <label>Provider<select id="launch-orchestrator-provider" class="input" onchange="_launchProviderChanged('orchestrator')"><option value="claude">Claude</option><option value="codex">Codex</option><option value="gemini">Gemini</option><option value="ollama">Ollama</option><option value="muse">Muse</option></select></label>
-            <label>Model<input id="launch-orchestrator-model" class="input" value="opus" list="launch-orchestrator-models" placeholder="Provider default" oninput="_saveLaunchDraft()" autocomplete="off" spellcheck="false"><datalist id="launch-orchestrator-models"></datalist></label>
-          </div>
-        </fieldset>
-        <fieldset class="launch-role"><legend>Fan-out workers</legend><p>Each worker owns its board and worktree, and reports to the orchestrator.</p>
-          <div class="launch-profile-fields">
-            <label>Provider<select id="launch-worker-provider" class="input" onchange="_launchProviderChanged('worker')"><option value="claude">Claude</option><option value="codex">Codex</option><option value="gemini">Gemini</option><option value="ollama">Ollama</option><option value="muse">Muse</option></select></label>
-            <label>Model<input id="launch-worker-model" class="input" value="haiku" list="launch-worker-models" placeholder="Provider default" oninput="_saveLaunchDraft()" autocomplete="off" spellcheck="false"><datalist id="launch-worker-models"></datalist></label>
-          </div>
-        </fieldset>
-      </div>
-      <details id="launch-overrides"><summary>Customize individual workers</summary><div id="launch-worker-profiles"></div></details>
-      <div class="launch-controls">
-        <button class="btn primary" id="launch-btn" onclick="_launchFanOut()">Launch orchestration</button>
-        <button class="btn" id="launch-new" onclick="_resetLaunchRequest()" hidden>New priorities</button>
-      </div>
-      <div class="launch-status" id="launch-status" style="display:none;"></div>
-    </div>
-  </div>
-  <div class="board-toolbar">
+  <div class="board-page-heading"><div><h1>Board <span class="board-legacy-badge">Legacy</span></h1><p>Legacy board/history · start new work in <button class="btn compact" type="button" onclick="switchView('projects')">Projects</button></p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
+  <!-- No launch surface here: new work starts in Projects. Existing boards below remain for legacy maintenance. -->
+  <div class="board-control-row" aria-label="Board controls">
+    <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
+    <div class="board-toolbar">
     <div id="bf-chips" style="display:none;flex-basis:100%;order:3;flex-wrap:wrap;gap:6px;padding-top:6px;"></div>
     <!-- #bf-add is the FIRST flex child of the wrap (AMUX-2569): as a later
          sibling of a block-layout input it stacked underneath, burning a whole
@@ -706,10 +698,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button class="bv-btn" id="nudges-btn" onclick="_nudgesTogglePanel(event)" title="Enable or disable board nudges fleet-wide or per scope">Nudges</button>
       <div id="nudges-panel" style="display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;min-width:220px;box-shadow:0 4px 16px rgba(0,0,0,0.25);font-size:0.78rem;"></div>
     </div>
+    </div>
+    <div class="board-views" id="board-views"></div>
+    <div class="board-filters" id="board-filters"></div>
+    <div id="board-stats-mount"></div>
   </div>
-  <div class="board-views" id="board-views"></div>
-  <div class="board-filters" id="board-filters"></div>
-  <div id="board-stats-mount"></div>
   <div class="board-columns" id="board-columns"></div>
 </div>
 <!-- Calendar view -->
@@ -1682,13 +1675,15 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
+<div id="projects-view" style="display:none" class="projects-view"></div>
 <div id="orchestrations-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
   <div style="padding:12px 14px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-    <h2 style="font-size:1rem;font-weight:600;margin:0;">Orchestrations</h2>
+    <h2 style="font-size:1rem;font-weight:600;margin:0;">Legacy orchestration history</h2>
     <div id="orch-filters" class="orch-filters"></div>
     <span style="flex:1;"></span>
-    <button class="btn primary" onclick="switchView('board');_toggleLaunchBar()" style="font-size:.8rem;">+ Launch</button>
+    <button class="btn primary" onclick="switchView('projects')" style="font-size:.8rem;">Open Projects</button>
   </div>
+  <p class="orch-legacy-note" style="padding:0 14px;margin:0 0 8px;color:var(--dim);font-size:.8rem;">Older orchestration records, kept for history. Project work, tasks, evidence and executors live under Projects.</p>
   <div id="orch-list" style="flex:1;min-height:0;overflow-x:auto;overflow-y:auto;padding:0 14px 14px;"></div>
 </div>
 <div id="graph-view" style="display:none;flex-direction:row;overflow:hidden;">
@@ -2300,7 +2295,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <!-- Peek overlay -->
-<div id="peek-overlay" class="overlay">
+<div id="peek-overlay" class="overlay" hidden inert aria-hidden="true">
   <div class="overlay-header" style="flex-direction:column;gap:4px;padding-bottom:6px;">
     <div id="peek-title-row" style="display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;width:100%;overflow:hidden;">
       <!-- `flex: 0 1 auto` — SHRINK BUT DO NOT GROW, plus min-width:0.
@@ -2471,7 +2466,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <button type="button" onclick="_peekMoreClose();setPeekTab('dictation')">&#128220; Dictation history</button>
             <button type="button" onclick="_peekMoreClose();_readLatestMessage(peekSession)" title="Read the worker's most recent full message aloud">&#x1F50A; Read aloud latest</button>
             <button type="button" onclick="_peekMoreClose();setPeekTab('readalouds')">&#x1F50A; Read-aloud history</button>
-            <button type="button" onclick="_peekMoreClose();_peekFanOut()" title="Fan out priorities to ephemeral workers via this session">&#x1F680; Fan out</button>
+            <button type="button" onclick="_peekMoreClose();closePeek();switchView('projects')" title="New work starts in Projects">&#x1F4CB; Open Projects</button>
             <!-- Last, and separated: the only DESTRUCTIVE entry in this menu.
                  Everything above opens something; this throws work away, so it
                  does not sit where a thumb lands by accident reaching for

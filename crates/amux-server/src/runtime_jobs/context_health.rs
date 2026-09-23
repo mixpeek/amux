@@ -99,7 +99,10 @@ mod tests {
             census.len(),
             "every lane must land in exactly one of measured/unmeasurable"
         );
-        assert!(over <= measured as usize, "an over-threshold lane must have been measured");
+        assert!(
+            over <= measured as usize,
+            "an over-threshold lane must have been measured"
+        );
     }
 
     /// The boundary of the degraded predicate, both sides.
@@ -113,9 +116,15 @@ mod tests {
     #[test]
     fn the_degraded_predicate_includes_its_own_threshold() {
         let at = std::hint::black_box(GENERATIONS_WARN_AT);
-        assert!(is_degraded(at), "a lane exactly at the threshold must count");
+        assert!(
+            is_degraded(at),
+            "a lane exactly at the threshold must count"
+        );
         assert!(is_degraded(at + 1));
         assert!(!is_degraded(at - 1), "one below must not");
-        assert!(!is_degraded(std::hint::black_box(0u32)), "a pristine lane is never degraded");
+        assert!(
+            !is_degraded(std::hint::black_box(0u32)),
+            "a pristine lane is never degraded"
+        );
     }
 }

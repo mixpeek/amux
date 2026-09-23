@@ -23,7 +23,7 @@ struct Migration {
     sql: &'static str,
 }
 
-/// Recorded names that are known to be an earlier name for the SAME migration.
+/// Recorded names that are safe predecessors of the registered migration.
 ///
 /// A version/name mismatch normally means a migration was skipped and remains
 /// a startup error. This one is different and was already proven/documented in
@@ -31,15 +31,20 @@ struct Migration {
 /// stale `0029_` filename prefix to `0035_` without changing its schema work.
 /// Keeping that fact executable prevents every healthy boot from raising a
 /// false migration-collision alarm while preserving the alarm for every
-/// unrecognized mismatch.
+/// unrecognized mismatch. Versions 82/83 were assigned independently on the
+/// project-lifecycle branch. Migration 85 is an idempotent union of both
+/// histories, so either deployed history converges before the server uses the
+/// schema.
 const MIGRATION_NAME_ALIASES: &[(i64, &str, &str)] = &[
     (35, "0029_regenerable_samples", "0035_regenerable_samples"),
+    (82, "0082_project_execution", "0082_nudge_budget"),
+    (83, "0083_project_attempts", "0083_project_execution"),
 ];
 
 fn known_name_alias(version: i64, recorded: &str, registered: &str) -> bool {
-    MIGRATION_NAME_ALIASES.iter().any(|(v, old, new)| {
-        *v == version && *old == recorded && *new == registered
-    })
+    MIGRATION_NAME_ALIASES
+        .iter()
+        .any(|(v, old, new)| *v == version && *old == recorded && *new == registered)
 }
 
 // Embedded at compile time so the binary is self-contained (single-artifact
@@ -468,6 +473,26 @@ const MIGRATIONS: &[Migration] = &[
         name: "0082_nudge_budget",
         sql: include_str!("../../migrations/0082_nudge_budget.sql"),
     },
+    Migration {
+        version: 83,
+        name: "0083_project_execution",
+        sql: include_str!("../../migrations/0083_project_execution.sql"),
+    },
+    Migration {
+        version: 84,
+        name: "0084_project_attempts",
+        sql: include_str!("../../migrations/0084_project_attempts.sql"),
+    },
+    Migration {
+        version: 85,
+        name: "0085_project_migration_collision_reconcile",
+        sql: include_str!("../../migrations/0085_project_migration_collision_reconcile.sql"),
+    },
+    Migration {
+        version: 86,
+        name: "0086_steering_message_receipts",
+        sql: include_str!("../../migrations/0086_steering_message_receipts.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
@@ -534,9 +559,8 @@ pub fn pending(conn: &Connection) -> Vec<&'static str> {
 /// and, unlike a substring of one hardcoded layout, does not need revisiting
 /// the next time the fleet moves its build directory.
 fn is_cargo_target_build(exe: &std::path::Path) -> bool {
-    exe.components().any(|c| {
-        matches!(c.as_os_str().to_str(), Some("debug") | Some("release"))
-    })
+    exe.components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some("debug") | Some("release")))
 }
 
 /// True when `db_path` is the fleet's real database, `$HOME/.amux/amux.db`.
@@ -649,7 +673,11 @@ fn truthy_env(key: &str) -> bool {
 /// same migration re-checked on a later boot (the ordinary, non-colliding
 /// case — every version this binary has ever successfully applied hits this
 /// path on every subsequent startup, and must stay silent).
-fn version_collision_warning(version: i64, expected_name: &str, recorded_name: &str) -> Option<String> {
+fn version_collision_warning(
+    version: i64,
+    expected_name: &str,
+    recorded_name: &str,
+) -> Option<String> {
     if recorded_name == expected_name || known_name_alias(version, recorded_name, expected_name) {
         return None;
     }
@@ -835,7 +863,10 @@ pub(crate) fn renumbered_migrations(conn: &Connection) -> Vec<(i64, String, Stri
 fn report_renumbered_migrations(conn: &Connection) {
     let found = renumbered_migrations(conn);
     if found.is_empty() {
-        tracing::info!(renumbered_migrations = 0, "migration version/name binding checked");
+        tracing::info!(
+            renumbered_migrations = 0,
+            "migration version/name binding checked"
+        );
         return;
     }
     for (version, recorded, registered) in &found {
@@ -953,8 +984,7 @@ mod registration_guard {
             on_disk.len()
         );
 
-        let mut registered: Vec<String> =
-            MIGRATIONS.iter().map(|m| m.name.to_owned()).collect();
+        let mut registered: Vec<String> = MIGRATIONS.iter().map(|m| m.name.to_owned()).collect();
         registered.sort();
 
         let unregistered: Vec<&String> =
@@ -1012,6 +1042,109 @@ mod registration_guard {
 mod tests {
     use super::*;
 
+    fn apply_history_through(conn: &Connection, through: i64) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _amux_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL,
+                duration_ms INTEGER
+            );",
+        )
+        .unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= through) {
+            apply_one(conn, migration.sql).unwrap();
+            conn.execute(
+                "INSERT INTO _amux_migrations(version,name,applied_at,duration_ms) VALUES(?1,?2,'test',0)",
+                rusqlite::params![migration.version, migration.name],
+            )
+            .unwrap();
+        }
+    }
+
+    fn assert_reconciled_project_schema(conn: &Connection) {
+        for (table, column) in [
+            ("group_config", "execution_policy"),
+            ("group_config", "execution_rev"),
+            ("issues", "project_group"),
+            ("issues", "execution_state"),
+            ("cmd_history", "project_group"),
+            ("steering_queue", "sender"),
+        ] {
+            let present: bool = conn
+                .query_row(
+                    &format!(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1)"
+                    ),
+                    [column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(present, "missing {table}.{column}");
+        }
+        let nudge: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_drive_nudge_budget')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            nudge,
+            "the main-line nudge budget must survive reconciliation"
+        );
+    }
+
+    #[test]
+    fn current_main_history_upgrades_to_project_schema() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, 82);
+        apply_all(&mut conn).unwrap();
+        assert_reconciled_project_schema(&conn);
+        assert!(renumbered_migrations(&conn).is_empty());
+    }
+
+    #[test]
+    fn deployed_project_branch_history_converges_without_collision_or_missing_main_schema() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, 81);
+        apply_one(
+            &conn,
+            include_str!("../../migrations/0083_project_execution.sql"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO _amux_migrations(version,name,applied_at,duration_ms) VALUES(82,'0082_project_execution','test',0)",
+            [],
+        )
+        .unwrap();
+        apply_one(
+            &conn,
+            include_str!("../../migrations/0084_project_attempts.sql"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO _amux_migrations(version,name,applied_at,duration_ms) VALUES(83,'0083_project_attempts','test',0)",
+            [],
+        )
+        .unwrap();
+
+        apply_all(&mut conn).unwrap();
+        assert_reconciled_project_schema(&conn);
+        assert!(renumbered_migrations(&conn).is_empty());
+        let recorded: String = conn
+            .query_row(
+                "SELECT name FROM _amux_migrations WHERE version=82",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            recorded, "0082_project_execution",
+            "deployed history remains immutable"
+        );
+    }
+
     /// AF-353: a version whose recorded name is no longer the registered one
     /// must be REPORTED, and a clean database must stay quiet.
     ///
@@ -1050,7 +1183,11 @@ mod tests {
         .unwrap();
 
         let found = renumbered_migrations(&conn);
-        assert_eq!(found.len(), 1, "expected exactly the one mismatch: {found:?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly the one mismatch: {found:?}"
+        );
         assert_eq!(found[0].0, MIGRATIONS[0].version);
         assert_eq!(found[0].1, "0001_under_its_old_name", "the RECORDED name");
         assert_eq!(found[0].2, registered, "the REGISTERED name");
@@ -1077,11 +1214,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            version_collision_warning(
-                35,
-                "0035_regenerable_samples",
-                "0029_regenerable_samples",
-            ),
+            version_collision_warning(35, "0035_regenerable_samples", "0029_regenerable_samples",),
             None,
             "the documented rename performed the same schema work"
         );
@@ -1175,18 +1308,31 @@ mod tests {
         apply_all(&mut conn).unwrap();
 
         let (name, duration): (String, Option<i64>) = conn
-            .query_row("SELECT name, duration_ms FROM _amux_migrations WHERE version = ?1", [target], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT name, duration_ms FROM _amux_migrations WHERE version = ?1",
+                [target],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
-        assert_eq!(name, "some_other_branchs_migration", "the colliding row must be left exactly as found");
-        assert_eq!(duration, Some(1), "not re-timed — it was never actually re-run");
+        assert_eq!(
+            name, "some_other_branchs_migration",
+            "the colliding row must be left exactly as found"
+        );
+        assert_eq!(
+            duration,
+            Some(1),
+            "not re-timed — it was never actually re-run"
+        );
 
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM _amux_migrations", [], |r| r.get(0))
             .unwrap();
         // Every real migration except the one whose version collided.
-        assert_eq!(n as usize, super::MIGRATIONS.len(), "every non-colliding migration still applied");
+        assert_eq!(
+            n as usize,
+            super::MIGRATIONS.len(),
+            "every non-colliding migration still applied"
+        );
 
         let has_col: bool = conn
             .query_row("SELECT COUNT(*) FROM pragma_table_info('telegram_mappings') WHERE name = 'last_relayed_hash'", [], |r| {
@@ -1194,7 +1340,10 @@ mod tests {
             })
             .map(|n| n > 0)
             .unwrap();
-        assert!(!has_col, "the colliding migration's actual SQL must never have run");
+        assert!(
+            !has_col,
+            "the colliding migration's actual SQL must never have run"
+        );
     }
 
     #[test]
@@ -1247,19 +1396,41 @@ mod tests {
         // Re-run the shipped body. ADDCOL is idempotent; the UPDATE is the part
         // under test. Reading it from the same include_str the registry uses
         // means this cannot drift from what production applies.
-        apply_one(&conn, super::MIGRATIONS.iter().find(|m| m.version == 31).unwrap().sql).unwrap();
+        apply_one(
+            &conn,
+            super::MIGRATIONS
+                .iter()
+                .find(|m| m.version == 31)
+                .unwrap()
+                .sql,
+        )
+        .unwrap();
 
         let at = |id: &str| -> Option<i64> {
-            conn.query_row("SELECT closed_at FROM issues WHERE id = ?1", [id], |r| r.get(0))
-                .unwrap()
+            conn.query_row("SELECT closed_at FROM issues WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
         };
 
         // 1787220000 = 2026-08-20T10:00:00Z. The microseconds and the +00:00
         // offset are parsed by strftime, which is the assumption the migration
         // rests on — asserted here rather than trusted.
-        assert_eq!(at("C-CLOSED"), Some(1787220000), "a closed card recovers its real close time");
-        assert_eq!(at("C-REOPEN"), None, "a card that is open NOW must not be backfilled from an old close");
-        assert_eq!(at("C-REAPED"), None, "no journal row survives for it: NULL means NOT RECORDED, never a guess");
+        assert_eq!(
+            at("C-CLOSED"),
+            Some(1787220000),
+            "a closed card recovers its real close time"
+        );
+        assert_eq!(
+            at("C-REOPEN"),
+            None,
+            "a card that is open NOW must not be backfilled from an old close"
+        );
+        assert_eq!(
+            at("C-REAPED"),
+            None,
+            "no journal row survives for it: NULL means NOT RECORDED, never a guess"
+        );
         assert_eq!(
             at("C-TWICE"),
             Some(1787389200),
@@ -1268,7 +1439,15 @@ mod tests {
 
         // Idempotent: the migration is guarded by `closed_at IS NULL`, so a
         // second run must not disturb what the first wrote.
-        apply_one(&conn, super::MIGRATIONS.iter().find(|m| m.version == 31).unwrap().sql).unwrap();
+        apply_one(
+            &conn,
+            super::MIGRATIONS
+                .iter()
+                .find(|m| m.version == 31)
+                .unwrap()
+                .sql,
+        )
+        .unwrap();
         assert_eq!(at("C-CLOSED"), Some(1787220000));
         assert_eq!(at("C-TWICE"), Some(1787389200));
     }
@@ -1287,7 +1466,11 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_all(&mut conn).unwrap();
         let missing: i64 = conn
-            .query_row("SELECT COUNT(*) FROM _amux_migrations WHERE duration_ms IS NULL", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM _amux_migrations WHERE duration_ms IS NULL",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(
             missing, 0,
@@ -1297,20 +1480,27 @@ mod tests {
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM _amux_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n as usize, super::MIGRATIONS.len(), "and every migration must be recorded at all");
+        assert_eq!(
+            n as usize,
+            super::MIGRATIONS.len(),
+            "and every migration must be recorded at all"
+        );
     }
 
     #[test]
     fn addcol_can_be_used_by_the_same_migration() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER);").unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER);")
+            .unwrap();
         conn.execute("INSERT INTO t VALUES ('a', 7)", []).unwrap();
         apply_one(
             &conn,
             "-- ADDCOL: t doubled INTEGER\nUPDATE t SET doubled = n * 2;",
         )
         .expect("a migration that adds a column and populates it must apply");
-        let got: i64 = conn.query_row("SELECT doubled FROM t WHERE id='a'", [], |r| r.get(0)).unwrap();
+        let got: i64 = conn
+            .query_row("SELECT doubled FROM t WHERE id='a'", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(got, 14, "the plain SQL must run AFTER the column exists");
     }
 
@@ -1327,7 +1517,10 @@ mod tests {
     #[test]
     fn team_migration_preserves_every_legacy_scope_without_widening_access() {
         let conn = Connection::open_in_memory().unwrap();
-        for migration in MIGRATIONS.iter().filter(|migration| migration.version <= 59) {
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 59)
+        {
             apply_one(&conn, migration.sql).unwrap();
         }
         conn.execute(
@@ -1345,7 +1538,10 @@ mod tests {
         )
         .unwrap();
 
-        let migration = MIGRATIONS.iter().find(|migration| migration.version == 60).unwrap();
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 60)
+            .unwrap();
         apply_one(&conn, migration.sql).unwrap();
 
         let rows: Vec<(String, String, String)> = {
@@ -1365,7 +1561,11 @@ mod tests {
             vec![
                 ("member-global".into(), "global".into(), "".into()),
                 ("member-group".into(), "group".into(), "research".into()),
-                ("member-worker".into(), "worker".into(), "tubescience".into()),
+                (
+                    "member-worker".into(),
+                    "worker".into(),
+                    "tubescience".into()
+                ),
             ]
         );
         let invite_scope: (String, String) = conn
@@ -1402,23 +1602,33 @@ mod guard_tests {
     #[test]
     fn any_profile_dir_reads_as_a_cargo_build_whatever_the_target_dir_is() {
         // A per-session checkout dir (banned, but must still be caught).
-        assert!(is_cargo_target_build(Path::new("/Users/x/Dev/amux/target/debug/amux-server")));
-        assert!(is_cargo_target_build(Path::new("/Users/x/Dev/amux/target/release/amux-server")));
+        assert!(is_cargo_target_build(Path::new(
+            "/Users/x/Dev/amux/target/debug/amux-server"
+        )));
+        assert!(is_cargo_target_build(Path::new(
+            "/Users/x/Dev/amux/target/release/amux-server"
+        )));
         // THE MANDATED SHARED DIR — the case that was unguarded. A `cargo run`
         // here is exactly the working-tree-against-live-DB hazard.
         assert!(
-            is_cargo_target_build(Path::new("/Users/x/.amux/rust-build-target/debug/amux-server")),
+            is_cargo_target_build(Path::new(
+                "/Users/x/.amux/rust-build-target/debug/amux-server"
+            )),
             "the build dir every session is told to use must be guarded, not exempt"
         );
         assert!(is_cargo_target_build(Path::new(
             "/Users/x/.amux/rust-build-target/release/amux-server"
         )));
         // Any OTHER target dir, because the next move must not need a code change.
-        assert!(is_cargo_target_build(Path::new("/tmp/whatever-42/debug/deps/amux_server-abc")));
+        assert!(is_cargo_target_build(Path::new(
+            "/tmp/whatever-42/debug/deps/amux_server-abc"
+        )));
 
         // The two paths that actually boot a server, both of which must stay
         // exempt or the fleet cannot start with a pending migration.
-        assert!(!is_cargo_target_build(Path::new("/Users/x/.local/bin/amux-server-rs")));
+        assert!(!is_cargo_target_build(Path::new(
+            "/Users/x/.local/bin/amux-server-rs"
+        )));
         assert!(
             !is_cargo_target_build(Path::new("/usr/local/bin/amux-server-rs")),
             "the cloud image's path — CMD [\"amux-server-rs\"] off /usr/local/bin"
@@ -1450,7 +1660,10 @@ mod guard_tests {
         let home = PathBuf::from("/Users/x");
         assert!(is_live_db(Path::new("/Users/x/.amux/amux.db"), Some(&home)));
         assert!(!is_live_db(Path::new("/tmp/scratch/amux.db"), Some(&home)));
-        assert!(!is_live_db(Path::new("/Users/x/.amux/other.db"), Some(&home)));
+        assert!(!is_live_db(
+            Path::new("/Users/x/.amux/other.db"),
+            Some(&home)
+        ));
         // No HOME at all: cannot prove it is live, so do not block.
         assert!(!is_live_db(Path::new("/Users/x/.amux/amux.db"), None));
     }
@@ -1501,8 +1714,10 @@ mod guard_tests {
     #[test]
     fn it_actually_refuses_a_pending_migration_against_the_live_db() {
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            panic!("HOME unset — this test cannot express its precondition, \
-                    which is a broken test, not a passing one");
+            panic!(
+                "HOME unset — this test cannot express its precondition, \
+                    which is a broken test, not a passing one"
+            );
         };
         // A cargo-target-shaped path, supplied rather than inherited: the real
         // hazard is a binary built from a working tree, and that shape is a
@@ -1511,7 +1726,10 @@ mod guard_tests {
         // CARGO_TARGET_DIR=~/.amux/rust-build-target — the shared build dir the
         // workflow now standardises on — while the guard itself was correct.)
         let exe = PathBuf::from("/Users/someone/Dev/amux/target/debug/deps/amux_server-abc123");
-        assert!(is_cargo_target_build(&exe), "the fixture must be the shape the guard looks for");
+        assert!(
+            is_cargo_target_build(&exe),
+            "the fixture must be the shape the guard looks for"
+        );
 
         let live = home.join(".amux").join("amux.db");
         std::env::remove_var("AMUX_ALLOW_LIVE_DB");
@@ -1601,7 +1819,11 @@ mod cost_tests {
         let mut s = conn.prepare(&format!("EXPLAIN QUERY PLAN {stmt}")).ok()?;
         let rows = s
             .query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(3)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(3)?,
+                ))
             })
             .ok()?
             .flatten()
@@ -1697,9 +1919,8 @@ mod cost_tests {
         }
         fn reads_table(stmt_upper: &str, table: &str) -> bool {
             let ids = identifiers(stmt_upper);
-            ids.windows(2).any(|w| {
-                matches!(w[0].as_str(), "FROM" | "JOIN") && w[1].as_str() == table
-            })
+            ids.windows(2)
+                .any(|w| matches!(w[0].as_str(), "FROM" | "JOIN") && w[1].as_str() == table)
         }
         fn mentions_column(stmt_upper: &str, column: &str) -> bool {
             identifiers(stmt_upper).iter().any(|t| t == column)
@@ -1720,9 +1941,7 @@ mod cost_tests {
                 dml_seen.push((offset, written_table(&t), t.clone()));
             }
             if t.starts_with("CREATE INDEX") || t.starts_with("CREATE UNIQUE INDEX") {
-                if let Some((idx_table, leading_column)) =
-                    indexed_table_and_leading_column(&t)
-                {
+                if let Some((idx_table, leading_column)) = indexed_table_and_leading_column(&t) {
                     for (d_off, written, dml) in &dml_seen {
                         if offset > *d_off
                             && written.as_deref() != Some(idx_table.as_str())
@@ -1773,7 +1992,9 @@ mod cost_tests {
             tx.commit().unwrap();
 
             for stmt in dml(m.sql) {
-                let Some(rows) = plan(&conn, &stmt) else { continue };
+                let Some(rows) = plan(&conn, &stmt) else {
+                    continue;
+                };
                 explained += 1;
                 let sq = squash(&stmt);
                 if sq.starts_with("UPDATE issues SET closed_at") {
@@ -1864,7 +2085,11 @@ mod cost_tests {
             CREATE INDEX idx_events_entity
                 ON _amux_state_events(entity_type, entity_id);";
         let bad = late_read_side_indexes("0031-planted", incident);
-        assert_eq!(bad.len(), 1, "the real late read-side index must still fail: {bad:?}");
+        assert_eq!(
+            bad.len(),
+            1,
+            "the real late read-side index must still fail: {bad:?}"
+        );
         assert!(bad[0].contains("_AMUX_STATE_EVENTS(ENTITY_TYPE"), "{bad:?}");
     }
 

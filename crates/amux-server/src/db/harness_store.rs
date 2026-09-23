@@ -177,10 +177,9 @@ pub fn insert_handoff(conn: &Connection, packet: &HandoffPacket) -> rusqlite::Re
                 return Err(invalid("handoff sender does not own the planning node"));
             }
             if packet.requires_replan {
-                let parent_id = node
-                    .parent_id
-                    .as_deref()
-                    .ok_or_else(|| invalid("a root planning node cannot request parent replanning"))?;
+                let parent_id = node.parent_id.as_deref().ok_or_else(|| {
+                    invalid("a root planning node cannot request parent replanning")
+                })?;
                 let parent = get_planning_node(conn, parent_id)?
                     .ok_or_else(|| invalid("planning node parent is missing"))?;
                 if parent.owner != packet.receiver {

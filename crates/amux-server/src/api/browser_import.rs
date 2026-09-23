@@ -108,7 +108,11 @@ fn browser_root(desc: &BrowserDescriptor) -> Option<PathBuf> {
         PathBuf::from(&home).join(".config")
     };
     let root = base.join(desc.root);
-    if root.is_dir() { Some(root) } else { None }
+    if root.is_dir() {
+        Some(root)
+    } else {
+        None
+    }
 }
 
 fn discover_chromium_profiles(root: &Path) -> Vec<SourceProfile> {
@@ -217,39 +221,37 @@ fn md5_hash(data: &[u8]) -> u128 {
 // ── Discover endpoint ──
 
 async fn discover() -> Response {
-    let result =
-        tokio::task::spawn_blocking(|| {
-            let mut sources = Vec::new();
-            for desc in BROWSERS {
-                let root = match browser_root(desc) {
-                    Some(r) => r,
-                    None => continue,
-                };
-                let profiles = if desc.family == "chromium" {
-                    discover_chromium_profiles(&root)
-                } else {
-                    discover_firefox_profiles(&root)
-                };
-                if profiles.is_empty() {
-                    continue;
-                }
-                let cookie_support =
-                    if desc.family == "chromium" && !cfg!(target_os = "macos") {
-                        "partial"
-                    } else {
-                        "supported"
-                    };
-                sources.push(BrowserSource {
-                    id: desc.id,
-                    name: desc.name,
-                    family: desc.family,
-                    profiles,
-                    cookie_support,
-                });
+    let result = tokio::task::spawn_blocking(|| {
+        let mut sources = Vec::new();
+        for desc in BROWSERS {
+            let root = match browser_root(desc) {
+                Some(r) => r,
+                None => continue,
+            };
+            let profiles = if desc.family == "chromium" {
+                discover_chromium_profiles(&root)
+            } else {
+                discover_firefox_profiles(&root)
+            };
+            if profiles.is_empty() {
+                continue;
             }
-            sources
-        })
-        .await;
+            let cookie_support = if desc.family == "chromium" && !cfg!(target_os = "macos") {
+                "partial"
+            } else {
+                "supported"
+            };
+            sources.push(BrowserSource {
+                id: desc.id,
+                name: desc.name,
+                family: desc.family,
+                profiles,
+                cookie_support,
+            });
+        }
+        sources
+    })
+    .await;
 
     match result {
         Ok(sources) => Json(json!({ "sources": sources })).into_response(),
@@ -340,7 +342,8 @@ fn do_import(
         .find(|b| b.id == browser_id)
         .ok_or_else(|| format!("unknown browser: {browser_id}"))?;
 
-    let root = browser_root(desc).ok_or_else(|| format!("{} not found on this machine", desc.name))?;
+    let root =
+        browser_root(desc).ok_or_else(|| format!("{} not found on this machine", desc.name))?;
 
     let profile_dir = if desc.family == "chromium" {
         let dir = root.join(profile_name);
@@ -425,8 +428,7 @@ fn do_import(
     });
     std::fs::write(
         &state_file,
-        serde_json::to_string_pretty(&state)
-            .map_err(|e| format!("state JSON failed: {e}"))?,
+        serde_json::to_string_pretty(&state).map_err(|e| format!("state JSON failed: {e}"))?,
     )
     .map_err(|e| format!("cannot write state.json: {e}"))?;
 
@@ -485,8 +487,8 @@ fn read_chromium_cookies(
     };
 
     // Copy to a temp file to avoid locking the live database
-    let tmp = tempfile::NamedTempFile::new()
-        .map_err(|e| format!("cannot create temp file: {e}"))?;
+    let tmp =
+        tempfile::NamedTempFile::new().map_err(|e| format!("cannot create temp file: {e}"))?;
     std::fs::copy(&cookies_db, tmp.path())
         .map_err(|e| format!("cannot copy Cookies database: {e}"))?;
     // Also copy WAL/SHM if present (for consistency)
@@ -498,11 +500,7 @@ fn read_chromium_cookies(
                 .unwrap_or_else(|| ext[1..].to_string()),
         );
         if src.is_file() {
-            let dst_name = format!(
-                "{}{}",
-                tmp.path().to_string_lossy(),
-                ext
-            );
+            let dst_name = format!("{}{}", tmp.path().to_string_lossy(), ext);
             let _ = std::fs::copy(&src, &dst_name);
         }
     }
@@ -545,26 +543,36 @@ fn read_chromium_cookies(
     let rows = stmt
         .query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,       // host_key
-                row.get::<_, String>(1)?,       // name
-                row.get::<_, String>(2)?,       // value (plaintext, often empty in newer Chrome)
-                row.get::<_, Vec<u8>>(3)?,      // encrypted_value
-                row.get::<_, String>(4)?,       // path
-                row.get::<_, i64>(5)?,          // expires_utc (Chromium epoch)
-                row.get::<_, bool>(6)?,         // is_secure
-                row.get::<_, bool>(7)?,         // is_httponly
-                row.get::<_, i32>(8)?,          // samesite
-                row.get::<_, String>(9)?,       // top_frame_site_key
+                row.get::<_, String>(0)?,  // host_key
+                row.get::<_, String>(1)?,  // name
+                row.get::<_, String>(2)?,  // value (plaintext, often empty in newer Chrome)
+                row.get::<_, Vec<u8>>(3)?, // encrypted_value
+                row.get::<_, String>(4)?,  // path
+                row.get::<_, i64>(5)?,     // expires_utc (Chromium epoch)
+                row.get::<_, bool>(6)?,    // is_secure
+                row.get::<_, bool>(7)?,    // is_httponly
+                row.get::<_, i32>(8)?,     // samesite
+                row.get::<_, String>(9)?,  // top_frame_site_key
             ))
         })
         .map_err(|e| format!("SQL query failed: {e}"))?;
 
     for row in rows {
-        let (host, name, plaintext_value, encrypted_value, path, expires_utc, secure, http_only, samesite, top_frame) =
-            match row {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+        let (
+            host,
+            name,
+            plaintext_value,
+            encrypted_value,
+            path,
+            expires_utc,
+            secure,
+            http_only,
+            samesite,
+            top_frame,
+        ) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
 
         // Skip partitioned cookies
         if !top_frame.is_empty() {
@@ -625,10 +633,7 @@ fn read_chromium_cookies(
         );
     }
     if skipped_partitioned > 0 {
-        tracing::debug!(
-            count = skipped_partitioned,
-            "skipped partitioned cookies"
-        );
+        tracing::debug!(count = skipped_partitioned, "skipped partitioned cookies");
     }
 
     Ok(cookies)
@@ -668,11 +673,7 @@ fn derive_chromium_key(password: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Decrypt a single Chromium cookie value using AES-128-CBC.
 /// IV: 16 bytes of 0x20 (space). Prefix: "v10" or "v11" (3 bytes, stripped).
-fn decrypt_chromium_cookie(
-    encrypted: &[u8],
-    key: Option<&[u8]>,
-    host: &str,
-) -> Option<String> {
+fn decrypt_chromium_cookie(encrypted: &[u8], key: Option<&[u8]>, host: &str) -> Option<String> {
     let key = key?;
 
     // Must start with v10 or v11
@@ -724,8 +725,8 @@ fn read_firefox_cookies(profile_dir: &Path) -> Result<Vec<ImportedCookie>, Strin
     }
 
     // Copy to temp to avoid locking the live browser's DB
-    let tmp = tempfile::NamedTempFile::new()
-        .map_err(|e| format!("cannot create temp file: {e}"))?;
+    let tmp =
+        tempfile::NamedTempFile::new().map_err(|e| format!("cannot create temp file: {e}"))?;
     std::fs::copy(&cookies_db, tmp.path())
         .map_err(|e| format!("cannot copy cookies.sqlite: {e}"))?;
 
@@ -775,14 +776,14 @@ fn read_firefox_cookies(profile_dir: &Path) -> Result<Vec<ImportedCookie>, Strin
     let rows = stmt
         .query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,  // host
-                row.get::<_, String>(1)?,  // name
-                row.get::<_, String>(2)?,  // value
-                row.get::<_, String>(3)?,  // path
-                row.get::<_, i64>(4)?,     // expiry (unix seconds)
-                row.get::<_, bool>(5)?,    // isSecure
-                row.get::<_, bool>(6)?,    // isHttpOnly
-                row.get::<_, i32>(7)?,     // sameSite
+                row.get::<_, String>(0)?, // host
+                row.get::<_, String>(1)?, // name
+                row.get::<_, String>(2)?, // value
+                row.get::<_, String>(3)?, // path
+                row.get::<_, i64>(4)?,    // expiry (unix seconds)
+                row.get::<_, bool>(5)?,   // isSecure
+                row.get::<_, bool>(6)?,   // isHttpOnly
+                row.get::<_, i32>(7)?,    // sameSite
             ))
         })
         .map_err(|e| format!("SQL query failed: {e}"))?;

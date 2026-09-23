@@ -66,9 +66,7 @@
 
 use super::{events, AgentProtocol, AgentState, Prompt, ProtocolError, Result};
 use amux_core::ids::{MessageId, TurnId, WorkerId};
-use amux_core::protocol::{
-    ExitStatus, Failure, TurnTrace, TurnTraceKind, WorkerEvent,
-};
+use amux_core::protocol::{ExitStatus, Failure, TurnTrace, TurnTraceKind, WorkerEvent};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -315,7 +313,11 @@ impl WorkerShared {
     }
 
     fn set_state(&self, s: AgentState) {
-        *self.state.lock().unwrap() = if self.paused.load(std::sync::atomic::Ordering::SeqCst) { AgentState::Paused } else { s };
+        *self.state.lock().unwrap() = if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
+            AgentState::Paused
+        } else {
+            s
+        };
     }
 }
 
@@ -391,7 +393,9 @@ impl StructuredCliProtocol {
         let (stdout, stderr, turn, resumed_from) = {
             let mut keys = shared.seen_keys.lock().unwrap();
             if shared.paused.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(ProtocolError::Rejected(format!("worker {worker} is paused")));
+                return Err(ProtocolError::Rejected(format!(
+                    "worker {worker} is paused"
+                )));
             }
             if keys.contains(&key) {
                 return Ok(()); // Invariant 9: redelivery must not double-run.
@@ -413,12 +417,15 @@ impl StructuredCliProtocol {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(cfg.provider.binary()));
             let mut cmd = Command::new(&program);
-            cmd.args(cfg.provider.args(text, cfg.model.as_deref(), resumed_from.as_deref()))
-                .current_dir(&cfg.cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
+            cmd.args(
+                cfg.provider
+                    .args(text, cfg.model.as_deref(), resumed_from.as_deref()),
+            )
+            .current_dir(&cfg.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
             for (k, v) in cfg.provider.envs() {
                 cmd.env(k, v);
             }
@@ -461,12 +468,15 @@ impl StructuredCliProtocol {
                     }
                 }
             };
-            let stdout = child.stdout.take().ok_or_else(|| {
-                ProtocolError::Transport("child stdout not captured".to_string())
-            })?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| ProtocolError::Transport("child stdout not captured".to_string()))?;
             let stderr = child.stderr.take();
             *shared.child.lock().unwrap() = Some(child);
-            shared.reading.store(true, std::sync::atomic::Ordering::SeqCst);
+            shared
+                .reading
+                .store(true, std::sync::atomic::Ordering::SeqCst);
 
             let turn = TurnId::from_ulid(ulid::Ulid::new());
             shared.set_state(AgentState::Working {
@@ -517,7 +527,11 @@ async fn read_stream(
 ) {
     struct Reading(Arc<WorkerShared>);
     impl Drop for Reading {
-        fn drop(&mut self) { self.0.reading.store(false, std::sync::atomic::Ordering::SeqCst); }
+        fn drop(&mut self) {
+            self.0
+                .reading
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
     }
     let _reading = Reading(shared.clone());
     let stderr_task = tokio::spawn(stderr_tail(stderr));
@@ -633,10 +647,12 @@ async fn read_stream(
                         turn_id: turn.clone(),
                     });
                 }
-                shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
-                    turn_id: turn.clone(),
-                    outcome: "stream ended without a result event".to_string(),
-                }));
+                shared.emit(WorkerEvent::TurnCompleted(
+                    amux_core::protocol::TurnResult {
+                        turn_id: turn.clone(),
+                        outcome: "stream ended without a result event".to_string(),
+                    },
+                ));
             }
             shared.set_state(AgentState::Idle);
         }
@@ -716,12 +732,7 @@ impl AgentProtocol for StructuredCliProtocol {
     /// nothing running is Ok — the absence of a turn IS the cancelled state.
     async fn cancel(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
-        let pid = shared
-            .child
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|c| c.id());
+        let pid = shared.child.lock().unwrap().as_ref().and_then(|c| c.id());
         let Some(pid) = pid else {
             return Ok(());
         };
@@ -747,23 +758,30 @@ impl AgentProtocol for StructuredCliProtocol {
         let shared = self.shared(worker)?;
         let pid = {
             let _keys = shared.seen_keys.lock().unwrap();
-            shared.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+            shared
+                .paused
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             shared.child.lock().unwrap().as_ref().and_then(|c| c.id())
         };
         shared.set_state(AgentState::Paused);
         if let Some(pid) = pid {
-            crate::api::session_verbs::terminate_owned_tree(pid as i32, true).await
+            crate::api::session_verbs::terminate_owned_tree(pid as i32, true)
+                .await
                 .map_err(|e| ProtocolError::Transport(e.to_string()))?;
             // The stream reader owns reaping. Do not acknowledge until the
             // previous turn's process is gone, even if EOF raced the kill.
             for _ in 0..100 {
-                if !shared.reading.load(std::sync::atomic::Ordering::SeqCst) && unsafe { libc::kill(pid as i32, 0) } != 0 {
+                if !shared.reading.load(std::sync::atomic::Ordering::SeqCst)
+                    && unsafe { libc::kill(pid as i32, 0) } != 0
+                {
                     tracing::info!(worker = %worker, verdict = "protocol_pause_stopped", "paused structured worker process stopped");
                     return Ok(());
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-            return Err(ProtocolError::Transport("could not confirm paused protocol process stopped".into()));
+            return Err(ProtocolError::Transport(
+                "could not confirm paused protocol process stopped".into(),
+            ));
         }
         Ok(())
     }
@@ -772,9 +790,13 @@ impl AgentProtocol for StructuredCliProtocol {
         let shared = self.shared(worker)?;
         let _keys = shared.seen_keys.lock().unwrap();
         if shared.reading.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(ProtocolError::Rejected("previous turn is still stopping".into()));
+            return Err(ProtocolError::Rejected(
+                "previous turn is still stopping".into(),
+            ));
         }
-        shared.paused.store(false, std::sync::atomic::Ordering::SeqCst);
+        shared
+            .paused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         shared.set_state(AgentState::Idle);
         Ok(())
     }
@@ -823,7 +845,12 @@ mod tests {
     /// assertions), records its argv (for continuity assertions — one
     /// NUL-joined line per run in `<name>.argv`), and replays a fixture
     /// stream on stdout.
-    fn fixture_script(dir: &std::path::Path, name: &str, lines: &[&str], exit_code: i32) -> PathBuf {
+    fn fixture_script(
+        dir: &std::path::Path,
+        name: &str,
+        lines: &[&str],
+        exit_code: i32,
+    ) -> PathBuf {
         let path = dir.join(name);
         let runs = dir.join(format!("{name}.runs"));
         let argv = dir.join(format!("{name}.argv"));
@@ -882,10 +909,8 @@ mod tests {
             }
             match tokio::time::timeout(end - now, rx.recv()).await {
                 Ok(Ok(ev)) => {
-                    let terminal = matches!(
-                        ev,
-                        WorkerEvent::TurnCompleted(_) | WorkerEvent::Exited(_)
-                    );
+                    let terminal =
+                        matches!(ev, WorkerEvent::TurnCompleted(_) | WorkerEvent::Exited(_));
                     out.push(ev);
                     if terminal {
                         break;
@@ -994,7 +1019,14 @@ mod tests {
         let with = CliProvider::CodexCli.args("hi", None, Some("thr-1"));
         assert_eq!(
             with,
-            vec!["exec", "resume", "--json", "--skip-git-repo-check", "thr-1", "hi"]
+            vec![
+                "exec",
+                "resume",
+                "--json",
+                "--skip-git-repo-check",
+                "thr-1",
+                "hi"
+            ]
         );
         let fresh = CliProvider::CodexCli.args("hi", None, None);
         assert_eq!(fresh, vec!["exec", "--json", "--skip-git-repo-check", "hi"]);
@@ -1019,7 +1051,10 @@ mod tests {
         // one — measured live); it must NOT be captured, or the dead ref
         // would re-arm itself on every failure.
         let bad_resume_result = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"00000000-0000-0000-0000-000000000000","errors":["No conversation found with session ID: 00000000-0000-0000-0000-000000000000"]}"#;
-        assert_eq!(CliProvider::ClaudeCode.conversation_ref(bad_resume_result), None);
+        assert_eq!(
+            CliProvider::ClaudeCode.conversation_ref(bad_resume_result),
+            None
+        );
         // Cross-provider lines do not cross-match.
         assert_eq!(
             CliProvider::ClaudeCode.conversation_ref(events::tests::GEMINI_INIT),
@@ -1262,22 +1297,41 @@ mod tests {
             WorkerEvent::Exited(st) => assert_eq!(st.code, Some(3)),
             other => panic!("expected Exited, got {other:?}"),
         }
-        let settled =
-            wait_for_state(&proto, &w, |s| matches!(s, AgentState::Exited { .. })).await;
+        let settled = wait_for_state(&proto, &w, |s| matches!(s, AgentState::Exited { .. })).await;
         assert_eq!(settled, AgentState::Exited { code: Some(3) });
     }
 
     #[tokio::test]
     async fn pause_and_resume_stop_headless_work_and_preserve_conversation() {
         use std::os::unix::fs::PermissionsExt;
-        for (i, provider) in [CliProvider::ClaudeCode, CliProvider::CodexCli, CliProvider::GeminiCli].into_iter().enumerate() {
+        for (i, provider) in [
+            CliProvider::ClaudeCode,
+            CliProvider::CodexCli,
+            CliProvider::GeminiCli,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let dir = tempfile::tempdir().unwrap();
             let script = dir.path().join("provider");
-            std::fs::write(&script, "#!/bin/sh\nsleep 120 &\necho $! > tool.pid.tmp\nmv tool.pid.tmp tool.pid\nwait\n").unwrap();
+            std::fs::write(
+                &script,
+                "#!/bin/sh\nsleep 120 &\necho $! > tool.pid.tmp\nmv tool.pid.tmp tool.pid\nwait\n",
+            )
+            .unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
             let proto = StructuredCliProtocol::new();
             let w = worker_id(&format!("{:05}", i + 60));
-            proto.register(w.clone(), WorkerConfig { provider, cwd:dir.path().into(), binary:Some(script), model:None, conversation:Some("saved-conversation".into()) });
+            proto.register(
+                w.clone(),
+                WorkerConfig {
+                    provider,
+                    cwd: dir.path().into(),
+                    binary: Some(script),
+                    model: None,
+                    conversation: Some("saved-conversation".into()),
+                },
+            );
             proto.send_prompt(&w, prompt("before-pause")).await.unwrap();
             // Wait for the fixture's atomic readiness signal, not a one-second
             // host scheduling assumption. Always stop its process group before
@@ -1286,21 +1340,42 @@ mod tests {
                 loop {
                     match std::fs::read_to_string(dir.path().join("tool.pid")) {
                         Ok(pid) => break Ok(pid),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                         Err(e) => break Err(e),
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-            }).await;
+            })
+            .await;
             proto.pause(&w).await.unwrap();
-            let tool = tool.expect("fake provider did not publish tool readiness within 10s")
+            let tool = tool
+                .expect("fake provider did not publish tool readiness within 10s")
                 .expect("fake provider readiness could not be read");
             assert_eq!(proto.state(&w).await.unwrap(), AgentState::Paused);
-            assert!(matches!(proto.send_prompt(&w, prompt("while-paused")).await, Err(ProtocolError::Rejected(_))));
-            let status = Command::new("ps").args(["-p", tool.trim(), "-o", "stat="]).output().await.unwrap();
+            assert!(matches!(
+                proto.send_prompt(&w, prompt("while-paused")).await,
+                Err(ProtocolError::Rejected(_))
+            ));
+            let status = Command::new("ps")
+                .args(["-p", tool.trim(), "-o", "stat="])
+                .output()
+                .await
+                .unwrap();
             let stat = String::from_utf8_lossy(&status.stdout);
-            assert!(stat.trim().is_empty() || stat.trim().starts_with('Z'), "tool survived pause: {stat}");
-            assert_eq!(proto.shared(&w).unwrap().conversation.lock().unwrap().as_deref(), Some("saved-conversation"));
+            assert!(
+                stat.trim().is_empty() || stat.trim().starts_with('Z'),
+                "tool survived pause: {stat}"
+            );
+            assert_eq!(
+                proto
+                    .shared(&w)
+                    .unwrap()
+                    .conversation
+                    .lock()
+                    .unwrap()
+                    .as_deref(),
+                Some("saved-conversation")
+            );
             proto.resume(&w).await.unwrap();
             assert_eq!(proto.state(&w).await.unwrap(), AgentState::Idle);
             // A rejected prompt did not consume the key; it can be sent after Resume.
@@ -1308,7 +1383,10 @@ mod tests {
             proto.pause(&w).await.unwrap();
         }
         let proto = StructuredCliProtocol::new();
-        assert!(matches!(proto.pause(&worker_id("00007")).await, Err(ProtocolError::NoSession(_))));
+        assert!(matches!(
+            proto.pause(&worker_id("00007")).await,
+            Err(ProtocolError::NoSession(_))
+        ));
     }
 
     #[tokio::test]
@@ -1323,7 +1401,10 @@ mod tests {
             proto.state(&ghost).await,
             Err(ProtocolError::NoSession(_))
         ));
-        assert!(matches!(proto.cancel(&ghost).await, Err(ProtocolError::NoSession(_))));
+        assert!(matches!(
+            proto.cancel(&ghost).await,
+            Err(ProtocolError::NoSession(_))
+        ));
         let mut rx = proto.events(&ghost);
         assert!(matches!(
             rx.recv().await,
@@ -1458,7 +1539,9 @@ mod tests {
         collect_until_terminal(&mut rx, Duration::from_secs(10)).await;
         let argvs = recorded_argvs(dir.path(), "fake-claude");
         assert!(
-            argvs[0].windows(2).any(|p| p == ["--resume", "persisted-ref-1"]),
+            argvs[0]
+                .windows(2)
+                .any(|p| p == ["--resume", "persisted-ref-1"]),
             "{argvs:?}"
         );
     }
@@ -1475,7 +1558,9 @@ mod tests {
         let script = fixture_script(
             dir.path(),
             "fake-claude",
-            &[r#"{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"dead-ref-9","errors":["No conversation found with session ID: dead-ref-9"]}"#],
+            &[
+                r#"{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"dead-ref-9","errors":["No conversation found with session ID: dead-ref-9"]}"#,
+            ],
             1,
         );
         let sink = Arc::new(RecordingSink::default());
@@ -1498,12 +1583,15 @@ mod tests {
         // after, observed via the settled state.
         let evs = collect_until_terminal(&mut rx, Duration::from_secs(10)).await;
         assert!(
-            evs.iter().any(|e| matches!(e, WorkerEvent::TurnCompleted(_))),
+            evs.iter()
+                .any(|e| matches!(e, WorkerEvent::TurnCompleted(_))),
             "{evs:?}"
         );
-        let settled =
-            wait_for_state(&proto, &w, |s| matches!(s, AgentState::Exited { .. })).await;
-        assert!(matches!(settled, AgentState::Exited { code: Some(1) }), "{settled:?}");
+        let settled = wait_for_state(&proto, &w, |s| matches!(s, AgentState::Exited { .. })).await;
+        assert!(
+            matches!(settled, AgentState::Exited { code: Some(1) }),
+            "{settled:?}"
+        );
 
         let argvs = recorded_argvs(dir.path(), "fake-claude");
         assert!(
@@ -1515,7 +1603,10 @@ mod tests {
             vec![w.clone()],
             "the dead ref must be forgotten durably"
         );
-        assert!(sink.saves.lock().unwrap().is_empty(), "nothing re-captured the dead id");
+        assert!(
+            sink.saves.lock().unwrap().is_empty(),
+            "nothing re-captured the dead id"
+        );
         // A fresh key runs again — WITHOUT the dead ref.
         let mut rx2 = proto.events(&w);
         proto.send_prompt(&w, prompt("t2")).await.unwrap();
@@ -1574,7 +1665,8 @@ mod tests {
             .unwrap();
         let t1 = collect_until_terminal(&mut rx, Duration::from_secs(120)).await;
         assert!(
-            t1.iter().any(|e| matches!(e, WorkerEvent::TurnCompleted(_))),
+            t1.iter()
+                .any(|e| matches!(e, WorkerEvent::TurnCompleted(_))),
             "turn 1 did not complete: {t1:?}"
         );
         wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
@@ -1584,8 +1676,7 @@ mod tests {
             .send_prompt(
                 &w,
                 Prompt {
-                    text: "What word did I ask you to remember? Reply with just that word."
-                        .into(),
+                    text: "What word did I ask you to remember? Reply with just that word.".into(),
                     idempotency_key: "pom-2".into(),
                 },
             )
@@ -1652,18 +1743,18 @@ mod tests {
         let evs = collect_until_terminal(&mut rx, Duration::from_secs(120)).await;
         let kinds: Vec<_> = evs.iter().map(kind).collect();
         let pos = |k: &str| kinds.iter().position(|x| *x == k);
-        let (started, turn_started, turn_completed) = (
-            pos("started"),
-            pos("turn_started"),
-            pos("turn_completed"),
-        );
+        let (started, turn_started, turn_completed) =
+            (pos("started"), pos("turn_started"), pos("turn_completed"));
         assert!(started.is_some(), "no Started in {kinds:?}");
         assert!(turn_started.is_some(), "no TurnStarted in {kinds:?}");
         assert!(
             turn_completed.is_some(),
             "no TurnCompleted within 120s: {kinds:?}"
         );
-        assert!(started < turn_started && turn_started < turn_completed, "{kinds:?}");
+        assert!(
+            started < turn_started && turn_started < turn_completed,
+            "{kinds:?}"
+        );
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle);
     }

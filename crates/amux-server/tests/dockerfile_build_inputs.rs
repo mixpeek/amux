@@ -63,7 +63,8 @@ fn external_include_roots(crate_manifest: &Path) -> BTreeSet<String> {
             let src_dir = p.parent().unwrap();
             for abs in include_str_targets(&text, src_dir, crate_manifest) {
                 if let Ok(rr) = abs.strip_prefix(&root) {
-                    if let Some(first) = rr.components().next().and_then(|c| c.as_os_str().to_str()) {
+                    if let Some(first) = rr.components().next().and_then(|c| c.as_os_str().to_str())
+                    {
                         if !first.is_empty() && first != "crates" {
                             roots.insert(first.to_string());
                         }
@@ -125,8 +126,14 @@ fn include_str_targets(text: &str, src_dir: &Path, manifest: &Path) -> Vec<PathB
         i = end + 1;
         // The PATH literal, not the first literal: `env!("CARGO_MANIFEST_DIR")`
         // puts "CARGO_MANIFEST_DIR" ahead of the real path, and it has no `/`.
-        let Some(lit) = path_literal(call) else { continue };
-        let base = if call.contains("CARGO_MANIFEST_DIR") { manifest } else { src_dir };
+        let Some(lit) = path_literal(call) else {
+            continue;
+        };
+        let base = if call.contains("CARGO_MANIFEST_DIR") {
+            manifest
+        } else {
+            src_dir
+        };
         let joined = if lit.starts_with('/') {
             PathBuf::from(format!("{}{}", base.to_string_lossy(), lit))
         } else {

@@ -129,14 +129,30 @@ fn parse_local(val: &str) -> Option<(NaiveDateTime, String)> {
     {
         return None;
     }
-    let ss = if b.len() >= 19 && b[16] == b':' && digits(17..19) { &s[17..19] } else { "00" };
+    let ss = if b.len() >= 19 && b[16] == b':' && digits(17..19) {
+        &s[17..19]
+    } else {
+        "00"
+    };
     let naive = NaiveDate::from_ymd_opt(
         s[0..4].parse().ok()?,
         s[5..7].parse().ok()?,
         s[8..10].parse().ok()?,
     )?
-    .and_hms_opt(s[11..13].parse().ok()?, s[14..16].parse().ok()?, ss.parse().ok()?)?;
-    let floating = format!("{}{}{}T{}{}{}", &s[0..4], &s[5..7], &s[8..10], &s[11..13], &s[14..16], ss);
+    .and_hms_opt(
+        s[11..13].parse().ok()?,
+        s[14..16].parse().ok()?,
+        ss.parse().ok()?,
+    )?;
+    let floating = format!(
+        "{}{}{}T{}{}{}",
+        &s[0..4],
+        &s[5..7],
+        &s[8..10],
+        &s[11..13],
+        &s[14..16],
+        ss
+    );
     Some((naive, floating))
 }
 
@@ -152,7 +168,9 @@ pub fn ical_utc(val: &str, tz: TzConvert) -> Option<String> {
 }
 
 fn row_str<'a>(ev: &'a Value, key: &str) -> Option<&'a str> {
-    ev.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+    ev.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 /// RFC 5545 iCalendar feed from calendar EVENTS only (Python
@@ -175,12 +193,20 @@ pub fn generate_ical(events: &[CalEventRow], dtstamp: &str, tz: TzConvert) -> St
             .get("all_day")
             .map(|v| v.as_i64().unwrap_or(0) != 0 || v.as_bool().unwrap_or(false))
             .unwrap_or(false);
-        let uid = format!("{}@amux", ev.get("id").and_then(Value::as_str).unwrap_or("evt"));
+        let uid = format!(
+            "{}@amux",
+            ev.get("id").and_then(Value::as_str).unwrap_or("evt")
+        );
         let summary = ical_escape(row_str(ev, "title").unwrap_or("Event"));
-        let mut block: Vec<String> =
-            vec!["BEGIN:VEVENT".into(), format!("UID:{uid}"), format!("DTSTAMP:{dtstamp}")];
+        let mut block: Vec<String> = vec![
+            "BEGIN:VEVENT".into(),
+            format!("UID:{uid}"),
+            format!("DTSTAMP:{dtstamp}"),
+        ];
         if all_day {
-            let Some(d0) = row_str(ev, "start").and_then(ical_date) else { continue };
+            let Some(d0) = row_str(ev, "start").and_then(ical_date) else {
+                continue;
+            };
             // All-day DTEND is exclusive; default to the day after start.
             let d1 = row_str(ev, "end")
                 .and_then(ical_date)
@@ -214,7 +240,12 @@ pub fn generate_ical(events: &[CalEventRow], dtstamp: &str, tz: TzConvert) -> St
         lines.append(&mut block);
     }
     lines.push("END:VCALENDAR".into());
-    lines.iter().map(|l| ical_fold(l)).collect::<Vec<_>>().join("\r\n") + "\r\n"
+    lines
+        .iter()
+        .map(|l| ical_fold(l))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+        + "\r\n"
 }
 
 /// Production entry: now-UTC DTSTAMP, system-local tz conversion.
@@ -280,14 +311,22 @@ impl CliS3Publisher {
         let bucket = get("AMUX_S3_BUCKET")?;
         let key = get("AMUX_S3_KEY")?;
         let region = get("AMUX_S3_REGION").unwrap_or_else(|| "us-east-1".into());
-        Some(Self { bucket, key, region })
+        Some(Self {
+            bucket,
+            key,
+            region,
+        })
     }
 
     fn aws_binary() -> Option<std::path::PathBuf> {
-        ["/usr/local/bin/aws", "/opt/homebrew/bin/aws", "/usr/bin/aws"]
-            .iter()
-            .map(std::path::PathBuf::from)
-            .find(|p| p.exists())
+        [
+            "/usr/local/bin/aws",
+            "/opt/homebrew/bin/aws",
+            "/usr/bin/aws",
+        ]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.exists())
     }
 }
 
@@ -300,13 +339,18 @@ impl IcalPublisher for CliS3Publisher {
         let aws = Self::aws_binary().ok_or("aws CLI not found")?;
         let mut child = std::process::Command::new(aws)
             .args([
-                "s3", "cp", "-",
+                "s3",
+                "cp",
+                "-",
                 &format!("s3://{}/{}", self.bucket, self.key),
-                "--region", &self.region,
+                "--region",
+                &self.region,
                 // Same headers Python set: content-type for Google, ETag-able
                 // caching so conditional refetches stay cheap.
-                "--content-type", "text/calendar; charset=utf-8",
-                "--cache-control", "public, max-age=900, must-revalidate",
+                "--content-type",
+                "text/calendar; charset=utf-8",
+                "--cache-control",
+                "public, max-age=900, must-revalidate",
             ])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
@@ -319,7 +363,9 @@ impl IcalPublisher for CliS3Publisher {
             .ok_or("aws stdin unavailable")?
             .write_all(ical.as_bytes())
             .map_err(|e| format!("writing feed to aws failed: {e}"))?;
-        let out = child.wait_with_output().map_err(|e| format!("aws wait failed: {e}"))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("aws wait failed: {e}"))?;
         if out.status.success() {
             tracing::info!(bucket = %self.bucket, key = %self.key, "iCal published to S3");
             Ok(())
@@ -327,7 +373,10 @@ impl IcalPublisher for CliS3Publisher {
             Err(format!(
                 "aws s3 cp exited {}: {}",
                 out.status,
-                String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+                String::from_utf8_lossy(&out.stderr)
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
             ))
         }
     }
@@ -343,7 +392,9 @@ mod tests {
     /// UTC-5 (America/New_York standard time), like the Python default tz.
     fn minus5(naive: NaiveDateTime) -> Option<DateTime<Utc>> {
         let off = FixedOffset::west_opt(5 * 3600).unwrap();
-        off.from_local_datetime(&naive).single().map(|dt| dt.with_timezone(&Utc))
+        off.from_local_datetime(&naive)
+            .single()
+            .map(|dt| dt.with_timezone(&Utc))
     }
 
     #[test]
@@ -364,7 +415,11 @@ mod tests {
                 assert!(seg.len() <= 75, "first segment {} octets", seg.len());
             } else {
                 assert!(seg.starts_with(' '), "continuation must start with a space");
-                assert!(seg.len() <= 75, "continuation {} octets incl. space", seg.len());
+                assert!(
+                    seg.len() <= 75,
+                    "continuation {} octets incl. space",
+                    seg.len()
+                );
             }
         }
         // Reassembles losslessly.
@@ -401,10 +456,19 @@ mod tests {
     #[test]
     fn utc_conversion_and_floating_fallback() {
         // 10:30 local at UTC-5 => 15:30Z. Both 'T' and ' ' separators parse.
-        assert_eq!(ical_utc("2026-08-09T10:30:00", &minus5), Some("20260809T153000Z".into()));
-        assert_eq!(ical_utc("2026-08-09 10:30", &minus5), Some("20260809T153000Z".into()));
+        assert_eq!(
+            ical_utc("2026-08-09T10:30:00", &minus5),
+            Some("20260809T153000Z".into())
+        );
+        assert_eq!(
+            ical_utc("2026-08-09 10:30", &minus5),
+            Some("20260809T153000Z".into())
+        );
         // Converter cannot answer -> floating value, seconds zero-padded.
-        assert_eq!(ical_utc("2026-08-09T10:30", &|_| None), Some("20260809T103000".into()));
+        assert_eq!(
+            ical_utc("2026-08-09T10:30", &|_| None),
+            Some("20260809T103000".into())
+        );
         assert_eq!(ical_utc("2026-08-09", &minus5), None); // date-only is not a timed value
     }
 

@@ -56,6 +56,8 @@ COPY amux ./amux
 # so the next scripts/ include_str! does not re-break it; build-stage only (the
 # content is baked into the binary, the runtime stage needs none of it).
 COPY scripts scripts
+# Project execution embeds the harness contract at compile time.
+COPY docs docs
 # frustrations.md is a BUILD INPUT for the same reason, third recurrence of the
 # class after `amux` and `scripts/` (AMUX-3633). The ledger checks added in
 # 14573a02 include_str! the file to parse the REAL ledger rather than a fixture,

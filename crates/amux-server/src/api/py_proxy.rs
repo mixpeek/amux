@@ -86,6 +86,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/sync", "delta sync"),
     ("/api/events", "SSE stream"),
     ("/api/board", "board/tasks CRUD, gates, contract"),
+    ("/api/projects", "project-owned board execution, command intake, evidence and explicit migration"),
     ("/api/board-lifecycle", "durable command decisions and measured planning costs"),
     ("/api/lookup", "explain-selection helper (peek view)"),
     ("/api/tts", "text-to-speech read-aloud synthesis (+ /api/tts/voices)"),

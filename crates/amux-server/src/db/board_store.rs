@@ -24,7 +24,7 @@
 //!   does not model (`creator`, `created`, `notified`, `gcal_event_id`,
 //!   `deleted`).
 
-use amux_core::board::{ Gate, GateCriterion, ItemType, Task, TaskStatus};
+use amux_core::board::{Gate, GateCriterion, ItemType, Task, TaskStatus};
 use amux_core::events::Actor;
 use amux_core::ids::{GateId, TaskId};
 use amux_core::verification::VerifierKind;
@@ -251,7 +251,10 @@ pub const DONE_LINK_REQUIRED_KEY: &str = "AMUX_DONE_LINK_REQUIRED";
 /// board handler to decide whether to validate a link before allowing `done`.
 pub fn done_link_required(session: Option<&str>) -> bool {
     fn is_off(v: &str) -> bool {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
     }
     // A PROCESS-ENV override wins: `AMUX_DONE_LINK_REQUIRED` in ~/.amux/server.env
     // (loaded into process env at startup) is the global operator switch, and it
@@ -289,7 +292,10 @@ pub const DONE_EVIDENCE_REQUIRED_KEY: &str = "AMUX_DONE_EVIDENCE_REQUIRED";
 /// what this card is about, and ethos rule 1 asks for opt-out, not opt-in.
 pub fn done_evidence_required(session: Option<&str>) -> bool {
     fn is_off(v: &str) -> bool {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
     }
     if let Ok(v) = std::env::var(DONE_EVIDENCE_REQUIRED_KEY) {
         if !v.trim().is_empty() {
@@ -375,7 +381,15 @@ pub const NEEDSYOU_ASK_REQUIRED_KEY: &str = "AMUX_NEEDSYOU_ASK_REQUIRED";
 /// means a call only the owner's taste can settle, which is a real category
 /// (ethos rule 3 wants a truthful path for it) and NOT "I would like a second
 /// opinion".
-pub const ASK_TYPES: [&str; 7] = ["budget", "customer_outbound", "decision", "access", "credential", "external", "judgment"];
+pub const ASK_TYPES: [&str; 7] = [
+    "budget",
+    "customer_outbound",
+    "decision",
+    "access",
+    "credential",
+    "external",
+    "judgment",
+];
 
 /// What each type means, printed in the refusal so the reader picks correctly
 /// on the first try rather than by guessing at five bare words.
@@ -395,7 +409,10 @@ pub const ASK_TYPE_HELP: [(&str, &str); 7] = [
 /// process env wins, then worker > group > global scope. Default ON.
 pub fn needsyou_ask_required(session: Option<&str>) -> bool {
     fn is_off(v: &str) -> bool {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
     }
     if let Ok(v) = std::env::var(NEEDSYOU_ASK_REQUIRED_KEY) {
         if !v.trim().is_empty() {
@@ -421,77 +438,217 @@ pub fn needsyou_ask_required(session: Option<&str>) -> bool {
 /// the owner selects a global/group/worker policy; no worker can silently infer
 /// a budget grant from the absence of a typed question.
 pub fn approval_types(session: Option<&str>) -> Vec<String> {
-    let configured = std::env::var("AMUX_APPROVAL_TYPES").ok().filter(|v|!v.trim().is_empty())
-        .or_else(||session.and_then(|s|crate::api::session_verbs::scoped_setting_in(&crate::api::session_verbs::home(),s,"AMUX_APPROVAL_TYPES")))
-        .unwrap_or_else(||"*".into());
-    configured.split(',').map(|s|s.trim().to_ascii_lowercase()).filter(|s|!s.is_empty()).collect()
+    let configured = std::env::var("AMUX_APPROVAL_TYPES")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            session.and_then(|s| {
+                crate::api::session_verbs::scoped_setting_in(
+                    &crate::api::session_verbs::home(),
+                    s,
+                    "AMUX_APPROVAL_TYPES",
+                )
+            })
+        })
+        .unwrap_or_else(|| "*".into());
+    configured
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 pub fn approval_type_allowed(session: Option<&str>, kind: &str) -> bool {
-    let allowed=approval_types(session);
-    allowed.iter().any(|s|s=="*" || s==&kind.trim().to_ascii_lowercase())
+    let allowed = approval_types(session);
+    allowed
+        .iter()
+        .any(|s| s == "*" || s == &kind.trim().to_ascii_lowercase())
 }
 
 /// Boards are self-contained by default. Legacy cooperative workspaces can
 /// explicitly opt in through the same worker/group/global setting resolver.
 pub fn board_delegation_allowed(session: Option<&str>) -> bool {
-    let value = std::env::var("AMUX_BOARD_DELEGATION").ok()
-        .or_else(|| session.and_then(|s| crate::api::session_verbs::scoped_setting_in(
-            &crate::api::session_verbs::home(), s, "AMUX_BOARD_DELEGATION")));
+    let value = std::env::var("AMUX_BOARD_DELEGATION").ok().or_else(|| {
+        session.and_then(|s| {
+            crate::api::session_verbs::scoped_setting_in(
+                &crate::api::session_verbs::home(),
+                s,
+                "AMUX_BOARD_DELEGATION",
+            )
+        })
+    });
     value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
 }
 
-/// References to other boards are evidence, not scheduler dependencies.
-/// This invariant is unconditional: delegation may authorize assignment, never
-/// an execution edge across owners. Unassigned cards form their own board.
-pub fn foreign_dependencies(conn: &Connection, session: Option<&str>, deps: &[String]) -> rusqlite::Result<Vec<(String, String)>> {
-    let session = session.filter(|s| !s.is_empty());
+/// A project's durable owner is independent of executor assignment or retirement.
+/// Legacy worker boards (including the unassigned board) remain self-contained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardOwner {
+    Project(String),
+    Worker(Option<String>),
+}
+impl BoardOwner {
+    pub fn new(project: Option<&str>, session: Option<&str>) -> Self {
+        match project {
+            Some(project) => Self::Project(project.into()),
+            None => Self::Worker(session.filter(|s| !s.is_empty()).map(str::to_owned)),
+        }
+    }
+    pub fn of(row: &IssueRow) -> Self {
+        Self::new(row.project_group.as_deref(), row.session.as_deref())
+    }
+    fn label(&self) -> String {
+        match self {
+            Self::Project(project) => format!("project:{project}"),
+            Self::Worker(worker) => worker.clone().unwrap_or_else(|| "unassigned".into()),
+        }
+    }
+}
+
+/// Dependencies must share durable ownership; assignment is not ownership.
+pub fn foreign_dependencies(
+    conn: &Connection,
+    owner: &BoardOwner,
+    deps: &[String],
+) -> rusqlite::Result<Vec<(String, String)>> {
     let mut foreign = Vec::new();
     for id in deps {
-        let owner = conn.query_row("SELECT session FROM issues WHERE id=?1 AND deleted IS NULL", [id],
-            |r| r.get::<_, Option<String>>(0)).optional()?;
-        match owner {
-            Some(owner) if owner.as_deref().filter(|s| !s.is_empty()) == session => {},
-            Some(owner) => foreign.push((id.clone(), owner.filter(|s| !s.is_empty()).unwrap_or_else(|| "unassigned".into()))),
+        let target = conn
+            .query_row(
+                "SELECT project_group,session FROM issues WHERE id=?1 AND deleted IS NULL",
+                [id],
+                |r| {
+                    Ok(BoardOwner::new(
+                        r.get::<_, Option<String>>(0)?.as_deref(),
+                        r.get::<_, Option<String>>(1)?.as_deref(),
+                    ))
+                },
+            )
+            .optional()?;
+        match target {
+            Some(target) if &target == owner => {}
+            Some(target) => foreign.push((id.clone(), target.label())),
             None => foreign.push((id.clone(), "missing".into())),
+        }
+    }
+    if foreign.is_empty() && !deps.is_empty() && matches!(owner, BoardOwner::Project(_)) {
+        tracing::info!(owner=?owner,measured=true,n_considered=deps.len(),verdict="project_dependency_owner_validated","same-project edges validated independently of executor assignment");
+    }
+    Ok(foreign)
+}
+
+/// Ownership changes must preserve incoming edges as well as outgoing ones.
+pub fn foreign_dependents(
+    conn: &Connection,
+    id: &str,
+    owner: &BoardOwner,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT i.id,i.project_group,i.session FROM issues i, \
+         json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d \
+         WHERE i.deleted IS NULL AND d.value=?1 ORDER BY i.id",
+    )?;
+    let rows = stmt.query_map([id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            BoardOwner::new(
+                r.get::<_, Option<String>>(1)?.as_deref(),
+                r.get::<_, Option<String>>(2)?.as_deref(),
+            ),
+        ))
+    })?;
+    let mut foreign = Vec::new();
+    for row in rows {
+        let (id, target) = row?;
+        if &target != owner {
+            foreign.push((id, target.label()));
         }
     }
     Ok(foreign)
 }
 
-/// Reassignment must also preserve the board of every task that waits on this
-/// card. Keep connected work together; silently dropping these edges would
-/// turn an unfinished prerequisite into runnable work.
-pub fn foreign_dependents(conn: &Connection, id: &str, session: Option<&str>) -> rusqlite::Result<Vec<(String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT i.id, COALESCE(NULLIF(i.session,''),'unassigned') FROM issues i, \
-         json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d \
-         WHERE i.deleted IS NULL AND d.value=?1 AND COALESCE(i.session,'') != ?2 ORDER BY i.id")?;
-    let rows = stmt.query_map(params![id, session.unwrap_or("")], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    rows.collect()
+/// Validate a batch against its final ownership, so connected migrations are
+/// atomic while outside incoming dependents cannot be stranded by reassignment.
+pub fn validate_owner_changes(
+    conn: &Connection,
+    changes: &[(String, BoardOwner)],
+) -> rusqlite::Result<()> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let owners: std::collections::HashMap<_, _> = changes
+        .iter()
+        .map(|(id, owner)| (id.as_str(), owner))
+        .collect();
+    let ids = serde_json::to_string(&owners.keys().collect::<Vec<_>>()).unwrap();
+    let mut q=conn.prepare("SELECT i.id,d.value FROM issues i,json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d WHERE i.deleted IS NULL AND (i.id IN (SELECT value FROM json_each(?1)) OR d.value IN (SELECT value FROM json_each(?1)))")?;
+    for edge in q.query_map([ids], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
+        let (source, target) = edge?;
+        let read_owner = |id: &str| -> rusqlite::Result<Option<BoardOwner>> {
+            let stored = conn
+                .query_row(
+                    "SELECT project_group,session FROM issues WHERE id=?1 AND deleted IS NULL",
+                    [id],
+                    |r| {
+                        Ok(BoardOwner::new(
+                            r.get::<_, Option<String>>(0)?.as_deref(),
+                            r.get::<_, Option<String>>(1)?.as_deref(),
+                        ))
+                    },
+                )
+                .optional()?;
+            Ok(stored.map(|old| owners.get(id).map(|v| (*v).clone()).unwrap_or(old)))
+        };
+        let left = read_owner(&source)?;
+        let right = read_owner(&target)?;
+        if left.is_none() || right.is_none() || left != right {
+            refuse_dependency_write(
+                &source,
+                &[(
+                    target,
+                    right.map(|v| v.label()).unwrap_or_else(|| "missing".into()),
+                )],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn refuse_dependency_write(card: &str, edges: &[(String, String)]) -> rusqlite::Result<()> {
-    if edges.is_empty() { return Ok(()) }
+    if edges.is_empty() {
+        return Ok(());
+    }
     tracing::warn!(marker="cross_board_dependency_refused", card, dependencies=?edges,
-        measured=true, n_considered=edges.len(), "storage refused a dependency graph crossing worker boards");
-    Err(rusqlite::Error::InvalidParameterName(format!("cross_board_dependency_forbidden: {card}: {edges:?}")))
+        measured=true, n_considered=edges.len(), "storage refused a dependency graph crossing durable project/worker ownership");
+    Err(rusqlite::Error::InvalidParameterName(format!(
+        "cross_board_dependency_forbidden: {card}: {edges:?}"
+    )))
 }
 
 /// Guard the shared write path, including board-drive and internal assignments.
 /// Legacy bad edges may still receive evidence and be removed incrementally;
 /// new edges, ownership changes and reopening a terminal card are checked.
 fn validate_dependency_update(conn: &Connection, row: &IssueRow) -> rusqlite::Result<()> {
-    let previous: Option<(Option<String>, Option<String>, String, String)> = conn.query_row(
-        "SELECT session, depends_on, status, type FROM issues WHERE id=?1", [&row.id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
-    let Some((owner, deps, status, item_type)) = previous else { return Ok(()) };
-    let owner_changed = owner.as_deref().filter(|s| !s.is_empty()) != row.session.as_deref().filter(|s| !s.is_empty());
-    let old_deps: Vec<String> = serde_json::from_str(deps.as_deref().unwrap_or("[]")).unwrap_or_default();
-    let reopened = execution_is_terminal(&status, &item_type) && !execution_is_terminal(&row.status, &row.item_type);
-    let added: Vec<String> = row.depends_on.iter().filter(|d| owner_changed || reopened || !old_deps.contains(d)).cloned().collect();
-    refuse_dependency_write(&row.id, &foreign_dependencies(conn, row.session.as_deref(), &added)?)?;
+    let Some(previous) = get_issue(conn, &row.id)? else {
+        return Ok(());
+    };
+    let owner = BoardOwner::of(row);
+    let owner_changed = BoardOwner::of(&previous) != owner;
+    let status = previous.status;
+    let item_type = previous.item_type;
+    let old_deps = previous.depends_on;
+    let reopened = execution_is_terminal(&status, &item_type)
+        && !execution_is_terminal(&row.status, &row.item_type);
+    let added: Vec<String> = row
+        .depends_on
+        .iter()
+        .filter(|d| owner_changed || reopened || !old_deps.contains(d))
+        .cloned()
+        .collect();
+    refuse_dependency_write(&row.id, &foreign_dependencies(conn, &owner, &added)?)?;
     if owner_changed {
-        refuse_dependency_write(&row.id, &foreign_dependents(conn, &row.id, row.session.as_deref())?)?;
+        refuse_dependency_write(&row.id, &foreign_dependents(conn, &row.id, &owner)?)?;
     }
     Ok(())
 }
@@ -533,7 +690,10 @@ pub fn ask_verdict(actor: &str, ask_type: &str, question: &str, unblocks: &str) 
     }
     let actor = actor.trim().to_ascii_lowercase();
     if actor.is_empty()
-        || matches!(actor.as_str(), "human" | "user" | "owner" | "someone" | "you" | "me")
+        || matches!(
+            actor.as_str(),
+            "human" | "user" | "owner" | "someone" | "you" | "me"
+        )
     {
         return AskVerdict::NoActor;
     }
@@ -589,7 +749,10 @@ pub const CONTINUATION_REQUIRED_KEY: &str = "AMUX_CONTINUATION_REQUIRED";
 /// and it differs on purpose.
 pub fn continuation_required(session: Option<&str>) -> bool {
     fn is_on(v: &str) -> bool {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes"
+        )
     }
     if let Ok(v) = std::env::var(CONTINUATION_REQUIRED_KEY) {
         if !v.trim().is_empty() {
@@ -836,7 +999,11 @@ pub fn stalest_todos(conn: &Connection, session: &str, n: usize) -> Vec<(String,
     )) {
         if let Ok(rows) = st.query_map(rusqlite::params![session, n as i64], |r| {
             let updated: f64 = r.get(2)?;
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, ((now - updated) / 86_400.0) as i64))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                ((now - updated) / 86_400.0) as i64,
+            ))
         }) {
             out.extend(rows.flatten());
         }
@@ -850,7 +1017,10 @@ pub const BLOCKED_NEEDS_WATCH_KEY: &str = "AMUX_BLOCKED_NEEDS_WATCH";
 /// Must a card entering `blocked` name what would unblock it?
 pub fn blocked_needs_watch(session: Option<&str>) -> bool {
     fn is_off(v: &str) -> bool {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
     }
     if let Ok(v) = std::env::var(BLOCKED_NEEDS_WATCH_KEY) {
         if !v.trim().is_empty() {
@@ -942,11 +1112,7 @@ fn scoped_or_process_env(key: &str, session: Option<&str>) -> Option<String> {
         }
     }
     let lane = session.filter(|s| !s.is_empty())?;
-    crate::api::session_verbs::scoped_setting_in(
-        &crate::api::session_verbs::home(),
-        lane,
-        key,
-    )
+    crate::api::session_verbs::scoped_setting_in(&crate::api::session_verbs::home(), lane, key)
 }
 
 /// `YYYY-MM-DD`, `days` from now in LOCAL time — the format every existing
@@ -969,7 +1135,11 @@ pub fn revisit_arrived(due: Option<&str>, today: &str) -> bool {
         && d.as_bytes()[4] == b'-'
         && d.as_bytes()[7] == b'-'
         && d.bytes().enumerate().all(|(i, c)| {
-            if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() }
+            if i == 4 || i == 7 {
+                c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
         });
     ok && d <= today
 }
@@ -991,8 +1161,8 @@ pub fn asset_refs(text: &str) -> Vec<String> {
     let markdown = MARKDOWN
         .get_or_init(|| Regex::new(r#"\[[^\]]*\]\(\s*([^\s\)]+)"#).expect("asset markdown regex"));
     let url = URL.get_or_init(|| Regex::new(r#"https?://[^\s<>\"']+"#).expect("asset url regex"));
-    let number_ref = NUMBER_REF
-        .get_or_init(|| Regex::new(r"(?:^|\s)(#\d+)\b").expect("asset ref regex"));
+    let number_ref =
+        NUMBER_REF.get_or_init(|| Regex::new(r"(?:^|\s)(#\d+)\b").expect("asset ref regex"));
 
     fn file_like_component(part: &str) -> bool {
         if let Some(name) = part.strip_prefix('.') {
@@ -1001,9 +1171,13 @@ pub fn asset_refs(text: &str) -> Vec<String> {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
         }
-        let Some((stem, ext)) = part.rsplit_once('.') else { return false };
+        let Some((stem, ext)) = part.rsplit_once('.') else {
+            return false;
+        };
         !stem.is_empty()
-            && stem.chars().any(|c| c.is_ascii_alphabetic() || matches!(c, '_' | '-'))
+            && stem
+                .chars()
+                .any(|c| c.is_ascii_alphabetic() || matches!(c, '_' | '-'))
             && (1..=12).contains(&ext.len())
             && ext.chars().all(|c| c.is_ascii_alphanumeric())
     }
@@ -1027,10 +1201,7 @@ pub fn asset_refs(text: &str) -> Vec<String> {
         // the repo that could never exist. A dotted directory is possible, but
         // two file-shaped path components are ambiguous evidence and should be
         // written as separate pointers by the worker.
-        if !clean.is_empty()
-            && !ambiguous_joined_files(clean)
-            && seen.insert(clean.to_string())
-        {
+        if !clean.is_empty() && !ambiguous_joined_files(clean) && seen.insert(clean.to_string()) {
             out.push(clean.to_string());
         }
     };
@@ -1123,7 +1294,9 @@ pub fn output_asset_refs(text: &str) -> Vec<String> {
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
         for marker in MARKERS {
-            let Some(i) = lower.find(marker) else { continue };
+            let Some(i) = lower.find(marker) else {
+                continue;
+            };
             let tail = &line[i + marker.len()..];
             for reference in asset_refs(tail) {
                 if seen.insert(reference.clone()) {
@@ -1201,9 +1374,10 @@ pub fn default_gates_for(item_type_raw: &str, target: TaskStatus) -> Vec<String>
             "The choice is stated as a question with its options",
             "Named the person whose call this is",
         ],
-        (ItemType::Decision, TaskStatus::Review) => {
-            &["Options and their trade-offs are written up", "Ready for the decider"]
-        }
+        (ItemType::Decision, TaskStatus::Review) => &[
+            "Options and their trade-offs are written up",
+            "Ready for the decider",
+        ],
         (ItemType::Decision, TaskStatus::Done) => {
             &["The decision is recorded on the card: what was chosen, by whom, and when"]
         }
@@ -1455,8 +1629,16 @@ pub fn effective_gate_trail(
     let (criteria, source, winner) = if !card.is_empty() {
         (card.clone(), GateSource::Card, "card")
     } else if let Some(g) = worker.clone() {
-        let g = if worker_additive { union_with_type(g) } else { g };
-        (g, GateSource::Worker(session.unwrap_or("").to_string()), "worker")
+        let g = if worker_additive {
+            union_with_type(g)
+        } else {
+            g
+        };
+        (
+            g,
+            GateSource::Worker(session.unwrap_or("").to_string()),
+            "worker",
+        )
     } else if !group_merged.is_empty() {
         let g = if group_additive {
             union_with_type(group_merged.clone())
@@ -1469,26 +1651,44 @@ pub fn effective_gate_trail(
             "group",
         )
     } else if let Some(c) = column.clone() {
-        let c = if column_additive { union_with_type(c) } else { c };
+        let c = if column_additive {
+            union_with_type(c)
+        } else {
+            c
+        };
         (c, GateSource::Column, "column")
     } else {
-        (type_default.clone(), GateSource::TypeDefault, "type_default")
+        (
+            type_default.clone(),
+            GateSource::TypeDefault,
+            "type_default",
+        )
     };
 
     // `held` = this tier actually had a rule. A tier that held one and did not
     // win was OUTRANKED; one that held nothing was SILENT and could never have
     // applied. Same row count, opposite meanings.
-    let layer = |name: &'static str, scope: Option<String>, held: Option<Vec<String>>| -> GateLayer {
-        let (verdict, criteria) = match held {
-            _ if name == winner => ("applied", criteria.clone()),
-            Some(c) => ("outranked", c),
-            None => ("silent", vec![]),
+    let layer =
+        |name: &'static str, scope: Option<String>, held: Option<Vec<String>>| -> GateLayer {
+            let (verdict, criteria) = match held {
+                _ if name == winner => ("applied", criteria.clone()),
+                Some(c) => ("outranked", c),
+                None => ("silent", vec![]),
+            };
+            GateLayer {
+                layer: name,
+                scope,
+                verdict,
+                criteria,
+            }
         };
-        GateLayer { layer: name, scope, verdict, criteria }
-    };
 
     let layers = vec![
-        layer("card", Some(row.id.clone()), (!card.is_empty()).then_some(card)),
+        layer(
+            "card",
+            Some(row.id.clone()),
+            (!card.is_empty()).then_some(card),
+        ),
         // A card with no session has no worker or group tier to consult at all.
         // Reporting that as `silent` would claim an empty answer from a scope
         // nobody asked, which is the same over-claim one layer along.
@@ -1515,10 +1715,18 @@ pub fn effective_gate_trail(
             },
         },
         layer("column", None, column),
-        layer("type_default", Some(row.item_type.clone()), Some(type_default)),
+        layer(
+            "type_default",
+            Some(row.item_type.clone()),
+            Some(type_default),
+        ),
     ];
 
-    GateTrail { criteria, source, layers }
+    GateTrail {
+        criteria,
+        source,
+        layers,
+    }
 }
 
 /// Which tier of the precedence produced a card's gate for one transition.
@@ -1921,6 +2129,8 @@ pub fn next_issue_id(conn: &Connection, prefix: &str) -> rusqlite::Result<String
 /// to check one property is a test that stops being written.
 #[derive(Debug, Clone, Default)]
 pub struct IssueRow {
+    /// Stable group/project owner. Session is the executor when this is set.
+    pub project_group: Option<String>,
     /// The semantic id ("AMUX-123") — the wire identity. See [`internal_id`].
     pub id: String,
     pub title: String,
@@ -2228,6 +2438,9 @@ impl IssueRow {
             obj.insert("desc".into(), serde_json::json!(self.desc));
             obj.insert("log".into(), serde_json::json!(self.log));
         }
+        if let Some(project) = &self.project_group {
+            v["project_group"] = serde_json::json!(project);
+        }
         v
     }
 
@@ -2301,7 +2514,10 @@ impl IssueRow {
             archived: self.archived != 0,
             pinned: self.pinned != 0,
             depends_on: self.depends_on.iter().map(|d| internal_id(d)).collect(),
-            reviewer: self.reviewer.as_ref().map(|n| Actor::Human { name: n.clone() }),
+            reviewer: self
+                .reviewer
+                .as_ref()
+                .map(|n| Actor::Human { name: n.clone() }),
             gate_override: None,
             tags: self.tags.clone(),
             version: u64::try_from(self.version).unwrap_or(0),
@@ -2329,7 +2545,7 @@ const COLS: &str = "i.id, i.title, i.\"desc\", i.status, i.session, i.creator, i
      i.callback_prompt, i.callback_state, i.callback_message_id, \
      i.callback_fired_at, i.callback_error, i.ask_actor, \
      i.lease_owner, i.lease_acquired_at, i.lease_heartbeat_at, \
-     i.lease_expires_at, COALESCE(i.lease_generation,0)";
+     i.lease_expires_at, COALESCE(i.lease_generation,0), i.project_group";
 
 /// Read an INTEGER-typed timestamp column that some row may hold as REAL or TEXT.
 ///
@@ -2404,6 +2620,7 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
         .map(str::to_string)
         .collect();
     Ok(IssueRow {
+        project_group: r.get(57)?,
         id: r.get(0)?,
         title: r.get(1)?,
         desc: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -2421,7 +2638,9 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
         // reason it had not fired.
         created: ts_i64(r, 7)?,
         updated: ts_i64(r, 8)?,
-        owner_type: r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "human".into()),
+        owner_type: r
+            .get::<_, Option<String>>(9)?
+            .unwrap_or_else(|| "human".into()),
         due_time: r.get(10)?,
         pinned: r.get(11)?,
         gcal_event_id: r.get(12)?,
@@ -2429,7 +2648,9 @@ fn issue_from_row(r: &Row<'_>) -> rusqlite::Result<IssueRow> {
         notified: r.get(14)?,
         gate: r.get(15)?,
         shepherd: r.get(16)?,
-        item_type: r.get::<_, Option<String>>(17)?.unwrap_or_else(|| "code".into()),
+        item_type: r
+            .get::<_, Option<String>>(17)?
+            .unwrap_or_else(|| "code".into()),
         archived: r.get(18)?,
         depends_on,
         reviewer: r.get(20)?,
@@ -2527,6 +2748,13 @@ pub fn get_issue(conn: &Connection, id: &str) -> rusqlite::Result<Option<IssueRo
     .optional()
 }
 
+/// The project owns these rows even when its executor expires or is replaced.
+pub fn project_issues(conn: &Connection, name: &str) -> rusqlite::Result<Vec<IssueRow>> {
+    let mut q = conn.prepare(&format!("SELECT {COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id=i.id WHERE i.project_group=?1 AND i.deleted IS NULL AND i.archived=0 GROUP BY i.id ORDER BY i.pos,i.created,i.id"))?;
+    let rows = q.query_map([name], issue_from_row)?.collect();
+    rows
+}
+
 /// Archived filter for the list (`archived` query param), Python's grammar
 /// (amux-server.py:14025): absent/"" = no filter, truthy = archived-only,
 /// any other value = non-archived only.
@@ -2621,7 +2849,7 @@ pub fn planning_tasks(
 ) -> rusqlite::Result<Vec<PlanningRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {PLANNING_COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
-         WHERE i.deleted IS NULL GROUP BY i.id"
+         WHERE i.deleted IS NULL AND i.project_group IS NULL GROUP BY i.id"
     ))?;
     let mut rows: Vec<(i64, f64, i64, PlanningRow)> = Vec::new();
     let mapped = stmt.query_map([], |r| {
@@ -2634,7 +2862,11 @@ pub fn planning_tasks(
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(s).ok())
-            .map(|v| v.into_iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .map(|v| {
+                v.into_iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let tags_csv: Option<String> = r.get(15)?;
         let tags: Vec<String> = tags_csv
@@ -2662,7 +2894,9 @@ pub fn planning_tasks(
                 .map(crate::orchestrator::runtime::foreign_worker_id),
             item_type: core_item_type(&item_type),
             creator: if creator.trim().is_empty() {
-                Actor::System { component: "python-board".into() }
+                Actor::System {
+                    component: "python-board".into(),
+                }
             } else {
                 Actor::Human { name: creator }
             },
@@ -2680,7 +2914,11 @@ pub fn planning_tasks(
             pinned,
             pos,
             updated,
-            PlanningRow { task, raw_status, session: r.get(3)? },
+            PlanningRow {
+                task,
+                raw_status,
+                session: r.get(3)?,
+            },
         ))
     })?;
     for row in mapped {
@@ -2715,10 +2953,28 @@ fn raw_spellings_for(wanted: &str) -> Vec<String> {
         return vec![want];
     };
     const ALIASES: &[&str] = &[
-        "backlog", "todo", "doing", "wip", "in_progress", "inprogress", "review",
-        "in_review", "inreview", "in review", "needsyou", "needs_you", "blocked",
-        "done", "resolved", "complete", "completed", "closed", "verified",
-        "discarded", "armed", "quarantined",
+        "backlog",
+        "todo",
+        "doing",
+        "wip",
+        "in_progress",
+        "inprogress",
+        "review",
+        "in_review",
+        "inreview",
+        "in review",
+        "needsyou",
+        "needs_you",
+        "blocked",
+        "done",
+        "resolved",
+        "complete",
+        "completed",
+        "closed",
+        "verified",
+        "discarded",
+        "armed",
+        "quarantined",
     ];
     ALIASES
         .iter()
@@ -2743,8 +2999,10 @@ pub fn list_issues(
     // The narrowing is exact, not conservative: `raw_spellings_for` enumerates
     // the closed alias table `parse_status` matches on, so SQL selects exactly
     // the rows the Rust comparison would keep.
-    let sql_status: Vec<String> =
-        status_filter.iter().flat_map(|s| raw_spellings_for(s)).collect();
+    let sql_status: Vec<String> = status_filter
+        .iter()
+        .flat_map(|s| raw_spellings_for(s))
+        .collect();
     let where_status = if sql_status.is_empty() {
         String::new()
     } else {
@@ -2762,7 +3020,10 @@ pub fn list_issues(
     };
     let want_status: Vec<String> = status_filter.iter().map(|s| canon(s)).collect();
     let mut rows = Vec::new();
-    for row in stmt.query_map(rusqlite::params_from_iter(sql_status.iter()), issue_from_row)? {
+    for row in stmt.query_map(
+        rusqlite::params_from_iter(sql_status.iter()),
+        issue_from_row,
+    )? {
         let row = row?;
         if !want_status.is_empty() && !want_status.contains(&canon(&row.status)) {
             continue;
@@ -2800,7 +3061,11 @@ fn board_order(
     b_pinned
         .cmp(&a_pinned)
         .then_with(|| i32::from(a_pos == 0.0).cmp(&i32::from(b_pos == 0.0)))
-        .then_with(|| a_pos.partial_cmp(&b_pos).unwrap_or(std::cmp::Ordering::Equal))
+        .then_with(|| {
+            a_pos
+                .partial_cmp(&b_pos)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .then_with(|| b_updated.cmp(&a_updated))
 }
 
@@ -2841,7 +3106,11 @@ pub fn list_issues_capped(
     let light = light_rows(conn, status_filter, session_filter, archived)?;
     let (kept_light, term_total, term_kept) =
         cap_terminal_by(light, done_limit, |r| &r.status, |r| r.updated);
-    Ok((hydrate_light(conn, &kept_light, prose)?, term_total, term_kept))
+    Ok((
+        hydrate_light(conn, &kept_light, prose)?,
+        term_total,
+        term_kept,
+    ))
 }
 
 /// [`list_issues_capped`]'s sibling with [`sse_terminal_quota`] semantics
@@ -2962,9 +3231,15 @@ const DESC_PREFIX_CHARS: usize = 512;
 /// of the 371 matches across the whole table really do yield a note.
 fn needsyou_marker_sql() -> String {
     const MARKERS: [&str; 9] = [
-        "needs-you:", "needs you:", "needsyou:",
-        "needs-ethan:", "needs ethan:", "needsethan:",
-        "needs-human:", "needs human:", "needshuman:",
+        "needs-you:",
+        "needs you:",
+        "needsyou:",
+        "needs-ethan:",
+        "needs ethan:",
+        "needsethan:",
+        "needs-human:",
+        "needs human:",
+        "needshuman:",
     ];
     let mut parts: Vec<String> = Vec::new();
     for col in ["i.\"desc\"", "i.log"] {
@@ -3016,8 +3291,7 @@ fn hydrate_light(
             // pasted terminal output and will recur, and `instr(desc, char(0))`
             // isolates exactly those two rows out of 8,260. Hydrating them
             // whole is cheaper than shipping a quietly wrong length.
-            let full_desc_when =
-                format!("instr(COALESCE(i.\"desc\",''), char(0)) > 0 OR {marker}");
+            let full_desc_when = format!("instr(COALESCE(i.\"desc\",''), char(0)) > 0 OR {marker}");
             let desc_expr = format!(
                 "CASE WHEN {full_desc_when} THEN i.\"desc\" \
                  ELSE substr(COALESCE(i.\"desc\",''), 1, {DESC_PREFIX_CHARS}) END"
@@ -3042,8 +3316,10 @@ fn hydrate_light(
             "SELECT {cols} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
              WHERE i.deleted IS NULL AND i.id IN ({marks}) GROUP BY i.id"
         ))?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            chunk.iter().map(|r| &r.id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|r| &r.id as &dyn rusqlite::types::ToSql)
+            .collect();
         // Read the derived columns BY NAME. `issue_from_row` maps fifty columns
         // positionally, so appending to that list by index is a standing invite
         // to an off-by-one that silently reads the neighbouring field.
@@ -3062,7 +3338,10 @@ fn hydrate_light(
             by_id.insert(row.id.clone(), row);
         }
     }
-    Ok(kept_light.iter().filter_map(|l| by_id.remove(&l.id)).collect())
+    Ok(kept_light
+        .iter()
+        .filter_map(|l| by_id.remove(&l.id))
+        .collect())
 }
 
 /// The Python `_BOARD_TERMINAL` set for the done_limit cap. NOTE: this is
@@ -3146,16 +3425,17 @@ fn terminal_quota_by<T>(
     updated_of: impl Fn(&T) -> i64,
 ) -> Vec<T> {
     let verified_limit = done_limit.max(300);
-    let keep_top = |status_match: &dyn Fn(&str) -> bool, limit: usize| -> std::collections::HashSet<usize> {
-        let mut idx: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| status_match(&status_of(r).trim().to_lowercase()))
-            .map(|(i, _)| i)
-            .collect();
-        idx.sort_by(|a, b| updated_of(&items[*b]).cmp(&updated_of(&items[*a])));
-        idx.into_iter().take(limit).collect()
-    };
+    let keep_top =
+        |status_match: &dyn Fn(&str) -> bool, limit: usize| -> std::collections::HashSet<usize> {
+            let mut idx: Vec<usize> = items
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| status_match(&status_of(r).trim().to_lowercase()))
+                .map(|(i, _)| i)
+                .collect();
+            idx.sort_by(|a, b| updated_of(&items[*b]).cmp(&updated_of(&items[*a])));
+            idx.into_iter().take(limit).collect()
+        };
     let keep_verified = keep_top(&|s: &str| s == "verified", verified_limit);
     let keep_done = keep_top(&|s: &str| matches!(s, "done" | "discarded"), done_limit);
     items
@@ -3294,7 +3574,14 @@ pub fn open_capture_with_desc(
 /// card at the top of its lane), int timestamps, `notified` 0. Returns the
 /// row as stored.
 pub fn create_issue(conn: &Connection, new: &NewIssue, now: i64) -> rusqlite::Result<IssueRow> {
-    refuse_dependency_write("new card", &foreign_dependencies(conn, new.session.as_deref(), &new.depends_on)?)?;
+    refuse_dependency_write(
+        "new card",
+        &foreign_dependencies(
+            conn,
+            &BoardOwner::new(None, new.session.as_deref()),
+            &new.depends_on,
+        )?,
+    )?;
     let prefix = prefix_from_session(new.session.as_deref().unwrap_or(""));
     let id = next_issue_id(conn, &prefix)?;
     let min_pos: f64 = conn.query_row(
@@ -3348,8 +3635,12 @@ pub fn create_issue(conn: &Connection, new: &NewIssue, now: i64) -> rusqlite::Re
             now,
             new.source.as_deref().filter(|x| !x.trim().is_empty()),
             new.requested_by.as_deref().filter(|x| !x.trim().is_empty()),
-            new.callback_session.as_deref().filter(|x| !x.trim().is_empty()),
-            new.callback_prompt.as_deref().filter(|x| !x.trim().is_empty()),
+            new.callback_session
+                .as_deref()
+                .filter(|x| !x.trim().is_empty()),
+            new.callback_prompt
+                .as_deref()
+                .filter(|x| !x.trim().is_empty()),
             new.callback_session.as_ref().map(|_| "armed"),
             new.ask_actor.as_deref().filter(|x| !x.trim().is_empty()),
             new.next_action.as_deref().filter(|x| !x.trim().is_empty()),
@@ -3417,7 +3708,11 @@ pub fn undelete(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
 /// identically (not found) because they were never asked to distinguish them.
 pub fn issue_exists_including_deleted(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(conn
-        .query_row("SELECT 1 FROM issues WHERE id = ?1", params![id], |_| Ok(()))
+        .query_row(
+            "SELECT 1 FROM issues WHERE id = ?1",
+            params![id],
+            |_| Ok(()),
+        )
         .optional()?
         .is_some())
 }
@@ -3506,7 +3801,11 @@ pub static LEASE_HEARTBEATS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 /// Deliberately a raw UPDATE of the lease columns only: `updated` and `version`
 /// are untouched, so a heartbeat never reads as a card edit, never bumps rot
 /// clocks, and never races a real PATCH on the version check.
-pub fn refresh_lease_heartbeat(conn: &Connection, holder: &str, now: i64) -> rusqlite::Result<usize> {
+pub fn refresh_lease_heartbeat(
+    conn: &Connection,
+    holder: &str,
+    now: i64,
+) -> rusqlite::Result<usize> {
     let holder = holder.trim();
     if holder.is_empty() {
         return Ok(0);
@@ -3574,11 +3873,18 @@ pub fn execution_is_terminal(status: &str, item_type: &str) -> bool {
 }
 
 pub fn dependency_resolved(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let state = conn.query_row(
-        "SELECT status, type FROM issues WHERE id=?1 AND deleted IS NULL",
-        [id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())),
-    ).optional()?;
+    let state = conn
+        .query_row(
+            "SELECT status, type FROM issues WHERE id=?1 AND deleted IS NULL",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .optional()?;
     Ok(state.is_some_and(|(status, item_type)| dependency_is_resolved(&status, &item_type)))
 }
 
@@ -3591,7 +3897,10 @@ fn compact_terminal_text(text: &str, limit: usize) -> String {
     if compact.chars().count() <= limit {
         compact
     } else {
-        let mut truncated = compact.chars().take(limit.saturating_sub(1)).collect::<String>();
+        let mut truncated = compact
+            .chars()
+            .take(limit.saturating_sub(1))
+            .collect::<String>();
         truncated.push('…');
         truncated
     }
@@ -3702,13 +4011,15 @@ pub fn has_execution_details(row: &IssueRow) -> bool {
 fn execution_details_sql() -> String {
     // CASE prevents json_each from evaluating corrupt legacy JSON.
     let whitespace = "char(9)||char(10)||char(11)||char(12)||char(13)||' '||char(133)||char(160)||char(5760)||char(8192)||char(8193)||char(8194)||char(8195)||char(8196)||char(8197)||char(8198)||char(8199)||char(8200)||char(8201)||char(8202)||char(8232)||char(8233)||char(8239)||char(8287)||char(12288)";
-    format!("(length(trim(COALESCE(i.next_action,''), {whitespace})) > 0 AND \
+    format!(
+        "(length(trim(COALESCE(i.next_action,''), {whitespace})) > 0 AND \
         CASE WHEN json_valid(i.acceptance_criteria) THEN \
           CASE json_type(i.acceptance_criteria) \
           WHEN 'text' THEN length(trim(json_extract(i.acceptance_criteria,'$'), {whitespace})) > 0 \
           WHEN 'array' THEN EXISTS(\
             SELECT 1 FROM json_each(i.acceptance_criteria) c WHERE c.type='text' \
-            AND length(trim(c.value, {whitespace})) > 0) ELSE 0 END ELSE 0 END)")
+            AND length(trim(c.value, {whitespace})) > 0) ELSE 0 END ELSE 0 END)"
+    )
 }
 
 /// A captured message whose FIRST LINE opens with `ASK` and names a board id is
@@ -3742,8 +4053,12 @@ fn execution_details_sql() -> String {
 /// interpolate into a dispatch query. A well-formed id that names nothing keeps
 /// one extra card, which is the recoverable direction.
 pub fn capture_is_delegated_ask(desc: &str) -> bool {
-    let Some(first) = capture_prompt_first_line(desc) else { return false };
-    let Some(rest) = first.strip_prefix("ASK") else { return false };
+    let Some(first) = capture_prompt_first_line(desc) else {
+        return false;
+    };
+    let Some(rest) = first.strip_prefix("ASK") else {
+        return false;
+    };
     rest.as_bytes().windows(4).any(|w| {
         w[0].is_ascii_uppercase()
             && w[1].is_ascii_uppercase()
@@ -3760,7 +4075,10 @@ pub fn capture_is_delegated_ask(desc: &str) -> bool {
 /// strip a newline, and a `trim_start()` here would walk a prompt that begins
 /// with a blank line onto line two while the SQL stayed on line one.
 fn capture_prompt_first_line(desc: &str) -> Option<&str> {
-    let rest = desc.trim_start().strip_prefix("**Prompt:**")?.trim_start_matches(' ');
+    let rest = desc
+        .trim_start()
+        .strip_prefix("**Prompt:**")?
+        .trim_start_matches(' ');
     Some(rest.split('\n').next().unwrap_or(rest))
 }
 
@@ -3784,13 +4102,21 @@ fn capture_prompt_first_line(desc: &str) -> Option<&str> {
 /// would match "ask me later" and part company with `strip_prefix("ASK")` on the
 /// very first message anyone writes in lower case.
 pub fn capture_shell_sql() -> String {
-    format!("({} AND NOT {} AND NOT {})", capture_envelope_sql(), capture_delegation_sql(), execution_details_sql())
+    format!(
+        "({} AND NOT {} AND NOT {})",
+        capture_envelope_sql(),
+        capture_delegation_sql(),
+        execution_details_sql()
+    )
 }
 
 /// `creator='amux'` plus the `**Prompt:**` marker: amux minted this row from an
 /// inbound prompt, whatever the prompt turned out to say.
 pub fn capture_envelope_sql() -> String {
-    format!("(i.creator = 'amux' AND {} LIKE '**Prompt:**%')", capture_desc_trimmed())
+    format!(
+        "(i.creator = 'amux' AND {} LIKE '**Prompt:**%')",
+        capture_desc_trimmed()
+    )
 }
 
 /// [`capture_is_delegated_ask`] as SQL. Split out from [`capture_shell_sql`] so
@@ -3807,7 +4133,11 @@ fn capture_delegation_sql() -> String {
 /// An envelope that carries a delegation, for callers that want the population
 /// the carve-out rescued rather than the one it left behind.
 pub fn capture_delegation_row_sql() -> String {
-    format!("({} AND {})", capture_envelope_sql(), capture_delegation_sql())
+    format!(
+        "({} AND {})",
+        capture_envelope_sql(),
+        capture_delegation_sql()
+    )
 }
 
 /// `i.desc` with the leading whitespace `trim_start` removes. SQLite's default
@@ -4042,7 +4372,11 @@ fn terminal_summary(
 /// replaces.
 fn closed_at_for_write(conn: &Connection, row: &IssueRow) -> Option<i64> {
     let prev: Option<String> = conn
-        .query_row("SELECT status FROM issues WHERE id = ?1", params![row.id], |r| r.get(0))
+        .query_row(
+            "SELECT status FROM issues WHERE id = ?1",
+            params![row.id],
+            |r| r.get(0),
+        )
         .ok();
     let was = prev.as_deref().map(is_terminal_status);
     let now_terminal = is_terminal_status(&row.status);
@@ -4076,7 +4410,11 @@ fn closed_at_for_write(conn: &Connection, row: &IssueRow) -> Option<i64> {
 /// bottleneck it exists to surface.
 fn entered_state_at_for_write(conn: &Connection, row: &IssueRow) -> Option<i64> {
     let prev: Option<String> = conn
-        .query_row("SELECT status FROM issues WHERE id = ?1", params![row.id], |r| r.get(0))
+        .query_row(
+            "SELECT status FROM issues WHERE id = ?1",
+            params![row.id],
+            |r| r.get(0),
+        )
         .ok();
     match prev {
         // A real transition: this write is the moment of entry.
@@ -4096,8 +4434,11 @@ pub fn save_patched(conn: &Connection, row: &mut IssueRow) -> rusqlite::Result<u
     // This marker records delivery, not an outside dependency. Once the owner
     // structures the captured request it must become eligible without a second
     // manual PATCH deleting harness-generated text. Preserve all real holds.
-    if row.source_ref.as_deref() == Some("Already delivered owner follow-up; claim explicitly when switching work")
-        && row.creator == "amux" && has_execution_details(row) {
+    if row.source_ref.as_deref()
+        == Some("Already delivered owner follow-up; claim explicitly when switching work")
+        && row.creator == "amux"
+        && has_execution_details(row)
+    {
         row.source_ref = None;
         tracing::info!(card = %row.id, verdict = "capture_intake_completed",
             "structured captured request released its delivery-only hold");
@@ -4182,7 +4523,10 @@ pub fn save_patched(conn: &Connection, row: &mut IssueRow) -> rusqlite::Result<u
         ));
         terminal_summary_assets = asset_count;
     }
-    if row.callback_session.as_deref().is_some_and(|s| !s.trim().is_empty())
+    if row
+        .callback_session
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
         && row.callback_state.as_deref() == Some("armed")
     {
         if dependency_is_resolved(&row.status, &row.item_type) || row.status == "discarded" {
@@ -4374,15 +4718,23 @@ pub fn depends_on_cycle(
 
 /// The parent relation is its own DAG: mixing it with depends_on would turn
 /// normal parent-waits-for-child execution into a false cycle.
-pub fn epic_cycle(conn: &Connection, self_id: &str, parent: &str) -> rusqlite::Result<Option<Vec<String>>> {
+pub fn epic_cycle(
+    conn: &Connection,
+    self_id: &str,
+    parent: &str,
+) -> rusqlite::Result<Option<Vec<String>>> {
     let mut graph = amux_core::task_graph::Adjacency::new();
-    let mut stmt = conn.prepare("SELECT id,epic FROM issues WHERE deleted IS NULL AND epic IS NOT NULL AND epic != ''")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
-        let (id,parent) = row?;
+    let mut stmt = conn.prepare(
+        "SELECT id,epic FROM issues WHERE deleted IS NULL AND epic IS NOT NULL AND epic != ''",
+    )?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (id, parent) = row?;
         graph.entry(id).or_default().insert(parent);
     }
     let result = amux_core::task_graph::path_to(&graph, &[parent.into()], self_id).map(|path| {
-        let mut cycle = vec![self_id.into()]; cycle.extend(path); cycle
+        let mut cycle = vec![self_id.into()];
+        cycle.extend(path);
+        cycle
     });
     if let Some(cycle) = &result {
         tracing::warn!(target: "amux::board", verdict = "lineage_cycle_rejected", task_id = self_id,
@@ -4411,14 +4763,20 @@ pub fn dependency_path(
 ) -> rusqlite::Result<Option<Vec<String>>> {
     let mut graph = amux_core::task_graph::Adjacency::new();
     let mut stmt = conn.prepare("SELECT id, depends_on FROM issues WHERE deleted IS NULL")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
     for row in rows {
         let (id, raw) = row?;
         if let Some(raw) = raw.filter(|v| !v.is_empty()) {
             match serde_json::from_str::<Vec<String>>(&raw) {
-                Ok(deps) => { graph.insert(id, deps.into_iter().collect()); }
-                Err(error) => tracing::warn!(target: "amux::board", verdict = "dependency_graph_malformed",
-                    task_id = id, %error, "cannot traverse malformed task dependencies; graph verification reports this row"),
+                Ok(deps) => {
+                    graph.insert(id, deps.into_iter().collect());
+                }
+                Err(error) => {
+                    tracing::warn!(target: "amux::board", verdict = "dependency_graph_malformed",
+                    task_id = id, %error, "cannot traverse malformed task dependencies; graph verification reports this row")
+                }
             }
         }
     }
@@ -4445,9 +4803,18 @@ mod tests {
             );
         }
         // The two the old literal got wrong, named so a regression says which.
-        assert!(!list.contains("'quarantined'"), "a quarantined card is parked for the OWNER: {list}");
-        assert!(!list.contains("'armed'"), "an armed card waits for an event and is never auto-picked: {list}");
-        assert!(list.contains("'todo'") && list.contains("'doing'"), "{list}");
+        assert!(
+            !list.contains("'quarantined'"),
+            "a quarantined card is parked for the OWNER: {list}"
+        );
+        assert!(
+            !list.contains("'armed'"),
+            "an armed card waits for an event and is never auto-picked: {list}"
+        );
+        assert!(
+            list.contains("'todo'") && list.contains("'doing'"),
+            "{list}"
+        );
         // And `done` is absent here even though it is NOT is_terminal: the two
         // predicates disagree on `done` on purpose, which is the trap this
         // whole card is about.
@@ -4456,11 +4823,13 @@ mod tests {
         // SQL-SAFE: interpolated, so this must be a comma-separated list of
         // single-quoted lowercase identifiers and nothing else.
         for part in list.split(',') {
-            assert!(part.starts_with('\'') && part.ends_with('\''), "{part:?} in {list}");
+            assert!(
+                part.starts_with('\'') && part.ends_with('\''),
+                "{part:?} in {list}"
+            );
             let inner = &part[1..part.len() - 1];
             assert!(
-                !inner.is_empty()
-                    && inner.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                !inner.is_empty() && inner.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
                 "{inner:?} is not a bare identifier, so interpolating it is unsafe"
             );
         }
@@ -4497,14 +4866,16 @@ mod tests {
         // fine and a revision-style query still succeeds. This is the state
         // /health reported as "ok" for 20 minutes.
         assert!(
-            conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok(),
+            conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+                .is_ok(),
             "the connection must be healthy, or this cell proves nothing"
         );
 
         // Now corrupt a column's TYPE, not the connection. SQLite is
         // dynamically typed, so this is exactly how a schema drift or a bad
         // write reaches the mapper in production.
-        conn.execute("UPDATE issues SET created = 'not-an-integer'", []).unwrap();
+        conn.execute("UPDATE issues SET created = 'not-an-integer'", [])
+            .unwrap();
 
         assert!(
             probe_board_read(&conn).is_err(),
@@ -4514,7 +4885,8 @@ mod tests {
         );
         // And the connection is STILL healthy, which is the whole point.
         assert!(
-            conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok(),
+            conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
+                .is_ok(),
             "the store check would still say ok here - that is the gap"
         );
     }
@@ -4581,7 +4953,12 @@ mod tests {
             "the fixture must actually hold both storage shapes, got {kinds:?}"
         );
 
-        let at = |id: &str| get_issue(&conn, id).expect("read").expect("row").last_verified_at;
+        let at = |id: &str| {
+            get_issue(&conn, id)
+                .expect("read")
+                .expect("row")
+                .last_verified_at
+        };
         // PER-ROW STORAGE, not just "the set holds both shapes" (AF-328).
         //
         // The guard above is satisfied as long as SOME row is text and SOME row
@@ -4592,21 +4969,47 @@ mod tests {
         // and all. Asserting each row's own typeof is what makes the label and
         // the fact agree.
         let kind = |id: &str| -> String {
-            conn.query_row("SELECT typeof(last_verified_at) FROM issues WHERE id=?1", [id], |r| {
-                r.get(0)
-            })
+            conn.query_row(
+                "SELECT typeof(last_verified_at) FROM issues WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
             .expect("typeof")
         };
         assert_eq!(kind("INT-1"), "integer");
-        assert_eq!(kind("TXT-1"), "integer", "a numeric string is coerced by INTEGER affinity");
-        assert_eq!(kind("TXT-2"), "integer", "whitespace does not defeat affinity either");
-        assert_eq!(kind("BAD-1"), "text", "only a NON-numeric string survives as text");
+        assert_eq!(
+            kind("TXT-1"),
+            "integer",
+            "a numeric string is coerced by INTEGER affinity"
+        );
+        assert_eq!(
+            kind("TXT-2"),
+            "integer",
+            "whitespace does not defeat affinity either"
+        );
+        assert_eq!(
+            kind("BAD-1"),
+            "text",
+            "only a NON-numeric string survives as text"
+        );
 
         assert_eq!(at("INT-1"), Some(1787840686), "the normal INTEGER case");
-        assert_eq!(at("TXT-1"), Some(1787840686), "a numeric string, coerced to INTEGER on write");
-        assert_eq!(at("TXT-2"), Some(1787840686), "same, with surrounding whitespace");
+        assert_eq!(
+            at("TXT-1"),
+            Some(1787840686),
+            "a numeric string, coerced to INTEGER on write"
+        );
+        assert_eq!(
+            at("TXT-2"),
+            Some(1787840686),
+            "same, with surrounding whitespace"
+        );
         assert_eq!(at("NUL-1"), None, "NULL is genuine absence");
-        assert_eq!(at("BAD-1"), None, "unreadable text degrades to None (and warns)");
+        assert_eq!(
+            at("BAD-1"),
+            None,
+            "unreadable text degrades to None (and warns)"
+        );
 
         // WHAT THIS TEST CANNOT REACH, said out loud rather than left implied.
         // The reader's `Value::Text(s) => s.trim().parse::<i64>()` SUCCESS arm is
@@ -4663,7 +5066,11 @@ mod tests {
             TaskStatus::Blocked,
             TaskStatus::Discarded,
         ] {
-            assert_eq!(default_revisit_days(st, None), None, "{st:?} must not be stamped");
+            assert_eq!(
+                default_revisit_days(st, None),
+                None,
+                "{st:?} must not be stamped"
+            );
         }
     }
 
@@ -4674,7 +5081,10 @@ mod tests {
         // The format must be the one `revisit_arrived` accepts, or the stamp
         // and the reader disagree and nothing ever promotes. Round-trip it
         // through the real predicate rather than a second regex.
-        assert!(!revisit_arrived(Some(&d), &revisit_date(0)), "14d out must not be due today");
+        assert!(
+            !revisit_arrived(Some(&d), &revisit_date(0)),
+            "14d out must not be due today"
+        );
         assert!(revisit_arrived(Some(&revisit_date(-1)), &revisit_date(0)));
     }
 
@@ -4688,7 +5098,9 @@ mod tests {
         assert!(has_asset_link("see https://amux.io/x for details"));
         assert!(has_asset_link("wrote it up in [the doc](docs/x.md)"));
         assert!(has_asset_link("landed in docs/design/connectors.md"));
-        assert!(has_asset_link("crates/amux-server/src/api/board.rs updated"));
+        assert!(has_asset_link(
+            "crates/amux-server/src/api/board.rs updated"
+        ));
         assert!(has_asset_link("produced video-moderation-launch.mp4"));
         assert!(has_asset_link("and video-moderation-launch-9x16.mp4"));
         assert!(has_asset_link("shipped as 53a868f"));
@@ -4770,7 +5182,9 @@ mod tests {
     #[test]
     fn every_integer_timestamp_in_the_row_mapper_is_read_tolerantly() {
         let src = include_str!("board_store.rs");
-        let start = src.find("fn issue_from_row").expect("the row mapper exists");
+        let start = src
+            .find("fn issue_from_row")
+            .expect("the row mapper exists");
         let body = &src[start..start + 4000];
         for field in ["created", "updated"] {
             let line = body
@@ -4802,23 +5216,55 @@ mod tests {
         // One row per raw spelling the parser accepts, plus an unmodelled
         // operator column, plus a spelling with stray case and whitespace.
         let spellings = [
-            "backlog", "todo", "doing", "wip", "in_progress", "inprogress", "review",
-            "in_review", "inreview", "in review", "needsyou", "needs_you", "blocked",
-            "done", "resolved", "complete", "completed", "closed", "verified",
-            "discarded", "armed", "quarantined", "some-operator-column", "  DoInG  ",
+            "backlog",
+            "todo",
+            "doing",
+            "wip",
+            "in_progress",
+            "inprogress",
+            "review",
+            "in_review",
+            "inreview",
+            "in review",
+            "needsyou",
+            "needs_you",
+            "blocked",
+            "done",
+            "resolved",
+            "complete",
+            "completed",
+            "closed",
+            "verified",
+            "discarded",
+            "armed",
+            "quarantined",
+            "some-operator-column",
+            "  DoInG  ",
         ];
         for (i, sp) in spellings.iter().enumerate() {
             conn.execute(
                 "INSERT INTO issues (id, title, status, type, created, updated)
                  VALUES (?1, ?2, ?3, 'code', 1760000000, 1760000000)",
                 rusqlite::params![format!("S-{i}"), format!("card {i}"), sp],
-            ).expect("insert");
+            )
+            .expect("insert");
         }
         // For every canonical status, the SQL-narrowed read must return exactly
         // the rows whose spelling canonicalises to it.
-        for canon in ["backlog", "todo", "doing", "review", "needsyou", "blocked",
-                      "done", "verified", "discarded", "armed", "quarantined",
-                      "some-operator-column"] {
+        for canon in [
+            "backlog",
+            "todo",
+            "doing",
+            "review",
+            "needsyou",
+            "blocked",
+            "done",
+            "verified",
+            "discarded",
+            "armed",
+            "quarantined",
+            "some-operator-column",
+        ] {
             let got = list_issues(&conn, &[canon.to_string()], &[], ArchivedFilter::ActiveOnly)
                 .expect("list");
             let want: Vec<&str> = spellings
@@ -4840,9 +5286,18 @@ mod tests {
             );
         }
         // `doing` specifically: four aliases plus the padded/mixed-case one.
-        let doing = list_issues(&conn, &["doing".to_string()], &[], ArchivedFilter::ActiveOnly)
-            .expect("list");
-        assert_eq!(doing.len(), 5, "doing must match wip/in_progress/inprogress/  DoInG  too");
+        let doing = list_issues(
+            &conn,
+            &["doing".to_string()],
+            &[],
+            ArchivedFilter::ActiveOnly,
+        )
+        .expect("list");
+        assert_eq!(
+            doing.len(),
+            5,
+            "doing must match wip/in_progress/inprogress/  DoInG  too"
+        );
         // An empty filter still reads everything.
         let all = list_issues(&conn, &[], &[], ArchivedFilter::ActiveOnly).expect("list");
         assert_eq!(all.len(), spellings.len());
@@ -4862,7 +5317,11 @@ mod tests {
             ArchivedFilter::ActiveOnly,
         )
         .expect("list");
-        assert_eq!(mixed.len(), 2, "a mixed filter must keep BOTH, got {mixed:?}");
+        assert_eq!(
+            mixed.len(),
+            2,
+            "a mixed filter must keep BOTH, got {mixed:?}"
+        );
         assert!(mixed.iter().any(|r| r.status == "some-operator-column"));
         assert!(mixed.iter().any(|r| r.status == "todo"));
     }
@@ -4882,32 +5341,76 @@ mod tests {
     fn the_planning_projection_matches_the_full_read_except_for_the_desc_it_declares() {
         let mut conn = Connection::open_in_memory().expect("memdb");
         crate::db::migrate::apply_all(&mut conn).expect("schema");
-        let add = |id: &str, status: &str, session: Option<&str>, archived: i64,
-                       pinned: i64, pos: f64, deps: &str, reviewer: Option<&str>| {
+        let add = |id: &str,
+                   status: &str,
+                   session: Option<&str>,
+                   archived: i64,
+                   pinned: i64,
+                   pos: f64,
+                   deps: &str,
+                   reviewer: Option<&str>| {
             conn.execute(
                 "INSERT INTO issues (id, title, \"desc\", status, session, creator, created,
                     updated, type, archived, pinned, pos, depends_on, reviewer, version,
                     lease_owner)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                 rusqlite::params![
-                    id, format!("title of {id}"), format!("a long description for {id}"),
-                    status, session, "someone", 1_760_000_000i64, 1_760_000_100i64,
-                    "code", archived, pinned, pos, deps, reviewer, 3i64,
-                    if session.is_none() { Some("leaseholder") } else { None },
+                    id,
+                    format!("title of {id}"),
+                    format!("a long description for {id}"),
+                    status,
+                    session,
+                    "someone",
+                    1_760_000_000i64,
+                    1_760_000_100i64,
+                    "code",
+                    archived,
+                    pinned,
+                    pos,
+                    deps,
+                    reviewer,
+                    3i64,
+                    if session.is_none() {
+                        Some("leaseholder")
+                    } else {
+                        None
+                    },
                 ],
-            ).expect("insert");
+            )
+            .expect("insert");
         };
         // The shapes that distinguish the two reads: ordering by pinned/pos/
         // updated, an archived row, an unowned row whose worker comes from the
         // LEASE rather than the session, dependencies, tags, and a status the
         // board does not model.
-        add("P-1", "todo", Some("alpha"), 0, 0, 0.0, "[\"P-2\"]", Some("rev"));
+        add(
+            "P-1",
+            "todo",
+            Some("alpha"),
+            0,
+            0,
+            0.0,
+            "[\"P-2\"]",
+            Some("rev"),
+        );
         add("P-2", "done", Some("beta"), 0, 0, 0.0, "", None);
         add("P-3", "todo", None, 0, 1, 0.0, "", None);
         add("P-4", "todo", Some("alpha"), 1, 0, 0.0, "", None);
-        add("P-5", "some-operator-column", Some("beta"), 0, 0, -5.0, "", None);
-        conn.execute("INSERT INTO issue_tags (issue_id, tag) VALUES ('P-1','urgent')", [])
-            .expect("tag");
+        add(
+            "P-5",
+            "some-operator-column",
+            Some("beta"),
+            0,
+            0,
+            -5.0,
+            "",
+            None,
+        );
+        conn.execute(
+            "INSERT INTO issue_tags (issue_id, tag) VALUES ('P-1','urgent')",
+            [],
+        )
+        .expect("tag");
 
         let full = list_issues(&conn, &[], &[], ArchivedFilter::ActiveOnly).expect("full");
         let narrow = planning_tasks(&conn, ArchivedFilter::ActiveOnly).expect("narrow");
@@ -4919,7 +5422,10 @@ mod tests {
             // The ONE declared difference. Asserted explicitly rather than
             // skipped, so a future change that starts loading desc here is a
             // failure rather than a silent cost.
-            assert!(!expected.desc.is_empty(), "fixture must have a desc to omit");
+            assert!(
+                !expected.desc.is_empty(),
+                "fixture must have a desc to omit"
+            );
             assert_eq!(planned.task.desc, "", "planning_tasks must not load desc");
             expected.desc = String::new();
             // SERIALISED, not field-by-field. A hand-written comparison only
@@ -4936,7 +5442,9 @@ mod tests {
         }
         // The unmodelled column still reaches the caller by its raw spelling,
         // which is what the orchestrator's warning prints.
-        assert!(narrow.iter().any(|p| p.raw_status == "some-operator-column"));
+        assert!(narrow
+            .iter()
+            .any(|p| p.raw_status == "some-operator-column"));
         // And the archived row is excluded by both.
         assert!(!narrow.iter().any(|p| p.task.id == internal_id("P-4")));
     }
@@ -4964,7 +5472,11 @@ mod tests {
         assert_eq!(release_leases_for_holder(&conn, "gone-worker").unwrap(), 2);
 
         let freed: i64 = conn
-            .query_row("SELECT COUNT(*) FROM issues WHERE lease_owner IS NULL", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE lease_owner IS NULL",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(freed, 2, "both of the dead worker's live cards are free");
 
@@ -4977,20 +5489,38 @@ mod tests {
         assert_eq!(leftovers, 0);
 
         // The generation bump is the reaper's stale-resume guard.
-        let gen: i64 =
-            conn.query_row("SELECT lease_generation FROM issues WHERE id='A-1'", [], |r| r.get(0)).unwrap();
-        assert_eq!(gen, 4, "generation must advance so a dead holder cannot resume");
+        let gen: i64 = conn
+            .query_row(
+                "SELECT lease_generation FROM issues WHERE id='A-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            gen, 4,
+            "generation must advance so a dead holder cannot resume"
+        );
 
         // THE CONTROLS. A release that freed everything would satisfy the count
         // above, and this is the half that would strand a live worker mid-work.
         let other: String = conn
-            .query_row("SELECT lease_owner FROM issues WHERE id='B-1'", [], |r| r.get(0))
+            .query_row("SELECT lease_owner FROM issues WHERE id='B-1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(other, "live-worker", "another lane's lease must be untouched");
+        assert_eq!(
+            other, "live-worker",
+            "another lane's lease must be untouched"
+        );
         let deleted_row: String = conn
-            .query_row("SELECT lease_owner FROM issues WHERE id='C-1'", [], |r| r.get(0))
+            .query_row("SELECT lease_owner FROM issues WHERE id='C-1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(deleted_row, "gone-worker", "a deleted card is not part of the live board");
+        assert_eq!(
+            deleted_row, "gone-worker",
+            "a deleted card is not part of the live board"
+        );
 
         // An empty holder must not free the whole board.
         assert_eq!(release_leases_for_holder(&conn, "   ").unwrap(), 0);
@@ -5008,10 +5538,16 @@ mod tests {
         .unwrap();
         // SQLite is dynamically typed, so this stores a REAL in an INTEGER column
         // exactly as the job did.
-        conn.execute("INSERT INTO issues VALUES ('A-1','todo','x',0,0,0,?1,NULL)", [1788076327.487f64])
-            .unwrap();
-        conn.execute("INSERT INTO issues VALUES ('A-2','todo','x',0,0,0,?1,NULL)", [1788076327i64])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO issues VALUES ('A-1','todo','x',0,0,0,?1,NULL)",
+            [1788076327.487f64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO issues VALUES ('A-2','todo','x',0,0,0,?1,NULL)",
+            [1788076327i64],
+        )
+        .unwrap();
 
         let mut st = conn
             .prepare("SELECT id, status, session, archived, pinned, pos, updated FROM issues ORDER BY id")
@@ -5022,14 +5558,19 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .expect("a REAL in an INTEGER column must not fail the read");
         assert_eq!(rows.len(), 2, "both rows must come back");
-        assert_eq!(rows[0].1, 1788076327, "the REAL row truncates to its second");
+        assert_eq!(
+            rows[0].1, 1788076327,
+            "the REAL row truncates to its second"
+        );
         // CONTROL: the correct row is unchanged, so a reader that zeroed
         // everything would fail here rather than pass.
         assert_eq!(rows[1].1, 1788076327, "the INTEGER row must be exact");
 
         // And the strict read is what USED to happen — pinned so the test is
         // known to be exercising the real hazard and not a hypothetical one.
-        let mut st = conn.prepare("SELECT updated FROM issues WHERE id='A-1'").unwrap();
+        let mut st = conn
+            .prepare("SELECT updated FROM issues WHERE id='A-1'")
+            .unwrap();
         assert!(
             st.query_row([], |r| r.get::<_, i64>(0)).is_err(),
             "if a strict i64 read of this cell succeeds, the fixture no longer reproduces the bug"
@@ -5062,25 +5603,49 @@ mod tests {
     #[test]
     fn evidence_verdict_separates_proof_from_prose() {
         // Prose with nothing to re-run: the closes this card exists to stop.
-        for prose in ["implemented", "done", "fixed it and closed out", "addressed review"] {
-            assert_eq!(evidence_verdict(prose), EvidenceVerdict::NoArtifact, "{prose}");
+        for prose in [
+            "implemented",
+            "done",
+            "fixed it and closed out",
+            "addressed review",
+        ] {
+            assert_eq!(
+                evidence_verdict(prose),
+                EvidenceVerdict::NoArtifact,
+                "{prose}"
+            );
         }
         assert_eq!(evidence_verdict(""), EvidenceVerdict::Missing);
         assert_eq!(evidence_verdict("   \n  "), EvidenceVerdict::Missing);
 
         // Things a reader can actually check.
-        assert_eq!(evidence_verdict("ran `cargo test -p amux-server`, 412 passed"), EvidenceVerdict::Ok);
-        assert_eq!(evidence_verdict("$ scripts/test-contended.sh -p amux-server"), EvidenceVerdict::Ok);
+        assert_eq!(
+            evidence_verdict("ran `cargo test -p amux-server`, 412 passed"),
+            EvidenceVerdict::Ok
+        );
+        assert_eq!(
+            evidence_verdict("$ scripts/test-contended.sh -p amux-server"),
+            EvidenceVerdict::Ok
+        );
         assert_eq!(evidence_verdict("shipped as 53a868f"), EvidenceVerdict::Ok);
-        assert_eq!(evidence_verdict("verified at https://amux.io/board"), EvidenceVerdict::Ok);
-        assert_eq!(evidence_verdict("screenshot at /tmp/shots/board-mobile.png"), EvidenceVerdict::Ok);
+        assert_eq!(
+            evidence_verdict("verified at https://amux.io/board"),
+            EvidenceVerdict::Ok
+        );
+        assert_eq!(
+            evidence_verdict("screenshot at /tmp/shots/board-mobile.png"),
+            EvidenceVerdict::Ok
+        );
 
         // The honest no-artifact answer (ethos rule 3) — and its abuse.
         assert_eq!(
             evidence_verdict("none: owner decided to stand this down, no code changed"),
             EvidenceVerdict::Ok
         );
-        assert_eq!(evidence_verdict("none: n/a"), EvidenceVerdict::UnexplainedNone);
+        assert_eq!(
+            evidence_verdict("none: n/a"),
+            EvidenceVerdict::UnexplainedNone
+        );
         assert_eq!(evidence_verdict("none:"), EvidenceVerdict::UnexplainedNone);
     }
 
@@ -5132,17 +5697,25 @@ mod tests {
                 params![existing],
             )
             .unwrap();
-            assert!(has_needs_you_tag(&conn, "C-1").unwrap(), "{existing} must count as asked");
+            assert!(
+                has_needs_you_tag(&conn, "C-1").unwrap(),
+                "{existing} must count as asked"
+            );
             assert!(
                 !add_needs_you_tag(&conn, "C-1", 999).unwrap(),
                 "{existing} is already an ask — stamping a second resets the clock"
             );
             let kept: f64 = conn
-                .query_row("SELECT MIN(added_at) FROM issue_tags WHERE issue_id='C-1'", [], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT MIN(added_at) FROM issue_tags WHERE issue_id='C-1'",
+                    [],
+                    |r| r.get(0),
+                )
                 .unwrap();
-            assert_eq!(kept, 100.0, "{existing}: the original ask time must survive");
+            assert_eq!(
+                kept, 100.0,
+                "{existing}: the original ask time must survive"
+            );
             assert_eq!(clear_needs_you_tags(&conn, "C-1").unwrap(), 1);
             assert!(!has_needs_you_tag(&conn, "C-1").unwrap());
         }
@@ -5162,7 +5735,10 @@ mod tests {
         for (status, want) in [("needsyou", true), ("needs_you", true), ("todo", false)] {
             let conn = create_db();
             let row = create_issue(&conn, &new_card(status), 1000).expect("create");
-            assert_eq!(row.status, status, "the fixture must actually store {status}");
+            assert_eq!(
+                row.status, status,
+                "the fixture must actually store {status}"
+            );
             assert_eq!(
                 has_needs_you_tag(&conn, &row.id).unwrap(),
                 want,
@@ -5206,13 +5782,21 @@ mod tests {
         // matches the row depending on BR-18, so the old path answered 3 here.
         // Measured on the live board: 26 such prefix collisions among ids that
         // are actually depended on.
-        assert_eq!(r.get("BR-1"), Some(&2), "BR-18's dependent must not count toward BR-1: {r:?}");
+        assert_eq!(
+            r.get("BR-1"),
+            Some(&2),
+            "BR-18's dependent must not count toward BR-1: {r:?}"
+        );
         assert_eq!(r.get("BR-18"), Some(&1));
 
         // POSITIVE CONTROL: the old substring query really does answer 3, so the
         // cell above is about a behaviour that changed rather than one that was
         // always right.
-        assert_eq!(blast_radius(&conn, "BR-1"), 3, "the substring query over-counts, which is why this exists");
+        assert_eq!(
+            blast_radius(&conn, "BR-1"),
+            3,
+            "the substring query over-counts, which is why this exists"
+        );
 
         // An id nobody depends on is 0 and PRESENT, not missing: the caller
         // scores every row and a missing key would silently become a default.
@@ -5244,8 +5828,14 @@ mod tests {
         let b = get_issue(&conn, &in_doing.id).expect("read").expect("row");
         assert_eq!(a.status, "review", "a blocked card keeps where it was");
         assert_eq!(b.status, "doing", "and so does the other one");
-        assert_ne!(a.status, b.status, "which is the whole point: two positions, one block");
-        assert_eq!(a.blocked_on.as_deref(), Some("waiting on the KubeRay answer"));
+        assert_ne!(
+            a.status, b.status,
+            "which is the whole point: two positions, one block"
+        );
+        assert_eq!(
+            a.blocked_on.as_deref(),
+            Some("waiting on the KubeRay answer")
+        );
 
         // CLEARING IS INDEPENDENT of any status move. Blocking and unblocking
         // must not require pretending the card changed position.
@@ -5253,7 +5843,10 @@ mod tests {
         save_patched(&conn, &mut in_doing).expect("clear");
         let b2 = get_issue(&conn, &in_doing.id).expect("read").expect("row");
         assert_eq!(b2.blocked_on, None, "the dimension clears");
-        assert_eq!(b2.status, "doing", "and the position is untouched by the clear");
+        assert_eq!(
+            b2.status, "doing",
+            "and the position is untouched by the clear"
+        );
     }
 
     /// CONTROL, and the one that keeps this from being a regression: the LEGACY
@@ -5277,7 +5870,10 @@ mod tests {
         // The frontier's candidate query is `status='todo'`, so a legacy blocked
         // card is excluded by position. Asserted here so that if anyone widens
         // that query, this cell says what it costs.
-        assert_ne!(row.status, "todo", "a legacy blocked card is not a todo candidate");
+        assert_ne!(
+            row.status, "todo",
+            "a legacy blocked card is not a todo candidate"
+        );
     }
 
     /// AMUX-3948. THE CARD'S OWN CHECK: a card whose blocker is open must not
@@ -5311,7 +5907,10 @@ mod tests {
         blocker.status = "done".into();
         blocker.updated = 2000;
         save_patched(&conn, &mut blocker).expect("close blocker");
-        assert_eq!(crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent), vec![blocker.id.clone()]);
+        assert_eq!(
+            crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent),
+            vec![blocker.id.clone()]
+        );
         blocker.status = "verified".into();
         save_patched(&conn, &mut blocker).expect("verify blocker");
         assert!(crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent).is_empty());
@@ -5319,14 +5918,27 @@ mod tests {
         // A missing or discarded required artifact is not successful delivery.
         // The owner can explicitly remove a no-longer-required relationship.
         dependent.depends_on = vec!["AMUX-DOES-NOT-EXIST".into()];
-        assert!(save_patched(&conn, &mut dependent).is_err(), "new missing dependencies are rejected");
+        assert!(
+            save_patched(&conn, &mut dependent).is_err(),
+            "new missing dependencies are rejected"
+        );
         // A historical dangling row still reads as blocked, never successful.
-        conn.execute("UPDATE issues SET depends_on='[\"AMUX-DOES-NOT-EXIST\"]' WHERE id=?1", [&dependent.id]).unwrap();
-        assert_eq!(crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent), dependent.depends_on);
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"AMUX-DOES-NOT-EXIST\"]' WHERE id=?1",
+            [&dependent.id],
+        )
+        .unwrap();
+        assert_eq!(
+            crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent),
+            dependent.depends_on
+        );
         blocker.status = "discarded".into();
         save_patched(&conn, &mut blocker).unwrap();
         dependent.depends_on = vec![blocker.id.clone()];
-        assert_eq!(crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent), dependent.depends_on);
+        assert_eq!(
+            crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent),
+            dependent.depends_on
+        );
         dependent.depends_on.clear();
         save_patched(&conn, &mut dependent).unwrap();
         assert!(crate::runtime_jobs::board_drive::deps_blocking(&conn, &dependent).is_empty());
@@ -5344,13 +5956,21 @@ mod tests {
     fn entered_state_at_records_the_transition_not_the_touch() {
         let conn = create_db();
         let mut row = create_issue(&conn, &new_card("todo"), 1000).expect("create");
-        assert_eq!(row.entered_state_at, Some(1000), "a new card enters its first status now");
+        assert_eq!(
+            row.entered_state_at,
+            Some(1000),
+            "a new card enters its first status now"
+        );
 
         // 1. A real transition re-stamps.
         row.status = "doing".into();
         row.updated = 2000;
         save_patched(&conn, &mut row).expect("save");
-        assert_eq!(row.entered_state_at, Some(2000), "moving status stamps the moment of entry");
+        assert_eq!(
+            row.entered_state_at,
+            Some(2000),
+            "moving status stamps the moment of entry"
+        );
 
         // 2. THE ARM THAT MATTERS: an ordinary edit does NOT.
         row.desc = "a progress note, five days later".into();
@@ -5362,7 +5982,11 @@ mod tests {
             "an edit is not a transition; moving this would erase the age it measures"
         );
         let back = get_issue(&conn, &row.id).expect("read").expect("row");
-        assert_eq!(back.entered_state_at, Some(2000), "and it survives the round trip");
+        assert_eq!(
+            back.entered_state_at,
+            Some(2000),
+            "and it survives the round trip"
+        );
 
         // 3. Moving again re-stamps, so the field tracks the CURRENT state.
         row.status = "review".into();
@@ -5387,7 +6011,10 @@ mod tests {
         )
         .unwrap();
         let mut row = get_issue(&conn, "OLD-1").expect("read").expect("row");
-        assert_eq!(row.entered_state_at, None, "no backfill: absence is the honest answer");
+        assert_eq!(
+            row.entered_state_at, None,
+            "no backfill: absence is the honest answer"
+        );
 
         // An unrelated edit must NOT invent a value for it.
         row.desc = "touched".into();
@@ -5402,7 +6029,11 @@ mod tests {
         row.status = "done".into();
         row.updated = 8000;
         save_patched(&conn, &mut row).expect("save");
-        assert_eq!(row.entered_state_at, Some(8000), "a real move makes it measured");
+        assert_eq!(
+            row.entered_state_at,
+            Some(8000),
+            "a real move makes it measured"
+        );
     }
 
     /// AMUX-3946. The continuation gate's predicate, both arms.
@@ -5414,8 +6045,14 @@ mod tests {
         assert_eq!(continuation_verdict(""), ContinuationVerdict::Missing);
         assert_eq!(continuation_verdict("   "), ContinuationVerdict::Missing);
         // Real specimens of the shrug this exists to refuse.
-        assert_eq!(continuation_verdict("wip"), ContinuationVerdict::NotASentence);
-        assert_eq!(continuation_verdict("continue"), ContinuationVerdict::NotASentence);
+        assert_eq!(
+            continuation_verdict("wip"),
+            ContinuationVerdict::NotASentence
+        );
+        assert_eq!(
+            continuation_verdict("continue"),
+            ContinuationVerdict::NotASentence
+        );
         // ACCEPTED, and it has to be, or the gate is unsatisfiable.
         assert_eq!(
             continuation_verdict("Rerun compatibility test 07 against KubeRay 1.4"),
@@ -5425,7 +6062,10 @@ mod tests {
         // sentence, not sincerity. "still working on it" is four words and
         // passes. Three words is the floor at which somebody has had to think
         // about the reader, and no predicate here can do better than that.
-        assert_eq!(continuation_verdict("still working on it"), ContinuationVerdict::Ok);
+        assert_eq!(
+            continuation_verdict("still working on it"),
+            ContinuationVerdict::Ok
+        );
     }
 
     /// SCOPE. The gate is on `doing` and nowhere else, and the other states are
@@ -5442,7 +6082,10 @@ mod tests {
             TaskStatus::Verified,
             TaskStatus::Discarded,
         ] {
-            assert!(!continuation_applies(st), "{st:?} must not be gated by Phase 1");
+            assert!(
+                !continuation_applies(st),
+                "{st:?} must not be gated by Phase 1"
+            );
         }
     }
 
@@ -5468,10 +6111,16 @@ mod tests {
 
         std::env::remove_var(CONTINUATION_REQUIRED_KEY);
         assert!(!continuation_required(Some("some-lane")), "default is OFF");
-        assert!(!continuation_required(None), "an unattributed caller is not gated");
+        assert!(
+            !continuation_required(None),
+            "an unattributed caller is not gated"
+        );
 
         std::env::set_var(CONTINUATION_REQUIRED_KEY, "1");
-        assert!(continuation_required(Some("some-lane")), "env can turn it on");
+        assert!(
+            continuation_required(Some("some-lane")),
+            "env can turn it on"
+        );
         std::env::set_var(CONTINUATION_REQUIRED_KEY, "0");
         assert!(!continuation_required(Some("some-lane")), "and off again");
     }
@@ -5487,7 +6136,10 @@ mod tests {
     fn the_continuation_fields_survive_save_and_reload() {
         let conn = create_db();
         let mut row = create_issue(&conn, &new_card("todo"), 1000).expect("create");
-        assert_eq!(row.next_action, None, "a fresh card carries no continuation");
+        assert_eq!(
+            row.next_action, None,
+            "a fresh card carries no continuation"
+        );
 
         row.next_action = Some("Rerun compatibility test 07 against KubeRay 1.4".into());
         row.last_result = Some("E2E 07 failed on namespace-scoped discovery".into());
@@ -5495,9 +6147,18 @@ mod tests {
         save_patched(&conn, &mut row).expect("save");
 
         let back = get_issue(&conn, &row.id).expect("read").expect("row");
-        assert_eq!(back.next_action.as_deref(), Some("Rerun compatibility test 07 against KubeRay 1.4"));
-        assert_eq!(back.last_result.as_deref(), Some("E2E 07 failed on namespace-scoped discovery"));
-        assert_eq!(back.unresolved.as_deref(), Some("Do multiple namespaces need support?"));
+        assert_eq!(
+            back.next_action.as_deref(),
+            Some("Rerun compatibility test 07 against KubeRay 1.4")
+        );
+        assert_eq!(
+            back.last_result.as_deref(),
+            Some("E2E 07 failed on namespace-scoped discovery")
+        );
+        assert_eq!(
+            back.unresolved.as_deref(),
+            Some("Do multiple namespaces need support?")
+        );
     }
 
     /// AMUX-3609. The write rule lives in `save_patched`, so these drive the
@@ -5520,7 +6181,11 @@ mod tests {
         row.updated = 2000;
         save_patched(&conn, &mut row).unwrap();
         let after_close = get_issue(&conn, &row.id).unwrap().unwrap();
-        assert_eq!(after_close.closed_at, Some(2000), "closing must stamp the close time");
+        assert_eq!(
+            after_close.closed_at,
+            Some(2000),
+            "closing must stamp the close time"
+        );
 
         // 2. An UNRELATED edit while already closed must not move it. This is
         //    what makes the field mean "when it closed" rather than "when it
@@ -5546,7 +6211,10 @@ mod tests {
         )
         .unwrap();
         let mut legacy = get_issue(&conn, &row.id).unwrap().unwrap();
-        assert_eq!(legacy.closed_at, None, "fixture must actually be NULL or this proves nothing");
+        assert_eq!(
+            legacy.closed_at, None,
+            "fixture must actually be NULL or this proves nothing"
+        );
         legacy.desc = "another comment".into();
         legacy.updated = 9000;
         save_patched(&conn, &mut legacy).unwrap();
@@ -5682,7 +6350,8 @@ mod tests {
         code_card.callback_session = Some("requester".into());
         let mut code_row = create_issue(&conn, &code_card, 1000).expect("create code card");
         assert_eq!(
-            code_row.snapshot()["callback"]["completion_label_for_type"], "verified",
+            code_row.snapshot()["callback"]["completion_label_for_type"],
+            "verified",
             "code's completion word is 'verified' before anything has happened"
         );
 
@@ -5690,12 +6359,14 @@ mod tests {
         code_row.updated = 2000;
         save_patched(&conn, &mut code_row).expect("discard");
         assert_eq!(
-            code_row.snapshot()["callback"]["completion_label_for_type"], "verified",
+            code_row.snapshot()["callback"]["completion_label_for_type"],
+            "verified",
             "the label is UNCHANGED by discarding -- it never claimed to describe \
              what happened, only what this TYPE's completion is called"
         );
         assert_eq!(
-            code_row.snapshot()["callback"]["dependency_resolved"], false,
+            code_row.snapshot()["callback"]["dependency_resolved"],
+            false,
             "the REAL per-card outcome lives here, not in the type label"
         );
 
@@ -5704,7 +6375,10 @@ mod tests {
         chore_card.requested_by = Some("requester".into());
         chore_card.callback_session = Some("requester".into());
         let chore_row = create_issue(&conn, &chore_card, 1000).expect("create chore card");
-        assert_eq!(chore_row.snapshot()["callback"]["completion_label_for_type"], "done");
+        assert_eq!(
+            chore_row.snapshot()["callback"]["completion_label_for_type"],
+            "done"
+        );
     }
 
     #[test]
@@ -5810,7 +6484,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO issue_tags VALUES ('F-1','b',1.0),('F-1','a',2.0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO issue_tags VALUES ('F-1','b',1.0),('F-1','a',2.0)",
+            [],
+        )
+        .unwrap();
         let row = get_issue(&conn, "F-1").unwrap().unwrap();
         let mut full = row.snapshot();
         let slim = row.snapshot_slim();
@@ -5819,7 +6497,10 @@ mod tests {
         let fo = full.as_object_mut().unwrap();
         assert_eq!(fo.remove("desc").unwrap(), serde_json::json!("prose body"));
         assert!(fo.remove("log").unwrap().as_str().is_some());
-        assert_eq!(full, slim, "snapshot_slim drifted from snapshot minus prose");
+        assert_eq!(
+            full, slim,
+            "snapshot_slim drifted from snapshot minus prose"
+        );
     }
 
     /// AF-346's TRAP, written BEFORE that optimisation lands rather than after.
@@ -5869,11 +6550,17 @@ mod tests {
         for prose in [Prose::Full, Prose::SlimDerivations] {
             let (kept, _, _) =
                 list_issues_capped(&conn, &[], &[], ArchivedFilter::All, 100, prose).unwrap();
-            let row = kept.iter().find(|r| r.id == "D-1").expect("the seeded card");
+            let row = kept
+                .iter()
+                .find(|r| r.id == "D-1")
+                .expect("the seeded card");
             let slim = crate::api::board::list_body(row, true, false);
 
             // The diet still holds: the prose itself is not shipped.
-            assert!(slim["desc"].is_null(), "slim must not ship the prose ({prose:?})");
+            assert!(
+                slim["desc"].is_null(),
+                "slim must not ship the prose ({prose:?})"
+            );
             assert!(slim["log"].is_null(), "{prose:?}");
 
             // ...and every derivation over it survived the round trip. These are
@@ -5882,7 +6569,10 @@ mod tests {
                 slim["desc_head"], "First line is the preview.",
                 "app.js renders this as the card preview — blank means every card lost its preview ({prose:?})"
             );
-            assert_eq!(slim["folded_n"], 2, "counts 'New task:' across desc AND log ({prose:?})");
+            assert_eq!(
+                slim["folded_n"], 2,
+                "counts 'New task:' across desc AND log ({prose:?})"
+            );
             assert_eq!(slim["desc_len"], 47, "{prose:?}");
             assert_eq!(slim["log_n"], 2, "{prose:?}");
         }
@@ -5911,8 +6601,14 @@ mod tests {
         // fixture can pass. What must hold is that the substitution landed in
         // the projection and displaced the bare column.
         let swapped = cols_with_desc("'SENTINEL'");
-        assert_ne!(swapped, COLS, "the substitution must actually change the projection");
-        assert!(swapped.contains("'SENTINEL'"), "the expression must reach the projection");
+        assert_ne!(
+            swapped, COLS,
+            "the substitution must actually change the projection"
+        );
+        assert!(
+            swapped.contains("'SENTINEL'"),
+            "the expression must reach the projection"
+        );
         assert!(
             !swapped.contains(DESC_COL),
             "a substitution that leaves the bare column behind selects the prose anyway: {swapped}"
@@ -5944,7 +6640,10 @@ mod tests {
         // recomputed from what was hydrated. A fallback that counted the prefix
         // would return 0 here and 0 is a plausible-looking answer.
         let plain = format!("\n\n   \n{head}\n{pad}\nNew task: alpha\nNew task: beta\n");
-        assert!(plain.chars().count() > DESC_PREFIX_CHARS, "the fixture must straddle the cut");
+        assert!(
+            plain.chars().count() > DESC_PREFIX_CHARS,
+            "the fixture must straddle the cut"
+        );
         // A marker BEYOND the cut: this row must take the full-desc escape, or
         // the owner view silently loses the card's question.
         let marked = format!("{plain}NEEDS-YOU: does the escape fire?\n");
@@ -5964,9 +6663,15 @@ mod tests {
 
         let (full, _, _) =
             list_issues_capped(&conn, &[], &[], ArchivedFilter::All, 100, Prose::Full).unwrap();
-        let (slim, _, _) =
-            list_issues_capped(&conn, &[], &[], ArchivedFilter::All, 100, Prose::SlimDerivations)
-                .unwrap();
+        let (slim, _, _) = list_issues_capped(
+            &conn,
+            &[],
+            &[],
+            ArchivedFilter::All,
+            100,
+            Prose::SlimDerivations,
+        )
+        .unwrap();
 
         // POSITIVE CONTROL FIRST. Without it every assertion below is vacuous:
         // if the prefix never engaged, the two hydrations are the same bytes and
@@ -5992,26 +6697,42 @@ mod tests {
         // Now the claim: identical output, whichever way the row was loaded.
         for id in ["P-1", "P-2", "P-3"] {
             let f = crate::api::board::list_body(
-                full.iter().find(|r| r.id == id).unwrap(), true, false);
+                full.iter().find(|r| r.id == id).unwrap(),
+                true,
+                false,
+            );
             let s = crate::api::board::list_body(
-                slim.iter().find(|r| r.id == id).unwrap(), true, false);
-            for k in ["desc_len", "desc_head", "log_n", "folded_n", "needsyou_note"] {
+                slim.iter().find(|r| r.id == id).unwrap(),
+                true,
+                false,
+            );
+            for k in [
+                "desc_len",
+                "desc_head",
+                "log_n",
+                "folded_n",
+                "needsyou_note",
+            ] {
                 assert_eq!(f[k], s[k], "{id}: `{k}` differs between hydrations");
             }
             // Named individually too, so a failure says WHICH derivation broke
             // rather than only that two blobs differ.
-            assert_eq!(s["desc_head"], head, "{id}: the preview must skip the blank lines");
+            assert_eq!(
+                s["desc_head"], head,
+                "{id}: the preview must skip the blank lines"
+            );
             assert_eq!(s["folded_n"], 2, "{id}: both markers are past the cut");
             assert_eq!(s["log_n"], 3, "{id}: blank log lines are not entries");
         }
         // And the marker, which is the derivation the prefix cannot serve at all.
-        let m = crate::api::board::list_body(
-            slim.iter().find(|r| r.id == "P-2").unwrap(), true, false);
+        let m =
+            crate::api::board::list_body(slim.iter().find(|r| r.id == "P-2").unwrap(), true, false);
         assert_eq!(m["needsyou_note"], "does the escape fire?");
-        let n = crate::api::board::list_body(
-            slim.iter().find(|r| r.id == "P-3").unwrap(), true, false);
+        let n =
+            crate::api::board::list_body(slim.iter().find(|r| r.id == "P-3").unwrap(), true, false);
         assert_eq!(
-            n["desc_len"], nulled.chars().count(),
+            n["desc_len"],
+            nulled.chars().count(),
             "a NUL-carrying desc must report its REAL length; SQLite LENGTH() stops at the NUL"
         );
     }
@@ -6026,7 +6747,15 @@ mod tests {
     #[test]
     fn capped_two_pass_equals_the_single_pass_it_replaced() {
         let conn = create_db();
-        let statuses = ["todo", "done", "verified", "doing", "discarded", "backlog", "needsyou"];
+        let statuses = [
+            "todo",
+            "done",
+            "verified",
+            "doing",
+            "discarded",
+            "backlog",
+            "needsyou",
+        ];
         for i in 0..40 {
             let id = format!("C-{i:02}");
             conn.execute(
@@ -6070,12 +6799,14 @@ mod tests {
         ];
         let mut cap_engaged_somewhere = false;
         for (status_f, session_f, archived, limit) in cases {
-            let (single, st, sk) =
-                cap_terminal(list_issues(&conn, &status_f, &session_f, archived).unwrap(), limit);
+            let (single, st, sk) = cap_terminal(
+                list_issues(&conn, &status_f, &session_f, archived).unwrap(),
+                limit,
+            );
             let (fused, ft, fk) =
-                list_issues_capped(&conn, &status_f, &session_f, archived, limit, Prose::Full).unwrap();
-            let key =
-                |r: &IssueRow| (r.id.clone(), r.desc.clone(), r.tags.clone(), r.log.clone());
+                list_issues_capped(&conn, &status_f, &session_f, archived, limit, Prose::Full)
+                    .unwrap();
+            let key = |r: &IssueRow| (r.id.clone(), r.desc.clone(), r.tags.clone(), r.log.clone());
             assert_eq!(
                 single.iter().map(key).collect::<Vec<_>>(),
                 fused.iter().map(key).collect::<Vec<_>>(),
@@ -6087,7 +6818,10 @@ mod tests {
             }
         }
         // The equivalence means nothing if no case ever engaged the cap.
-        assert!(cap_engaged_somewhere, "fixture too small: the terminal cap never engaged");
+        assert!(
+            cap_engaged_somewhere,
+            "fixture too small: the terminal cap never engaged"
+        );
 
         // AMUX-3503: the QUOTA two-pass must equal quota-over-single-pass the
         // same way. done_limit=2 engages the done/discarded quota (fixture
@@ -6097,22 +6831,31 @@ mod tests {
             list_issues(&conn, &[], &[], ArchivedFilter::All).unwrap(),
             2,
         );
-        let fused_q = list_issues_quota(&conn, &[], &[], ArchivedFilter::All, 2, Prose::Full).unwrap();
+        let fused_q =
+            list_issues_quota(&conn, &[], &[], ArchivedFilter::All, 2, Prose::Full).unwrap();
         let key = |r: &IssueRow| (r.id.clone(), r.desc.clone(), r.tags.clone(), r.log.clone());
         assert_eq!(
             single_q.iter().map(key).collect::<Vec<_>>(),
             fused_q.iter().map(key).collect::<Vec<_>>(),
             "quota rows diverged between single-pass and two-pass"
         );
-        let done_kept =
-            fused_q.iter().filter(|r| matches!(r.status.as_str(), "done" | "discarded")).count();
+        let done_kept = fused_q
+            .iter()
+            .filter(|r| matches!(r.status.as_str(), "done" | "discarded"))
+            .count();
         let verified_kept = fused_q.iter().filter(|r| r.status == "verified").count();
         assert_eq!(done_kept, 2, "the done/discarded quota must have engaged");
-        assert!(verified_kept > 2, "verified must ride its own floor, not the done quota");
+        assert!(
+            verified_kept > 2,
+            "verified must ride its own floor, not the done quota"
+        );
         // Nor if the deleted row leaked into either path.
         let (all, _, _) =
             list_issues_capped(&conn, &[], &[], ArchivedFilter::All, 0, Prose::Full).unwrap();
-        assert!(all.iter().all(|r| r.id != "C-39"), "deleted row must stay invisible");
+        assert!(
+            all.iter().all(|r| r.id != "C-39"),
+            "deleted row must stay invisible"
+        );
         assert!(!all.is_empty());
     }
 
@@ -6121,14 +6864,33 @@ mod tests {
     #[test]
     fn needs_you_helpers_leave_unrelated_tags_alone() {
         let conn = tag_db();
-        conn.execute("INSERT INTO issue_tags VALUES ('C-1','needs:review',100.0)", []).unwrap();
-        assert!(!has_needs_you_tag(&conn, "C-1").unwrap(), "needs:review is not an ask");
-        assert!(add_needs_you_tag(&conn, "C-1", 200).unwrap(), "the first ask must be stamped");
-        assert_eq!(clear_needs_you_tags(&conn, "C-1").unwrap(), 1, "only the ask goes");
-        let left: String =
-            conn.query_row("SELECT tag FROM issue_tags WHERE issue_id='C-1'", [], |r| r.get(0))
-                .unwrap();
-        assert_eq!(left, "needs:review", "clearing the ask must not take other tags with it");
+        conn.execute(
+            "INSERT INTO issue_tags VALUES ('C-1','needs:review',100.0)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            !has_needs_you_tag(&conn, "C-1").unwrap(),
+            "needs:review is not an ask"
+        );
+        assert!(
+            add_needs_you_tag(&conn, "C-1", 200).unwrap(),
+            "the first ask must be stamped"
+        );
+        assert_eq!(
+            clear_needs_you_tags(&conn, "C-1").unwrap(),
+            1,
+            "only the ask goes"
+        );
+        let left: String = conn
+            .query_row("SELECT tag FROM issue_tags WHERE issue_id='C-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            left, "needs:review",
+            "clearing the ask must not take other tags with it"
+        );
     }
 
     #[test]
@@ -6162,8 +6924,11 @@ mod tests {
             real.is_none(),
             "AC-330 -> AC-331 is not yet a cycle (AC-331 has no deps stored)"
         );
-        conn.execute("UPDATE issues SET depends_on='[\"AC-330\"]' WHERE id='AC-331'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"AC-330\"]' WHERE id='AC-331'",
+            [],
+        )
+        .unwrap();
         let real = depends_on_cycle(&conn, "AC-330", &["AC-331".to_string()]).unwrap();
         assert!(
             real.is_some(),
@@ -6177,7 +6942,12 @@ mod tests {
         // newest verified, and the 100 newest done — the lumped 100-cap
         // showed 9 of a 141-card bulk-verify while Python showed all of it.
         let mk = |i: i64, status: &str| IssueRow {
-            lease_owner: None, lease_acquired_at: None, lease_heartbeat_at: None, lease_expires_at: None, lease_generation: 0,
+            project_group: None,
+            lease_owner: None,
+            lease_acquired_at: None,
+            lease_heartbeat_at: None,
+            lease_expires_at: None,
+            lease_generation: 0,
             desc_prefixed: None,
             id: format!("T-{i}"),
             title: String::new(),
@@ -6219,8 +6989,10 @@ mod tests {
             version: 0,
             tags: vec![],
             source: None,
-            acceptance_criteria: None, decision_question: None,
-            decision_rationale: None, decision_supersedes: None,
+            acceptance_criteria: None,
+            decision_question: None,
+            decision_rationale: None,
+            decision_supersedes: None,
             waiting_on: None,
             requested_by: None,
             callback_session: None,
@@ -6291,7 +7063,10 @@ mod tests {
     #[test]
     fn append_log_matches_python_format() {
         let today = format!("`{}`", chrono::Local::now().format("%Y-%m-%d"));
-        assert_eq!(append_log(None, "12:01", "x -> y"), format!("{today}\n`12:01` x -> y"));
+        assert_eq!(
+            append_log(None, "12:01", "x -> y"),
+            format!("{today}\n`12:01` x -> y")
+        );
         // The separator lands right before the NEW entry, not retroactively
         // before the pre-existing one: `existing` has no separator at all,
         // so its own date is genuinely untracked, and the marker means "from
@@ -6356,9 +7131,21 @@ mod tests {
     #[test]
     fn date_separator_recognizes_only_the_exact_shape() {
         assert_eq!(date_separator("`2026-09-18`"), Some("2026-09-18"));
-        assert_eq!(date_separator("`09:15` message"), None, "an ordinary entry is not a separator");
-        assert_eq!(date_separator("`2026-09-18` message"), None, "trailing text disqualifies it");
-        assert_eq!(date_separator("2026-09-18"), None, "must be backtick-wrapped");
+        assert_eq!(
+            date_separator("`09:15` message"),
+            None,
+            "an ordinary entry is not a separator"
+        );
+        assert_eq!(
+            date_separator("`2026-09-18` message"),
+            None,
+            "trailing text disqualifies it"
+        );
+        assert_eq!(
+            date_separator("2026-09-18"),
+            None,
+            "must be backtick-wrapped"
+        );
         assert_eq!(date_separator("`26-09-18`"), None, "must be 4-digit year");
     }
 
@@ -6420,7 +7207,11 @@ mod tests {
         let (rows, total) = needsyou_digest(&conn, 2_000_000_000.0, 10).unwrap();
         assert_eq!(total, 3);
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, vec!["NY-OLD", "NY-MID", "NY-NEW"], "must be oldest-asked-first, not insertion or session order");
+        assert_eq!(
+            ids,
+            vec!["NY-OLD", "NY-MID", "NY-NEW"],
+            "must be oldest-asked-first, not insertion or session order"
+        );
         assert!(rows[0].age_days > rows[1].age_days && rows[1].age_days > rows[2].age_days);
     }
 
@@ -6444,7 +7235,10 @@ mod tests {
         assert_eq!(total, 5, "the true population must survive the cap");
         assert_eq!(rows.len(), 2, "the returned list must actually be capped");
         // And it must be the OLDEST two that survive the cut, not an arbitrary two.
-        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["NY-0", "NY-1"]);
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["NY-0", "NY-1"]
+        );
     }
 
     /// AF-510. Mirrors the per-lane renag's own predicate exactly: a
@@ -6473,7 +7267,10 @@ mod tests {
         .unwrap();
         let (rows, total) = needsyou_digest(&conn, 2_000_000_000.0, 10).unwrap();
         let leaked_ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(total, 0, "neither a human-owned nor a terminal card is a live agent ask: {leaked_ids:?}");
+        assert_eq!(
+            total, 0,
+            "neither a human-owned nor a terminal card is a live agent ask: {leaked_ids:?}"
+        );
     }
 
     /// AF-510 / AC-178. The ask clock is the TAG's `added_at` when a tag
@@ -6499,7 +7296,10 @@ mod tests {
         .unwrap();
         let (rows, _) = needsyou_digest(&conn, 2_000_000_000.0, 10).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].asked_at, 1_000_000_000.0, "asked_at must be the TAG's added_at, not the recent `updated` touch");
+        assert_eq!(
+            rows[0].asked_at, 1_000_000_000.0,
+            "asked_at must be the TAG's added_at, not the recent `updated` touch"
+        );
     }
 }
 
@@ -6509,29 +7309,65 @@ mod configured_gate_tests {
 
     fn row(item_type: &str, gate: Option<&str>) -> IssueRow {
         IssueRow {
-            lease_owner: None, lease_acquired_at: None, lease_heartbeat_at: None, lease_expires_at: None, lease_generation: 0,
+            project_group: None,
+            lease_owner: None,
+            lease_acquired_at: None,
+            lease_heartbeat_at: None,
+            lease_expires_at: None,
+            lease_generation: 0,
             desc_prefixed: None,
-            id: "T-1".into(), title: String::new(), desc: String::new(),
-            status: "doing".into(), session: None, creator: String::new(),
-            due: None, created: 0, updated: 0, owner_type: "agent".into(),
-            due_time: None, pinned: 0, gcal_event_id: None, pos: 0.0, notified: 0,
-            gate: gate.map(String::from), shepherd: None, item_type: item_type.into(),
-            archived: 0, depends_on: vec![], reviewer: None, epic: None, log: None, rev: 0,
-            source_ref: None, evidence: None, ask_type: None, ask_question: None,
-            ask_unblocks: None, ask_actor: None,
+            id: "T-1".into(),
+            title: String::new(),
+            desc: String::new(),
+            status: "doing".into(),
+            session: None,
+            creator: String::new(),
+            due: None,
+            created: 0,
+            updated: 0,
+            owner_type: "agent".into(),
+            due_time: None,
+            pinned: 0,
+            gcal_event_id: None,
+            pos: 0.0,
+            notified: 0,
+            gate: gate.map(String::from),
+            shepherd: None,
+            item_type: item_type.into(),
+            archived: 0,
+            depends_on: vec![],
+            reviewer: None,
+            epic: None,
+            log: None,
+            rev: 0,
+            source_ref: None,
+            evidence: None,
+            ask_type: None,
+            ask_question: None,
+            ask_unblocks: None,
+            ask_actor: None,
             entered_state_at: None,
             blocked_on: None,
             next_action: None,
             last_result: None,
-            unresolved: None, last_verified_at: None, closed_at: None,
-            version: 0, tags: vec![],
+            unresolved: None,
+            last_verified_at: None,
+            closed_at: None,
+            version: 0,
+            tags: vec![],
             source: None,
-            acceptance_criteria: None, decision_question: None,
-            decision_rationale: None, decision_supersedes: None,
+            acceptance_criteria: None,
+            decision_question: None,
+            decision_rationale: None,
+            decision_supersedes: None,
             waiting_on: None,
-            requested_by: None, callback_session: None, callback_prompt: None,
-            callback_state: None, callback_message_id: None,
-            callback_fired_at: None, callback_error: None,
+            requested_by: None,
+            callback_session: None,
+            callback_prompt: None,
+            callback_state: None,
+            callback_message_id: None,
+            callback_fired_at: None,
+            callback_error: None,
         }
     }
 
@@ -6605,7 +7441,10 @@ mod configured_gate_tests {
 
     #[test]
     fn an_operator_authored_gate_is_honoured() {
-        let c = conn_with(Some(r#"["Signed off by Ethan","Screenshot attached"]"#), Some(1));
+        let c = conn_with(
+            Some(r#"["Signed off by Ethan","Screenshot attached"]"#),
+            Some(1),
+        );
         let got = effective_gate_configured(&c, &row("code", None), TaskStatus::Done);
         assert_eq!(got, vec!["Signed off by Ethan", "Screenshot attached"]);
     }
@@ -6681,7 +7520,12 @@ mod configured_gate_tests {
         assert_eq!(t.criteria, vec!["card rule"], "the winner must not change");
         assert_eq!(t.source, GateSource::Card);
 
-        let by = |n: &str| t.layers.iter().find(|l| l.layer == n).expect("every tier is present");
+        let by = |n: &str| {
+            t.layers
+                .iter()
+                .find(|l| l.layer == n)
+                .expect("every tier is present")
+        };
         assert_eq!(t.layers.len(), 5, "all five tiers, always: {:?}", t.layers);
 
         assert_eq!(by("card").verdict, "applied");
@@ -6692,7 +7536,11 @@ mod configured_gate_tests {
         // something else", not context for it.
         assert_eq!(by("worker").verdict, "outranked");
         assert_eq!(by("worker").criteria, vec!["worker rule"]);
-        assert_eq!(by("worker").scope.as_deref(), Some("backend"), "name the scope so it can be re-read");
+        assert_eq!(
+            by("worker").scope.as_deref(),
+            Some("backend"),
+            "name the scope so it can be re-read"
+        );
         assert_eq!(by("group").verdict, "outranked");
         assert_eq!(by("group").criteria, vec!["group rule"]);
         assert_eq!(by("group").scope.as_deref(), Some("ops"));
@@ -6716,7 +7564,11 @@ mod configured_gate_tests {
         let by2 = |n: &str| t2.layers.iter().find(|l| l.layer == n).unwrap();
         assert_eq!(by2("worker").verdict, "not_applicable");
         assert_eq!(by2("group").verdict, "not_applicable");
-        assert_eq!(by2("type_default").verdict, "applied", "with no scope the type default wins");
+        assert_eq!(
+            by2("type_default").verdict,
+            "applied",
+            "with no scope the type default wins"
+        );
     }
 
     /// The one-line audit form. Asserted as a WHOLE STRING rather than by
@@ -6745,7 +7597,11 @@ column=silent type:code=outranked(2)"
         let t2 = effective_gate_trail(&c, &plain, TaskStatus::Backlog, &groups(&[]));
         let line = t2.log_line();
         assert!(line.starts_with("authz: "), "{line}");
-        assert_eq!(line.matches('=').count(), 5, "all five tiers, always: {line}");
+        assert_eq!(
+            line.matches('=').count(),
+            5,
+            "all five tiers, always: {line}"
+        );
         assert!(line.contains("card=silent"), "{line}");
     }
 
@@ -6760,17 +7616,31 @@ column=silent type:code=outranked(2)"
         scope_gate(&c, "backend", "done", r#"["worker rule"]"#);
         scope_gate(&c, "group:ops", "verified", r#"["group rule"]"#);
         for (row, target) in [
-            (row_for("backend", "code", Some(r#"["card"]"#)), TaskStatus::Done),
+            (
+                row_for("backend", "code", Some(r#"["card"]"#)),
+                TaskStatus::Done,
+            ),
             (row_for("backend", "code", None), TaskStatus::Done),
             (row_for("backend", "code", None), TaskStatus::Verified),
-            (row_for("backend", "investigation", None), TaskStatus::Review),
+            (
+                row_for("backend", "investigation", None),
+                TaskStatus::Review,
+            ),
         ] {
             let t = effective_gate_trail(&c, &row, target, &groups(&["ops"]));
             let (crit, src) = effective_gate_with_source(&c, &row, target, &groups(&["ops"]));
-            assert_eq!((crit, src), (t.criteria.clone(), t.source.clone()), "{target:?}");
+            assert_eq!(
+                (crit, src),
+                (t.criteria.clone(), t.source.clone()),
+                "{target:?}"
+            );
             // And the applied layer must be the one the source names.
-            let applied: Vec<&str> =
-                t.layers.iter().filter(|l| l.verdict == "applied").map(|l| l.layer).collect();
+            let applied: Vec<&str> = t
+                .layers
+                .iter()
+                .filter(|l| l.verdict == "applied")
+                .map(|l| l.layer)
+                .collect();
             assert_eq!(applied.len(), 1, "exactly one tier applies: {applied:?}");
         }
     }
@@ -6810,19 +7680,30 @@ column=silent type:code=outranked(2)"
                 "INSERT INTO issues (id, title, status, type, created, updated, last_result)
                  VALUES (?1, ?2, 'discarded', 'doc', ?3, ?3, ?4)",
                 rusqlite::params![id, format!("t {id}"), 1_760_000_000.0_f64, last_result],
-            ).expect("insert");
+            )
+            .expect("insert");
             get_issue(&conn, id).expect("read").expect("row")
         };
 
         // A card whose last_result is this function's OWN prior output, which is
         // the overwhelmingly common real state.
-        let echoed = add("C-ECHO", Some("Final outcome: discarded (from doing). Actions: 1 recorded."));
+        let echoed = add(
+            "C-ECHO",
+            Some("Final outcome: discarded (from doing). Actions: 1 recorded."),
+        );
         let (text, _) = terminal_summary(&conn, &echoed, "doing").expect("summary");
-        assert!(!text.contains("not supplied"),
-            "must not assert an absence it cannot support: {text}");
-        assert!(!text.contains("Recorded terminal outcome"),
-            "the clause is omitted, not emptied: {text}");
-        assert!(text.starts_with("Final outcome: discarded (from doing)."), "{text}");
+        assert!(
+            !text.contains("not supplied"),
+            "must not assert an absence it cannot support: {text}"
+        );
+        assert!(
+            !text.contains("Recorded terminal outcome"),
+            "the clause is omitted, not emptied: {text}"
+        );
+        assert!(
+            text.starts_with("Final outcome: discarded (from doing)."),
+            "{text}"
+        );
 
         // A card with nothing recorded at all: same, no negative asserted.
         let bare = add("C-BARE", None);
@@ -6832,10 +7713,19 @@ column=silent type:code=outranked(2)"
         // THE CONTROL, and it is the one that matters: a REAL recorded outcome
         // must still be reported. Without this, deleting the clause entirely
         // would pass everything above.
-        let real = add("C-REAL", Some("Verified the CTA on studio.mixpeek.com; manifest chain checked."));
+        let real = add(
+            "C-REAL",
+            Some("Verified the CTA on studio.mixpeek.com; manifest chain checked."),
+        );
         let (real_text, _) = terminal_summary(&conn, &real, "doing").expect("summary");
-        assert!(real_text.contains("Recorded terminal outcome:"), "{real_text}");
-        assert!(real_text.contains("Verified the CTA on studio.mixpeek.com"), "{real_text}");
+        assert!(
+            real_text.contains("Recorded terminal outcome:"),
+            "{real_text}"
+        );
+        assert!(
+            real_text.contains("Verified the CTA on studio.mixpeek.com"),
+            "{real_text}"
+        );
     }
 
     /// AF-634. The rendered summary, not just the predicate. A capture shell
@@ -6850,15 +7740,31 @@ column=silent type:code=outranked(2)"
             conn.execute(
                 "INSERT INTO issues (id, title, status, type, created, updated, creator, \"desc\")
                  VALUES (?1, ?2, ?5, 'doc', ?3, ?3, ?4, ?6)",
-                rusqlite::params![id, format!("t {id}"), 1_760_000_000.0_f64, creator, status, desc],
-            ).expect("insert");
+                rusqlite::params![
+                    id,
+                    format!("t {id}"),
+                    1_760_000_000.0_f64,
+                    creator,
+                    status,
+                    desc
+                ],
+            )
+            .expect("insert");
             get_issue(&conn, id).expect("read").expect("row")
         };
 
-        let cap = add("C-CAP", "amux", "**Prompt:** here is a finding you should know", "discarded");
+        let cap = add(
+            "C-CAP",
+            "amux",
+            "**Prompt:** here is a finding you should know",
+            "discarded",
+        );
         let (text, _) = terminal_summary(&conn, &cap, "doing").expect("summary");
         assert!(text.contains("captured message"), "say what it was: {text}");
-        assert!(text.contains("nothing is owed"), "and that nothing is outstanding: {text}");
+        assert!(
+            text.contains("nothing is owed"),
+            "and that nothing is outstanding: {text}"
+        );
         assert!(
             !text.contains("Tests/deployment/live evidence"),
             "a message has no test evidence, and saying so reads as a missing one: {text}"
@@ -6908,7 +7814,11 @@ column=silent type:code=outranked(2)"
 
         // THE PREDICATE. Both halves are required: amux minted it AND it carries
         // the prompt marker. Either alone catches real work.
-        assert!(is_capture_shell(&cap("amux", "**Prompt:** hello", "discarded")));
+        assert!(is_capture_shell(&cap(
+            "amux",
+            "**Prompt:** hello",
+            "discarded"
+        )));
         assert!(
             !is_capture_shell(&cap("some-lane", "**Prompt:** hello", "discarded")),
             "a LANE that happens to paste a prompt marker is carding real work"
@@ -6919,7 +7829,11 @@ column=silent type:code=outranked(2)"
         );
         // Leading whitespace must not defeat it: the marker is written by a
         // formatter, not by hand.
-        assert!(is_capture_shell(&cap("amux", "\n  **Prompt:** hi", "discarded")));
+        assert!(is_capture_shell(&cap(
+            "amux",
+            "\n  **Prompt:** hi",
+            "discarded"
+        )));
     }
 
     /// AMUX-4677: a captured message whose FIRST LINE is an `ASK` naming a card
@@ -6944,10 +7858,16 @@ column=silent type:code=outranked(2)"
         const RECEIPT: &str = "**Prompt:** ASK (Ethan, resumed you for this): pick up MF-1165 on \
 the finances board, WS5 of epic MF-1168.\nThe bar Ethan set 2026-09-15: ONE COMMAND deploys \
 everything to a clean machine.";
-        assert!(capture_is_delegated_ask(RECEIPT), "the shape this card exists for");
+        assert!(
+            capture_is_delegated_ask(RECEIPT),
+            "the shape this card exists for"
+        );
 
         for (desc, why) in [
-            ("**Prompt:** ask (ethan): pick up MF-1165", "lower-case ask is prose, not a marker"),
+            (
+                "**Prompt:** ask (ethan): pick up MF-1165",
+                "lower-case ask is prose, not a marker",
+            ),
             (
                 "**Prompt:** landed 3f79021a; say the word if you want me to ask about MF-1165",
                 "the word ask inside a body is the over-firing this must not do",
@@ -6956,9 +7876,18 @@ everything to a clean machine.";
                 "**Prompt:** ASK below\nthe card is MF-1165",
                 "the id has to be on the same line as the ask",
             ),
-            ("**Prompt:** ASK: can you look at the retry loop", "an ask naming no card"),
-            ("**Prompt:** ASK (finances): pick up the docker bundle", "a subject but no id"),
-            ("ASK (finances): pick up MF-1165", "not a capture envelope at all"),
+            (
+                "**Prompt:** ASK: can you look at the retry loop",
+                "an ask naming no card",
+            ),
+            (
+                "**Prompt:** ASK (finances): pick up the docker bundle",
+                "a subject but no id",
+            ),
+            (
+                "ASK (finances): pick up MF-1165",
+                "not a capture envelope at all",
+            ),
         ] {
             assert!(!capture_is_delegated_ask(desc), "{why}: {desc}");
         }
@@ -6988,7 +7917,10 @@ everything to a clean machine.";
         // THE DISCRIMINATION. Tidied chatter keeps AF-634's sentence, and if it
         // did not this cell would pass on a predicate that had simply stopped
         // recognising captures at all.
-        let chatter = add("C-CHAT", "**Prompt:** landed 3f79021a, ask me if you want MF-1165 next");
+        let chatter = add(
+            "C-CHAT",
+            "**Prompt:** landed 3f79021a, ask me if you want MF-1165 next",
+        );
         assert!(is_capture_shell(&chatter), "chatter is still a shell");
         let (chat_text, _) = terminal_summary(&conn, &chatter, "doing").expect("summary");
         assert!(chat_text.contains("nothing is owed"), "{chat_text}");
@@ -7010,20 +7942,32 @@ everything to a clean machine.";
             assert!(!dependency_is_resolved(status, "code"));
         }
         for status in ["backlog", "todo", "review", "doing", "unknown"] {
-            assert!(!execution_is_terminal(status,"code"));
+            assert!(!execution_is_terminal(status, "code"));
         }
     }
 
     #[test]
     fn structured_capture_releases_only_the_delivery_marker() {
         let conn = crate::db::migrate::test_memdb();
-        for (i, hold) in ["Already delivered owner follow-up; claim explicitly when switching work", "budget approval pending"].into_iter().enumerate() {
+        for (i, hold) in [
+            "Already delivered owner follow-up; claim explicitly when switching work",
+            "budget approval pending",
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let id = format!("HOLD-{i}");
             conn.execute("INSERT INTO issues(id,title,desc,status,creator,created,updated,next_action,acceptance_criteria,source_ref) VALUES (?1,'Reproduce bug','**Prompt:** fix this','backlog','amux',1,1,'Run regression','[\"Regression passes\"]',?2)", rusqlite::params![id, hold]).unwrap();
-            let mut row = get_issue(&conn,&id).unwrap().unwrap();
-            save_patched(&conn,&mut row).unwrap();
-            assert_eq!(row.source_ref.as_deref(), if i==0 {None} else {Some(hold)});
-            assert_eq!(get_issue(&conn,&id).unwrap().unwrap().source_ref, row.source_ref);
+            let mut row = get_issue(&conn, &id).unwrap().unwrap();
+            save_patched(&conn, &mut row).unwrap();
+            assert_eq!(
+                row.source_ref.as_deref(),
+                if i == 0 { None } else { Some(hold) }
+            );
+            assert_eq!(
+                get_issue(&conn, &id).unwrap().unwrap().source_ref,
+                row.source_ref
+            );
         }
     }
 
@@ -7031,8 +7975,16 @@ everything to a clean machine.";
     fn retained_prompt_provenance_does_not_make_structured_work_a_shell() {
         let conn = crate::db::migrate::test_memdb();
         for (i, (action, criteria, expected)) in [
-            ("Run the reproduction", r#"["Regression no longer reproduces"]"#, false),
-            ("Run the reproduction", r#""Regression no longer reproduces""#, false),
+            (
+                "Run the reproduction",
+                r#"["Regression no longer reproduces"]"#,
+                false,
+            ),
+            (
+                "Run the reproduction",
+                r#""Regression no longer reproduces""#,
+                false,
+            ),
             ("Run the reproduction", r#"" \t\n\u2003""#, true),
             ("", r#""Regression no longer reproduces""#, true),
             ("", r#"["Regression no longer reproduces"]"#, true),
@@ -7041,11 +7993,20 @@ everything to a clean machine.";
             ("Run the reproduction", "broken json", true),
             ("Run the reproduction", r#"{"gate":"done"}"#, true),
             ("\u{2003}", r#"["done"]"#, true),
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let id = format!("INTAKE-{i}");
             conn.execute("INSERT INTO issues(id,title,desc,status,creator,created,updated,next_action,acceptance_criteria) VALUES (?1,'Reproduce bug','**Prompt:** fix this','backlog','amux',1,1,?2,?3)", rusqlite::params![id, action, criteria]).unwrap();
             let row = get_issue(&conn, &id).unwrap().unwrap();
-            let sql: bool = conn.query_row(&format!("SELECT {} FROM issues i WHERE id=?1", capture_shell_sql()), [&id], |r| r.get(0)).unwrap();
+            let sql: bool = conn
+                .query_row(
+                    &format!("SELECT {} FROM issues i WHERE id=?1", capture_shell_sql()),
+                    [&id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(is_capture_shell(&row), expected, "Rust: {id}");
             assert_eq!(sql, expected, "SQL: {id}");
         }
@@ -7074,7 +8035,11 @@ everything to a clean machine.";
             // AMUX-4677's carve-out, on both sides of every clause it added.
             // Ids sort after C-9 on purpose: the comparison below is ordered,
             // and SQLite's BINARY collation puts "C-10" between "C-1" and "C-2".
-            ("C-A1", "amux", "**Prompt:** ASK (Ethan, resumed you for this): pick up MF-1165 now\nmore"),
+            (
+                "C-A1",
+                "amux",
+                "**Prompt:** ASK (Ethan, resumed you for this): pick up MF-1165 now\nmore",
+            ),
             ("C-A2", "amux", "**Prompt:** ask me about MF-1165"),
             ("C-A3", "amux", "**Prompt:** ASK below\nthe card is MF-1165"),
             ("C-A4", "amux", "**Prompt:** ASK: look at the retry loop"),
@@ -7118,7 +8083,10 @@ everything to a clean machine.";
             })
             .map(|(id, _, _)| (*id).to_string())
             .collect();
-        assert_eq!(sql_says, rust_says, "the two predicates must agree row for row");
+        assert_eq!(
+            sql_says, rust_says,
+            "the two predicates must agree row for row"
+        );
         // POSITIVE CONTROL: if this were empty both sides would agree
         // vacuously, which is the most reassuring output a dead check produces.
         assert!(
@@ -7205,10 +8173,16 @@ everything to a clean machine.";
         // passes everything above, and every discarded card would claim a fold.
         assert_eq!(folded_into(None), None);
         assert_eq!(folded_into(Some("")), None);
-        assert_eq!(folded_into(Some("discarded: duplicate of MS-1370")), None,
-            "an ordinary discard is not a fold");
-        assert_eq!(folded_into(Some("capture folded into ")), None,
-            "a fold with no target names nothing");
+        assert_eq!(
+            folded_into(Some("discarded: duplicate of MS-1370")),
+            None,
+            "an ordinary discard is not a fold"
+        );
+        assert_eq!(
+            folded_into(Some("capture folded into ")),
+            None,
+            "a fold with no target names nothing"
+        );
 
         // THE LIVE SPECIMEN, caught by a callback within the hour of shipping
         // the first cut. An outcome note DISCUSSING this fix is embedded in the
@@ -7217,12 +8191,17 @@ everything to a clean machine.";
         let quoting = "`17:31` STATUS (board): Final outcome: discarded (from doing). \
                        Their fix reads a server-authored \"capture folded into <ID>\" line, \
                        and its own Actions line read \"capture folded into AF-615\", so";
-        assert_eq!(folded_into(Some(quoting)), None,
-            "prose QUOTING the marker is not a fold");
+        assert_eq!(
+            folded_into(Some(quoting)),
+            None,
+            "prose QUOTING the marker is not a fold"
+        );
 
         // And the real entry still matches with that attribution prefix present.
         assert_eq!(
-            folded_into(Some("`17:31` amux-frustrations: capture folded into AF-615")),
+            folded_into(Some(
+                "`17:31` amux-frustrations: capture folded into AF-615"
+            )),
             Some("AF-615".to_string())
         );
         // A stray quote on a REAL fold line must not become part of the id.
@@ -7241,19 +8220,33 @@ everything to a clean machine.";
         let c = conn_with(None, None);
         add_session_gates(&c);
         let (_, src) = effective_gate_with_source(
-            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&[]));
+            &c,
+            &row_for("backend", "code", None),
+            TaskStatus::Done,
+            &groups(&[]),
+        );
         assert_eq!(src, GateSource::TypeDefault);
-        assert!(src.retype_would_help(), "the type default is the ONE rung retyping moves");
+        assert!(
+            src.retype_would_help(),
+            "the type default is the ONE rung retyping moves"
+        );
         assert!(src.explain().contains("TYPE"), "{}", src.explain());
 
         // COLUMN — an operator-authored gate on the status itself.
         let c = conn_with(Some(r#"["Global column rule"]"#), Some(1));
         add_session_gates(&c);
         let (g, src) = effective_gate_with_source(
-            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&[]));
+            &c,
+            &row_for("backend", "code", None),
+            TaskStatus::Done,
+            &groups(&[]),
+        );
         assert_eq!(g, vec!["Global column rule"]);
         assert_eq!(src, GateSource::Column);
-        assert!(!src.retype_would_help(), "retyping cannot clear a column gate");
+        assert!(
+            !src.retype_would_help(),
+            "retyping cannot clear a column gate"
+        );
 
         // GROUP — the worker has none, a group does. This rung and the next are
         // the ones the mutation proved uncovered.
@@ -7261,22 +8254,46 @@ everything to a clean machine.";
         add_session_gates(&c);
         scope_gate(&c, "group:ops", "done", r#"["Group rule"]"#);
         let (g, src) = effective_gate_with_source(
-            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&["ops"]));
+            &c,
+            &row_for("backend", "code", None),
+            TaskStatus::Done,
+            &groups(&["ops"]),
+        );
         assert_eq!(g, vec!["Group rule"]);
         assert_eq!(src, GateSource::Group("ops".into()));
-        assert!(!src.retype_would_help(), "a GROUP gate ignores the item type: {}", src.explain());
+        assert!(
+            !src.retype_would_help(),
+            "a GROUP gate ignores the item type: {}",
+            src.explain()
+        );
         assert!(src.explain().contains("GROUP scope"), "{}", src.explain());
-        assert!(src.explain().contains("session-gates"), "point at the endpoint that answers it: {}", src.explain());
+        assert!(
+            src.explain().contains("session-gates"),
+            "point at the endpoint that answers it: {}",
+            src.explain()
+        );
 
         // WORKER — beats the group, and names the worker so the reader can go
         // look. This is TUBES-2053's shape exactly.
         scope_gate(&c, "backend", "done", r#"["Worker rule"]"#);
         let (g, src) = effective_gate_with_source(
-            &c, &row_for("backend", "code", None), TaskStatus::Done, &groups(&["ops"]));
+            &c,
+            &row_for("backend", "code", None),
+            TaskStatus::Done,
+            &groups(&["ops"]),
+        );
         assert_eq!(g, vec!["Worker rule"]);
         assert_eq!(src, GateSource::Worker("backend".into()));
-        assert!(!src.retype_would_help(), "a WORKER gate ignores the item type: {}", src.explain());
-        assert!(src.explain().contains("`backend`"), "name the worker, or the reader cannot go look: {}", src.explain());
+        assert!(
+            !src.retype_would_help(),
+            "a WORKER gate ignores the item type: {}",
+            src.explain()
+        );
+        assert!(
+            src.explain().contains("`backend`"),
+            "name the worker, or the reader cannot go look: {}",
+            src.explain()
+        );
 
         // CARD — beats everything above it.
         let (g, src) = effective_gate_with_source(
@@ -7583,7 +8600,11 @@ everything to a clean machine.";
                 TaskStatus::Done,
                 &groups(&["ops"]),
             );
-            assert_eq!(got, vec!["Group rule"], "worker row {bad:?} must inherit the group tier");
+            assert_eq!(
+                got,
+                vec!["Group rule"],
+                "worker row {bad:?} must inherit the group tier"
+            );
         }
     }
 
@@ -7608,7 +8629,8 @@ everything to a clean machine.";
         let c = conn_with(None, None);
         add_session_gates(&c);
         scope_gate(&c, "group:ops", "done", r#"["Group rule"]"#);
-        let got = effective_gate_scoped(&c, &row("code", None), TaskStatus::Done, &groups(&["ops"]));
+        let got =
+            effective_gate_scoped(&c, &row("code", None), TaskStatus::Done, &groups(&["ops"]));
         assert_eq!(got, default_gates_for("code", TaskStatus::Done));
     }
 
@@ -7636,5 +8658,46 @@ everything to a clean machine.";
         let c = rusqlite::Connection::open_in_memory().unwrap();
         let got = effective_gate_configured(&c, &row("code", None), TaskStatus::Done);
         assert_eq!(got, default_gates_for("code", TaskStatus::Done));
+    }
+}
+
+#[cfg(test)]
+mod dependency_owner_tests {
+    use super::*;
+    #[test]
+    fn project_dependency_owner_preserves_assignments_and_refuses_foreign_edges_both_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            for (id,project,worker) in [("P",Some("one"),None),("A",Some("one"),Some("retired-a")),("B",Some("one"),Some("retired-b")),("X",Some("two"),Some("retired-a")),("L",None,Some("retired-a")),("L2",None,Some("other")),("U",None,None)] {
+                c.execute("INSERT INTO issues(id,title,status,type,project_group,session,created,updated) VALUES(?1,'Outcome','backlog','code',?2,?3,1,1)",params![id,project,worker])?;
+            }
+            c.execute("INSERT INTO issues(id,title,status,project_group,deleted,created,updated) VALUES('D','Deleted','backlog','one',1,1,1)",[])?;
+            let mut parent=get_issue(c,"P")?.unwrap();parent.depends_on=vec!["A".into(),"B".into()];
+            save_patched(c,&mut parent)?;
+            let owner=BoardOwner::of(&parent);
+            assert!(foreign_dependencies(c,&owner,&parent.depends_on)?.is_empty());
+            for id in ["X","L","U","D","missing"] {
+                let mut bad=parent.clone();bad.depends_on.push(id.into());
+                assert!(save_patched(c,&mut bad).is_err(),"outgoing {id}");
+            }
+            let mut child=get_issue(c,"A")?.unwrap();child.session=Some("replacement".into());
+            save_patched(c,&mut child)?;
+            assert_eq!(get_issue(c,"A")?.unwrap().session.as_deref(),Some("replacement"));
+            for project in [None,Some("two")] {
+                let mut moved=child.clone();moved.project_group=project.map(str::to_owned);
+                assert!(save_patched(c,&mut moved).is_err(),"incoming edge must reject ownership change");
+                assert!(validate_owner_changes(c,&[("A".into(),BoardOwner::of(&moved))]).is_err());
+            }
+            let mut legacy=get_issue(c,"L")?.unwrap();legacy.session=Some("replacement".into());legacy.depends_on=vec!["A".into()];
+            assert!(save_patched(c,&mut legacy).is_err(),"legacy cannot depend on project even with matching assignment");
+            legacy.depends_on=vec!["L2".into()];assert!(save_patched(c,&mut legacy).is_err(),"worker boards remain isolated");
+            c.execute("INSERT INTO issues(id,title,status,session,created,updated,depends_on) VALUES('LC','Dependent','backlog','retired-a',1,1,'[\"L\"]')",[])?;
+            assert!(validate_owner_changes(c,&[("L".into(),BoardOwner::new(Some("one"),None))]).is_err(),"incoming legacy edge cannot be stranded");
+            assert!(validate_owner_changes(c,&[("L".into(),BoardOwner::new(Some("one"),None)),("LC".into(),BoardOwner::new(Some("one"),None))]).is_ok(),"connected batch migration is allowed");
+            assert!(validate_owner_changes(c,&[("A".into(),BoardOwner::new(None,Some("retired-a"))),("P".into(),BoardOwner::new(None,Some("retired-a")))]).is_err(),"partial rollback strands B");
+            assert_eq!(get_issue(c,"P")?.unwrap().depends_on,vec!["A","B"]);
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
     }
 }

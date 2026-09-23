@@ -54,10 +54,16 @@ fn nest_prefixes(mod_rs: &str) -> BTreeMap<String, String> {
         if line.starts_with("//") {
             continue;
         }
-        let Some(rest) = line.split_once(".nest(\"").map(|x| x.1) else { continue };
-        let Some((prefix, tail)) = rest.split_once('"') else { continue };
+        let Some(rest) = line.split_once(".nest(\"").map(|x| x.1) else {
+            continue;
+        };
+        let Some((prefix, tail)) = rest.split_once('"') else {
+            continue;
+        };
         // `module::routes()` — take the module ident before `::`.
-        let Some(after) = tail.split_once("::").map(|x| x.0) else { continue };
+        let Some(after) = tail.split_once("::").map(|x| x.0) else {
+            continue;
+        };
         let module: String = after
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '_')
@@ -97,7 +103,11 @@ fn routes_in(src: &str) -> Vec<String> {
 fn join(prefix: &str, sub: &str) -> String {
     let joined = format!("{prefix}{sub}");
     let trimmed = joined.trim_end_matches('/');
-    if trimmed.is_empty() { prefix.to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        prefix.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[test]
@@ -120,7 +130,9 @@ fn every_mounted_route_appears_in_route_table() {
 
     for (module, prefix) in &prefixes {
         let path = dir.join(format!("{module}.rs"));
-        let Ok(src) = std::fs::read_to_string(&path) else { continue };
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         covered_modules += 1;
         for sub in routes_in(&src) {
             // DOCUMENTED NON-ROWS, quoted from ROUTE_TABLE's own header: the
@@ -132,7 +144,11 @@ fn every_mounted_route_appears_in_route_table() {
             }
             // A literal already rooted at /api/ is an absolute mount, not a
             // suffix: prefixing it produced "/api/cal-events/api/calendar.ics".
-            let full = if sub.starts_with("/api/") { sub.clone() } else { join(prefix, &sub) };
+            let full = if sub.starts_with("/api/") {
+                sub.clone()
+            } else {
+                join(prefix, &sub)
+            };
             covered_routes += 1;
             // A module may host a SECOND router mounted somewhere else
             // (org.rs declares `/invite/{token}`, merged at TOP LEVEL, and

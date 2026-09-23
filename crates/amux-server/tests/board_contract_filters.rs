@@ -29,15 +29,22 @@ async fn contract() -> Value {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
     let res = app
-        .oneshot(Request::builder().uri("/api/board/contract").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/board/contract")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -68,7 +75,9 @@ async fn the_contract_documents_every_real_list_filter() {
     let c = contract().await;
     let list = c.get("list").expect("contract documents the list endpoint");
     let filters = list["filters"].as_object().expect("filters object");
-    let refused = list["not_a_filter"].as_object().expect("refused params named too");
+    let refused = list["not_a_filter"]
+        .as_object()
+        .expect("refused params named too");
 
     // Every entry in `filters` must be name -> DESCRIPTION. This is what keeps
     // the two assertions below meaningful: they treat each key as a real query
@@ -93,12 +102,17 @@ async fn the_contract_documents_every_real_list_filter() {
         .cloned()
         .chain(refused.keys().flat_map(|k| {
             // "q / query / search" documents three names in one key.
-            k.split('/').map(|s| s.trim().to_string()).collect::<Vec<_>>()
+            k.split('/')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<_>>()
         }))
         .collect();
 
     let real = list_params_fields();
-    assert!(real.len() >= 7, "the ListParams scraper is broken, found {real:?}");
+    assert!(
+        real.len() >= 7,
+        "the ListParams scraper is broken, found {real:?}"
+    );
 
     for f in &real {
         assert!(
@@ -127,18 +141,36 @@ async fn the_contract_documents_every_real_list_filter() {
 async fn the_contract_explains_the_terminal_cap_and_how_to_see_it() {
     let c = contract().await;
     let cap = &c["list"]["terminal_cap"];
-    assert_eq!(cap["default_unscoped"], 100, "the unscoped default cap must be stated");
-    assert_eq!(cap["default_scoped"], 0, "a scoped query is uncapped — that is the fix ts-gke got");
+    assert_eq!(
+        cap["default_unscoped"], 100,
+        "the unscoped default cap must be stated"
+    );
+    assert_eq!(
+        cap["default_scoped"], 0,
+        "a scoped query is uncapped — that is the fix ts-gke got"
+    );
 
-    for key in ["why", "detect_truncation", "to_get_everything", "auditing_your_own_cards"] {
+    for key in [
+        "why",
+        "detect_truncation",
+        "to_get_everything",
+        "auditing_your_own_cards",
+    ] {
         let v = cap[key].as_str().unwrap_or("");
-        assert!(!v.is_empty(), "terminal_cap.{key} must be documented, got {v:?}");
+        assert!(
+            !v.is_empty(),
+            "terminal_cap.{key} must be documented, got {v:?}"
+        );
     }
     // The headers named in the contract must be the ones list_board actually
     // sets — naming a header that does not exist is the same class of lie.
     let detect = cap["detect_truncation"].as_str().unwrap();
     let src = include_str!("../src/api/board.rs");
-    for h in ["x-amux-truncated", "x-amux-terminal-total", "x-amux-terminal-returned"] {
+    for h in [
+        "x-amux-truncated",
+        "x-amux-terminal-total",
+        "x-amux-terminal-returned",
+    ] {
         assert!(detect.contains(h), "contract must name {h}");
         assert!(src.contains(h), "list_board must actually set {h}");
     }
@@ -162,7 +194,7 @@ async fn contract_serves_the_enforced_gate_not_just_type_defaults() {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
 
@@ -179,7 +211,10 @@ async fn contract_serves_the_enforced_gate_not_just_type_defaults() {
                 "UPDATE statuses SET gate=?1, gate_custom=1 WHERE id='verified'",
                 rusqlite::params![custom_str],
             )?;
-            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
     // A card to resolve against.
@@ -190,14 +225,22 @@ async fn contract_serves_the_enforced_gate_not_just_type_defaults() {
                 .method("POST")
                 .uri("/api/board")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"title":"gate drift specimen","type":"investigation"}"#))
+                .body(Body::from(
+                    r#"{"title":"gate drift specimen","type":"investigation"}"#,
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let created: Value = serde_json::from_slice(&bytes).unwrap();
-    let id = created["id"].as_str().or_else(|| created["item"]["id"].as_str()).unwrap().to_string();
+    let id = created["id"]
+        .as_str()
+        .or_else(|| created["item"]["id"].as_str())
+        .unwrap()
+        .to_string();
 
     let res = app
         .oneshot(
@@ -209,7 +252,9 @@ async fn contract_serves_the_enforced_gate_not_just_type_defaults() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let c: Value = serde_json::from_slice(&bytes).unwrap();
 
     // The card-resolved gate must be the ENFORCED one, not the type default.
@@ -221,7 +266,10 @@ async fn contract_serves_the_enforced_gate_not_just_type_defaults() {
     assert_eq!(c["global_custom_gates"]["verified"], custom, "{c}");
     // And the bare table now says what it is, so nobody reads tier 5 as the law.
     assert!(
-        c["gates_are"].as_str().unwrap_or("").contains("TYPE DEFAULTS"),
+        c["gates_are"]
+            .as_str()
+            .unwrap_or("")
+            .contains("TYPE DEFAULTS"),
         "the defaults table must name itself as defaults: {c}"
     );
 }
@@ -245,9 +293,15 @@ async fn the_contract_publishes_the_type_list_the_cli_reads() {
     let types = c["types"]
         .as_array()
         .unwrap_or_else(|| panic!("contract must publish `types` at top level: {c}"));
-    assert!(!types.is_empty(), "contract published an empty type list: {c}");
+    assert!(
+        !types.is_empty(),
+        "contract published an empty type list: {c}"
+    );
     for want in ["code", "investigation", "escalation"] {
-        assert!(types.iter().any(|t| t == want), "contract types missing {want}: {types:?}");
+        assert!(
+            types.iter().any(|t| t == want),
+            "contract types missing {want}: {types:?}"
+        );
     }
 
     // The consumer half: the bash CLI is not compiled, so nothing else can catch
@@ -274,7 +328,7 @@ async fn contract_and_rows() -> (Value, Value, Value) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let app = router(state);
     let get = |uri: String, method: &'static str, body: Body| {
@@ -291,7 +345,9 @@ async fn contract_and_rows() -> (Value, Value, Value) {
                 )
                 .await
                 .unwrap();
-            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
             serde_json::from_slice::<Value>(&bytes).unwrap()
         }
     };
@@ -302,7 +358,10 @@ async fn contract_and_rows() -> (Value, Value, Value) {
         Body::from(r#"{"title":"slim omits probe","desc":"a body long enough to be dropped"}"#),
     )
     .await;
-    let id = created["id"].as_str().expect("created card must have an id").to_string();
+    let id = created["id"]
+        .as_str()
+        .expect("created card must have an id")
+        .to_string();
 
     let contract = get("/api/board/contract".into(), "GET", Body::empty()).await;
     // `full=1`, NOT the bare list: the list is ALREADY slim by default, so

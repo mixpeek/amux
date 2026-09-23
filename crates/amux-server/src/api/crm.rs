@@ -101,15 +101,18 @@ fn ev(id: &str, kind: MutationKind) -> PendingEvent {
 /// Fields a client may write on a contact. Python's `allowed` set, verbatim —
 /// notably NOT `id`, `created` or `deleted`, so a PATCH can neither re-key a
 /// row nor resurrect a soft-deleted one by accident.
-const CONTACT_FIELDS: &[&str] =
-    &["name", "company", "role", "email", "linkedin", "twitter", "phone", "notes"];
+const CONTACT_FIELDS: &[&str] = &[
+    "name", "company", "role", "email", "linkedin", "twitter", "phone", "notes",
+];
 
 /// Same, for an interaction.
-const INTERACTION_FIELDS: &[&str] =
-    &["date", "type", "notes", "follow_up_date", "follow_up_note"];
+const INTERACTION_FIELDS: &[&str] = &["date", "type", "notes", "follow_up_date", "follow_up_note"];
 
 fn str_field(body: &Value, key: &str) -> String {
-    body.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    body.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Tags for one contact, as a JSON array of strings.
@@ -307,7 +310,10 @@ pub async fn patch_contact(
             if let Some(tags) = body.get("tags").and_then(Value::as_array) {
                 replace_tags(conn, &id, tags)?;
             }
-            Ok(WriteOutcome { applied: true, events: vec![ev(&id, MutationKind::Updated)] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![ev(&id, MutationKind::Updated)],
+            })
         })
         .await;
     match write {
@@ -330,9 +336,15 @@ pub async fn delete_contact(State(state): State<AppState>, Path(id): Path<String
                 "UPDATE crm_contacts SET deleted=?1 WHERE id=?2",
                 rusqlite::params![now_secs(), &id],
             )?;
-            let events =
-                if n > 0 { vec![ev(&id, MutationKind::Deleted)] } else { vec![] };
-            Ok(WriteOutcome { applied: n > 0, events })
+            let events = if n > 0 {
+                vec![ev(&id, MutationKind::Deleted)]
+            } else {
+                vec![]
+            };
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events,
+            })
         })
         .await;
     match write {
@@ -441,7 +453,10 @@ pub async fn patch_interaction(
                 }
             }
             if sets.is_empty() {
-                return Ok(WriteOutcome { applied: false, events: vec![] });
+                return Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
             }
             params.push(SqlValue::Integer(now_secs()));
             let updated_ix = params.len();
@@ -452,7 +467,10 @@ pub async fn patch_interaction(
                 sets.join(", ")
             );
             let n = conn.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
-            Ok(WriteOutcome { applied: n > 0, events: vec![] })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
         })
         .await;
     match write {
@@ -467,7 +485,10 @@ pub async fn delete_interaction(State(state): State<AppState>, Path(id): Path<St
         .store
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM crm_interactions WHERE id=?1", [&id])?;
-            Ok(WriteOutcome { applied: n > 0, events: vec![] })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
         })
         .await;
     match write {

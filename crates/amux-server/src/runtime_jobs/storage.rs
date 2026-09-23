@@ -118,17 +118,24 @@ pub(crate) fn apfs_snapshot_note(n: usize) -> String {
     )
 }
 
-
 /// Bound both child lifetime and stdout consumption. A child can exit while a
 /// descendant still holds its stdout open, so wait_with_output after try_wait
 /// is not a deadline. Nonblocking reads also prevent a full pipe deadlock.
-pub(crate) fn bounded_output(program: &str, args: &[&str], budget: std::time::Duration) -> Option<Vec<u8>> {
+pub(crate) fn bounded_output(
+    program: &str,
+    args: &[&str],
+    budget: std::time::Duration,
+) -> Option<Vec<u8>> {
     use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::process::{Command, Stdio};
     let deadline = std::time::Instant::now() + budget;
-    let mut child = Command::new(program).args(args).stdout(Stdio::piped())
-        .stderr(Stdio::null()).spawn().ok()?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
     let result = (|| {
         let mut stdout = child.stdout.take()?;
         let fd = stdout.as_raw_fd();
@@ -155,19 +162,28 @@ pub(crate) fn bounded_output(program: &str, args: &[&str], budget: std::time::Du
                         progressed = true;
                         output.extend_from_slice(&buf[..n]);
                         if output.len() > 1024 * 1024 {
-                            tracing::warn!(program, "storage_probe_output_limit: measurement unknown");
+                            tracing::warn!(
+                                program,
+                                "storage_probe_output_limit: measurement unknown"
+                            );
                             return None;
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => return None,
                 }
             }
-            if status.is_none() { status = child.try_wait().ok()?; }
+            if status.is_none() {
+                status = child.try_wait().ok()?;
+            }
             if let Some(status) = status {
-                if !status.success() { return None; }
-                if eof { return Some(output); }
+                if !status.success() {
+                    return None;
+                }
+                if eof {
+                    return Some(output);
+                }
             }
             if !progressed {
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -205,22 +221,34 @@ pub(crate) fn parse_local_snapshots(stdout: &[u8]) -> Option<Vec<String>> {
     Some(snapshots)
 }
 
-
 pub(crate) const SNAPSHOT_UNMEASURED: &str = "Local snapshot retention is unmeasured: the probe did not return a successful recognized listing (unsupported platform/output, command failure, or timeout). Do not infer that snapshots are absent or that deleting them is necessary.";
 
 pub(crate) fn local_snapshots() -> Option<Vec<String>> {
-    probe_local_snapshots("/usr/bin/tmutil", &["listlocalsnapshots", "/"], std::time::Duration::from_secs(5))
+    probe_local_snapshots(
+        "/usr/bin/tmutil",
+        &["listlocalsnapshots", "/"],
+        std::time::Duration::from_secs(5),
+    )
 }
 
-fn probe_local_snapshots(program: &str, args: &[&str], budget: std::time::Duration) -> Option<Vec<String>> {
-    let snapshots = bounded_output(program, args, budget)
-        .and_then(|stdout| parse_local_snapshots(&stdout));
+fn probe_local_snapshots(
+    program: &str,
+    args: &[&str],
+    budget: std::time::Duration,
+) -> Option<Vec<String>> {
+    let snapshots =
+        bounded_output(program, args, budget).and_then(|stdout| parse_local_snapshots(&stdout));
     let measured = snapshots.is_some();
     let n_considered = snapshots.as_ref().map_or(0, Vec::len);
     if measured {
         tracing::info!(measured, n_considered, "storage_snapshot_probe");
     } else {
-        tracing::warn!(measured, n_considered, why_unmeasured = SNAPSHOT_UNMEASURED, "storage_snapshot_probe");
+        tracing::warn!(
+            measured,
+            n_considered,
+            why_unmeasured = SNAPSHOT_UNMEASURED,
+            "storage_snapshot_probe"
+        );
     }
     snapshots
 }
@@ -380,7 +408,10 @@ pub const SPECS: &[SweepSpec] = &[
 /// `<ENV>`: process env wins, then `server.env`, then the spec default — the
 /// same precedence `AMUX_REQLOG_RETAIN_DAYS` and every other knob uses.
 pub fn retain_days(spec: &SweepSpec) -> f64 {
-    if let Some(d) = std::env::var(spec.env).ok().and_then(|v| v.trim().parse::<f64>().ok()) {
+    if let Some(d) = std::env::var(spec.env)
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+    {
         return d;
     }
     crate::config::parse_env_file(&amux_home().join("server.env"))
@@ -392,7 +423,10 @@ pub fn retain_days(spec: &SweepSpec) -> f64 {
 pub use crate::config::amux_home;
 
 fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 fn unix_now() -> f64 {
@@ -407,10 +441,16 @@ fn unix_now() -> f64 {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SweepResult {
     Disabled,
-    Deleted { rows: usize, kept: i64 },
+    Deleted {
+        rows: usize,
+        kept: i64,
+    },
     /// The cutoff would have emptied a non-empty table — almost certainly a
     /// unit mismatch. Nothing was deleted.
-    Refused { total: i64, cutoff: String },
+    Refused {
+        total: i64,
+        cutoff: String,
+    },
     Error(String),
 }
 
@@ -452,7 +492,11 @@ fn iso_utc(secs: i64) -> String {
 /// returns None: the ISO column is compared lexicographically and cannot land
 /// 1000x off, so the mismatch this guard exists to catch cannot occur there.
 fn retention_eligible(spec: &SweepSpec) -> &'static str {
-    if spec.table == "cmd_history" { "capture_pending=0" } else { "1=1" }
+    if spec.table == "cmd_history" {
+        "capture_pending=0"
+    } else {
+        "1=1"
+    }
 }
 
 fn oldest_secs(conn: &Connection, spec: &SweepSpec) -> Option<f64> {
@@ -461,12 +505,21 @@ fn oldest_secs(conn: &Connection, spec: &SweepSpec) -> Option<f64> {
         TsUnit::Secs | TsUnit::Millis => {
             let raw: f64 = conn
                 .query_row(
-                    &format!("SELECT MIN({}) FROM {} WHERE {}", spec.ts_col, spec.table, retention_eligible(spec)),
+                    &format!(
+                        "SELECT MIN({}) FROM {} WHERE {}",
+                        spec.ts_col,
+                        spec.table,
+                        retention_eligible(spec)
+                    ),
                     [],
                     |r| r.get(0),
                 )
                 .ok()?;
-            Some(if spec.unit == TsUnit::Millis { raw / 1000.0 } else { raw })
+            Some(if spec.unit == TsUnit::Millis {
+                raw / 1000.0
+            } else {
+                raw
+            })
         }
     }
 }
@@ -480,12 +533,13 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
     }
     let cutoff = cutoff_for(spec.unit, now_secs, days);
 
-    let total: i64 = match conn.query_row(&format!("SELECT COUNT(*) FROM {}", spec.table), [], |r| {
-        r.get(0)
-    }) {
-        Ok(v) => v,
-        Err(e) => return SweepResult::Error(format!("count {}: {e}", spec.table)),
-    };
+    let total: i64 =
+        match conn.query_row(&format!("SELECT COUNT(*) FROM {}", spec.table), [], |r| {
+            r.get(0)
+        }) {
+            Ok(v) => v,
+            Err(e) => return SweepResult::Error(format!("count {}: {e}", spec.table)),
+        };
     if total == 0 {
         return SweepResult::Deleted { rows: 0, kept: 0 };
     }
@@ -493,7 +547,10 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
     // THE GUARD. Ask what survives, not what dies: an unbounded match and a
     // correct match are indistinguishable from the deleted rows alone.
     let kept: i64 = match conn.query_row(
-        &format!("SELECT COUNT(*) FROM {} WHERE {} >= ?1", spec.table, spec.ts_col),
+        &format!(
+            "SELECT COUNT(*) FROM {} WHERE {} >= ?1",
+            spec.table, spec.ts_col
+        ),
         rusqlite::params![&cutoff],
         |r| r.get(0),
     ) {
@@ -515,7 +572,12 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
     }
 
     match conn.execute(
-        &format!("DELETE FROM {} WHERE {} < ?1 AND {}", spec.table, spec.ts_col, retention_eligible(spec)),
+        &format!(
+            "DELETE FROM {} WHERE {} < ?1 AND {}",
+            spec.table,
+            spec.ts_col,
+            retention_eligible(spec)
+        ),
         rusqlite::params![&cutoff],
     ) {
         Ok(rows) => {
@@ -618,7 +680,12 @@ pub fn rotate_server_log(logs_dir: &Path) -> Option<u64> {
         return None;
     }
     // Truncate in place — do NOT rename; the tracing appender holds this fd.
-    if std::fs::OpenOptions::new().write(true).truncate(true).open(&log).is_err() {
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&log)
+        .is_err()
+    {
         return None;
     }
     tracing::info!(
@@ -651,7 +718,10 @@ pub fn rotate_server_log(logs_dir: &Path) -> Option<u64> {
 /// is the honest "this was never a unit of work", so holding its attachment
 /// forever would make the protection a leak that never frees anything. That
 /// asymmetry is what the control cell pins.
-pub fn card_referenced_uploads(conn: &Connection, uploads: &Path) -> anyhow::Result<std::collections::HashSet<String>> {
+pub fn card_referenced_uploads(
+    conn: &Connection,
+    uploads: &Path,
+) -> anyhow::Result<std::collections::HashSet<String>> {
     let texts = super::log_retention::reference_texts(conn, "/uploads/")?;
     let mut out = std::collections::HashSet::new();
     let md = match std::fs::symlink_metadata(uploads) {
@@ -659,12 +729,18 @@ pub fn card_referenced_uploads(conn: &Connection, uploads: &Path) -> anyhow::Res
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(error) => return Err(error.into()),
     };
-    anyhow::ensure!(md.is_dir() && !md.file_type().is_symlink(), "upload retention root must be a real directory");
+    anyhow::ensure!(
+        md.is_dir() && !md.file_type().is_symlink(),
+        "upload retention root must be a real directory"
+    );
     // Match actual names rather than parsing prose: upload names may contain
     // spaces and Unicode, and a URL may percent-escape them. A prefix match is
     // deliberately conservative (extra retention is safer than lost evidence).
     for entry in std::fs::read_dir(uploads)? {
-        let name = entry?.file_name().into_string().map_err(|_| anyhow::anyhow!("upload filename is not UTF-8"))?;
+        let name = entry?
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("upload filename is not UTF-8"))?;
         let needle = format!("/uploads/{name}");
         if texts.iter().any(|text| text.contains(&needle)) {
             out.insert(name);
@@ -685,7 +761,9 @@ pub fn prune_dir_by_age_keeping(
         return (0, 0, 0);
     }
     let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(dir) else { return (0, 0, 0) };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return (0, 0, 0);
+    };
     let (mut n, mut bytes, mut kept) = (0usize, 0u64, 0usize);
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
@@ -764,7 +842,9 @@ fn dir_size_fast(root: &Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let Ok(md) = e.metadata() else { continue };
             if md.is_dir() {
@@ -795,7 +875,9 @@ pub fn prune_rotated_logs(logs_dir: &Path) -> (usize, u64) {
     }
     let max_age = days * 86_400;
     let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(logs_dir) else { return (0, 0) };
+    let Ok(rd) = std::fs::read_dir(logs_dir) else {
+        return (0, 0);
+    };
     let (mut n, mut bytes) = (0usize, 0u64);
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
@@ -857,7 +939,9 @@ pub fn prune_stale_build_targets(home: &Path) -> (usize, u64) {
     let max_age = days * 86_400;
     let canonical = home.join("rust-build-target");
     let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(home) else { return (0, 0) };
+    let Ok(rd) = std::fs::read_dir(home) else {
+        return (0, 0);
+    };
     let (mut n, mut bytes) = (0usize, 0u64);
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
@@ -912,7 +996,9 @@ pub fn prune_temp_browser_dirs(home: &Path) -> (usize, u64) {
     let max_age = days * 86_400;
     let pw_dir = home.join("playwright-auth");
     let now = std::time::SystemTime::now();
-    let Ok(rd) = std::fs::read_dir(&pw_dir) else { return (0, 0) };
+    let Ok(rd) = std::fs::read_dir(&pw_dir) else {
+        return (0, 0);
+    };
     let (mut n, mut bytes) = (0usize, 0u64);
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
@@ -927,7 +1013,10 @@ pub fn prune_temp_browser_dirs(home: &Path) -> (usize, u64) {
         }
         // Temp dirs contain a timestamp suffix like `bb-1784387451210`
         let has_timestamp = name.contains('-')
-            && name.rsplit('-').next().is_some_and(|s| s.len() >= 10 && s.chars().all(|c| c.is_ascii_digit()));
+            && name
+                .rsplit('-')
+                .next()
+                .is_some_and(|s| s.len() >= 10 && s.chars().all(|c| c.is_ascii_digit()));
         if !has_timestamp {
             continue;
         }
@@ -976,7 +1065,9 @@ pub fn rotate_session_logs(logs_dir: &Path) -> (usize, u64) {
         return (0, 0);
     }
     let max_bytes = max_mb * 1024 * 1024;
-    let Ok(rd) = std::fs::read_dir(logs_dir) else { return (0, 0) };
+    let Ok(rd) = std::fs::read_dir(logs_dir) else {
+        return (0, 0);
+    };
     let (mut n, mut bytes) = (0usize, 0u64);
     for e in rd.flatten() {
         let Ok(md) = e.metadata() else { continue };
@@ -1088,14 +1179,16 @@ async fn checkpoint_wal(store: &crate::db::SharedStore, home: &Path) -> (Option<
             if let (Some(b), Some(a)) = (before, after) {
                 if a > 8 * 1024 * 1024 && a > b / 2 {
                     tracing::warn!(
-                        before_bytes = b, after_bytes = a,
+                        before_bytes = b,
+                        after_bytes = a,
                         took_ms = t0.elapsed().as_millis() as u64,
                         "storage sweep: wal_checkpoint(TRUNCATE) did not shrink the WAL — a \
                          long-lived reader is holding the checkpoint off (AMUX-4811)"
                     );
                 } else {
                     tracing::info!(
-                        before_bytes = b, after_bytes = a,
+                        before_bytes = b,
+                        after_bytes = a,
                         took_ms = t0.elapsed().as_millis() as u64,
                         "storage sweep: WAL checkpointed"
                     );
@@ -1163,13 +1256,25 @@ async fn maybe_vacuum(store: &crate::db::SharedStore, home: &Path) -> bool {
 
 /// Free bytes on the volume holding `path`.
 pub fn disk_free_bytes(path: &Path) -> Option<u64> {
-    let df = ["/bin/df", "/usr/bin/df"].iter().find(|c| Path::new(c).is_file())?;
-    let out = std::process::Command::new(df).arg("-Pk").arg(path).output().ok()?;
+    let df = ["/bin/df", "/usr/bin/df"]
+        .iter()
+        .find(|c| Path::new(c).is_file())?;
+    let out = std::process::Command::new(df)
+        .arg("-Pk")
+        .arg(path)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let avail_kb: u64 = text.lines().last()?.split_whitespace().nth(3)?.parse().ok()?;
+    let avail_kb: u64 = text
+        .lines()
+        .last()?
+        .split_whitespace()
+        .nth(3)?
+        .parse()
+        .ok()?;
     Some(avail_kb * 1024)
 }
 
@@ -1228,15 +1333,26 @@ pub const AGE_PRUNED_DIRS: &[(&str, &str, u64)] = &[
     ("media-cache", "AMUX_MEDIA_CACHE_RETAIN_DAYS", 30),
     ("uploads", "AMUX_UPLOADS_RETAIN_DAYS", 7),
     ("spin-dumps", "AMUX_SPIN_DUMPS_RETAIN_DAYS", 14),
-    ("browser-screenshots", "AMUX_BROWSER_SCREENSHOTS_RETAIN_DAYS", 14),
-    ("email-attachments", "AMUX_EMAIL_ATTACHMENTS_RETAIN_DAYS", 30),
+    (
+        "browser-screenshots",
+        "AMUX_BROWSER_SCREENSHOTS_RETAIN_DAYS",
+        14,
+    ),
+    (
+        "email-attachments",
+        "AMUX_EMAIL_ATTACHMENTS_RETAIN_DAYS",
+        30,
+    ),
     ("transcripts", "AMUX_TRANSCRIPTS_RETAIN_DAYS", 30),
 ];
 
 pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     let t0 = std::time::Instant::now();
     let now = unix_now();
-    let mut rep = StorageReport { at: now, ..Default::default() };
+    let mut rep = StorageReport {
+        at: now,
+        ..Default::default()
+    };
 
     // DB retention runs on the writer thread — one transaction, and
     // `applied: false` so retention never bumps `_amux_rev`. A delete of aged
@@ -1253,12 +1369,18 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
         .write_async(move |conn| {
             let mut out = Vec::new();
             for spec in SPECS {
-                out.push((spec.table.to_string(), format!("{:?}", sweep_one(conn, spec, now))));
+                out.push((
+                    spec.table.to_string(),
+                    format!("{:?}", sweep_one(conn, spec, now)),
+                ));
             }
             if let Ok(mut s) = sink2.lock() {
                 *s = out;
             }
-            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .await;
     match res {
@@ -1289,8 +1411,13 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     // directories retain their existing age policy.
     let store = state.store.clone();
     let uploads = home.join("uploads");
-    let keep = tokio::task::spawn_blocking(move || store.read().and_then(|conn| card_referenced_uploads(&conn, &uploads)))
-        .await.unwrap_or_else(|error| Err(error.into()));
+    let keep = tokio::task::spawn_blocking(move || {
+        store
+            .read()
+            .and_then(|conn| card_referenced_uploads(&conn, &uploads))
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.into()));
     if let Err(error) = &keep {
         rep.upload_refs_error = Some(error.to_string());
         tracing::warn!(%error, "upload retention deferred: references unavailable");
@@ -1302,9 +1429,10 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
         let keeping = if *name == "uploads" {
             let Ok(keep) = &keep else { continue };
             keep
-        } else { &empty };
-        let (n, b, k) =
-            prune_dir_by_age_keeping(&home.join(name), days * 86_400, env_key, keeping);
+        } else {
+            &empty
+        };
+        let (n, b, k) = prune_dir_by_age_keeping(&home.join(name), days * 86_400, env_key, keeping);
         files += n;
         bytes += b;
         kept += k;
@@ -1314,7 +1442,13 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     rep.kept_card_referenced = kept;
 
     let log_refs = super::log_retention::references(state, "/logs/").await;
-    rep.run_logs = super::log_retention::sweep(home, "logs", env_u64("AMUX_RUN_LOG_RETAIN_DAYS", 30), log_refs).await;
+    rep.run_logs = super::log_retention::sweep(
+        home,
+        "logs",
+        env_u64("AMUX_RUN_LOG_RETAIN_DAYS", 30),
+        log_refs,
+    )
+    .await;
     rep.memory_entries_removed = crate::api::session_verbs::sweep_transcript_evidence();
 
     // Directory-level pruning (evidence captures, etc.).
@@ -1353,7 +1487,9 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     // return to the OS. Only run when something was actually deleted, and at
     // most once per day. Full VACUUM is expensive and stays gated; the WAL
     // checkpoint it used to carry now runs above on its own schedule.
-    let total_deleted: usize = rep.tables.iter()
+    let total_deleted: usize = rep
+        .tables
+        .iter()
         .filter(|(_, v)| v.contains("Deleted { rows:") && !v.contains("rows: 0"))
         .count();
     if total_deleted > 0 {
@@ -1481,7 +1617,12 @@ mod tests {
                 .args(["--exact", "runtime_jobs::storage::tests::failed_snapshot_probe_logs_unknown_and_positive_control_logs_measured", "--nocapture"])
                 .env("AMUX_TEST_SNAPSHOT_LOG_CHILD", "1")
                 .output().unwrap();
-            assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
             return;
         }
@@ -1493,22 +1634,35 @@ mod tests {
                 self.0.lock().unwrap().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         for (script, measured) in [("exit 0", false), ("echo 'Snapshots for disk /:'", true)] {
             let bytes = Arc::new(Mutex::new(Vec::new()));
             let writer = Writer(bytes.clone());
-            let subscriber = tracing_subscriber::fmt().with_ansi(false).without_time()
-                .with_writer(move || writer.clone()).finish();
-            let result = tracing::subscriber::with_default(subscriber, ||
-                super::probe_local_snapshots("/bin/sh", &["-c", script], std::time::Duration::from_secs(1)));
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(move || writer.clone())
+                .finish();
+            let result = tracing::subscriber::with_default(subscriber, || {
+                super::probe_local_snapshots(
+                    "/bin/sh",
+                    &["-c", script],
+                    std::time::Duration::from_secs(1),
+                )
+            });
             assert_eq!(result.is_some(), measured);
             let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
             assert!(logs.contains("storage_snapshot_probe"), "{logs}");
             assert!(logs.contains(&format!("measured={measured}")), "{logs}");
             assert!(logs.contains("n_considered=0"), "{logs}");
             if !measured {
-                assert!(logs.contains("WARN") && logs.contains("why_unmeasured="), "{logs}");
+                assert!(
+                    logs.contains("WARN") && logs.contains("why_unmeasured="),
+                    "{logs}"
+                );
             }
         }
     }
@@ -1516,20 +1670,51 @@ mod tests {
     #[test]
     fn native_snapshot_probe_preserves_zero_unknown_and_positive() {
         let budget = std::time::Duration::from_secs(2);
-        assert_eq!(super::probe_local_snapshots("/bin/echo", &["Snapshots for disk /:"], budget), Some(vec![]));
-        assert_eq!(super::probe_local_snapshots("/bin/echo", &["Snapshots for disk /:\ncom.apple.TimeMachine.example.local"], budget), Some(vec!["com.apple.TimeMachine.example.local".into()]));
-        for script in ["exit 0", "echo 'Snapshots for disk /:'; exit 1", "echo diagnostic"] {
-            assert_eq!(super::probe_local_snapshots("/bin/sh", &["-c", script], budget), None, "{script}");
+        assert_eq!(
+            super::probe_local_snapshots("/bin/echo", &["Snapshots for disk /:"], budget),
+            Some(vec![])
+        );
+        assert_eq!(
+            super::probe_local_snapshots(
+                "/bin/echo",
+                &["Snapshots for disk /:\ncom.apple.TimeMachine.example.local"],
+                budget
+            ),
+            Some(vec!["com.apple.TimeMachine.example.local".into()])
+        );
+        for script in [
+            "exit 0",
+            "echo 'Snapshots for disk /:'; exit 1",
+            "echo diagnostic",
+        ] {
+            assert_eq!(
+                super::probe_local_snapshots("/bin/sh", &["-c", script], budget),
+                None,
+                "{script}"
+            );
         }
-        assert_eq!(super::probe_local_snapshots("/no/such/amux-probe", &[], budget), None);
+        assert_eq!(
+            super::probe_local_snapshots("/no/such/amux-probe", &[], budget),
+            None
+        );
     }
 
     #[test]
     fn snapshot_probe_bounds_running_child_and_inherited_stdout() {
         for script in ["exec /bin/sleep 5", "/bin/sleep 1 & exit 0"] {
             let start = std::time::Instant::now();
-            assert_eq!(super::probe_local_snapshots("/bin/sh", &["-c", script], std::time::Duration::from_millis(150)), None);
-            assert!(start.elapsed() < std::time::Duration::from_millis(900), "probe outlived its own deadline: {script}");
+            assert_eq!(
+                super::probe_local_snapshots(
+                    "/bin/sh",
+                    &["-c", script],
+                    std::time::Duration::from_millis(150)
+                ),
+                None
+            );
+            assert!(
+                start.elapsed() < std::time::Duration::from_millis(900),
+                "probe outlived its own deadline: {script}"
+            );
         }
     }
 
@@ -1538,9 +1723,14 @@ mod tests {
         let budget = std::time::Duration::from_secs(5);
         // Finite deterministic byte streams. Without the ceiling the second
         // command succeeds with 2 MiB, rather than hitting a separate timeout.
-        let bytes = super::bounded_output("/bin/dd", &["if=/dev/zero", "bs=65536", "count=2"], budget).unwrap();
+        let bytes =
+            super::bounded_output("/bin/dd", &["if=/dev/zero", "bs=65536", "count=2"], budget)
+                .unwrap();
         assert_eq!(bytes.len(), 131072);
-        assert_eq!(super::bounded_output("/bin/dd", &["if=/dev/zero", "bs=65536", "count=32"], budget), None);
+        assert_eq!(
+            super::bounded_output("/bin/dd", &["if=/dev/zero", "bs=65536", "count=32"], budget),
+            None
+        );
     }
 
     use super::*;
@@ -1563,7 +1753,11 @@ mod tests {
     fn board(rows: &[(&str, &str, i64)]) -> Connection {
         let c = crate::db::migrate::test_memdb();
         for (id, desc, archived) in rows {
-            let status = if id.starts_with("DISC") { "discarded" } else { "todo" };
+            let status = if id.starts_with("DISC") {
+                "discarded"
+            } else {
+                "todo"
+            };
             c.execute(
                 // `created` is NOT NULL in the real schema. The hand-rolled
                 // fixture this replaced did not have that column at all, which
@@ -1599,13 +1793,25 @@ mod tests {
         aged_file(dir.path(), "orphan.png", 10 * 86_400);
         let conn = board(&[("AMUX-1", "see /Users/ethan/.amux/uploads/referenced.png", 0)]);
         let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
-        assert!(keep.contains("referenced.png"), "keep-set must find the reference: {keep:?}");
+        assert!(
+            keep.contains("referenced.png"),
+            "keep-set must find the reference: {keep:?}"
+        );
 
-        let (removed, _, kept) =
-            prune_dir_by_age_keeping(dir.path(), 7 * 86_400, "TEST", &keep);
-        assert!(dir.path().join("referenced.png").exists(), "a live card's attachment survives");
-        assert!(!dir.path().join("orphan.png").exists(), "an unreferenced aged file is reaped");
-        assert_eq!((removed, kept), (1, 1), "and both outcomes are COUNTED, not just done");
+        let (removed, _, kept) = prune_dir_by_age_keeping(dir.path(), 7 * 86_400, "TEST", &keep);
+        assert!(
+            dir.path().join("referenced.png").exists(),
+            "a live card's attachment survives"
+        );
+        assert!(
+            !dir.path().join("orphan.png").exists(),
+            "an unreferenced aged file is reaped"
+        );
+        assert_eq!(
+            (removed, kept),
+            (1, 1),
+            "and both outcomes are COUNTED, not just done"
+        );
     }
 
     /// CONTROL, and the one that keeps this from becoming a leak: `discarded`
@@ -1615,16 +1821,27 @@ mod tests {
     #[test]
     fn a_discarded_or_archived_card_does_not_pin_its_upload() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["discarded.png", "archived.png", "live.png"] { aged_file(dir.path(), name, 0); }
+        for name in ["discarded.png", "archived.png", "live.png"] {
+            aged_file(dir.path(), name, 0);
+        }
         let conn = board(&[
             ("DISC-1", "/Users/ethan/.amux/uploads/discarded.png", 0),
             ("AMUX-2", "/Users/ethan/.amux/uploads/archived.png", 1),
             ("AMUX-3", "/Users/ethan/.amux/uploads/live.png", 0),
         ]);
         let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
-        assert!(keep.contains("live.png"), "positive control: a live card still pins");
-        assert!(!keep.contains("discarded.png"), "a discarded card must not pin its upload");
-        assert!(!keep.contains("archived.png"), "an archived card must not pin its upload");
+        assert!(
+            keep.contains("live.png"),
+            "positive control: a live card still pins"
+        );
+        assert!(
+            !keep.contains("discarded.png"),
+            "a discarded card must not pin its upload"
+        );
+        assert!(
+            !keep.contains("archived.png"),
+            "an archived card must not pin its upload"
+        );
     }
 
     /// The reference is matched by FILENAME, so it has to survive the forms a
@@ -1634,9 +1851,15 @@ mod tests {
     #[test]
     fn the_reference_is_found_in_every_form_a_card_carries_it() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["at-form.png", "url-form.png", "md-form.png"] { aged_file(dir.path(), name, 0); }
+        for name in ["at-form.png", "url-form.png", "md-form.png"] {
+            aged_file(dir.path(), name, 0);
+        }
         let conn = board(&[
-            ("A", "make it automatic @/Users/ethan/.amux/uploads/at-form.png", 0),
+            (
+                "A",
+                "make it automatic @/Users/ethan/.amux/uploads/at-form.png",
+                0,
+            ),
             ("B", "screenshot: /api/uploads/url-form.png", 0),
             ("C", "![shot](/api/uploads/md-form.png) and text after", 0),
         ]);
@@ -1652,23 +1875,36 @@ mod tests {
     #[test]
     fn upload_retention_references_include_artifacts_saved_messages_and_pending_steering() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["artifact.png", "saved.png", "pending.png"] { aged_file(dir.path(), name, 0); }
+        for name in ["artifact.png", "saved.png", "pending.png"] {
+            aged_file(dir.path(), name, 0);
+        }
         let conn = board(&[]);
         conn.execute_batch("INSERT INTO _amux_task_artifacts(id,task_id,kind,ref_value,created_at,updated_at) VALUES('a','t','file','/uploads/artifact.png',0,0);
             INSERT INTO saved_messages(label,text,created) VALUES('saved','/uploads/saved.png',0);
             INSERT INTO steering_queue(session,text,queued_at) VALUES('worker','/uploads/pending.png',0);").unwrap();
         let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
-        for file in ["artifact.png", "saved.png", "pending.png"] { assert!(keep.contains(file), "{file}"); }
+        for file in ["artifact.png", "saved.png", "pending.png"] {
+            assert!(keep.contains(file), "{file}");
+        }
         conn.execute_batch("DROP TABLE saved_messages").unwrap();
-        assert!(card_referenced_uploads(&conn, dir.path()).is_err(), "partial reference data is not a safe keep-set");
+        assert!(
+            card_referenced_uploads(&conn, dir.path()).is_err(),
+            "partial reference data is not a safe keep-set"
+        );
     }
 
     #[test]
     fn upload_retention_protects_spaces_unicode_and_percent_encoded_file_urls() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["naïve café.txt", "report final.pdf", "unused final.pdf"] { aged_file(dir.path(), name, 40 * 86_400); }
+        for name in ["naïve café.txt", "report final.pdf", "unused final.pdf"] {
+            aged_file(dir.path(), name, 40 * 86_400);
+        }
         let conn = board(&[
-            ("A", "Review file:///tmp/uploads/na%C3%AFve%20caf%C3%A9.txt and then reply", 0),
+            (
+                "A",
+                "Review file:///tmp/uploads/na%C3%AFve%20caf%C3%A9.txt and then reply",
+                0,
+            ),
             ("B", "See /uploads/report final.pdf for evidence", 0),
         ]);
         let keep = card_referenced_uploads(&conn, dir.path()).unwrap();
@@ -1682,19 +1918,38 @@ mod tests {
     #[tokio::test]
     async fn upload_retention_defers_deletion_when_reference_probe_fails() {
         let home = tempfile::tempdir().unwrap();
-        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
-        store.write_async(|conn| {
-            conn.execute_batch("DROP TABLE saved_messages")?;
-            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
-        }).await.unwrap();
-        let state = AppState { store, started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
-            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let store =
+            std::sync::Arc::new(crate::db::Store::open(&home.path().join("test.db")).unwrap());
+        store
+            .write_async(|conn| {
+                conn.execute_batch("DROP TABLE saved_messages")?;
+                Ok(crate::db::WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        let state = AppState {
+            store,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
         let uploads = home.path().join("uploads");
         std::fs::create_dir(&uploads).unwrap();
         aged_file(&uploads, "saved.png", 40 * 86_400);
         let report = storage_tick(&state, home.path()).await;
-        assert!(uploads.join("saved.png").exists(), "probe failure must never mean no references");
-        assert!(report.upload_refs_error.as_deref().unwrap().contains("saved_messages"));
+        assert!(
+            uploads.join("saved.png").exists(),
+            "probe failure must never mean no references"
+        );
+        assert!(report
+            .upload_refs_error
+            .as_deref()
+            .unwrap()
+            .contains("saved_messages"));
         assert_eq!(report.files_removed, 0);
     }
 
@@ -1707,7 +1962,10 @@ mod tests {
         // refactor ever makes them equal, every ms table empties on tick one.
         let s: f64 = secs.parse().unwrap();
         let m: f64 = ms.parse().unwrap();
-        assert!((m / s - 1000.0).abs() < 1.0, "millis cutoff must be 1000x the seconds cutoff");
+        assert!(
+            (m / s - 1000.0).abs() < 1.0,
+            "millis cutoff must be 1000x the seconds cutoff"
+        );
         assert!(cutoff_for(TsUnit::IsoText, now, 1.0).starts_with("2026-08-"));
     }
 
@@ -1725,8 +1983,8 @@ mod tests {
     /// looks ancient and the sweep would empty the table.
     #[test]
     fn age_retention_keeps_pending_capture_but_prunes_completed_history() {
-        let dir=tempfile::tempdir().unwrap();
-        let store=crate::db::Store::open(&dir.path().join("retention.db")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("retention.db")).unwrap();
         store.write(|conn| {
             let now=unix_now();
             conn.execute("INSERT INTO cmd_history(id,text,type,session,ts,capture_pending) VALUES (1,'unfinished task','user','fixture',1,1),(2,'old completed','user','fixture',2,0),(3,'recent','user','fixture',?1,0)",[(now*1000.0) as i64])?;
@@ -1741,7 +1999,8 @@ mod tests {
     #[test]
     fn a_cutoff_that_would_empty_the_table_is_refused() {
         let c = mem();
-        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL)").unwrap();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL)")
+            .unwrap();
         let now = unix_now();
         for i in 0..10 {
             c.execute(
@@ -1758,16 +2017,26 @@ mod tests {
             default_days: 1.0,
         };
         let r = sweep_one(&c, &wrong, now);
-        assert!(matches!(r, SweepResult::Refused { total: 10, .. }), "got {r:?}");
-        let left: i64 =
-            c.query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0)).unwrap();
+        assert!(
+            matches!(r, SweepResult::Refused { total: 10, .. }),
+            "got {r:?}"
+        );
+        let left: i64 = c
+            .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(left, 10, "a refusal must not delete a single row");
 
         // Correctly declared, the same data keeps everything (rows are minutes
         // old, retention is a day) — which proves the refusal above came from
         // the unit and not from the data.
-        let right = SweepSpec { unit: TsUnit::Secs, ..wrong };
-        assert!(matches!(sweep_one(&c, &right, now), SweepResult::Deleted { rows: 0, kept: 10 }));
+        let right = SweepSpec {
+            unit: TsUnit::Secs,
+            ..wrong
+        };
+        assert!(matches!(
+            sweep_one(&c, &right, now),
+            SweepResult::Deleted { rows: 0, kept: 10 }
+        ));
     }
 
     /// The OTHER direction, which is silent: a MILLISECOND table mis-declared
@@ -1799,22 +2068,37 @@ mod tests {
         // Safe, so not a refusal — but nothing is deleted despite every row
         // being 200-400 days old. Guard 2 logs the warning; the observable
         // contract is that data is untouched.
-        assert_eq!(sweep_one(&c, &wrong, now), SweepResult::Deleted { rows: 0, kept: 3 });
+        assert_eq!(
+            sweep_one(&c, &wrong, now),
+            SweepResult::Deleted { rows: 0, kept: 3 }
+        );
         // The tell guard 2 keys on, and it is NOT "very old": read as seconds,
         // a millisecond timestamp is dated tens of thousands of years in the
         // FUTURE, so the age is negative.
-        let age_days = oldest_secs(&c, &wrong).map(|s| (now - s) / 86_400.0).unwrap();
-        assert!(age_days < 0.0, "ms-as-secs must read as a future date, got {age_days} days");
+        let age_days = oldest_secs(&c, &wrong)
+            .map(|s| (now - s) / 86_400.0)
+            .unwrap();
+        assert!(
+            age_days < 0.0,
+            "ms-as-secs must read as a future date, got {age_days} days"
+        );
 
         // Declared correctly, the same rows sweep as intended.
-        let right = SweepSpec { unit: TsUnit::Millis, ..wrong };
-        assert_eq!(sweep_one(&c, &right, now), SweepResult::Deleted { rows: 2, kept: 1 });
+        let right = SweepSpec {
+            unit: TsUnit::Millis,
+            ..wrong
+        };
+        assert_eq!(
+            sweep_one(&c, &right, now),
+            SweepResult::Deleted { rows: 2, kept: 1 }
+        );
     }
 
     #[test]
     fn old_rows_go_and_new_rows_stay() {
         let c = mem();
-        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL)").unwrap();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL)")
+            .unwrap();
         let now = unix_now();
         for d in [200.0, 150.0, 100.0, 5.0, 1.0] {
             c.execute(
@@ -1865,15 +2149,21 @@ mod tests {
             env: "AMUX_TEST_DORMANT",
             default_days: 90.0,
         };
-        assert!(matches!(sweep_one(&c, &spec, now), SweepResult::Refused { total: 3, .. }));
-        let left: i64 = c.query_row("SELECT COUNT(*) FROM schedule_runs", [], |r| r.get(0)).unwrap();
+        assert!(matches!(
+            sweep_one(&c, &spec, now),
+            SweepResult::Refused { total: 3, .. }
+        ));
+        let left: i64 = c
+            .query_row("SELECT COUNT(*) FROM schedule_runs", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(left, 3, "refusing is safe: it never deletes");
     }
 
     #[test]
     fn disabling_a_table_with_zero_days_sweeps_nothing() {
         let c = mem();
-        c.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, ts REAL)").unwrap();
+        c.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, ts REAL)")
+            .unwrap();
         std::env::set_var("AMUX_TEST_DISABLED_KNOB", "0");
         let spec = SweepSpec {
             table: "t",
@@ -1900,8 +2190,17 @@ mod tests {
 
         let rolled = rotate_server_log(logs).expect("should rotate");
         assert_eq!(rolled, 2 * 1024 * 1024);
-        assert_eq!(std::fs::metadata(logs.join("server-rs.log.1")).unwrap().len(), 2 * 1024 * 1024);
-        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0, "must truncate in place");
+        assert_eq!(
+            std::fs::metadata(logs.join("server-rs.log.1"))
+                .unwrap()
+                .len(),
+            2 * 1024 * 1024
+        );
+        assert_eq!(
+            std::fs::metadata(&log).unwrap().len(),
+            0,
+            "must truncate in place"
+        );
 
         // The held fd must still write to the SAME path — this is what a
         // rename would have broken, silently and permanently.
@@ -1935,17 +2234,26 @@ mod tests {
         // a real cutoff and backdated mtimes instead.
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86_400);
         for f in ["session-a.log.1", "server-rs.log.1", "session-b.log"] {
-            let h = std::fs::File::options().write(true).open(logs.join(f)).unwrap();
+            let h = std::fs::File::options()
+                .write(true)
+                .open(logs.join(f))
+                .unwrap();
             h.set_modified(old).unwrap();
         }
         let (n, _) = prune_rotated_logs(logs);
         assert_eq!(n, 1, "only the aged session rotation is eligible");
-        assert!(!logs.join("session-a.log.1").exists(), "an aged rotation is pruned");
+        assert!(
+            !logs.join("session-a.log.1").exists(),
+            "an aged rotation is pruned"
+        );
         assert!(
             logs.join("server-rs.log.1").exists(),
             "server-rs.log.1 belongs to rotate_server_log and must survive at any age"
         );
-        assert!(logs.join("session-b.log").exists(), "a live .log is never a rotation");
+        assert!(
+            logs.join("session-b.log").exists(),
+            "a live .log is never a rotation"
+        );
         std::env::remove_var("AMUX_ROTATED_LOG_RETAIN_DAYS");
     }
 
@@ -1956,7 +2264,10 @@ mod tests {
         let (n, _) = prune_dir_by_age(dir.path(), 86_400, "AMUX_TEST");
         assert_eq!(n, 0, "a file created just now is not stale");
         let (n, _) = prune_dir_by_age(dir.path(), 0, "AMUX_TEST");
-        assert_eq!(n, 0, "0 disables the sweep entirely rather than deleting everything");
+        assert_eq!(
+            n, 0,
+            "0 disables the sweep entirely rather than deleting everything"
+        );
         assert!(dir.path().join("fresh.mp4").exists());
     }
 
@@ -1983,19 +2294,21 @@ mod tests {
         conn.execute_batch("CREATE TABLE t(v BLOB);").unwrap();
         let blob = vec![b'x'; 8192];
         for _ in 0..400 {
-            conn.execute("INSERT INTO t(v) VALUES (?1)", [&blob]).unwrap();
+            conn.execute("INSERT INTO t(v) VALUES (?1)", [&blob])
+                .unwrap();
         }
         let wal = dir.path().join("t.db-wal");
         let size = || std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
         let grown = size();
-        assert!(grown > 0, "the fixture must actually produce a WAL to truncate");
+        assert!(
+            grown > 0,
+            "the fixture must actually produce a WAL to truncate"
+        );
 
         // INSIDE a transaction: refused, exactly as the shipped bug was.
-        let tx = rusqlite::Transaction::new_unchecked(
-            &conn,
-            rusqlite::TransactionBehavior::Immediate,
-        )
-        .unwrap();
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
         let refused = tx.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         assert!(
             refused.is_err(),
@@ -2005,7 +2318,8 @@ mod tests {
         drop(tx);
 
         // OUTSIDE one: it truncates.
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
         assert!(
             size() < grown,
             "checkpoint outside a transaction must shrink the WAL: {} -> {}",

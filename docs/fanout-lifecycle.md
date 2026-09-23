@@ -1,5 +1,7 @@
 # Fan-out lifecycle
 
+> Legacy. New work is done in Projects, which own intent and acceptance while the harness schedules disposable task executors (no separate orchestrator or fan-out workers). This page describes the older orchestration boards, which stay reachable from Projects → Legacy boards and history and are not migrated or removed.
+
 Fan-out execution uses the existing board, worker configuration and git worktree lifecycle. Orchestrations is a compact read-only projection (`GET /api/board/orchestrations`), not another task store. Its response declares measurement and the number of rows considered, includes full child boards and standalone ephemeral workers, and omits long prompt/history fields. Worker lifecycle controls pause classification; the shared type-specific terminal predicate controls progress. Code Done is not Verified. The compact response includes configuration-derived worker metadata; the page renders it immediately and reuses the normal single-flight status refresh without waiting for cold runtime probes.
 
 ## Global Orchestrations view

@@ -239,7 +239,8 @@ mod tests {
     #[test]
     fn delivery_advances_through_full_chain() {
         let mut m = msg_to_worker();
-        m.advance_delivery(DeliveryState::Delivered { at: t(1) }).unwrap();
+        m.advance_delivery(DeliveryState::Delivered { at: t(1) })
+            .unwrap();
         m.advance_delivery(DeliveryState::Acknowledged { at: t(2) })
             .unwrap();
         m.advance_delivery(DeliveryState::ActedOn {

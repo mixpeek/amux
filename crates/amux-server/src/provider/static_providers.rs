@@ -413,7 +413,10 @@ mod tests {
 
     #[test]
     fn muse_builds_muse_command() {
-        assert_eq!(MuseAdapter.build_command(PromptMode::Interactive), vec!["muse"]);
+        assert_eq!(
+            MuseAdapter.build_command(PromptMode::Interactive),
+            vec!["muse"]
+        );
         // `exec` AND `--json`: bare `muse --json` is not a valid invocation.
         assert_eq!(
             MuseAdapter.build_command(PromptMode::HeadlessStructured),
@@ -424,7 +427,10 @@ mod tests {
     #[tokio::test]
     async fn muse_models_lead_with_the_catalog_default() {
         let m = MuseAdapter.models().await;
-        assert_eq!(m.first().map(String::as_str), Some("muse-spark-1.3-contributor"));
+        assert_eq!(
+            m.first().map(String::as_str),
+            Some("muse-spark-1.3-contributor")
+        );
         assert!(m.iter().any(|x| x == "muse-spark-1.2"));
     }
 
@@ -435,19 +441,39 @@ mod tests {
         // herdr/bootstrap path (calls this directly) and the tmux path (which
         // guards on !opts.contains) launch with file-editing and no approval prompts.
         let interactive_expected = vec![
-            "codex", "--oss", "--local-provider", "ollama", "--model", "qwen3.8:27b",
-            "-a", "never", "--sandbox", "workspace-write",
+            "codex",
+            "--oss",
+            "--local-provider",
+            "ollama",
+            "--model",
+            "qwen3.8:27b",
+            "-a",
+            "never",
+            "--sandbox",
+            "workspace-write",
             // `none`, not `low` (AMUX-4611): this path is sync and cannot ask
             // `ollama show` whether the model can think, and `low` is a
             // guaranteed per-turn failure for one that cannot.
-            "-c", "model_reasoning_effort=none",
+            "-c",
+            "model_reasoning_effort=none",
         ];
         // HeadlessStructured: no extra flags needed (headless driver handles approvals).
         let headless_expected = vec![
-            "codex", "--oss", "--local-provider", "ollama", "--model", "qwen3.8:27b",
+            "codex",
+            "--oss",
+            "--local-provider",
+            "ollama",
+            "--model",
+            "qwen3.8:27b",
         ];
-        assert_eq!(a.build_command(PromptMode::Interactive), interactive_expected);
-        assert_eq!(a.build_command(PromptMode::HeadlessStructured), headless_expected);
+        assert_eq!(
+            a.build_command(PromptMode::Interactive),
+            interactive_expected
+        );
+        assert_eq!(
+            a.build_command(PromptMode::HeadlessStructured),
+            headless_expected
+        );
     }
 
     #[test]
@@ -532,7 +558,10 @@ mod ollama_default_tests {
     #[test]
     fn the_adapter_and_the_launcher_resolve_the_same_model() {
         with_knob(Some("pinned:test"), || {
-            assert_eq!(OllamaAdapter::default().default_model, ollama_default_model());
+            assert_eq!(
+                OllamaAdapter::default().default_model,
+                ollama_default_model()
+            );
             assert_eq!(OllamaAdapter::default().default_model, "pinned:test");
         });
     }
@@ -541,7 +570,9 @@ mod ollama_default_tests {
     /// make the default movable, not to move it.
     #[test]
     fn unset_keeps_the_compiled_fallback() {
-        with_knob(None, || assert_eq!(ollama_default_model(), OLLAMA_FALLBACK_MODEL));
+        with_knob(None, || {
+            assert_eq!(ollama_default_model(), OLLAMA_FALLBACK_MODEL)
+        });
     }
 
     /// The knob has to actually move it, or it is decoration. This is the
@@ -566,7 +597,11 @@ mod ollama_default_tests {
     fn a_blank_knob_falls_back_rather_than_launching_an_empty_model() {
         for blank in ["", "   "] {
             with_knob(Some(blank), || {
-                assert_eq!(ollama_default_model(), OLLAMA_FALLBACK_MODEL, "blank {blank:?}");
+                assert_eq!(
+                    ollama_default_model(),
+                    OLLAMA_FALLBACK_MODEL,
+                    "blank {blank:?}"
+                );
             });
         }
     }

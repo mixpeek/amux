@@ -153,18 +153,29 @@ fn hdr<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 #[tokio::test]
 async fn a_card_created_with_a_next_action_is_claimable() {
     let (app, _dir) = app();
-    let c = create(&app, json!({
-        "title": "created with a continuation",
-        "session": "alpha", "status": "todo", "type": "chore",
-        "next_action": "Run the compatibility suite against the new build",
-    })).await;
+    let c = create(
+        &app,
+        json!({
+            "title": "created with a continuation",
+            "session": "alpha", "status": "todo", "type": "chore",
+            "next_action": "Run the compatibility suite against the new build",
+        }),
+    )
+    .await;
 
     // STORED, and not reported as dropped. Both halves matter: a silent drop
     // and a loud one strand the card identically, but only one tells the caller.
-    assert_eq!(c["next_action"], json!("Run the compatibility suite against the new build"));
+    assert_eq!(
+        c["next_action"],
+        json!("Run the compatibility suite against the new build")
+    );
     assert!(
-        !c["ignored_fields"].as_array().map(|a| a.iter().any(|v| v == "next_action")).unwrap_or(false),
-        "next_action must not be reported as ignored: {c}");
+        !c["ignored_fields"]
+            .as_array()
+            .map(|a| a.iter().any(|v| v == "next_action"))
+            .unwrap_or(false),
+        "next_action must not be reported as ignored: {c}"
+    );
 
     // THE OTHER END. Claiming must not be refused for a continuation the card
     // already carries.
@@ -173,11 +184,21 @@ async fn a_card_created_with_a_next_action_is_claimable() {
     // were refused by "gate not acknowledged" instead, which made the control
     // pass for a reason that had nothing to do with next_action.
     let id = c["id"].as_str().expect("id").to_string();
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({
-        "status": "doing",
-        "gate_checked": ["Scope is clear", "Has an owner"],
-    }))).await;
-    assert_eq!(st, StatusCode::OK, "created with a continuation, refused at pickup: {v}");
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({
+            "status": "doing",
+            "gate_checked": ["Scope is clear", "Has an owner"],
+        })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "created with a continuation, refused at pickup: {v}"
+    );
     assert_eq!(v["status"], json!("doing"));
 }
 
@@ -198,11 +219,18 @@ async fn a_card_created_with_a_next_action_is_claimable() {
 #[tokio::test]
 async fn create_does_not_invent_a_next_action_it_was_not_given() {
     let (app, _dir) = app();
-    let c = create(&app, json!({
-        "title": "no continuation", "session": "alpha", "status": "todo", "type": "chore",
-    })).await;
-    assert_eq!(c["next_action"], json!(null),
-        "create must store NULL when no continuation was supplied: {c}");
+    let c = create(
+        &app,
+        json!({
+            "title": "no continuation", "session": "alpha", "status": "todo", "type": "chore",
+        }),
+    )
+    .await;
+    assert_eq!(
+        c["next_action"],
+        json!(null),
+        "create must store NULL when no continuation was supplied: {c}"
+    );
 }
 
 /// A continuation the gate would LATER reject is refused at creation instead of
@@ -210,10 +238,16 @@ async fn create_does_not_invent_a_next_action_it_was_not_given() {
 #[tokio::test]
 async fn a_next_action_that_is_not_a_sentence_is_refused_at_creation() {
     let (app, _dir) = app();
-    let (st, _, v) = send(&app, "POST", "/api/board", Some(json!({
-        "title": "bad continuation", "session": "alpha", "status": "todo", "type": "chore",
-        "next_action": "fix",
-    }))).await;
+    let (st, _, v) = send(
+        &app,
+        "POST",
+        "/api/board",
+        Some(json!({
+            "title": "bad continuation", "session": "alpha", "status": "todo", "type": "chore",
+            "next_action": "fix",
+        })),
+    )
+    .await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
     assert_eq!(v["code"], json!("next_action_not_a_sentence"));
 }
@@ -234,7 +268,10 @@ async fn create_list_detail_lifecycle() {
     assert_eq!(a["type"], json!("code"));
     assert_eq!(a["session"], json!("my-project"));
     assert_eq!(a["owner_type"], json!("agent"));
-    assert!(a["created"].is_i64(), "created must be unix INTEGER seconds");
+    assert!(
+        a["created"].is_i64(),
+        "created must be unix INTEGER seconds"
+    );
     assert!(a["updated"].is_i64());
 
     let b = create(&app, json!({ "title": "Second", "session": "my-project" })).await;
@@ -367,7 +404,10 @@ async fn capture_decomposition_is_atomic_ordered_and_keeps_the_message_on_the_ep
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(blocked_events, 1, "the refused dependency bypass must survive a log sweep");
+    assert_eq!(
+        blocked_events, 1,
+        "the refused dependency bypass must survive a log sweep"
+    );
 
     let (st, _, detail) = send(&app, "GET", "/api/board/ATE-1", None).await;
     assert_eq!(st, StatusCode::OK);
@@ -389,7 +429,10 @@ async fn capture_decomposition_is_atomic_ordered_and_keeps_the_message_on_the_ep
     assert_eq!(child_detail["messages"][0]["id"], json!(39225));
     assert_eq!(child_detail["artifacts"][0]["ref"], json!("/tmp/result.md"));
     assert!(
-        child_detail["log"].as_str().unwrap().contains("artifact (api-anonymous): implementation/created /tmp/result.md"),
+        child_detail["log"]
+            .as_str()
+            .unwrap()
+            .contains("artifact (api-anonymous): implementation/created /tmp/result.md"),
         "artifact registration must be part of the task action history: {child_detail}"
     );
 
@@ -442,32 +485,46 @@ async fn incomplete_or_ambiguous_decomposition_is_rejected_atomically_with_a_mea
                          'code','amux','agent','capture',1,1)",
                 [],
             )?;
-            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
 
-    let complete = |title: &str| json!({
-        "title": title,
-        "description": "Implement one independently testable behavior.",
-        "type": "code",
-        "priority": 0,
-        "depends_on": [],
-        "next_action": "Implement the focused behavior now",
-        "acceptance_criteria": ["The focused regression test passes"]
-    });
+    let complete = |title: &str| {
+        json!({
+            "title": title,
+            "description": "Implement one independently testable behavior.",
+            "type": "code",
+            "priority": 0,
+            "depends_on": [],
+            "next_action": "Implement the focused behavior now",
+            "acceptance_criteria": ["The focused regression test passes"]
+        })
+    };
     let mut cases = Vec::new();
 
     let mut no_desc = complete("Missing description");
     no_desc["description"] = json!("");
-    cases.push(("description", json!({"tasks":[no_desc, complete("Control one")]})));
+    cases.push((
+        "description",
+        json!({"tasks":[no_desc, complete("Control one")]}),
+    ));
 
     let mut no_criteria = complete("Missing criteria");
     no_criteria["acceptance_criteria"] = json!([]);
-    cases.push(("acceptance_criteria", json!({"tasks":[no_criteria, complete("Control two")]})));
+    cases.push((
+        "acceptance_criteria",
+        json!({"tasks":[no_criteria, complete("Control two")]}),
+    ));
 
     let mut wrong_criteria = complete("Wrong criteria type");
     wrong_criteria["acceptance_criteria"] = json!([{"looks":"plausible"}]);
-    cases.push(("must be a string", json!({"tasks":[wrong_criteria, complete("Control three")]})));
+    cases.push((
+        "must be a string",
+        json!({"tasks":[wrong_criteria, complete("Control three")]}),
+    ));
 
     cases.push((
         "repeats the title",
@@ -479,9 +536,12 @@ async fn incomplete_or_ambiguous_decomposition_is_rejected_atomically_with_a_mea
         "The focused regression test passes",
         " the FOCUSED regression test passes ",
     ]);
-    cases.push(("repeats acceptance criterion", json!({
-        "tasks":[duplicate_criteria, complete("Control four")]
-    })));
+    cases.push((
+        "repeats acceptance criterion",
+        json!({
+            "tasks":[duplicate_criteria, complete("Control four")]
+        }),
+    ));
 
     for (expected, plan) in cases {
         let (st, _, body) = send_with(
@@ -494,7 +554,10 @@ async fn incomplete_or_ambiguous_decomposition_is_rejected_atomically_with_a_mea
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{expected}: {body}");
         assert!(
-            body["error"].as_str().unwrap_or_default().contains(expected),
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(expected),
             "{expected}: {body}"
         );
         assert_eq!(body["verdict"], json!("invalid_plan"));
@@ -503,9 +566,14 @@ async fn incomplete_or_ambiguous_decomposition_is_rejected_atomically_with_a_mea
         let children: i64 = store
             .read()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM issues WHERE epic='ATE-8'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM issues WHERE epic='ATE-8'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(children, 0, "{expected}: a refused plan must create nothing");
+        assert_eq!(
+            children, 0,
+            "{expected}: a refused plan must create nothing"
+        );
     }
 }
 
@@ -575,7 +643,10 @@ async fn a_depends_on_that_is_not_an_index_is_refused_by_the_board_not_by_serde(
                          'code','amux','agent','capture',1,1)",
                 [],
             )?;
-            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
 
@@ -608,7 +679,11 @@ async fn a_depends_on_that_is_not_an_index_is_refused_by_the_board_not_by_serde(
         why.contains("not a card id or a title"),
         "and must name the guess the caller actually made: {body}"
     );
-    assert_eq!(body["item"], json!("ATE-7"), "the refusal names the card: {body}");
+    assert_eq!(
+        body["item"],
+        json!("ATE-7"),
+        "the refusal names the card: {body}"
+    );
 
     // CONTROL: the arm that already worked still answers the same way. Without
     // it, deleting the range check would leave this test green.
@@ -625,7 +700,10 @@ async fn a_depends_on_that_is_not_an_index_is_refused_by_the_board_not_by_serde(
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        body["error"].as_str().unwrap_or_default().contains("1-based index"),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("1-based index"),
         "the out-of-range arm is unchanged: {body}"
     );
 
@@ -633,7 +711,9 @@ async fn a_depends_on_that_is_not_an_index_is_refused_by_the_board_not_by_serde(
     let children: i64 = store
         .read()
         .unwrap()
-        .query_row("SELECT COUNT(*) FROM issues WHERE epic='ATE-7'", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM issues WHERE epic='ATE-7'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(children, 0, "a refused decomposition creates nothing");
 
@@ -653,8 +733,16 @@ async fn a_depends_on_that_is_not_an_index_is_refused_by_the_board_not_by_serde(
     .await;
     assert_eq!(st, StatusCode::CREATED, "{made}");
     let tasks = made["tasks"].as_array().unwrap();
-    assert_eq!(tasks[1]["depends_on"], json!([tasks[0]["id"].clone()]), "{made}");
-    assert_eq!(tasks[1]["status"], json!("backlog"), "a dependent leaf parks: {made}");
+    assert_eq!(
+        tasks[1]["depends_on"],
+        json!([tasks[0]["id"].clone()]),
+        "{made}"
+    );
+    assert_eq!(
+        tasks[1]["status"],
+        json!("backlog"),
+        "a dependent leaf parks: {made}"
+    );
 }
 
 // ---- List payload shapes: slim by default, prose on request --------------
@@ -687,7 +775,10 @@ async fn list_is_slim_by_default_and_serves_prose_only_on_request() {
     // DEFAULT: slim-shaped — no prose, all four derived facts.
     let (_, _, list) = send(&app, "GET", "/api/board", None).await;
     let item = &list.as_array().unwrap()[0];
-    assert!(item.get("desc").is_none(), "default list must not carry desc");
+    assert!(
+        item.get("desc").is_none(),
+        "default list must not carry desc"
+    );
     assert!(item.get("log").is_none(), "default list must not carry log");
     // `> 0`, not `is_some()` (AF-346). A blanked loader returns 0 for both, and
     // `is_some()` is true of 0 — so the pair read as passing while every card on
@@ -701,7 +792,10 @@ async fn list_is_slim_by_default_and_serves_prose_only_on_request() {
         item["log_n"].as_u64().unwrap_or(0) > 0,
         "the PATCH above appends a log line, so log_n must be non-zero"
     );
-    assert!(item["desc_head"].as_str().unwrap().starts_with("first line"));
+    assert!(item["desc_head"]
+        .as_str()
+        .unwrap()
+        .starts_with("first line"));
     assert!(item.get("folded_n").is_some());
 
     // ?full=1: the WHOLE desc, the WHOLE log (string or null), none of the
@@ -776,7 +870,10 @@ async fn patch_archived_round_trip_with_cross_lane_guard() {
     )
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    assert!(e["error"].as_str().unwrap().contains("authorized_by"), "{e}");
+    assert!(
+        e["error"].as_str().unwrap().contains("authorized_by"),
+        "{e}"
+    );
     assert_eq!(e["card_owner"], json!("lane-a"));
 
     // Same-lane archive: applied; the card leaves the active view.
@@ -841,21 +938,38 @@ async fn archived_grammar_matches_python_and_tab_counts_pin() {
     // Fixture: 2 live owned, 3 live unowned, 4 archived unowned, 1 archived
     // owned. "Unowned" (the SPA chip) = open cards with no session.
     for i in 0..2 {
-        create(&app, json!({ "title": format!("live owned {i}"), "session": "lane-a" })).await;
+        create(
+            &app,
+            json!({ "title": format!("live owned {i}"), "session": "lane-a" }),
+        )
+        .await;
     }
     for i in 0..3 {
-        create(&app, json!({ "title": format!("live unowned {i}"), "session": "" })).await;
+        create(
+            &app,
+            json!({ "title": format!("live unowned {i}"), "session": "" }),
+        )
+        .await;
     }
     let mut archived_ids = Vec::new();
     for i in 0..4 {
-        let v = create(&app, json!({ "title": format!("arch unowned {i}"), "session": "" })).await;
+        let v = create(
+            &app,
+            json!({ "title": format!("arch unowned {i}"), "session": "" }),
+        )
+        .await;
         archived_ids.push(v["id"].as_str().unwrap().to_string());
     }
     let v = create(&app, json!({ "title": "arch owned", "session": "lane-a" })).await;
     archived_ids.push(v["id"].as_str().unwrap().to_string());
     for id in &archived_ids {
-        let (st, _, _) =
-            send(&app, "POST", &format!("/api/board/{id}/archive"), Some(json!({}))).await;
+        let (st, _, _) = send(
+            &app,
+            "POST",
+            &format!("/api/board/{id}/archive"),
+            Some(json!({})),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
     }
 
@@ -880,7 +994,11 @@ async fn archived_grammar_matches_python_and_tab_counts_pin() {
     // is what inflated the merged set the counters scan).
     let (_, _, arch) = send(&app, "GET", "/api/board?archived=1&done_limit=0", None).await;
     assert_eq!(count(&arch), 5);
-    assert!(arch.as_array().unwrap().iter().all(|i| i["archived"] == json!(1)));
+    assert!(arch
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|i| i["archived"] == json!(1)));
 
     // Case-insensitive truthy, Python's `.lower()`.
     let (_, _, arch2) = send(&app, "GET", "/api/board?archived=TRUE", None).await;
@@ -906,7 +1024,11 @@ async fn archived_grammar_matches_python_and_tab_counts_pin() {
 async fn done_limit_caps_terminal_and_headers_announce_it() {
     let (app, _dir) = app();
     for i in 0..3 {
-        create(&app, json!({ "title": format!("done {i}"), "status": "done" })).await;
+        create(
+            &app,
+            json!({ "title": format!("done {i}"), "status": "done" }),
+        )
+        .await;
     }
     create(&app, json!({ "title": "live", "status": "todo" })).await;
 
@@ -971,7 +1093,10 @@ async fn gate_blocks_with_python_body_then_gate_checked_satisfies() {
     assert_eq!(v["attempted_status"], json!("done"));
     assert_eq!(v["item"], json!(id));
     assert_eq!(v["item_type"], json!("code"));
-    assert!(v["valid_types"].as_array().unwrap().contains(&json!("escalation")));
+    assert!(v["valid_types"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("escalation")));
     // NB: no "status" key — a client reading the body instead of the HTTP
     // code must not misread the rejection as success (orch MO-2952).
     assert!(v.get("status").is_none());
@@ -988,7 +1113,9 @@ async fn gate_blocks_with_python_body_then_gate_checked_satisfies() {
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Implemented and merged"] })),
+        Some(
+            json!({ "status": "done", "evidence": EV, "gate_checked": ["Implemented and merged"] }),
+        ),
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
@@ -1012,7 +1139,10 @@ async fn gate_blocks_with_python_body_then_gate_checked_satisfies() {
     assert_eq!(v["applied"], json!(true));
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     let log = detail["log"].as_str().unwrap();
-    assert!(log.contains("worker-1: gate satisfied via gate_checked (2/2)"), "log: {log}");
+    assert!(
+        log.contains("worker-1: gate satisfied via gate_checked (2/2)"),
+        "log: {log}"
+    );
     assert!(log.contains("worker-1: doing -> done"), "log: {log}");
 }
 
@@ -1075,11 +1205,17 @@ async fn gates_derive_from_type_and_retyping_is_the_honest_exit() {
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert!(v["error"].as_str().unwrap().contains("unknown type"));
-    assert!(v["valid_types"].as_array().unwrap().contains(&json!("watch")));
+    assert!(v["valid_types"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("watch")));
     // And the type this card family is named after is now IN that set, which is
     // the half a "reject unknown types" test can never show on its own.
     assert!(
-        v["valid_types"].as_array().unwrap().contains(&json!("decision")),
+        v["valid_types"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("decision")),
         "decision must be offered as a valid type: {v}"
     );
 }
@@ -1108,12 +1244,28 @@ async fn retyping_clears_a_gate_override_so_the_gate_re_derives_from_the_new_typ
     let id = card["id"].as_str().unwrap().to_string();
 
     // Before the fix: done demanded the code override even for an investigation.
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done", "evidence": EV }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT);
-    assert_eq!(v["gate"], json!(["Implemented and merged", "Tests / lint pass"]), "the override pins code criteria pre-retype");
+    assert_eq!(
+        v["gate"],
+        json!(["Implemented and merged", "Tests / lint pass"]),
+        "the override pins code criteria pre-retype"
+    );
 
     // Retype to chore: AMUX-3058 clears the stale override.
-    let (st, _, _) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "type": "chore" }))).await;
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "type": "chore" })),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
 
     // POSITIVE leg: the chore gate is now satisfiable (override cleared, re-derived).
@@ -1124,7 +1276,11 @@ async fn retyping_clears_a_gate_override_so_the_gate_re_derives_from_the_new_typ
         Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Outcome recorded in the item (what happened, and why it is closed)"] })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the type-derived chore gate must be satisfiable after retype: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the type-derived chore gate must be satisfiable after retype: {v}"
+    );
     assert_eq!(v["status"], json!("done"));
 
     // NEGATIVE leg: the gate is RE-DERIVED, not bypassed. A fresh chore card must
@@ -1138,7 +1294,11 @@ async fn retyping_clears_a_gate_override_so_the_gate_re_derives_from_the_new_typ
         Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Implemented and merged", "Tests / lint pass"] })),
     )
     .await;
-    assert_eq!(st, StatusCode::CONFLICT, "code criteria must NOT satisfy a chore gate: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "code criteria must NOT satisfy a chore gate: {v}"
+    );
     assert_eq!(v["error"], json!("gate_checked does not match the gate"));
 }
 
@@ -1223,14 +1383,21 @@ async fn force_with_a_blank_reason_is_refused_even_when_properly_attributed() {
             &[("X-Amux-Session", "tester")],
         )
         .await;
-        assert_eq!(st, StatusCode::BAD_REQUEST, "body {body} should be refused: {v}");
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "body {body} should be refused: {v}"
+        );
         assert_eq!(v["error"], json!("force requires a reason"), "{v}");
         // The 409/400 body must name the SANCTIONED command, not just the HTTP
         // shape. AMUX-2325: an error that publishes the escape purely in
         // protocol terms sends a correct, literal-minded agent off-trail into a
         // hand-rolled curl, which is where 25 of those 41 came from.
         let how = v["how"].as_str().unwrap_or_default();
-        assert!(how.contains("amux board"), "refusal must name the CLI escape: {how}");
+        assert!(
+            how.contains("amux board"),
+            "refusal must name the CLI escape: {how}"
+        );
 
         // The card did not move — a refused force must not half-apply.
         let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
@@ -1250,7 +1417,11 @@ async fn force_with_a_blank_reason_is_refused_even_when_properly_attributed() {
         &[("X-Amux-Session", "tester")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "a force WITH a reason must still work: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a force WITH a reason must still work: {v}"
+    );
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{ok_id}"), None).await;
     let log = detail["log"].as_str().unwrap();
     assert!(
@@ -1304,19 +1475,31 @@ async fn a_scoped_list_excludes_archived_by_default_but_unscoped_still_includes_
     let (_, _, list) = send(&app, "GET", "/api/board?session=alpha&status=done", None).await;
     let got = ids(&list);
     assert!(got.contains(&live_id), "live card must be present: {list}");
-    assert!(!got.contains(&arch_id), "archived card must be excluded from a scoped list: {list}");
+    assert!(
+        !got.contains(&arch_id),
+        "archived card must be excluded from a scoped list: {list}"
+    );
 
     // Scoped by session alone: same exclusion.
     let (_, _, list) = send(&app, "GET", "/api/board?session=alpha", None).await;
-    assert!(!ids(&list).contains(&arch_id), "session-scoped list must exclude archived: {list}");
+    assert!(
+        !ids(&list).contains(&arch_id),
+        "session-scoped list must exclude archived: {list}"
+    );
 
     // UNSCOPED bare list still includes it (the guard the unscoped default protects).
     let (_, _, list) = send(&app, "GET", "/api/board", None).await;
-    assert!(ids(&list).contains(&arch_id), "unscoped bare list must still include archived: {list}");
+    assert!(
+        ids(&list).contains(&arch_id),
+        "unscoped bare list must still include archived: {list}"
+    );
 
     // Explicit ?archived=1 on a scoped query still finds it (the override wins).
     let (_, _, list) = send(&app, "GET", "/api/board?session=alpha&archived=1", None).await;
-    assert!(ids(&list).contains(&arch_id), "explicit archived=1 must still return it: {list}");
+    assert!(
+        ids(&list).contains(&arch_id),
+        "explicit archived=1 must still return it: {list}"
+    );
 }
 
 #[tokio::test]
@@ -1343,7 +1526,11 @@ async fn archive_restore_round_trip_preserves_every_field() {
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["applied"], json!(true));
     assert_eq!(v["archived"], json!(1));
-    assert_eq!(v["status"], json!("doing"), "archive is a FLAG, not a status");
+    assert_eq!(
+        v["status"],
+        json!("doing"),
+        "archive is a FLAG, not a status"
+    );
 
     // Python's grammar: the BARE list has NO archived filter (the card is
     // still in it, flagged); `?archived=0` is the SPA's active view, which
@@ -1384,7 +1571,10 @@ async fn archive_restore_round_trip_preserves_every_field() {
     // see it. `how_to_fix` must name the real verb and this card's own id.
     let how_to_fix = v3["how_to_fix"].as_str().unwrap_or_default();
     assert!(how_to_fix.contains("unarchive"), "how_to_fix: {v3}");
-    assert!(how_to_fix.contains(id.as_str()), "how_to_fix must name the card: {v3}");
+    assert!(
+        how_to_fix.contains(id.as_str()),
+        "how_to_fix must name the card: {v3}"
+    );
 
     // Restore: back exactly where it was, every field intact.
     let (st, _, r) = send(&app, "POST", &format!("/api/board/{id}/restore"), None).await;
@@ -1398,7 +1588,10 @@ async fn archive_restore_round_trip_preserves_every_field() {
     assert_eq!(r["type"], json!("research"));
     assert_eq!(r["tags"], json!(["q3"]));
     let log = r["log"].as_str().unwrap();
-    assert!(log.contains("orch: archived — parking for Q4"), "log: {log}");
+    assert!(
+        log.contains("orch: archived — parking for Q4"),
+        "log: {log}"
+    );
     assert!(log.contains("restored"), "log: {log}");
 }
 
@@ -1435,7 +1628,10 @@ async fn create_response_names_itself_a_create_at_the_top_level() {
     // The pre-existing `created` field (the row's own creation timestamp)
     // must survive untouched -- this is the exact collision the rename
     // above exists to avoid.
-    assert!(v["created"].is_i64(), "created must stay the row's timestamp: {v}");
+    assert!(
+        v["created"].is_i64(),
+        "created must stay the row's timestamp: {v}"
+    );
 }
 
 /// AF-922. Before `undelete_item` existed, a soft-deleted card had no
@@ -1497,10 +1693,20 @@ async fn delete_undelete_round_trip_preserves_every_field_and_who_did_it() {
     assert_eq!(v["session"], json!("my-project"));
     assert_eq!(v["type"], json!("research"));
     assert_eq!(v["tags"], json!(["q3"]));
-    assert_eq!(v["status"], json!("doing"), "undelete must not touch status");
+    assert_eq!(
+        v["status"],
+        json!("doing"),
+        "undelete must not touch status"
+    );
     let log = v["log"].as_str().unwrap();
-    assert!(log.contains("orch: deleted"), "who deleted it must survive: {log}");
-    assert!(log.contains("recover-lane: undeleted"), "who undeleted it: {log}");
+    assert!(
+        log.contains("orch: deleted"),
+        "who deleted it must survive: {log}"
+    );
+    assert!(
+        log.contains("recover-lane: undeleted"),
+        "who undeleted it: {log}"
+    );
 
     // Fully live again: the normal read path sees it, and a second undelete
     // now correctly refuses (nothing left to reverse).
@@ -1562,19 +1768,28 @@ async fn cross_board_peer_request_is_refused_before_parent_or_child_mutation() {
         &[("X-Amux-Worker", requester)],
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN, "cross-board create escaped: {made}");
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "cross-board create escaped: {made}"
+    );
     assert_eq!(made["code"], "cross_board_create_forbidden");
 
-    let (_, _, parent_after) =
-        send(&app, "GET", &format!("/api/board/{parent_id}"), None).await;
+    let (_, _, parent_after) = send(&app, "GET", &format!("/api/board/{parent_id}"), None).await;
     assert_eq!(parent_after["status"], json!("doing"));
     assert_eq!(parent_after["depends_on"], json!([]));
     assert_eq!(parent_after["source_ref"], json!("upstream event arrived"));
     assert_eq!(parent_after["last_verified_at"], json!(9999999999_i64));
-    assert!(!parent_after["log"].as_str().unwrap_or("").contains("parent requeued"));
+    assert!(!parent_after["log"]
+        .as_str()
+        .unwrap_or("")
+        .contains("parent requeued"));
     let (_, _, all) = send(&app, "GET", "/api/board?all=1", None).await;
     assert!(
-        !all.as_array().unwrap().iter().any(|row| row["title"] == "Produce the dependency artifact"),
+        !all.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["title"] == "Produce the dependency artifact"),
         "a refused cross-board create leaked its child: {all}"
     );
 }
@@ -1605,16 +1820,22 @@ async fn cross_board_create_is_refused_before_dependency_cycle_evaluation() {
         &[("X-Amux-Worker", requester)],
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN, "ownership must refuse before graph mutation: {refused}");
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "ownership must refuse before graph mutation: {refused}"
+    );
     assert_eq!(refused["code"], "cross_board_create_forbidden");
 
-    let (_, _, parent_after) =
-        send(&app, "GET", &format!("/api/board/{parent_id}"), None).await;
+    let (_, _, parent_after) = send(&app, "GET", &format!("/api/board/{parent_id}"), None).await;
     assert_eq!(parent_after["status"], json!("doing"));
     assert_eq!(parent_after["depends_on"], json!([]));
     let (_, _, all) = send(&app, "GET", "/api/board?all=1", None).await;
     assert!(
-        !all.as_array().unwrap().iter().any(|row| row["title"] == "child that points back at its parent"),
+        !all.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["title"] == "child that points back at its parent"),
         "a refused transaction leaked its child: {all}"
     );
 }
@@ -1643,7 +1864,10 @@ async fn cross_board_create_cannot_mutate_a_durable_message_linked_task() {
                  VALUES('current prompt','user',?1,9999999999999,'browser',?2)",
                 rusqlite::params![requester, linked_for_db],
             )?;
-            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .unwrap();
 
@@ -1660,19 +1884,29 @@ async fn cross_board_create_cannot_mutate_a_durable_message_linked_task() {
         &[("X-Amux-Worker", requester)],
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN, "cross-board create escaped: {child}");
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "cross-board create escaped: {child}"
+    );
     assert_eq!(child["code"], "cross_board_create_forbidden");
 
-    let (_, _, linked_after) =
-        send(&app, "GET", &format!("/api/board/{intended_id}"), None).await;
+    let (_, _, linked_after) = send(&app, "GET", &format!("/api/board/{intended_id}"), None).await;
     let (_, _, stale_after) = send(&app, "GET", &format!("/api/board/{stale_id}"), None).await;
     assert_eq!(linked_after["status"], json!("doing"));
     assert_eq!(linked_after["depends_on"], json!([]));
-    assert_eq!(stale_after["status"], json!("doing"), "an unrelated task was mutated");
+    assert_eq!(
+        stale_after["status"],
+        json!("doing"),
+        "an unrelated task was mutated"
+    );
     assert_eq!(stale_after["depends_on"], json!([]));
     let (_, _, all) = send(&app, "GET", "/api/board?all=1", None).await;
     assert!(
-        !all.as_array().unwrap().iter().any(|row| row["title"] == "delegated from the current prompt"),
+        !all.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["title"] == "delegated from the current prompt"),
         "a refused cross-board create leaked its child: {all}"
     );
 }
@@ -1714,7 +1948,11 @@ async fn circular_depends_on_is_rejected_with_the_cycle_path() {
     let (app, _dir) = app();
     let a = create(&app, json!({ "title": "A", "session": "g" })).await;
     let a_id = a["id"].as_str().unwrap().to_string();
-    let b = create(&app, json!({ "title": "B", "session": "g", "depends_on": [a_id.clone()] })).await;
+    let b = create(
+        &app,
+        json!({ "title": "B", "session": "g", "depends_on": [a_id.clone()] }),
+    )
+    .await;
     let b_id = b["id"].as_str().unwrap().to_string();
     assert_eq!(b["depends_on"], json!([a_id.clone()]));
 
@@ -1752,7 +1990,11 @@ async fn circular_depends_on_is_rejected_with_the_cycle_path() {
 async fn a_card_is_assigned_to_an_epic_and_can_be_cleared() {
     // AMUX-2992: epic = a type=epic card, children link up via the epic field.
     let (app, _dir) = app();
-    let epic = create(&app, json!({ "title": "TubeScience search reliability", "type": "epic" })).await;
+    let epic = create(
+        &app,
+        json!({ "title": "TubeScience search reliability", "type": "epic" }),
+    )
+    .await;
     let epic_id = epic["id"].as_str().unwrap().to_string();
     assert_eq!(epic["type"], json!("epic"), "epic is a real card type now");
 
@@ -1770,12 +2012,19 @@ async fn a_card_is_assigned_to_an_epic_and_can_be_cleared() {
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["applied"], json!(true));
     let ignored = v["ignored_fields"].as_array().cloned().unwrap_or_default();
-    assert!(!ignored.contains(&json!("epic")), "epic must be writable, not ignored: {v}");
+    assert!(
+        !ignored.contains(&json!("epic")),
+        "epic must be writable, not ignored: {v}"
+    );
 
     // It rolls up: the child's detail carries the epic id.
     let (st, _, detail) = send(&app, "GET", &format!("/api/board/{child_id}"), None).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(detail["epic"], json!(epic_id), "child must report its epic: {detail}");
+    assert_eq!(
+        detail["epic"],
+        json!(epic_id),
+        "child must report its epic: {detail}"
+    );
 
     // Clearing it (empty string) removes the link.
     let (st, _, _) = send(
@@ -1787,7 +2036,10 @@ async fn a_card_is_assigned_to_an_epic_and_can_be_cleared() {
     .await;
     assert_eq!(st, StatusCode::OK);
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{child_id}"), None).await;
-    assert!(detail["epic"].is_null(), "cleared epic must read null: {detail}");
+    assert!(
+        detail["epic"].is_null(),
+        "cleared epic must read null: {detail}"
+    );
 }
 
 #[tokio::test]
@@ -1838,7 +2090,10 @@ async fn noop_patch_reports_applied_false_and_moves_nothing() {
     // Read back: rev truly unmoved, no log lines invented.
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert_eq!(detail["rev"].as_i64().unwrap(), rev0);
-    assert_eq!(detail["log"], card["log"], "no-op must preserve the intake audit");
+    assert_eq!(
+        detail["log"], card["log"],
+        "no-op must preserve the intake audit"
+    );
 }
 
 // ---- optimistic concurrency ----------------------------------------------
@@ -1955,7 +2210,10 @@ async fn done_requires_evidence_a_plan_cannot_supply() {
     // gate nobody can audit (ethos rule 6).
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert!(
-        detail["evidence"].as_str().unwrap_or("").contains("cargo test"),
+        detail["evidence"]
+            .as_str()
+            .unwrap_or("")
+            .contains("cargo test"),
         "evidence must survive onto the card: {detail}"
     );
 }
@@ -1982,7 +2240,10 @@ async fn the_todo_wip_limit_refuses_the_next_card_and_names_what_to_close() {
     };
     for n in 0..3 {
         let c = mk(&app, n).await;
-        assert!(c["id"].as_str().is_some(), "card {n} must be creatable: {c}");
+        assert!(
+            c["id"].as_str().is_some(),
+            "card {n} must be creatable: {c}"
+        );
     }
 
     // The FOURTH is refused, on the CREATE path — which is the path `amux board
@@ -2000,9 +2261,17 @@ async fn the_todo_wip_limit_refuses_the_next_card_and_names_what_to_close() {
     assert_eq!(v["holding"], json!(3), "{v}");
     assert_eq!(v["limit"], json!(3), "{v}");
     // Not a generic "close something": the refusal carries specific cards.
-    let close = v["close_these_first"].as_array().expect("must name cards to close");
-    assert!(!close.is_empty(), "a limit with no list is an obstacle, not a fix: {v}");
-    assert!(close[0]["id"].as_str().is_some() && close[0]["days_since_touched"].is_number(), "{v}");
+    let close = v["close_these_first"]
+        .as_array()
+        .expect("must name cards to close");
+    assert!(
+        !close.is_empty(),
+        "a limit with no list is an obstacle, not a fix: {v}"
+    );
+    assert!(
+        close[0]["id"].as_str().is_some() && close[0]["days_since_touched"].is_number(),
+        "{v}"
+    );
 
     // `backlog` is the sanctioned exit and is NOT capped — the limit is a
     // ceiling on QUEUEING, not on filing (ethos rule 3 wants a truthful path).
@@ -2026,7 +2295,11 @@ async fn the_todo_wip_limit_refuses_the_next_card_and_names_what_to_close() {
         Some(json!({"title": "disk is at 97%", "owner_type": "human", "status": "todo"})),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED, "a fault report must never be dropped for WIP: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "a fault report must never be dropped for WIP: {v}"
+    );
 
     std::env::remove_var("AMUX_TODO_WIP_LIMIT");
 }
@@ -2035,7 +2308,11 @@ async fn the_todo_wip_limit_refuses_the_next_card_and_names_what_to_close() {
 #[tokio::test]
 async fn blocked_refuses_a_card_that_names_no_watch() {
     let (app, _tmp) = app();
-    let c = create(&app, json!({"title": "waiting on something", "session": "w2"})).await;
+    let c = create(
+        &app,
+        json!({"title": "waiting on something", "session": "w2"}),
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
 
     let (st, _, v) = send(
@@ -2049,12 +2326,31 @@ async fn blocked_refuses_a_card_that_names_no_watch() {
     assert_eq!(v["code"], json!("blocked_needs_a_watch"), "{v}");
     // All three honest exits are offered, including the AF-318 one.
     let fix = &v["how_to_fix"];
-    assert!(fix["on_another_card"].as_str().unwrap().contains("depends_on"), "{v}");
-    assert!(fix["on_a_condition"].as_str().unwrap().contains("--trigger"), "{v}");
-    assert!(fix["on_a_person"].as_str().unwrap().contains("needsyou"), "{v}");
+    assert!(
+        fix["on_another_card"]
+            .as_str()
+            .unwrap()
+            .contains("depends_on"),
+        "{v}"
+    );
+    assert!(
+        fix["on_a_condition"]
+            .as_str()
+            .unwrap()
+            .contains("--trigger"),
+        "{v}"
+    );
+    assert!(
+        fix["on_a_person"].as_str().unwrap().contains("needsyou"),
+        "{v}"
+    );
 
     // A dependency satisfies it.
-    let other = create(&app, json!({"title": "the thing that must land first", "session": "w2"})).await;
+    let other = create(
+        &app,
+        json!({"title": "the thing that must land first", "session": "w2"}),
+    )
+    .await;
     let (st, _, v) = send(
         &app,
         "PATCH",
@@ -2104,9 +2400,25 @@ async fn needsyou_refuses_a_park_that_names_no_human_act() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], json!("needsyou_requires_ask_type"), "{v}");
-    let types: Vec<&str> =
-        v["ask_types"].as_array().unwrap().iter().map(|t| t["type"].as_str().unwrap()).collect();
-    assert_eq!(types, vec!["budget", "customer_outbound", "decision", "access", "credential", "external", "judgment"], "{v}");
+    let types: Vec<&str> = v["ask_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "budget",
+            "customer_outbound",
+            "decision",
+            "access",
+            "credential",
+            "external",
+            "judgment"
+        ],
+        "{v}"
+    );
 
     // A type outside the closed vocabulary is refused too, or the vocabulary
     // is decorative.
@@ -2165,7 +2477,13 @@ async fn needsyou_refuses_a_park_that_names_no_human_act() {
     // a gate nobody can audit (ethos rule 6), and the owner view ranks on it.
     let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert_eq!(got["ask_type"], json!("decision"));
-    assert!(got["ask_unblocks"].as_str().unwrap().contains("auto-reclaim"), "{got}");
+    assert!(
+        got["ask_unblocks"]
+            .as_str()
+            .unwrap()
+            .contains("auto-reclaim"),
+        "{got}"
+    );
 }
 
 /// The TAG door's twin of the test above (AMUX-4590). AF-318/AMUX-3929 closed
@@ -2262,8 +2580,16 @@ async fn a_refused_park_does_not_discard_the_ask_it_asked_for() {
     assert_eq!(st, StatusCode::OK);
 
     let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(got["ask_type"], json!("access"), "the ask must persist without a transition");
-    assert_eq!(got["status"], json!("todo"), "writing an ask must not move the card");
+    assert_eq!(
+        got["ask_type"],
+        json!("access"),
+        "the ask must persist without a transition"
+    );
+    assert_eq!(
+        got["status"],
+        json!("todo"),
+        "writing an ask must not move the card"
+    );
 }
 
 /// THE OWNER VIEW: capped, ranked by what clearing it releases, and honest
@@ -2297,15 +2623,22 @@ async fn the_needsyou_view_is_capped_and_ranks_by_blast_radius_not_age_alone() {
         .as_str()
         .unwrap()
         .to_string();
-    create(&app, json!({"title": "waiting behind the blocker", "depends_on": [blocker.clone()]}))
-        .await;
+    create(
+        &app,
+        json!({"title": "waiting behind the blocker", "depends_on": [blocker.clone()]}),
+    )
+    .await;
     assert_eq!(park(&app, blocker.clone()).await.0, StatusCode::OK);
     assert_eq!(park(&app, lonely.clone()).await.0, StatusCode::OK);
 
     let (st, _, v) = send(&app, "GET", "/api/board/needsyou", None).await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    let ids: Vec<&str> =
-        v["queue"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = v["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
     assert_eq!(
         ids.first(),
         Some(&blocker.as_str()),
@@ -2327,7 +2660,11 @@ async fn the_needsyou_view_is_capped_and_ranks_by_blast_radius_not_age_alone() {
     assert_eq!(capped["hidden"], json!(1), "{capped}");
     assert_eq!(capped["total"], json!(2), "{capped}");
     let (_, _, all) = send(&app, "GET", "/api/board/needsyou?limit=1&all=1", None).await;
-    assert_eq!(all["shown"], json!(2), "?all=1 must reach the remainder: {all}");
+    assert_eq!(
+        all["shown"],
+        json!(2),
+        "?all=1 must reach the remainder: {all}"
+    );
     assert_eq!(all["hidden"], json!(0), "{all}");
 }
 
@@ -2370,7 +2707,10 @@ async fn none_needs_a_reason_and_then_it_is_accepted_and_stored() {
     // Stored verbatim, so `evidence LIKE 'none:%'` counts the escapes. An escape
     // nobody can count is the blind spot the escape was meant not to be.
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert!(detail["evidence"].as_str().unwrap_or("").starts_with("none: owner decided"));
+    assert!(detail["evidence"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("none: owner decided"));
 }
 
 // ---- global done-link gate (AMUX-3275): done needs a real asset link ------
@@ -2413,7 +2753,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
     )
     .await;
-    assert_eq!(st, StatusCode::CONFLICT, "a command is evidence, not an asset: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "a command is evidence, not an asset: {v}"
+    );
     assert_eq!(v["code"], json!("done_requires_asset_link"));
 
     // The structured artifact registry is canonical and sufficient by itself;
@@ -2431,7 +2775,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         })),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED, "artifact registration failed: {artifact}");
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "artifact registration failed: {artifact}"
+    );
     let artifact_id = artifact["id"].as_str().unwrap();
     let (st, _, retired) = send(
         &app,
@@ -2440,7 +2788,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         Some(json!({ "state": "invalid" })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "retiring the artifact failed: {retired}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "retiring the artifact failed: {retired}"
+    );
     let (st, _, v) = send(
         &app,
         "PATCH",
@@ -2461,7 +2813,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         Some(json!({ "state": "created" })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "restoring the artifact failed: {restored}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "restoring the artifact failed: {restored}"
+    );
     let (st, _, v) = send(
         &app,
         "PATCH",
@@ -2469,9 +2825,17 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "a registered artifact must satisfy the asset gate: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a registered artifact must satisfy the asset gate: {v}"
+    );
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(detail["artifacts"][0]["ref"], json!("summary.md"), "{detail}");
+    assert_eq!(
+        detail["artifacts"][0]["ref"],
+        json!("summary.md"),
+        "{detail}"
+    );
 
     // Evidence that actually names an artifact remains a direct path, with the
     // description still containing only prose.
@@ -2492,7 +2856,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "a bare produced filename is a real asset ref: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a bare produced filename is a real asset ref: {v}"
+    );
 
     // THE DOCUMENTED ESCAPE ACTUALLY WORKS NOW. CLAUDE.md says `none: <reason>`
     // "is stored and counted, not a bypass"; this gate used to refuse it, so an
@@ -2515,7 +2883,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "`none: <reason>` must close without --force: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "`none: <reason>` must close without --force: {v}"
+    );
 
     // CONTROL: a bare `none:` is still refused. The escape is a reason, not a
     // shrug, and an unexplained one is exactly what it exists to prevent — so
@@ -2533,7 +2905,11 @@ async fn done_requires_an_asset_link_and_gate_ack_cannot_fake_it() {
         Some(json!({ "status": "done", "evidence": "none:", "gate_ack": true })),
     )
     .await;
-    assert_eq!(st, StatusCode::CONFLICT, "an unexplained `none:` must not pass: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "an unexplained `none:` must not pass: {v}"
+    );
 
     // And the original path still works: an artifact link in the DESC, which is
     // what this gate has always read.
@@ -2583,7 +2959,11 @@ async fn creating_a_needsyou_card_needs_a_typed_ask_just_like_the_transition_doe
         Some(json!({ "title": "parked at birth", "status": "needsyou", "type": "chore" })),
     )
     .await;
-    assert_eq!(st, StatusCode::CONFLICT, "creation must be gated like the transition: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "creation must be gated like the transition: {v}"
+    );
     assert_eq!(v["code"], json!("needsyou_requires_ask_type"));
 
     // CONTROL: a REAL ask is created, not refused. Without this the fix would be
@@ -2604,7 +2984,11 @@ async fn creating_a_needsyou_card_needs_a_typed_ask_just_like_the_transition_doe
         })),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED, "a typed ask must be creatable: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "a typed ask must be creatable: {v}"
+    );
     assert_eq!(v["status"], json!("needsyou"));
     assert_eq!(v["ask_type"], json!("decision"));
 
@@ -2695,7 +3079,10 @@ async fn lifecycle_todo_doing_review_done_verified_via_state_machine() {
     )
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
-    assert!(v["error"].as_str().unwrap().contains("archive it instead"), "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("archive it instead"),
+        "{v}"
+    );
 }
 
 #[tokio::test]
@@ -2736,7 +3123,10 @@ async fn owner_doing_transition_records_claim_and_claim_repairs_a_missing_marker
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(direct_markers, 1, "`board doing` must carry the same exact claim as `board claim`");
+    assert_eq!(
+        direct_markers, 1,
+        "`board doing` must carry the same exact claim as `board claim`"
+    );
 
     // A coordinator can move another lane's assigned card to Doing without
     // claiming that runtime. The owning lane's idempotent `/claim` is the
@@ -2776,7 +3166,11 @@ async fn owner_doing_transition_records_claim_and_claim_repairs_a_missing_marker
         .await;
         assert_eq!(st, StatusCode::OK, "repair claim: {claimed}");
         assert_eq!(claimed["already"], json!(true), "{claimed}");
-        assert_eq!(claimed["attribution_repaired"], json!(expected_repaired), "{claimed}");
+        assert_eq!(
+            claimed["attribution_repaired"],
+            json!(expected_repaired),
+            "{claimed}"
+        );
     }
     let repair_markers: i64 = store
         .read()
@@ -2789,7 +3183,10 @@ async fn owner_doing_transition_records_claim_and_claim_repairs_a_missing_marker
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(repair_markers, 1, "repeated repair must not inflate task.claimed history");
+    assert_eq!(
+        repair_markers, 1,
+        "repeated repair must not inflate task.claimed history"
+    );
 }
 
 // ---- PYTHON INTEROP: a live-shaped row survives the Rust API -------------
@@ -2825,12 +3222,23 @@ async fn python_shaped_row_round_trips_without_corruption() {
     // GET: raw Python vocabulary preserved on the wire.
     let (st, _, detail) = send(&app, "GET", "/api/board/ORCH-42", None).await;
     assert_eq!(st, StatusCode::OK, "{detail}");
-    assert_eq!(detail["status"], json!("needsyou"), "spelling preserved, not rewritten");
-    assert_eq!(detail["depends_on"], json!(["ORCH-1"]), "JSON TEXT decoded to a list");
+    assert_eq!(
+        detail["status"],
+        json!("needsyou"),
+        "spelling preserved, not rewritten"
+    );
+    assert_eq!(
+        detail["depends_on"],
+        json!(["ORCH-1"]),
+        "JSON TEXT decoded to a list"
+    );
     assert_eq!(detail["created"], json!(1754000000));
     assert_eq!(detail["rev"], json!(7));
     assert_eq!(detail["tags"], json!(["mixpeek"]));
-    assert!(detail["log"].as_str().unwrap().contains("`09:20` STATUS (orch)"));
+    assert!(detail["log"]
+        .as_str()
+        .unwrap()
+        .contains("`09:20` STATUS (orch)"));
 
     // It appears in the list, and a needs_you filter (core spelling) finds
     // the needsyou row — both vocabularies resolve.
@@ -3088,7 +3496,13 @@ async fn status_column_crud_matches_python() {
         )
         .unwrap();
     }
-    let (st, _, v) = send(&app, "DELETE", "/api/board/statuses/waiting-on-vendor", None).await;
+    let (st, _, v) = send(
+        &app,
+        "DELETE",
+        "/api/board/statuses/waiting-on-vendor",
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["moved"], json!(1));
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{cid}"), None).await;
@@ -3127,7 +3541,11 @@ async fn cards_move_into_and_out_of_user_created_columns() {
     assert_eq!(v["id"], json!("qa-review"));
 
     // 1. CREATE directly into a user column.
-    let born = create(&app, json!({ "title": "born in qa", "status": "qa-review" })).await;
+    let born = create(
+        &app,
+        json!({ "title": "born in qa", "status": "qa-review" }),
+    )
+    .await;
     assert_eq!(born["status"], json!("qa-review"), "{born}");
 
     // 2. MOVE IN — the drag that used to 400.
@@ -3145,8 +3563,14 @@ async fn cards_move_into_and_out_of_user_created_columns() {
     // Not laundered through the force path: a routine move must not write a
     // bypass line into the one audit trail that is supposed to mean something.
     let log = v["log"].as_str().unwrap_or("");
-    assert!(log.contains("todo -> qa-review"), "no honest audit line: {log}");
-    assert!(!log.contains("force by"), "routine move logged as a force: {log}");
+    assert!(
+        log.contains("todo -> qa-review"),
+        "no honest audit line: {log}"
+    );
+    assert!(
+        !log.contains("force by"),
+        "routine move logged as a force: {log}"
+    );
 
     // 3. MOVE OUT — the roach-motel guard.
     let (st, _, v) = send(
@@ -3177,7 +3601,14 @@ async fn cards_move_into_and_out_of_user_created_columns() {
             .any(|c| c == "qa-review"),
         "the refusal must list the columns that DO exist: {v}"
     );
-    assert!(v["valid_statuses"].as_array().unwrap().iter().any(|c| c == "todo"), "{v}");
+    assert!(
+        v["valid_statuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "todo"),
+        "{v}"
+    );
 }
 
 /// A user column carrying a gate must enforce it. `statuses.gate` is written by
@@ -3228,7 +3659,10 @@ async fn a_user_column_with_a_gate_enforces_it() {
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["status"], json!("security-review"), "{v}");
     assert!(
-        v["log"].as_str().unwrap_or("").contains("gate satisfied via gate_checked"),
+        v["log"]
+            .as_str()
+            .unwrap_or("")
+            .contains("gate satisfied via gate_checked"),
         "the ack must be recorded on the card: {v}"
     );
 }
@@ -3336,7 +3770,11 @@ async fn clear_done_archives_and_reports_the_count() {
 
     let mut done_ids = Vec::new();
     for i in 0..3 {
-        let v = create(&app, json!({ "title": format!("finished {i}"), "status": "done" })).await;
+        let v = create(
+            &app,
+            json!({ "title": format!("finished {i}"), "status": "done" }),
+        )
+        .await;
         done_ids.push(v["id"].as_str().unwrap().to_string());
     }
     let keep = create(&app, json!({ "title": "still open", "status": "todo" })).await;
@@ -3345,15 +3783,31 @@ async fn clear_done_archives_and_reports_the_count() {
     let (st, _, v) = send(&app, "POST", "/api/board/clear-done", None).await;
     // Not 405: the failure this card is about is the route not existing.
     assert_eq!(st, StatusCode::OK, "clear-done did not answer 200: {v}");
-    assert_eq!(v["archived"], json!(3), "must report the count, not a bare flag: {v}");
-    assert_eq!(v["action"], json!("archived"), "the payload must say it archived: {v}");
+    assert_eq!(
+        v["archived"],
+        json!(3),
+        "must report the count, not a bare flag: {v}"
+    );
+    assert_eq!(
+        v["action"],
+        json!("archived"),
+        "the payload must say it archived: {v}"
+    );
 
     // NOT DELETED. Each card is still individually readable, with archived=1.
     for id in &done_ids {
         let (st, _, row) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         assert_eq!(st, StatusCode::OK, "clear-done DELETED {id} — data loss");
-        assert_eq!(row["archived"], json!(1), "{id} should be archived, got {row}");
-        assert_eq!(row["status"], json!("done"), "status must be untouched: {row}");
+        assert_eq!(
+            row["archived"],
+            json!(1),
+            "{id} should be archived, got {row}"
+        );
+        assert_eq!(
+            row["status"],
+            json!("done"),
+            "status must be untouched: {row}"
+        );
     }
     // ...and gone from the default (non-archived) view, which is what the
     // button promises.
@@ -3365,9 +3819,15 @@ async fn clear_done_archives_and_reports_the_count() {
         .map(|i| i["id"].as_str().unwrap())
         .collect();
     for id in &done_ids {
-        assert!(!live.contains(&id.as_str()), "{id} still in the default view");
+        assert!(
+            !live.contains(&id.as_str()),
+            "{id} still in the default view"
+        );
     }
-    assert!(live.contains(&keep_id.as_str()), "a todo card was swept: {active}");
+    assert!(
+        live.contains(&keep_id.as_str()),
+        "a todo card was swept: {active}"
+    );
 
     // Idempotent, and honest about it: nothing left to archive reports 0
     // rather than repeating the first run's number.
@@ -3407,7 +3867,11 @@ async fn force_accepts_x_amux_worker_attribution_like_every_other_module() {
         &[],
     )
     .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "unattributed force must refuse: {v}");
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "unattributed force must refuse: {v}"
+    );
     // ORDERING MATTERS, and this assertion pins it. This control omits BOTH a
     // header and a reason, so it trips two checks; attribution must be the one
     // that answers, or the test silently stops covering attribution at all and
@@ -3427,7 +3891,8 @@ async fn force_accepts_x_amux_worker_attribution_like_every_other_module() {
     )
     .await;
     assert_ne!(
-        v["error"], json!("force requires attribution"),
+        v["error"],
+        json!("force requires attribution"),
         "X-Amux-Worker IS attribution — every other module accepts it: {v}"
     );
     assert_eq!(st, StatusCode::OK, "forced transition should apply: {v}");
@@ -3457,13 +3922,21 @@ async fn force_accepts_x_amux_worker_attribution_like_every_other_module() {
 #[tokio::test]
 async fn a_foreign_lane_cannot_move_a_needsyou_card_out_of_needsyou() {
     let (app, _d) = app();
-    let item = create(&app, json!({
-        "title": "lane-a needs a decision", "session": "lane-a", "status": "needsyou",
-        "ask_type": "decision", "ask_question": "Ship it or hold?", "ask_actor": "Ethan",
-        "ask_unblocks": "Ethan answers ship or hold, in this card",
-    })).await;
+    let item = create(
+        &app,
+        json!({
+            "title": "lane-a needs a decision", "session": "lane-a", "status": "needsyou",
+            "ask_type": "decision", "ask_question": "Ship it or hold?", "ask_actor": "Ethan",
+            "ask_unblocks": "Ethan answers ship or hold, in this card",
+        }),
+    )
+    .await;
     let id = item["id"].as_str().unwrap().to_string();
-    assert_eq!(item["status"], json!("needsyou"), "fixture must start in needsyou: {item}");
+    assert_eq!(
+        item["status"],
+        json!("needsyou"),
+        "fixture must start in needsyou: {item}"
+    );
 
     // THE CASE: a different lane sweeps it to todo, exactly as amux-3 did.
     let (st, _, v) = send_with(
@@ -3474,19 +3947,41 @@ async fn a_foreign_lane_cannot_move_a_needsyou_card_out_of_needsyou() {
         &[("x-amux-worker", "lane-b")],
     )
     .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "lane-b must not hide lane-a's ask: {v}");
-    assert_eq!(v["error"], json!("cross-lane needsyou move requires authorized_by"), "{v}");
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "lane-b must not hide lane-a's ask: {v}"
+    );
+    assert_eq!(
+        v["error"],
+        json!("cross-lane needsyou move requires authorized_by"),
+        "{v}"
+    );
 
     // CONTROL A: a guard that refuses AND writes is not a guard.
     let (_, _, row) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(row["status"], json!("needsyou"), "refused move must not write: {row}");
+    assert_eq!(
+        row["status"],
+        json!("needsyou"),
+        "refused move must not write: {row}"
+    );
 
     // CONTROL B: an ANONYMOUS caller is refused too. That is the shape the
     // incident actually had, and the archive guard's own history (AF-701) is
     // that an empty caller_lane used to read as "skip the check" — the caller
     // that most needs the guard waved through for being unnamed.
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "todo" }))).await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "an unnamed caller must not be exempt: {v}");
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "todo" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "an unnamed caller must not be exempt: {v}"
+    );
 
     // CONTROL C: the OWNER may still answer its own ask, or the guard has just
     // broken needsyou for everyone rather than protecting it.
@@ -3498,15 +3993,23 @@ async fn a_foreign_lane_cannot_move_a_needsyou_card_out_of_needsyou() {
         &[("x-amux-worker", "lane-a")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the owner may move its own needsyou card: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the owner may move its own needsyou card: {v}"
+    );
 
     // CONTROL D: `authorized_by` is a REAL path, not decoration — a lane acting
     // on the owner's behalf must be able to say so and proceed.
-    let second = create(&app, json!({
-        "title": "lane-a needs another decision", "session": "lane-a", "status": "needsyou",
-        "ask_type": "decision", "ask_question": "And this one?", "ask_actor": "Ethan",
-        "ask_unblocks": "Ethan answers this one too, in this card",
-    })).await;
+    let second = create(
+        &app,
+        json!({
+            "title": "lane-a needs another decision", "session": "lane-a", "status": "needsyou",
+            "ask_type": "decision", "ask_question": "And this one?", "ask_actor": "Ethan",
+            "ask_unblocks": "Ethan answers this one too, in this card",
+        }),
+    )
+    .await;
     let sid = second["id"].as_str().unwrap().to_string();
     let (st, _, v) = send_with(
         &app,
@@ -3522,7 +4025,11 @@ async fn a_foreign_lane_cannot_move_a_needsyou_card_out_of_needsyou() {
     // statuses is untouched, so board-drive, promotion and reassignment keep
     // working — a guard on every transition would have been a different and
     // much larger change.
-    let plain = create(&app, json!({ "title": "lane-a backlog", "session": "lane-a", "status": "backlog" })).await;
+    let plain = create(
+        &app,
+        json!({ "title": "lane-a backlog", "session": "lane-a", "status": "backlog" }),
+    )
+    .await;
     let pid = plain["id"].as_str().unwrap().to_string();
     let (st, _, v) = send_with(
         &app,
@@ -3532,7 +4039,11 @@ async fn a_foreign_lane_cannot_move_a_needsyou_card_out_of_needsyou() {
         &[("x-amux-worker", "lane-b")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "only needsyou is guarded; backlog->todo must still pass: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "only needsyou is guarded; backlog->todo must still pass: {v}"
+    );
 }
 
 /// EFFECT 2 — the cross-lane ARCHIVE guard stops being blind.
@@ -3545,7 +4056,11 @@ async fn a_foreign_lane_cannot_move_a_needsyou_card_out_of_needsyou() {
 #[tokio::test]
 async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
     let (app, _d) = app();
-    let item = create(&app, json!({ "title": "lane-a's card", "session": "lane-a" })).await;
+    let item = create(
+        &app,
+        json!({ "title": "lane-a's card", "session": "lane-a" }),
+    )
+    .await;
     let id = item["id"].as_str().unwrap().to_string();
 
     // THE CASE: a DIFFERENT lane archives it, identifying itself the way the
@@ -3563,12 +4078,20 @@ async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
         StatusCode::BAD_REQUEST,
         "lane-b archiving lane-a's card must be refused: {v}"
     );
-    assert_eq!(v["error"], json!("cross-lane destruction requires authorized_by"), "{v}");
+    assert_eq!(
+        v["error"],
+        json!("cross-lane destruction requires authorized_by"),
+        "{v}"
+    );
 
     // CONTROL A: the card must be untouched — a guard that refuses AND writes
     // is not a guard.
     let (_, _, row) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(row["archived"], json!(0), "refused archive must not write: {row}");
+    assert_eq!(
+        row["archived"],
+        json!(0),
+        "refused archive must not write: {row}"
+    );
 
     // CONTROL B: the OWNER archiving its own card is still allowed, so the test
     // discriminates rather than proving archiving is broken for everyone.
@@ -3580,7 +4103,11 @@ async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
         &[("x-amux-worker", "lane-a")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the owner may archive its own card: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the owner may archive its own card: {v}"
+    );
 }
 
 // AVE-36: `amux board progress` reported success while notifying nobody, and
@@ -3593,7 +4120,11 @@ async fn cross_lane_archive_guard_sees_x_amux_worker_callers() {
 #[tokio::test]
 async fn a_peers_progress_note_reports_owner_notification_honestly() {
     let (app, _dir) = app();
-    let v = create(&app, json!({ "title": "Handoff", "session": "ave36-nonexistent-owner" })).await;
+    let v = create(
+        &app,
+        json!({ "title": "Handoff", "session": "ave36-nonexistent-owner" }),
+    )
+    .await;
     let id = v["id"].as_str().unwrap().to_string();
 
     // A DIFFERENT lane appends: the response must carry the notify verdict.
@@ -3608,7 +4139,10 @@ async fn a_peers_progress_note_reports_owner_notification_honestly() {
     assert_eq!(r["applied"], json!(true), "{r}");
     assert_eq!(r["owner_notified"], json!(false), "{r}");
     assert!(
-        r["owner_notify_reason"].as_str().unwrap().contains("not running"),
+        r["owner_notify_reason"]
+            .as_str()
+            .unwrap()
+            .contains("not running"),
         "the reason must name WHY nobody was told: {r}"
     );
 
@@ -3622,7 +4156,10 @@ async fn a_peers_progress_note_reports_owner_notification_honestly() {
     )
     .await;
     assert_eq!(r["applied"], json!(true), "{r}");
-    assert!(r.get("owner_notified").is_none(), "a self-note must not claim a notice: {r}");
+    assert!(
+        r.get("owner_notified").is_none(),
+        "a self-note must not claim a notice: {r}"
+    );
 
     // An unattributed append (server-side automation) notifies nobody either.
     let (_, _, r) = send(
@@ -3693,7 +4230,10 @@ async fn discarding_an_outlier_report_does_not_rearm() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(n, 1, "an occurrence-class idem must SURVIVE the discard — deleting it refiles the same specimen");
+    assert_eq!(
+        n, 1,
+        "an occurrence-class idem must SURVIVE the discard — deleting it refiles the same specimen"
+    );
 }
 
 #[tokio::test]
@@ -3721,7 +4261,10 @@ async fn discarding_an_autofix_report_rearms_the_detector() {
                      VALUES (1, 'amux', 'autofix.filed', '{}', 'autofix:sig-x', 'autofix')",
                     [],
                 )?;
-                Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(amux_server::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             }
         })
         .unwrap();
@@ -3756,7 +4299,6 @@ async fn discarding_an_autofix_report_rearms_the_detector() {
          suppresses every future recurrence of this signature"
     );
 }
-
 
 // ---- AF-160: a gate that says "name them" must collect the name -----------
 
@@ -3808,18 +4350,25 @@ async fn a_gate_that_asks_you_to_name_the_peer_refuses_until_a_peer_is_named() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_ne!(
-        v["error"], json!("gate_checked does not match the gate"),
+        v["error"],
+        json!("gate_checked does not match the gate"),
         "the filled-in ack must be ACCEPTED as matching — refusing it here is the original bug"
     );
     assert_eq!(v["ok"], json!(false));
     assert_eq!(v["blocked"], json!(true));
     assert!(
-        v["error"].as_str().unwrap().contains("no reviewer is recorded"),
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("no reviewer is recorded"),
         "the refusal must name the real reason: {v}"
     );
     // The remedy must be reachable with sanctioned tooling, or this gate
     // manufactures the hand-rolled curls the audit trail depends on not existing.
-    assert!(v["how_to_fix"]["cli"].as_str().unwrap().starts_with("amux board reviewer "));
+    assert!(v["how_to_fix"]["cli"]
+        .as_str()
+        .unwrap()
+        .starts_with("amux board reviewer "));
 
     // 2. A SELF-REVIEW is refused: reviewer == the card's owner.
     let (st, _, _) = send(
@@ -3863,7 +4412,11 @@ async fn a_gate_that_asks_you_to_name_the_peer_refuses_until_a_peer_is_named() {
         &[("X-Amux-Session", "amux-frustrations")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the peer signing off themselves must pass: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the peer signing off themselves must pass: {v}"
+    );
     assert_eq!(v["status"], json!("verified"));
 }
 
@@ -3934,7 +4487,10 @@ async fn a_gate_that_says_the_peer_verified_it_themselves_needs_the_peer_acting_
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], json!("verified_requires_peer_actor"));
     assert!(
-        v["error"].as_str().unwrap().contains("not the recorded reviewer"),
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the recorded reviewer"),
         "the refusal must name the real reason, not AF-160's (which already passed): {v}"
     );
 
@@ -3948,7 +4504,11 @@ async fn a_gate_that_says_the_peer_verified_it_themselves_needs_the_peer_acting_
         &[("X-Amux-Session", "amux-frustrations")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the peer signing off themselves must pass: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the peer signing off themselves must pass: {v}"
+    );
     assert_eq!(v["status"], json!("verified"));
 }
 
@@ -4066,7 +4626,11 @@ async fn a_gate_without_a_named_peer_criterion_needs_no_reviewer() {
         &[("X-Amux-Session", "amux")],
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "no reviewer required when nothing asks for one: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "no reviewer required when nothing asks for one: {v}"
+    );
     assert_eq!(v["status"], json!("done"));
 }
 
@@ -4088,12 +4652,22 @@ async fn the_retype_hint_prints_only_when_retyping_would_actually_help() {
     // (a) TYPE DEFAULT refused -> the hint is right, and must still appear.
     // `artifact:` in the desc satisfies done_requires_asset_link, which fires
     // BEFORE the ack gate — without it this test never reaches the hint at all.
-    let card = create(&app, json!({
-        "title": "plain code card", "status": "doing",
-        "desc": "artifact: crates/amux-server/src/api/board.rs",
-    })).await;
+    let card = create(
+        &app,
+        json!({
+            "title": "plain code card", "status": "doing",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+        }),
+    )
+    .await;
     let id = card["id"].as_str().unwrap().to_string();
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "status": "done", "evidence": EV }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "done", "evidence": EV })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert!(
         v["how_to_ack"]["wrong_type?"].is_string(),
@@ -4114,7 +4688,13 @@ async fn the_retype_hint_prints_only_when_retyping_would_actually_help() {
     )
     .await;
     let sid = scoped["id"].as_str().unwrap().to_string();
-    let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{sid}"), Some(json!({ "status": "done", "evidence": EV }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{sid}"),
+        Some(json!({ "status": "done", "evidence": EV })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert!(
         v["how_to_ack"]["wrong_type?"].is_null(),
@@ -4150,14 +4730,18 @@ async fn the_contract_says_which_tier_each_gate_came_from() {
     let (st, _, v) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
     assert_eq!(st, StatusCode::OK);
     let src = &v["card_effective_gates"]["gate_sources"];
-    assert!(src.is_object(), "the contract must name the source per transition: {v}");
+    assert!(
+        src.is_object(),
+        "the contract must name the source per transition: {v}"
+    );
 
     // A card with no override anywhere resolves from the TYPE, and there the
     // retype advice is correct — this is the cell that fails if the field is
     // hardcoded to "scoped".
     let done = &src["done"];
     assert_eq!(
-        done["retype_would_change_it"], json!(true),
+        done["retype_would_change_it"],
+        json!(true),
         "a type-derived gate IS changed by retyping: {v}"
     );
     assert!(done["explain"].as_str().unwrap().contains("TYPE"), "{v}");
@@ -4176,7 +4760,8 @@ async fn the_contract_says_which_tier_each_gate_came_from() {
     let (_, _, v2) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
     let done2 = &v2["card_effective_gates"]["gate_sources"]["done"];
     assert_eq!(
-        done2["retype_would_change_it"], json!(false),
+        done2["retype_would_change_it"],
+        json!(false),
         "a card-scoped gate is NOT changed by retyping, and the contract must say so: {v2}"
     );
 }
@@ -4201,7 +4786,11 @@ async fn the_contract_says_which_tier_each_gate_came_from() {
 async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
     let (app, _dir) = app();
     let long = "x".repeat(900);
-    let card = create(&app, json!({ "title": "long desc", "status": "todo", "desc": long })).await;
+    let card = create(
+        &app,
+        json!({ "title": "long desc", "status": "todo", "desc": long }),
+    )
+    .await;
     let id = card["id"].as_str().unwrap().to_string();
 
     // A replace dropping a strict majority of a 500+ char desc trips the SIZE rule.
@@ -4212,7 +4801,11 @@ async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
         Some(json!({ "desc": "tiny" })),
     )
     .await;
-    assert_eq!(st, StatusCode::CONFLICT, "a 900 -> 4 char replace must be refused: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "a 900 -> 4 char replace must be refused: {v}"
+    );
     assert_eq!(v["kind"], json!("desc_shrink_blocked"), "{v}");
 
     // THE MACHINE-READABLE HALF: a caller can build the request without prose.
@@ -4227,7 +4820,10 @@ async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
     // THE PROSE HALF: the sentence a human reads must carry the shape too, since
     // that is the half that got guessed as a path.
     let err = v["error"].as_str().unwrap_or("");
-    assert!(err.contains("desc_append"), "still name the field — it is what a reader greps: {err:?}");
+    assert!(
+        err.contains("desc_append"),
+        "still name the field — it is what a reader greps: {err:?}"
+    );
     assert!(
         err.contains(&format!("/api/board/{id}")) || err.contains("in place of"),
         "the sentence must show the invocation, not just the name: {err:?}"
@@ -4258,8 +4854,16 @@ async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
         &[("X-Amux-Session", "lane-b")],
     )
     .await;
-    assert_eq!(st2, StatusCode::CONFLICT, "a peer replacing the owner's prose must refuse: {v2}");
-    assert_eq!(v2["rule"], json!("authorship"), "this must be the OTHER branch: {v2}");
+    assert_eq!(
+        st2,
+        StatusCode::CONFLICT,
+        "a peer replacing the owner's prose must refuse: {v2}"
+    );
+    assert_eq!(
+        v2["rule"],
+        json!("authorship"),
+        "this must be the OTHER branch: {v2}"
+    );
     let err2 = v2["error"].as_str().unwrap_or("");
     assert!(err2.contains("desc_append"), "{err2:?}");
     assert!(
@@ -4286,12 +4890,18 @@ async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
         &app,
         "PATCH",
         &format!("/api/board/{gid}"),
-        Some(json!({ "desc": "TOTALLY DIFFERENT CONTENT, and noticeably longer than what it \
-                             replaced, which is the point of this case." })),
+        Some(
+            json!({ "desc": "TOTALLY DIFFERENT CONTENT, and noticeably longer than what it \
+                             replaced, which is the point of this case." }),
+        ),
         &[("X-Amux-Session", "lane-b")],
     )
     .await;
-    assert_eq!(st3, StatusCode::CONFLICT, "a LONGER replacement destroys just as much: {v3}");
+    assert_eq!(
+        st3,
+        StatusCode::CONFLICT,
+        "a LONGER replacement destroys just as much: {v3}"
+    );
     assert_eq!(v3["rule"], json!("authorship"), "{v3}");
 
     // (b) a SHORT card. The old rule required `before >= 200`; amux-cloud's
@@ -4311,7 +4921,11 @@ async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
         &[("X-Amux-Session", "lane-b")],
     )
     .await;
-    assert_eq!(st4, StatusCode::CONFLICT, "a SHORT desc is not exempt: {v4}");
+    assert_eq!(
+        st4,
+        StatusCode::CONFLICT,
+        "a SHORT desc is not exempt: {v4}"
+    );
 
     // CONTROL, and it carries the weight: a peer editing ONE line of a
     // multi-line write-up keeps the rest and must still pass, or the guard
@@ -4325,7 +4939,11 @@ async fn the_desc_shrink_refusal_shows_how_to_append_not_just_the_field_name() {
         &[("X-Amux-Session", "lane-b")],
     )
     .await;
-    assert_eq!(st5, StatusCode::OK, "a typo fix that keeps the other lines must pass: {v5}");
+    assert_eq!(
+        st5,
+        StatusCode::OK,
+        "a typo fix that keeps the other lines must pass: {v5}"
+    );
 }
 
 /// AMUX-3567 REVIEW (amux-frustrations): the same answer for the WORKER tier,
@@ -4374,7 +4992,8 @@ async fn the_contract_names_a_worker_scoped_gate_before_you_trip_it() {
     let (_, _, v1) = send(&app, "GET", &format!("/api/board/contract?card={id}"), None).await;
     let done = &v1["card_effective_gates"]["gate_sources"]["done"];
     assert_eq!(
-        done["retype_would_change_it"], json!(false),
+        done["retype_would_change_it"],
+        json!(false),
         "a worker-scoped gate ignores the item type — this is what AF-168's reporter \
          was not told, and they concluded the override was pinned per-card: {v1}"
     );
@@ -4394,7 +5013,8 @@ async fn the_contract_names_a_worker_scoped_gate_before_you_trip_it() {
     // per-card summary would pass every assertion above.
     let review = &v1["card_effective_gates"]["gate_sources"]["review"];
     assert_eq!(
-        review["retype_would_change_it"], json!(true),
+        review["retype_would_change_it"],
+        json!(true),
         "only `done` was pinned — the other transitions are still the type's: {v1}"
     );
 }
@@ -4453,7 +5073,10 @@ async fn overwriting_a_trigger_records_the_value_it_destroyed() {
         &[("X-Amux-Session", "amux")],
     )
     .await;
-    assert!(st.is_success(), "replacing a trigger with a trigger stays allowed");
+    assert!(
+        st.is_success(),
+        "replacing a trigger with a trigger stays allowed"
+    );
 
     let (_s, _h, detail) = send_with(&app, "GET", &format!("/api/board/{id}"), None, &[]).await;
     let log = detail["log"].as_str().unwrap_or("");
@@ -4486,8 +5109,7 @@ async fn overwriting_a_trigger_records_the_value_it_destroyed() {
     //     so the cell cannot go quietly vacuous the way the one above did.
     let long_head = "HEADSENTINEL-inventory-2026-09-04";
     let long_tail = "TAILSENTINEL-the-fifth-item-that-was-lost";
-    let long_original =
-        format!("{long_head}{}{long_tail}", "x".repeat(2600));
+    let long_original = format!("{long_head}{}{long_tail}", "x".repeat(2600));
     let (st, _h, _b) = send_with(
         &app,
         "PATCH",
@@ -4534,7 +5156,11 @@ async fn overwriting_a_trigger_records_the_value_it_destroyed() {
     // 2c. gtm-engine's ACTUAL value size, which the previous fix silently cut.
     //     366 characters must come back WHOLE, with no elision marker at all.
     let real_case = format!("REALHEAD{}REALTAIL", "y".repeat(350));
-    assert_eq!(real_case.chars().count(), 366, "premise: their measured size");
+    assert_eq!(
+        real_case.chars().count(),
+        366,
+        "premise: their measured size"
+    );
     let (st, _h, _b) = send_with(
         &app,
         "PATCH",
@@ -4616,52 +5242,118 @@ async fn parking_with_a_trigger_records_time_and_prevents_immediate_redrain() {
     use amux_server::runtime_jobs::board_drive::{select_pickup_with, Pickup};
     let (app, store, _dir) = app_with_store();
     let lane = "trigger-repair-fixture";
-    let (_, _, card) = send_with(&app, "POST", "/api/board",
-        Some(json!({"title": "Verify the next engine rollout", "status": "backlog",
-            "session": lane, "owner_type": "agent", "desc": "SCOPE: verify the rollout"})),
-        &[("X-Amux-Session", lane)]).await;
+    let (_, _, card) = send_with(
+        &app,
+        "POST",
+        "/api/board",
+        Some(
+            json!({"title": "Verify the next engine rollout", "status": "backlog",
+            "session": lane, "owner_type": "agent", "desc": "SCOPE: verify the rollout"}),
+        ),
+        &[("X-Amux-Session", lane)],
+    )
+    .await;
     let id = card["id"].as_str().expect("created card");
     let path = format!("/api/board/{id}");
     let now = amux_server::config::now_f64();
-    let (st, _, body) = send_with(&app, "PATCH", &path,
+    let (st, _, body) = send_with(
+        &app,
+        "PATCH",
+        &path,
         Some(json!({"source_ref": "the next engine rollout"})),
-        &[("X-Amux-Session", lane)]).await;
+        &[("X-Amux-Session", lane)],
+    )
+    .await;
     assert!(st.is_success(), "{body}");
-    assert!(body["last_verified_at"].as_i64().unwrap_or(0) >= now as i64, "{body}");
-    assert!(body["advisories"].as_array().unwrap().iter().any(|a|
-        a["field"] == "last_verified_at" && a["set_to"].is_i64()), "{body}");
+    assert!(
+        body["last_verified_at"].as_i64().unwrap_or(0) >= now as i64,
+        "{body}"
+    );
+    assert!(
+        body["advisories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["field"] == "last_verified_at" && a["set_to"].is_i64()),
+        "{body}"
+    );
     let conn = store.read().unwrap();
-    assert!(matches!(select_pickup_with(&conn, lane, now, false),
-        Pickup::None { reason: "no-eligible-card", .. }), "a parked card must stay parked");
+    assert!(
+        matches!(
+            select_pickup_with(&conn, lane, now, false),
+            Pickup::None {
+                reason: "no-eligible-card",
+                ..
+            }
+        ),
+        "a parked card must stay parked"
+    );
     drop(conn);
 
     // Reasserting the SAME condition must repair an old/missing timestamp too.
-    let (_, _, body) = send_with(&app, "PATCH", &path,
-        Some(json!({"last_verified_at": 1})), &[("X-Amux-Session", lane)]).await;
+    let (_, _, body) = send_with(
+        &app,
+        "PATCH",
+        &path,
+        Some(json!({"last_verified_at": 1})),
+        &[("X-Amux-Session", lane)],
+    )
+    .await;
     assert_eq!(body["last_verified_at"], 1);
-    let (_, _, body) = send_with(&app, "PATCH", &path,
+    let (_, _, body) = send_with(
+        &app,
+        "PATCH",
+        &path,
         Some(json!({"source_ref": "the next engine rollout"})),
-        &[("X-Amux-Session", lane)]).await;
-    assert!(body["last_verified_at"].as_i64().unwrap_or(0) >= now as i64, "{body}");
+        &[("X-Amux-Session", lane)],
+    )
+    .await;
+    assert!(
+        body["last_verified_at"].as_i64().unwrap_or(0) >= now as i64,
+        "{body}"
+    );
 
     // Explicit timestamps (including null) are intentional and stay authoritative.
     for explicit in [json!(1788510477i64), Value::Null] {
-        let (_, _, body) = send_with(&app, "PATCH", &path,
+        let (_, _, body) = send_with(
+            &app,
+            "PATCH",
+            &path,
             Some(json!({"source_ref": "the next engine rollout", "last_verified_at": explicit})),
-            &[("X-Amux-Session", lane)]).await;
+            &[("X-Amux-Session", lane)],
+        )
+        .await;
         assert_eq!(body["last_verified_at"], explicit, "{body}");
-        assert!(body["advisories"].as_array().is_none_or(|a|
-            a.iter().all(|a| a["field"] != "last_verified_at")), "{body}");
+        assert!(
+            body["advisories"]
+                .as_array()
+                .is_none_or(|a| a.iter().all(|a| a["field"] != "last_verified_at")),
+            "{body}"
+        );
     }
     // Updating prose is not re-verifying a trigger. Clearing it is not parking.
-    for patch in [json!({"desc_append": "An unrelated progress note."}), json!({"source_ref": ""})] {
-        let (_, _, body) = send_with(&app, "PATCH", &path, Some(patch),
-            &[("X-Amux-Session", lane)]).await;
+    for patch in [
+        json!({"desc_append": "An unrelated progress note."}),
+        json!({"source_ref": ""}),
+    ] {
+        let (_, _, body) = send_with(
+            &app,
+            "PATCH",
+            &path,
+            Some(patch),
+            &[("X-Amux-Session", lane)],
+        )
+        .await;
         assert_eq!(body["last_verified_at"], Value::Null, "{body}");
     }
     let conn = store.read().unwrap();
-    assert!(matches!(select_pickup_with(&conn, lane, now, false), Pickup::DrainBacklog { .. }),
-        "control: clearing the trigger must make the backlog drainable again");
+    assert!(
+        matches!(
+            select_pickup_with(&conn, lane, now, false),
+            Pickup::DrainBacklog { .. }
+        ),
+        "control: clearing the trigger must make the backlog drainable again"
+    );
 }
 
 // AF-475. Posting an artifact to a card that does not exist answered
@@ -4678,22 +5370,52 @@ async fn an_artifact_on_a_missing_card_is_404_not_a_raw_db_error() {
     // lookup, so an invalid kind 400s and never reaches the arm under test.
     let body = json!({"kind": "implementation", "ref": "deadbeef"});
 
-    let (st, _h, b) = send_with(&app, "POST", "/api/board/NOPE-999/artifacts",
-        Some(body.clone()), &[("X-Amux-Session", "amux")]).await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "a missing card is a client error: {b}");
-    assert_eq!(b["error"], "no such task", "and it must say which fault: {b}");
-    assert!(!b.to_string().contains("Query returned no rows"),
-        "the raw storage error must not reach the caller: {b}");
+    let (st, _h, b) = send_with(
+        &app,
+        "POST",
+        "/api/board/NOPE-999/artifacts",
+        Some(body.clone()),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "a missing card is a client error: {b}"
+    );
+    assert_eq!(
+        b["error"], "no such task",
+        "and it must say which fault: {b}"
+    );
+    assert!(
+        !b.to_string().contains("Query returned no rows"),
+        "the raw storage error must not reach the caller: {b}"
+    );
 
     // THE OTHER ARM: a real card still succeeds. Without this the test passes on
     // a handler that 404s everything.
-    let (_s, _h, c) = send_with(&app, "POST", "/api/board",
+    let (_s, _h, c) = send_with(
+        &app,
+        "POST",
+        "/api/board",
         Some(json!({"title": "has artifacts", "status": "todo", "session": "amux"})),
-        &[("X-Amux-Session", "amux")]).await;
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
-    let (st2, _h, b2) = send_with(&app, "POST", &format!("/api/board/{id}/artifacts"),
-        Some(body), &[("X-Amux-Session", "amux")]).await;
-    assert_eq!(st2, StatusCode::CREATED, "an artifact on a real card still lands: {b2}");
+    let (st2, _h, b2) = send_with(
+        &app,
+        "POST",
+        &format!("/api/board/{id}/artifacts"),
+        Some(body),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
+    assert_eq!(
+        st2,
+        StatusCode::CREATED,
+        "an artifact on a real card still lands: {b2}"
+    );
 }
 
 /// A worker-authored output is already attributed to one exact card. Capture
@@ -4736,16 +5458,31 @@ async fn worker_outputs_auto_register_every_provider_artifact_and_survive_done()
                 &[("X-Amux-Worker", lane.as_str())],
             )
             .await;
-            assert_eq!(st, StatusCode::OK, "{provider} status update failed: {body}");
+            assert_eq!(
+                st,
+                StatusCode::OK,
+                "{provider} status update failed: {body}"
+            );
         }
 
         let (_, _, before) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         let artifacts = before["artifacts"].as_array().unwrap();
-        assert_eq!(artifacts.len(), 1, "capture must be idempotent for {provider}: {before}");
-        assert_eq!(artifacts[0]["task_id"], json!(id), "artifact leaked off {provider}'s card");
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "capture must be idempotent for {provider}: {before}"
+        );
+        assert_eq!(
+            artifacts[0]["task_id"],
+            json!(id),
+            "artifact leaked off {provider}'s card"
+        );
         assert_eq!(artifacts[0]["ref"], json!(artifact_ref));
         assert!(
-            artifacts[0]["description"].as_str().unwrap_or("").contains(&lane),
+            artifacts[0]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains(&lane),
             "the automatic registration must retain its provider lane attribution: {before}"
         );
 
@@ -4761,10 +5498,18 @@ async fn worker_outputs_auto_register_every_provider_artifact_and_survive_done()
             &[("X-Amux-Worker", lane.as_str())],
         )
         .await;
-        assert_eq!(st, StatusCode::OK, "terminal transition failed for {provider}: {done}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "terminal transition failed for {provider}: {done}"
+        );
         let (_, _, after) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         assert_eq!(after["status"], json!("done"));
-        assert_eq!(after["artifacts"][0]["ref"], json!(artifact_ref), "done lost {provider}'s artifact");
+        assert_eq!(
+            after["artifacts"][0]["ref"],
+            json!(artifact_ref),
+            "done lost {provider}'s artifact"
+        );
     }
 }
 
@@ -4812,7 +5557,10 @@ async fn terminal_transition_records_summary_and_preserves_provenance_for_provid
                      depends_on='[\"AMUX-4018\"]' WHERE id=?1",
                     rusqlite::params![linked_id],
                 )?;
-                Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(amux_server::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
 
@@ -4839,17 +5587,33 @@ async fn terminal_transition_records_summary_and_preserves_provenance_for_provid
             &[("X-Amux-Worker", lane.as_str())],
         )
         .await;
-        assert_eq!(st, StatusCode::OK, "{provider} terminal transition failed: {done}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "{provider} terminal transition failed: {done}"
+        );
 
         let (st, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         assert_eq!(st, StatusCode::OK);
         let summary = detail["last_result"].as_str().unwrap_or("");
-        assert!(summary.contains("Final outcome: done"), "{provider}: {summary}");
+        assert!(
+            summary.contains("Final outcome: done"),
+            "{provider}: {summary}"
+        );
         assert!(summary.contains("Actions:"), "{provider}: {summary}");
-        assert!(summary.contains("Tests/deployment/live evidence:"), "{provider}: {summary}");
+        assert!(
+            summary.contains("Tests/deployment/live evidence:"),
+            "{provider}: {summary}"
+        );
         assert!(summary.contains("Linked assets:"), "{provider}: {summary}");
-        assert!(summary.contains(artifact_ref), "{provider} asset missing: {summary}");
-        assert!(detail["log"].as_str().unwrap().contains("STATUS (board): Final outcome: done"));
+        assert!(
+            summary.contains(artifact_ref),
+            "{provider} asset missing: {summary}"
+        );
+        assert!(detail["log"]
+            .as_str()
+            .unwrap()
+            .contains("STATUS (board): Final outcome: done"));
         assert_eq!(detail["source_ref"], json!("message:ATE-75"));
         assert_eq!(detail["epic"], json!("ATE-75"));
         assert_eq!(detail["depends_on"], json!(["AMUX-4018"]));
@@ -4891,7 +5655,10 @@ async fn reopening_terminal_card_retires_stale_summary_without_erasing_history()
     assert_eq!(st, StatusCode::OK, "discard failed: {discarded}");
     let (_, _, terminal) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     let old_summary = terminal["last_result"].as_str().unwrap().to_string();
-    assert!(old_summary.starts_with("Final outcome: discarded"), "{terminal}");
+    assert!(
+        old_summary.starts_with("Final outcome: discarded"),
+        "{terminal}"
+    );
 
     let current_result = "Current reconciliation run has live acceptance in progress.";
     let (st, _, reopened) = send_with(
@@ -4909,9 +5676,16 @@ async fn reopening_terminal_card_retires_stale_summary_without_erasing_history()
 
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert_eq!(detail["status"], json!("todo"));
-    assert_eq!(detail["last_result"], json!(current_result), "stale Work summary survived: {detail}");
+    assert_eq!(
+        detail["last_result"],
+        json!(current_result),
+        "stale Work summary survived: {detail}"
+    );
     let log = detail["log"].as_str().unwrap_or("");
-    assert!(log.contains(&old_summary), "terminal history was erased: {log}");
+    assert!(
+        log.contains(&old_summary),
+        "terminal history was erased: {log}"
+    );
     assert!(
         log.contains("terminal summary retired on reopen"),
         "reopen did not leave a sweep-visible card marker: {log}"
@@ -4956,11 +5730,21 @@ async fn refused_terminal_transition_does_not_record_summary_for_provider_shapes
             &[("X-Amux-Worker", lane.as_str())],
         )
         .await;
-        assert_eq!(st, StatusCode::CONFLICT, "{provider} refusal was not enforced: {refused}");
+        assert_eq!(
+            st,
+            StatusCode::CONFLICT,
+            "{provider} refusal was not enforced: {refused}"
+        );
         let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         assert_eq!(detail["status"], json!("doing"));
-        assert!(detail["last_result"].is_null(), "refused {provider}: {detail}");
-        assert!(!detail["log"].as_str().unwrap().contains("Final outcome:"), "refused {provider}: {detail}");
+        assert!(
+            detail["last_result"].is_null(),
+            "refused {provider}: {detail}"
+        );
+        assert!(
+            !detail["log"].as_str().unwrap().contains("Final outcome:"),
+            "refused {provider}: {detail}"
+        );
     }
 }
 
@@ -5003,7 +5787,11 @@ async fn terminal_status_paths_preserve_summary_and_record_audit_for_provider_sh
             &[("X-Amux-Worker", lane.as_str())],
         )
         .await;
-        assert_eq!(st, StatusCode::OK, "{provider} setup update failed: {update}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "{provider} setup update failed: {update}"
+        );
 
         let (st, _, finished) = send_with(
             &app,
@@ -5020,8 +5808,14 @@ async fn terminal_status_paths_preserve_summary_and_record_audit_for_provider_sh
         assert_eq!(st, StatusCode::OK, "{provider} close failed: {finished}");
         let (_, _, before) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         let summary = before["last_result"].as_str().unwrap().to_string();
-        assert!(summary.starts_with("Final outcome: done"), "{provider}: {summary}");
-        assert!(summary.contains(artifact_ref), "{provider} asset missing: {summary}");
+        assert!(
+            summary.starts_with("Final outcome: done"),
+            "{provider}: {summary}"
+        );
+        assert!(
+            summary.contains(artifact_ref),
+            "{provider} asset missing: {summary}"
+        );
 
         // The stale-old-client shape: provider prose arrives as a PATCH after
         // the terminal summary was already committed. It is acknowledged as an
@@ -5034,7 +5828,11 @@ async fn terminal_status_paths_preserve_summary_and_record_audit_for_provider_sh
             &[("X-Amux-Worker", lane.as_str())],
         )
         .await;
-        assert_eq!(stale_st, StatusCode::OK, "{provider} stale patch failed: {stale}");
+        assert_eq!(
+            stale_st,
+            StatusCode::OK,
+            "{provider} stale patch failed: {stale}"
+        );
         assert!(
             stale["ignored_fields"]
                 .as_array()
@@ -5107,39 +5905,60 @@ async fn terminal_status_paths_preserve_summary_and_record_audit_for_provider_sh
 async fn own_status_update_claims_exact_todo_or_backlog_for_every_provider() {
     let (app, store, _dir) = app_with_store();
     for (provider, initial) in [
-        ("claude", "todo"), ("codex", "backlog"),
-        ("gemini", "todo"), ("opencode", "backlog"),
+        ("claude", "todo"),
+        ("codex", "backlog"),
+        ("gemini", "todo"),
+        ("opencode", "backlog"),
     ] {
         let lane = format!("claim-{provider}");
-        let made = create(&app, json!({
-            "title": format!("{provider} exact-card claim"),
-            "status": initial, "session": lane,
-            "desc": "Implement the exact-card status claim."
-        })).await;
+        let made = create(
+            &app,
+            json!({
+                "title": format!("{provider} exact-card claim"),
+                "status": initial, "session": lane,
+                "desc": "Implement the exact-card status claim."
+            }),
+        )
+        .await;
         let id = made["id"].as_str().unwrap().to_string();
         let id_for_db = id.clone();
-        store.write(move |conn| {
-            conn.execute(
-                "UPDATE issues SET source_ref='message:153', last_verified_at=NULL WHERE id=?1",
-                [&id_for_db],
-            )?;
-            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE issues SET source_ref='message:153', last_verified_at=NULL WHERE id=?1",
+                    [&id_for_db],
+                )?;
+                Ok(amux_server::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let (st, _, body) = send_with(
-            &app, "POST", &format!("/api/board/{id}/status-update"),
+            &app,
+            "POST",
+            &format!("/api/board/{id}/status-update"),
             Some(json!({"text": format!("{provider} is implementing {id}")})),
             &[("X-Amux-Worker", lane.as_str())],
-        ).await;
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{provider}: {body}");
         assert_eq!(body["claimed"], json!(true), "{provider}: {body}");
-        assert_eq!(body["claim_verdict"], json!("claimed"), "{provider}: {body}");
+        assert_eq!(
+            body["claim_verdict"],
+            json!("claimed"),
+            "{provider}: {body}"
+        );
         assert_eq!(body["status"], json!("doing"), "{provider}: {body}");
 
         let conn = store.read().unwrap();
-        let (status, owner, log): (String, String, String) = conn.query_row(
-            "SELECT status, COALESCE(session,''), COALESCE(log,'') FROM issues WHERE id=?1",
-            [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).unwrap();
+        let (status, owner, log): (String, String, String) = conn
+            .query_row(
+                "SELECT status, COALESCE(session,''), COALESCE(log,'') FROM issues WHERE id=?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
         assert_eq!(status, "doing");
         assert_eq!(owner, lane);
         assert!(log.contains("Claimed by status update"), "{log}");
@@ -5153,115 +5972,190 @@ async fn own_status_update_claims_exact_todo_or_backlog_for_every_provider() {
 async fn status_update_refuses_cross_worker_blocked_dependency_wip_and_later_states() {
     let (app, store, _dir) = app_with_store();
 
-    let cross = create(&app, json!({
-        "title":"owned elsewhere", "status":"todo", "session":"owner-lane"
-    })).await;
+    let cross = create(
+        &app,
+        json!({
+            "title":"owned elsewhere", "status":"todo", "session":"owner-lane"
+        }),
+    )
+    .await;
     let cross_id = cross["id"].as_str().unwrap().to_string();
     let (_, _, body) = send_with(
-        &app, "POST", &format!("/api/board/{cross_id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{cross_id}/status-update"),
         Some(json!({"text":"cross-worker note must survive"})),
         &[("X-Amux-Worker", "other-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(body["claim_verdict"], json!("owner_mismatch"));
 
-    let blocked = create(&app, json!({
-        "title":"blocked card", "status":"todo", "session":"blocked-lane"
-    })).await;
+    let blocked = create(
+        &app,
+        json!({
+            "title":"blocked card", "status":"todo", "session":"blocked-lane"
+        }),
+    )
+    .await;
     let blocked_id = blocked["id"].as_str().unwrap().to_string();
     let blocked_for_db = blocked_id.clone();
-    store.write(move |conn| {
-        conn.execute("UPDATE issues SET blocked_on='network' WHERE id=?1", [&blocked_for_db])?;
-        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-    }).unwrap();
+    store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET blocked_on='network' WHERE id=?1",
+                [&blocked_for_db],
+            )?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let (_, _, body) = send_with(
-        &app, "POST", &format!("/api/board/{blocked_id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{blocked_id}/status-update"),
         Some(json!({"text":"still investigating the blocker"})),
         &[("X-Amux-Worker", "blocked-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(body["claim_verdict"], json!("blocked"));
 
-    let dep = create(&app, json!({
-        "title":"open dependency", "status":"backlog", "session":"dependent-lane"
-    })).await;
-    let dependent = create(&app, json!({
-        "title":"dependent card", "status":"todo", "session":"dependent-lane",
-        "depends_on":[dep["id"].as_str().unwrap()]
-    })).await;
+    let dep = create(
+        &app,
+        json!({
+            "title":"open dependency", "status":"backlog", "session":"dependent-lane"
+        }),
+    )
+    .await;
+    let dependent = create(
+        &app,
+        json!({
+            "title":"dependent card", "status":"todo", "session":"dependent-lane",
+            "depends_on":[dep["id"].as_str().unwrap()]
+        }),
+    )
+    .await;
     let dependent_id = dependent["id"].as_str().unwrap().to_string();
     let (_, _, body) = send_with(
-        &app, "POST", &format!("/api/board/{dependent_id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{dependent_id}/status-update"),
         Some(json!({"text":"dependency has not cleared"})),
         &[("X-Amux-Worker", "dependent-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(body["claim_verdict"], json!("dependency_blocked"));
 
-    let triggered = create(&app, json!({
-        "title":"fresh external trigger", "status":"backlog", "session":"trigger-lane"
-    })).await;
+    let triggered = create(
+        &app,
+        json!({
+            "title":"fresh external trigger", "status":"backlog", "session":"trigger-lane"
+        }),
+    )
+    .await;
     let triggered_id = triggered["id"].as_str().unwrap().to_string();
     let trigger_for_db = triggered_id.clone();
-    store.write(move |conn| {
-        conn.execute(
-            "UPDATE issues SET source_ref='wait for upstream', last_verified_at=?1 WHERE id=?2",
-            rusqlite::params![amux_server::config::now_f64() as i64, &trigger_for_db],
-        )?;
-        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-    }).unwrap();
+    store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET source_ref='wait for upstream', last_verified_at=?1 WHERE id=?2",
+                rusqlite::params![amux_server::config::now_f64() as i64, &trigger_for_db],
+            )?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let (_, _, body) = send_with(
-        &app, "POST", &format!("/api/board/{triggered_id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{triggered_id}/status-update"),
         Some(json!({"text":"upstream is still unavailable"})),
         &[("X-Amux-Worker", "trigger-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(body["claim_verdict"], json!("external_trigger"));
 
-    let stale_watch = create(&app, json!({
-        "title":"stale external watch", "status":"backlog", "session":"watch-lane",
-        "type":"watch"
-    })).await;
+    let stale_watch = create(
+        &app,
+        json!({
+            "title":"stale external watch", "status":"backlog", "session":"watch-lane",
+            "type":"watch"
+        }),
+    )
+    .await;
     let stale_watch_id = stale_watch["id"].as_str().unwrap().to_string();
     let stale_watch_for_db = stale_watch_id.clone();
-    store.write(move |conn| {
-        conn.execute(
+    store
+        .write(move |conn| {
+            conn.execute(
             "UPDATE issues SET source_ref='wait for auction list', last_verified_at=?1 WHERE id=?2",
             rusqlite::params![0i64, &stale_watch_for_db],
         )?;
-        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-    }).unwrap();
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let (_, _, body) = send_with(
-        &app, "POST", &format!("/api/board/{stale_watch_id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{stale_watch_id}/status-update"),
         Some(json!({"text":"auction list still has not fired"})),
         &[("X-Amux-Worker", "watch-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(body["claimed"], json!(false));
     assert_eq!(body["claim_verdict"], json!("dormant_type"));
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{stale_watch_id}"), None).await;
     assert_eq!(detail["status"], json!("backlog"));
 
-    let holding = create(&app, json!({
-        "title":"current work", "status":"doing", "session":"wip-lane"
-    })).await;
-    let target = create(&app, json!({
-        "title":"queued work", "status":"todo", "session":"wip-lane"
-    })).await;
+    let holding = create(
+        &app,
+        json!({
+            "title":"current work", "status":"doing", "session":"wip-lane"
+        }),
+    )
+    .await;
+    let target = create(
+        &app,
+        json!({
+            "title":"queued work", "status":"todo", "session":"wip-lane"
+        }),
+    )
+    .await;
     let target_id = target["id"].as_str().unwrap().to_string();
     let (_, _, body) = send_with(
-        &app, "POST", &format!("/api/board/{target_id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{target_id}/status-update"),
         Some(json!({"text":format!("still on {}", holding["id"])})),
         &[("X-Amux-Worker", "wip-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(body["claim_verdict"], json!("wip_conflict"));
 
     for later in ["doing", "review", "done", "verified", "discarded"] {
         let lane = format!("past-{later}");
-        let made = create(&app, json!({
-            "title":format!("already {later}"), "status":later, "session":lane
-        })).await;
+        let made = create(
+            &app,
+            json!({
+                "title":format!("already {later}"), "status":later, "session":lane
+            }),
+        )
+        .await;
         let id = made["id"].as_str().unwrap().to_string();
         let (_, _, body) = send_with(
-            &app, "POST", &format!("/api/board/{id}/status-update"),
+            &app,
+            "POST",
+            &format!("/api/board/{id}/status-update"),
             Some(json!({"text":"informational follow-up"})),
             &[("X-Amux-Worker", lane.as_str())],
-        ).await;
+        )
+        .await;
         assert_eq!(body["claim_verdict"], json!("status_not_actionable"));
         let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         assert_eq!(detail["status"], json!(later), "{later} moved backward");
@@ -5269,15 +6163,22 @@ async fn status_update_refuses_cross_worker_blocked_dependency_wip_and_later_sta
 
     for id in [&cross_id, &blocked_id, &dependent_id, &target_id] {
         let conn = store.read().unwrap();
-        let (status, log): (String, String) = conn.query_row(
-            "SELECT status, COALESCE(log,'') FROM issues WHERE id=?1", [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
+        let (status, log): (String, String) = conn
+            .query_row(
+                "SELECT status, COALESCE(log,'') FROM issues WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(status, "todo", "{id} bypassed its claim guard");
         assert!(log.contains("STATUS ("), "refused update was lost: {log}");
     }
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{triggered_id}"), None).await;
-    assert_eq!(detail["status"], json!("backlog"), "fresh trigger was bypassed");
+    assert_eq!(
+        detail["status"],
+        json!("backlog"),
+        "fresh trigger was bypassed"
+    );
 }
 
 /// Claim and progress are one transaction: a failed progress write rolls back
@@ -5285,32 +6186,49 @@ async fn status_update_refuses_cross_worker_blocked_dependency_wip_and_later_sta
 #[tokio::test]
 async fn status_update_claim_rolls_back_when_its_log_write_fails() {
     let (app, store, _dir) = app_with_store();
-    let made = create(&app, json!({
-        "title":"atomic update", "status":"todo", "session":"atomic-lane"
-    })).await;
+    let made = create(
+        &app,
+        json!({
+            "title":"atomic update", "status":"todo", "session":"atomic-lane"
+        }),
+    )
+    .await;
     let id = made["id"].as_str().unwrap().to_string();
     let trigger_id = id.clone();
-    store.write(move |conn| {
-        conn.execute_batch(&format!(
-            "CREATE TRIGGER reject_status_progress BEFORE UPDATE OF log ON issues \
+    store
+        .write(move |conn| {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER reject_status_progress BEFORE UPDATE OF log ON issues \
              WHEN NEW.id='{trigger_id}' AND NEW.log LIKE '%ROLLBACK-SPECIMEN%' \
              BEGIN SELECT RAISE(ABORT, 'forced status progress failure'); END;"
-        ))?;
-        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-    }).unwrap();
+            ))?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let (st, _, _) = send_with(
-        &app, "POST", &format!("/api/board/{id}/status-update"),
+        &app,
+        "POST",
+        &format!("/api/board/{id}/status-update"),
         Some(json!({"text":"ROLLBACK-SPECIMEN"})),
         &[("X-Amux-Worker", "atomic-lane")],
-    ).await;
+    )
+    .await;
     assert_eq!(st, StatusCode::INTERNAL_SERVER_ERROR);
     let conn = store.read().unwrap();
-    let (status, log): (String, Option<String>) = conn.query_row(
-        "SELECT status, log FROM issues WHERE id=?1", [&id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).unwrap();
+    let (status, log): (String, Option<String>) = conn
+        .query_row("SELECT status, log FROM issues WHERE id=?1", [&id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
     assert_eq!(status, "todo");
-    assert_eq!(log.as_deref(), made["log"].as_str(), "failed update must preserve the pre-existing intake audit");
+    assert_eq!(
+        log.as_deref(),
+        made["log"].as_str(),
+        "failed update must preserve the pre-existing intake audit"
+    );
 }
 
 /// Artifact identity is the `(task, artifact)` pair in the URL. A mismatched
@@ -5331,7 +6249,11 @@ async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
         Some(json!({"kind": "implementation", "ref": "   "})),
     )
     .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "a blank artifact cannot be clickable: {body}");
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "a blank artifact cannot be clickable: {body}"
+    );
 
     let (st, _, made) = send(
         &app,
@@ -5351,7 +6273,11 @@ async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
             Some(json!({"state": retired_state})),
         )
         .await;
-        assert_eq!(st, StatusCode::OK, "{retired_state} must be a durable artifact disposition: {patched}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "{retired_state} must be a durable artifact disposition: {patched}"
+        );
         let (_, _, listed) = send(&app, "GET", &format!("/api/board/{a}/artifacts"), None).await;
         assert_eq!(listed[0]["state"], json!(retired_state));
     }
@@ -5362,7 +6288,11 @@ async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
         Some(json!({"state": "created"})),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "fixture must restore the active state: {restored}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "fixture must restore the active state: {restored}"
+    );
 
     let (st, _, wrong_patch) = send(
         &app,
@@ -5371,7 +6301,11 @@ async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
         Some(json!({"state": "submitted"})),
     )
     .await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "cross-task PATCH must not become a storage 500: {wrong_patch}");
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "cross-task PATCH must not become a storage 500: {wrong_patch}"
+    );
 
     let (st, _, invalid) = send(
         &app,
@@ -5380,18 +6314,56 @@ async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
         Some(json!({"state": "teleported"})),
     )
     .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "an invalid state is a client error: {invalid}");
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "an invalid state is a client error: {invalid}"
+    );
 
-    let (st, _, wrong_delete) = send(&app, "DELETE", &format!("/api/board/{b}/artifacts/{aid}"), None).await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "a different task must not delete this artifact: {wrong_delete}");
+    let (st, _, wrong_delete) = send(
+        &app,
+        "DELETE",
+        &format!("/api/board/{b}/artifacts/{aid}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "a different task must not delete this artifact: {wrong_delete}"
+    );
     let (_, _, still_there) = send(&app, "GET", &format!("/api/board/{a}/artifacts"), None).await;
-    assert_eq!(still_there.as_array().unwrap().len(), 1, "cross-task delete removed the artifact");
-    assert_eq!(still_there[0]["state"], json!("created"), "cross-task patch changed the artifact");
+    assert_eq!(
+        still_there.as_array().unwrap().len(),
+        1,
+        "cross-task delete removed the artifact"
+    );
+    assert_eq!(
+        still_there[0]["state"],
+        json!("created"),
+        "cross-task patch changed the artifact"
+    );
 
-    let (st, _, _) = send(&app, "DELETE", &format!("/api/board/{a}/artifacts/{aid}"), None).await;
+    let (st, _, _) = send(
+        &app,
+        "DELETE",
+        &format!("/api/board/{a}/artifacts/{aid}"),
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    let (st, _, missing_delete) = send(&app, "DELETE", &format!("/api/board/{a}/artifacts/{aid}"), None).await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "repeat delete must say the target is gone: {missing_delete}");
+    let (st, _, missing_delete) = send(
+        &app,
+        "DELETE",
+        &format!("/api/board/{a}/artifacts/{aid}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "repeat delete must say the target is gone: {missing_delete}"
+    );
     let (st, _, missing_patch) = send(
         &app,
         "PATCH",
@@ -5399,7 +6371,11 @@ async fn artifact_crud_is_exact_and_missing_targets_fail_honestly() {
         Some(json!({"description": "too late"})),
     )
     .await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "patching a deleted artifact must be 404: {missing_patch}");
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "patching a deleted artifact must be 404: {missing_patch}"
+    );
 }
 
 /// Live controls from TUBES-2426/TUBES-2428: `.env` is a file even though its
@@ -5436,7 +6412,11 @@ async fn evidence_assets_keep_hidden_files_and_reject_decimal_measurements() {
         .iter()
         .map(|asset| asset["ref"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(refs, vec!["customers/tubescience/.env"], "parser regressed: {detail}");
+    assert_eq!(
+        refs,
+        vec!["customers/tubescience/.env"],
+        "parser regressed: {detail}"
+    );
 }
 
 // AF-476. `trigger` is a CLI FLAG, not an API field. A raw PATCH of
@@ -5448,33 +6428,59 @@ async fn evidence_assets_keep_hidden_files_and_reject_decimal_measurements() {
 #[tokio::test]
 async fn an_ignored_trigger_key_names_the_fields_it_meant() {
     let (app, _dir) = app();
-    let (_s, _h, c) = send_with(&app, "POST", "/api/board",
+    let (_s, _h, c) = send_with(
+        &app,
+        "POST",
+        "/api/board",
         Some(json!({"title": "park me", "status": "todo", "session": "amux"})),
-        &[("X-Amux-Session", "amux")]).await;
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
 
-    let (st, _h, b) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+    let (st, _h, b) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
         Some(json!({"trigger": "the next ts-engine roll"})),
-        &[("X-Amux-Session", "amux")]).await;
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
 
-    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "nothing sent was writable: {b}");
+    assert_eq!(
+        st,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "nothing sent was writable: {b}"
+    );
     assert_eq!(b["ignored_fields"][0], "trigger");
     let h = &b["ignored_hints"][0];
     assert_eq!(h["sent"], "trigger", "the hint must name the key sent: {b}");
     assert_eq!(h["meant"][0], "source_ref");
-    assert_eq!(h["meant"][1], "last_verified_at",
-        "both fields, or the caller lands in AF-469's re-draining state: {b}");
-    assert!(h["how"].as_str().unwrap_or("").contains("--trigger"),
-        "and it must name the CLI verb that writes both: {b}");
+    assert_eq!(
+        h["meant"][1], "last_verified_at",
+        "both fields, or the caller lands in AF-469's re-draining state: {b}"
+    );
+    assert!(
+        h["how"].as_str().unwrap_or("").contains("--trigger"),
+        "and it must name the CLI verb that writes both: {b}"
+    );
 
     // THE OTHER ARM: an ordinary unwritable key gets no hint. Without this the
     // test passes on an implementation that attaches the trigger hint to
     // everything, which would be worse than silence.
-    let (st2, _h, b2) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
-        Some(json!({"nonsense_key": 1})), &[("X-Amux-Session", "amux")]).await;
+    let (st2, _h, b2) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({"nonsense_key": 1})),
+        &[("X-Amux-Session", "amux")],
+    )
+    .await;
     assert_eq!(st2, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(b2.get("ignored_hints").is_none(),
-        "a key with no known equivalent must not invent one: {b2}");
+    assert!(
+        b2.get("ignored_hints").is_none(),
+        "a key with no known equivalent must not invent one: {b2}"
+    );
 }
 
 // `source_ref` has two owners. autofix stores its fault signature there and
@@ -5514,7 +6520,10 @@ async fn a_trigger_cannot_overwrite_an_autofix_signature_but_can_replace_a_trigg
         &[("X-Amux-Session", "amux")],
     )
     .await;
-    assert!(st.is_success(), "autofix must be able to stamp its signature");
+    assert!(
+        st.is_success(),
+        "autofix must be able to stamp its signature"
+    );
 
     // THE SPECIMEN: park it with a trigger, as the idle nudge prescribes.
     let trigger = "560d40ba adopted by the running server";
@@ -5631,31 +6640,56 @@ async fn a_patch_whose_every_key_is_unwritable_is_422_and_a_real_noop_is_not() {
 
     // 1) EVERY key unwritable -> 422. `item_type` is the classic typo for `type`.
     let (st, _, body) = send(
-        &app, "PATCH", &format!("/api/board/{id}"),
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
         Some(json!({"item_type": "code"})),
-    ).await;
-    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "nothing sent was writable: {body}");
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "nothing sent was writable: {body}"
+    );
     assert_eq!(body["applied"], json!(false));
     assert_eq!(body["ignored_fields"], json!(["item_type"]));
     assert_eq!(body["type"], json!("chore"), "and the card is untouched");
 
     // 2) CONTROL — an ordinary no-op is a SUCCESSFUL request that changed nothing.
     let (st, _, body) = send(
-        &app, "PATCH", &format!("/api/board/{id}"),
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
         Some(json!({"type": "chore"})),
-    ).await;
-    assert_eq!(st, StatusCode::OK, "a writable field at its current value is not an error: {body}");
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a writable field at its current value is not an error: {body}"
+    );
     assert_eq!(body["applied"], json!(false));
 
     // 3) CONTROL — a MIXED body must not 422. `type` is legitimate and merely
     // unchanged; the typo is reported, not fatal. Without this cell the narrowing
     // is untested and "all keys ignored" could quietly become "any key ignored".
     let (st, _, body) = send(
-        &app, "PATCH", &format!("/api/board/{id}"),
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
         Some(json!({"type": "chore", "item_type": "code"})),
-    ).await;
-    assert_eq!(st, StatusCode::OK, "one legitimate key means the request was usable: {body}");
-    assert_eq!(body["ignored_fields"], json!(["item_type"]), "still reported");
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "one legitimate key means the request was usable: {body}"
+    );
+    assert_eq!(
+        body["ignored_fields"],
+        json!(["item_type"]),
+        "still reported"
+    );
 }
 
 /// AMUX-3715: `?count=1` agrees with the list it describes, and refuses to look
@@ -5720,7 +6754,10 @@ async fn count_agrees_with_the_list_and_is_not_shaped_like_one() {
     // `.length` on the count body must be undefined rather than 1.
     let (_, _, cnt) = send(&app, "GET", "/api/board?archived=1&count=1", None).await;
     assert!(cnt.is_object(), "count must not be array-shaped: {cnt}");
-    assert!(cnt.get("filter").is_some(), "it must echo the filter it counted: {cnt}");
+    assert!(
+        cnt.get("filter").is_some(),
+        "it must echo the filter it counted: {cnt}"
+    );
 
     // AND IT MUST DISCRIMINATE, or a constant would pass every agreement cell
     // above.
@@ -5764,13 +6801,20 @@ async fn archiving_a_trigger_bearing_card_records_that_it_de_arms_it() {
     assert_eq!(st, StatusCode::OK, "set trigger: {v}");
     // PREMISE: the trigger actually stuck. Without this the cell below passes
     // for a card that never had one.
-    assert_eq!(v["source_ref"], json!("when the content_hash deploy lands"), "{v}");
+    assert_eq!(
+        v["source_ref"],
+        json!("when the content_hash deploy lands"),
+        "{v}"
+    );
 
     let (st, _, v) =
         send(&app, "PATCH", &format!("/api/board/{armed_id}"), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let log = v["log"].as_str().unwrap_or_default();
-    assert!(log.contains("DE-ARMS"), "the log must say archiving de-arms it: {log}");
+    assert!(
+        log.contains("DE-ARMS"),
+        "the log must say archiving de-arms it: {log}"
+    );
     assert!(
         log.contains("when the content_hash deploy lands"),
         "and must quote the trigger, so a future reader knows WHAT stopped firing: {log}"
@@ -5783,8 +6827,14 @@ async fn archiving_a_trigger_bearing_card_records_that_it_de_arms_it() {
     let (_, _, pv) =
         send(&app, "PATCH", &format!("/api/board/{plain_id}"), Some(json!({"archived": 1, "archive_outcome": "Retiring this temporary lifecycle fixture; no production work is hidden", "authorized_by": "lifecycle fixture owner"}))).await;
     let plog = pv["log"].as_str().unwrap_or_default();
-    assert!(plog.contains("ARCHIVED"), "it still records the archive: {plog}");
-    assert!(!plog.contains("DE-ARMS"), "but must not warn about a trigger it does not have: {plog}");
+    assert!(
+        plog.contains("ARCHIVED"),
+        "it still records the archive: {plog}"
+    );
+    assert!(
+        !plog.contains("DE-ARMS"),
+        "but must not warn about a trigger it does not have: {plog}"
+    );
 }
 
 /// `backlog` and `needsyou` were the only two statuses in the vocabulary with
@@ -5820,15 +6870,24 @@ async fn entering_an_undrained_status_stamps_a_revisit_date() {
         let want = (chrono::Local::now() + chrono::Duration::days(days))
             .format("%Y-%m-%d")
             .to_string();
-        assert_eq!(due, want, "{status} must be stamped {days}d out, got {due:?}");
+        assert_eq!(
+            due, want,
+            "{status} must be stamped {days}d out, got {due:?}"
+        );
         // NOT already due, or the drain promotes it straight back on the next
         // tick and the park never happened.
-        assert!(due > today.as_str(), "{status} date {due} must be in the future");
+        assert!(
+            due > today.as_str(),
+            "{status} date {due} must be in the future"
+        );
         // The stamp is on the card's own history, not only in a response the
         // caller may never read (Ethan: the card is the source of truth for
         // its own history).
         let log = got["log"].as_str().unwrap_or("");
-        assert!(log.contains(&format!("revisit {due}")), "log must name the date: {log}");
+        assert!(
+            log.contains(&format!("revisit {due}")),
+            "log must name the date: {log}"
+        );
     }
 }
 
@@ -5852,7 +6911,11 @@ async fn a_caller_supplied_revisit_date_survives_the_default() {
     assert_eq!(st, StatusCode::OK, "{v}");
 
     let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(got["due"].as_str(), Some("2027-01-15"), "the caller's date must win");
+    assert_eq!(
+        got["due"].as_str(),
+        Some("2027-01-15"),
+        "the caller's date must win"
+    );
 }
 
 /// Every status with a next actor must be left alone. A `doing` card carrying
@@ -5880,7 +6943,10 @@ async fn statuses_that_have_a_next_actor_are_not_stamped() {
         assert_eq!(st, StatusCode::OK, "{status}: {v}");
         let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         let due = got["due"].as_str().unwrap_or("");
-        assert!(due.is_empty(), "{status} must not be stamped, got due={due:?}");
+        assert!(
+            due.is_empty(),
+            "{status} must not be stamped, got due={due:?}"
+        );
     }
 }
 
@@ -5911,7 +6977,8 @@ async fn verified_refuses_a_blanket_ack_and_takes_the_enumeration() {
     // whole gate system depends on not happening (AMUX-2325).
     assert!(
         v["error"].as_str().unwrap_or("").contains("gate"),
-        "CLI remedy printer keys on this: {}", v["error"]
+        "CLI remedy printer keys on this: {}",
+        v["error"]
     );
     let gate: Vec<String> = v["gate"]
         .as_array()
@@ -5919,7 +6986,10 @@ async fn verified_refuses_a_blanket_ack_and_takes_the_enumeration() {
         .iter()
         .map(|g| g.as_str().unwrap_or_default().to_string())
         .collect();
-    assert!(gate.len() > 1, "the multi-criterion case is the one refused: {gate:?}");
+    assert!(
+        gate.len() > 1,
+        "the multi-criterion case is the one refused: {gate:?}"
+    );
 
     // Enumerating exactly what came back is accepted — the honest path is the
     // one the refusal just printed.
@@ -5943,7 +7013,11 @@ async fn the_blanket_ack_refusal_is_narrow_by_design() {
     // 1. A ONE-criterion verified gate (the non-code default, "Outcome
     //    confirmed to still hold"): blanket-acking it is byte-identical to
     //    checking it, so it is allowed.
-    let c = create(&app, json!({ "title": "looked again", "type": "investigation" })).await;
+    let c = create(
+        &app,
+        json!({ "title": "looked again", "type": "investigation" }),
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
     let (st, _, v) = send(
         &app,
@@ -5952,7 +7026,11 @@ async fn the_blanket_ack_refusal_is_narrow_by_design() {
         Some(json!({ "status": "verified", "gate_ack": true, "evidence": EV })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "single-criterion gate must still take an ack: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "single-criterion gate must still take an ack: {v}"
+    );
 
     // 2. `done` is deliberately excluded: it already carries a machine-checked
     //    asset link that no ack can fake, so it needs no second mechanism.
@@ -5965,7 +7043,11 @@ async fn the_blanket_ack_refusal_is_narrow_by_design() {
         Some(json!({ "status": "done", "evidence": EV, "gate_ack": true })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "done must still take a blanket ack: {v}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "done must still take a blanket ack: {v}"
+    );
 }
 
 /// A gate you can only learn by tripping it is the AF-112 shape. Both global
@@ -5980,12 +7062,17 @@ async fn the_contract_publishes_every_machine_checked_constraint() {
     // tested at the widest scope the mechanism touches — ethos rule 7 — so this
     // list is the list, and adding a constraint without adding it here is the
     // failure the rename is guarding against.
-    for key in
-        ["done_requires_asset_link", "done_requires_evidence", "verified_requires_gate_checked"]
-    {
+    for key in [
+        "done_requires_asset_link",
+        "done_requires_evidence",
+        "verified_requires_gate_checked",
+    ] {
         assert!(v[key].is_object(), "contract must publish {key}: {v}");
         assert!(
-            v[key]["enforced"].as_str().unwrap_or("").contains("force bypasses"),
+            v[key]["enforced"]
+                .as_str()
+                .unwrap_or("")
+                .contains("force bypasses"),
             "{key} must say force bypasses it — the audited exit is part of the contract"
         );
     }
@@ -6013,39 +7100,88 @@ async fn the_contract_publishes_every_machine_checked_constraint() {
 #[tokio::test]
 async fn verified_requires_the_evidence_done_requires() {
     let (app, _tmp) = app();
-    let c = create(&app, json!({ "title": "looked again", "type": "investigation", "status": "backlog" })).await;
+    let c = create(
+        &app,
+        json!({ "title": "looked again", "type": "investigation", "status": "backlog" }),
+    )
+    .await;
     let id = c["id"].as_str().unwrap().to_string();
     assert_eq!(c["status"], json!("backlog"), "{c}");
     let url = format!("/api/board/{id}");
 
-    let (st, _, v) = send(&app, "PATCH", &url, Some(json!({ "status": "verified", "gate_ack": true }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &url,
+        Some(json!({ "status": "verified", "gate_ack": true })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], json!("verified_requires_evidence"), "{v}");
-    assert!(v["error"].as_str().unwrap_or("").starts_with("verified requires evidence"), "{v}");
     assert!(
-        v["how_to_fix"]["cli"].as_str().unwrap_or("").starts_with(&format!("amux board verified {id} ")),
+        v["error"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("verified requires evidence"),
+        "{v}"
+    );
+    assert!(
+        v["how_to_fix"]["cli"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with(&format!("amux board verified {id} ")),
         "the remedy names the verb that was refused: {v}"
     );
 
-    let (st, _, v) =
-        send(&app, "PATCH", &url, Some(json!({ "status": "verified", "gate_ack": true, "evidence": "implemented" }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &url,
+        Some(json!({ "status": "verified", "gate_ack": true, "evidence": "implemented" })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], json!("verified_evidence_has_no_artifact"), "{v}");
 
-    let (st, _, v) =
-        send(&app, "PATCH", &url, Some(json!({ "status": "verified", "gate_ack": true, "evidence": "none: n/a" }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &url,
+        Some(json!({ "status": "verified", "gate_ack": true, "evidence": "none: n/a" })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
-    assert_eq!(v["code"], json!("verified_evidence_none_unexplained"), "{v}");
+    assert_eq!(
+        v["code"],
+        json!("verified_evidence_none_unexplained"),
+        "{v}"
+    );
 
-    let (st, _, v) = send(&app, "PATCH", &url, Some(json!({ "status": "verified", "gate_ack": true, "evidence": EV }))).await;
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &url,
+        Some(json!({ "status": "verified", "gate_ack": true, "evidence": EV })),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["status"], json!("verified"), "{v}");
 
     let (st, _, contract) = send(&app, "GET", "/api/board/contract", None).await;
     assert_eq!(st, StatusCode::OK);
     let rule = &contract["done_requires_evidence"];
-    assert!(rule["enforced"].as_str().unwrap_or("").contains("done or verified"), "{rule}");
-    assert_eq!(rule["codes"]["verified"][0], json!("verified_requires_evidence"), "{rule}");
+    assert!(
+        rule["enforced"]
+            .as_str()
+            .unwrap_or("")
+            .contains("done or verified"),
+        "{rule}"
+    );
+    assert_eq!(
+        rule["codes"]["verified"][0],
+        json!("verified_requires_evidence"),
+        "{rule}"
+    );
 }
 
 // ---- full export (AMUX-3868) ---------------------------------------------
@@ -6077,11 +7213,19 @@ async fn export_carries_full_descriptions_where_the_list_deliberately_does_not()
         "the LIST must keep omitting desc — if it does not, this endpoint's reason for \
          existing has changed and the docs on both sides are now wrong: {row}"
     );
-    assert_eq!(row["desc_len"], json!(4000), "the list reports the true length");
+    assert_eq!(
+        row["desc_len"],
+        json!(4000),
+        "the list reports the true length"
+    );
 
     let (st, h, ex) = send(&app, "GET", "/api/board/export?format=json", None).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(ex["issues"][0]["desc"], json!(long), "export must carry the WHOLE desc");
+    assert_eq!(
+        ex["issues"][0]["desc"],
+        json!(long),
+        "export must carry the WHOLE desc"
+    );
     assert_eq!(ex["count"], json!(1));
     assert_eq!(ex["scoped"], json!(false), "no filters were given");
     assert!(
@@ -6097,36 +7241,67 @@ async fn export_carries_full_descriptions_where_the_list_deliberately_does_not()
 #[tokio::test]
 async fn a_scoped_export_declares_its_scope_and_an_unscoped_one_declares_that() {
     let (app, _dir) = app();
-    create(&app, json!({ "title": "a1", "session": "alpha", "desc": "AAA" })).await;
-    create(&app, json!({ "title": "b1", "session": "beta", "desc": "BBB" })).await;
+    create(
+        &app,
+        json!({ "title": "a1", "session": "alpha", "desc": "AAA" }),
+    )
+    .await;
+    create(
+        &app,
+        json!({ "title": "b1", "session": "beta", "desc": "BBB" }),
+    )
+    .await;
 
     let (_, _, all) = send(&app, "GET", "/api/board/export?format=json", None).await;
     assert_eq!(all["count"], json!(2));
     assert_eq!(all["scoped"], json!(false));
 
-    let (_, _, one) = send(&app, "GET", "/api/board/export?format=json&worker=alpha", None).await;
+    let (_, _, one) = send(
+        &app,
+        "GET",
+        "/api/board/export?format=json&worker=alpha",
+        None,
+    )
+    .await;
     assert_eq!(one["count"], json!(1), "worker filter must actually filter");
     assert_eq!(one["scoped"], json!(true));
     assert!(
-        one["scope"].as_array().expect("scope array").iter().any(|s| s
-            .as_str()
-            .unwrap_or_default()
-            .contains("alpha")),
+        one["scope"]
+            .as_array()
+            .expect("scope array")
+            .iter()
+            .any(|s| s.as_str().unwrap_or_default().contains("alpha")),
         "the scope must NAME the filter, not merely flag that one ran: {}",
         one["scope"]
     );
 
     // Markdown: the two headers must be different TEXT, not present-vs-absent.
     let (_, _, md_all) = send(&app, "GET", "/api/board/export?format=md", None).await;
-    let (_, _, md_one) =
-        send(&app, "GET", "/api/board/export?format=md&worker=alpha", None).await;
+    let (_, _, md_one) = send(
+        &app,
+        "GET",
+        "/api/board/export?format=md&worker=alpha",
+        None,
+    )
+    .await;
     let a = md_all.as_str().expect("md is text");
     let b = md_one.as_str().expect("md is text");
-    assert!(a.contains("Whole board"), "unscoped md must say so: {}", &a[..a.len().min(200)]);
-    assert!(b.contains("Scoped export"), "scoped md must say so: {}", &b[..b.len().min(200)]);
+    assert!(
+        a.contains("Whole board"),
+        "unscoped md must say so: {}",
+        &a[..a.len().min(200)]
+    );
+    assert!(
+        b.contains("Scoped export"),
+        "scoped md must say so: {}",
+        &b[..b.len().min(200)]
+    );
     assert!(b.contains("alpha"), "scoped md must name the worker");
     assert!(b.contains("AAA"), "scoped md must carry the full desc");
-    assert!(!b.contains("BBB"), "scoped md must not leak the other worker's card");
+    assert!(
+        !b.contains("BBB"),
+        "scoped md must not leak the other worker's card"
+    );
 }
 
 /// AF-323: a `decision` card can be FILED and CLOSED, through the real HTTP
@@ -6163,7 +7338,11 @@ async fn a_decision_card_can_be_filed_and_closed_without_claiming_a_merge() {
     )
     .await;
     let id = card["id"].as_str().unwrap().to_string();
-    assert_eq!(card["type"], json!("decision"), "type must round-trip: {card}");
+    assert_eq!(
+        card["type"],
+        json!("decision"),
+        "type must round-trip: {card}"
+    );
 
     // 2. THE GATE IS NOT THE CODE GATE. A refused transition reports the gate it
     //    enforced, so this reads the criteria the server actually applied rather
@@ -6178,8 +7357,7 @@ async fn a_decision_card_can_be_filed_and_closed_without_claiming_a_merge() {
     //    — the honest `none:` path is offered in `how_to_fix`, so there IS a way
     //    through, but a reader debugging one of the five live cards would see the
     //    artifact demand first and the mis-gating never.
-    const DECIDED: &str =
-        "none: Ethan chose us-east-1 on 2026-08-31; a decision ships no artifact";
+    const DECIDED: &str = "none: Ethan chose us-east-1 on 2026-08-31; a decision ships no artifact";
     let (st, _, v) = send(
         &app,
         "PATCH",
@@ -6187,14 +7365,21 @@ async fn a_decision_card_can_be_filed_and_closed_without_claiming_a_merge() {
         Some(json!({ "status": "done", "evidence": DECIDED })),
     )
     .await;
-    assert_eq!(st, StatusCode::CONFLICT, "expected the gate to ask first: {v}");
-    let gate = v["gate"].as_array().unwrap_or_else(|| panic!("no gate key in refusal: {v}"));
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "expected the gate to ask first: {v}"
+    );
+    let gate = v["gate"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no gate key in refusal: {v}"));
     assert!(
         !gate.contains(&json!("Implemented and merged")),
         "a decision card must not be asked to claim a merge: {gate:?}"
     );
     assert!(
-        gate.iter().any(|c| c.as_str().unwrap_or("").contains("by whom")),
+        gate.iter()
+            .any(|c| c.as_str().unwrap_or("").contains("by whom")),
         "the decision gate must ask WHO decided, which is the field that stops a \
          settled question being re-asked: {gate:?}"
     );
@@ -6391,16 +7576,26 @@ async fn a_refused_transition_names_the_fields_it_discarded() {
         "the refusal must name the content fields it dropped: {v}"
     );
     assert!(
-        v["discarded_note"].as_str().unwrap_or("").contains("NOT applied"),
+        v["discarded_note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("NOT applied"),
         "a bare array is cryptic; say what happened: {v}"
     );
 
     // AND THE WRITE REALLY DID NOT HAPPEN — otherwise this test would pass just
     // as well against a server that applied the desc and reported it discarded.
     let (_, _, detail) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(detail["title"], json!("gated"), "title must be unchanged: {detail}");
+    assert_eq!(
+        detail["title"],
+        json!("gated"),
+        "title must be unchanged: {detail}"
+    );
     assert!(
-        !detail["desc"].as_str().unwrap_or("").contains("CANARY-BODY"),
+        !detail["desc"]
+            .as_str()
+            .unwrap_or("")
+            .contains("CANARY-BODY"),
         "desc must be unchanged: {detail}"
     );
 
@@ -6432,7 +7627,10 @@ async fn a_refused_transition_names_the_fields_it_discarded() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(v["discarded"], json!([]), "empty, but PRESENT: {v}");
-    assert!(v.get("discarded_note").is_none(), "no note when nothing was dropped: {v}");
+    assert!(
+        v.get("discarded_note").is_none(),
+        "no note when nothing was dropped: {v}"
+    );
 }
 
 /// AF-424: a card whose stated deadline has ARRIVED outranks an older card
@@ -6460,7 +7658,13 @@ async fn the_needsyou_queue_ranks_a_passed_deadline_above_an_older_undated_card(
     // comparison and the commoner live shape (119 of 404 carry a date, mostly future).
     let old = create(&app, json!({ "title": "older, date not yet arrived" })).await;
     let old_id = old["id"].as_str().unwrap().to_string();
-    let (st, _, why) = send(&app, "PATCH", &format!("/api/board/{old_id}"), Some(ask.clone())).await;
+    let (st, _, why) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{old_id}"),
+        Some(ask.clone()),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "park refused: {why}");
 
     // A NEWER card with a deadline that has already arrived.
@@ -6468,18 +7672,31 @@ async fn the_needsyou_queue_ranks_a_passed_deadline_above_an_older_undated_card(
     let due_id = due["id"].as_str().unwrap().to_string();
     let mut with_due = ask.as_object().unwrap().clone();
     with_due.insert("due".into(), json!("2000-01-01")); // long past
-    let (st, _, _) =
-        send(&app, "PATCH", &format!("/api/board/{due_id}"), Some(Value::Object(with_due))).await;
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{due_id}"),
+        Some(Value::Object(with_due)),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
 
     let (_, _, v) = send(&app, "GET", "/api/board/needsyou?all=1", None).await;
     let q = v["queue"].as_array().unwrap();
-    let pos = |id: &str| q.iter().position(|r| r["id"] == json!(id)).expect("card in queue");
+    let pos = |id: &str| {
+        q.iter()
+            .position(|r| r["id"] == json!(id))
+            .expect("card in queue")
+    };
     assert!(
         pos(&due_id) < pos(&old_id),
         "an ARRIVED deadline must outrank an older card whose date has not: {v}"
     );
-    assert_eq!(v["queue"][pos(&due_id)]["overdue"], json!(true), "and say why: {v}");
+    assert_eq!(
+        v["queue"][pos(&due_id)]["overdue"],
+        json!(true),
+        "and say why: {v}"
+    );
     assert_eq!(v["queue"][pos(&old_id)]["overdue"], json!(false));
     assert_eq!(v["overdue"], json!(1), "the count is published: {v}");
     assert!(
@@ -6493,12 +7710,21 @@ async fn the_needsyou_queue_ranks_a_passed_deadline_above_an_older_undated_card(
     let far_id = far["id"].as_str().unwrap().to_string();
     let mut future = ask.as_object().unwrap().clone();
     future.insert("due".into(), json!("2099-12-31"));
-    let (st, _, _) =
-        send(&app, "PATCH", &format!("/api/board/{far_id}"), Some(Value::Object(future))).await;
+    let (st, _, _) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{far_id}"),
+        Some(Value::Object(future)),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     let (_, _, v) = send(&app, "GET", "/api/board/needsyou?all=1", None).await;
     let q = v["queue"].as_array().unwrap();
-    let pos = |id: &str| q.iter().position(|r| r["id"] == json!(id)).expect("card in queue");
+    let pos = |id: &str| {
+        q.iter()
+            .position(|r| r["id"] == json!(id))
+            .expect("card in queue")
+    };
     assert!(
         pos(&old_id) < pos(&far_id),
         "a future deadline must NOT jump the queue; only an arrived one does: {v}"
@@ -6508,7 +7734,10 @@ async fn the_needsyou_queue_ranks_a_passed_deadline_above_an_older_undated_card(
     // CONTROL 2: the view names the population it does NOT consider, so a
     // reader comparing against a raw board dump cannot mistake archived cards
     // for live work the view dropped. That misreading is what this card came in as.
-    assert!(v["archived_excluded"].is_number(), "excluded population is stated: {v}");
+    assert!(
+        v["archived_excluded"].is_number(),
+        "excluded population is stated: {v}"
+    );
 }
 
 /// AF-506 — a gate refusal names the reassignment exit, not only the gate.
@@ -6523,28 +7752,41 @@ async fn the_needsyou_queue_ranks_a_passed_deadline_above_an_older_undated_card(
 #[tokio::test]
 async fn a_gate_refusal_offers_the_reassignment_exit_and_says_it_is_not_a_bypass() {
     let (app, _dir) = app();
-    let card = create(&app, json!({
-        "title": "a card whose work belongs elsewhere", "status": "doing",
-        "desc": "artifact: crates/amux-server/src/api/board.rs",
-        "session": "mvs-infra",
-    })).await;
+    let card = create(
+        &app,
+        json!({
+            "title": "a card whose work belongs elsewhere", "status": "doing",
+            "desc": "artifact: crates/amux-server/src/api/board.rs",
+            "session": "mvs-infra",
+        }),
+    )
+    .await;
     let id = card["id"].as_str().unwrap().to_string();
 
     // A DIFFERENT lane trips the gate: the exit can name the owner.
     let (st, _, v) = send_with(
-        &app, "PATCH", &format!("/api/board/{id}"),
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
         Some(json!({ "status": "done", "evidence": EV })),
         &[("X-Amux-Session", "backend")],
-    ).await;
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT);
     let ex = &v["or_reassign"];
-    assert!(!ex.is_null(), "the refusal offers no reassignment exit at all: {v}");
+    assert!(
+        !ex.is_null(),
+        "the refusal offers no reassignment exit at all: {v}"
+    );
     assert!(
         ex["how"].as_str().unwrap_or("").contains("mvs-infra"),
         "the exit does not name the owning lane it could see: {v}"
     );
     assert!(
-        ex["not_a_bypass"].as_str().unwrap_or("").contains("does not skip the gate"),
+        ex["not_a_bypass"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not skip the gate"),
         "the exit reads as a way around the gate: {v}"
     );
     // The gate itself is untouched: this is offered BESIDE the refusal.
@@ -6554,13 +7796,25 @@ async fn a_gate_refusal_offers_the_reassignment_exit_and_says_it_is_not_a_bypass
     // The owner must get a local completion path, not advice to recreate an
     // outside dependency as reviewer/shepherd prose after storage rejects it.
     let (st, _, owned) = send_with(
-        &app, "PATCH", &format!("/api/board/{id}"),
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
         Some(json!({ "status": "done", "evidence": EV })),
         &[("X-Amux-Session", "mvs-infra")],
-    ).await;
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT);
-    assert!(owned["or_reassign"]["how"].as_str().unwrap().contains("complete the missing work locally"), "{owned}");
-    assert!(!owned["or_reassign"].to_string().contains("<owning-lane>"), "{owned}");
+    assert!(
+        owned["or_reassign"]["how"]
+            .as_str()
+            .unwrap()
+            .contains("complete the missing work locally"),
+        "{owned}"
+    );
+    assert!(
+        !owned["or_reassign"].to_string().contains("<owning-lane>"),
+        "{owned}"
+    );
 }
 
 /// AF-506, second pass — EVERY refusal that blocks closing or reviewing a card
@@ -6594,23 +7848,37 @@ async fn every_close_refusal_offers_the_reassignment_exit() {
     ];
 
     for (want_code, patch, desc) in cases {
-        let card = create(&app, json!({
-            "title": format!("card for {want_code}"), "status": "doing",
-            "desc": desc, "session": "mvs-infra",
-        })).await;
+        let card = create(
+            &app,
+            json!({
+                "title": format!("card for {want_code}"), "status": "doing",
+                "desc": desc, "session": "mvs-infra",
+            }),
+        )
+        .await;
         let id = card["id"].as_str().unwrap().to_string();
         let (st, _, v) = send_with(
-            &app, "PATCH", &format!("/api/board/{id}"), Some(patch.clone()),
+            &app,
+            "PATCH",
+            &format!("/api/board/{id}"),
+            Some(patch.clone()),
             &[("X-Amux-Session", "backend")],
-        ).await;
+        )
+        .await;
         assert_eq!(st, StatusCode::CONFLICT, "{want_code}: {v}");
         assert_eq!(v["code"], json!(want_code), "wrong refusal answered: {v}");
         assert!(
-            v["or_reassign"]["how"].as_str().unwrap_or("").contains("mvs-infra"),
+            v["or_reassign"]["how"]
+                .as_str()
+                .unwrap_or("")
+                .contains("mvs-infra"),
             "{want_code} teaches only its own exit: {v}"
         );
         assert!(
-            v["or_reassign"]["not_a_bypass"].as_str().unwrap_or("").contains("does not skip"),
+            v["or_reassign"]["not_a_bypass"]
+                .as_str()
+                .unwrap_or("")
+                .contains("does not skip"),
             "{want_code}: the exit reads as a way around the refusal: {v}"
         );
     }
@@ -6620,33 +7888,85 @@ async fn every_close_refusal_offers_the_reassignment_exit() {
 async fn changed_verified_gate_preserves_history_and_rejects_the_old_checklist() {
     let (app, _dir) = app();
     let first = vec!["Report total equals 42", "Peer checked malformed input"];
-    let second = vec!["Report total equals 42", "Peer checked malformed input", "Duplicate invoices are rejected"];
-    let card = create(&app, json!({"title":"gate revision acceptance", "type":"chore", "gate": first})).await;
+    let second = vec![
+        "Report total equals 42",
+        "Peer checked malformed input",
+        "Duplicate invoices are rejected",
+    ];
+    let card = create(
+        &app,
+        json!({"title":"gate revision acceptance", "type":"chore", "gate": first}),
+    )
+    .await;
     let path = format!("/api/board/{}", card["id"].as_str().unwrap());
-    let (st, _, result) = send(&app, "PATCH", &path, Some(json!({"status":"verified", "evidence":EV, "gate_checked":first}))).await;
+    let (st, _, result) = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(json!({"status":"verified", "evidence":EV, "gate_checked":first})),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{result}");
     let (_, _, initial) = send(&app, "GET", &path, None).await;
     assert_eq!(initial["verification"]["gate_matches"], true);
     let (st, _, result) = send(&app, "PATCH", &path, Some(json!({"gate":second}))).await;
     assert_eq!(st, StatusCode::OK, "{result}");
     let (_, _, revised) = send(&app, "GET", &path, None).await;
-    assert_eq!(revised["status"], "verified", "preserve historical status while naming stale coverage");
+    assert_eq!(
+        revised["status"], "verified",
+        "preserve historical status while naming stale coverage"
+    );
     assert_eq!(revised["verification"]["state"], "needs_reverification");
     assert_eq!(revised["verification"]["gate_snapshot"], json!(first));
-    let (st, _, refused) = send(&app, "PATCH", &path, Some(json!({"status":"verified", "evidence":EV, "reverify":true, "gate_checked":first}))).await;
-    assert_eq!(st, StatusCode::CONFLICT, "recheck must enforce amended criteria: {refused}");
-    let (st, _, checked) = send(&app, "PATCH", &path, Some(json!({"status":"verified", "evidence":EV, "reverify":true, "gate_checked":second}))).await;
+    let (st, _, refused) = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(json!({"status":"verified", "evidence":EV, "reverify":true, "gate_checked":first})),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "recheck must enforce amended criteria: {refused}"
+    );
+    let (st, _, checked) = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(json!({"status":"verified", "evidence":EV, "reverify":true, "gate_checked":second})),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{checked}");
     let (_, _, rechecked) = send(&app, "GET", &path, None).await;
     assert_eq!(rechecked["verification"]["state"], "current");
     assert_eq!(rechecked["verification"]["attempts"], 2);
 
-    let other = create(&app, json!({"title":"new gate acceptance", "type":"chore", "gate":second})).await;
+    let other = create(
+        &app,
+        json!({"title":"new gate acceptance", "type":"chore", "gate":second}),
+    )
+    .await;
     let other_path = format!("/api/board/{}", other["id"].as_str().unwrap());
-    let (st, _, refused) = send(&app, "PATCH", &other_path, Some(json!({"status":"verified", "evidence":EV, "gate_checked":first}))).await;
+    let (st, _, refused) = send(
+        &app,
+        "PATCH",
+        &other_path,
+        Some(json!({"status":"verified", "evidence":EV, "gate_checked":first})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{refused}");
-    assert_eq!(refused["missing"], json!(["Duplicate invoices are rejected"]));
-    let (st, _, result) = send(&app, "PATCH", &other_path, Some(json!({"status":"verified", "evidence":EV, "gate_checked":second}))).await;
+    assert_eq!(
+        refused["missing"],
+        json!(["Duplicate invoices are rejected"])
+    );
+    let (st, _, result) = send(
+        &app,
+        "PATCH",
+        &other_path,
+        Some(json!({"status":"verified", "evidence":EV, "gate_checked":second})),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{result}");
     let (_, _, checked) = send(&app, "GET", &other_path, None).await;
     assert_eq!(checked["verification"]["state"], "current");
@@ -6672,47 +7992,98 @@ fn capture_wip_fixture() -> (axum::Router, std::sync::Arc<Store>, tempfile::Temp
 async fn capture_shell_does_not_block_patch_claim_but_reshaped_work_does() {
     let (app, store, _dir) = capture_wip_fixture();
     let (st, _, body) = send_with(
-        &app, "PATCH", "/api/board/WC-2",
+        &app,
+        "PATCH",
+        "/api/board/WC-2",
         Some(json!({"status":"doing", "gate_ack":true})),
         &[("X-Amux-Worker", "capture-wip-api")],
-    ).await;
-    assert_eq!(st, StatusCode::OK, "an unanswered capture must not block PATCH: {body}");
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "an unanswered capture must not block PATCH: {body}"
+    );
     let (_, _, capture) = send(&app, "GET", "/api/board/WC-1", None).await;
-    assert_eq!(capture["status"], json!("doing"), "exemption must not discard the prompt");
+    assert_eq!(
+        capture["status"],
+        json!("doing"),
+        "exemption must not discard the prompt"
+    );
     assert_eq!(capture["desc"], json!("**Prompt:** keep working"));
 
-    store.write(|conn| {
-        conn.execute("UPDATE issues SET status='todo' WHERE id='WC-2'", [])?;
-        conn.execute("UPDATE issues SET \"desc\"='SCOPE: implement the first task' WHERE id='WC-1'", [])?;
-        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-    }).unwrap();
+    store
+        .write(|conn| {
+            conn.execute("UPDATE issues SET status='todo' WHERE id='WC-2'", [])?;
+            conn.execute(
+                "UPDATE issues SET \"desc\"='SCOPE: implement the first task' WHERE id='WC-1'",
+                [],
+            )?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let (st, _, body) = send_with(
-        &app, "PATCH", "/api/board/WC-2",
+        &app,
+        "PATCH",
+        "/api/board/WC-2",
         Some(json!({"status":"doing", "gate_ack":true})),
         &[("X-Amux-Worker", "capture-wip-api")],
-    ).await;
-    assert_eq!(st, StatusCode::CONFLICT, "reshaped work must retain WIP: {body}");
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "reshaped work must retain WIP: {body}"
+    );
     assert_eq!(body["holding"], json!(["WC-1"]));
     let (_, _, next) = send(&app, "GET", "/api/board/WC-2", None).await;
-    assert_eq!(next["status"], json!("todo"), "a refused claim must not mutate status");
+    assert_eq!(
+        next["status"],
+        json!("todo"),
+        "a refused claim must not mutate status"
+    );
 }
 
 #[tokio::test]
 async fn capture_shell_frontier_and_status_claim_agree_with_patch() {
     let (app, _store, _dir) = capture_wip_fixture();
-    let (st, _, ready) = send(&app, "GET", "/api/board/ready?session=capture-wip-api", None).await;
+    let (st, _, ready) = send(
+        &app,
+        "GET",
+        "/api/board/ready?session=capture-wip-api",
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(ready["measured"], json!(true), "{ready}");
-    assert_eq!(ready["wip"]["holding"], json!([]), "frontier must exempt the same capture: {ready}");
+    assert_eq!(
+        ready["wip"]["holding"],
+        json!([]),
+        "frontier must exempt the same capture: {ready}"
+    );
     assert_eq!(ready["wip"]["available"], json!(1), "{ready}");
-    assert_eq!(ready["claimable_now"], json!(1), "the ready view must offer the real task: {ready}");
+    assert_eq!(
+        ready["claimable_now"],
+        json!(1),
+        "the ready view must offer the real task: {ready}"
+    );
     let (st, _, claim) = send_with(
-        &app, "POST", "/api/board/WC-2/status-update",
+        &app,
+        "POST",
+        "/api/board/WC-2/status-update",
         Some(json!({"text":"Implementing the parser now."})),
         &[("X-Amux-Worker", "capture-wip-api")],
-    ).await;
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{claim}");
-    assert_eq!(claim["claimed"], json!(true), "status update must agree with the frontier: {claim}");
+    assert_eq!(
+        claim["claimed"],
+        json!(true),
+        "status update must agree with the frontier: {claim}"
+    );
     assert_eq!(claim["status"], json!("doing"));
 }
 
@@ -6729,16 +8100,34 @@ async fn move_as(app: &axum::Router, id: &str, status: &str, lane: &str) -> Valu
     } else {
         json!({ "status": status })
     };
-    let (st, _, v) = send_with(app, "PATCH", &path, Some(body.clone()), &[("X-Amux-Session", lane)]).await;
+    let (st, _, v) = send_with(
+        app,
+        "PATCH",
+        &path,
+        Some(body.clone()),
+        &[("X-Amux-Session", lane)],
+    )
+    .await;
     if st == StatusCode::OK {
         return v;
     }
-    assert_eq!(st, StatusCode::CONFLICT, "unexpected refusal moving {id} to {status}: {v}");
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "unexpected refusal moving {id} to {status}: {v}"
+    );
     let gate = v["gate"].clone();
     assert!(gate.is_array(), "only a gate refusal is expected here: {v}");
     let mut acked = body;
     acked["gate_checked"] = gate;
-    let (st, _, v) = send_with(app, "PATCH", &path, Some(acked), &[("X-Amux-Session", lane)]).await;
+    let (st, _, v) = send_with(
+        app,
+        "PATCH",
+        &path,
+        Some(acked),
+        &[("X-Amux-Session", lane)],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     v
 }
@@ -6746,8 +8135,12 @@ async fn move_as(app: &axum::Router, id: &str, status: &str, lane: &str) -> Valu
 #[tokio::test]
 async fn each_claim_opens_an_attempt_and_each_exit_closes_it_with_an_outcome() {
     let (app, _dir) = app();
-    let card = create(&app, json!({ "title": "attempted", "session": "lane-a",
-        "desc": "artifact: crates/amux-server/src/db/attempts.rs" })).await;
+    let card = create(
+        &app,
+        json!({ "title": "attempted", "session": "lane-a",
+        "desc": "artifact: crates/amux-server/src/db/attempts.rs" }),
+    )
+    .await;
     let id = card["id"].as_str().unwrap().to_string();
 
     // Claim: a lease and a running attempt #1, on the list row and the detail.
@@ -6756,10 +8149,23 @@ async fn each_claim_opens_an_attempt_and_each_exit_closes_it_with_an_outcome() {
     assert_eq!(d["lease"]["holder"], json!("lane-a"), "{d}");
     assert_eq!(d["lease"]["attempt"], json!(1), "{d}");
     assert_eq!(d["attempts"].as_array().unwrap().len(), 1);
-    assert!(d["attempts"][0]["outcome"].is_null(), "a running attempt has no outcome yet");
+    assert!(
+        d["attempts"][0]["outcome"].is_null(),
+        "a running attempt has no outcome yet"
+    );
     let (_, _, list) = send(&app, "GET", "/api/board", None).await;
-    let row = list.as_array().unwrap().iter().find(|r| r["id"] == json!(id)).unwrap().clone();
-    assert_eq!(row["lease"]["attempt"], json!(1), "the list row carries the same attempt: {row}");
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == json!(id))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        row["lease"]["attempt"],
+        json!(1),
+        "the list row carries the same attempt: {row}"
+    );
 
     // Released back to todo: attempt 1 closes as `released`, the lease is gone.
     move_as(&app, &id, "todo", "lane-a").await;
@@ -6768,16 +8174,30 @@ async fn each_claim_opens_an_attempt_and_each_exit_closes_it_with_an_outcome() {
     move_as(&app, &id, "review", "lane-a").await;
 
     let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert!(d.get("lease").is_none(), "a card in review holds no lease: {d}");
-    let got: Vec<(i64, String, String)> = d["attempts"].as_array().unwrap().iter().map(|a| (
-        a["attempt"].as_i64().unwrap(),
-        a["worker"].as_str().unwrap().to_string(),
-        a["outcome"].as_str().unwrap_or("RUNNING").to_string(),
-    )).collect();
-    assert_eq!(got, vec![
-        (1, "lane-a".to_string(), "released".to_string()),
-        (2, "lane-a".to_string(), "review".to_string()),
-    ], "{d}");
+    assert!(
+        d.get("lease").is_none(),
+        "a card in review holds no lease: {d}"
+    );
+    let got: Vec<(i64, String, String)> = d["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["attempt"].as_i64().unwrap(),
+                a["worker"].as_str().unwrap().to_string(),
+                a["outcome"].as_str().unwrap_or("RUNNING").to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, "lane-a".to_string(), "released".to_string()),
+            (2, "lane-a".to_string(), "review".to_string()),
+        ],
+        "{d}"
+    );
 }
 
 // ---- RR-0052 Invariant 2: only the holder moves a leased card -------------
@@ -6790,21 +8210,38 @@ async fn each_claim_opens_an_attempt_and_each_exit_closes_it_with_an_outcome() {
 async fn a_non_holder_worker_cannot_move_a_leased_card_except_by_audited_force() {
     std::env::set_var("AMUX_LEASE_ENFORCE", "1");
     let (app, _dir) = app();
-    let card = create(&app, json!({ "title": "held", "session": "lane-a",
-        "desc": "artifact: crates/amux-server/src/api/board.rs" })).await;
+    let card = create(
+        &app,
+        json!({ "title": "held", "session": "lane-a",
+        "desc": "artifact: crates/amux-server/src/api/board.rs" }),
+    )
+    .await;
     let id = card["id"].as_str().unwrap().to_string();
     move_as(&app, &id, "doing", "lane-a").await;
 
     for target in ["todo", "backlog", "discarded", "review"] {
         let (st, _, v) = send_with(
-            &app, "PATCH", &format!("/api/board/{id}"),
+            &app,
+            "PATCH",
+            &format!("/api/board/{id}"),
             Some(json!({ "status": target, "reason": "taking it over" })),
             &[("X-Amux-Session", "lane-b")],
-        ).await;
-        assert_eq!(st, StatusCode::CONFLICT, "lane-b moving a held card to {target}: {v}");
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::CONFLICT,
+            "lane-b moving a held card to {target}: {v}"
+        );
         assert_eq!(v["error"], json!("lease_held"), "{v}");
         assert_eq!(v["holder"], json!("lane-a"), "{v}");
-        assert!(v["exits"]["override_on_the_record"].as_str().unwrap().contains("--force"), "{v}");
+        assert!(
+            v["exits"]["override_on_the_record"]
+                .as_str()
+                .unwrap()
+                .contains("--force"),
+            "{v}"
+        );
     }
     let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert_eq!(d["status"], json!("doing"), "no refused move may land: {d}");
@@ -6824,7 +8261,11 @@ async fn a_non_holder_worker_cannot_move_a_leased_card_except_by_audited_force()
     let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     let last = d["attempts"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(last["outcome"], json!("released"), "{d}");
-    assert_eq!(last["ended_by"], json!("lane-b"), "who ended the attempt is on the record: {d}");
+    assert_eq!(
+        last["ended_by"],
+        json!("lane-b"),
+        "who ended the attempt is on the record: {d}"
+    );
 }
 
 // ---- RR-0052 Invariant 3: a worker receives one task, it does not browse ----
@@ -6836,16 +8277,30 @@ async fn lease_next_hands_a_lane_one_task_then_the_same_one_then_says_why_there_
     let (st, _, v) = send(&app, "POST", "/api/board/lease-next", None).await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
 
-    let card = create(&app, json!({ "title": "Implement the leased unit", "session": "lane-l",
+    let card = create(
+        &app,
+        json!({ "title": "Implement the leased unit", "session": "lane-l",
         "desc": "SCOPE: work\n- [ ] do it", "next_action": "Implement the scoped work",
-        "type": "chore" })).await;
+        "type": "chore" }),
+    )
+    .await;
     let id = card["id"].as_str().unwrap().to_string();
     // Creation stamps `updated`; the pickup window excludes nothing this fresh.
-    let (st, _, v) = send_with(&app, "POST", "/api/board/lease-next", None, &[("X-Amux-Session", "lane-l")]).await;
+    let (st, _, v) = send_with(
+        &app,
+        "POST",
+        "/api/board/lease-next",
+        None,
+        &[("X-Amux-Session", "lane-l")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["verdict"], json!("leased"), "{v}");
     assert_eq!(v["card"], json!(id), "{v}");
-    assert!(v["prompt"].as_str().is_some_and(|p| p.contains(&id)), "the prompt names the card: {v}");
+    assert!(
+        v["prompt"].as_str().is_some_and(|p| p.contains(&id)),
+        "the prompt names the card: {v}"
+    );
 
     // The lease is real: doing, held by the lane, attempt 1.
     let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
@@ -6854,17 +8309,34 @@ async fn lease_next_hands_a_lane_one_task_then_the_same_one_then_says_why_there_
     assert_eq!(d["lease"]["attempt"], json!(1), "{d}");
 
     // Asking again returns the SAME card: one worker, one task.
-    let (_, _, v) = send_with(&app, "POST", "/api/board/lease-next", None, &[("X-Amux-Session", "lane-l")]).await;
+    let (_, _, v) = send_with(
+        &app,
+        "POST",
+        "/api/board/lease-next",
+        None,
+        &[("X-Amux-Session", "lane-l")],
+    )
+    .await;
     assert_eq!(v["verdict"], json!("already_holding"), "{v}");
     assert_eq!(v["card"], json!(id), "{v}");
     assert_eq!(v["drain"]["verdict"], json!("draining"), "{v}");
 
     // Once the card leaves doing, nothing is runnable, and the answer says what remains.
     move_as(&app, &id, "review", "lane-l").await;
-    let (_, _, v) = send_with(&app, "POST", "/api/board/lease-next", None, &[("X-Amux-Session", "lane-l")]).await;
+    let (_, _, v) = send_with(
+        &app,
+        "POST",
+        "/api/board/lease-next",
+        None,
+        &[("X-Amux-Session", "lane-l")],
+    )
+    .await;
     assert_eq!(v["verdict"], json!("none"), "{v}");
     assert!(v["card"].is_null(), "{v}");
-    assert!(v["reason"].as_str().is_some_and(|r| !r.is_empty()), "a none always carries a reason: {v}");
+    assert!(
+        v["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "a none always carries a reason: {v}"
+    );
     assert_eq!(v["drain"]["measured"], json!(true), "{v}");
     assert_eq!(v["drain"]["verdict"], json!("waiting_on_review"), "{v}");
 }
@@ -6878,10 +8350,18 @@ async fn drain_reports_measured_verdicts_for_a_lane() {
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(v["measured"], json!(true), "{v}");
     assert_eq!(v["n_considered"], json!(1), "{v}");
-    assert_eq!(v["lanes"][0]["verdict"], json!("drained"), "an empty lane is drained: {v}");
+    assert_eq!(
+        v["lanes"][0]["verdict"],
+        json!("drained"),
+        "an empty lane is drained: {v}"
+    );
 
-    create(&app, json!({ "title": "Implement the drain unit", "session": "lane-d", "type": "chore",
-        "desc": "SCOPE: work\n- [ ] do it", "next_action": "Implement the scoped work" })).await;
+    create(
+        &app,
+        json!({ "title": "Implement the drain unit", "session": "lane-d", "type": "chore",
+        "desc": "SCOPE: work\n- [ ] do it", "next_action": "Implement the scoped work" }),
+    )
+    .await;
     let (_, _, v) = send(&app, "GET", "/api/board/drain?session=lane-d", None).await;
     assert_eq!(v["lanes"][0]["verdict"], json!("draining"), "{v}");
     assert_eq!(v["lanes"][0]["ready"], json!(1), "{v}");
@@ -6893,40 +8373,82 @@ async fn drain_reports_measured_verdicts_for_a_lane() {
 #[tokio::test]
 async fn review_and_done_are_refused_with_every_unmet_check_listed_together() {
     let (app, _dir) = app();
-    let dep = create(&app, json!({ "title": "the prerequisite", "session": "lane-p", "type": "chore",
-        "desc": "artifact: crates/amux-server/src/api/board.rs" })).await;
+    let dep = create(
+        &app,
+        json!({ "title": "the prerequisite", "session": "lane-p", "type": "chore",
+        "desc": "artifact: crates/amux-server/src/api/board.rs" }),
+    )
+    .await;
     let dep_id = dep["id"].as_str().unwrap().to_string();
-    let epic = create(&app, json!({ "title": "the parent", "session": "lane-p", "type": "chore",
-        "desc": "artifact: crates/amux-server/src/api/board.rs" })).await;
+    let epic = create(
+        &app,
+        json!({ "title": "the parent", "session": "lane-p", "type": "chore",
+        "desc": "artifact: crates/amux-server/src/api/board.rs" }),
+    )
+    .await;
     let epic_id = epic["id"].as_str().unwrap().to_string();
-    let child = create(&app, json!({ "title": "an open child", "session": "lane-p", "type": "chore",
-        "desc": "artifact: crates/amux-server/src/api/board.rs" })).await;
+    let child = create(
+        &app,
+        json!({ "title": "an open child", "session": "lane-p", "type": "chore",
+        "desc": "artifact: crates/amux-server/src/api/board.rs" }),
+    )
+    .await;
     let child_id = child["id"].as_str().unwrap().to_string();
     // The epic link is a PATCH field (AMUX-2992); read it back so a link that
     // did not take fails here rather than as a missing check below.
-    let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{child_id}"),
-        Some(json!({ "epic": epic_id })), &[("X-Amux-Session", "lane-p")]).await;
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{child_id}"),
+        Some(json!({ "epic": epic_id })),
+        &[("X-Amux-Session", "lane-p")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let (_, _, linked) = send_with(&app, "GET", &format!("/api/board/{child_id}"), None, &[]).await;
     assert_eq!(linked["epic"], json!(epic_id), "{linked}");
     // Discover another required input after starting; completion must refuse
     // it even though the earlier claim was ready when it was made.
     move_as(&app, &epic_id, "doing", "lane-p").await;
-    let (st, _, _) = send_with(&app, "PATCH", &format!("/api/board/{epic_id}"),
-        Some(json!({ "depends_on": [dep_id] })), &[("X-Amux-Session", "lane-p")]).await;
+    let (st, _, _) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{epic_id}"),
+        Some(json!({ "depends_on": [dep_id] })),
+        &[("X-Amux-Session", "lane-p")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
 
-    let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{epic_id}"),
-        Some(json!({ "status": "review" })), &[("X-Amux-Session", "lane-p")]).await;
+    let (st, _, v) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{epic_id}"),
+        Some(json!({ "status": "review" })),
+        &[("X-Amux-Session", "lane-p")],
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["code"], json!("acceptance_checks_failed"), "{v}");
-    let checks: Vec<(String, String)> = v["missing"].as_array().unwrap().iter()
-        .map(|m| (m["check"].as_str().unwrap().to_string(), m["card"].as_str().unwrap_or("").to_string()))
+    let checks: Vec<(String, String)> = v["missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["check"].as_str().unwrap().to_string(),
+                m["card"].as_str().unwrap_or("").to_string(),
+            )
+        })
         .collect();
-    assert_eq!(checks, vec![
-        ("dependency_resolved".to_string(), dep_id.clone()),
-        ("children_terminal".to_string(), child_id.clone()),
-    ], "both unmet checks in ONE answer: {v}");
+    assert_eq!(
+        checks,
+        vec![
+            ("dependency_resolved".to_string(), dep_id.clone()),
+            ("children_terminal".to_string(), child_id.clone()),
+        ],
+        "both unmet checks in ONE answer: {v}"
+    );
 
     // Clear both: the prerequisite finishes (chore completes at done) and the
     // child is discarded. The same move now passes the preflight.
@@ -6935,9 +8457,14 @@ async fn review_and_done_are_refused_with_every_unmet_check_listed_together() {
         Some(json!({ "status": "done", "evidence": EV, "gate_checked": ["Outcome recorded in the item (what happened, and why it is closed)"] })),
         &[("X-Amux-Session", "lane-p")]).await;
     assert_eq!(st, StatusCode::OK, "prerequisite closes: {v}");
-    let (st, _, _) = send_with(&app, "PATCH", &format!("/api/board/{child_id}"),
+    let (st, _, _) = send_with(
+        &app,
+        "PATCH",
+        &format!("/api/board/{child_id}"),
         Some(json!({ "status": "discarded", "force": true, "reason": "not needed after all" })),
-        &[("X-Amux-Session", "lane-p")]).await;
+        &[("X-Amux-Session", "lane-p")],
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
     let v = move_as(&app, &epic_id, "review", "lane-p").await;
     assert_eq!(v["status"], json!("review"), "{v}");
@@ -6955,23 +8482,41 @@ async fn dep_done_with_type(
     store: &std::sync::Arc<Store>,
     item_type: &str,
 ) -> String {
-    let v = create(app, json!({ "title": format!("prerequisite ({item_type})"),
-        "session": "lane-4786", "type": item_type, "status": "backlog" })).await;
+    let v = create(
+        app,
+        json!({ "title": format!("prerequisite ({item_type})"),
+        "session": "lane-4786", "type": item_type, "status": "backlog" }),
+    )
+    .await;
     let id = v["id"].as_str().unwrap().to_string();
     let w = id.clone();
-    store.write(move |conn| {
-        conn.execute("UPDATE issues SET status='done' WHERE id=?1", [w])?;
-        Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
-    }).unwrap();
+    store
+        .write(move |conn| {
+            conn.execute("UPDATE issues SET status='done' WHERE id=?1", [w])?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     id
 }
 
 async fn dependent_on(app: &axum::Router, dep_id: &str) -> String {
-    let v = create(app, json!({ "title": format!("dependent on {dep_id}"), "session": "lane-4786",
-        "type": "chore", "status": "backlog", "next_action": "Do the scoped work" })).await;
+    let v = create(
+        app,
+        json!({ "title": format!("dependent on {dep_id}"), "session": "lane-4786",
+        "type": "chore", "status": "backlog", "next_action": "Do the scoped work" }),
+    )
+    .await;
     let id = v["id"].as_str().unwrap().to_string();
-    let (st, _, v) = send(app, "PATCH", &format!("/api/board/{id}"),
-        Some(json!({ "depends_on": [dep_id] }))).await;
+    let (st, _, v) = send(
+        app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "depends_on": [dep_id] })),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     id
 }
@@ -6991,15 +8536,33 @@ async fn a_dependency_refusal_names_the_dependencys_own_type() {
     for (item_type, other) in [("ops", "code"), ("code", "ops")] {
         let dep = dep_done_with_type(&app, &store, item_type).await;
         let card = dependent_on(&app, &dep).await;
-        let (st, _, v) = send(&app, "PATCH", &format!("/api/board/{card}"),
-            Some(json!({ "status": "doing" }))).await;
-        assert_eq!(st, StatusCode::CONFLICT, "a {item_type} dependency at done must refuse: {v}");
+        let (st, _, v) = send(
+            &app,
+            "PATCH",
+            &format!("/api/board/{card}"),
+            Some(json!({ "status": "doing" })),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::CONFLICT,
+            "a {item_type} dependency at done must refuse: {v}"
+        );
         assert_eq!(v["code"], json!("acceptance_checks_failed"), "{v}");
-        let m = v["missing"].as_array().unwrap().iter()
+        let m = v["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
             .find(|m| m["check"] == "dependency_resolved")
-            .unwrap_or_else(|| panic!("no dependency_resolved check for a {item_type} dependency: {v}"));
+            .unwrap_or_else(|| {
+                panic!("no dependency_resolved check for a {item_type} dependency: {v}")
+            });
         assert_eq!(m["card"], json!(dep), "{v}");
-        assert_eq!(m["type"], json!(item_type), "the refusal must carry the dependency's own type: {v}");
+        assert_eq!(
+            m["type"],
+            json!(item_type),
+            "the refusal must carry the dependency's own type: {v}"
+        );
         let fix = m["fix"].as_str().unwrap_or_default();
         assert!(
             fix.contains(&format!("({item_type} work completes at verified)")),
@@ -7022,10 +8585,20 @@ async fn a_dependency_refusal_names_the_dependencys_own_type() {
     // nothing about doc dependencies.
     let doc = dep_done_with_type(&app, &store, "doc").await;
     let card = dependent_on(&app, &doc).await;
-    let (_, _, v) = send(&app, "PATCH", &format!("/api/board/{card}"),
-        Some(json!({ "status": "doing" }))).await;
-    let dep_checks = v["missing"].as_array()
-        .map(|a| a.iter().filter(|m| m["check"] == "dependency_resolved").count())
+    let (_, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{card}"),
+        Some(json!({ "status": "doing" })),
+    )
+    .await;
+    let dep_checks = v["missing"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|m| m["check"] == "dependency_resolved")
+                .count()
+        })
         .unwrap_or(0);
     assert_eq!(
         dep_checks, 0,
@@ -7034,26 +8607,44 @@ async fn a_dependency_refusal_names_the_dependencys_own_type() {
     // And the claim really does go through, so the cell above is not passing
     // because something else refused first.
     let v = move_as(&app, &card, "doing", "lane-4786").await;
-    assert_eq!(v["status"], json!("doing"), "a doc dependency at done resolves: {v}");
+    assert_eq!(
+        v["status"],
+        json!("doing"),
+        "a doc dependency at done resolves: {v}"
+    );
 }
-
 
 #[tokio::test]
 async fn doing_ack_cannot_bypass_readiness_and_repairs_are_atomic() {
     let (app, store, _dir) = app_with_store();
-    let dep = create(&app, json!({"title":"Import census", "session":"parity", "type":"code", "status":"backlog"})).await;
+    let dep = create(
+        &app,
+        json!({"title":"Import census", "session":"parity", "type":"code", "status":"backlog"}),
+    )
+    .await;
     let dep_id = dep["id"].as_str().unwrap();
     let dep_w = dep_id.to_string();
-    store.write(move |conn| {
-        conn.execute("UPDATE issues SET status='done' WHERE id=?1", [dep_w])?;
-        Ok(amux_server::db::WriteOutcome { applied:true, events:vec![] })
-    }).unwrap();
+    store
+        .write(move |conn| {
+            conn.execute("UPDATE issues SET status='done' WHERE id=?1", [dep_w])?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
     let card = create(&app, json!({"title":"Measure parity", "session":"parity", "type":"investigation",
         "status":"backlog", "next_action":"Run the parity comparison", "acceptance_criteria":["Publish actual measurements"]})).await;
     let id = card["id"].as_str().unwrap();
     let path = format!("/api/board/{id}");
-    let (_,_,_) = send(&app,"PATCH",&path,Some(json!({"depends_on":[dep_id],"gate":["Input census is available"]}))).await;
-    let (_,_,before) = send(&app,"GET",&path,None).await;
+    let (_, _, _) = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(json!({"depends_on":[dep_id],"gate":["Input census is available"]})),
+    )
+    .await;
+    let (_, _, before) = send(&app, "GET", &path, None).await;
     let (status,_,refused) = send(&app,"PATCH",&path,Some(json!({"status":"doing",
         "gate_checked":["Input census is available"], "desc_append":"Must not survive a refused claim"}))).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
@@ -7061,29 +8652,49 @@ async fn doing_ack_cannot_bypass_readiness_and_repairs_are_atomic() {
     assert_eq!(refused["attempted_status"], "doing");
     assert_eq!(refused["missing"][0]["card"], dep_id);
     assert_eq!(refused["missing"][0]["status"], "done");
-    let (_,_,after) = send(&app,"GET",&path,None).await;
+    let (_, _, after) = send(&app, "GET", &path, None).await;
     assert_eq!(after["status"], "backlog");
-    assert_eq!(after["rev"], before["rev"], "a rejected claim is not a write");
+    assert_eq!(
+        after["rev"], before["rev"],
+        "a rejected claim is not a write"
+    );
     assert_eq!(after["desc"], before["desc"]);
 
     // A missing input and a stored blocker also obey the parker's predicate.
-    for fields in [json!({"depends_on":["MISSING-999"]}), json!({"depends_on":[],"blocked_on":"required access absent"})] {
+    for fields in [
+        json!({"depends_on":["MISSING-999"]}),
+        json!({"depends_on":[],"blocked_on":"required access absent"}),
+    ] {
         let missing = fields["depends_on"][0] == "MISSING-999";
-        let (status,_,body) = send(&app,"PATCH",&path,Some(fields)).await;
+        let (status, _, body) = send(&app, "PATCH", &path, Some(fields)).await;
         if missing {
             assert_eq!(status, StatusCode::CONFLICT, "{body}");
             assert_eq!(body["code"], "cross_board_dependency_forbidden");
             // New writes are refused; seed historical corruption separately
             // to preserve the read-side rule that a missing input blocks work.
             let legacy_id = id.to_string();
-            store.write(move |conn| {
-                conn.execute("UPDATE issues SET depends_on='[\"MISSING-999\"]' WHERE id=?1", [legacy_id])?;
-                Ok(amux_server::db::WriteOutcome { applied:true, events:vec![] })
-            }).unwrap();
+            store
+                .write(move |conn| {
+                    conn.execute(
+                        "UPDATE issues SET depends_on='[\"MISSING-999\"]' WHERE id=?1",
+                        [legacy_id],
+                    )?;
+                    Ok(amux_server::db::WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
         } else {
             assert_eq!(status, StatusCode::OK, "{body}");
         }
-        let (status,_,body) = send(&app,"PATCH",&path,Some(json!({"status":"doing","gate_checked":["Input census is available"]}))).await;
+        let (status, _, body) = send(
+            &app,
+            "PATCH",
+            &path,
+            Some(json!({"status":"doing","gate_checked":["Input census is available"]})),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert_eq!(body["code"], "acceptance_checks_failed");
     }
@@ -7092,38 +8703,90 @@ async fn doing_ack_cannot_bypass_readiness_and_repairs_are_atomic() {
     // Done investigations complete naturally. Clear the obsolete blocker in
     // the SAME write as the claim; an open child does not prevent starting.
     let dep_w = dep_id.to_string();
-    store.write(move |conn| {
-        conn.execute("UPDATE issues SET type='investigation' WHERE id=?1", [dep_w])?;
-        Ok(amux_server::db::WriteOutcome { applied:true, events:vec![] })
-    }).unwrap();
-    let child = create(&app, json!({"title":"Independent child", "type":"chore", "status":"backlog"})).await;
-    let (status,_,body) = send(&app,"PATCH",&format!("/api/board/{}",child["id"].as_str().unwrap()),Some(json!({"epic":id}))).await;
+    store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET type='investigation' WHERE id=?1",
+                [dep_w],
+            )?;
+            Ok(amux_server::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    let child = create(
+        &app,
+        json!({"title":"Independent child", "type":"chore", "status":"backlog"}),
+    )
+    .await;
+    let (status, _, body) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{}", child["id"].as_str().unwrap()),
+        Some(json!({"epic":id})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status,_,body) = send(&app,"PATCH",&path,Some(json!({"status":"doing","depends_on":[dep_id],
-        "blocked_on":null,"gate_checked":["Input census is available"]}))).await;
+    let (status, _, body) = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(json!({"status":"doing","depends_on":[dep_id],
+        "blocked_on":null,"gate_checked":["Input census is available"]})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (_,_,after) = send(&app,"GET",&path,None).await;
+    let (_, _, after) = send(&app, "GET", &path, None).await;
     assert_eq!(after["status"], "doing");
     assert!(after["blocked_on"].is_null());
 }
 
-
 #[tokio::test]
 async fn create_preserves_acceptance_contract_and_rejects_malformed_criteria_atomically() {
     let (app, store, _dir) = app_with_store();
-    for criteria in [json!(["The exact artifact passes its test"]), json!("The output matches the requested result"), Value::Null] {
+    for criteria in [
+        json!(["The exact artifact passes its test"]),
+        json!("The output matches the requested result"),
+        Value::Null,
+    ] {
         let card = create(&app, json!({"title":"Acceptance contract", "status":"backlog", "session":"lane-a",
             "next_action":"Implement and test the scoped artifact", "acceptance_criteria":criteria})).await;
-        assert!(card["ignored_fields"].as_array().is_none_or(|v|v.is_empty()), "{card}");
+        assert!(
+            card["ignored_fields"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "{card}"
+        );
         let id = card["id"].as_str().unwrap();
-        let (_,_,read) = send(&app,"GET",&format!("/api/board/{id}"),None).await;
+        let (_, _, read) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
         assert_eq!(read["acceptance_criteria"], criteria);
-        assert_eq!(read["next_action"], "Implement and test the scoped artifact");
+        assert_eq!(
+            read["next_action"],
+            "Implement and test the scoped artifact"
+        );
     }
-    let count = || store.read().unwrap().query_row("SELECT count(*) FROM issues", [], |r|r.get::<_,i64>(0)).unwrap();
+    let count = || {
+        store
+            .read()
+            .unwrap()
+            .query_row("SELECT count(*) FROM issues", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
     let before = count();
-    for criteria in [json!({"fake":true}), json!(["valid", 7]), json!(false), json!(42)] {
-        let (status,_,body) = send(&app,"POST","/api/board",Some(json!({"title":"Malformed criteria", "acceptance_criteria":criteria}))).await;
+    for criteria in [
+        json!({"fake":true}),
+        json!(["valid", 7]),
+        json!(false),
+        json!(42),
+    ] {
+        let (status, _, body) = send(
+            &app,
+            "POST",
+            "/api/board",
+            Some(json!({"title":"Malformed criteria", "acceptance_criteria":criteria})),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["code"], "invalid_acceptance_criteria");
     }

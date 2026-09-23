@@ -63,7 +63,11 @@ fn ids_in(text: &str) -> BTreeSet<String> {
             i += 1;
         }
         // Trailing '-' is punctuation, not part of the id.
-        let end = if i > start + 4 && b[i - 1] == b'-' { i - 1 } else { i };
+        let end = if i > start + 4 && b[i - 1] == b'-' {
+            i - 1
+        } else {
+            i
+        };
         if end > start + 4 {
             out.insert(text[start..end].to_string());
         }
@@ -79,14 +83,19 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.join("crates"), root.join("scripts"), root.join("e2e")];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
             if p.is_dir() {
                 // Build output and vendored deps are not ours to police, and
                 // walking them turns a 0.1s test into a minute.
-                if !matches!(name.as_str(), "target" | "node_modules" | ".git" | "__pycache__") {
+                if !matches!(
+                    name.as_str(),
+                    "target" | "node_modules" | ".git" | "__pycache__"
+                ) {
                     stack.push(p);
                 }
             } else if matches!(
@@ -102,7 +111,9 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is crates/amux-server.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
 }
 
 /// Direction 2: every tag in the tree names an invariant the doc defines.
@@ -139,7 +150,9 @@ fn every_inv_tag_names_an_invariant_the_doc_defines() {
     let mut unknown: Vec<String> = Vec::new();
     let mut tagged: BTreeSet<String> = BTreeSet::new();
     for f in &files {
-        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
         if !text.contains("INV-") {
             continue;
         }
@@ -147,7 +160,10 @@ fn every_inv_tag_names_an_invariant_the_doc_defines() {
             if known.contains(&id) {
                 tagged.insert(id);
             } else {
-                unknown.push(format!("{}: {id}", f.strip_prefix(&root).unwrap_or(f).display()));
+                unknown.push(format!(
+                    "{}: {id}",
+                    f.strip_prefix(&root).unwrap_or(f).display()
+                ));
             }
         }
     }
@@ -186,18 +202,32 @@ fn an_invented_tag_is_rejected_and_a_real_one_is_not() {
     let invented = id("TYPO-SOT");
     let known: BTreeSet<String> = [real.clone(), id("DONE-VS-VERIFIED")].into_iter().collect();
 
-    let found = ids_in(&format!("// {real} holds here\n// {invented} does not exist\n"));
+    let found = ids_in(&format!(
+        "// {real} holds here\n// {invented} does not exist\n"
+    ));
     let unknown: Vec<&String> = found.iter().filter(|i| !known.contains(*i)).collect();
     assert_eq!(unknown.len(), 1, "{found:?}");
     assert_eq!(unknown[0], &invented);
-    assert!(found.contains(&real), "a REAL tag must be accepted: {found:?}");
+    assert!(
+        found.contains(&real),
+        "a REAL tag must be accepted: {found:?}"
+    );
 
     // The parser's own edges, each one a way a tag could be mis-read.
     assert!(ids_in(&id("")).is_empty(), "a bare prefix is not an id");
-    assert_eq!(ids_in(&format!("see {real}, then stop")).iter().next().unwrap(), &real,
-               "trailing punctuation must not join the id");
-    assert_eq!(ids_in(&format!("{}-", id("A-B"))).iter().next().unwrap(), &id("A-B"),
-               "a trailing hyphen is punctuation, not part of the id");
+    assert_eq!(
+        ids_in(&format!("see {real}, then stop"))
+            .iter()
+            .next()
+            .unwrap(),
+        &real,
+        "trailing punctuation must not join the id"
+    );
+    assert_eq!(
+        ids_in(&format!("{}-", id("A-B"))).iter().next().unwrap(),
+        &id("A-B"),
+        "a trailing hyphen is punctuation, not part of the id"
+    );
     // Lowercase is not an id: `inv_board_sot_...` is the TEST-NAME convention
     // the doc describes, and folding it in here would make a function name look
     // like a tag.

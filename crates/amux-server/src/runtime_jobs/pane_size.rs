@@ -279,7 +279,13 @@ mod tests {
     use super::*;
 
     fn p(session: &str, cols: u32, rows: u32, attached: bool, pinned: bool) -> PaneState {
-        PaneState { session: session.into(), cols, rows, attached, pinned }
+        PaneState {
+            session: session.into(),
+            cols,
+            rows,
+            attached,
+            pinned,
+        }
     }
 
     #[test]
@@ -302,13 +308,23 @@ mod tests {
     // that motivated it, not the convenient case).
     #[test]
     fn restores_the_50x50_phone_peek_specimen() {
-        assert!(needs_restore(&p("amux-mixpeek-autopilot", 50, 50, false, true), 220, 50, false));
+        assert!(needs_restore(
+            &p("amux-mixpeek-autopilot", 50, 50, false, true),
+            220,
+            50,
+            false
+        ));
     }
 
     #[test]
     fn never_touches_a_session_with_a_real_terminal_attached() {
         // 181x44 attached — a human's own terminal, and its size wins.
-        assert!(!needs_restore(&p("amux-gtm-videos", 181, 44, true, true), 220, 50, false));
+        assert!(!needs_restore(
+            &p("amux-gtm-videos", 181, 44, true, true),
+            220,
+            50,
+            false
+        ));
     }
 
     #[test]
@@ -321,27 +337,52 @@ mod tests {
 
     #[test]
     fn never_touches_a_session_we_do_not_manage() {
-        assert!(!needs_restore(&p("66", 153, 21, false, true), 220, 50, false));
-        assert!(!needs_restore(&p("some-dev-shell", 80, 24, false, false), 220, 50, false));
+        assert!(!needs_restore(
+            &p("66", 153, 21, false, true),
+            220,
+            50,
+            false
+        ));
+        assert!(!needs_restore(
+            &p("some-dev-shell", 80, 24, false, false),
+            220,
+            50,
+            false
+        ));
     }
 
     // The half-fix guard: right width, still pinned. list-panes would show
     // this as healthy while the window no longer follows default-size.
     #[test]
     fn a_correctly_sized_but_pinned_window_is_still_repaired() {
-        assert!(needs_restore(&p("amux-ethan-dev", 220, 50, false, true), 220, 50, false));
+        assert!(needs_restore(
+            &p("amux-ethan-dev", 220, 50, false, true),
+            220,
+            50,
+            false
+        ));
     }
 
     #[test]
     fn a_healthy_window_is_left_alone() {
-        assert!(!needs_restore(&p("amux-self", 220, 50, false, false), 220, 50, false));
+        assert!(!needs_restore(
+            &p("amux-self", 220, 50, false, false),
+            220,
+            50,
+            false
+        ));
     }
 
     // Sessions created without -x/-y sit at the global default 80x24 and are
     // also below the configured width — the restorer must claim them too.
     #[test]
     fn an_unsized_session_at_the_global_default_is_repaired() {
-        assert!(needs_restore(&p("amux-bdq-empty", 80, 24, false, false), 220, 50, false));
+        assert!(needs_restore(
+            &p("amux-bdq-empty", 80, 24, false, false),
+            220,
+            50,
+            false
+        ));
     }
 
     #[test]

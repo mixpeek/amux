@@ -58,7 +58,17 @@ pub fn routes() -> Router<AppState> {
 
 /// Row shapes for the per-kind subject SELECTs. Named because a bare 9-tuple
 /// in a signature is a place for two columns to swap silently.
-type TaskRow = (String, String, Option<String>, String, Option<String>, i64, i64, Option<String>, i64);
+type TaskRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+    i64,
+);
 type CommandRow = (String, String, String, String, i64, String, Option<String>);
 type ScheduleRow = (String, String, String, i64, Option<String>, i64, i64);
 
@@ -130,7 +140,14 @@ impl Why {
         }
     }
 
-    fn probe(&mut self, table: &str, query: String, rows: usize, total: usize, note: Option<String>) {
+    fn probe(
+        &mut self,
+        table: &str,
+        query: String,
+        rows: usize,
+        total: usize,
+        note: Option<String>,
+    ) {
         self.sources.push(SourceProbe {
             table: table.to_string(),
             query,
@@ -147,7 +164,8 @@ impl Why {
     fn finish(mut self) -> Value {
         // Timestamped events first, in time order; undated ones keep their
         // append order at the end. A stable sort is what preserves that.
-        self.events.sort_by_key(|e| (e.at_epoch.is_none(), e.at_epoch.unwrap_or(i64::MAX)));
+        self.events
+            .sort_by_key(|e| (e.at_epoch.is_none(), e.at_epoch.unwrap_or(i64::MAX)));
 
         let evidence_rows: usize = self.sources.iter().map(|s| s.rows_total).sum();
         let structural_gaps = !self.gaps.is_empty();
@@ -198,7 +216,9 @@ fn epoch_to_rfc3339(secs: i64) -> String {
 
 /// Parse the `at` column of `_amux_state_events` (RFC3339) to epoch seconds.
 fn rfc3339_to_epoch(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp())
 }
 
 // ---------------------------------------------------------------------------
@@ -235,9 +255,10 @@ fn collect_state_events(
          WHERE entity_type = ?1 AND entity_id = ?2 ORDER BY rev ASC, id ASC LIMIT ?3",
     )?;
     let rows: Vec<(i64, i64, String, String, Option<String>)> = stmt
-        .query_map(rusqlite::params![entity_tag, entity_id, PER_SOURCE_CAP as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })?
+        .query_map(
+            rusqlite::params![entity_tag, entity_id, PER_SOURCE_CAP as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?
         .collect::<rusqlite::Result<_>>()?;
 
     let mut prev: Option<Value> = None;
@@ -248,7 +269,9 @@ fn collect_state_events(
             .ok()
             .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
             .unwrap_or(mutation_raw);
-        let payload: Option<Value> = payload_raw.as_deref().and_then(|p| serde_json::from_str(p).ok());
+        let payload: Option<Value> = payload_raw
+            .as_deref()
+            .and_then(|p| serde_json::from_str(p).ok());
         if payload.is_none() {
             payloadless += 1;
         }
@@ -313,12 +336,18 @@ fn collect_state_events(
     // is unfalsifiable to a reader — it cannot be compared against anything they
     // know — while a date can be held against the card in front of them.
     let floor: Option<(i64, String)> = conn
-        .query_row("SELECT MIN(rev), MIN(at) FROM _amux_state_events", [], |r| {
-            Ok(match (r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?) {
-                (Some(rev), Some(at)) => Some((rev, at)),
-                _ => None,
-            })
-        })
+        .query_row(
+            "SELECT MIN(rev), MIN(at) FROM _amux_state_events",
+            [],
+            |r| {
+                Ok(
+                    match (r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?) {
+                        (Some(rev), Some(at)) => Some((rev, at)),
+                        _ => None,
+                    },
+                )
+            },
+        )
         .unwrap_or(None);
     let predates_floor = match (created_epoch, floor.as_ref()) {
         (Some(c), Some((_, at))) => rfc3339_to_epoch(at).is_some_and(|f| c < f),
@@ -405,7 +434,10 @@ fn abbrev(v: &Value) -> String {
         return format!("{flat:?}");
     }
     let head: String = flat.chars().take(MAX).collect();
-    format!("{head:?}… ({} chars total, full value in `detail`)", s.chars().count())
+    format!(
+        "{head:?}… ({} chars total, full value in `detail`)",
+        s.chars().count()
+    )
 }
 
 /// Field-level diff of two snapshots, for the "a -> b" lines above.
@@ -434,7 +466,12 @@ fn changed_fields(a: &Value, b: &Value) -> Vec<(String, Value, Value)> {
 /// Requests that touched a path. This is the trail that carries ATTRIBUTION —
 /// `amux_session` is the X-Amux-Session stamp, and its absence on a mutating
 /// call is itself a finding worth surfacing, not something to paper over.
-fn collect_requests(conn: &Connection, w: &mut Why, like: &str, label: &str) -> rusqlite::Result<()> {
+fn collect_requests(
+    conn: &Connection,
+    w: &mut Why,
+    like: &str,
+    label: &str,
+) -> rusqlite::Result<()> {
     let q = format!("path LIKE '{like}'");
     let total: usize = conn.query_row(
         "SELECT COUNT(*) FROM _amux_request_log WHERE path LIKE ?1",
@@ -510,8 +547,15 @@ fn why_task(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
             [id],
             |r| {
                 Ok((
-                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
-                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
                 ))
             },
         )
@@ -519,7 +563,13 @@ fn why_task(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
 
     let Some((title, status, session, creator, log, created, updated, gate, archived)) = row else {
         w.gap(format!("no row in `issues` with id {id} — it never existed, or it was hard-deleted (the board soft-deletes, so a hard delete means something outside the API removed it)"));
-        w.probe("issues", format!("id='{id}'"), 0, 0, Some("subject not found".into()));
+        w.probe(
+            "issues",
+            format!("id='{id}'"),
+            0,
+            0,
+            Some("subject not found".into()),
+        );
         return Ok(w.finish());
     };
     w.found = true;
@@ -553,7 +603,12 @@ fn why_task(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
 
     // The card log: the human-facing history. Append-only, one line each,
     // formatted `` `HH:MM` text `` — note there is NO DATE in it.
-    let log_lines: Vec<&str> = log.as_deref().unwrap_or("").lines().filter(|l| !l.trim().is_empty()).collect();
+    let log_lines: Vec<&str> = log
+        .as_deref()
+        .unwrap_or("")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     for (i, line) in log_lines.iter().take(PER_SOURCE_CAP).enumerate() {
         let (hhmm, text) = parse_log_line(line);
         w.events.push(WhyEvent {
@@ -583,16 +638,29 @@ fn why_task(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
     if let Some(nt) = &log_note {
         w.gap(format!("issues.log: {nt}"));
     }
-    w.probe("issues.log", format!("id='{id}'"), log_lines.len().min(PER_SOURCE_CAP), log_lines.len(), log_note);
+    w.probe(
+        "issues.log",
+        format!("id='{id}'"),
+        log_lines.len().min(PER_SOURCE_CAP),
+        log_lines.len(),
+        log_note,
+    );
 
     collect_state_events(conn, &mut w, "task", id, Some(created))?;
-    collect_requests(conn, &mut w, &format!("/api/board/{id}%"), &format!("card {id}"))?;
+    collect_requests(
+        conn,
+        &mut w,
+        &format!("/api/board/{id}%"),
+        &format!("card {id}"),
+    )?;
 
     // Turn ledger: which agent turns claimed this task.
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM _amux_turns WHERE task_id = ?1", [id], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM _amux_turns WHERE task_id = ?1",
+            [id],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, worker_id, session_id, started_at, ended_at, outcome
@@ -613,7 +681,9 @@ fn why_task(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
                 actor: Some(worker.clone()),
                 summary: match (&ended, &outcome) {
                     (Some(_), Some(o)) => format!("turn {tid} by {worker} ended: {o}"),
-                    (Some(_), None) => format!("turn {tid} by {worker} ended with no recorded outcome"),
+                    (Some(_), None) => {
+                        format!("turn {tid} by {worker} ended with no recorded outcome")
+                    }
                     _ => format!("turn {tid} by {worker} is still running"),
                 },
                 detail: Some(json!({"turn_id": tid, "worker_id": worker, "session_id": session})),
@@ -652,9 +722,11 @@ fn parse_log_line(line: &str) -> (Option<&str>, &str) {
 /// on this table (unlike every other timestamp here).
 fn collect_interactions(conn: &Connection, w: &mut Why, target: &str) -> rusqlite::Result<()> {
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM interaction_log WHERE target = ?1", [target], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM interaction_log WHERE target = ?1",
+            [target],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, ts, kind, actor, action, detail, ok, result FROM interaction_log
@@ -680,7 +752,11 @@ fn collect_interactions(conn: &Connection, w: &mut Why, target: &str) -> rusqlit
                 actor: Some(actor).filter(|s| !s.is_empty()),
                 summary: format!(
                     "{kind} {action}{}",
-                    if ok == 1 { String::new() } else { format!(" FAILED: {result}") }
+                    if ok == 1 {
+                        String::new()
+                    } else {
+                        format!(" FAILED: {result}")
+                    }
                 ),
                 detail: (!detail.is_empty()).then(|| json!({ "detail": detail })),
                 source: json!({"table": "interaction_log", "rowid": id}),
@@ -757,12 +833,24 @@ fn why_worker(conn: &Connection, key: &str) -> rusqlite::Result<Value> {
         w.gap(format!(
             "no worker matches `{key}` by id, display_name, or a recorded alias — the name may belong to a tmux-only session that was never registered in `_amux_workers`"
         ));
-        w.probe("_amux_workers", format!("id/display_name/alias = '{key}'"), 0, 0, Some("subject not found".into()));
+        w.probe(
+            "_amux_workers",
+            format!("id/display_name/alias = '{key}'"),
+            0,
+            0,
+            Some("subject not found".into()),
+        );
         return Ok(w.finish());
     };
     w.found = true;
     w.subject = json!({"kind": "worker", "id": id, "display_name": name, "cwd": cwd, "provider": provider, "backend": backend});
-    w.probe("_amux_workers", format!("id/display_name/alias = '{key}'"), 1, 1, None);
+    w.probe(
+        "_amux_workers",
+        format!("id/display_name/alias = '{key}'"),
+        1,
+        1,
+        None,
+    );
 
     // `_amux_workers` records no creation time, so the truncation caveat cannot
     // be computed for a worker and the journal's floor is reported without a
@@ -772,9 +860,11 @@ fn why_worker(conn: &Connection, key: &str) -> rusqlite::Result<Value> {
 
     // Sessions: every time this worker was actually running.
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM _amux_sessions WHERE worker_id = ?1", [&id], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM _amux_sessions WHERE worker_id = ?1",
+            [&id],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, backend, backend_ref, pid, started_at, ended_at, exit_reason
@@ -795,8 +885,12 @@ fn why_worker(conn: &Connection, key: &str) -> rusqlite::Result<Value> {
                 kind: "session".into(),
                 actor: None,
                 summary: match (&ended, &exit) {
-                    (Some(e), Some(x)) => format!("session {sid} on {backend} ran until {e}, exit {x}"),
-                    (Some(e), None) => format!("session {sid} on {backend} ended {e} with no recorded exit reason"),
+                    (Some(e), Some(x)) => {
+                        format!("session {sid} on {backend} ran until {e}, exit {x}")
+                    }
+                    (Some(e), None) => {
+                        format!("session {sid} on {backend} ended {e} with no recorded exit reason")
+                    }
                     _ => format!("session {sid} on {backend} is still live"),
                 },
                 detail: Some(json!({"backend_ref": bref, "pid": pid})),
@@ -812,15 +906,26 @@ fn why_worker(conn: &Connection, key: &str) -> rusqlite::Result<Value> {
 
     collect_worker_commands(conn, &mut w, &id)?;
     collect_worker_turns(conn, &mut w, &id)?;
-    collect_requests(conn, &mut w, &format!("/api/workers/{id}%"), &format!("worker {id}"))?;
+    collect_requests(
+        conn,
+        &mut w,
+        &format!("/api/workers/{id}%"),
+        &format!("worker {id}"),
+    )?;
     Ok(w.finish())
 }
 
-fn collect_worker_commands(conn: &Connection, w: &mut Why, worker_id: &str) -> rusqlite::Result<()> {
+fn collect_worker_commands(
+    conn: &Connection,
+    w: &mut Why,
+    worker_id: &str,
+) -> rusqlite::Result<()> {
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM _amux_commands WHERE worker_id = ?1", [worker_id], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM _amux_commands WHERE worker_id = ?1",
+            [worker_id],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, command, state, queued_at, attempts FROM _amux_commands
@@ -828,17 +933,36 @@ fn collect_worker_commands(conn: &Connection, w: &mut Why, worker_id: &str) -> r
     )?;
     let rows: Vec<WhyEvent> = stmt
         .query_map(rusqlite::params![worker_id, PER_SOURCE_CAP as i64], |r| {
-            Ok(command_event(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok(command_event(
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    w.probe("_amux_commands", format!("worker_id='{worker_id}'"), n, total,
-        (total == 0).then(|| "no commands were queued to this worker through the command table".to_string()));
+    w.probe(
+        "_amux_commands",
+        format!("worker_id='{worker_id}'"),
+        n,
+        total,
+        (total == 0).then(|| {
+            "no commands were queued to this worker through the command table".to_string()
+        }),
+    );
     Ok(())
 }
 
-fn command_event(id: String, command: String, state: String, queued_at: String, attempts: i64) -> WhyEvent {
+fn command_event(
+    id: String,
+    command: String,
+    state: String,
+    queued_at: String,
+    attempts: i64,
+) -> WhyEvent {
     let cmd_kind = serde_json::from_str::<Value>(&command)
         .ok()
         .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
@@ -861,9 +985,11 @@ fn command_event(id: String, command: String, state: String, queued_at: String, 
 
 fn collect_worker_turns(conn: &Connection, w: &mut Why, worker_id: &str) -> rusqlite::Result<()> {
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM _amux_turns WHERE worker_id = ?1", [worker_id], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM _amux_turns WHERE worker_id = ?1",
+            [worker_id],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, task_id, started_at, ended_at, outcome, tokens FROM _amux_turns
@@ -884,7 +1010,9 @@ fn collect_worker_turns(conn: &Connection, w: &mut Why, worker_id: &str) -> rusq
                 actor: Some(worker_id.to_string()),
                 summary: format!(
                     "turn {tid}{} {}",
-                    task.as_ref().map(|t| format!(" on {t}")).unwrap_or_default(),
+                    task.as_ref()
+                        .map(|t| format!(" on {t}"))
+                        .unwrap_or_default(),
                     match (&ended, &outcome) {
                         (Some(_), Some(o)) => format!("ended: {o}"),
                         (Some(_), None) => "ended with no recorded outcome".into(),
@@ -899,8 +1027,13 @@ fn collect_worker_turns(conn: &Connection, w: &mut Why, worker_id: &str) -> rusq
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    w.probe("_amux_turns", format!("worker_id='{worker_id}'"), n, total,
-        (total == 0).then(|| "no turns recorded for this worker".to_string()));
+    w.probe(
+        "_amux_turns",
+        format!("worker_id='{worker_id}'"),
+        n,
+        total,
+        (total == 0).then(|| "no turns recorded for this worker".to_string()),
+    );
     Ok(())
 }
 
@@ -915,12 +1048,28 @@ fn why_command(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
             "SELECT worker_id, command, state, queued_at, attempts, timing, precondition
              FROM _amux_commands WHERE id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
         )
         .ok();
     let Some((worker_id, command, state, queued_at, attempts, timing, precondition)) = row else {
         w.gap(format!("no row in `_amux_commands` with id {id}"));
-        w.probe("_amux_commands", format!("id='{id}'"), 0, 0, Some("subject not found".into()));
+        w.probe(
+            "_amux_commands",
+            format!("id='{id}'"),
+            0,
+            0,
+            Some("subject not found".into()),
+        );
         return Ok(w.finish());
     };
     w.found = true;
@@ -929,7 +1078,13 @@ fn why_command(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
     // Read before the move: `queued_at` is RFC3339 TEXT here (not the millis that
     // `cmd_history.ts` carries), and it is this command's birth time.
     let queued_epoch = rfc3339_to_epoch(&queued_at);
-    w.events.push(command_event(id.to_string(), command, state, queued_at, attempts));
+    w.events.push(command_event(
+        id.to_string(),
+        command,
+        state,
+        queued_at,
+        attempts,
+    ));
     w.events.push(WhyEvent {
         at: None,
         at_epoch: None,
@@ -959,12 +1114,28 @@ fn why_schedule(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
             "SELECT title, session, command, enabled, schedule_expr, created, updated
              FROM schedules WHERE id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
         )
         .ok();
     let Some((title, session, command, enabled, expr, created, updated)) = row else {
         w.gap(format!("no row in `schedules` with id {id} — a deleted schedule leaves its runs and audit rows behind, so try `schedule_runs`/`schedule_audit` directly for a schedule that no longer exists"));
-        w.probe("schedules", format!("id='{id}'"), 0, 0, Some("subject not found".into()));
+        w.probe(
+            "schedules",
+            format!("id='{id}'"),
+            0,
+            0,
+            Some("subject not found".into()),
+        );
         // The runs/audit rows can still explain a deleted schedule; collect
         // them anyway rather than stopping at "not found".
         collect_schedule_runs(conn, &mut w, id)?;
@@ -997,15 +1168,22 @@ fn why_schedule(conn: &Connection, id: &str) -> rusqlite::Result<Value> {
     collect_schedule_runs(conn, &mut w, id)?;
     collect_schedule_audit(conn, &mut w, id)?;
     collect_state_events(conn, &mut w, "schedule", id, Some(created))?;
-    collect_requests(conn, &mut w, &format!("/api/schedules/{id}%"), &format!("schedule {id}"))?;
+    collect_requests(
+        conn,
+        &mut w,
+        &format!("/api/schedules/{id}%"),
+        &format!("schedule {id}"),
+    )?;
     Ok(w.finish())
 }
 
 fn collect_schedule_runs(conn: &Connection, w: &mut Why, id: &str) -> rusqlite::Result<()> {
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM schedule_runs WHERE schedule_id = ?1", [id], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM schedule_runs WHERE schedule_id = ?1",
+            [id],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, ran_at, status, note, source FROM schedule_runs
@@ -1039,16 +1217,23 @@ fn collect_schedule_runs(conn: &Connection, w: &mut Why, id: &str) -> rusqlite::
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    w.probe("schedule_runs", format!("schedule_id='{id}'"), n, total,
-        (total == 0).then(|| "this schedule has never recorded a run".to_string()));
+    w.probe(
+        "schedule_runs",
+        format!("schedule_id='{id}'"),
+        n,
+        total,
+        (total == 0).then(|| "this schedule has never recorded a run".to_string()),
+    );
     Ok(())
 }
 
 fn collect_schedule_audit(conn: &Connection, w: &mut Why, id: &str) -> rusqlite::Result<()> {
     let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM schedule_audit WHERE schedule_id = ?1", [id], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM schedule_audit WHERE schedule_id = ?1",
+            [id],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
         "SELECT id, ts, field, old_value, new_value, source, by_who FROM schedule_audit
@@ -1081,8 +1266,13 @@ fn collect_schedule_audit(conn: &Connection, w: &mut Why, id: &str) -> rusqlite:
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    w.probe("schedule_audit", format!("schedule_id='{id}'"), n, total,
-        (total == 0).then(|| "no audited field changes for this schedule".to_string()));
+    w.probe(
+        "schedule_audit",
+        format!("schedule_id='{id}'"),
+        n,
+        total,
+        (total == 0).then(|| "no audited field changes for this schedule".to_string()),
+    );
     Ok(())
 }
 
@@ -1093,17 +1283,25 @@ fn collect_schedule_audit(conn: &Connection, w: &mut Why, id: &str) -> rusqlite:
 fn why_session(conn: &Connection, name: &str) -> rusqlite::Result<Value> {
     let mut w = Why::new("session", name);
     let req_total: usize = conn
-        .query_row("SELECT COUNT(*) FROM _amux_request_log WHERE amux_session = ?1", [name], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM _amux_request_log WHERE amux_session = ?1",
+            [name],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let ev_total: usize = conn
-        .query_row("SELECT COUNT(*) FROM session_events WHERE session = ?1", [name], |r| {
-            r.get::<_, i64>(0).map(|n| n as usize)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM session_events WHERE session = ?1",
+            [name],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
         .unwrap_or(0);
     let cards: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues WHERE session = ?1 AND deleted IS NULL", [name], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE session = ?1 AND deleted IS NULL",
+            [name],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     w.found = req_total > 0 || ev_total > 0 || cards > 0;
     w.subject = json!({"kind": "session", "id": name, "board_cards": cards});
@@ -1160,7 +1358,14 @@ fn why_session(conn: &Connection, name: &str) -> rusqlite::Result<Value> {
                 at_epoch: Some(secs),
                 kind: "session".into(),
                 actor: (!source.is_empty()).then(|| source.clone()),
-                summary: format!("{ty} (reported by {})", if source.is_empty() { "unrecorded source" } else { &source }),
+                summary: format!(
+                    "{ty} (reported by {})",
+                    if source.is_empty() {
+                        "unrecorded source"
+                    } else {
+                        &source
+                    }
+                ),
                 detail: data.map(|d| json!({ "data": d })),
                 source: json!({"table": "session_events", "rowid": id}),
                 ordering: "timestamped",
@@ -1215,7 +1420,8 @@ fn why_integration(conn: &Connection, name: &str) -> rusqlite::Result<Value> {
                 actor: session.filter(|s| !s.is_empty()),
                 summary: format!(
                     "{method} {path} -> {status}{}",
-                    err.map(|e| format!(" — {}", e.chars().take(160).collect::<String>())).unwrap_or_default()
+                    err.map(|e| format!(" — {}", e.chars().take(160).collect::<String>()))
+                        .unwrap_or_default()
                 ),
                 detail: None,
                 source: json!({"table": "_amux_request_log", "rowid": id}),
@@ -1268,15 +1474,22 @@ pub struct WindowParams {
 }
 
 fn parse_when(s: &str) -> Option<i64> {
-    s.parse::<i64>()
-        .ok()
-        .or_else(|| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp()))
+    s.parse::<i64>().ok().or_else(|| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.timestamp())
+    })
 }
 
 /// "What happened between T1 and T2" across the journal, the request log, and
 /// schedule runs — the three trails that are complete enough to answer a
 /// window question without cherry-picking.
-fn why_window_inner(conn: &Connection, since: i64, until: i64, limit: usize) -> rusqlite::Result<Value> {
+fn why_window_inner(
+    conn: &Connection,
+    since: i64,
+    until: i64,
+    limit: usize,
+) -> rusqlite::Result<Value> {
     let mut w = Why::new("window", &format!("{since}..{until}"));
     w.found = true;
     w.subject = json!({
@@ -1325,7 +1538,13 @@ fn why_window_inner(conn: &Connection, since: i64, until: i64, limit: usize) -> 
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    w.probe("_amux_state_events", format!("at BETWEEN '{since_s}' AND '{until_s}'"), n, ev_total, None);
+    w.probe(
+        "_amux_state_events",
+        format!("at BETWEEN '{since_s}' AND '{until_s}'"),
+        n,
+        ev_total,
+        None,
+    );
 
     let req_total: usize = conn
         .query_row(
@@ -1341,29 +1560,33 @@ fn why_window_inner(conn: &Connection, since: i64, until: i64, limit: usize) -> 
          WHERE ts >= ?1 AND ts <= ?2 AND status >= 400 ORDER BY ts ASC LIMIT ?3",
     )?;
     let rows: Vec<WhyEvent> = stmt
-        .query_map(rusqlite::params![since as f64, until as f64, limit as i64], |r| {
-            let id: i64 = r.get(0)?;
-            let ts: f64 = r.get(1)?;
-            let method: String = r.get(2)?;
-            let path: String = r.get(3)?;
-            let status: i64 = r.get(4)?;
-            let session: Option<String> = r.get(5)?;
-            let err: Option<String> = r.get(6)?;
-            let secs = ts as i64;
-            Ok(WhyEvent {
-                at: Some(epoch_to_rfc3339(secs)),
-                at_epoch: Some(secs),
-                kind: "request".into(),
-                actor: session.filter(|s| !s.is_empty()),
-                summary: format!(
-                    "{method} {path} -> {status}{}",
-                    err.map(|e| format!(" — {}", e.chars().take(160).collect::<String>())).unwrap_or_default()
-                ),
-                detail: None,
-                source: json!({"table": "_amux_request_log", "rowid": id}),
-                ordering: "timestamped",
-            })
-        })?
+        .query_map(
+            rusqlite::params![since as f64, until as f64, limit as i64],
+            |r| {
+                let id: i64 = r.get(0)?;
+                let ts: f64 = r.get(1)?;
+                let method: String = r.get(2)?;
+                let path: String = r.get(3)?;
+                let status: i64 = r.get(4)?;
+                let session: Option<String> = r.get(5)?;
+                let err: Option<String> = r.get(6)?;
+                let secs = ts as i64;
+                Ok(WhyEvent {
+                    at: Some(epoch_to_rfc3339(secs)),
+                    at_epoch: Some(secs),
+                    kind: "request".into(),
+                    actor: session.filter(|s| !s.is_empty()),
+                    summary: format!(
+                        "{method} {path} -> {status}{}",
+                        err.map(|e| format!(" — {}", e.chars().take(160).collect::<String>()))
+                            .unwrap_or_default()
+                    ),
+                    detail: None,
+                    source: json!({"table": "_amux_request_log", "rowid": id}),
+                    ordering: "timestamped",
+                })
+            },
+        )?
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
@@ -1406,7 +1629,13 @@ fn why_window_inner(conn: &Connection, since: i64, until: i64, limit: usize) -> 
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    w.probe("schedule_runs", format!("ran_at BETWEEN {since} AND {until}"), n, run_total, None);
+    w.probe(
+        "schedule_runs",
+        format!("ran_at BETWEEN {since} AND {until}"),
+        n,
+        run_total,
+        None,
+    );
 
     if ev_total == 0 && req_total == 0 && run_total == 0 {
         w.found = false;
@@ -1421,21 +1650,24 @@ fn why_window_inner(conn: &Connection, since: i64, until: i64, limit: usize) -> 
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn why_entity(State(st): State<AppState>, AxPath((kind, id)): AxPath<(String, String)>) -> Response {
+async fn why_entity(
+    State(st): State<AppState>,
+    AxPath((kind, id)): AxPath<(String, String)>,
+) -> Response {
     let conn = match st.store.read() {
         Ok(c) => c,
         Err(e) => return internal(e),
     };
-    let res = match kind.as_str() {
-        // `card` is the SPA's word for the same thing; both spellings answer.
-        "task" | "card" | "issue" => why_task(&conn, &id),
-        "worker" => why_worker(&conn, &id),
-        "command" => why_command(&conn, &id),
-        "schedule" => why_schedule(&conn, &id),
-        "session" => why_session(&conn, &id),
-        "integration" => why_integration(&conn, &id),
-        other => {
-            return (
+    let res =
+        match kind.as_str() {
+            // `card` is the SPA's word for the same thing; both spellings answer.
+            "task" | "card" | "issue" => why_task(&conn, &id),
+            "worker" => why_worker(&conn, &id),
+            "command" => why_command(&conn, &id),
+            "schedule" => why_schedule(&conn, &id),
+            "session" => why_session(&conn, &id),
+            "integration" => why_integration(&conn, &id),
+            other => return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": format!("unknown subject kind `{other}`"),
@@ -1443,9 +1675,8 @@ async fn why_entity(State(st): State<AppState>, AxPath((kind, id)): AxPath<(Stri
                     "contract": "GET /api/why/contract",
                 })),
             )
-                .into_response()
-        }
-    };
+                .into_response(),
+        };
     match res {
         Ok(v) => Json(v).into_response(),
         Err(e) => internal(e),
@@ -1457,7 +1688,11 @@ async fn why_window(State(st): State<AppState>, Query(p): Query<WindowParams>) -
     let until = p.until.as_deref().and_then(parse_when).unwrap_or(now);
     // Default window is the last hour: long enough to contain the thing you
     // just noticed, short enough that the answer is not a log.
-    let since = p.since.as_deref().and_then(parse_when).unwrap_or(until - 3600);
+    let since = p
+        .since
+        .as_deref()
+        .and_then(parse_when)
+        .unwrap_or(until - 3600);
     let limit = p.limit.unwrap_or(100).min(PER_SOURCE_CAP);
     if since > until {
         return (
@@ -1506,18 +1741,30 @@ mod tests {
 
     #[test]
     fn log_line_parses_the_python_format_and_leaves_anything_else_alone() {
-        assert_eq!(parse_log_line("`12:01` a: todo -> doing"), (Some("12:01"), "a: todo -> doing"));
+        assert_eq!(
+            parse_log_line("`12:01` a: todo -> doing"),
+            (Some("12:01"), "a: todo -> doing")
+        );
         // A line that is not in the expected shape is returned whole rather
         // than half-parsed into a wrong timestamp.
-        assert_eq!(parse_log_line("no timestamp here"), (None, "no timestamp here"));
+        assert_eq!(
+            parse_log_line("no timestamp here"),
+            (None, "no timestamp here")
+        );
     }
 
     #[test]
     fn abbrev_truncates_but_says_it_did_and_how_much() {
         let long = Value::String("x".repeat(4000));
         let s = abbrev(&long);
-        assert!(s.len() < 200, "a 4000-char field must not land in a summary line");
-        assert!(s.contains("4000 chars total"), "the cut must state the real length: {s}");
+        assert!(
+            s.len() < 200,
+            "a 4000-char field must not land in a summary line"
+        );
+        assert!(
+            s.contains("4000 chars total"),
+            "the cut must state the real length: {s}"
+        );
         assert!(s.contains("full value in `detail`"), "{s}");
         // Short values are untouched.
         assert_eq!(abbrev(&Value::String("todo".into())), "\"todo\"");
@@ -1551,7 +1798,10 @@ mod tests {
         let mut w = Why::new("task", "AMUX-1");
         collect_interactions(&conn, &mut w, "AMUX-1").expect("collect");
         let note = format!("{:?}", w.sources);
-        assert!(note.contains("EMPTY"), "must name the SOURCE as empty: {note}");
+        assert!(
+            note.contains("EMPTY"),
+            "must name the SOURCE as empty: {note}"
+        );
         assert!(
             !note.contains("no interaction rows target this entity"),
             "must not state a dead channel as a fact about the entity: {note}"
@@ -1570,8 +1820,14 @@ mod tests {
         let mut w2 = Why::new("task", "AMUX-1");
         collect_interactions(&conn, &mut w2, "AMUX-1").expect("collect");
         let note2 = format!("{:?}", w2.sources);
-        assert!(note2.contains("stale"), "a populated-but-old table must read as stale: {note2}");
-        assert!(note2.contains("2026-08-09"), "the note must name the newest row: {note2}");
+        assert!(
+            note2.contains("stale"),
+            "a populated-but-old table must read as stale: {note2}"
+        );
+        assert!(
+            note2.contains("2026-08-09"),
+            "the note must name the newest row: {note2}"
+        );
 
         // (c) CONTROL — a row that DOES target the entity produces no note at
         // all, or every explanation would carry a caveat and the caveat would
@@ -1585,8 +1841,14 @@ mod tests {
         let mut w3 = Why::new("task", "AMUX-1");
         collect_interactions(&conn, &mut w3, "AMUX-1").expect("collect");
         let note3 = format!("{:?}", w3.sources);
-        assert!(!note3.contains("EMPTY"), "a real hit must not be caveated: {note3}");
-        assert!(!note3.contains("stale"), "a real hit must not be caveated: {note3}");
+        assert!(
+            !note3.contains("EMPTY"),
+            "a real hit must not be caveated: {note3}"
+        );
+        assert!(
+            !note3.contains("stale"),
+            "a real hit must not be caveated: {note3}"
+        );
     }
 
     #[test]

@@ -206,13 +206,8 @@ fn reconciliation_requires_approval(method: &Method, path: &str) -> bool {
     )
 }
 
-fn require_reconciliation_approval(
-    method: &Method,
-    path: &str,
-    decision: &mut CapabilityDecision,
-) {
-    if reconciliation_requires_approval(method, path)
-        && decision.effect == CapabilityEffect::Allow
+fn require_reconciliation_approval(method: &Method, path: &str, decision: &mut CapabilityDecision) {
+    if reconciliation_requires_approval(method, path) && decision.effect == CapabilityEffect::Allow
     {
         decision.effect = CapabilityEffect::Ask;
         decision.rule_id = Some("builtin-reconciliation-exact-approval".into());
@@ -355,15 +350,12 @@ async fn request_trust(state: &AppState, headers: &HeaderMap) -> Result<TrustLev
 }
 
 /// The verdict itself, unchanged, split out so it runs on the blocking pool.
-fn trust_from_conn(
-    conn: &rusqlite::Connection,
-    actor_name: &str,
-) -> anyhow::Result<TrustLevel> {
+fn trust_from_conn(conn: &rusqlite::Connection, actor_name: &str) -> anyhow::Result<TrustLevel> {
     let Some(worker) = crate::db::queries::get_worker(conn, actor_name)? else {
         return Ok(TrustLevel::Trusted);
     };
-    let worker_id = amux_core::ids::WorkerId::parse(&worker.id)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let worker_id =
+        amux_core::ids::WorkerId::parse(&worker.id).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let Some(command) = crate::db::commands::in_flight(conn, &worker_id)? else {
         return Ok(TrustLevel::Trusted);
     };
@@ -427,6 +419,11 @@ pub async fn enforce(State(state): State<AppState>, mut req: Request, next: Next
     // recovery path recursively unavailable.
     if req.uri().path() == "/api/policy/approvals" {
         return next.run(req).await;
+    }
+    if let Some(response) =
+        super::projects::executor_mutation_guard(req.method(), req.uri().path(), req.headers())
+    {
+        return response;
     }
     let (action, reversible) = classify(req.method(), req.uri().path());
     if action == ActionClass::Read {
@@ -829,9 +826,15 @@ mod tests {
             (Method::DELETE, "/api/harness/reconciliations"),
             (Method::POST, "/api/harness/reconciliations/recon_1"),
             (Method::PUT, "/api/harness/reconciliations/recon_1/promote"),
-            (Method::POST, "/api/harness/reconciliations/recon_1/extra/promote"),
+            (
+                Method::POST,
+                "/api/harness/reconciliations/recon_1/extra/promote",
+            ),
         ] {
-            assert!(!reconciliation_requires_approval(&method, path), "{method} {path}");
+            assert!(
+                !reconciliation_requires_approval(&method, path),
+                "{method} {path}"
+            );
         }
     }
 

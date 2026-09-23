@@ -40,8 +40,14 @@ use super::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/default-model", get(get_default_model_h).patch(patch_default_model))
-        .route("/commit-guard", get(get_commit_guard).patch(patch_commit_guard))
+        .route(
+            "/default-model",
+            get(get_default_model_h).patch(patch_default_model),
+        )
+        .route(
+            "/commit-guard",
+            get(get_commit_guard).patch(patch_commit_guard),
+        )
         .route("/task-guard", get(get_task_guard).patch(patch_task_guard))
         .route("/env", get(get_env).patch(patch_env))
 }
@@ -274,7 +280,11 @@ pub(crate) fn strip_model_from_flags(flags: &str) -> Result<String, String> {
         filtered.push(t.clone());
         i += 1;
     }
-    Ok(filtered.iter().map(|t| shlex_quote(t)).collect::<Vec<_>>().join(" "))
+    Ok(filtered
+        .iter()
+        .map(|t| shlex_quote(t))
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 /// Python `_extract_model_from_flags`: read-only, so malformed input
@@ -312,7 +322,9 @@ pub(crate) fn validate_model_name(v: &Value) -> Result<String, String> {
     };
     let normalized = s.trim().to_string();
     if normalized.len() > MODEL_ID_MAX_LEN {
-        return Err(format!("model name too long (max {MODEL_ID_MAX_LEN} chars)"));
+        return Err(format!(
+            "model name too long (max {MODEL_ID_MAX_LEN} chars)"
+        ));
     }
     let allowed = |c: char| c.is_ascii_alphanumeric() || "._:[]@/+-".contains(c);
     if !normalized.is_empty() && (normalized.starts_with('-') || !normalized.chars().all(allowed)) {
@@ -329,7 +341,11 @@ pub(crate) fn get_default_model(home: &Path) -> String {
     let defaults = home.join("defaults.env");
     if defaults.exists() {
         let cfg = crate::config::parse_env_file(&defaults);
-        let model = extract_model_from_flags(cfg.get("CC_DEFAULT_FLAGS").map(String::as_str).unwrap_or(""));
+        let model = extract_model_from_flags(
+            cfg.get("CC_DEFAULT_FLAGS")
+                .map(String::as_str)
+                .unwrap_or(""),
+        );
         if !model.is_empty() {
             return model;
         }
@@ -340,12 +356,20 @@ pub(crate) fn get_default_model(home: &Path) -> String {
 /// The PATCH body's model applied to defaults.env — Python's handler, line
 /// for line: single read (no TOCTOU), strip the old `--model` while
 /// PRESERVING every other flag, quote-wrap, atomic 0600 write.
-pub(crate) fn patch_default_model_file(home: &Path, model: &str) -> Result<(), (StatusCode, Value)> {
+pub(crate) fn patch_default_model_file(
+    home: &Path,
+    model: &str,
+) -> Result<(), (StatusCode, Value)> {
     let defaults = home.join("defaults.env");
     let mut lines: Vec<String> = if defaults.exists() {
         std::fs::read_to_string(&defaults)
             .map(|s| s.lines().map(String::from).collect())
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })))?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": e.to_string() }),
+                )
+            })?
     } else {
         Vec::new()
     };
@@ -375,7 +399,9 @@ pub(crate) fn patch_default_model_file(home: &Path, model: &str) -> Result<(), (
     })?;
     let new_flag_value = if !model.is_empty() {
         if !flags_no_model.is_empty() {
-            format!("--model {model} {flags_no_model}").trim().to_string()
+            format!("--model {model} {flags_no_model}")
+                .trim()
+                .to_string()
         } else {
             format!("--model {model}")
         }
@@ -395,8 +421,12 @@ pub(crate) fn patch_default_model_file(home: &Path, model: &str) -> Result<(), (
         lines.push(new_line);
     }
     let content = lines.join("\n") + "\n";
-    atomic_write_secure(&defaults, &content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })))
+    atomic_write_secure(&defaults, &content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        )
+    })
 }
 
 // ---- /api/settings/default-model ------------------------------------------
@@ -407,10 +437,16 @@ async fn get_default_model_h() -> Response {
 
 async fn patch_default_model(Json(body): Json<Value>) -> Response {
     if !body.is_object() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "payload must be a JSON object" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "payload must be a JSON object" }),
+        );
     }
     // Python: body.get("model", "") — absent means "clear the override".
-    let model_v = body.get("model").cloned().unwrap_or_else(|| Value::String(String::new()));
+    let model_v = body
+        .get("model")
+        .cloned()
+        .unwrap_or_else(|| Value::String(String::new()));
     let model = match validate_model_name(&model_v) {
         Ok(m) => m,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
@@ -427,13 +463,19 @@ async fn patch_default_model(Json(body): Json<Value>) -> Response {
 /// falsy spelling.
 pub(crate) fn commit_guard_enabled(home: &Path) -> bool {
     let val = effective_env(home, "AMUX_COMMIT_GUARD").unwrap_or_else(|| "1".into());
-    !matches!(val.trim().to_lowercase().as_str(), "0" | "false" | "off" | "no")
+    !matches!(
+        val.trim().to_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    )
 }
 
 /// Python `_task_guard_enabled`: default OFF, opt-in spelling required.
 pub(crate) fn task_guard_enabled(home: &Path) -> bool {
     let val = effective_env(home, "AMUX_TASK_GUARD").unwrap_or_else(|| "0".into());
-    matches!(val.trim().to_lowercase().as_str(), "1" | "true" | "on" | "yes")
+    matches!(
+        val.trim().to_lowercase().as_str(),
+        "1" | "true" | "on" | "yes"
+    )
 }
 
 async fn get_commit_guard() -> Response {
@@ -446,7 +488,10 @@ async fn patch_commit_guard(Json(body): Json<Value>) -> Response {
     let val = if enabled { "1" } else { "0" };
     match set_server_env_key(&amux_home(), "AMUX_COMMIT_GUARD", val) {
         Ok(()) => Json(json!({ "ok": true, "enabled": enabled })).into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        ),
     }
 }
 
@@ -460,7 +505,10 @@ async fn patch_task_guard(Json(body): Json<Value>) -> Response {
     let val = if enabled { "1" } else { "0" };
     match set_server_env_key(&amux_home(), "AMUX_TASK_GUARD", val) {
         Ok(()) => Json(json!({ "ok": true, "enabled": enabled })).into_response(),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        ),
     }
 }
 
@@ -468,8 +516,12 @@ async fn patch_task_guard(Json(body): Json<Value>) -> Response {
 
 /// The only keys the settings UI may read (masked) or write. Fixed array,
 /// not a set: response key order is stable.
-pub(crate) const PROVIDER_ENV_KEYS: [&str; 4] =
-    ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"];
+pub(crate) const PROVIDER_ENV_KEYS: [&str; 4] = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+];
 
 /// Provider credentials a newly spawned process should inherit.
 ///
@@ -479,9 +531,7 @@ pub(crate) const PROVIDER_ENV_KEYS: [&str; 4] =
 pub(crate) fn runtime_provider_env(home: &Path) -> Vec<(String, String)> {
     PROVIDER_ENV_KEYS
         .iter()
-        .filter_map(|key| {
-            effective_env(home, key).map(|value| ((*key).to_string(), value))
-        })
+        .filter_map(|key| effective_env(home, key).map(|value| ((*key).to_string(), value)))
         .collect()
 }
 
@@ -525,7 +575,10 @@ async fn patch_env(Json(body): Json<Value>) -> Response {
     let home = amux_home();
     for (key, val) in &updates {
         if let Err(e) = set_server_env_key(&home, key, val) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
         }
     }
     // Consumers read server.env at process launch through runtime_provider_env;
@@ -757,9 +810,10 @@ pub(crate) mod test_env {
             // this guard's window could have exported ARE that file's keys.
             // Reading them at drop (not at set_home) is deliberate: the fixture
             // is usually written AFTER the guard is taken.
-            let mut scoped: Vec<String> = crate::config::parse_env_file(&self.home.join("server.env"))
-                .into_keys()
-                .collect();
+            let mut scoped: Vec<String> =
+                crate::config::parse_env_file(&self.home.join("server.env"))
+                    .into_keys()
+                    .collect();
             // The marker config.rs writes alongside the export belongs to the
             // same mechanism, so it leaks the same way.
             scoped.push(crate::config::ENV_FROM_FILE_MARKER.to_string());
@@ -769,7 +823,11 @@ pub(crate) mod test_env {
                 if k == "AMUX_HOME" || self.prev_leaky.iter().any(|(lk, _)| *lk == k) {
                     continue; // already handled above
                 }
-                let want = self.snapshot.iter().find(|(sk, _)| *sk == k).map(|(_, v)| v.clone());
+                let want = self
+                    .snapshot
+                    .iter()
+                    .find(|(sk, _)| *sk == k)
+                    .map(|(_, v)| v.clone());
                 let have = std::env::var(&k).ok();
                 if have == want {
                     continue;
@@ -928,7 +986,6 @@ pub(crate) mod test_env {
 mod tests {
     use super::*;
 
-
     /// AMUX-2904. Clearing an API key must actually clear it. `effective_env`
     /// fell through to the PROCESS env whenever the file value was empty, and
     /// config.rs exports server.env into the process env at startup — so a key
@@ -947,7 +1004,10 @@ mod tests {
 
         // 1. ABSENT from the file -> the process env is the answer.
         std::fs::write(home.join("server.env"), "OTHER=1\n").expect("write");
-        assert_eq!(effective_env(home, key).as_deref(), Some("from-process-env"));
+        assert_eq!(
+            effective_env(home, key).as_deref(),
+            Some("from-process-env")
+        );
 
         // 2. PRESENT and non-empty -> the file wins.
         std::fs::write(home.join("server.env"), format!("{key}=from-file\n")).expect("write");
@@ -976,9 +1036,11 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        let router = Router::new().nest("/api/settings", routes()).with_state(state);
+        let router = Router::new()
+            .nest("/api/settings", routes())
+            .with_state(state);
         (router, dir)
     }
 
@@ -998,7 +1060,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
@@ -1006,15 +1070,22 @@ mod tests {
 
     #[test]
     fn shlex_split_matches_python_shapes() {
-        assert_eq!(shlex_split("--model opus --max-tokens 8000").unwrap(),
-                   vec!["--model", "opus", "--max-tokens", "8000"]);
-        assert_eq!(shlex_split(r#"--append-system-prompt "be very terse""#).unwrap(),
-                   vec!["--append-system-prompt", "be very terse"]);
+        assert_eq!(
+            shlex_split("--model opus --max-tokens 8000").unwrap(),
+            vec!["--model", "opus", "--max-tokens", "8000"]
+        );
+        assert_eq!(
+            shlex_split(r#"--append-system-prompt "be very terse""#).unwrap(),
+            vec!["--append-system-prompt", "be very terse"]
+        );
         assert_eq!(shlex_split("--x 'a b'").unwrap(), vec!["--x", "a b"]);
         assert_eq!(shlex_split("").unwrap(), Vec::<String>::new());
         assert_eq!(shlex_split(r#"a\ b"#).unwrap(), vec!["a b"]);
         // Unbalanced quote errors with Python's message.
-        assert_eq!(shlex_split(r#"--x "unclosed"#).unwrap_err(), "No closing quotation");
+        assert_eq!(
+            shlex_split(r#"--x "unclosed"#).unwrap_err(),
+            "No closing quotation"
+        );
     }
 
     #[test]
@@ -1028,10 +1099,14 @@ mod tests {
 
     #[test]
     fn model_flag_surgery_preserves_other_flags() {
-        assert_eq!(strip_model_from_flags("--model opus --max-tokens 8000").unwrap(),
-                   "--max-tokens 8000");
-        assert_eq!(strip_model_from_flags("--model=opus --effort high").unwrap(),
-                   "--effort high");
+        assert_eq!(
+            strip_model_from_flags("--model opus --max-tokens 8000").unwrap(),
+            "--max-tokens 8000"
+        );
+        assert_eq!(
+            strip_model_from_flags("--model=opus --effort high").unwrap(),
+            "--effort high"
+        );
         assert_eq!(strip_model_from_flags("").unwrap(), "");
         // Quoted multi-word values survive re-quoting.
         assert_eq!(
@@ -1041,7 +1116,10 @@ mod tests {
         assert!(strip_model_from_flags(r#"--model "unclosed"#).is_err());
 
         assert_eq!(extract_model_from_flags("--model opus --x y"), "opus");
-        assert_eq!(extract_model_from_flags("--model=claude-fable-5"), "claude-fable-5");
+        assert_eq!(
+            extract_model_from_flags("--model=claude-fable-5"),
+            "claude-fable-5"
+        );
         assert_eq!(extract_model_from_flags("--x y"), "");
         assert_eq!(extract_model_from_flags(r#"--model "unclosed"#), "");
     }
@@ -1050,8 +1128,10 @@ mod tests {
     fn model_name_validation_matches_python() {
         assert_eq!(validate_model_name(&json!("  opus  ")).unwrap(), "opus");
         assert_eq!(validate_model_name(&json!("")).unwrap(), "");
-        assert_eq!(validate_model_name(&json!("us.anthropic.claude-3[1m]@x/+y")).unwrap(),
-                   "us.anthropic.claude-3[1m]@x/+y");
+        assert_eq!(
+            validate_model_name(&json!("us.anthropic.claude-3[1m]@x/+y")).unwrap(),
+            "us.anthropic.claude-3[1m]@x/+y"
+        );
         assert!(validate_model_name(&json!(3)).is_err());
         assert!(validate_model_name(&json!("-leading-hyphen")).is_err());
         assert!(validate_model_name(&json!("has space")).is_err());
@@ -1109,7 +1189,10 @@ mod tests {
         .unwrap();
         patch_default_model_file(home, "opus").unwrap();
         let content = std::fs::read_to_string(home.join("defaults.env")).unwrap();
-        assert_eq!(content, "OTHER=1\nCC_DEFAULT_FLAGS=\"--model opus --max-tokens 8000\"\n");
+        assert_eq!(
+            content,
+            "OTHER=1\nCC_DEFAULT_FLAGS=\"--model opus --max-tokens 8000\"\n"
+        );
         // Clearing the model keeps the rest.
         patch_default_model_file(home, "").unwrap();
         let content = std::fs::read_to_string(home.join("defaults.env")).unwrap();
@@ -1118,15 +1201,29 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(home.join("defaults.env")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(home.join("defaults.env"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         // Malformed existing flags: loud 400, file untouched.
-        std::fs::write(home.join("defaults.env"), "CC_DEFAULT_FLAGS=\"--model 'unclosed\"\n").unwrap();
+        std::fs::write(
+            home.join("defaults.env"),
+            "CC_DEFAULT_FLAGS=\"--model 'unclosed\"\n",
+        )
+        .unwrap();
         let e = patch_default_model_file(home, "opus").unwrap_err();
         assert_eq!(e.0, StatusCode::BAD_REQUEST);
-        assert!(e.1["error"].as_str().unwrap().contains("malformed"), "{:?}", e.1);
-        assert!(e.1["error"].as_str().unwrap().contains("fix the file manually"));
+        assert!(
+            e.1["error"].as_str().unwrap().contains("malformed"),
+            "{:?}",
+            e.1
+        );
+        assert!(e.1["error"]
+            .as_str()
+            .unwrap()
+            .contains("fix the file manually"));
     }
 
     #[test]
@@ -1135,7 +1232,11 @@ mod tests {
         let home = dir.path();
         // Empty keys resolve to None, so this exercises the defaults without
         // inheriting the live host's toggles or another test's config load.
-        std::fs::write(home.join("server.env"), "AMUX_COMMIT_GUARD=\nAMUX_TASK_GUARD=\n").unwrap();
+        std::fs::write(
+            home.join("server.env"),
+            "AMUX_COMMIT_GUARD=\nAMUX_TASK_GUARD=\n",
+        )
+        .unwrap();
         // Defaults: commit ON, task OFF.
         assert!(commit_guard_enabled(home));
         assert!(!task_guard_enabled(home));
@@ -1165,25 +1266,46 @@ mod tests {
         let (st, v) = send(&app, "GET", "/api/settings/default-model", None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["model"], json!("sonnet"));
-        let (st, v) =
-            send(&app, "PATCH", "/api/settings/default-model", Some(json!({ "model": "opus" }))).await;
+        let (st, v) = send(
+            &app,
+            "PATCH",
+            "/api/settings/default-model",
+            Some(json!({ "model": "opus" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert_eq!(v, json!({ "ok": true, "model": "opus" }));
         let (_, v) = send(&app, "GET", "/api/settings/default-model", None).await;
         assert_eq!(v["model"], json!("opus"));
         // Bad payloads.
-        let (st, v) = send(&app, "PATCH", "/api/settings/default-model", Some(json!(["x"]))).await;
+        let (st, v) = send(
+            &app,
+            "PATCH",
+            "/api/settings/default-model",
+            Some(json!(["x"])),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], json!("payload must be a JSON object"));
-        let (st, _) =
-            send(&app, "PATCH", "/api/settings/default-model", Some(json!({ "model": "-x" }))).await;
+        let (st, _) = send(
+            &app,
+            "PATCH",
+            "/api/settings/default-model",
+            Some(json!({ "model": "-x" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
 
         // Guards: GET defaults, PATCH, GET reflects the file immediately.
         let (_, v) = send(&app, "GET", "/api/settings/commit-guard", None).await;
         assert_eq!(v, json!({ "enabled": true }));
-        let (_, v) =
-            send(&app, "PATCH", "/api/settings/commit-guard", Some(json!({ "enabled": false }))).await;
+        let (_, v) = send(
+            &app,
+            "PATCH",
+            "/api/settings/commit-guard",
+            Some(json!({ "enabled": false })),
+        )
+        .await;
         assert_eq!(v, json!({ "ok": true, "enabled": false }));
         let (_, v) = send(&app, "GET", "/api/settings/commit-guard", None).await;
         assert_eq!(v, json!({ "enabled": false }));
@@ -1192,8 +1314,13 @@ mod tests {
         assert_eq!(v["enabled"], json!(true));
         let (_, v) = send(&app, "PATCH", "/api/settings/task-guard", Some(json!({}))).await;
         assert_eq!(v["enabled"], json!(false));
-        let (_, v) =
-            send(&app, "PATCH", "/api/settings/task-guard", Some(json!({ "enabled": true }))).await;
+        let (_, v) = send(
+            &app,
+            "PATCH",
+            "/api/settings/task-guard",
+            Some(json!({ "enabled": true })),
+        )
+        .await;
         assert_eq!(v, json!({ "ok": true, "enabled": true }));
         let (_, v) = send(&app, "GET", "/api/settings/task-guard", None).await;
         assert_eq!(v, json!({ "enabled": true }));
@@ -1242,12 +1369,22 @@ mod tests {
         assert!(content.contains("ANTHROPIC_API_KEY=sk-ant-api03-abcd"));
         assert!(!content.contains("NOT_ALLOWED"));
         // Only disallowed / non-string keys: Python's 400.
-        let (st, v) =
-            send(&app, "PATCH", "/api/settings/env", Some(json!({ "NOT_ALLOWED": "x" }))).await;
+        let (st, v) = send(
+            &app,
+            "PATCH",
+            "/api/settings/env",
+            Some(json!({ "NOT_ALLOWED": "x" })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], json!("no valid keys"));
-        let (st, _) =
-            send(&app, "PATCH", "/api/settings/env", Some(json!({ "OPENAI_API_KEY": 42 }))).await;
+        let (st, _) = send(
+            &app,
+            "PATCH",
+            "/api/settings/env",
+            Some(json!({ "OPENAI_API_KEY": 42 })),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
     }
 
@@ -1264,13 +1401,28 @@ mod tests {
         // EVERY age-reaped dir is ephemeral, not just uploads — the guard reads
         // storage::AGE_PRUNED_DIRS, so media-cache and spin-dumps (which the
         // original guard silently passed) are caught too.
-        assert!(is_ephemeral_path(home, uploads.to_str().unwrap()), "uploads path is ephemeral");
-        assert!(is_ephemeral_path(home, home.join("media-cache").join("x").to_str().unwrap()), "media-cache");
-        assert!(is_ephemeral_path(home, home.join("spin-dumps").join("x").to_str().unwrap()), "spin-dumps");
+        assert!(
+            is_ephemeral_path(home, uploads.to_str().unwrap()),
+            "uploads path is ephemeral"
+        );
+        assert!(
+            is_ephemeral_path(home, home.join("media-cache").join("x").to_str().unwrap()),
+            "media-cache"
+        );
+        assert!(
+            is_ephemeral_path(home, home.join("spin-dumps").join("x").to_str().unwrap()),
+            "spin-dumps"
+        );
         // Negative control — a path-prefix check must not widen into refusing
         // everything: a stable dir and an opaque non-path value are NOT flagged.
-        assert!(!is_ephemeral_path(home, stable.to_str().unwrap()), "gcp path is stable");
-        assert!(!is_ephemeral_path(home, "some-opaque-token-value"), "a non-path value is not ephemeral");
+        assert!(
+            !is_ephemeral_path(home, stable.to_str().unwrap()),
+            "gcp path is stable"
+        );
+        assert!(
+            !is_ephemeral_path(home, "some-opaque-token-value"),
+            "a non-path value is not ephemeral"
+        );
 
         // The persist site refuses the ephemeral path and writes nothing.
         assert!(
@@ -1278,11 +1430,17 @@ mod tests {
             "must refuse an uploads path"
         );
         let after = std::fs::read_to_string(home.join("server.env")).unwrap_or_default();
-        assert!(!after.contains("uploads"), "the ephemeral path must not reach server.env: {after}");
+        assert!(
+            !after.contains("uploads"),
+            "the ephemeral path must not reach server.env: {after}"
+        );
 
         // A stable path persists normally.
         set_server_env_key(home, "GOOGLE_SA_KEY_FILE", stable.to_str().unwrap()).unwrap();
         let after = std::fs::read_to_string(home.join("server.env")).unwrap();
-        assert!(after.contains("gcp/dpa-sa.json"), "stable path persists: {after}");
+        assert!(
+            after.contains("gcp/dpa-sa.json"),
+            "stable path persists: {after}"
+        );
     }
 }

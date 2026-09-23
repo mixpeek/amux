@@ -39,7 +39,9 @@ const ALLOW: &[(&str, &str)] = &[];
 
 fn rs_files(root: &str) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -74,8 +76,10 @@ fn pub_fn_names(src: &str) -> Vec<String> {
             .strip_prefix("pub async fn ")
             .or_else(|| t.strip_prefix("pub fn "));
         if let Some(rest) = rest {
-            let name: String =
-                rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
             if !name.is_empty() {
                 out.push(name);
             }
@@ -122,7 +126,11 @@ fn no_new_unreferenced_pub_fn_in_amux_server() {
             *defs.entry(n).or_insert(0) += 1;
         }
     }
-    assert!(defs.len() > 100, "found only {} pub fns — the scanner is broken, not the code", defs.len());
+    assert!(
+        defs.len() > 100,
+        "found only {} pub fns — the scanner is broken, not the code",
+        defs.len()
+    );
 
     // THIS FILE IS EXCLUDED FROM ITS OWN CORPUS. Every ALLOW row names a
     // function, so the allowlist is itself a bare-word reference to each name it
@@ -130,7 +138,10 @@ fn no_new_unreferenced_pub_fn_in_amux_server() {
     // failed with "ALLOW rows that are now REFERENCED". An instrument that
     // measures itself reads its own output as data (frustrations.md's header
     // indents its template for exactly this reason).
-    let me = Path::new(file!()).file_name().unwrap_or_default().to_owned();
+    let me = Path::new(file!())
+        .file_name()
+        .unwrap_or_default()
+        .to_owned();
     let corpus: Vec<String> = rs_files("crates")
         .iter()
         .filter(|p| p.file_name().unwrap_or_default() != me)
@@ -140,19 +151,28 @@ fn no_new_unreferenced_pub_fn_in_amux_server() {
     let found = unreferenced(&defs, &corpus);
     let allowed: Vec<&str> = ALLOW.iter().map(|(n, _)| *n).collect();
 
-    let new: Vec<&String> = found.iter().filter(|n| !allowed.contains(&n.as_str())).collect();
+    let new: Vec<&String> = found
+        .iter()
+        .filter(|n| !allowed.contains(&n.as_str()))
+        .collect();
     assert!(
         new.is_empty(),
         "unreferenced `pub fn` in amux-server (dead_code cannot see these — a `pub` item in a \
          lib crate is reachable by definition):\n{}\n\nDelete them, demote to `pub(crate)` so \
          the compiler polices them for free, or add to ALLOW with the reason.",
-        new.iter().map(|n| format!("  - {n}")).collect::<Vec<_>>().join("\n")
+        new.iter()
+            .map(|n| format!("  - {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     // The mirror: an ALLOW row that is no longer unreferenced is stale and must
     // go, or the list slowly becomes a place where live code hides.
-    let stale: Vec<&str> =
-        allowed.iter().copied().filter(|a| !found.iter().any(|f| f == a)).collect();
+    let stale: Vec<&str> = allowed
+        .iter()
+        .copied()
+        .filter(|a| !found.iter().any(|f| f == a))
+        .collect();
     assert!(
         stale.is_empty(),
         "ALLOW rows that are now REFERENCED (or gone) — delete them: {stale:?}"
@@ -174,10 +194,20 @@ fn the_detector_can_actually_fail() {
     let corpus = vec![src.to_string(), "fn caller() { used(); }".to_string()];
 
     let out = unreferenced(&defs, &corpus);
-    assert_eq!(out, vec!["orphan".to_string()], "must flag the orphan and clear the used one");
+    assert_eq!(
+        out,
+        vec!["orphan".to_string()],
+        "must flag the orphan and clear the used one"
+    );
 
     // Word boundaries: `used_elsewhere` must not count as a reference to `used`
     // — the substring bug that makes a census silently clear real dead code.
-    let out2 = unreferenced(&defs, &[src.to_string(), "fn f() { used_elsewhere(); }".into()]);
-    assert!(out2.contains(&"used".to_string()), "substring must not count as a reference");
+    let out2 = unreferenced(
+        &defs,
+        &[src.to_string(), "fn f() { used_elsewhere(); }".into()],
+    );
+    assert!(
+        out2.contains(&"used".to_string()),
+        "substring must not count as a reference"
+    );
 }

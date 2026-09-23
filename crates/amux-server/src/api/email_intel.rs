@@ -127,7 +127,10 @@ pub fn load_themes(home: &Path) -> Themes {
 
 pub fn save_themes(home: &Path, t: &Themes) -> std::io::Result<()> {
     std::fs::create_dir_all(home)?;
-    std::fs::write(themes_path(home), serde_json::to_vec_pretty(t).unwrap_or_default())
+    std::fs::write(
+        themes_path(home),
+        serde_json::to_vec_pretty(t).unwrap_or_default(),
+    )
 }
 
 /// The prompt. Asks for STRUCTURE, not prose: the whole point is that scoring
@@ -180,13 +183,22 @@ pub fn parse_themes(raw: &str) -> Option<Vec<Theme>> {
 /// theme with a hit, so an email touching two things you care about outranks one
 /// touching either alone, which is the behaviour a person expects from "rank by
 /// what matters to me".
-pub fn score_email(themes: &Themes, from: &str, subject: &str, snippet: &str) -> (f64, Vec<String>) {
+pub fn score_email(
+    themes: &Themes,
+    from: &str,
+    subject: &str,
+    snippet: &str,
+) -> (f64, Vec<String>) {
     let hay = format!("{} {} {}", from, subject, snippet).to_lowercase();
     let from_l = from.to_lowercase();
     let mut score = 0.0;
     let mut hits: Vec<String> = Vec::new();
     for t in &themes.themes {
-        let w = if t.weight <= 0.0 { 1.0 } else { t.weight.min(10.0) };
+        let w = if t.weight <= 0.0 {
+            1.0
+        } else {
+            t.weight.min(10.0)
+        };
         // A SENDER MATCH OUTWEIGHS A KEYWORD MATCH, deliberately. "from my
         // accountant" is a much stronger signal than the word "invoice"
         // appearing somewhere, and treating them equally lets a newsletter
@@ -309,7 +321,11 @@ pub fn annotate(
             rank_delta,
             note,
             score_now,
-            if themes_now.is_empty() { None } else { serde_json::to_string(themes_now).ok() },
+            if themes_now.is_empty() {
+                None
+            } else {
+                serde_json::to_string(themes_now).ok()
+            },
             from_addr,
             subject,
             now,
@@ -326,7 +342,9 @@ pub fn annotate(
 /// from the same messages forever and every correction is thrown away. With it,
 /// "you ranked these high and I rejected them" is part of the next prompt.
 pub fn annotation_signal(home: &Path) -> (String, usize) {
-    let Ok(c) = open_rw(home) else { return (String::new(), 0) };
+    let Ok(c) = open_rw(home) else {
+        return (String::new(), 0);
+    };
     let Ok(mut st) = c.prepare(
         "SELECT verdict, COALESCE(themes_at_annotation,'[]'), COALESCE(score_at_annotation,0) \
          FROM email_annotations WHERE verdict IS NOT NULL AND verdict <> '' \
@@ -335,7 +353,11 @@ pub fn annotation_signal(home: &Path) -> (String, usize) {
         return (String::new(), 0);
     };
     let rows = st.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, f64>(2)?,
+        ))
     });
     let mut approved: HashMap<String, usize> = HashMap::new();
     let mut rejected: HashMap<String, usize> = HashMap::new();
@@ -344,7 +366,11 @@ pub fn annotation_signal(home: &Path) -> (String, usize) {
         for (verdict, themes_json, _score) in rows.flatten() {
             n += 1;
             let ts: Vec<String> = serde_json::from_str(&themes_json).unwrap_or_default();
-            let bucket = if verdict == "approved" { &mut approved } else { &mut rejected };
+            let bucket = if verdict == "approved" {
+                &mut approved
+            } else {
+                &mut rejected
+            };
             for t in ts {
                 *bucket.entry(t).or_insert(0) += 1;
             }
@@ -356,15 +382,27 @@ pub fn annotation_signal(home: &Path) -> (String, usize) {
     let fmt = |m: &HashMap<String, usize>| -> String {
         let mut v: Vec<(&String, &usize)> = m.iter().collect();
         v.sort_by(|a, b| b.1.cmp(a.1));
-        v.iter().take(8).map(|(k, c)| format!("{k} ({c})")).collect::<Vec<_>>().join(", ")
+        v.iter()
+            .take(8)
+            .map(|(k, c)| format!("{k} ({c})"))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     (
         format!(
             "\n\nTHE PERSON HAS ALSO JUDGED {n} RANKED EMAILS. Themes they KEPT: {}. Themes they \
 REJECTED: {}. Weight the kept ones up and the rejected ones down, or drop a rejected theme \
 entirely if it only ever produced mail they did not want.",
-            if approved.is_empty() { "(none yet)".to_string() } else { fmt(&approved) },
-            if rejected.is_empty() { "(none yet)".to_string() } else { fmt(&rejected) },
+            if approved.is_empty() {
+                "(none yet)".to_string()
+            } else {
+                fmt(&approved)
+            },
+            if rejected.is_empty() {
+                "(none yet)".to_string()
+            } else {
+                fmt(&rejected)
+            },
         ),
         n,
     )
@@ -400,7 +438,11 @@ async fn ranked(
     let home = amux_home();
     let themes = load_themes(&home);
     let account = q.get("account").cloned().unwrap_or_default();
-    let count: usize = q.get("count").and_then(|v| v.parse().ok()).unwrap_or(40).min(200);
+    let count: usize = q
+        .get("count")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40)
+        .min(200);
     let days: f64 = q.get("days").and_then(|v| v.parse().ok()).unwrap_or(7.0);
 
     // The SAME client `/api/email/inbox` uses, reached through the SAME
@@ -411,7 +453,12 @@ async fn ranked(
         .client
         .inbox_messages(&account, count, "", days, None)
         .await
-        .map(|v| v.get("messages").and_then(Value::as_array).cloned().unwrap_or_default());
+        .map(|v| {
+            v.get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        });
     let msgs = match fetched {
         Ok(v) => v,
         Err(e) => {
@@ -440,7 +487,9 @@ async fn ranked(
     let mut scored: Vec<Value> = msgs
         .iter()
         .filter_map(|m| {
-            let id = m.get("message_id").and_then(Value::as_str)
+            let id = m
+                .get("message_id")
+                .and_then(Value::as_str)
                 .or_else(|| m.get("id").and_then(Value::as_str))
                 .unwrap_or("");
             let a = anns.get(id);
@@ -518,7 +567,13 @@ async fn ranked(
 /// disagreement is unrecoverable otherwise.
 async fn annotate_msg(Json(b): Json<Value>) -> Response {
     let home = amux_home();
-    let sget = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let sget = |k: &str| {
+        b.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let account = sget("account");
     let message_id = sget("message_id");
     if account.is_empty() || message_id.is_empty() {
@@ -545,7 +600,11 @@ async fn annotate_msg(Json(b): Json<Value>) -> Response {
     let themes_now: Vec<String> = b
         .get("matched_themes")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     match annotate(
         &home,
@@ -560,8 +619,9 @@ async fn annotate_msg(Json(b): Json<Value>) -> Response {
         &sget("from"),
         &sget("subject"),
     ) {
-        Ok(()) => Json(json!({"ok": true, "account": account, "message_id": message_id}))
-            .into_response(),
+        Ok(()) => {
+            Json(json!({"ok": true, "account": account, "message_id": message_id})).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "error": e})),
@@ -628,7 +688,10 @@ pub fn recompute_themes(home: &Path) -> Result<Themes, String> {
         .complete(&model, &prompt)
         .map_err(|e| format!("meta-task model call failed: {e}"))?;
     let themes = parse_themes(&out).ok_or_else(|| {
-        format!("could not parse a JSON theme array out of the model's answer ({} bytes)", out.len())
+        format!(
+            "could not parse a JSON theme array out of the model's answer ({} bytes)",
+            out.len()
+        )
     })?;
     let t = Themes {
         themes,
@@ -658,16 +721,20 @@ fn human_corpus(home: &Path, limit: usize) -> Result<Vec<String>, String> {
     // The SAME predicate `msg_kind` uses, rather than a re-spelling of it: a
     // corpus that disagreed with the Messages view about what counts as human
     // would be inferring themes from machine traffic.
-    let types: Vec<String> =
-        super::history::HUMAN_TYPES.iter().map(|s| s.to_string()).collect();
+    let types: Vec<String> = super::history::HUMAN_TYPES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let placeholders = types.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT text FROM cmd_history WHERE COALESCE(type,'') IN ({placeholders}) \
          AND text IS NOT NULL AND length(text) > 20 ORDER BY id DESC LIMIT {limit}"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let refs: Vec<&dyn rusqlite::types::ToSql> =
-        types.iter().map(|t| t as &dyn rusqlite::types::ToSql).collect();
+    let refs: Vec<&dyn rusqlite::types::ToSql> = types
+        .iter()
+        .map(|t| t as &dyn rusqlite::types::ToSql)
+        .collect();
     let rows = stmt
         .query_map(refs.as_slice(), |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
@@ -717,14 +784,16 @@ async fn one_theme_pass() {
     let age = now_f64() - existing.computed_at;
     if existing.measured && age < THEME_REFRESH_SECS as f64 {
         tracing::debug!(
-            age_s = age as i64, themes = existing.themes.len(),
+            age_s = age as i64,
+            themes = existing.themes.len(),
             "email-intel: themes are fresh, skipping recompute"
         );
         return;
     }
     match tokio::task::spawn_blocking(move || recompute_themes(&amux_home())).await {
         Ok(Ok(t)) if t.measured => tracing::info!(
-            themes = t.themes.len(), n_considered = t.n_considered,
+            themes = t.themes.len(),
+            n_considered = t.n_considered,
             "email-intel: themes refreshed"
         ),
         // A corpus too small is a REPORTED state, not a failure and not silence.
@@ -754,7 +823,12 @@ mod tests {
         }
     }
     fn themes(v: Vec<Theme>) -> Themes {
-        Themes { themes: v, measured: true, n_considered: 100, ..Themes::default() }
+        Themes {
+            themes: v,
+            measured: true,
+            n_considered: 100,
+            ..Themes::default()
+        }
     }
 
     /// Ranking must actually rank: an email matching a heavy theme outranks one
@@ -822,14 +896,22 @@ mod tests {
         assert!(!never.measured);
         assert!(
             never.why_unmeasured.contains("never been computed"),
-            "an absent inference must name itself: {}", never.why_unmeasured
+            "an absent inference must name itself: {}",
+            never.why_unmeasured
         );
         assert_eq!(score_email(&never, "a@b.com", "invoice", "").0, 0.0);
 
         // A REAL measurement that found nothing scores the same and reads
         // differently. Same number, different fact.
-        let empty_but_measured = Themes { measured: true, n_considered: 187, ..Themes::default() };
-        assert_eq!(score_email(&empty_but_measured, "a@b.com", "invoice", "").0, 0.0);
+        let empty_but_measured = Themes {
+            measured: true,
+            n_considered: 187,
+            ..Themes::default()
+        };
+        assert_eq!(
+            score_email(&empty_but_measured, "a@b.com", "invoice", "").0,
+            0.0
+        );
         assert!(empty_but_measured.measured);
         assert_eq!(empty_but_measured.n_considered, 187);
     }
@@ -874,7 +956,10 @@ mod tests {
         save_themes(d.path(), &src).unwrap();
         let back = load_themes(d.path());
         assert!(back.measured);
-        assert_eq!(back.n_considered, 42, "provenance must survive, not just content");
+        assert_eq!(
+            back.n_considered, 42,
+            "provenance must survive, not just content"
+        );
         assert_eq!(back.model, "claude-haiku");
         assert_eq!(back.themes[0].senders, vec!["acme.com".to_string()]);
     }
@@ -887,7 +972,8 @@ mod annotation_tests {
     fn home_with_db() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         let c = rusqlite::Connection::open(d.path().join("amux.db")).unwrap();
-        c.execute_batch(include_str!("../../migrations/0049_email_annotations.sql")).unwrap();
+        c.execute_batch(include_str!("../../migrations/0049_email_annotations.sql"))
+            .unwrap();
         d
     }
 
@@ -897,14 +983,29 @@ mod annotation_tests {
     fn an_annotation_freezes_what_the_ranker_believed_at_the_time() {
         let d = home_with_db();
         annotate(
-            d.path(), "a@b.com", "m1", Some("rejected"), None, None, None,
-            Some(14.0), &["Newsletters".into(), "Billing".into()], "spam@x.io", "Weekly digest",
+            d.path(),
+            "a@b.com",
+            "m1",
+            Some("rejected"),
+            None,
+            None,
+            None,
+            Some(14.0),
+            &["Newsletters".into(), "Billing".into()],
+            "spam@x.io",
+            "Weekly digest",
         )
         .unwrap();
         let (signal, n) = annotation_signal(d.path());
         assert_eq!(n, 1);
-        assert!(signal.contains("Newsletters"), "the rejected theme must reach the next prompt: {signal}");
-        assert!(signal.contains("REJECTED"), "and be on the rejected side: {signal}");
+        assert!(
+            signal.contains("Newsletters"),
+            "the rejected theme must reach the next prompt: {signal}"
+        );
+        assert!(
+            signal.contains("REJECTED"),
+            "and be on the rejected side: {signal}"
+        );
     }
 
     /// THE FEEDBACK LOOP IS THE POINT. Kept and rejected themes must land on
@@ -912,8 +1013,34 @@ mod annotation_tests {
     #[test]
     fn kept_and_rejected_themes_are_reported_separately() {
         let d = home_with_db();
-        annotate(d.path(), "a", "m1", Some("approved"), None, None, None, Some(9.0), &["Customer".into()], "", "").unwrap();
-        annotate(d.path(), "a", "m2", Some("rejected"), None, None, None, Some(9.0), &["Newsletters".into()], "", "").unwrap();
+        annotate(
+            d.path(),
+            "a",
+            "m1",
+            Some("approved"),
+            None,
+            None,
+            None,
+            Some(9.0),
+            &["Customer".into()],
+            "",
+            "",
+        )
+        .unwrap();
+        annotate(
+            d.path(),
+            "a",
+            "m2",
+            Some("rejected"),
+            None,
+            None,
+            None,
+            Some(9.0),
+            &["Newsletters".into()],
+            "",
+            "",
+        )
+        .unwrap();
         let (signal, n) = annotation_signal(d.path());
         assert_eq!(n, 2);
         let kept_at = signal.find("KEPT").unwrap();
@@ -921,8 +1048,14 @@ mod annotation_tests {
         let kept_side = &signal[kept_at..rej_at];
         let rej_side = &signal[rej_at..];
         assert!(kept_side.contains("Customer"), "kept side: {kept_side}");
-        assert!(rej_side.contains("Newsletters"), "rejected side: {rej_side}");
-        assert!(!kept_side.contains("Newsletters"), "a rejected theme must not read as kept");
+        assert!(
+            rej_side.contains("Newsletters"),
+            "rejected side: {rej_side}"
+        );
+        assert!(
+            !kept_side.contains("Newsletters"),
+            "a rejected theme must not read as kept"
+        );
     }
 
     /// An upsert must not wipe fields the caller did not send. Flagging a
@@ -930,12 +1063,41 @@ mod annotation_tests {
     #[test]
     fn a_partial_update_preserves_the_fields_it_did_not_mention() {
         let d = home_with_db();
-        annotate(d.path(), "a", "m1", Some("approved"), None, Some(5.0), None, None, &[], "", "").unwrap();
+        annotate(
+            d.path(),
+            "a",
+            "m1",
+            Some("approved"),
+            None,
+            Some(5.0),
+            None,
+            None,
+            &[],
+            "",
+            "",
+        )
+        .unwrap();
         // Flag only.
-        annotate(d.path(), "a", "m1", None, Some(true), None, None, None, &[], "", "").unwrap();
+        annotate(
+            d.path(),
+            "a",
+            "m1",
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            &[],
+            "",
+            "",
+        )
+        .unwrap();
         let all = annotations_for(d.path(), "a");
         let a = all.get("m1").expect("row");
-        assert_eq!(a.verdict, "approved", "the verdict must survive a flag-only update");
+        assert_eq!(
+            a.verdict, "approved",
+            "the verdict must survive a flag-only update"
+        );
         assert_eq!(a.rank_delta, 5.0, "and so must the nudge");
         assert!(a.flagged);
     }
@@ -945,18 +1107,47 @@ mod annotation_tests {
     #[test]
     fn an_unjudged_message_has_no_verdict() {
         let d = home_with_db();
-        annotate(d.path(), "a", "m1", None, Some(true), None, None, None, &[], "", "").unwrap();
+        annotate(
+            d.path(),
+            "a",
+            "m1",
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            &[],
+            "",
+            "",
+        )
+        .unwrap();
         let all = annotations_for(d.path(), "a");
         assert_eq!(all.get("m1").unwrap().verdict, "", "flagged is not filed");
         let (_, n) = annotation_signal(d.path());
-        assert_eq!(n, 0, "a message with no verdict teaches the inference nothing");
+        assert_eq!(
+            n, 0,
+            "a message with no verdict teaches the inference nothing"
+        );
     }
 
     /// Annotations are per-account. Two mailboxes must not share judgments.
     #[test]
     fn annotations_do_not_leak_between_accounts() {
         let d = home_with_db();
-        annotate(d.path(), "a@x.com", "m1", Some("approved"), None, None, None, None, &[], "", "").unwrap();
+        annotate(
+            d.path(),
+            "a@x.com",
+            "m1",
+            Some("approved"),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            "",
+            "",
+        )
+        .unwrap();
         assert_eq!(annotations_for(d.path(), "a@x.com").len(), 1);
         assert!(annotations_for(d.path(), "b@y.com").is_empty());
     }

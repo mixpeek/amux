@@ -158,7 +158,10 @@ fn err(status: StatusCode, body: Value) -> Response {
 use super::internal;
 
 fn no_write() -> WriteOutcome {
-    WriteOutcome { applied: false, events: Vec::new() }
+    WriteOutcome {
+        applied: false,
+        events: Vec::new(),
+    }
 }
 
 fn finish<T>(
@@ -171,7 +174,12 @@ fn finish<T>(
 }
 
 fn ev(entity_type: EntityType, id: &str, mutation: MutationKind) -> PendingEvent {
-    PendingEvent { entity_type, entity_id: id.to_string(), mutation, payload: None }
+    PendingEvent {
+        entity_type,
+        entity_id: id.to_string(),
+        mutation,
+        payload: None,
+    }
 }
 
 fn message_body(m: &Message) -> Value {
@@ -194,7 +202,11 @@ pub(crate) fn resolve_recipient(
         Ok(Some(MessageTarget::Human))
     } else {
         queries::get_worker(conn, key)?
-            .map(|row| WorkerId::parse(&row.id).map(MessageTarget::Worker).map_err(corrupt))
+            .map(|row| {
+                WorkerId::parse(&row.id)
+                    .map(MessageTarget::Worker)
+                    .map_err(corrupt)
+            })
             .transpose()
     }
 }
@@ -222,7 +234,11 @@ pub(crate) fn insert_message_and_deliver(
         now,
     );
     insert_message(conn, &parent)?;
-    let mut events = vec![ev(EntityType::Message, parent.id.as_str(), MutationKind::Created)];
+    let mut events = vec![ev(
+        EntityType::Message,
+        parent.id.as_str(),
+        MutationKind::Created,
+    )];
     let mut children_ids = Vec::new();
     let mut commands_enqueued = 0usize;
     match &target {
@@ -237,7 +253,11 @@ pub(crate) fn insert_message_and_deliver(
             let mut mint = || MessageId::from_ulid(ulid::Ulid::new());
             for child in fan_out(&parent, &members, &mut mint) {
                 insert_message(conn, &child)?;
-                events.push(ev(EntityType::Message, child.id.as_str(), MutationKind::Created));
+                events.push(ev(
+                    EntityType::Message,
+                    child.id.as_str(),
+                    MutationKind::Created,
+                ));
                 if let MessageTarget::Worker(w) = &child.to {
                     enqueue_delivery(conn, w, &child.id, now)?;
                     commands_enqueued += 1;
@@ -281,8 +301,14 @@ pub struct CreateMessageBody {
 }
 
 enum CreateOutcome {
-    NotFound { what: String },
-    Created { message: Value, fan_out: Vec<String>, commands_enqueued: usize },
+    NotFound {
+        what: String,
+    },
+    Created {
+        message: Value,
+        fan_out: Vec<String>,
+        commands_enqueued: usize,
+    },
 }
 
 pub async fn create_message(
@@ -290,7 +316,10 @@ pub async fn create_message(
     Json(body): Json<CreateMessageBody>,
 ) -> Response {
     if body.body.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "body is required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "body is required" }),
+        );
     }
     let to_spec = match body.to {
         Value::String(s) => ToSpec::Key(s),
@@ -320,7 +349,9 @@ pub async fn create_message(
                 )
             }
         },
-        None => Actor::Human { name: "owner".into() },
+        None => Actor::Human {
+            name: "owner".into(),
+        },
     };
     let thread: Option<MessageId> = match &body.thread {
         Some(t) => match MessageId::parse(t) {
@@ -352,7 +383,9 @@ pub async fn create_message(
                     None => {
                         return finish(
                             &slot_w,
-                            CreateOutcome::NotFound { what: format!("worker '{s}'") },
+                            CreateOutcome::NotFound {
+                                what: format!("worker '{s}'"),
+                            },
                             no_write(),
                         )
                     }
@@ -364,7 +397,9 @@ pub async fn create_message(
                 if queries::get_worker(conn, w.as_str())?.is_none() {
                     return finish(
                         &slot_w,
-                        CreateOutcome::NotFound { what: format!("worker {}", w.as_str()) },
+                        CreateOutcome::NotFound {
+                            what: format!("worker {}", w.as_str()),
+                        },
                         no_write(),
                     );
                 }
@@ -382,8 +417,14 @@ pub async fn create_message(
             }
 
             let now = Utc::now();
-            let (parent, children_ids, commands_enqueued, events) =
-                insert_message_and_deliver(conn, from.clone(), target, text.clone(), thread.clone(), now)?;
+            let (parent, children_ids, commands_enqueued, events) = insert_message_and_deliver(
+                conn,
+                from.clone(),
+                target,
+                text.clone(),
+                thread.clone(),
+                now,
+            )?;
 
             finish(
                 &slot_w,
@@ -392,7 +433,10 @@ pub async fn create_message(
                     fan_out: children_ids,
                     commands_enqueued,
                 },
-                WriteOutcome { applied: true, events },
+                WriteOutcome {
+                    applied: true,
+                    events,
+                },
             )
         })
         .await;
@@ -408,7 +452,11 @@ pub async fn create_message(
             StatusCode::NOT_FOUND,
             json!({ "error": "recipient not found", "missing": what }),
         ),
-        Some(CreateOutcome::Created { message, fan_out, commands_enqueued }) => (
+        Some(CreateOutcome::Created {
+            message,
+            fan_out,
+            commands_enqueued,
+        }) => (
             StatusCode::CREATED,
             Json(json!({
                 "message": message,
@@ -437,10 +485,7 @@ fn default_limit() -> u64 {
 
 /// Newest first, PagedResponse-shaped (Invariant 40: `total`/`truncated`
 /// announce what the page omits).
-pub async fn list_messages(
-    State(state): State<AppState>,
-    Query(p): Query<ListParams>,
-) -> Response {
+pub async fn list_messages(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
     let offset = p.offset;
     let limit = p.limit.clamp(1, 1000);
     let store = state.store.clone();
@@ -524,16 +569,19 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
     #[derive(Default)]
     struct Row {
         msgs: u64,
+        actionable: u64,
         linked: u64,
         latest_ts_ms: i64,
         latest_snippet: String,
+        latest_actionable_ts_ms: i64,
+        latest_actionable_snippet: String,
         created: u64,
         moved: u64,
     }
     let mut rows: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
 
     let mut stmt = conn.prepare(
-        "SELECT session, ts, card_id, substr(text,1,80) \
+        "SELECT session, ts, card_id, text \
          FROM cmd_history \
          WHERE type='user' AND origin='' AND ts >= ?1 \
          ORDER BY ts DESC",
@@ -548,7 +596,8 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
         }
         let ts: i64 = r.get(1)?;
         let card_id: Option<String> = r.get(2)?;
-        let snippet: String = r.get::<_, String>(3)?.replace(['\n', '\r'], " ");
+        let message: String = r.get(3)?;
+        let snippet: String = message.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
         let e = rows.entry(session).or_default();
         e.msgs += 1;
         if card_id.as_deref().map(|c| !c.is_empty()).unwrap_or(false) {
@@ -557,6 +606,21 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
         if ts > e.latest_ts_ms {
             e.latest_ts_ms = ts;
             e.latest_snippet = snippet;
+        }
+        // A delivered answer-only message or explicit [no-board] control does
+        // not owe the worker a task. The board capture path uses this same
+        // predicate; the accountability nudge must not contradict it by
+        // demanding a new card for a prompt the harness intentionally left
+        // cardless.
+        if amux_core::board::title_from_prompt(&message).is_some()
+            && !amux_core::board::is_informational_query(&message)
+            && !amux_core::board::is_conversational_ack(&message)
+        {
+            e.actionable += 1;
+            if ts > e.latest_actionable_ts_ms {
+                e.latest_actionable_ts_ms = ts;
+                e.latest_actionable_snippet = message.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
+            }
         }
     }
 
@@ -572,7 +636,9 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
     while let Some(r) = bq.next()? {
         // issues.session is nullable — a NULL here is what 500'd the first live
         // call. Skip it: an ownerless card is not a worker's tracked work.
-        let Some(session) = r.get::<_, Option<String>>(0)? else { continue };
+        let Some(session) = r.get::<_, Option<String>>(0)? else {
+            continue;
+        };
         if let Some(e) = rows.get_mut(&session) {
             e.created = r.get::<_, i64>(1)? as u64;
             e.moved = r.get::<_, i64>(2)? as u64;
@@ -594,26 +660,35 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
         workers.push(json!({
             "worker": session,
             "human_messages": e.msgs,
+            "actionable_messages": e.actionable,
             "messages_linked_to_a_card": e.linked,
             "cards_created_in_window": e.created,
             "cards_moved_in_window": e.moved,
             "latest_message_snippet": e.latest_snippet,
-            "verdict": if accounted { "tracking" } else { "no-board-activity" },
+            "verdict": if accounted { "tracking" } else if e.actionable == 0 { "message-only" } else { "no-board-activity" },
         }));
-        if !accounted {
+        if !accounted && e.actionable > 0 {
             unaccounted.push(Unaccounted {
                 worker: session.clone(),
-                human_messages: e.msgs,
-                latest_snippet: e.latest_snippet.clone(),
+                human_messages: e.actionable,
+                latest_snippet: e.latest_actionable_snippet.clone(),
             });
         }
     }
     workers.sort_by(|a, b| {
-        b["human_messages"].as_u64().unwrap_or(0).cmp(&a["human_messages"].as_u64().unwrap_or(0))
+        b["human_messages"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["human_messages"].as_u64().unwrap_or(0))
     });
     unaccounted.sort_by_key(|b| std::cmp::Reverse(b.human_messages));
 
-    Ok(Rollup { total_human_messages, total_linked, workers, unaccounted })
+    Ok(Rollup {
+        total_human_messages,
+        total_linked,
+        workers,
+        unaccounted,
+    })
 }
 
 pub async fn accountability(
@@ -628,8 +703,10 @@ pub async fn accountability(
         let unaccounted: Vec<Value> = r
             .unaccounted
             .iter()
-            .map(|u| json!({"worker": u.worker, "human_messages": u.human_messages,
-                "latest_message_snippet": u.latest_snippet}))
+            .map(|u| {
+                json!({"worker": u.worker, "human_messages": u.human_messages,
+                "latest_message_snippet": u.latest_snippet})
+            })
             .collect();
         Ok(json!({
             "since_h": since_h,
@@ -665,7 +742,10 @@ pub async fn accountability(
 const NUDGE_PREFS_KEY: &str = "accountability_nudged";
 
 fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// One sweep: nudge every lane that has been unaccounted longer than the
@@ -676,16 +756,16 @@ pub(crate) async fn accountability_tick(state: &AppState) {
     let now = Utc::now().timestamp();
 
     let store = state.store.clone();
-    let gaps = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(String, u64, String)>> {
-        let conn = store.read()?;
-        let r = compute_rollup(&conn, since_h)?;
-        Ok(r
-            .unaccounted
-            .into_iter()
-            .map(|u| (u.worker, u.human_messages, u.latest_snippet))
-            .collect())
-    })
-    .await;
+    let gaps =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(String, u64, String)>> {
+            let conn = store.read()?;
+            let r = compute_rollup(&conn, since_h)?;
+            Ok(r.unaccounted
+                .into_iter()
+                .map(|u| (u.worker, u.human_messages, u.latest_snippet))
+                .collect())
+        })
+        .await;
     let gaps = match gaps {
         Ok(Ok(g)) => g,
         Ok(Err(e)) => {
@@ -742,7 +822,9 @@ pub(crate) async fn accountability_tick(state: &AppState) {
              no board card created or moved — the work isn't tracked yet. Please open a board card \
              for the ask (owned by you) and pursue it. Most recent: \"{snippet}\"",
         );
-        let _ = crate::api::session_verbs::steer_enqueue(state, &worker, &text, "accountability", "").await;
+        let _ =
+            crate::api::session_verbs::steer_enqueue(state, &worker, &text, "accountability", "")
+                .await;
         nudged.insert(worker.clone(), now);
         sent += 1;
         tracing::info!(worker=%worker, human_messages=msgs, "[accountability] nudged unaccounted lane");
@@ -761,10 +843,16 @@ pub(crate) async fn accountability_tick(state: &AppState) {
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 params![NUDGE_PREFS_KEY, body],
             )?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
-    tracing::info!(nudged = sent, "[accountability] sweep nudged unaccounted lanes");
+    tracing::info!(
+        nudged = sent,
+        "[accountability] sweep nudged unaccounted lanes"
+    );
 }
 
 /// Register the periodic sweep. Interval default 30m; the per-lane cooldown
@@ -818,15 +906,16 @@ pub struct ActedBody {
 enum AdvanceOutcome {
     NotFound,
     /// Backwards/sideways move refused by the core (forward-only record).
-    Refused { from: &'static str, to: &'static str },
-    Applied { delivery: Value },
+    Refused {
+        from: &'static str,
+        to: &'static str,
+    },
+    Applied {
+        delivery: Value,
+    },
 }
 
-async fn advance(
-    state: AppState,
-    key: String,
-    next: DeliveryState,
-) -> Response {
+async fn advance(state: AppState, key: String, next: DeliveryState) -> Response {
     let slot: Arc<Mutex<Option<AdvanceOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let key_w = key.clone();
@@ -840,7 +929,10 @@ async fn advance(
             match msg.advance_delivery(next) {
                 Err(e) => finish(
                     &slot_w,
-                    AdvanceOutcome::Refused { from: e.from, to: e.to },
+                    AdvanceOutcome::Refused {
+                        from: e.from,
+                        to: e.to,
+                    },
                     no_write(),
                 ),
                 Ok(()) => {
@@ -862,10 +954,12 @@ async fn advance(
                     finish(
                         &slot_w,
                         AdvanceOutcome::Applied {
-                            delivery: serde_json::to_value(&msg.delivery)
-                                .unwrap_or(Value::Null),
+                            delivery: serde_json::to_value(&msg.delivery).unwrap_or(Value::Null),
                         },
-                        WriteOutcome { applied: true, events },
+                        WriteOutcome {
+                            applied: true,
+                            events,
+                        },
                     )
                 }
             }
@@ -920,7 +1014,15 @@ pub async fn acted_message(
         },
         None => None,
     };
-    advance(state, key, DeliveryState::ActedOn { at: Utc::now(), task }).await
+    advance(
+        state,
+        key,
+        DeliveryState::ActedOn {
+            at: Utc::now(),
+            task,
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -943,7 +1045,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         (router(state), store, dir)
     }
@@ -964,7 +1066,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = if bytes.is_empty() {
             Value::Null
         } else {
@@ -1045,11 +1149,17 @@ mod tests {
         let protocol = Arc::new(MockProtocol::new());
         protocol.register(worker.clone(), AgentState::Idle);
         let rt = pump_runtime(store.clone(), protocol.clone());
-        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
         let calls = protocol.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
         match &calls[0] {
-            RecordedCall::DeliverMessage { worker: w, msg, body } => {
+            RecordedCall::DeliverMessage {
+                worker: w,
+                msg,
+                body,
+            } => {
                 assert_eq!(w, &worker);
                 assert_eq!(msg.as_str(), msg_id);
                 assert_eq!(body, text, "the durable body, byte-identical");
@@ -1081,14 +1191,19 @@ mod tests {
                         None,
                         Utc::now(),
                     )?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
         let protocol = Arc::new(MockProtocol::new());
         protocol.register(worker.clone(), AgentState::Idle);
         let rt = pump_runtime(store.clone(), protocol.clone());
-        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
 
         assert!(protocol.calls().is_empty(), "nothing must reach the agent");
         let conn = store.read().unwrap();
@@ -1126,15 +1241,22 @@ mod tests {
         // and each member worker has a queued DeliverMessage.
         let conn = store.read().unwrap();
         for child_id in children {
-            let m = message_by_id(&conn, child_id.as_str().unwrap()).unwrap().unwrap();
-            assert_eq!(m.thread.as_ref().map(|t| t.as_str()), Some(parent_id.as_str()));
+            let m = message_by_id(&conn, child_id.as_str().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                m.thread.as_ref().map(|t| t.as_str()),
+                Some(parent_id.as_str())
+            );
             assert_eq!(m.body, "standup in 5");
             assert_eq!(m.delivery, DeliveryState::Queued);
         }
         for w in [&w1, &w2] {
             let worker = WorkerId::parse(w).unwrap();
             assert!(
-                crate::db::commands::next_deliverable(&conn, &worker).unwrap().is_some(),
+                crate::db::commands::next_deliverable(&conn, &worker)
+                    .unwrap()
+                    .is_some(),
                 "member {w} has a queued delivery"
             );
         }
@@ -1214,7 +1336,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let now_s = Utc::now().timestamp();
         let now_ms = now_s * 1000;
@@ -1225,7 +1347,11 @@ mod tests {
         let _home = crate::api::settings::test_env::set_home(_dir.path());
         std::fs::create_dir_all(_dir.path().join("sessions")).unwrap();
         for w in ["w-gap", "w-cooled"] {
-            std::fs::write(_dir.path().join(format!("sessions/{w}.env")), "CC_DIR=/tmp\n").unwrap();
+            std::fs::write(
+                _dir.path().join(format!("sessions/{w}.env")),
+                "CC_DIR=/tmp\n",
+            )
+            .unwrap();
         }
         // Both lanes are unaccounted (a human message, no board card). w-cooled
         // was "already nudged just now" via the prefs stamp; w-gap never was.
@@ -1260,8 +1386,16 @@ mod tests {
                 )
                 .unwrap()
         };
-        assert_eq!(steers("w-gap"), 1, "an un-nudged unaccounted lane must be steered");
-        assert_eq!(steers("w-cooled"), 0, "a lane nudged within the cooldown must be skipped");
+        assert_eq!(
+            steers("w-gap"),
+            1,
+            "an un-nudged unaccounted lane must be steered"
+        );
+        assert_eq!(
+            steers("w-cooled"),
+            0,
+            "a lane nudged within the cooldown must be skipped"
+        );
     }
 
     #[tokio::test]
@@ -1284,6 +1418,7 @@ mod tests {
                 ins_msg("w-gap", "", "user", now_ms - 1000);
                 ins_msg("w-ok", "", "user", now_ms - 1000);
                 ins_msg("w-sched", "Daily thing", "user", now_ms - 1000); // origin set -> not human
+                conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,delivery,delivered_at) VALUES('[11:17 AM] [no-board] Reply with ACK only','user','w-message-only',?1,'','direct',?1)",params![now_ms-1000]).unwrap();
                 // A board card w-ok created just now; w-gap has none.
                 conn.execute(
                     "INSERT INTO issues (id,title,status,session,created,updated) VALUES ('I-OK','t','todo','w-ok',?1,?1)",
@@ -1304,15 +1439,21 @@ mod tests {
 
         let (st, v) = send(&app, "GET", "/api/messages/accountability?since_h=24", None).await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        // Only the two human messages count; the scheduler one is excluded.
-        assert_eq!(v["total_human_messages"], json!(2), "{v}");
+        // The no-board prompt remains a human message, but cannot trigger a
+        // work-card nudge; the scheduler is excluded from human messages.
+        assert_eq!(v["total_human_messages"], json!(3), "{v}");
         let unacc: Vec<&str> = v["unaccounted"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|u| u["worker"].as_str())
             .collect();
-        assert_eq!(unacc, vec!["w-gap"], "only the worker with no board activity is flagged: {v}");
+        assert_eq!(
+            unacc,
+            vec!["w-gap"],
+            "only the worker with no board activity is flagged: {v}"
+        );
+        assert_eq!(v["workers"].as_array().unwrap().iter().find(|w|w["worker"]=="w-message-only").unwrap()["verdict"],json!("message-only"));
         // And w-ok reads as tracking, not flagged.
         let ok_row = v["workers"]
             .as_array()

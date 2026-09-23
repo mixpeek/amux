@@ -57,7 +57,9 @@ async fn send(
     };
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let value = if bytes.is_empty() {
         Value::Null
     } else {
@@ -85,7 +87,12 @@ async fn seed_backlog(app: &axum::Router, headers: &[(&str, &str)], n: usize) ->
         )
         .await;
         assert!(st.is_success(), "seeding a backlog card: {st} {v}");
-        ids.push(v["id"].as_str().expect("created card has an id").to_string());
+        ids.push(
+            v["id"]
+                .as_str()
+                .expect("created card has an id")
+                .to_string(),
+        );
     }
     ids
 }
@@ -150,8 +157,7 @@ async fn a_dashboard_column_sweep_names_the_owner_on_every_card_it_moved() {
 async fn a_worker_that_also_holds_the_owner_bearer_is_still_the_worker() {
     let (app, _dir) = app(Some(OWNER));
     let bearer = format!("Bearer {OWNER}");
-    let as_worker: &[(&str, &str)] =
-        &[("authorization", &bearer), ("x-amux-session", "some-lane")];
+    let as_worker: &[(&str, &str)] = &[("authorization", &bearer), ("x-amux-session", "some-lane")];
     let ids = seed_backlog(&app, as_worker, 2).await;
 
     let (st, v) = send(
@@ -163,7 +169,10 @@ async fn a_worker_that_also_holds_the_owner_bearer_is_still_the_worker() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!(v["actor"], "some-lane", "the worker's own name must win: {v}");
+    assert_eq!(
+        v["actor"], "some-lane",
+        "the worker's own name must win: {v}"
+    );
     let log = card_log(&app, &ids[0], as_worker).await;
     assert!(
         log.contains("by some-lane"),

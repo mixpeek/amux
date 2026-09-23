@@ -47,7 +47,10 @@ async fn list(State(state): State<AppState>) -> Response {
     let conn = match state.store.read() {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": e.to_string()})))
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": e.to_string()})),
+            )
                 .into_response()
         }
     };
@@ -84,7 +87,10 @@ async fn list(State(state): State<AppState>) -> Response {
                         o.insert("url".into(), json!(t.url));
                         o.insert("requests".into(), json!(t.requests));
                         o.insert("error".into(), json!(t.error));
-                        o.insert("dropped".into(), json!(crate::runtime_jobs::tunnel::dropped()));
+                        o.insert(
+                            "dropped".into(),
+                            json!(crate::runtime_jobs::tunnel::dropped()),
+                        );
                     }
                 }
                 Ok(row)
@@ -151,7 +157,10 @@ async fn create(State(state): State<AppState>, Json(body): Json<Value>) -> Respo
                 "INSERT INTO proxies (id, name, port, scheme, created_at) VALUES (?1,?2,?3,?4,?5)",
                 rusqlite::params![id, name, port, scheme, ts],
             )?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     match out {
@@ -174,7 +183,10 @@ async fn create(State(state): State<AppState>, Json(body): Json<Value>) -> Respo
                 .unwrap_or_default();
             (StatusCode::OK, Json(json!({"ok": true, "id": id}))).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -186,13 +198,22 @@ async fn patch(
 ) -> Response {
     let existing = {
         let Ok(conn) = state.store.read() else {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "store unavailable"})))
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "store unavailable"})),
+            )
                 .into_response();
         };
         conn.query_row(
             "SELECT name, port, scheme FROM proxies WHERE id=?1",
             [&id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
         )
         .ok()
     };
@@ -202,7 +223,11 @@ async fn patch(
 
     // Every field falls back to its CURRENT value — a PATCH that omits a field
     // must not blank it (Python py:65660 does the same).
-    let name = match body["name"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+    let name = match body["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(n) => n.to_string(),
         None => cur_name,
     };
@@ -211,7 +236,11 @@ async fn patch(
         .or_else(|| body["port"].as_str().and_then(|s| s.trim().parse().ok()))
         .unwrap_or(cur_port);
     if !(1..=65535).contains(&port) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid port"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid port"})),
+        )
+            .into_response();
     }
     let scheme = scheme_of(body["scheme"].as_str(), &cur_scheme);
 
@@ -222,7 +251,10 @@ async fn patch(
                 "UPDATE proxies SET name=?1, port=?2, scheme=?3 WHERE id=?4",
                 rusqlite::params![name, port, scheme, id],
             )?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
     {
@@ -230,7 +262,10 @@ async fn patch(
         // without the tunnel client, so there is nothing to restart — and
         // pretending otherwise is the fake this module refuses to ship.
         Ok(_) => Json(json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -240,12 +275,18 @@ async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Respon
         .store
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM proxies WHERE id=?1", [&id])?;
-            Ok(WriteOutcome { applied: n > 0, events: vec![] })
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
         })
         .await
     {
         Ok(_) => Json(json!({"ok": true})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
             .into_response(),
     }
 }
@@ -260,16 +301,30 @@ async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Respon
 async fn start(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let row = {
         let Ok(conn) = state.store.read() else {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "store unavailable"})))
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "store unavailable"})),
+            )
                 .into_response();
         };
-        conn.query_row("SELECT port FROM proxies WHERE id=?1", [&id], |r| r.get::<_, i64>(0)).ok()
+        conn.query_row("SELECT port FROM proxies WHERE id=?1", [&id], |r| {
+            r.get::<_, i64>(0)
+        })
+        .ok()
     };
     let Some(port) = row else {
-        return (StatusCode::NOT_FOUND, Json(json!({"error": "proxy not found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "proxy not found"})),
+        )
+            .into_response();
     };
     let Ok(port) = u16::try_from(port) else {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid port"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid port"})),
+        )
+            .into_response();
     };
     if crate::runtime_jobs::tunnel::snapshot().running {
         crate::runtime_jobs::tunnel::stop();
@@ -278,7 +333,11 @@ async fn start(State(state): State<AppState>, Path(id): Path<String>) -> Respons
     match crate::runtime_jobs::tunnel::start(Some(port)).await {
         // 400: refusing amux's own port, or no token. Both are amux declining
         // with a stated remedy, not amux failing.
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": e})),
+        )
+            .into_response(),
         Ok(s) => {
             crate::runtime_jobs::tunnel::set_proxy_id(Some(id.clone()));
             let ts = now();
@@ -289,7 +348,10 @@ async fn start(State(state): State<AppState>, Path(id): Path<String>) -> Respons
                         "UPDATE proxies SET last_started=?1 WHERE id=?2",
                         rusqlite::params![ts, id],
                     )?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .await;
             Json(json!({"ok": true, "running": s.running, "url": s.url, "error": s.error}))
@@ -328,7 +390,10 @@ mod tests {
         assert!(validate("api", 0).is_some(), "0 is not a port");
         assert!(validate("api", 65536).is_some(), "above the u16 range");
         assert!(validate("api", -1).is_some(), "negative");
-        assert!(validate("", 8080).is_some(), "a nameless proxy is unusable in the list");
+        assert!(
+            validate("", 8080).is_some(),
+            "a nameless proxy is unusable in the list"
+        );
         assert!(validate("   ", 8080).is_some(), "whitespace is not a name");
     }
 
@@ -348,8 +413,16 @@ mod tests {
         // rather than reporting a stop that did not happen.
         tun::set_proxy_id(None);
         let (st, body) = shape(stop(Path("PRX-9".into())).await).await;
-        assert_eq!(st, StatusCode::OK, "not an error: the caller's intent is satisfied");
-        assert_eq!(body["stopped"], json!(false), "it did not stop anything: {body}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "not an error: the caller's intent is satisfied"
+        );
+        assert_eq!(
+            body["stopped"],
+            json!(false),
+            "it did not stop anything: {body}"
+        );
 
         // CONTROL: with PRX-9 recorded as the active proxy the same call DOES
         // stop. Without this cell, a stop that never stops anything passes the
@@ -358,13 +431,19 @@ mod tests {
         // `active_proxy_id` gates on `running`, which is false here — so the
         // control asserts the PREDICATE the handler uses, not a state a unit
         // test cannot construct without dialling a gateway.
-        assert_eq!(tun::active_proxy_id(), None, "not running, so nothing is active");
+        assert_eq!(
+            tun::active_proxy_id(),
+            None,
+            "not running, so nothing is active"
+        );
         tun::set_proxy_id(None);
     }
 
     async fn shape(r: Response) -> (StatusCode, Value) {
         let st = r.status();
-        let b = axum::body::to_bytes(r.into_body(), 64 * 1024).await.unwrap_or_default();
+        let b = axum::body::to_bytes(r.into_body(), 64 * 1024)
+            .await
+            .unwrap_or_default();
         (st, serde_json::from_slice(&b).unwrap_or(Value::Null))
     }
 
@@ -375,7 +454,11 @@ mod tests {
         // Python coerces silently and the SPA depends on it — it omits `scheme`
         // on most writes, so rejecting would break every edit from the UI.
         assert_eq!(scheme_of(Some("ftp"), "http"), "http");
-        assert_eq!(scheme_of(None, "https"), "https", "absent keeps the CURRENT scheme");
+        assert_eq!(
+            scheme_of(None, "https"),
+            "https",
+            "absent keeps the CURRENT scheme"
+        );
         assert_eq!(scheme_of(Some(""), "https"), "https");
     }
 }

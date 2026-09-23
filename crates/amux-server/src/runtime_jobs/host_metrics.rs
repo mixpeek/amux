@@ -100,7 +100,14 @@ pub fn extract(v: &Value) -> Row {
 
 /// Insert one sample. `measured` false carries `why` and a default row, so the
 /// gap is IN the series rather than missing from it.
-async fn record(state: &AppState, ts: i64, measured: bool, why: Option<String>, row: Row, sample: String) {
+async fn record(
+    state: &AppState,
+    ts: i64,
+    measured: bool,
+    why: Option<String>,
+    row: Row,
+    sample: String,
+) {
     let outcome = state
         .store
         .write_async(move |conn| {
@@ -129,7 +136,10 @@ async fn record(state: &AppState, ts: i64, measured: bool, why: Option<String>, 
                     sample,
                 ],
             )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     if let Err(e) = outcome {
@@ -150,7 +160,15 @@ pub async fn record_result(state: &AppState, ts: i64, res: Result<Value, String>
         }
         Err(why) => {
             tracing::warn!(job = JOB, %why, "host analysis failed; recording an unmeasured sample");
-            record(state, ts, false, Some(why), Row::default(), "{}".to_string()).await;
+            record(
+                state,
+                ts,
+                false,
+                Some(why),
+                Row::default(),
+                "{}".to_string(),
+            )
+            .await;
         }
     }
 }
@@ -229,7 +247,11 @@ mod tests {
         let mut v = full_sample();
         v["cpu"]["load_avg"] = json!([]);
         assert_eq!(extract(&v).load1, None);
-        assert_eq!(extract(&v).cpu_count, Some(28), "control: the rest still parses");
+        assert_eq!(
+            extract(&v).cpu_count,
+            Some(28),
+            "control: the rest still parses"
+        );
     }
 
     /// The interval floor: `spawn_periodic` clamps to 1 s, so 0 must not reach
@@ -266,8 +288,24 @@ mod tests {
             auth_token: None,
             reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        record(&state, 1_700_000_000, true, None, extract(&full_sample()), full_sample().to_string()).await;
-        record(&state, 1_700_000_060, false, Some("sysctl missing".into()), Row::default(), "{}".to_string()).await;
+        record(
+            &state,
+            1_700_000_000,
+            true,
+            None,
+            extract(&full_sample()),
+            full_sample().to_string(),
+        )
+        .await;
+        record(
+            &state,
+            1_700_000_060,
+            false,
+            Some("sysctl missing".into()),
+            Row::default(),
+            "{}".to_string(),
+        )
+        .await;
 
         let conn = state.store.read().unwrap();
         let (n, unmeasured): (i64, i64) = conn
@@ -277,7 +315,11 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!((n, unmeasured), (2, 1), "both rows land, exactly one unmeasured");
+        assert_eq!(
+            (n, unmeasured),
+            (2, 1),
+            "both rows land, exactly one unmeasured"
+        );
         let (mem, why): (Option<f64>, Option<String>) = conn
             .query_row(
                 "SELECT mem_used_mb, why_unmeasured FROM host_metrics WHERE ts=1700000060",
@@ -288,9 +330,17 @@ mod tests {
         assert_eq!(mem, None, "a failed probe stores NULL, never 0");
         assert_eq!(why.as_deref(), Some("sysctl missing"));
         let load: Option<f64> = conn
-            .query_row("SELECT load1 FROM host_metrics WHERE ts=1700000000", [], |r| r.get(0))
+            .query_row(
+                "SELECT load1 FROM host_metrics WHERE ts=1700000000",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(load, Some(25.09), "control: the measured row kept its columns");
+        assert_eq!(
+            load,
+            Some(25.09),
+            "control: the measured row kept its columns"
+        );
     }
 
     /// A probe that FAILED must leave a row saying so. Without it the series
@@ -307,7 +357,12 @@ mod tests {
             auth_token: None,
             reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        record_result(&state, 1_700_001_000, Err("host-analysis.sh exited 127".into())).await;
+        record_result(
+            &state,
+            1_700_001_000,
+            Err("host-analysis.sh exited 127".into()),
+        )
+        .await;
         // Control: the success arm on the same path, so this cell fails on a
         // broken writer rather than passing because nothing was written at all.
         record_result(&state, 1_700_001_060, Ok(full_sample())).await;
@@ -329,7 +384,11 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!((measured_ok, load), (1, Some(25.09)), "control: the success arm still records");
+        assert_eq!(
+            (measured_ok, load),
+            (1, Some(25.09)),
+            "control: the success arm still records"
+        );
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {

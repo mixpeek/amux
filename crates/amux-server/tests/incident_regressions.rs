@@ -116,12 +116,21 @@ fn incident_regression_duplicate_draft_resurrects_sent_message() {
     // The blank-email shape: assembly is ONE construction — an empty body
     // yields a visibly empty part, never a draft to resurrect later.
     let blank = build_rfc822(&MimeSpec {
-        from: "a@x.com", to: "b@y.com", cc: "", subject: "Re: pilot",
-        in_reply_to: "<parent@id>", references: "", plain: "", html: "",
+        from: "a@x.com",
+        to: "b@y.com",
+        cc: "",
+        subject: "Re: pilot",
+        in_reply_to: "<parent@id>",
+        references: "",
+        plain: "",
+        html: "",
         boundary: "bnd-test",
         attachments: &[],
     });
-    assert!(blank.contains("In-Reply-To"), "threading survives an empty body");
+    assert!(
+        blank.contains("In-Reply-To"),
+        "threading survives an empty body"
+    );
 }
 
 /// INCIDENT (AMUX-2560 / 2026-08-02): board read-after-write staleness — a
@@ -164,7 +173,10 @@ fn incident_regression_stale_steering_command_freshness() {
     let lookup_moved = |entity: &str| -> Option<(u64, String)> {
         (entity == "wrk_x").then(|| (4u64, "idle".into()))
     };
-    assert!(!pre.evaluate(&lookup_moved), "moved version must fail delivery");
+    assert!(
+        !pre.evaluate(&lookup_moved),
+        "moved version must fail delivery"
+    );
     let lookup_fresh = |entity: &str| -> Option<(u64, String)> {
         (entity == "wrk_x").then(|| (3u64, "idle".into()))
     };
@@ -180,7 +192,12 @@ fn incident_regression_noop_write_bumps_nothing() {
     let s = store();
     let before = s.current_rev().unwrap();
     let reply = s
-        .write(|_conn| Ok(WriteOutcome { applied: false, events: vec![] }))
+        .write(|_conn| {
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
+        })
         .unwrap();
     assert!(!reply.applied);
     assert_eq!(s.current_rev().unwrap(), before, "no-op must not move rev");

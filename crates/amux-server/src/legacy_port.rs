@@ -139,8 +139,12 @@ fn persist_path() -> std::path::PathBuf {
 /// Load the persisted window. Absent/corrupt file = a fresh window, which is
 /// the conservative direction: it delays retirement, never advances it.
 fn load_persisted() -> (u64, u64, u64) {
-    let Ok(txt) = std::fs::read_to_string(persist_path()) else { return (0, 0, 0) };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { return (0, 0, 0) };
+    let Ok(txt) = std::fs::read_to_string(persist_path()) else {
+        return (0, 0, 0);
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+        return (0, 0, 0);
+    };
     (
         v.get("first_armed").and_then(|x| x.as_u64()).unwrap_or(0),
         v.get("hits_total").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -243,8 +247,11 @@ pub async fn count(mut req: Request, next: Next) -> Response {
     // dashboard document acts on this; the API surface stays identical. Set
     // outside the lock so a poisoned counter cannot silently disable the
     // migration — the two failures are unrelated and must not be coupled.
-    req.extensions_mut()
-        .insert(OnLegacyListener(if port == 0 { crate::config::DEFAULT_PORT } else { port }));
+    req.extensions_mut().insert(OnLegacyListener(if port == 0 {
+        crate::config::DEFAULT_PORT
+    } else {
+        port
+    }));
     next.run(req).await
 }
 
@@ -287,7 +294,10 @@ fn record(ip: &str, ua: &str, session: &str, path: &str) -> u16 {
         }
         return port;
     }
-    let e = s.clients.entry(key).or_insert(ClientTally { first_seen: t, ..Default::default() });
+    let e = s.clients.entry(key).or_insert(ClientTally {
+        first_seen: t,
+        ..Default::default()
+    });
     e.count += 1;
     e.last_seen = t;
     e.last_path = path.to_string();
@@ -357,9 +367,10 @@ fn scan_stranded_sessions_checked() -> Option<Vec<serde_json::Value>> {
     // after its command, on both BSD (macOS) and GNU (the Linux container) ps.
     let output = std::process::Command::new("ps").arg("axeww").output();
     match output {
-        Ok(o) if o.status.success() => {
-            Some(parse_stranded(&String::from_utf8_lossy(&o.stdout), RETIRED_PORTS))
-        }
+        Ok(o) if o.status.success() => Some(parse_stranded(
+            &String::from_utf8_lossy(&o.stdout),
+            RETIRED_PORTS,
+        )),
         _ => None,
     }
 }
@@ -388,7 +399,10 @@ fn parse_stranded(ps_output: &str, retired: &[u16]) -> Vec<serde_json::Value> {
         if session.is_empty() {
             continue; // no session name — not an attributable lane
         }
-        let pid = line.split_whitespace().next().and_then(|p| p.parse::<i64>().ok());
+        let pid = line
+            .split_whitespace()
+            .next()
+            .and_then(|p| p.parse::<i64>().ok());
         let url = url_tok.trim_start_matches("AMUX_URL=").to_string();
         seen.entry(session).or_insert((pid, url));
     }
@@ -506,7 +520,10 @@ pub fn publish_endpoint(amux_home: &std::path::Path, canonical: u16, legacy: Opt
         let me = std::process::id() as u64;
         if owner != me && pid_alive(owner as u32) {
             tracing::warn!(
-                ?path, owner_pid = owner, my_pid = me, canonical,
+                ?path,
+                owner_pid = owner,
+                my_pid = me,
+                canonical,
                 "endpoint.json is owned by a live server (pid {owner}); NOT overwriting it \
                  from this instance — a non-fleet server must not repoint the shared hook lookup \
                  (AMUX-2971). Give a dev server its own AMUX_HOME."
@@ -522,12 +539,20 @@ pub fn publish_endpoint(amux_home: &std::path::Path, canonical: u16, legacy: Opt
         .and_then(|_| std::fs::rename(&tmp, &path))
         .is_ok();
     if ok {
-        tracing::info!(?path, canonical, ?legacy_field, "published endpoint.json (stale-URL self-heal)");
+        tracing::info!(
+            ?path,
+            canonical,
+            ?legacy_field,
+            "published endpoint.json (stale-URL self-heal)"
+        );
     } else {
         // Loud: silently failing here turns every hook's self-heal off with no
         // trace, and the symptom (traffic on the retired port) looks identical
         // to nobody having fixed the hooks at all.
-        tracing::warn!(?path, "could not publish endpoint.json — hooks cannot self-heal a stale AMUX_URL");
+        tracing::warn!(
+            ?path,
+            "could not publish endpoint.json — hooks cannot self-heal a stale AMUX_URL"
+        );
     }
 }
 
@@ -558,8 +583,11 @@ fn snapshot_with(stranded: Vec<serde_json::Value>) -> serde_json::Value {
             // Loudest path first, for the same reason clients are sorted that
             // way: this list is read to decide WHICH caller wearing this
             // user-agent to go and fix next.
-            let mut paths: Vec<_> =
-                v.paths.iter().map(|(p, c)| serde_json::json!({"path": p, "count": c})).collect();
+            let mut paths: Vec<_> = v
+                .paths
+                .iter()
+                .map(|(p, c)| serde_json::json!({"path": p, "count": c}))
+                .collect();
             paths.sort_by_key(|p| std::cmp::Reverse(p["count"].as_u64().unwrap_or(0)));
             serde_json::json!({
                 "ip": ip,
@@ -693,7 +721,10 @@ pub async fn debug() -> axum::Json<serde_json::Value> {
     // on a retired port. A zero with `measured: true` is the answer this whole
     // counter exists to produce; a zero with `measured: false` is a probe that
     // did not run, and the two used to be the same payload.
-    let hits = body.get("hits_total").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+    let hits = body
+        .get("hits_total")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
     axum::Json(match scan {
         Some(_) => crate::api::measured::measured(body, hits),
         None => crate::api::measured::unmeasured(
@@ -731,7 +762,11 @@ pub fn take_hour() -> Option<HourReport> {
     if s.port == 0 {
         return None;
     }
-    let mut top: Vec<(String, u64)> = s.clients.iter().map(|(k, v)| (k.clone(), v.count)).collect();
+    let mut top: Vec<(String, u64)> = s
+        .clients
+        .iter()
+        .map(|(k, v)| (k.clone(), v.count))
+        .collect();
     top.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     top.truncate(5);
     let hits_last_hour = s.hour_hits;
@@ -832,7 +867,9 @@ mod tests {
         // included; amux EXCLUDED (on the live 8824); the session-less daemon
         // and the env-less login line both excluded.
         assert_eq!(names, vec!["backend", "ts-gke"], "got {got:?}");
-        assert!(got.iter().all(|r| r["amux_url"].as_str().unwrap().contains(":8822")));
+        assert!(got
+            .iter()
+            .all(|r| r["amux_url"].as_str().unwrap().contains(":8822")));
         // A machine fully migrated to 8824 yields nothing — no false positives.
         assert!(parse_stranded(ps, &[9999]).is_empty());
     }
@@ -945,7 +982,10 @@ mod tests {
         // one path going quiet while the other does not — with a single
         // `last_path` field that is invisible, so "did my fix work?" was
         // unanswerable from what this module kept.
-        assert_eq!(record("127.0.0.1", "curl/8", "", "/api/sessions/a/report"), 8822);
+        assert_eq!(
+            record("127.0.0.1", "curl/8", "", "/api/sessions/a/report"),
+            8822
+        );
         record("127.0.0.1", "curl/8", "", "/api/sessions/a/report");
         record("127.0.0.1", "curl/8", "", "/api/board");
         let busy = take_hour().expect("still armed");
@@ -971,11 +1011,19 @@ mod tests {
             .as_array()
             .expect("per-client path histogram")
             .iter()
-            .map(|p| (p["path"].as_str().unwrap_or("").to_string(), p["count"].as_u64().unwrap_or(0)))
+            .map(|p| {
+                (
+                    p["path"].as_str().unwrap_or("").to_string(),
+                    p["count"].as_u64().unwrap_or(0),
+                )
+            })
             .collect();
         assert_eq!(
             paths,
-            vec![("/api/sessions/a/report".to_string(), 2), ("/api/board".to_string(), 1)],
+            vec![
+                ("/api/sessions/a/report".to_string(), 2),
+                ("/api/board".to_string(), 1)
+            ],
             "paths must be split per caller and sorted loudest-first — one row \
              collapsing both callers is the state that made the drain unmeasurable"
         );
@@ -1002,7 +1050,10 @@ mod tests {
         assert_eq!(snap["unattributed_hits"], 3);
         assert_eq!(snap["attributed_hits"], 0);
         assert!(
-            snap["verdict"].as_str().unwrap_or("").starts_with("INVESTIGATE"),
+            snap["verdict"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("INVESTIGATE"),
             "unattributed traffic must not read as merely draining"
         );
 
@@ -1022,7 +1073,10 @@ mod tests {
         );
         // Unattributed traffic still outranks: a defect is not cleared by a
         // lane that merely needs restarting.
-        assert!(snap["verdict"].as_str().unwrap_or("").starts_with("INVESTIGATE"));
+        assert!(snap["verdict"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("INVESTIGATE"));
 
         // (5) THE COUNTDOWN MUST SURVIVE A RESTART (AMUX-2769). `ready_to_retire`
         // wanted 168h of observation on a process the builder re-execs several
@@ -1039,13 +1093,19 @@ mod tests {
         save_persisted(long_ago, 42, long_ago);
         arm(8822); // "restart"
         let back = snapshot_with(vec![]);
-        assert_eq!(back["hits_total"], 42, "a restart must not forget prior traffic");
+        assert_eq!(
+            back["hits_total"], 42,
+            "a restart must not forget prior traffic"
+        );
         assert_eq!(
             back["window"]["resets_on_restart"], false,
             "the field must stop claiming a reset it no longer does"
         );
         let quiet = back["quiet_for_hours"].as_f64().expect("quiet_for_hours");
-        assert!(quiet >= 168.0, "8 days of silence must read as >=168h, got {quiet}");
+        assert!(
+            quiet >= 168.0,
+            "8 days of silence must read as >=168h, got {quiet}"
+        );
         assert_eq!(
             back["ready_to_retire"], true,
             "no hit for 8 days and no clients this uptime IS the all-clear"
@@ -1063,7 +1123,10 @@ mod tests {
         ]);
         assert_eq!(stranded_snap["stranded_count"], 1);
         assert!(
-            stranded_snap["verdict"].as_str().unwrap_or("").starts_with("STRANDED"),
+            stranded_snap["verdict"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("STRANDED"),
             "a live lane on a retired port must read STRANDED, not CLEAR/ready"
         );
         assert_eq!(
@@ -1075,7 +1138,10 @@ mod tests {
         // verdict that never fires.
         record("127.0.0.1", "curl/8", "", "/api/board");
         let after = snapshot_with(vec![]);
-        assert_eq!(after["ready_to_retire"], false, "a hit must revoke the all-clear");
+        assert_eq!(
+            after["ready_to_retire"], false,
+            "a hit must revoke the all-clear"
+        );
         assert!(after["quiet_for_hours"].as_f64().unwrap_or(999.0) < 1.0);
     }
 }

@@ -109,9 +109,7 @@ mod tests {
     use crate::db::{SharedStore, Store, WriteOutcome};
     use crate::opencode::mock::MockProtocol;
     use amux_core::ids::CommandId;
-    use amux_core::protocol::{
-        CommandState, CommandTransition, DeliveryTiming, WorkerCommand,
-    };
+    use amux_core::protocol::{CommandState, CommandTransition, DeliveryTiming, WorkerCommand};
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use chrono::Utc;
@@ -126,12 +124,17 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         (router(state), store, dir)
     }
 
-    async fn send(app: &axum::Router, method: &str, path: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
+    async fn send(
+        app: &axum::Router,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
         let b = Request::builder().method(method).uri(path);
         let req = match body {
             Some(v) => b
@@ -142,7 +145,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = if bytes.is_empty() {
             serde_json::Value::Null
         } else {
@@ -173,12 +178,17 @@ mod tests {
                     commands::transition(
                         conn,
                         &id,
-                        CommandTransition::Fail { reason: "transport down".into() },
+                        CommandTransition::Fail {
+                            reason: "transport down".into(),
+                        },
                         3,
                     )?;
                     commands::transition(conn, &id, CommandTransition::Retry, 3)?;
                 }
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -200,28 +210,68 @@ mod tests {
             let (wid1, wid2) = (wid1.clone(), wid2.clone());
             store
                 .write(move |conn| {
-                    commands::enqueue(conn, dead1, &wid1, &WorkerCommand::Continue, "k1",
-                        &DeliveryTiming::Immediate, None, Utc::now())?;
-                    commands::enqueue(conn, queued1, &wid1, &WorkerCommand::Continue, "k2",
-                        &DeliveryTiming::Immediate, None, Utc::now())?;
-                    commands::enqueue(conn, dead2, &wid2, &WorkerCommand::Continue, "k3",
-                        &DeliveryTiming::Immediate, None, Utc::now())?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    commands::enqueue(
+                        conn,
+                        dead1,
+                        &wid1,
+                        &WorkerCommand::Continue,
+                        "k1",
+                        &DeliveryTiming::Immediate,
+                        None,
+                        Utc::now(),
+                    )?;
+                    commands::enqueue(
+                        conn,
+                        queued1,
+                        &wid1,
+                        &WorkerCommand::Continue,
+                        "k2",
+                        &DeliveryTiming::Immediate,
+                        None,
+                        Utc::now(),
+                    )?;
+                    commands::enqueue(
+                        conn,
+                        dead2,
+                        &wid2,
+                        &WorkerCommand::Continue,
+                        "k3",
+                        &DeliveryTiming::Immediate,
+                        None,
+                        Utc::now(),
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
         spend_attempts(&store, &dead1, 3); // third retry dead-letters
         spend_attempts(&store, &dead2, 3);
 
-        let (st, v) = send(&app, "GET", &format!("/api/workers/{w1}/dead-letters"), None).await;
+        let (st, v) = send(
+            &app,
+            "GET",
+            &format!("/api/workers/{w1}/dead-letters"),
+            None,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert_eq!(v["worker_id"], serde_json::json!(w1));
         let dead = v["dead_letters"].as_array().unwrap();
         assert_eq!(dead.len(), 1, "only w1's dead letter: {v}");
         assert_eq!(dead[0]["id"], serde_json::json!(dead1.as_str()));
-        assert_eq!(v["queue_health"]["counts"]["dead_lettered"], serde_json::json!(1));
+        assert_eq!(
+            v["queue_health"]["counts"]["dead_lettered"],
+            serde_json::json!(1)
+        );
         assert_eq!(v["queue_health"]["counts"]["queued"], serde_json::json!(1));
-        assert_eq!(v["queue_health"]["depth"], serde_json::json!(1), "dead letters are not load");
+        assert_eq!(
+            v["queue_health"]["depth"],
+            serde_json::json!(1),
+            "dead letters are not load"
+        );
         assert_eq!(v["queue_health"]["dead_letter_count"], serde_json::json!(1));
 
         // Unknown worker: 404, not an empty happy list.
@@ -242,9 +292,20 @@ mod tests {
             let (cmd_id, wid) = (cmd_id.clone(), wid.clone());
             store
                 .write(move |conn| {
-                    commands::enqueue(conn, cmd_id, &wid, &WorkerCommand::Continue, "k",
-                        &DeliveryTiming::Immediate, None, Utc::now())?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    commands::enqueue(
+                        conn,
+                        cmd_id,
+                        &wid,
+                        &WorkerCommand::Continue,
+                        "k",
+                        &DeliveryTiming::Immediate,
+                        None,
+                        Utc::now(),
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
@@ -271,7 +332,9 @@ mod tests {
             resume_stagger_secs: 5,
         };
         let mut rx = store.subscribe();
-        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
 
         // Terminal state reached...
         {
@@ -294,7 +357,10 @@ mod tests {
                 saw_dead_letter_event = true;
             }
         }
-        assert!(saw_dead_letter_event, "dead letter must emit its StateEvent");
+        assert!(
+            saw_dead_letter_event,
+            "dead letter must emit its StateEvent"
+        );
 
         // And it is visible through the API surface.
         let (st, v) = send(&app, "GET", &format!("/api/workers/{w}/dead-letters"), None).await;

@@ -21,9 +21,10 @@ pub fn routes() -> Router<AppState> {
     // (app.js:23784, 23799) against a GET-only route, so Save toasted "Save
     // failed" and Delete did nothing — a dead editor, shipped and unnoticed
     // because a 405 in a fetch is silent unless someone reads the toast.
-    Router::new()
-        .route("/", get(list_skills))
-        .route("/{name}", get(get_skill).post(save_skill).delete(delete_skill))
+    Router::new().route("/", get(list_skills)).route(
+        "/{name}",
+        get(get_skill).post(save_skill).delete(delete_skill),
+    )
 }
 
 /// Shared name rule — one predicate, three handlers. `get_skill` had it
@@ -80,7 +81,10 @@ async fn list_skills(State(state): State<AppState>) -> Response {
 
 async fn get_skill(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     if name.is_empty() || name.contains('/') {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid name" })))
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid name" })),
+        )
             .into_response();
     }
     let conn = match state.store.read() {
@@ -88,7 +92,9 @@ async fn get_skill(State(state): State<AppState>, Path(name): Path<String>) -> R
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
     };
     let row: Option<String> = conn
-        .query_row("SELECT content FROM skills WHERE name=?1", [&name], |r| r.get(0))
+        .query_row("SELECT content FROM skills WHERE name=?1", [&name], |r| {
+            r.get(0)
+        })
         .ok();
     match row {
         Some(content) => Json(json!({ "name": name, "content": content })).into_response(),
@@ -158,7 +164,9 @@ fn command_dirs() -> Vec<std::path::PathBuf> {
     let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
     vec![
         home.join(".claude").join("commands"),
-        std::path::PathBuf::from(".").join(".claude").join("commands"),
+        std::path::PathBuf::from(".")
+            .join(".claude")
+            .join("commands"),
     ]
 }
 
@@ -167,8 +175,10 @@ async fn list_slash_commands() -> Response {
         .iter()
         .map(|(c, d)| json!({ "cmd": c, "desc": d }))
         .collect();
-    let mut seen: std::collections::BTreeSet<String> =
-        BUILTIN_SLASH_COMMANDS.iter().map(|(c, _)| c.to_string()).collect();
+    let mut seen: std::collections::BTreeSet<String> = BUILTIN_SLASH_COMMANDS
+        .iter()
+        .map(|(c, _)| c.to_string())
+        .collect();
     for dir in command_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -223,7 +233,9 @@ mod tests {
     #[tokio::test]
     async fn slash_commands_do_not_offer_claude_diff() {
         let response = list_slash_commands().await;
-        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+            .await
+            .unwrap();
         let commands: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let commands = commands.as_array().unwrap();
         assert!(!commands.iter().any(|c| c["cmd"] == "/diff"));
@@ -240,9 +252,15 @@ mod tests {
 
     #[test]
     fn frontmatter_absent_yields_empties() {
-        assert_eq!(frontmatter_fields("no frontmatter here"), (String::new(), String::new()));
+        assert_eq!(
+            frontmatter_fields("no frontmatter here"),
+            (String::new(), String::new())
+        );
         // An unterminated block parses nothing (Python: find("---", 3) < 0).
-        assert_eq!(frontmatter_fields("---\ndescription: x"), (String::new(), String::new()));
+        assert_eq!(
+            frontmatter_fields("---\ndescription: x"),
+            (String::new(), String::new())
+        );
     }
 }
 
@@ -255,9 +273,17 @@ async fn save_skill(
     Json(body): Json<Value>,
 ) -> Response {
     if bad_name(&name) {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid name" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid name" })),
+        )
+            .into_response();
     }
-    let content = body.get("content").and_then(Value::as_str).unwrap_or("").to_string();
+    let content = body
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     // An empty body would silently blank a skill the user can no longer see the
     // text of — the same shape as the board's blanked-desc hazard. Refuse it.
     if content.trim().is_empty() {
@@ -280,15 +306,19 @@ async fn save_skill(
                  ON CONFLICT(name) DO UPDATE SET content=excluded.content",
                 rusqlite::params![n2, content],
             )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
     match write {
         Ok(_) => Json(json!({ "ok": true, "name": name })).into_response(),
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -297,7 +327,11 @@ async fn save_skill(
 /// distinguished from a real removal.
 async fn delete_skill(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     if bad_name(&name) {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid name" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid name" })),
+        )
+            .into_response();
     }
     let n2 = name.clone();
     let slot = std::sync::Arc::new(std::sync::Mutex::new(0usize));
@@ -307,7 +341,10 @@ async fn delete_skill(State(state): State<AppState>, Path(name): Path<String>) -
         .write_async(move |conn| {
             let n = conn.execute("DELETE FROM skills WHERE name=?1", rusqlite::params![n2])?;
             *slot_w.lock().expect("slot") = n;
-            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
         })
         .await;
     match write {
@@ -315,10 +352,11 @@ async fn delete_skill(State(state): State<AppState>, Path(name): Path<String>) -
             let n = *slot.lock().expect("slot");
             Json(json!({ "ok": true, "name": name, "deleted": n > 0 })).into_response()
         }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })))
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -332,7 +370,10 @@ mod write_tests {
     fn the_name_rule_rejects_what_would_escape_the_key_space() {
         assert!(bad_name(""), "empty");
         assert!(bad_name("a/b"), "a slash would address another route");
-        assert!(bad_name(".."), "traversal-shaped names never reach the table");
+        assert!(
+            bad_name(".."),
+            "traversal-shaped names never reach the table"
+        );
         assert!(bad_name("../etc/passwd"));
         assert!(!bad_name("my-skill"));
         assert!(!bad_name("my_skill.v2"));

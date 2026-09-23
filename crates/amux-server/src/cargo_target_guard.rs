@@ -5,9 +5,18 @@ use std::path::{Path, PathBuf};
 
 const GUARD: &str = include_str!("../../../scripts/cargo-target-guard.py");
 
-fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[String], extra_roots: &[PathBuf]) -> Result<(), String> {
+fn mutate(
+    action: &str,
+    path: &Path,
+    destination: Option<&Path>,
+    originals: &[String],
+    extra_roots: &[PathBuf],
+) -> Result<(), String> {
     let home = crate::api::reclaim::home_dir();
-    let mut roots = vec![home.join(".amux/rust-build-target"), home.join(".amux/rust-build-target-e2e-head")];
+    let mut roots = vec![
+        home.join(".amux/rust-build-target"),
+        home.join(".amux/rust-build-target-e2e-head"),
+    ];
     if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
         roots.push(PathBuf::from(target));
     }
@@ -32,7 +41,9 @@ fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[St
     for original in originals {
         command.arg("--protected-path").arg(original);
     }
-    let output = command.output().map_err(|e| format!("Cargo reclaim guard unmeasured: {e}"));
+    let output = command
+        .output()
+        .map_err(|e| format!("Cargo reclaim guard unmeasured: {e}"));
     // THE STREAK HAS TO REACH THE SERVER LOG, NOT JUST THE GUARD'S STDOUT
     // (AMUX-4944). A single deferral is routine; 243 consecutive ones on the
     // same condition is the fleet's deploy pipeline wedged, and the two logged
@@ -46,7 +57,10 @@ fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[St
                 verdict["deferral_streak"].as_i64().unwrap_or(0),
                 verdict["wedged"].as_bool().unwrap_or(false),
             ));
-            return Err(verdict["reason"].as_str().unwrap_or("Cargo reclaim guard refused").to_string());
+            return Err(verdict["reason"]
+                .as_str()
+                .unwrap_or("Cargo reclaim guard refused")
+                .to_string());
         }
         tracing::info!(path = %path.display(), action, verdict = %verdict, "cargo_reclaim_result");
         Ok(())
@@ -87,11 +101,20 @@ fn resolved(path: &Path) -> PathBuf {
     }
 }
 
-fn overlaps_targets(path: &Path, destination: Option<&Path>, originals: &[String], roots: &[PathBuf]) -> bool {
+fn overlaps_targets(
+    path: &Path,
+    destination: Option<&Path>,
+    originals: &[String],
+    roots: &[PathBuf],
+) -> bool {
     let mut paths = vec![resolved(path)];
     paths.extend(destination.map(resolved));
     paths.extend(originals.iter().map(|p| resolved(Path::new(p))));
-    roots.iter().map(|p| resolved(p)).any(|root| paths.iter().any(|p| p.starts_with(&root) || root.starts_with(p)))
+    roots.iter().map(|p| resolved(p)).any(|root| {
+        paths
+            .iter()
+            .any(|p| p.starts_with(&root) || root.starts_with(p))
+    })
 }
 
 #[cfg(test)]
@@ -106,7 +129,9 @@ mod tests {
         std::fs::create_dir_all(target.join("debug/deps")).unwrap();
         let marker = target.join("debug/deps/running-test");
         std::fs::write(&marker, "active artifact").unwrap();
-        let lease = std::fs::File::create(dir.path().join(".rust-build-target-old-proof.reclaim.lock")).unwrap();
+        let lease =
+            std::fs::File::create(dir.path().join(".rust-build-target-old-proof.reclaim.lock"))
+                .unwrap();
         // Same advisory lock held by safe-cargo through compiler/test lifetime.
         assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_SH) }, 0);
         let error = purge_build_target(&target).unwrap_err();
@@ -115,7 +140,10 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH))
             .unwrap();
-        assert_eq!(crate::runtime_jobs::storage::prune_stale_build_targets(dir.path()), (0, 0));
+        assert_eq!(
+            crate::runtime_jobs::storage::prune_stale_build_targets(dir.path()),
+            (0, 0)
+        );
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "active artifact");
     }
 
@@ -128,11 +156,31 @@ mod tests {
         let unrelated = dir.path().join("unrelated");
         let staged = dir.path().join("quarantine");
         assert!(!overlaps_targets(&unrelated, Some(&staged), &[], &roots));
-        assert!(overlaps_targets(&root.join("debug/deps"), Some(&staged), &[], &roots));
-        assert!(overlaps_targets(&staged, Some(&root.join("debug/deps")), &[], &roots));
-        assert!(overlaps_targets(&staged, None, &[root.to_string_lossy().into()], &roots));
+        assert!(overlaps_targets(
+            &root.join("debug/deps"),
+            Some(&staged),
+            &[],
+            &roots
+        ));
+        assert!(overlaps_targets(
+            &staged,
+            Some(&root.join("debug/deps")),
+            &[],
+            &roots
+        ));
+        assert!(overlaps_targets(
+            &staged,
+            None,
+            &[root.to_string_lossy().into()],
+            &roots
+        ));
         std::os::unix::fs::symlink(&root, dir.path().join("alias")).unwrap();
-        assert!(overlaps_targets(&dir.path().join("alias/debug/deps"), None, &[], &roots));
+        assert!(overlaps_targets(
+            &dir.path().join("alias/debug/deps"),
+            None,
+            &[],
+            &roots
+        ));
         // These exercise the native branch even on hosts without Python.
         std::fs::create_dir(&unrelated).unwrap();
         std::fs::write(unrelated.join("artifact"), "ordinary cache").unwrap();

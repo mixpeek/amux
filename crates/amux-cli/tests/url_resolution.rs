@@ -33,8 +33,12 @@ fn health_stderr(env: &[(&str, Option<&str>)]) -> String {
     c.env_remove("AMUX_URL").env_remove("AMUX_RS_URL");
     for (k, v) in env {
         match v {
-            Some(val) => { c.env(k, val); }
-            None => { c.env_remove(k); }
+            Some(val) => {
+                c.env(k, val);
+            }
+            None => {
+                c.env_remove(k);
+            }
         }
     }
     let out = c.output().expect("run amux-rs health");

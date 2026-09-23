@@ -171,7 +171,9 @@ impl Bootstrap {
     /// fleet (AMUX-2613 gap 2). A ref stored under a DIFFERENT provider
     /// family is left behind, never replayed into the wrong CLI.
     fn register_protocol(&self, report: &mut BootstrapReport, row: &queries::WorkerRow) {
-        let Ok(worker) = WorkerId::parse(&row.id) else { return };
+        let Ok(worker) = WorkerId::parse(&row.id) else {
+            return;
+        };
         if self.registrar.is_registered(&worker) {
             return;
         }
@@ -220,9 +222,7 @@ impl Bootstrap {
                  JOIN _amux_sessions s ON s.worker_id = w.id AND s.ended_at IS NULL
                  WHERE json_extract(w.state, '$.state') = 'starting'",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             rows.collect::<Result<_, _>>()?
         };
         for (worker_id, session_id, backend_name, backend_ref) in starting {
@@ -238,8 +238,14 @@ impl Bootstrap {
                 let conn = self.store.read()?;
                 queries::get_worker(&conn, &worker_id)?
             };
-            let Some(row) = row.filter(|r| r.lifecycle.can_start() && matches!(r.state, WorkerState::Starting)) else { continue };
-            let Ok(worker) = WorkerId::parse(&row.id) else { continue };
+            let Some(row) =
+                row.filter(|r| r.lifecycle.can_start() && matches!(r.state, WorkerState::Starting))
+            else {
+                continue;
+            };
+            let Ok(worker) = WorkerId::parse(&row.id) else {
+                continue;
+            };
 
             let Some(backend) = self.backend(&backend_name) else {
                 self.mark_error(
@@ -264,9 +270,11 @@ impl Bootstrap {
             };
 
             let mut command = adapter.build_command(PromptMode::Interactive);
-            if row.permissions.iter().any(|permission| {
-                permission == "unsafe" || permission == "claude:skip_permissions"
-            }) && command.first().is_some_and(|binary| binary == "claude")
+            if row
+                .permissions
+                .iter()
+                .any(|permission| permission == "unsafe" || permission == "claude:skip_permissions")
+                && command.first().is_some_and(|binary| binary == "claude")
             {
                 tracing::warn!(
                     worker = %row.id,
@@ -303,13 +311,18 @@ impl Bootstrap {
                             )?;
                             // pid is bookkeeping on an already-announced
                             // session row; no event of its own.
-                            Ok(WriteOutcome { applied: true, events: vec![] })
+                            Ok(WriteOutcome {
+                                applied: true,
+                                events: vec![],
+                            })
                         })
                         .await?;
                     self.set_worker_state(
                         &row.id,
                         "starting",
-                        WorkerState::Idle { since: chrono::Utc::now() },
+                        WorkerState::Idle {
+                            since: chrono::Utc::now(),
+                        },
                     )
                     .await?;
                     self.register_protocol(&mut report, &row);
@@ -437,9 +450,7 @@ impl Bootstrap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{
-        backend_ref, AttachInfo, BackendError, BackendSession, BackendStatus,
-    };
+    use crate::backend::{backend_ref, AttachInfo, BackendError, BackendSession, BackendStatus};
     use crate::db::queries::SessionRow;
     use amux_core::session::ExitReason;
     use amux_core::worker::WorkerConfig as CoreWorkerConfig;
@@ -479,7 +490,9 @@ mod tests {
             Ok(BackendStatus::Running)
         }
         async fn attach_info(&self, _p: &ProcessRef) -> crate::backend::Result<AttachInfo> {
-            Ok(AttachInfo { command: "true".into() })
+            Ok(AttachInfo {
+                command: "true".into(),
+            })
         }
         async fn reconcile(&self) -> crate::backend::Result<Vec<BackendSession>> {
             Ok(self
@@ -505,7 +518,11 @@ mod tests {
 
     impl ProtocolRegistrar for RecordingRegistrar {
         fn is_registered(&self, worker: &WorkerId) -> bool {
-            self.registered.lock().unwrap().iter().any(|(w, _)| w == worker)
+            self.registered
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(w, _)| w == worker)
         }
         fn register_worker(&self, worker: WorkerId, config: ProtocolWorkerConfig) {
             self.registered.lock().unwrap().push((worker, config));
@@ -561,7 +578,10 @@ mod tests {
                         },
                     )?;
                 }
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         (id, bref)
@@ -577,7 +597,10 @@ mod tests {
                     &ExitReason::Killed,
                     &chrono::Utc::now().to_rfc3339(),
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -622,15 +645,15 @@ mod tests {
         // cwd and env.
         let spawns = backend.spawns.lock().unwrap();
         assert_eq!(spawns.len(), 1);
-        assert_eq!(
-            spawns[0].command,
-            vec!["claude"]
-        );
+        assert_eq!(spawns[0].command, vec!["claude"]);
         assert_eq!(spawns[0].cwd, "/tmp/bootstrap-test-cwd");
         assert_eq!(spawns[0].env.get("FOO").map(String::as_str), Some("bar"));
         // Display name rides along for backend metadata (herdr workspace
         // tokens, AMUX-2613 gap 5) — display-only, never the ref.
-        assert_eq!(spawns[0].human_label.as_deref(), Some(format!("w-{id}").as_str()));
+        assert_eq!(
+            spawns[0].human_label.as_deref(),
+            Some(format!("w-{id}").as_str())
+        );
 
         // pid recorded on the session row.
         let pid: Option<i64> = {
@@ -645,7 +668,10 @@ mod tests {
         assert_eq!(pid, Some(4242));
 
         // Worker Idle; protocol registered with the mapped CLI + model.
-        assert!(matches!(worker_state(&store, &id), WorkerState::Idle { .. }));
+        assert!(matches!(
+            worker_state(&store, &id),
+            WorkerState::Idle { .. }
+        ));
         let regs = registrar.registered.lock().unwrap();
         assert_eq!(regs.len(), 1);
         assert_eq!(regs[0].0, id);
@@ -707,13 +733,19 @@ mod tests {
     async fn spawn_failure_marks_error() {
         let (store, _dir) = store();
         let (id, _) = seed(&store, WorkerState::Starting, "herdr", "claude", true);
-        let backend = Arc::new(FakeBackend { fail_spawn: true, ..Default::default() });
+        let backend = Arc::new(FakeBackend {
+            fail_spawn: true,
+            ..Default::default()
+        });
         let registrar = Arc::new(RecordingRegistrar::default());
         let boot = bootstrap(store.clone(), backend, registrar);
         let report = boot.pass_once().await.unwrap();
         assert_eq!(report.errored.len(), 1);
         assert!(report.errored[0].contains("scripted failure"));
-        assert!(matches!(worker_state(&store, &id), WorkerState::Error { .. }));
+        assert!(matches!(
+            worker_state(&store, &id),
+            WorkerState::Error { .. }
+        ));
     }
 
     #[tokio::test]
@@ -723,7 +755,15 @@ mod tests {
         let (mine, my_ref) = seed(&store, WorkerState::Stopped, "herdr", "claude", true);
         end_session(&store, &mine);
         // Live sibling: must NOT be reaped.
-        let (_live, live_ref) = seed(&store, WorkerState::Idle { since: chrono::Utc::now() }, "herdr", "claude", true);
+        let (_live, live_ref) = seed(
+            &store,
+            WorkerState::Idle {
+                since: chrono::Utc::now(),
+            },
+            "herdr",
+            "claude",
+            true,
+        );
 
         let backend = Arc::new(FakeBackend::default());
         // The backend hosts: my ended ref, the live ref, and a FOREIGN
@@ -751,7 +791,9 @@ mod tests {
         let (store, _dir) = store();
         let (id, _) = seed(
             &store,
-            WorkerState::Idle { since: chrono::Utc::now() },
+            WorkerState::Idle {
+                since: chrono::Utc::now(),
+            },
             "herdr",
             "claude",
             true,
@@ -762,7 +804,10 @@ mod tests {
 
         let report = boot.pass_once().await.unwrap();
         assert_eq!(report.registered, vec![id.to_string()]);
-        assert!(backend.spawns.lock().unwrap().is_empty(), "adopt must not respawn");
+        assert!(
+            backend.spawns.lock().unwrap().is_empty(),
+            "adopt must not respawn"
+        );
         // Idempotent: the second pass re-registers nothing.
         let again = boot.pass_once().await.unwrap();
         assert!(again.registered.is_empty(), "{again:?}");
@@ -790,7 +835,9 @@ mod tests {
         let (store, _dir) = store();
         let (id, _) = seed(
             &store,
-            WorkerState::Idle { since: chrono::Utc::now() },
+            WorkerState::Idle {
+                since: chrono::Utc::now(),
+            },
             "herdr",
             "claude",
             true,
@@ -801,7 +848,9 @@ mod tests {
         // A sibling whose stored family no longer matches its row provider.
         let (mismatched, _) = seed(
             &store,
-            WorkerState::Idle { since: chrono::Utc::now() },
+            WorkerState::Idle {
+                since: chrono::Utc::now(),
+            },
             "herdr",
             "gemini",
             true,
@@ -847,7 +896,9 @@ mod tests {
             async fn usage(&self) -> amux_core::provider::ProviderUsage {
                 amux_core::provider::ProviderUsage::unknown(self.id())
             }
-            async fn models(&self) -> Vec<String> { vec![] }
+            async fn models(&self) -> Vec<String> {
+                vec![]
+            }
             fn build_command(&self, _m: crate::provider::PromptMode) -> Vec<String> {
                 vec!["bare-repl".into()]
             }
@@ -869,7 +920,10 @@ mod tests {
         let report = boot.pass_once().await.unwrap();
         // Terminal hosting is real...
         assert_eq!(report.spawned, vec![bref]);
-        assert!(matches!(worker_state(&store, &id), WorkerState::Idle { .. }));
+        assert!(matches!(
+            worker_state(&store, &id),
+            WorkerState::Idle { .. }
+        ));
         // ...but no protocol session is faked for a provider the protocol
         // cannot drive.
         assert!(registrar.registered.lock().unwrap().is_empty());

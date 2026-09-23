@@ -91,7 +91,15 @@ impl Rig {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("client");
-        Rig { home, db, port: free_port(), child: None, client, log, _tmp: tmp }
+        Rig {
+            home,
+            db,
+            port: free_port(),
+            child: None,
+            client,
+            log,
+            _tmp: tmp,
+        }
     }
 
     fn spawn(&mut self) {
@@ -286,7 +294,12 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     .unwrap();
 
     // ---------------- phase A: write one row per subsystem ----------------
-    let (c, board) = rig.post("/api/board", json!({"title": "rr0150 board row", "status": "todo"})).await;
+    let (c, board) = rig
+        .post(
+            "/api/board",
+            json!({"title": "rr0150 board row", "status": "todo"}),
+        )
+        .await;
     assert!((200..300).contains(&c), "board create: {board}");
     let board_id = board["id"].as_str().expect("board id").to_string();
 
@@ -307,7 +320,10 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     let next_run_before = sched["next_run"].clone();
 
     let (c, msg) = rig
-        .post("/api/messages", json!({"to": "human", "body": "rr0150 message body"}))
+        .post(
+            "/api/messages",
+            json!({"to": "human", "body": "rr0150 message body"}),
+        )
         .await;
     assert!((200..300).contains(&c), "message create: {msg}");
     let msg_id = msg["message"]["id"]
@@ -316,16 +332,33 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
         .expect("message id")
         .to_string();
 
-    let (c, _) = rig.post(&format!("/api/sessions/{lane}/steer"), json!({"text": "rr0150 queued one"})).await;
+    let (c, _) = rig
+        .post(
+            &format!("/api/sessions/{lane}/steer"),
+            json!({"text": "rr0150 queued one"}),
+        )
+        .await;
     assert!((200..300).contains(&c), "steer enqueue 1: {c}");
-    let (c, _) = rig.post(&format!("/api/sessions/{lane}/steer"), json!({"text": "rr0150 queued two"})).await;
+    let (c, _) = rig
+        .post(
+            &format!("/api/sessions/{lane}/steer"),
+            json!({"text": "rr0150 queued two"}),
+        )
+        .await;
     assert!((200..300).contains(&c), "steer enqueue 2: {c}");
 
-    let (c, jrn) = rig.post("/api/journal", json!({"text": "rr0150 journal entry"})).await;
+    let (c, jrn) = rig
+        .post("/api/journal", json!({"text": "rr0150 journal entry"}))
+        .await;
     assert!((200..300).contains(&c), "journal create: {jrn}");
     let jrn_id = jrn["id"].as_str().expect("journal id").to_string();
 
-    let (c, _) = rig.post("/api/history", json!({"text": "rr0150 history line", "session": lane})).await;
+    let (c, _) = rig
+        .post(
+            "/api/history",
+            json!({"text": "rr0150 history line", "session": lane}),
+        )
+        .await;
     let history_written = (200..300).contains(&c);
 
     // Seeded tables (no API writer — see module doc).
@@ -414,9 +447,16 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     rep.add(
         "board",
         survived && functional,
-        format!("read-back {c} title={} · PATCH->doing {pc} status={}{gate_note} {}",
-                v["title"], after["status"],
-                if !(200..300).contains(&pc) { format!("({pv})") } else { String::new() }),
+        format!(
+            "read-back {c} title={} · PATCH->doing {pc} status={}{gate_note} {}",
+            v["title"],
+            after["status"],
+            if !(200..300).contains(&pc) {
+                format!("({pv})")
+            } else {
+                String::new()
+            }
+        ),
     );
 
     // 2. workers
@@ -431,7 +471,10 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     rep.add(
         "workers",
         survived && listed,
-        format!("read-back {c} name={} · list {lc} contains_id={listed}", v["name"]),
+        format!(
+            "read-back {c} name={} · list {lc} contains_id={listed}",
+            v["name"]
+        ),
     );
 
     // 3. schedules — the row, and the cron expression still parsing into a
@@ -439,11 +482,17 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     let (c, v) = rig.get(&format!("/api/schedules/{sched_id}")).await;
     let row = v
         .as_array()
-        .and_then(|a| a.iter().find(|s| s["id"] == json!(sched_id.clone())).cloned())
+        .and_then(|a| {
+            a.iter()
+                .find(|s| s["id"] == json!(sched_id.clone()))
+                .cloned()
+        })
         .unwrap_or(v.clone());
     let survived = (200..300).contains(&c) && row["command"] == "noop";
     let next_ok = row["next_run"].is_string() || row["computed_next_run"].is_string();
-    let (pc, _) = rig.patch(&format!("/api/schedules/{sched_id}"), json!({"enabled": 0})).await;
+    let (pc, _) = rig
+        .patch(&format!("/api/schedules/{sched_id}"), json!({"enabled": 0}))
+        .await;
     rep.add(
         "schedules",
         survived && next_ok && (200..300).contains(&pc),
@@ -456,13 +505,17 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     // 4. messages — the row, and the delivery state machine still advancing.
     let (c, v) = rig.get(&format!("/api/messages/{msg_id}")).await;
     let survived = (200..300).contains(&c) && v["body"] == "rr0150 message body";
-    let (ac, av) = rig.post(&format!("/api/messages/{msg_id}/ack"), json!({})).await;
+    let (ac, av) = rig
+        .post(&format!("/api/messages/{msg_id}/ack"), json!({}))
+        .await;
     rep.add(
         "messages",
         survived && (200..300).contains(&ac),
-        format!("read-back {c} body_ok={} · ack {ac} delivery={}",
-                v["body"] == "rr0150 message body",
-                av["delivery"].clone()),
+        format!(
+            "read-back {c} body_ok={} · ack {ac} delivery={}",
+            v["body"] == "rr0150 message body",
+            av["delivery"].clone()
+        ),
     );
 
     // 5. steering queue — rows survive AND keep their queued_at ordering,
@@ -487,23 +540,35 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
         .collect();
     let texts: Vec<&str> = items.iter().filter_map(|i| i["text"].as_str()).collect();
     let ordered = texts == vec!["rr0150 queued one", "rr0150 queued two"];
-    let have_ts = items.iter().all(|i| i["queued_at"].as_f64().unwrap_or(0.0) > 0.0);
+    let have_ts = items
+        .iter()
+        .all(|i| i["queued_at"].as_f64().unwrap_or(0.0) > 0.0);
     rep.add(
         "steering_queue",
         (200..300).contains(&c) && items.len() == 2 && ordered && have_ts,
-        format!("read-back {c} rows={} ordered={ordered} queued_at_preserved={have_ts}", items.len()),
+        format!(
+            "read-back {c} rows={} ordered={ordered} queued_at_preserved={have_ts}",
+            items.len()
+        ),
     );
 
     // 6. journal
     let (c, v) = rig.get(&format!("/api/journal/{jrn_id}")).await;
     let survived = (200..300).contains(&c) && v.to_string().contains("rr0150 journal entry");
-    let (pc, _) = rig.patch(&format!("/api/journal/{jrn_id}"), json!({"text": "rr0150 journal edited"})).await;
+    let (pc, _) = rig
+        .patch(
+            &format!("/api/journal/{jrn_id}"),
+            json!({"text": "rr0150 journal edited"}),
+        )
+        .await;
     let (_, after) = rig.get(&format!("/api/journal/{jrn_id}")).await;
     rep.add(
         "journal",
         survived && (200..300).contains(&pc) && after.to_string().contains("rr0150 journal edited"),
-        format!("read-back {c} · PATCH {pc} · edit_visible={}",
-                after.to_string().contains("rr0150 journal edited")),
+        format!(
+            "read-back {c} · PATCH {pc} · edit_visible={}",
+            after.to_string().contains("rr0150 journal edited")
+        ),
     );
 
     // 7. request log — entries written BEFORE the kill are still counted.
@@ -516,10 +581,19 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     );
 
     // 8. cmd history
-    let (c, v) = rig.get(&format!("/api/history?limit=200&session={lane}")).await;
+    let (c, v) = rig
+        .get(&format!("/api/history?limit=200&session={lane}"))
+        .await;
     let found = v
         .as_array()
-        .map(|a| a.iter().any(|r| r["text"].as_str().unwrap_or("").contains("rr0150 history line")))
+        .map(|a| {
+            a.iter().any(|r| {
+                r["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("rr0150 history line")
+            })
+        })
         .unwrap_or(false);
     rep.add(
         "cmd_history",
@@ -531,7 +605,8 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     //    refs from here; an in-memory-only ref is fiction across an exec.
     rep.add(
         "conversations",
-        rig.count("SELECT COUNT(*) FROM _amux_conversations WHERE conversation_ref='conv-rr0150'") == 1,
+        rig.count("SELECT COUNT(*) FROM _amux_conversations WHERE conversation_ref='conv-rr0150'")
+            == 1,
         "seeded row survived (NO API surface: written only by ConversationSink, \
          read only by backend::bootstrap — not verifiable through the API)"
             .into(),
@@ -569,9 +644,12 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     rep.add(
         "leases",
         present == 1 && unexpired == 0,
-        format!("row_present={present} still_expired={} · /api/metrics leases.live={} \
+        format!(
+            "row_present={present} still_expired={} · /api/metrics leases.live={} \
                  (metric counts ALL lease rows, expired included — no expiry predicate)",
-                unexpired == 0, m["leases"]["live"]),
+            unexpired == 0,
+            m["leases"]["live"]
+        ),
     );
 
     // 11. media jobs (seeded) — the stale 'running' row survives, so the next
@@ -579,14 +657,20 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     //     memory and orphaned it invisibly on every restart.
     let job_status: String = {
         let conn = rusqlite::Connection::open(&rig.db).unwrap();
-        conn.query_row("SELECT status FROM _amux_media_jobs WHERE key='rr0150key'", [], |r| r.get(0))
-            .unwrap_or_else(|_| "<missing>".into())
+        conn.query_row(
+            "SELECT status FROM _amux_media_jobs WHERE key='rr0150key'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "<missing>".into())
     };
     rep.add(
         "media_jobs",
         job_status == "running",
-        format!("stale running job survived: status={job_status} \
-                 (end-to-end restart-on-stale needs ffmpeg + a media fixture — not covered here)"),
+        format!(
+            "stale running job survived: status={job_status} \
+                 (end-to-end restart-on-stale needs ffmpeg + a media fixture — not covered here)"
+        ),
     );
 
     rep.finish();
@@ -607,5 +691,8 @@ async fn the_rig_can_tell_a_dead_server_from_a_live_one() {
     // above is a real process replacement and not a no-op that left the
     // original server answering.
     let refused = rig.client.get(rig.url("/health")).send().await.is_err();
-    assert!(refused, "server still answered after kill — the restart in this suite proves nothing");
+    assert!(
+        refused,
+        "server still answered after kill — the restart in this suite proves nothing"
+    );
 }

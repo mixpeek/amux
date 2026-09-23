@@ -45,7 +45,7 @@ function fixture(names = [], shared = {}) {
   };
   const ctx = vm.createContext(sandbox);
   // Load production dependencies too: replay must execute, not fail on a stale fixture.
-  for (const name of ['_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS']) vm.runInContext(declaration(name), ctx);
+  for (const name of ['_projectReviewAction', '_syncBannerShownAt', '_RECEIPT_TIMEOUT_MSG', '_geoFix', '_GEO_FIX_MAX_AGE_MS']) vm.runInContext(declaration(name), ctx);
   for (const name of ['_syncBannerBeacon', '_sendContext', '_pendingStop', '_localStorageBytes', '_writeUserStorage', '_outboxDiagnostic', '_outboxAgeMs', '_outboxIsStalled', '_outboxAgeLabel', '_outboxNeedsAttention', '_localWriteNotice', '_localMessageRequest', '_validateMessageAcknowledgement', '_validateBoardAcknowledgement', '_readQueue', '_outboxLock', '_mutateQueue', '_outboxQueueable', '_outboxMessageId', '_outboxUncertainMessage', '_outboxConfirmMessage', '_queueOp', '_boundedMutationFetch', '_syncOneDraft', '_syncBackoffReset', '_scheduleSyncRetry', '_clearSyncTransientToast', '_outboxPermanentRefusal', '_runSyncBanner', 'runSyncBanner', ...names]) vm.runInContext(code(name), ctx);
   return {ctx, stored, timers, timerDelays, element};
 }
@@ -797,4 +797,17 @@ test('Stop deduplication preserves a later Stop after Start and separate worker 
   for (const url of ['/api/sessions/a/stop', '/api/sessions/b/stop', '/api/sessions/a/stop', '/api/sessions/a/start', '/api/sessions/a/stop'])
     await ctx._queueOp(url, {method:'POST'});
   assert.deepEqual(Array.from(ctx.offlineQueue, q => q.url), ['/api/sessions/a/stop', '/api/sessions/b/stop', '/api/sessions/a/start', '/api/sessions/a/stop']);
+});
+
+
+test('project output waits remain in progress while real operational failures are visible', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(code('_projectOutcomeVerdict'), ctx);
+  const acceptance = {state:'pending', criteria:[{verifier:{type:'human'}}]};
+  const parent = {phase:'waiting',execution_plan:{waiting_reason:'required_output:CHILD',waiting_label:'Waiting on CHILD'}};
+  const child = {phase:'working'};
+  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'running');
+  child.phase = 'waiting';
+  child.execution_plan = {waiting_reason:'executor_returned_without_result',waiting_label:'Missing report after attempt'};
+  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'failed');
 });

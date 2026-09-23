@@ -186,8 +186,12 @@ async fn host_history(
         .iter()
         .filter(|s| s.get("measured").and_then(|m| m.as_bool()) == Some(false))
         .count();
-    let newest = samples.first().and_then(|s| s.get("ts").and_then(|t| t.as_i64()));
-    let oldest = samples.last().and_then(|s| s.get("ts").and_then(|t| t.as_i64()));
+    let newest = samples
+        .first()
+        .and_then(|s| s.get("ts").and_then(|t| t.as_i64()));
+    let oldest = samples
+        .last()
+        .and_then(|s| s.get("ts").and_then(|t| t.as_i64()));
     let n = samples.len();
     Json(crate::api::measured::measured(
         json!({
@@ -266,7 +270,10 @@ fn resolve_bin(name: &str) -> &str {
 }
 
 fn collect_system_metrics() -> serde_json::Value {
-    let hostname = cmd_output("hostname", &[]).unwrap_or_default().trim().to_string();
+    let hostname = cmd_output("hostname", &[])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let mut sys = serde_json::Map::new();
     sys.insert("hostname".into(), json!(hostname));
     sys.insert("psutil".into(), json!(false));
@@ -311,8 +318,7 @@ fn collect_system_metrics() -> serde_json::Value {
                         }
                     }
                 }
-                let free = pages.get("free").unwrap_or(&0)
-                    + pages.get("speculative").unwrap_or(&0);
+                let free = pages.get("free").unwrap_or(&0) + pages.get("speculative").unwrap_or(&0);
                 let used = total_bytes.saturating_sub(free);
                 sys.insert(
                     "ram_total_mb".into(),
@@ -335,7 +341,9 @@ fn collect_system_metrics() -> serde_json::Value {
         // Swap
         if let Some(swap_s) = cmd_output("sysctl", &["-n", "vm.swapusage"]) {
             fn parse_mb(s: &str) -> Option<f64> {
-                s.trim().strip_suffix('M').and_then(|n| n.trim().parse().ok())
+                s.trim()
+                    .strip_suffix('M')
+                    .and_then(|n| n.trim().parse().ok())
             }
             let parts: Vec<&str> = swap_s.split("  ").collect();
             let mut total_mb = 0.0f64;
@@ -347,8 +355,14 @@ fn collect_system_metrics() -> serde_json::Value {
                     used_mb = parse_mb(rest).unwrap_or(0.0);
                 }
             }
-            sys.insert("swap_total_mb".into(), json!((total_mb * 10.0).round() / 10.0));
-            sys.insert("swap_used_mb".into(), json!((used_mb * 10.0).round() / 10.0));
+            sys.insert(
+                "swap_total_mb".into(),
+                json!((total_mb * 10.0).round() / 10.0),
+            );
+            sys.insert(
+                "swap_used_mb".into(),
+                json!((used_mb * 10.0).round() / 10.0),
+            );
         }
         // Uptime
         if let Some(bt) = cmd_output("sysctl", &["-n", "kern.boottime"]) {
@@ -446,16 +460,16 @@ fn collect_system_metrics() -> serde_json::Value {
 }
 
 fn sessions_dir() -> PathBuf {
-    let home = std::env::var("AMUX_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
-    });
+    let home = std::env::var("AMUX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"));
     home.join("sessions")
 }
 
 fn memory_dir() -> PathBuf {
-    let home = std::env::var("AMUX_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux")
-    });
+    let home = std::env::var("AMUX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"));
     home.join("memory")
 }
 
@@ -472,7 +486,9 @@ fn collect_session_metrics() -> Vec<serde_json::Value> {
     let mut sessions = Vec::new();
     for entry in entries.flatten() {
         let fname = entry.file_name().to_string_lossy().into_owned();
-        let Some(name) = fname.strip_suffix(".env") else { continue };
+        let Some(name) = fname.strip_suffix(".env") else {
+            continue;
+        };
         if name.contains(".meta") {
             continue;
         }
@@ -511,8 +527,7 @@ fn collect_session_metrics() -> Vec<serde_json::Value> {
                     .map(|p| p.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                if let Some(ps_out) =
-                    cmd_output("ps", &["-o", "pid=,rss=,pcpu=", "-p", &pid_list])
+                if let Some(ps_out) = cmd_output("ps", &["-o", "pid=,rss=,pcpu=", "-p", &pid_list])
                 {
                     let mut pids = Vec::new();
                     let mut total_rss = 0u64;
@@ -579,10 +594,8 @@ fn tmux_session_pids() -> std::collections::HashMap<String, u64> {
         // even the correct one — reads as hand-spelled. Keeping the convention
         // is what lets a grep-shaped check stay reliable.
         let pt = crate::backend::tmux::pane_target(&name);
-        if let Some(pane_out) = cmd_output(
-            "tmux",
-            &["list-panes", "-t", &pt, "-F", "#{pane_pid}"],
-        ) {
+        if let Some(pane_out) = cmd_output("tmux", &["list-panes", "-t", &pt, "-F", "#{pane_pid}"])
+        {
             if let Some(pid_s) = pane_out.lines().next() {
                 if let Ok(pid) = pid_s.trim().parse::<u64>() {
                     map.insert(name, pid);
@@ -637,7 +650,11 @@ async fn metrics(State(state): State<AppState>) -> Response {
     // System/session/server metrics — shell commands run off the runtime
     let started = state.started;
     match tokio::task::spawn_blocking(move || {
-        (collect_system_metrics(), collect_session_metrics(), collect_server_metrics(started))
+        (
+            collect_system_metrics(),
+            collect_session_metrics(),
+            collect_server_metrics(started),
+        )
     })
     .await
     {
@@ -679,9 +696,8 @@ async fn fleet(State(state): State<AppState>) -> Response {
         )
         .ok()
     };
-    let parse = |s: Option<String>| {
-        s.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-    };
+    let parse =
+        |s: Option<String>| s.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
 
     // Per-provider fleet state (RR-0044b): the dashboard's "Exhausted,
     // resets in 2h 14m, 14 workers parked" card. Derived from the SAME
@@ -762,7 +778,10 @@ mod tests {
             assert!(v.get(k).is_some(), "missing key {k}: {v}");
         }
         // Measurable on any supported host (macOS or Linux CI).
-        assert!(v["cpu"]["count"].as_u64().unwrap_or(0) >= 1, "cpu.count: {v}");
+        assert!(
+            v["cpu"]["count"].as_u64().unwrap_or(0) >= 1,
+            "cpu.count: {v}"
+        );
         assert!(
             v["disk"]["total_gb"].as_f64().unwrap_or(0.0) > 0.0,
             "disk.total_gb: {v}"
@@ -791,7 +810,9 @@ mod tests {
     #[test]
     fn disk_metrics_measure_the_data_volume_not_the_sealed_system_snapshot() {
         let sys = super::collect_system_metrics();
-        let total = sys["disk_total_gb"].as_f64().expect("disk_total_gb present");
+        let total = sys["disk_total_gb"]
+            .as_f64()
+            .expect("disk_total_gb present");
         let used = sys["disk_used_gb"].as_f64().expect("disk_used_gb present");
         let pct = sys["disk_percent"].as_f64().expect("disk_percent present");
 
@@ -825,16 +846,13 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         (router(state), store, dir)
     }
 
     fn seed_worker(store: &SharedStore, n: u128, provider: &str, state: WorkerState) {
-        let id = amux_core::ids::WorkerId::from_ulid(ulid::Ulid::from_parts(
-            1_700_000_000_000,
-            n,
-        ));
+        let id = amux_core::ids::WorkerId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, n));
         let provider = provider.to_string();
         store
             .write(move |conn| {
@@ -860,7 +878,10 @@ mod tests {
                     &state,
                     "2026-01-01T00:00:00Z",
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -872,17 +893,36 @@ mod tests {
     async fn fleet_metrics_report_per_provider_state() {
         let (app, store, _dir) = app();
         let reset = Utc::now() + chrono::Duration::hours(2);
-        seed_worker(&store, 31, "claude", WorkerState::RateLimited { reset_at: Some(reset) });
-        seed_worker(&store, 32, "claude", WorkerState::Idle { since: Utc::now() });
+        seed_worker(
+            &store,
+            31,
+            "claude",
+            WorkerState::RateLimited {
+                reset_at: Some(reset),
+            },
+        );
+        seed_worker(
+            &store,
+            32,
+            "claude",
+            WorkerState::Idle { since: Utc::now() },
+        );
         seed_worker(&store, 33, "codex", WorkerState::Idle { since: Utc::now() });
 
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/api/metrics/fleet").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/metrics/fleet")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         let claude = &v["providers"]["claude"];
@@ -924,10 +964,17 @@ mod tests {
 
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/api/metrics/fleet").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/metrics/fleet")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
             v["last_heartbeat"].is_object(),

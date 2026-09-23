@@ -6,6 +6,7 @@ const source=fs.readFileSync(process.env.AMUX_OUTBOX_SOURCE || 'crates/amux-dash
 function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert(a>=0 && b>a, start);return source.slice(a,b);}
 const run=section('async function _runSyncBanner(', 'async function _syncOneDraft(');
 const helpers=source.includes('function _outboxMessageId(') ? section('function _outboxMessageId(', '// Queue modal') : '';
+const reviewAction=section('const _projectReviewAction =', '\n');
 // AMUX-4844. THE SANDBOX IS HAND-MAINTAINED, SO MAKE ITS GAPS SAY SO.
 //
 // This file does not load app.js. It slices it by text markers and evaluates
@@ -58,7 +59,7 @@ function harness(queue,replies){
   _boundedMutationFetch:async(url,opts)=>{requests.push({url,opts});const r=replies.shift();assert(r,'unexpected request');if(r instanceof Error)throw r;return new Response(JSON.stringify(r.body),{status:r.status});},
   _apiErrText:async r=>(await r.json()).error,_interactionSet:(_,v)=>patches.push(v),_interactionAcknowledge:async()=>{},_validateMessageAcknowledgement:r=>assert.equal(r.deduped,true),
   _outboxDiagnostic:(kind,data)=>signals.push({kind,...data}),amuxTrack(){},updateConnectionStatus(){},fetchSessions(){},fetchBoard(){},showToast(){},setTimeout:(f,ms)=>timers.push(ms),clearTimeout(){},_writeError:'',_syncRetryTimer:null,_syncBackoffMs:0,_SYNC_MIN_MS:2000,_SYNC_MAX_MS:60000});
- const evaluated=helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
+ const evaluated=reviewAction+'\n'+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
  installMissingStubs(evaluated,ctx);
  vm.runInContext(evaluated,ctx);
  return {queue,requests,patches,signals,timers,beacons,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};

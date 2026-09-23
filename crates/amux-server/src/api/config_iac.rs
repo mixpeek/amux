@@ -53,9 +53,8 @@ pub async fn export(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
     // ---- skins, all three levels ------------------------------------------
     let mut skins = Map::new();
     if let Ok(mut st) = conn.prepare("SELECT key, value FROM prefs WHERE key LIKE 'skin:%'") {
-        if let Ok(rows) = st.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        }) {
+        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        {
             for (k, v) in rows.flatten() {
                 let parsed: Value = serde_json::from_str(&v).unwrap_or(Value::Null);
                 // `skin:group:ops` -> skins.group.ops ; `skin:global` -> skins.global
@@ -117,7 +116,8 @@ pub async fn export(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
             .collect();
         names.sort();
         for name in names {
-            let env = crate::config::parse_env_file(&home.join("sessions").join(format!("{name}.env")));
+            let env =
+                crate::config::parse_env_file(&home.join("sessions").join(format!("{name}.env")));
             if env.get("CC_ARCHIVED").map(|v| v == "1").unwrap_or(false) {
                 continue;
             }
@@ -199,18 +199,14 @@ pub async fn apply(
             };
             for (key, val) in pairs {
                 let want = val.to_string();
-                let have: Option<String> = state
-                    .store
-                    .read()
+                let have: Option<String> = state.store.read().ok().and_then(|c| {
+                    c.query_row(
+                        "SELECT value FROM prefs WHERE key=?1",
+                        rusqlite::params![key],
+                        |r| r.get::<_, String>(0),
+                    )
                     .ok()
-                    .and_then(|c| {
-                        c.query_row(
-                            "SELECT value FROM prefs WHERE key=?1",
-                            rusqlite::params![key],
-                            |r| r.get::<_, String>(0),
-                        )
-                        .ok()
-                    });
+                });
                 if have.as_deref() == Some(want.as_str()) {
                     unchanged.push(key);
                     continue;
@@ -224,7 +220,10 @@ pub async fn apply(
                              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                             rusqlite::params![k2, want],
                         )?;
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events: vec![],
+                        })
                     })
                     .await;
                 match res {
@@ -244,7 +243,10 @@ pub async fn apply(
             };
             let label = c.get("label").and_then(Value::as_str).map(String::from);
             let position = c.get("position").and_then(Value::as_i64);
-            let gate = c.get("gate").and_then(|g| g.as_array()).map(|_| c["gate"].to_string());
+            let gate = c
+                .get("gate")
+                .and_then(|g| g.as_array())
+                .map(|_| c["gate"].to_string());
             let id2 = id.to_string();
             let tag = format!("column:{id}");
             // COMPARE FIRST. Writing unconditionally made a re-apply report
@@ -252,11 +254,8 @@ pub async fn apply(
             // this endpoint promises — a config tool that claims to have
             // changed things it did not is one you cannot trust to tell you
             // when it DID.
-            let current: Option<(Option<String>, Option<i64>, Option<String>)> = state
-                .store
-                .read()
-                .ok()
-                .and_then(|c| {
+            let current: Option<(Option<String>, Option<i64>, Option<String>)> =
+                state.store.read().ok().and_then(|c| {
                     c.query_row(
                         "SELECT label, position, gate FROM statuses WHERE id=?1",
                         rusqlite::params![id2],
@@ -316,9 +315,12 @@ pub async fn apply(
             let f = home.join("sessions").join(format!("{name}.env"));
             let mut env = crate::config::parse_env_file(&f);
             let before = env.clone();
-            for (yaml_key, env_key) in
-                [("dir", "CC_DIR"), ("tags", "CC_TAGS"), ("flags", "CC_FLAGS"), ("creator", "CC_CREATOR")]
-            {
+            for (yaml_key, env_key) in [
+                ("dir", "CC_DIR"),
+                ("tags", "CC_TAGS"),
+                ("flags", "CC_FLAGS"),
+                ("creator", "CC_CREATOR"),
+            ] {
                 if let Some(v) = w.get(yaml_key) {
                     let s = match v {
                         Value::String(s) => s.clone(),
@@ -348,7 +350,11 @@ pub async fn apply(
         }
     }
 
-    let status = if errors.is_empty() { StatusCode::OK } else { StatusCode::MULTI_STATUS };
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::MULTI_STATUS
+    };
     (
         status,
         Json(json!({

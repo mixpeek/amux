@@ -80,4 +80,26 @@ async fn a_worktree_create_writes_the_variable_the_start_path_reads() {
         !env.contains("CC_WORKTREE"),
         "absence already means shared checkout; a second spelling of the default is not written:\n{env}"
     );
+
+    // Project executors record a repository-local worktree. The worker API
+    // must expose the same path the project uses, not the individual-worker
+    // default under AMUX_HOME/worktrees.
+    let repository = home.path().join("repository");
+    let checkout = repository.join(".worktrees/wt-lane");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::write(checkout.join(".git"), "gitdir: fixture\n").unwrap();
+    std::fs::create_dir_all(home.path().join("workspaces")).unwrap();
+    std::fs::write(home.path().join("workspaces/wt-lane.json"), json!({
+        "repo":repository,"path":checkout,"branch":"amux/fanout/wt-lane","base":"a".repeat(40)
+    }).to_string()).unwrap();
+    let response = app.oneshot(Request::builder().uri("/api/sessions").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let sessions: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let worker = sessions.as_array().unwrap().iter().find(|row| row["name"]=="wt-lane").unwrap();
+    assert_eq!(worker["worktree_path"], checkout.to_string_lossy().as_ref());
+    assert_eq!(worker["worktree_active"], true);
+    let plain = sessions.as_array().unwrap().iter().find(|row| row["name"]=="plain-lane").unwrap();
+    assert_eq!(plain["worktree_active"], false);
+
 }

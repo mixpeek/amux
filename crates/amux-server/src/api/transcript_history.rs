@@ -19,28 +19,43 @@ fn readable_records(record: Value) -> Vec<Value> {
         return vec![record];
     }
     let payload = &record["payload"];
-    if matches!(payload["type"].as_str(), Some("function_call_output" | "custom_tool_call_output")) {
+    if matches!(
+        payload["type"].as_str(),
+        Some("function_call_output" | "custom_tool_call_output")
+    ) {
         return vec![json!({"type":"user", "message":{"role":"user", "content":[
             {"type":"tool_result", "content":crate::opencode::events::output_text(payload)}
         ]}})];
     }
-    codex_rollout_transcript(&[record]).into_iter().filter_map(|event| {
-        let (role, block) = match event {
-            TranscriptEvent::User { text } => ("user", json!({"type":"text", "text":text})),
-            TranscriptEvent::Assistant { text } => ("assistant", json!({"type":"text", "text":text})),
-            TranscriptEvent::Tool { tool, detail, .. } => ("assistant", json!({
-                "type":"tool_use", "name":tool, "input":{"description":detail}
-            })),
-            TranscriptEvent::Plan { steps } => {
-                let text = steps.into_iter().map(|step| format!("[{}] {}", step.status, step.step)).collect::<Vec<_>>().join("\n");
-                ("assistant", json!({"type":"text", "text":text}))
-            }
-            // Like the Claude terminal renderer, display conversation and
-            // tool activity, not internal reasoning records.
-            TranscriptEvent::Reasoning { .. } => return None,
-        };
-        Some(json!({"type":role, "message":{"role":role, "content":[block]}}))
-    }).collect()
+    codex_rollout_transcript(&[record])
+        .into_iter()
+        .filter_map(|event| {
+            let (role, block) = match event {
+                TranscriptEvent::User { text } => ("user", json!({"type":"text", "text":text})),
+                TranscriptEvent::Assistant { text } => {
+                    ("assistant", json!({"type":"text", "text":text}))
+                }
+                TranscriptEvent::Tool { tool, detail, .. } => (
+                    "assistant",
+                    json!({
+                        "type":"tool_use", "name":tool, "input":{"description":detail}
+                    }),
+                ),
+                TranscriptEvent::Plan { steps } => {
+                    let text = steps
+                        .into_iter()
+                        .map(|step| format!("[{}] {}", step.status, step.step))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    ("assistant", json!({"type":"text", "text":text}))
+                }
+                // Like the Claude terminal renderer, display conversation and
+                // tool activity, not internal reasoning records.
+                TranscriptEvent::Reasoning { .. } => return None,
+            };
+            Some(json!({"type":role, "message":{"role":role, "content":[block]}}))
+        })
+        .collect()
 }
 
 fn conversation_path(name: &str, provider: &str) -> Option<PathBuf> {
@@ -52,18 +67,33 @@ fn conversation_path(name: &str, provider: &str) -> Option<PathBuf> {
 }
 
 pub(super) fn snapshot(name: &str, provider: &str, budget: usize) -> Result<Page, &'static str> {
-    let result = conversation_path(name, provider).ok_or("conversation_not_resolved")
-        .and_then(|path| read_page(&path, None, budget).map_err(|error| {
-            tracing::warn!(session = name, provider, measured = false, n_considered = 0,
+    let result = conversation_path(name, provider)
+        .ok_or("conversation_not_resolved")
+        .and_then(|path| {
+            read_page(&path, None, budget).map_err(|error| {
+                tracing::warn!(session = name, provider, measured = false, n_considered = 0,
                 verdict = "peek_history_read_failed", %error);
-            "conversation_read_failed"
-        }));
+                "conversation_read_failed"
+            })
+        });
     match &result {
-        Ok(page) => tracing::info!(session = name, provider, measured = true,
-            n_considered = page.records, tool_output_arrays = page.tool_output_arrays,
-            bytes = page.text.len(), verdict = "peek_history_loaded"),
-        Err(why) => tracing::warn!(session = name, provider, measured = false,
-            n_considered = 0, why_unmeasured = why, verdict = "peek_history_unavailable"),
+        Ok(page) => tracing::info!(
+            session = name,
+            provider,
+            measured = true,
+            n_considered = page.records,
+            tool_output_arrays = page.tool_output_arrays,
+            bytes = page.text.len(),
+            verdict = "peek_history_loaded"
+        ),
+        Err(why) => tracing::warn!(
+            session = name,
+            provider,
+            measured = false,
+            n_considered = 0,
+            why_unmeasured = why,
+            verdict = "peek_history_unavailable"
+        ),
     }
     result
 }
@@ -76,7 +106,10 @@ fn read_page(path: &Path, before: Option<u64>, budget: usize) -> std::io::Result
     let size = file.metadata()?.len();
     let end = before.unwrap_or(size);
     if end > size {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "transcript cursor exceeds file size"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "transcript cursor exceeds file size",
+        ));
     }
     let mut start = end.saturating_sub(5_000_000);
     while start > 0 {
@@ -106,9 +139,14 @@ fn read_page(path: &Path, before: Option<u64>, budget: usize) -> std::io::Result
     let mut tool_output_arrays = 0;
     for (offset, line) in records.into_iter().rev() {
         cursor = offset;
-        let Ok(record) = serde_json::from_slice::<Value>(line) else { continue };
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
         if record["type"] == "response_item"
-            && matches!(record["payload"]["type"].as_str(), Some("function_call_output" | "custom_tool_call_output"))
+            && matches!(
+                record["payload"]["type"].as_str(),
+                Some("function_call_output" | "custom_tool_call_output")
+            )
             && record["payload"]["output"].is_array()
         {
             tool_output_arrays += 1;
@@ -120,58 +158,101 @@ fn read_page(path: &Path, before: Option<u64>, budget: usize) -> std::io::Result
             chars += text.chars().count();
             parts.push(normalized);
         }
-        if chars >= budget { break; }
+        if chars >= budget {
+            break;
+        }
     }
     parts.reverse();
-    Ok(Page { text: render_transcript_records(parts.into_iter().flatten().collect(), usize::MAX, false), before: cursor, records: count, tool_output_arrays })
+    Ok(Page {
+        text: render_transcript_records(parts.into_iter().flatten().collect(), usize::MAX, false),
+        before: cursor,
+        records: count,
+        tool_output_arrays,
+    })
 }
 
 pub(super) fn response(name: &str, qs: &[(String, String)]) -> Response {
     let provider = provider_of(&parse_env(name));
     if !matches!(provider.as_str(), "claude" | "codex" | "ollama") {
         if !qs_first(qs, "conversation", "").is_empty() {
-            return jresp(StatusCode::CONFLICT, json!({"error": "worker provider changed; reopen its history"}));
+            return jresp(
+                StatusCode::CONFLICT,
+                json!({"error": "worker provider changed; reopen its history"}),
+            );
         }
-        let legacy: Vec<_> = qs.iter().filter(|(key, _)| key != "source").cloned().collect();
+        let legacy: Vec<_> = qs
+            .iter()
+            .filter(|(key, _)| key != "source")
+            .cloned()
+            .collect();
         return log_get(name, "", &legacy);
     }
     let Some(path) = conversation_path(name, &provider) else {
         tracing::warn!(session = name, provider, measured = false, n_considered = 0,
             verdict = "conversation_history_unavailable",
             "readable history unavailable; refusing to display terminal redraw fragments as conversation");
-        return jresp(StatusCode::NOT_FOUND, json!({"error": "no saved conversation"}));
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": "no saved conversation"}),
+        );
     };
     let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let requested_id = qs_first(qs, "conversation", "");
     if !requested_id.is_empty() && requested_id != id {
-        return jresp(StatusCode::CONFLICT, json!({"error": "conversation changed; reopen the worker to load its history"}));
+        return jresp(
+            StatusCode::CONFLICT,
+            json!({"error": "conversation changed; reopen the worker to load its history"}),
+        );
     }
     let cursor = qs_first(qs, "before", "");
-    let before = if cursor.is_empty() { None } else {
+    let before = if cursor.is_empty() {
+        None
+    } else {
         match cursor.parse::<u64>() {
             Ok(n) => Some(n),
-            Err(_) => return jresp(StatusCode::BAD_REQUEST, json!({"error": "invalid history cursor"})),
+            Err(_) => {
+                return jresp(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": "invalid history cursor"}),
+                )
+            }
         }
     };
     match read_page(&path, before, 192_000) {
         Ok(page) => {
-            tracing::info!(session = name, provider, measured = true, n_considered = page.records,
-                verdict = "conversation_history_page", source = "transcript",
-                records = page.records, tool_output_arrays = page.tool_output_arrays,
-                bytes = page.text.len(), remaining = page.before,
-                "served readable conversation history without terminal redraw fragments");
-            (StatusCode::OK, [
-                ("content-type", "text/plain; charset=utf-8".to_string()),
-                ("x-amux-session", name.to_string()),
-                ("x-log-source", "conversation".to_string()),
-                ("x-log-conversation", id.to_string()),
-                ("x-log-remaining", page.before.to_string()),
-            ], page.text).into_response()
+            tracing::info!(
+                session = name,
+                provider,
+                measured = true,
+                n_considered = page.records,
+                verdict = "conversation_history_page",
+                source = "transcript",
+                records = page.records,
+                tool_output_arrays = page.tool_output_arrays,
+                bytes = page.text.len(),
+                remaining = page.before,
+                "served readable conversation history without terminal redraw fragments"
+            );
+            (
+                StatusCode::OK,
+                [
+                    ("content-type", "text/plain; charset=utf-8".to_string()),
+                    ("x-amux-session", name.to_string()),
+                    ("x-log-source", "conversation".to_string()),
+                    ("x-log-conversation", id.to_string()),
+                    ("x-log-remaining", page.before.to_string()),
+                ],
+                page.text,
+            )
+                .into_response()
         }
         Err(error) => {
             tracing::warn!(session = name, provider, measured = false, n_considered = 0,
                 verdict = "conversation_history_read_failed", %error);
-            jresp(StatusCode::CONFLICT, json!({"error": "could not read this conversation history page; reopen the worker"}))
+            jresp(
+                StatusCode::CONFLICT,
+                json!({"error": "could not read this conversation history page; reopen the worker"}),
+            )
         }
     }
 }
@@ -182,7 +263,10 @@ mod tests {
     use std::io::Write;
 
     fn record(text: &str) -> String {
-        format!("{}\n", json!({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":text}]}}))
+        format!(
+            "{}\n",
+            json!({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":text}]}})
+        )
     }
 
     fn codex_record(kind: &str, payload: Value) -> String {
@@ -201,7 +285,10 @@ mod tests {
         assert!(page.text.contains("Find the missing logs"), "{}", page.text);
         assert!(page.text.contains("exec_command"));
         assert!(page.text.contains("fixture completed"));
-        assert_eq!(page.text.matches("Earlier work remains visible.").count(), 1);
+        assert_eq!(
+            page.text.matches("Earlier work remains visible.").count(),
+            1
+        );
     }
 
     #[test]
@@ -213,7 +300,9 @@ mod tests {
         assert!(last.text.contains("A complete tool result at the boundary"));
         let before = read_page(file.path(), Some(last.before), 1).unwrap();
         assert!(before.text.contains("exec_command"));
-        assert!(!before.text.contains("A complete tool result at the boundary"));
+        assert!(!before
+            .text
+            .contains("A complete tool result at the boundary"));
     }
 
     #[test]
@@ -228,7 +317,11 @@ mod tests {
         }
         let page = read_page(file.path(), None, 192_000).unwrap();
         assert!(page.text.contains("Actual tool output"));
-        for hidden in ["internal reasoning specimen", "harness instructions specimen", "Chunk ID:"] {
+        for hidden in [
+            "internal reasoning specimen",
+            "harness instructions specimen",
+            "Chunk ID:",
+        ] {
             assert!(!page.text.contains(hidden), "{hidden}");
         }
         assert_eq!(page.records, 3);
@@ -254,7 +347,11 @@ mod tests {
     #[test]
     fn pages_preserve_complete_messages_and_cursor_survives_appends() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        for s in ["First complete message", "Second complete message", "Third complete message"] {
+        for s in [
+            "First complete message",
+            "Second complete message",
+            "Third complete message",
+        ] {
             write!(file, "{}", record(s)).unwrap();
         }
         let last = read_page(file.path(), None, 1).unwrap();
@@ -272,7 +369,13 @@ mod tests {
     #[test]
     fn large_records_at_page_boundary_are_not_lost() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        write!(file, "{}{}", record("Earlier message"), record(&format!("Large {} intact", "x".repeat(5_010_000)))).unwrap();
+        write!(
+            file,
+            "{}{}",
+            record("Earlier message"),
+            record(&format!("Large {} intact", "x".repeat(5_010_000)))
+        )
+        .unwrap();
         let page = read_page(file.path(), None, 192_000).unwrap();
         assert!(page.text.contains("Large ") && page.text.contains(" intact"));
         let previous = read_page(file.path(), Some(page.before), 192_000).unwrap();
@@ -283,16 +386,32 @@ mod tests {
     #[test]
     fn consumed_mid_turn_messages_render_once_without_queue_bookkeeping() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        let prompt = "[amux-origin: mvs-infra]\n\nHousekeeping: the roll is complete. Continue validation.";
+        let prompt =
+            "[amux-origin: mvs-infra]\n\nHousekeeping: the roll is complete. Continue validation.";
         for operation in ["enqueue", "dequeue"] {
-            writeln!(file, "{}", json!({"type":"queue-operation", "operation":operation, "content":prompt})).unwrap();
+            writeln!(
+                file,
+                "{}",
+                json!({"type":"queue-operation", "operation":operation, "content":prompt})
+            )
+            .unwrap();
         }
-        writeln!(file, "{}", json!({"type":"attachment", "attachment":{
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"attachment", "attachment":{
             "type":"queued_command", "prompt":prompt, "commandMode":"prompt"
-        }, "rendered":[{"content":"<system-reminder>duplicate wrapper</system-reminder>"}]})).unwrap();
+        }, "rendered":[{"content":"<system-reminder>duplicate wrapper</system-reminder>"}]})
+        )
+        .unwrap();
         write!(file, "{}", record("Validation continued.")).unwrap();
         let page = read_page(file.path(), None, 192_000).unwrap();
-        assert_eq!(page.text.matches("Housekeeping: the roll is complete.").count(), 1);
+        assert_eq!(
+            page.text
+                .matches("Housekeeping: the roll is complete.")
+                .count(),
+            1
+        );
         assert!(page.text.contains("[amux-origin: mvs-infra]"));
         assert!(page.text.contains("Validation continued."));
         assert!(!page.text.contains("duplicate wrapper"));
@@ -302,8 +421,13 @@ mod tests {
     #[test]
     fn malformed_tail_and_spinner_metadata_are_not_displayed() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        write!(file, "{}{}\n{{\"partial\":", record("Readable TubeScience response ✓"),
-            json!({"type":"progress", "data":{"text":"* d i\n+ e n 4"}})).unwrap();
+        write!(
+            file,
+            "{}{}\n{{\"partial\":",
+            record("Readable TubeScience response ✓"),
+            json!({"type":"progress", "data":{"text":"* d i\n+ e n 4"}})
+        )
+        .unwrap();
         let page = read_page(file.path(), None, 192_000).unwrap();
         assert!(page.text.contains("Readable TubeScience response ✓"));
         assert!(!page.text.contains("* d i") && !page.text.contains("partial"));

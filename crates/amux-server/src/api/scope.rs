@@ -221,7 +221,11 @@ fn memory_file(home: &Path, level: &str, name: &str, key: &str) -> PathBuf {
     let suf = if key == "rules" { ".rules.md" } else { ".md" };
     let mem = home.join("memory");
     match level {
-        "global" => mem.join(if key == "rules" { "_rules.md" } else { "_global.md" }),
+        "global" => mem.join(if key == "rules" {
+            "_rules.md"
+        } else {
+            "_global.md"
+        }),
         "group" => mem.join("tags").join(format!("{name}{suf}")),
         _ => mem.join(format!("{name}{suf}")),
     }
@@ -274,7 +278,11 @@ fn scan_fleet(home: &Path) -> Vec<(String, Vec<String>, bool)> {
 /// `_session_tags_of` (py:21724; order is the documented AMUX-2311
 /// tie-break, so no sorting here).
 fn split_tags(raw: &str) -> Vec<String> {
-    raw.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()
+    raw.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// pub(crate) so the skin resolver uses the SAME reader (AMUX-2678). Two
@@ -339,12 +347,17 @@ fn read_cap_value(
             // already the DB-backed key/value the branding prefs use.
             let k = skin_pref_key(level, name);
             let raw: Option<String> = conn.and_then(|c| {
-                c.query_row("SELECT value FROM prefs WHERE key=?1", rusqlite::params![k], |r| {
-                    r.get::<_, String>(0)
-                })
+                c.query_row(
+                    "SELECT value FROM prefs WHERE key=?1",
+                    rusqlite::params![k],
+                    |r| r.get::<_, String>(0),
+                )
                 .ok()
             });
-            let set = raw.as_deref().map(|v| !v.trim().is_empty()).unwrap_or(false);
+            let set = raw
+                .as_deref()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false);
             let parsed: Value = raw
                 .as_deref()
                 .and_then(|v| serde_json::from_str(v).ok())
@@ -356,12 +369,17 @@ fn read_cap_value(
             // and the launch-time connector resolver read, keyed by scope).
             let k = connectors_pref_key(level, name);
             let raw: Option<String> = conn.and_then(|c| {
-                c.query_row("SELECT value FROM prefs WHERE key=?1", rusqlite::params![k], |r| {
-                    r.get::<_, String>(0)
-                })
+                c.query_row(
+                    "SELECT value FROM prefs WHERE key=?1",
+                    rusqlite::params![k],
+                    |r| r.get::<_, String>(0),
+                )
                 .ok()
             });
-            let set = raw.as_deref().map(|v| !v.trim().is_empty()).unwrap_or(false);
+            let set = raw
+                .as_deref()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false);
             let parsed: Value = raw
                 .as_deref()
                 .and_then(|v| serde_json::from_str(v).ok())
@@ -505,7 +523,10 @@ async fn write_skin(
                     )?;
                 }
             }
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
         .map_err(|e| (500, format!("skin write failed: {e}")))?;
@@ -555,7 +576,10 @@ async fn write_connectors(
                     )?;
                 }
             }
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
         .map_err(|e| (500, format!("connectors write failed: {e}")))?;
@@ -598,7 +622,9 @@ fn load_board_statuses(conn: &rusqlite::Connection) -> Vec<StatusRow> {
                         .as_deref()
                         .and_then(|g| serde_json::from_str(g).ok())
                         .unwrap_or_else(|| json!([])),
-                    mode: mode.filter(|m| !m.is_empty()).unwrap_or_else(|| "implicit".into()),
+                    mode: mode
+                        .filter(|m| !m.is_empty())
+                        .unwrap_or_else(|| "implicit".into()),
                 });
             }
         }
@@ -606,8 +632,20 @@ fn load_board_statuses(conn: &rusqlite::Connection) -> Vec<StatusRow> {
     if out.is_empty() {
         // _DEFAULT_STATUSES have no gate/mode keys; `s.get("gate") or []`
         // and `s.get("mode") or "implicit"` produce exactly this.
-        for id in ["backlog", "todo", "doing", "review", "done", "verified", "discarded"] {
-            out.push(StatusRow { id: id.into(), gate: json!([]), mode: "implicit".into() });
+        for id in [
+            "backlog",
+            "todo",
+            "doing",
+            "review",
+            "done",
+            "verified",
+            "discarded",
+        ] {
+            out.push(StatusRow {
+                id: id.into(),
+                gate: json!([]),
+                mode: "implicit".into(),
+            });
         }
     }
     out
@@ -631,7 +669,9 @@ fn load_session_gates(
         .map(|(st, g)| {
             (
                 st,
-                g.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(json!([])),
+                g.as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(json!([])),
             )
         })
         .collect();
@@ -654,13 +694,19 @@ fn scope_write_allowed(level: &str, name: &str, actor: &str) -> (bool, String) {
         .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
         .unwrap_or(false);
     if open {
-        return (true, "AMUX_SCOPE_WRITE_AGENTS=1 (all levels open to sessions)".into());
+        return (
+            true,
+            "AMUX_SCOPE_WRITE_AGENTS=1 (all levels open to sessions)".into(),
+        );
     }
     if actor.is_empty() {
         return (true, "human (no session header — dashboard)".into());
     }
     if level == "worker" && name == actor {
-        return (true, format!("session writing its own worker layer ({actor})"));
+        return (
+            true,
+            format!("session writing its own worker layer ({actor})"),
+        );
     }
     if level == "worker" {
         return (
@@ -687,7 +733,10 @@ fn scope_write_allowed(level: &str, name: &str, actor: &str) -> (bool, String) {
 // ---------------------------------------------------------------------------
 
 fn j(status: u16, v: Value) -> Response {
-    (StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(v))
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        Json(v),
+    )
         .into_response()
 }
 
@@ -732,8 +781,11 @@ pub async fn handler(State(state): State<AppState>, req: Request) -> Response {
     //
     // The message names the likely intent rather than only the rule, because
     // `worker=` is the natural guess and the correct spelling is two params.
-    let unknown: Vec<&str> =
-        q.keys().map(String::as_str).filter(|k| !matches!(*k, "level" | "name")).collect();
+    let unknown: Vec<&str> = q
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !matches!(*k, "level" | "name"))
+        .collect();
     if !unknown.is_empty() {
         let hint = unknown
             .iter()
@@ -756,10 +808,16 @@ pub async fn handler(State(state): State<AppState>, req: Request) -> Response {
         );
     }
     if !matches!(level, "global" | "group" | "worker") {
-        return j(400, json!({"error": "level must be global, group or worker"}));
+        return j(
+            400,
+            json!({"error": "level must be global, group or worker"}),
+        );
     }
     if level != "global" && name.is_empty() {
-        return j(400, json!({"error": format!("name required for level={level}")}));
+        return j(
+            400,
+            json!({"error": format!("name required for level={level}")}),
+        );
     }
     let home = super::groups::amux_home();
     let conn = state.store.read().ok();
@@ -783,8 +841,10 @@ pub async fn handler(State(state): State<AppState>, req: Request) -> Response {
             out.insert("members".into(), json!(members));
         }
         _ => {
-            let groups: BTreeSet<String> =
-                scan_fleet(&home).into_iter().flat_map(|(_, tags, _)| tags).collect();
+            let groups: BTreeSet<String> = scan_fleet(&home)
+                .into_iter()
+                .flat_map(|(_, tags, _)| tags)
+                .collect();
             out.insert("groups".into(), json!(groups));
         }
     }
@@ -812,8 +872,10 @@ async fn put_scope(state: AppState, req: Request) -> Response {
     // correctly from what the read half told them; the answer should teach.
     // (Python's comment; without this the 409 below would be unreachable —
     // an unfalsifiable guard, which ethos #7 counts as no guard at all.)
-    let known_layers: BTreeSet<&str> =
-        SCOPE_CAPS.iter().flat_map(|c| c.order.iter().copied()).collect();
+    let known_layers: BTreeSet<&str> = SCOPE_CAPS
+        .iter()
+        .flat_map(|c| c.order.iter().copied())
+        .collect();
     if !matches!(level.as_str(), "global" | "group" | "worker")
         && !known_layers.contains(level.as_str())
     {
@@ -826,7 +888,10 @@ async fn put_scope(state: AppState, req: Request) -> Response {
         );
     }
     if matches!(level.as_str(), "group" | "worker") && name.is_empty() {
-        return j(400, json!({"error": format!("name required for level={level}")}));
+        return j(
+            400,
+            json!({"error": format!("name required for level={level}")}),
+        );
     }
     if capability.is_empty() {
         return j(
@@ -837,7 +902,15 @@ async fn put_scope(state: AppState, req: Request) -> Response {
             }),
         );
     }
-    scope_write(&state, &level, &name, &capability, body.get("value"), &actor).await
+    scope_write(
+        &state,
+        &level,
+        &name,
+        &capability,
+        body.get("value"),
+        &actor,
+    )
+    .await
 }
 
 /// Python `_scope_write`: validate → authorize → before-read → storage write
@@ -955,7 +1028,11 @@ fn write_memory(
     // Python: value if str else (value or {}).get("text", "")
     let text = match value {
         Value::String(s) => s.clone(),
-        Value::Object(o) => o.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        Value::Object(o) => o
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => String::new(),
     };
     std::fs::write(&f, text).map_err(|e| (500, e.to_string()))
@@ -1094,7 +1171,11 @@ async fn write_status_mode(
         let lv = if level == "group" { "tag" } else { "session" };
         let wanted: BTreeSet<String> = value
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let name = name.to_string();
         state
@@ -1178,7 +1259,11 @@ async fn ilog_scope_write(
 ) {
     let kind = "scope".to_string();
     let action = format!("write:{key}");
-    let actor = if actor.is_empty() { "human".to_string() } else { actor.to_string() };
+    let actor = if actor.is_empty() {
+        "human".to_string()
+    } else {
+        actor.to_string()
+    };
     let target = format!("{level}:{}", if name.is_empty() { "global" } else { name });
     let detail = blob(Some(json!({
         "capability": key, "level": level, "name": name, "why_allowed": why,
@@ -1206,7 +1291,10 @@ async fn ilog_scope_write(
             )?;
             // Audit rows ride the transaction but announce nothing: Python's
             // _ilog emits no client-visible event either.
-            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         })
         .await;
     if let Err(e) = res {
@@ -1233,12 +1321,14 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
     fn app(state: &AppState) -> Router {
-        Router::new().nest("/api/scope", routes()).with_state(state.clone())
+        Router::new()
+            .nest("/api/scope", routes())
+            .with_state(state.clone())
     }
 
     async fn call(
@@ -1261,8 +1351,13 @@ mod tests {
         };
         let res = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     /// AF-518 — an unknown query param must be REFUSED, not dropped.
@@ -1280,9 +1375,16 @@ mod tests {
         let app = app(&st);
 
         let (code, body) = call(&app, "GET", "/api/scope?worker=backend", None, None).await;
-        assert_eq!(code, StatusCode::BAD_REQUEST, "?worker= silently answered global: {body}");
+        assert_eq!(
+            code,
+            StatusCode::BAD_REQUEST,
+            "?worker= silently answered global: {body}"
+        );
         let err = body["error"].as_str().unwrap_or_default();
-        assert!(err.contains("worker"), "the refusal does not name the offending param: {err}");
+        assert!(
+            err.contains("worker"),
+            "the refusal does not name the offending param: {err}"
+        );
         assert!(
             err.contains("level=worker&name=backend"),
             "the refusal does not teach the correct spelling, which is the whole point: {err}"
@@ -1303,8 +1405,11 @@ mod tests {
 
         // THE CONTROL, and without it the clause could reject everything: the
         // documented spellings must still work.
-        for uri in ["/api/scope", "/api/scope?level=global",
-                    "/api/scope?level=worker&name=backend"] {
+        for uri in [
+            "/api/scope",
+            "/api/scope?level=global",
+            "/api/scope?level=worker&name=backend",
+        ] {
             let (code, _) = call(&app, "GET", uri, None, None).await;
             assert_eq!(code, StatusCode::OK, "{uri} — a valid request was refused");
         }
@@ -1316,7 +1421,10 @@ mod tests {
         for (name, tags, archived) in sessions {
             std::fs::write(
                 sd.join(format!("{name}.env")),
-                format!("CC_TAGS=\"{tags}\"\nCC_ARCHIVED={}\n", if *archived { 1 } else { 0 }),
+                format!(
+                    "CC_TAGS=\"{tags}\"\nCC_ARCHIVED={}\n",
+                    if *archived { 1 } else { 0 }
+                ),
             )
             .unwrap();
         }
@@ -1336,7 +1444,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         fleet(
             home.path(),
-            &[("w1", "alpha, beta", false), ("w2", "alpha", true), ("w3", "", false)],
+            &[
+                ("w1", "alpha, beta", false),
+                ("w2", "alpha", true),
+                ("w3", "", false),
+            ],
         );
         // Shared AMUX_HOME guard (settings::test_env): the var is
         // process-global; the RAII guard serializes and restores it.
@@ -1364,9 +1476,15 @@ mod tests {
                 .filter_map(|c| c.get("key").and_then(|k| k.as_str()))
                 .collect();
             for expected in ["memory", "rules", "env", "gates", "status_mode"] {
-                assert!(caps.contains(&expected), "python capability {expected} is missing: {caps:?}");
+                assert!(
+                    caps.contains(&expected),
+                    "python capability {expected} is missing: {caps:?}"
+                );
             }
-            assert!(caps.contains(&"skin"), "the native skin capability should be published: {caps:?}");
+            assert!(
+                caps.contains(&"skin"),
+                "the native skin capability should be published: {caps:?}"
+            );
         }
         // Global groups include ARCHIVED sessions' tags (Python filters
         // archived only for group members).
@@ -1376,12 +1494,22 @@ mod tests {
         assert_eq!(m["value"]["bytes"], 0);
         assert_eq!(m["value"]["text"], "");
         assert_eq!(m["value"]["truncated"], false);
-        assert!(m["value"]["path"].as_str().unwrap().ends_with("memory/_global.md"));
-        assert_eq!(cap(&v, "gates")["value"], json!({}), "seeded statuses carry no gates");
+        assert!(m["value"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("memory/_global.md"));
+        assert_eq!(
+            cap(&v, "gates")["value"],
+            json!({}),
+            "seeded statuses carry no gates"
+        );
         // Seeded builtin statuses: all implicit.
         assert_eq!(cap(&v, "status_mode")["value"]["verified"], "implicit");
         assert_eq!(cap(&v, "status_mode")["set_here"], false);
-        assert_eq!(cap(&v, "gates")["order"], json!(["global", "group", "worker", "type", "card"]));
+        assert_eq!(
+            cap(&v, "gates")["order"],
+            json!(["global", "group", "worker", "type", "card"])
+        );
 
         // POST answers the read too (Python has no method guard on it).
         let (s, v2) = call(&app, "POST", "/api/scope", None, None).await;
@@ -1409,7 +1537,6 @@ mod tests {
         let (s, v) = call(&app, "GET", "/api/scope?level=group", None, None).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "name required for level=group");
-
     }
 
     #[tokio::test]
@@ -1421,10 +1548,20 @@ mod tests {
         let app = app(&st);
 
         // Unknown level → 400 naming the real precedence layers.
-        let (s, v) = call(&app, "PUT", "/api/scope", Some(json!({"level": "bogus"})), None).await;
+        let (s, v) = call(
+            &app,
+            "PUT",
+            "/api/scope",
+            Some(json!({"level": "bogus"})),
+            None,
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "level must be global, group or worker");
-        assert_eq!(v["precedence_layers"], json!(["card", "global", "group", "type", "worker"]));
+        assert_eq!(
+            v["precedence_layers"],
+            json!(["card", "global", "group", "type", "worker"])
+        );
 
         // A KNOWN precedence layer that is not settable reaches the 409
         // that teaches (not the flat 400) — the guard is falsifiable.
@@ -1444,27 +1581,47 @@ mod tests {
              that list are intrinsic to the item, not to a scope."
         );
 
-        let (s, v) =
-            call(&app, "PUT", "/api/scope", Some(json!({"level": "group"})), None).await;
+        let (s, v) = call(
+            &app,
+            "PUT",
+            "/api/scope",
+            Some(json!({"level": "group"})),
+            None,
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "name required for level=group");
 
-        let (s, v) =
-            call(&app, "PUT", "/api/scope", Some(json!({"level": "global"})), None).await;
+        let (s, v) = call(
+            &app,
+            "PUT",
+            "/api/scope",
+            Some(json!({"level": "global"})),
+            None,
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "capability required");
         {
             // Same rule as above: the python five, in their python ORDER
             // (the refusal lists them and the UI renders them in order), with
             // native additions permitted to follow or interleave.
-            let caps: Vec<&str> =
-                v["capabilities"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+            let caps: Vec<&str> = v["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_str().unwrap())
+                .collect();
             let py: Vec<&str> = caps
                 .iter()
                 .copied()
                 .filter(|c| ["memory", "rules", "env", "gates", "status_mode"].contains(c))
                 .collect();
-            assert_eq!(py, vec!["memory", "rules", "env", "gates", "status_mode"], "{caps:?}");
+            assert_eq!(
+                py,
+                vec!["memory", "rules", "env", "gates", "status_mode"],
+                "{caps:?}"
+            );
         }
 
         let (s, v) = call(
@@ -1500,8 +1657,10 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "worker", "name": "other", "capability": "memory",
-                        "value": {"text": "x"}})),
+            Some(
+                json!({"level": "worker", "name": "other", "capability": "memory",
+                        "value": {"text": "x"}}),
+            ),
             Some("probe"),
         )
         .await;
@@ -1515,15 +1674,19 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "worker", "name": "probe", "capability": "memory",
-                        "value": {"text": "self-note"}})),
+            Some(
+                json!({"level": "worker", "name": "probe", "capability": "memory",
+                        "value": {"text": "self-note"}}),
+            ),
             Some("probe"),
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert_eq!(v["why_allowed"], "session writing its own worker layer (probe)");
+        assert_eq!(
+            v["why_allowed"],
+            "session writing its own worker layer (probe)"
+        );
         assert_eq!(v["actor"], "probe");
-
     }
 
     #[tokio::test]
@@ -1539,8 +1702,10 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "group", "name": "alpha", "capability": "memory",
-                        "value": {"text": "# alpha notes\n"}})),
+            Some(
+                json!({"level": "group", "name": "alpha", "capability": "memory",
+                        "value": {"text": "# alpha notes\n"}}),
+            ),
             None,
         )
         .await;
@@ -1562,8 +1727,10 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "group", "name": "alpha", "capability": "env",
-                        "value": {"NEW": "val", "OLD": null}})),
+            Some(
+                json!({"level": "group", "name": "alpha", "capability": "env",
+                        "value": {"NEW": "val", "OLD": null}}),
+            ),
             None,
         )
         .await;
@@ -1587,8 +1754,10 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "group", "name": "alpha", "capability": "gates",
-                        "value": {"verified": ["peer-reviewed"], "done": []}})),
+            Some(
+                json!({"level": "group", "name": "alpha", "capability": "gates",
+                        "value": {"verified": ["peer-reviewed"], "done": []}}),
+            ),
             None,
         )
         .await;
@@ -1607,15 +1776,20 @@ mod tests {
             assert_eq!(gate, "[\"peer-reviewed\"]");
         }
         let (_, v) = call(&app, "GET", "/api/scope?level=group&name=alpha", None, None).await;
-        assert_eq!(cap(&v, "gates")["value"], json!({"verified": ["peer-reviewed"]}));
+        assert_eq!(
+            cap(&v, "gates")["value"],
+            json!({"verified": ["peer-reviewed"]})
+        );
         assert_eq!(cap(&v, "gates")["set_here"], true);
         // Empty list removes the override.
         let (s, _) = call(
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "group", "name": "alpha", "capability": "gates",
-                        "value": {"verified": []}})),
+            Some(
+                json!({"level": "group", "name": "alpha", "capability": "gates",
+                        "value": {"verified": []}}),
+            ),
             None,
         )
         .await;
@@ -1649,7 +1823,10 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        assert_eq!(v["error"], "mode must be implicit or explicit, got 'sometimes'");
+        assert_eq!(
+            v["error"],
+            "mode must be implicit or explicit, got 'sometimes'"
+        );
         let (s, _) = call(
             &app,
             "PUT",
@@ -1669,8 +1846,10 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "group", "name": "alpha", "capability": "status_mode",
-                        "value": ["verified"]})),
+            Some(
+                json!({"level": "group", "name": "alpha", "capability": "status_mode",
+                        "value": ["verified"]}),
+            ),
             None,
         )
         .await;
@@ -1680,8 +1859,10 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "group", "name": "alpha", "capability": "status_mode",
-                        "value": []})),
+            Some(
+                json!({"level": "group", "name": "alpha", "capability": "status_mode",
+                        "value": []}),
+            ),
             None,
         )
         .await;
@@ -1717,7 +1898,6 @@ mod tests {
         // derivation. group:alpha saw memory, env, gates, gates in order,
         // so the second gates write is the 4th row at this target.
         assert_eq!(seq, 4, "4th write at (scope, group:alpha)");
-
     }
 
     /// Connectors step 3 (AMUX-3105 data model): `connectors` is a scopable
@@ -1731,11 +1911,25 @@ mod tests {
         let app = app(&st);
 
         // It is advertised as a capability (the connectors tab reads the list).
-        let (s, v) = call(&app, "PUT", "/api/scope", Some(json!({"level": "global"})), None).await;
+        let (s, v) = call(
+            &app,
+            "PUT",
+            "/api/scope",
+            Some(json!({"level": "global"})),
+            None,
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        let caps: Vec<&str> =
-            v["capabilities"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
-        assert!(caps.contains(&"connectors"), "connectors must be advertised: {caps:?}");
+        let caps: Vec<&str> = v["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap())
+            .collect();
+        assert!(
+            caps.contains(&"connectors"),
+            "connectors must be advertised: {caps:?}"
+        );
 
         // A worker-level connector mapping round-trips.
         let (s, v) = call(
@@ -1750,7 +1944,10 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["ok"], true);
         assert_eq!(v["set_here"], true);
-        assert_eq!(v["value"]["connectors"]["gmail"]["account"], "ethan@mixpeek.com");
+        assert_eq!(
+            v["value"]["connectors"]["gmail"]["account"],
+            "ethan@mixpeek.com"
+        );
         assert_eq!(v["value"]["connectors"]["gmail"]["enabled"], true);
 
         // A second write REPLACES the layer; cross-LEVEL merge-by-key is the
@@ -1759,14 +1956,19 @@ mod tests {
             &app,
             "PUT",
             "/api/scope",
-            Some(json!({"level": "worker", "name": "w1", "capability": "connectors",
-                        "value": {"slack": {"enabled": true, "account": "T123"}}})),
+            Some(
+                json!({"level": "worker", "name": "w1", "capability": "connectors",
+                        "value": {"slack": {"enabled": true, "account": "T123"}}}),
+            ),
             None,
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["value"]["connectors"]["slack"]["account"], "T123");
-        assert!(v["value"]["connectors"].get("gmail").is_none(), "same-level write replaces");
+        assert!(
+            v["value"]["connectors"].get("gmail").is_none(),
+            "same-level write replaces"
+        );
 
         // `{}` CLEARS the layer (unset vs empty stays distinguishable).
         let (s, v) = call(

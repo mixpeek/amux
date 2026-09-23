@@ -85,18 +85,25 @@ pub fn valid_id(id: &str) -> bool {
 fn new_id() -> String {
     let mut b = [0u8; 12];
     getrandom_bytes(&mut b);
-    format!("grn_{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+    format!(
+        "grn_{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
 }
 
 fn getrandom_bytes(buf: &mut [u8]) {
     use std::time::{SystemTime, UNIX_EPOCH};
     // Not a secret — an id only has to be unguessable enough not to collide and
     // not to be trivially enumerated in a directory listing.
-    let mut seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
-        as u64
+    let mut seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0) as u64
         ^ (std::process::id() as u64) << 17;
     for b in buf.iter_mut() {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *b = (seed >> 33) as u8;
     }
 }
@@ -120,7 +127,11 @@ pub fn create_grant(
         "payload": payload,
         "created": now_f64(),
     });
-    std::fs::write(dir.join(format!("{id}.json")), serde_json::to_vec_pretty(&doc).ok()?).ok()?;
+    std::fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec_pretty(&doc).ok()?,
+    )
+    .ok()?;
     tracing::warn!(
         grant = %id, kind = %kind, requested_by = %requested_by,
         "[grant] a worker hit a permission wall and asked — pending owner approval"
@@ -141,8 +152,12 @@ pub fn consume(home: &Path, id: &str) -> Consume {
     }
     let dir = grants_dir(home);
     let live = dir.join(format!("{id}.json"));
-    let Ok(raw) = std::fs::read_to_string(&live) else { return Consume::Gone };
-    let Ok(doc) = serde_json::from_str::<Value>(&raw) else { return Consume::Gone };
+    let Ok(raw) = std::fs::read_to_string(&live) else {
+        return Consume::Gone;
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(&raw) else {
+        return Consume::Gone;
+    };
     let created = doc.get("created").and_then(Value::as_f64).unwrap_or(0.0);
     if now_f64() - created > GRANT_TTL_S {
         let _ = std::fs::rename(&live, dir.join(format!("{id}.expired.json")));
@@ -177,7 +192,9 @@ pub fn fate(home: &Path, id: &str) -> String {
 /// Pending asks, freshest first, with the time left on each.
 pub fn list_pending(home: &Path) -> Vec<Value> {
     let dir = grants_dir(home);
-    let Ok(rd) = std::fs::read_dir(&dir) else { return vec![] };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
     let mut out: Vec<Value> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
@@ -197,8 +214,12 @@ pub fn list_pending(home: &Path) -> Vec<Value> {
         if !name.starts_with("grn_") || !name.ends_with(".json") || name.matches('.').count() != 1 {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(e.path()) else { continue };
-        let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else { continue };
+        let Ok(raw) = std::fs::read_to_string(e.path()) else {
+            continue;
+        };
+        let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
         let created = doc.get("created").and_then(Value::as_f64).unwrap_or(0.0);
         let age = now_f64() - created;
         if age > GRANT_TTL_S {
@@ -230,8 +251,11 @@ pub fn discard(home: &Path, id: &str, by: &str) -> Option<Value> {
         o.insert("rejected_by".into(), json!(by));
         o.insert("rejected_at".into(), json!(now_f64()));
     }
-    std::fs::write(dir.join(format!("{id}.rejected.json")), serde_json::to_vec_pretty(&doc).ok()?)
-        .ok()?;
+    std::fs::write(
+        dir.join(format!("{id}.rejected.json")),
+        serde_json::to_vec_pretty(&doc).ok()?,
+    )
+    .ok()?;
     std::fs::remove_file(&live).ok()?;
     Some(doc)
 }
@@ -242,7 +266,15 @@ pub fn discard(home: &Path, id: &str, by: &str) -> Option<Value> {
 
 fn allowance_path(home: &Path, origin: &str, target: &str) -> PathBuf {
     let safe = |s: &str| -> String {
-        s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
     };
     grants_dir(home).join(format!("allow_{}__{}.json", safe(origin), safe(target)))
 }
@@ -275,7 +307,11 @@ pub fn take_allowance(home: &Path, origin: &str, target: &str) -> Option<String>
     // the safe direction — a lost allowance costs one more ask, while a retained
     // one is a permission nobody granted twice.
     let _ = std::fs::remove_file(&p);
-    let gid = doc.get("grant").and_then(Value::as_str).unwrap_or_default().to_string();
+    let gid = doc
+        .get("grant")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     tracing::warn!(
         origin = %origin, target = %target, grant = %gid,
         "[grant] cross-group send proceeding on a single-use owner approval"
@@ -291,9 +327,12 @@ pub fn take_allowance(home: &Path, origin: &str, target: &str) -> Option<String>
 /// the email gate's discriminator, and it is the reason a worker cannot approve
 /// its own ask.
 fn is_worker_origin(headers: &HeaderMap) -> bool {
-    ["x-amux-session", "x-amux-worker"]
-        .iter()
-        .any(|h| headers.get(*h).and_then(|v| v.to_str().ok()).is_some_and(|s| !s.trim().is_empty()))
+    ["x-amux-session", "x-amux-worker"].iter().any(|h| {
+        headers
+            .get(*h)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|s| !s.trim().is_empty())
+    })
 }
 
 async fn list() -> Response {
@@ -311,7 +350,6 @@ async fn list() -> Response {
 /// process-global and cargo runs tests in parallel, so an env-mutating test
 /// races every other test that reads a home.
 async fn list_at(home: PathBuf) -> Response {
-
     // OFF THE RUNTIME (AMUX-4756). `list_pending` is blocking filesystem work:
     // a read_dir plus one `read_to_string` PER grant file, 102 of them on this
     // box today. Inline, that held a tokio worker thread for the whole scan.
@@ -329,8 +367,7 @@ async fn list_at(home: PathBuf) -> Response {
     // `db::interactions::spawn_blocking` rather than the raw tokio call,
     // because it carries the interaction id into the blocking scope the way
     // every other blocking path here does.
-    let pending = match crate::db::interactions::spawn_blocking(move || list_pending(&home)).await
-    {
+    let pending = match crate::db::interactions::spawn_blocking(move || list_pending(&home)).await {
         Ok(pending) => pending,
         // A JoinError here means the scan panicked. Say so with a 5xx rather
         // than reporting an empty grant list, which would read as "nothing is
@@ -506,7 +543,10 @@ mod tests {
         let h = home();
         let a = mint(h.path());
         let b = mint(h.path());
-        assert_ne!(a, b, "two grants so the fixture is not a one-element special case");
+        assert_ne!(
+            a, b,
+            "two grants so the fixture is not a one-element special case"
+        );
         // A file the scan must IGNORE, so this proves the filter survived the
         // move rather than just that some list came back.
         std::fs::write(grants_dir(h.path()).join("not-a-grant.txt"), b"x").unwrap();
@@ -514,11 +554,17 @@ mod tests {
         // The SHIPPED handler, not a re-implementation of it.
         let resp = list_at(h.path().to_path_buf()).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
 
         let pending = body["pending"].as_array().expect("pending is an array");
-        assert_eq!(pending.len(), 2, "both grants are pending, the .txt is not: {body}");
+        assert_eq!(
+            pending.len(),
+            2,
+            "both grants are pending, the .txt is not: {body}"
+        );
         assert_eq!(
             serde_json::to_string(pending).unwrap(),
             serde_json::to_string(&list_pending(h.path())).unwrap(),
@@ -535,7 +581,10 @@ mod tests {
         let h = home();
         let id = mint(h.path());
         write_allowance(h.path(), "ts-gke", "autodesk", &id);
-        assert_eq!(take_allowance(h.path(), "ts-gke", "autodesk").as_deref(), Some(id.as_str()));
+        assert_eq!(
+            take_allowance(h.path(), "ts-gke", "autodesk").as_deref(),
+            Some(id.as_str())
+        );
         assert!(
             take_allowance(h.path(), "ts-gke", "autodesk").is_none(),
             "a second send must be refused again — one approval is one send"
@@ -550,9 +599,18 @@ mod tests {
         let h = home();
         let id = mint(h.path());
         write_allowance(h.path(), "ts-gke", "autodesk", &id);
-        assert!(take_allowance(h.path(), "ts-gke", "backend").is_none(), "other target");
-        assert!(take_allowance(h.path(), "backend", "autodesk").is_none(), "other origin");
-        assert!(take_allowance(h.path(), "ts-gke", "autodesk").is_some(), "the granted pair still works");
+        assert!(
+            take_allowance(h.path(), "ts-gke", "backend").is_none(),
+            "other target"
+        );
+        assert!(
+            take_allowance(h.path(), "backend", "autodesk").is_none(),
+            "other origin"
+        );
+        assert!(
+            take_allowance(h.path(), "ts-gke", "autodesk").is_some(),
+            "the granted pair still works"
+        );
     }
 
     /// Approval is ONE-SHOT. A raced second approver must lose rather than mint
@@ -578,7 +636,10 @@ mod tests {
         std::fs::write(&p, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
         assert!(matches!(consume(h.path(), &id), Consume::Expired));
         assert_eq!(fate(h.path(), &id), "expired");
-        assert!(list_pending(h.path()).is_empty(), "an expired ask is not a pending ask");
+        assert!(
+            list_pending(h.path()).is_empty(),
+            "an expired ask is not a pending ask"
+        );
     }
 
     /// An expired ALLOWANCE is not usable either. Without this the grant's TTL
@@ -595,7 +656,10 @@ mod tests {
         // CONTROL: a FRESH one is usable, or the cell above passes for a
         // take_allowance that never returns anything.
         write_allowance(h.path(), "a", "b", "grn_live");
-        assert_eq!(take_allowance(h.path(), "a", "b").as_deref(), Some("grn_live"));
+        assert_eq!(
+            take_allowance(h.path(), "a", "b").as_deref(),
+            Some("grn_live")
+        );
     }
 
     /// The worker-origin discriminator is the reason a lane cannot approve its
@@ -621,7 +685,10 @@ mod tests {
     fn ids_are_validated_not_cleaned() {
         assert!(valid_id("grn_00ff11"));
         assert!(!valid_id("grn_../../etc/passwd"));
-        assert!(!valid_id("apr_00ff"), "an email approval id is not a grant id");
+        assert!(
+            !valid_id("apr_00ff"),
+            "an email approval id is not a grant id"
+        );
         assert!(!valid_id("grn_"), "no body");
         assert!(!valid_id("grn_zz"), "not hex");
     }
@@ -635,7 +702,10 @@ mod tests {
         assert!(discard(h.path(), &id, "owner").is_some());
         assert!(list_pending(h.path()).is_empty());
         assert_eq!(fate(h.path(), &id), "rejected");
-        assert!(matches!(consume(h.path(), &id), Consume::Gone), "a rejected ask cannot be approved");
+        assert!(
+            matches!(consume(h.path(), &id), Consume::Gone),
+            "a rejected ask cannot be approved"
+        );
     }
 
     /// AN ALLOWANCE IS NOT A PENDING GRANT. Both live in the same directory, both
@@ -669,9 +739,18 @@ mod tests {
         assert_eq!(p[0]["requested_by"], json!("ts-gke"));
         assert_eq!(p[0]["kind"], json!("cross_group_send"));
         assert_eq!(p[0]["payload"]["target"], json!("autodesk"));
-        assert!(p[0]["expires_in_s"].as_i64().unwrap_or(0) > 0, "a human needs the clock");
+        assert!(
+            p[0]["expires_in_s"].as_i64().unwrap_or(0) > 0,
+            "a human needs the clock"
+        );
         // The audit siblings must not appear as pending.
-        assert!(matches!(consume(h.path(), p[0]["id"].as_str().unwrap()), Consume::Ready(_)));
-        assert!(list_pending(h.path()).is_empty(), ".approved.json is history, not queue");
+        assert!(matches!(
+            consume(h.path(), p[0]["id"].as_str().unwrap()),
+            Consume::Ready(_)
+        ));
+        assert!(
+            list_pending(h.path()).is_empty(),
+            ".approved.json is history, not queue"
+        );
     }
 }

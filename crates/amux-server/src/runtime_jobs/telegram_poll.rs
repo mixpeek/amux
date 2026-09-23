@@ -81,7 +81,9 @@ fn poll_cadence(token_present: bool) -> Duration {
 }
 
 fn bot_token() -> Option<String> {
-    std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.trim().is_empty())
+    std::env::var("TELEGRAM_BOT_TOKEN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn api_base(token: &str) -> String {
@@ -115,7 +117,10 @@ fn report_slot() -> &'static Mutex<Report> {
 }
 
 pub fn last_report() -> Report {
-    report_slot().lock().expect("telegram report lock poisoned").clone()
+    report_slot()
+        .lock()
+        .expect("telegram report lock poisoned")
+        .clone()
 }
 
 fn record_poll(err: Option<String>) {
@@ -125,15 +130,24 @@ fn record_poll(err: Option<String>) {
 }
 
 fn record_routed() {
-    report_slot().lock().expect("telegram report lock poisoned").messages_routed += 1;
+    report_slot()
+        .lock()
+        .expect("telegram report lock poisoned")
+        .messages_routed += 1;
 }
 
 fn record_unlinked() {
-    report_slot().lock().expect("telegram report lock poisoned").messages_unlinked += 1;
+    report_slot()
+        .lock()
+        .expect("telegram report lock poisoned")
+        .messages_unlinked += 1;
 }
 
 fn record_group_ignored() {
-    report_slot().lock().expect("telegram report lock poisoned").messages_group_ignored += 1;
+    report_slot()
+        .lock()
+        .expect("telegram report lock poisoned")
+        .messages_group_ignored += 1;
 }
 
 /// The loop. Never returns — matches every other `spawn_loop` job (gcal-sync,
@@ -188,14 +202,24 @@ async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> R
         offset + 1,
         POLL_TIMEOUT_SECS
     );
-    let resp = client.get(&url).send().await.map_err(|e| format!("getUpdates request: {e}"))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("getUpdates request: {e}"))?;
     let status = resp.status();
-    let body: Value =
-        resp.json().await.map_err(|e| format!("getUpdates body (status {status}): {e}"))?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("getUpdates body (status {status}): {e}"))?;
     if !status.is_success() || body.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(format!("getUpdates rejected (status {status}): {body}"));
     }
-    let updates = body.get("result").and_then(Value::as_array).cloned().unwrap_or_default();
+    let updates = body
+        .get("result")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let mut max_update_id = offset;
     for update in &updates {
         if let Some(id) = update.get("update_id").and_then(Value::as_i64) {
@@ -208,7 +232,10 @@ async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> R
             .store
             .write_async(move |conn| {
                 tg_db::set_last_update_id(conn, max_update_id)?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -217,8 +244,14 @@ async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> R
 }
 
 async fn handle_update(state: &AppState, update: &Value) {
-    let Some(msg) = update.get("message") else { return };
-    let Some(chat_id) = msg.get("chat").and_then(|c| c.get("id")).and_then(Value::as_i64) else {
+    let Some(msg) = update.get("message") else {
+        return;
+    };
+    let Some(chat_id) = msg
+        .get("chat")
+        .and_then(|c| c.get("id"))
+        .and_then(Value::as_i64)
+    else {
         return;
     };
     // "private" | "group" | "supergroup" | "channel" — Telegram sends this on
@@ -226,9 +259,18 @@ async fn handle_update(state: &AppState, update: &Value) {
     // Default "private" only covers a malformed/missing field, never a real
     // group (which always carries its own type), so it cannot be used to
     // sneak a group past the eligibility gate below.
-    let chat_type = msg.get("chat").and_then(|c| c.get("type")).and_then(Value::as_str).unwrap_or("private");
+    let chat_type = msg
+        .get("chat")
+        .and_then(|c| c.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("private");
     let is_group = chat_type == "group" || chat_type == "supergroup";
-    let text = msg.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let text = msg
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let username = msg
         .get("from")
         .and_then(|f| f.get("username"))
@@ -260,7 +302,11 @@ async fn handle_update(state: &AppState, update: &Value) {
             return;
         }
         record_unlinked();
-        send_reply(chat_id, "Not linked to any amux session yet. Send `/link <session-name>` first.").await;
+        send_reply(
+            chat_id,
+            "Not linked to any amux session yet. Send `/link <session-name>` first.",
+        )
+        .await;
         return;
     };
 
@@ -268,7 +314,10 @@ async fn handle_update(state: &AppState, update: &Value) {
         .store
         .write_async(move |conn| {
             tg_db::touch_last_message(conn, chat_id)?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
 
@@ -347,15 +396,23 @@ async fn handle_update(state: &AppState, update: &Value) {
             .store
             .write_async(move |conn| {
                 tg_db::set_routed_session(conn, chat_id, &target_session)?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await;
     }
 
     let stamped = format!("[from Telegram @{who}]: {message_text}");
-    let (ok, msg) =
-        session_verbs::send_text(state, &target_session, &stamped, true, session_verbs::SendOrigin::Automation)
-            .await;
+    let (ok, msg) = session_verbs::send_text(
+        state,
+        &target_session,
+        &stamped,
+        true,
+        session_verbs::SendOrigin::Automation,
+    )
+    .await;
     if ok {
         record_routed();
     } else {
@@ -365,11 +422,21 @@ async fn handle_update(state: &AppState, update: &Value) {
             chat_id,
             msg
         );
-        send_reply(chat_id, &format!("Couldn't deliver to '{}': {}", target_session, msg)).await;
+        send_reply(
+            chat_id,
+            &format!("Couldn't deliver to '{}': {}", target_session, msg),
+        )
+        .await;
     }
 }
 
-async fn link_chat(state: &AppState, chat_id: i64, session: &str, username: Option<&str>, chat_type: &str) {
+async fn link_chat(
+    state: &AppState,
+    chat_id: i64,
+    session: &str,
+    username: Option<&str>,
+    chat_type: &str,
+) {
     if session.is_empty() {
         send_reply(chat_id, "Usage: /link <session-name>").await;
         return;
@@ -378,7 +445,10 @@ async fn link_chat(state: &AppState, chat_id: i64, session: &str, username: Opti
     if !known.iter().any(|n| n == session) {
         send_reply(
             chat_id,
-            &format!("No such session '{session}'. Known sessions: {}", known.join(", ")),
+            &format!(
+                "No such session '{session}'. Known sessions: {}",
+                known.join(", ")
+            ),
         )
         .await;
         return;
@@ -413,8 +483,17 @@ async fn link_chat(state: &AppState, chat_id: i64, session: &str, username: Opti
     let stored = state
         .store
         .write_async(move |conn| {
-            tg_db::upsert(conn, chat_id, &session_owned, username_owned.as_deref(), &chat_type_owned)?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            tg_db::upsert(
+                conn,
+                chat_id,
+                &session_owned,
+                username_owned.as_deref(),
+                &chat_type_owned,
+            )?;
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await
         .map_err(|e| e.to_string());
@@ -429,7 +508,13 @@ async fn link_chat(state: &AppState, chat_id: i64, session: &str, username: Opti
             )
             .await
         }
-        Ok(_) => send_reply(chat_id, &format!("Linked. Messages here now go to '{session}'.")).await,
+        Ok(_) => {
+            send_reply(
+                chat_id,
+                &format!("Linked. Messages here now go to '{session}'."),
+            )
+            .await
+        }
         Err(e) => {
             tracing::warn!("telegram_poll: link write failed for chat {chat_id}: {e}");
             send_reply(chat_id, "Internal error linking — try again.").await;
@@ -514,7 +599,11 @@ pub(crate) async fn send_message(
     if let Some(mode) = parse_mode {
         body["parse_mode"] = serde_json::Value::String(mode.to_string());
     }
-    let resp = match client.post(format!("{}/sendMessage", api_base(token))).json(&body).send().await
+    let resp = match client
+        .post(format!("{}/sendMessage", api_base(token)))
+        .json(&body)
+        .send()
+        .await
     {
         Ok(r) => r,
         Err(first_err) => {
@@ -537,7 +626,10 @@ pub(crate) async fn send_message(
     let err_body = resp.text().await.unwrap_or_default();
     // Only retry when formatting was actually in play and Telegram's error
     // shape says it choked on the entities, not on rate limits/auth/network.
-    if parse_mode.is_some() && status.as_u16() == 400 && err_body.to_lowercase().contains("parse entities") {
+    if parse_mode.is_some()
+        && status.as_u16() == 400
+        && err_body.to_lowercase().contains("parse entities")
+    {
         tracing::warn!(
             "telegram_poll: sendMessage rejected formatted text for chat {chat_id}, retrying as plain: {err_body}"
         );
@@ -557,7 +649,9 @@ pub(crate) async fn send_message(
             "sendMessage rejected formatted (status {status}): {err_body}; plain-text retry also rejected (status {retry_status}): {retry_body}"
         ));
     }
-    Err(format!("sendMessage rejected (status {status}): {err_body}"))
+    Err(format!(
+        "sendMessage rejected (status {status}): {err_body}"
+    ))
 }
 
 pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
@@ -575,7 +669,10 @@ mod cadence_tests {
     #[test]
     fn registry_cadence_matches_configured_and_idle_loops() {
         assert_eq!(poll_cadence(true), Duration::from_secs(POLL_TIMEOUT_SECS));
-        assert_eq!(poll_cadence(false), Duration::from_secs(NO_TOKEN_SLEEP_SECS));
+        assert_eq!(
+            poll_cadence(false),
+            Duration::from_secs(NO_TOKEN_SLEEP_SECS)
+        );
         assert!(poll_cadence(false) > poll_cadence(true));
     }
 }

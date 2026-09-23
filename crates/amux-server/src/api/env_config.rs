@@ -21,12 +21,12 @@
 
 use super::AppState;
 use crate::db::WriteOutcome;
-use rusqlite::OptionalExtension;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -241,9 +241,15 @@ async fn apply(
         let content = render_worker_env(w);
         // "unchanged" if the file already holds this exact config (minus the
         // volatile `# updated:` header line) — so a re-apply reports honestly.
-        let action = if existed && same_env_body(&path, &content) { "unchanged" } else { action };
-        report.push(json!({"kind": "worker", "name": name, "action": action, "groups": w.groups,
-            "prompt": !w.prompt.trim().is_empty(), "dir": w.dir}));
+        let action = if existed && same_env_body(&path, &content) {
+            "unchanged"
+        } else {
+            action
+        };
+        report.push(
+            json!({"kind": "worker", "name": name, "action": action, "groups": w.groups,
+            "prompt": !w.prompt.trim().is_empty(), "dir": w.dir}),
+        );
         if !dry && action != "unchanged" {
             worker_writes.push((path, content, name.clone(), action, w.dir.clone()));
         }
@@ -259,7 +265,13 @@ async fn apply(
     let groups_for_write: Vec<(String, String, String)> = spec
         .groups
         .iter()
-        .map(|g| (g.name.trim().to_string(), g.department.clone(), g.goal.clone()))
+        .map(|g| {
+            (
+                g.name.trim().to_string(),
+                g.department.clone(),
+                g.goal.clone(),
+            )
+        })
         .filter(|(n, _, _)| !n.is_empty())
         .collect();
     // For the report, read current group_config so we can say create/update/unchanged.
@@ -271,7 +283,10 @@ async fn apply(
             let mut m = std::collections::HashMap::new();
             if let Ok(mut st) = conn.prepare("SELECT name, department, goal FROM group_config") {
                 if let Ok(rows) = st.query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+                    ))
                 }) {
                     for row in rows.flatten() {
                         m.insert(row.0, row.1);
@@ -325,7 +340,12 @@ async fn apply(
             crate::runtime_jobs::scheduler::list_schedules(&conn, None)
                 .unwrap_or_default()
                 .iter()
-                .map(|s| (s.str_field("session").to_string(), s.str_field("title").to_string()))
+                .map(|s| {
+                    (
+                        s.str_field("session").to_string(),
+                        s.str_field("title").to_string(),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -341,8 +361,10 @@ async fn apply(
         let expr = s.expr.trim();
         if !expr.is_empty() {
             if let Err(e) = crate::runtime_jobs::scheduler::ScheduleExpr::parse(expr) {
-                report.push(json!({"kind": "schedule", "title": title, "action": "error",
-                    "detail": format!("unparseable expr: {e}")}));
+                report.push(
+                    json!({"kind": "schedule", "title": title, "action": "error",
+                    "detail": format!("unparseable expr: {e}")}),
+                );
                 continue;
             }
         }
@@ -351,7 +373,13 @@ async fn apply(
         report.push(json!({"kind": "schedule", "worker": worker, "title": title,
             "action": action, "enabled": s.enabled}));
         if !dry && !exists {
-            sched_writes.push((worker.to_string(), title.to_string(), expr.to_string(), s.enabled, s.command.clone()));
+            sched_writes.push((
+                worker.to_string(),
+                title.to_string(),
+                expr.to_string(),
+                s.enabled,
+                s.command.clone(),
+            ));
         }
     }
 
@@ -387,9 +415,24 @@ async fn apply(
         let action = if exists { "exists" } else { "create" };
         report.push(json!({"kind": "card", "worker": worker, "title": title, "action": action}));
         if !dry && !exists {
-            let status = if c.status.trim().is_empty() { "backlog".into() } else { c.status.trim().to_string() };
-            let itype = if c.item_type.trim().is_empty() { "code".into() } else { c.item_type.trim().to_string() };
-            card_writes.push((worker.to_string(), title.to_string(), c.desc.clone(), status, itype, c.epic.trim().to_string()));
+            let status = if c.status.trim().is_empty() {
+                "backlog".into()
+            } else {
+                c.status.trim().to_string()
+            };
+            let itype = if c.item_type.trim().is_empty() {
+                "code".into()
+            } else {
+                c.item_type.trim().to_string()
+            };
+            card_writes.push((
+                worker.to_string(),
+                title.to_string(),
+                c.desc.clone(),
+                status,
+                itype,
+                c.epic.trim().to_string(),
+            ));
         }
     }
 
@@ -440,7 +483,9 @@ async fn apply(
     for (m, resolves) in spec.messages.iter().zip(&msg_resolves) {
         let (to, text) = (m.to.trim(), m.text.trim());
         if to.is_empty() || text.is_empty() {
-            report.push(json!({"kind": "message", "action": "error", "detail": "to and text are required"}));
+            report.push(
+                json!({"kind": "message", "action": "error", "detail": "to and text are required"}),
+            );
             continue;
         }
         if *resolves {
@@ -452,8 +497,10 @@ async fn apply(
             } else {
                 "recipient not found in worker registry — a .env worker is message-addressable only once started; \"human\", a group, or a running worker resolve"
             };
-            report.push(json!({"kind": "message", "to": to, "action": "skipped", "detail": detail,
-                "fix": if own_new_worker { "use worker.prompt" } else { "check recipient" }}));
+            report.push(
+                json!({"kind": "message", "to": to, "action": "skipped", "detail": detail,
+                "fix": if own_new_worker { "use worker.prompt" } else { "check recipient" }}),
+            );
             // Log signal (every-fix-needs-a-log-signal): the NEXT dropped
             // env-apply message self-announces in server-rs.log, so a sweep
             // catches the worker-model gap without a human noticing first. The
@@ -473,8 +520,10 @@ async fn apply(
 
     // Phase-2 stanzas still parsed-and-reported (not silently dropped).
     if !spec.columns.is_empty() {
-        report.push(json!({"kind": "columns", "action": "not-yet-applied", "count": spec.columns.len(),
-            "detail": "phase 2 (AMUX-2977) — parsed and reported, not written"}));
+        report.push(
+            json!({"kind": "columns", "action": "not-yet-applied", "count": spec.columns.len(),
+            "detail": "phase 2 (AMUX-2977) — parsed and reported, not written"}),
+        );
     }
     if spec.global.is_some() {
         report.push(json!({"kind": "global", "action": "not-yet-applied",
@@ -513,7 +562,9 @@ async fn apply(
     // if its session is not up yet (provisioned separately) it queues and lands
     // when the worker starts. Only newly-created workers are here (see the loop).
     for (name, prompt) in &worker_prompts {
-        let _ = crate::api::session_verbs::steer_enqueue(&state, name, prompt, "env-apply-prompt", "").await;
+        let _ =
+            crate::api::session_verbs::steer_enqueue(&state, name, prompt, "env-apply-prompt", "")
+                .await;
     }
 
     // ---- files: write each seed doc to its absolute path -------------------
@@ -522,7 +573,9 @@ async fn apply(
             let _ = std::fs::create_dir_all(dir);
         }
         if let Err(e) = std::fs::write(&path, content) {
-            errors.push(json!({"kind": "file", "path": path.to_string_lossy(), "error": e.to_string()}));
+            errors.push(
+                json!({"kind": "file", "path": path.to_string_lossy(), "error": e.to_string()}),
+            );
         }
     }
 
@@ -572,7 +625,9 @@ async fn apply(
                         match sch::ScheduleExpr::parse(expr) {
                             Ok(p) => (
                                 "recurring".to_string(),
-                                p.next_run_after(now).map(sch::fmt_minute).unwrap_or_else(|| sch::fmt_minute(now)),
+                                p.next_run_after(now)
+                                    .map(sch::fmt_minute)
+                                    .unwrap_or_else(|| sch::fmt_minute(now)),
                             ),
                             Err(_) => continue, // already reported as error in the dry pass
                         }
@@ -588,7 +643,14 @@ async fn apply(
                     m.insert("last_run".into(), Value::Null);
                     m.insert("enabled".into(), json!(*enabled as i64));
                     m.insert("run_count".into(), json!(0));
-                    m.insert("schedule_expr".into(), if expr.is_empty() { Value::Null } else { json!(expr) });
+                    m.insert(
+                        "schedule_expr".into(),
+                        if expr.is_empty() {
+                            Value::Null
+                        } else {
+                            json!(expr)
+                        },
+                    );
                     m.insert("watch".into(), json!(0));
                     // These columns are NOT NULL DEFAULT <x> — but insert_schedule
                     // lists every column explicitly, so an omitted key inserts NULL
@@ -604,7 +666,10 @@ async fn apply(
                     m.insert("id".into(), json!(id));
                     sch::insert_schedule(conn, &sch::DurableSchedule::from_map(m))?;
                 }
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await;
         if let Err(e) = res {
@@ -670,7 +735,10 @@ async fn apply(
                         )?;
                     }
                 }
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await;
         if let Err(e) = res {
@@ -687,7 +755,13 @@ async fn apply(
             .messages
             .iter()
             .filter(|m| !m.to.trim().is_empty() && !m.text.trim().is_empty())
-            .map(|m| (m.to.trim().to_string(), m.from.trim().to_string(), m.text.trim().to_string()))
+            .map(|m| {
+                (
+                    m.to.trim().to_string(),
+                    m.from.trim().to_string(),
+                    m.text.trim().to_string(),
+                )
+            })
             .collect();
         let res = state
             .store
@@ -707,14 +781,20 @@ async fn apply(
                         || from.eq_ignore_ascii_case("owner");
                     let from_actor = if is_owner {
                         amux_core::events::Actor::Human {
-                            name: if from.is_empty() { "owner".into() } else { from.clone() },
+                            name: if from.is_empty() {
+                                "owner".into()
+                            } else {
+                                from.clone()
+                            },
                         }
                     } else {
                         match super::messages::resolve_recipient(conn, from)? {
                             Some(amux_core::message::MessageTarget::Worker(w)) => {
                                 amux_core::events::Actor::Worker { id: w }
                             }
-                            _ => amux_core::events::Actor::Human { name: "owner".into() },
+                            _ => amux_core::events::Actor::Human {
+                                name: "owner".into(),
+                            },
                         }
                     };
                     // Idempotency: skip an identical (recipient, body) already sent.
@@ -740,7 +820,10 @@ async fn apply(
                     )?;
                     events.extend(evs);
                 }
-                Ok(WriteOutcome { applied: true, events })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events,
+                })
             })
             .await;
         if let Err(e) = res {
@@ -765,7 +848,13 @@ fn bad(msg: String) -> Response {
 fn sanitize(raw: &str) -> String {
     raw.trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -781,7 +870,11 @@ fn render_worker_env(w: &WorkerSpec) -> String {
     if !w.desc.is_empty() {
         pairs.push(("CC_DESC", w.desc.clone()));
     }
-    let provider = if w.provider.is_empty() { "claude".to_string() } else { w.provider.clone() };
+    let provider = if w.provider.is_empty() {
+        "claude".to_string()
+    } else {
+        w.provider.clone()
+    };
     if provider != "claude" {
         pairs.push(("CC_PROVIDER", provider.clone()));
     }
@@ -797,13 +890,19 @@ fn render_worker_env(w: &WorkerSpec) -> String {
             pairs.push(("CC_FLAGS", format!("--model {}", w.model)));
         }
     }
-    pairs.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect::<Vec<_>>().join("\n")
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}=\"{v}\""))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// True if the existing env file's body (ignoring the `# updated:` header)
 /// already equals `content` — so a re-apply reports "unchanged", not "update".
 fn same_env_body(path: &std::path::Path, content: &str) -> bool {
-    let Ok(existing) = std::fs::read_to_string(path) else { return false };
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return false;
+    };
     let strip = |s: &str| -> String {
         s.lines()
             .filter(|l| !l.trim_start().starts_with("# updated:"))
@@ -916,9 +1015,13 @@ mod tests {
             ..Default::default()
         });
         assert_ne!(
-            drift_flags, env_val(&ollama_render, "CC_FLAGS"),
+            drift_flags,
+            env_val(&ollama_render, "CC_FLAGS"),
             "control: claude-shaped wiring must differ from ollama render CC_FLAGS"
         );
-        assert!(drift_model.is_empty(), "control: claude path yields no CC_MODEL");
+        assert!(
+            drift_model.is_empty(),
+            "control: claude path yields no CC_MODEL"
+        );
     }
 }

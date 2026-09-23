@@ -165,7 +165,10 @@ impl TmuxBackend {
         // zombie under the tmux server, never reaped, so tmux had nothing to
         // report. The kernel still holds that zombie's exit status.
         let pids = self
-            .run(&["list-panes", "-t", &pt, "-F", "#{pane_pid}:#{pid}"], OP_TIMEOUT)
+            .run(
+                &["list-panes", "-t", &pt, "-F", "#{pane_pid}:#{pid}"],
+                OP_TIMEOUT,
+            )
             .await?;
         let line = String::from_utf8_lossy(&pids.stdout);
         if let Some((pane_pid, server_pid)) = parse_pid_pair(line.lines().next().unwrap_or("")) {
@@ -219,7 +222,10 @@ impl SessionBackend for TmuxBackend {
             )));
         }
         let mut exits = parse_process_exits(&String::from_utf8_lossy(&out.stdout))?;
-        if !exits.values().any(|e| e.code.is_none() && e.signal.is_none()) {
+        if !exits
+            .values()
+            .any(|e| e.code.is_none() && e.signal.is_none())
+        {
             return Ok(exits);
         }
         // AMUX-4636: see status_by_ref. Only a session with exactly one dead
@@ -227,7 +233,12 @@ impl SessionBackend for TmuxBackend {
         // one shared exit code, exactly as parse_process_exits decides.
         let census = self
             .run(
-                &["list-panes", "-a", "-F", "#{session_name}:#{pane_dead}:#{pane_pid}:#{pid}"],
+                &[
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_name}:#{pane_dead}:#{pane_pid}:#{pid}",
+                ],
                 OP_TIMEOUT,
             )
             .await?;
@@ -242,14 +253,17 @@ impl SessionBackend for TmuxBackend {
             let Some([(pane_pid, server_pid)]) = pids.get(name).map(Vec::as_slice) else {
                 continue;
             };
-            let measured =
-                zombie_exit_status(std::path::Path::new("/proc"), pane_pid, server_pid);
+            let measured = zombie_exit_status(std::path::Path::new("/proc"), pane_pid, server_pid);
             let filled = match measured {
-                Some(BackendStatus::Completed { exit_code }) => {
-                    amux_core::protocol::ExitStatus { code: Some(exit_code), signal: None }
-                }
+                Some(BackendStatus::Completed { exit_code }) => amux_core::protocol::ExitStatus {
+                    code: Some(exit_code),
+                    signal: None,
+                },
                 Some(BackendStatus::Crashed { signal: Some(sig) }) => {
-                    amux_core::protocol::ExitStatus { code: None, signal: Some(sig) }
+                    amux_core::protocol::ExitStatus {
+                        code: None,
+                        signal: Some(sig),
+                    }
                 }
                 _ => continue,
             };
@@ -628,7 +642,11 @@ fn dead_pane_pids(census: &str) -> std::collections::BTreeMap<String, Vec<(Strin
 /// or an unrelated process can never supply an exit. `comm` (field 2) may hold
 /// spaces and parentheses, so fields are counted after its LAST ')'. Anything
 /// unreadable is None, which keeps the honest Crashed { signal: None }.
-fn zombie_exit_status(proc_root: &std::path::Path, pid: &str, parent: &str) -> Option<BackendStatus> {
+fn zombie_exit_status(
+    proc_root: &std::path::Path,
+    pid: &str,
+    parent: &str,
+) -> Option<BackendStatus> {
     pid.parse::<u32>().ok()?;
     let stat = std::fs::read_to_string(proc_root.join(pid).join("stat")).ok()?;
     let rest = &stat[stat.rfind(')')? + 1..];
@@ -639,9 +657,13 @@ fn zombie_exit_status(proc_root: &std::path::Path, pid: &str, parent: &str) -> O
     }
     let raw: i32 = fields.get(52 - 3)?.parse().ok()?;
     if raw & 0x7f == 0 {
-        Some(BackendStatus::Completed { exit_code: (raw >> 8) & 0xff })
+        Some(BackendStatus::Completed {
+            exit_code: (raw >> 8) & 0xff,
+        })
     } else {
-        Some(BackendStatus::Crashed { signal: Some(raw & 0x7f) })
+        Some(BackendStatus::Crashed {
+            signal: Some(raw & 0x7f),
+        })
     }
 }
 
@@ -746,11 +768,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let r = root.path();
         write_stat(r, "100", &fake_stat("100", "sh", "Z", "50", 256));
-        assert_eq!(zombie_exit_status(r, "100", "50"), Some(BackendStatus::Completed { exit_code: 1 }));
+        assert_eq!(
+            zombie_exit_status(r, "100", "50"),
+            Some(BackendStatus::Completed { exit_code: 1 })
+        );
         write_stat(r, "101", &fake_stat("101", "sh", "Z", "50", 9));
-        assert_eq!(zombie_exit_status(r, "101", "50"), Some(BackendStatus::Crashed { signal: Some(9) }));
+        assert_eq!(
+            zombie_exit_status(r, "101", "50"),
+            Some(BackendStatus::Crashed { signal: Some(9) })
+        );
         write_stat(r, "102", &fake_stat("102", "a b) (c", "Z", "50", 0));
-        assert_eq!(zombie_exit_status(r, "102", "50"), Some(BackendStatus::Completed { exit_code: 0 }));
+        assert_eq!(
+            zombie_exit_status(r, "102", "50"),
+            Some(BackendStatus::Completed { exit_code: 0 })
+        );
         // Controls: not a zombie, a foreign parent, no record, a non-numeric pid.
         write_stat(r, "103", &fake_stat("103", "sh", "S", "50", 256));
         assert_eq!(zombie_exit_status(r, "103", "50"), None);
@@ -761,11 +792,16 @@ mod tests {
 
     #[test]
     fn dead_pane_pids_keeps_dead_panes_with_numeric_pids() {
-        let pids = dead_pane_pids("amux-a:1:100:50\namux-b:0:101:50\namux-c:1:x:50\nweird:name:1:102:50\n");
+        let pids = dead_pane_pids(
+            "amux-a:1:100:50\namux-b:0:101:50\namux-c:1:x:50\nweird:name:1:102:50\n",
+        );
         assert_eq!(pids["amux-a"], vec![("100".to_string(), "50".to_string())]);
         assert!(!pids.contains_key("amux-b"));
         assert!(!pids.contains_key("amux-c"));
-        assert_eq!(pids["weird:name"], vec![("102".to_string(), "50".to_string())]);
+        assert_eq!(
+            pids["weird:name"],
+            vec![("102".to_string(), "50".to_string())]
+        );
         assert_eq!(parse_pid_pair("100:50"), Some(("100".into(), "50".into())));
         assert_eq!(parse_pid_pair("100:"), None);
     }
@@ -791,8 +827,13 @@ mod argv_secret_tests {
     #[test]
     fn credential_shaped_names_are_refused_from_argv() {
         for key in [
-            "OPENAI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-            "GITHUB_TOKEN", "SLACK_CLIENT_SECRET", "MATTERMOST_PASSWORD",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GITHUB_TOKEN",
+            "SLACK_CLIENT_SECRET",
+            "MATTERMOST_PASSWORD",
         ] {
             assert!(
                 !env_pair_is_argv_safe(key, "sk-live-value"),
@@ -810,11 +851,20 @@ mod argv_secret_tests {
     #[test]
     fn ordinary_configuration_still_travels() {
         for key in [
-            "TMUX_SESSION_NAME", "AMUX_SESSION", "AMUX_WORKER", "AMUX_URL",
-            "ANTHROPIC_API_BASE", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
-            "TERM", "GOOGLE_GENAI_USE_VERTEXAI",
+            "TMUX_SESSION_NAME",
+            "AMUX_SESSION",
+            "AMUX_WORKER",
+            "AMUX_URL",
+            "ANTHROPIC_API_BASE",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "TERM",
+            "GOOGLE_GENAI_USE_VERTEXAI",
         ] {
-            assert!(env_pair_is_argv_safe(key, "some-value"), "{key} is not a secret");
+            assert!(
+                env_pair_is_argv_safe(key, "some-value"),
+                "{key} is not a secret"
+            );
         }
     }
 

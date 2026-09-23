@@ -66,9 +66,15 @@ fn an_appended_boundary_is_picked_up_by_the_incremental_pass() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("b.jsonl");
     std::fs::write(&path, one_compaction(0)).unwrap();
-    assert_eq!(amux_server::api::session_verbs::count_compact_boundaries(&path), Some(1));
+    assert_eq!(
+        amux_server::api::session_verbs::count_compact_boundaries(&path),
+        Some(1)
+    );
 
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     f.write_all(ordinary_turn(9).as_bytes()).unwrap();
     f.write_all(one_compaction(1).as_bytes()).unwrap();
     f.flush().unwrap();
@@ -113,7 +119,10 @@ fn a_missing_transcript_is_unmeasurable_not_zero() {
     // "nobody could measure this" must not both arrive as a number.
     let missing = std::env::temp_dir().join("amux-gen-does-not-exist.jsonl");
     let _ = std::fs::remove_file(&missing);
-    assert_eq!(amux_server::api::session_verbs::count_compact_boundaries(&missing), None);
+    assert_eq!(
+        amux_server::api::session_verbs::count_compact_boundaries(&missing),
+        None
+    );
 }
 
 #[test]

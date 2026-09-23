@@ -277,7 +277,9 @@ pub fn classify_status(
 ) -> ColumnClassification {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return ColumnClassification::Invalid { raw: raw.to_string() };
+        return ColumnClassification::Invalid {
+            raw: raw.to_string(),
+        };
     }
     let lower = trimmed.to_lowercase();
     let id = ColumnId::new(&lower);
@@ -292,7 +294,9 @@ pub fn classify_status(
             };
         }
     }
-    ColumnClassification::Historical { raw: trimmed.to_string() }
+    ColumnClassification::Historical {
+        raw: trimmed.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -321,13 +325,48 @@ mod tests {
     /// The default board, as configured in the live DB today.
     fn builtin() -> BoardWorkflow {
         BoardWorkflow::new(vec![
-            col("backlog", 0, ColumnRole::Backlog, TerminalBehavior::NonTerminal),
-            col("todo", 1, ColumnRole::Dispatchable, TerminalBehavior::NonTerminal),
-            col("doing", 2, ColumnRole::Active, TerminalBehavior::NonTerminal),
-            col("review", 3, ColumnRole::Review, TerminalBehavior::NonTerminal),
-            col("done", 4, ColumnRole::CompletionClaim, TerminalBehavior::NonTerminal),
-            col("verified", 5, ColumnRole::VerifiedTerminal, TerminalBehavior::SuccessfulTerminal),
-            col("discarded", 6, ColumnRole::DiscardedTerminal, TerminalBehavior::AbandonedTerminal),
+            col(
+                "backlog",
+                0,
+                ColumnRole::Backlog,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "todo",
+                1,
+                ColumnRole::Dispatchable,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "doing",
+                2,
+                ColumnRole::Active,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "review",
+                3,
+                ColumnRole::Review,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "done",
+                4,
+                ColumnRole::CompletionClaim,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "verified",
+                5,
+                ColumnRole::VerifiedTerminal,
+                TerminalBehavior::SuccessfulTerminal,
+            ),
+            col(
+                "discarded",
+                6,
+                ColumnRole::DiscardedTerminal,
+                TerminalBehavior::AbandonedTerminal,
+            ),
         ])
     }
 
@@ -335,11 +374,31 @@ mod tests {
     /// the case the closed enum could not express at all.
     fn custom() -> BoardWorkflow {
         BoardWorkflow::new(vec![
-            col("todo", 0, ColumnRole::Dispatchable, TerminalBehavior::NonTerminal),
-            col("implementation", 1, ColumnRole::Custom, TerminalBehavior::NonTerminal),
+            col(
+                "todo",
+                0,
+                ColumnRole::Dispatchable,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "implementation",
+                1,
+                ColumnRole::Custom,
+                TerminalBehavior::NonTerminal,
+            ),
             col("qa", 2, ColumnRole::Custom, TerminalBehavior::NonTerminal),
-            col("security-review", 3, ColumnRole::Review, TerminalBehavior::NonTerminal),
-            col("verified", 4, ColumnRole::VerifiedTerminal, TerminalBehavior::SuccessfulTerminal),
+            col(
+                "security-review",
+                3,
+                ColumnRole::Review,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "verified",
+                4,
+                ColumnRole::VerifiedTerminal,
+                TerminalBehavior::SuccessfulTerminal,
+            ),
         ])
     }
 
@@ -364,13 +423,31 @@ mod tests {
     #[test]
     fn reordering_columns_changes_progression() {
         let w = BoardWorkflow::new(vec![
-            col("todo", 0, ColumnRole::Dispatchable, TerminalBehavior::NonTerminal),
+            col(
+                "todo",
+                0,
+                ColumnRole::Dispatchable,
+                TerminalBehavior::NonTerminal,
+            ),
             col("qa", 1, ColumnRole::Custom, TerminalBehavior::NonTerminal),
-            col("implementation", 2, ColumnRole::Custom, TerminalBehavior::NonTerminal),
-            col("verified", 3, ColumnRole::VerifiedTerminal, TerminalBehavior::SuccessfulTerminal),
+            col(
+                "implementation",
+                2,
+                ColumnRole::Custom,
+                TerminalBehavior::NonTerminal,
+            ),
+            col(
+                "verified",
+                3,
+                ColumnRole::VerifiedTerminal,
+                TerminalBehavior::SuccessfulTerminal,
+            ),
         ]);
         assert_eq!(w.next_column(&ColumnId::new("todo")).unwrap().id.0, "qa");
-        assert_eq!(w.next_column(&ColumnId::new("qa")).unwrap().id.0, "implementation");
+        assert_eq!(
+            w.next_column(&ColumnId::new("qa")).unwrap().id.0,
+            "implementation"
+        );
     }
 
     /// A terminal column has no next stage, so a verified card is never
@@ -387,7 +464,10 @@ mod tests {
     #[test]
     fn abandoned_terminal_is_never_the_automatic_next_stage() {
         let w = builtin();
-        assert_eq!(w.next_column(&ColumnId::new("done")).unwrap().id.0, "verified");
+        assert_eq!(
+            w.next_column(&ColumnId::new("done")).unwrap().id.0,
+            "verified"
+        );
         assert_eq!(
             w.furthest_terminal().unwrap().id.0,
             "verified",
@@ -400,7 +480,12 @@ mod tests {
     #[test]
     fn appending_a_rightmost_column_does_not_redefine_success() {
         let mut cols = builtin().columns().to_vec();
-        cols.push(col("archive", 99, ColumnRole::Custom, TerminalBehavior::NonTerminal));
+        cols.push(col(
+            "archive",
+            99,
+            ColumnRole::Custom,
+            TerminalBehavior::NonTerminal,
+        ));
         let w = BoardWorkflow::new(cols);
         assert_eq!(
             w.furthest_terminal().unwrap().id.0,
@@ -415,7 +500,12 @@ mod tests {
     fn unconfigured_status_is_historical_not_remapped() {
         let w = custom();
         let c = classify_status("needsyou", &w, &|_| None);
-        assert_eq!(c, ColumnClassification::Historical { raw: "needsyou".into() });
+        assert_eq!(
+            c,
+            ColumnClassification::Historical {
+                raw: "needsyou".into()
+            }
+        );
     }
 
     /// Legacy spellings resolve without rewriting the stored value.
@@ -449,8 +539,17 @@ mod tests {
         };
         // Taken from the live DB: SELECT DISTINCT status FROM issues.
         for raw in [
-            "verified", "done", "discarded", "backlog", "todo", "review", "doing", "needsyou",
-            "blocked", "armed", "resolved",
+            "verified",
+            "done",
+            "discarded",
+            "backlog",
+            "todo",
+            "review",
+            "doing",
+            "needsyou",
+            "blocked",
+            "armed",
+            "resolved",
         ] {
             let c = classify_status(raw, &w, &alias);
             assert!(
@@ -465,6 +564,9 @@ mod tests {
     #[test]
     fn custom_columns_are_dispatchable() {
         assert!(ColumnRole::Custom.is_dispatchable());
-        assert!(!ColumnRole::Backlog.is_dispatchable(), "backlog is human triage");
+        assert!(
+            !ColumnRole::Backlog.is_dispatchable(),
+            "backlog is human triage"
+        );
     }
 }

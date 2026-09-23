@@ -32,9 +32,7 @@ fn row_to_command(r: &rusqlite::Row) -> rusqlite::Result<QueuedCommand> {
         command: serde_json::from_str(&command).map_err(corrupt)?,
         state: serde_json::from_str(&state).map_err(corrupt)?,
         idempotency_key,
-        queued_at: queued_at
-            .parse::<DateTime<Utc>>()
-            .map_err(corrupt)?,
+        queued_at: queued_at.parse::<DateTime<Utc>>().map_err(corrupt)?,
         attempts,
         timing: serde_json::from_str(&timing).map_err(corrupt)?,
         precondition: precondition
@@ -44,7 +42,8 @@ fn row_to_command(r: &rusqlite::Row) -> rusqlite::Result<QueuedCommand> {
     })
 }
 
-const COLS: &str = "id, worker_id, command, state, idempotency_key, queued_at, attempts, timing, precondition";
+const COLS: &str =
+    "id, worker_id, command, state, idempotency_key, queued_at, attempts, timing, precondition";
 
 /// Enqueue, deduplicating on (worker, idempotency_key): a duplicate returns
 /// the EXISTING command with `newly_created = false`, never a second row.
@@ -242,22 +241,40 @@ mod tests {
     fn enqueue_dedups_on_idempotency_key() {
         let c = conn();
         let (first, created1) = enqueue(
-            &c, cid(1), &wid(1), &WorkerCommand::Continue, "k1",
-            &DeliveryTiming::AtTurnBoundary, None, t(0),
+            &c,
+            cid(1),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "k1",
+            &DeliveryTiming::AtTurnBoundary,
+            None,
+            t(0),
         )
         .unwrap();
         assert!(created1);
         let (dup, created2) = enqueue(
-            &c, cid(2), &wid(1), &WorkerCommand::Continue, "k1",
-            &DeliveryTiming::AtTurnBoundary, None, t(1),
+            &c,
+            cid(2),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "k1",
+            &DeliveryTiming::AtTurnBoundary,
+            None,
+            t(1),
         )
         .unwrap();
         assert!(!created2);
         assert_eq!(dup.id, first.id, "duplicate returns the ORIGINAL");
         // Same key on a DIFFERENT worker is a different command.
         let (_, created3) = enqueue(
-            &c, cid(3), &wid(2), &WorkerCommand::Continue, "k1",
-            &DeliveryTiming::AtTurnBoundary, None, t(2),
+            &c,
+            cid(3),
+            &wid(2),
+            &WorkerCommand::Continue,
+            "k1",
+            &DeliveryTiming::AtTurnBoundary,
+            None,
+            t(2),
         )
         .unwrap();
         assert!(created3);
@@ -266,17 +283,38 @@ mod tests {
     #[test]
     fn fifo_and_single_in_flight() {
         let c = conn();
-        enqueue(&c, cid(1), &wid(1), &WorkerCommand::Continue, "a",
-                &DeliveryTiming::AtTurnBoundary, None, t(0)).unwrap();
-        enqueue(&c, cid(2), &wid(1), &WorkerCommand::Cancel, "b",
-                &DeliveryTiming::AtTurnBoundary, None, t(1)).unwrap();
+        enqueue(
+            &c,
+            cid(1),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "a",
+            &DeliveryTiming::AtTurnBoundary,
+            None,
+            t(0),
+        )
+        .unwrap();
+        enqueue(
+            &c,
+            cid(2),
+            &wid(1),
+            &WorkerCommand::Cancel,
+            "b",
+            &DeliveryTiming::AtTurnBoundary,
+            None,
+            t(1),
+        )
+        .unwrap();
 
         let head = next_deliverable(&c, &wid(1)).unwrap().unwrap();
         assert_eq!(head.id, cid(1), "oldest first");
 
         // Dispatch the head: queue blocks until it resolves.
         transition(&c, &cid(1), CommandTransition::Dispatch, 3).unwrap();
-        assert!(next_deliverable(&c, &wid(1)).unwrap().is_none(), "in-flight blocks");
+        assert!(
+            next_deliverable(&c, &wid(1)).unwrap().is_none(),
+            "in-flight blocks"
+        );
 
         transition(&c, &cid(1), CommandTransition::Deliver, 3).unwrap();
         transition(&c, &cid(1), CommandTransition::Confirm, 3).unwrap();
@@ -287,21 +325,37 @@ mod tests {
     #[test]
     fn failure_retry_and_dead_letter_persist() {
         let c = conn();
-        enqueue(&c, cid(1), &wid(1), &WorkerCommand::Continue, "a",
-                &DeliveryTiming::Immediate, None, t(0)).unwrap();
+        enqueue(
+            &c,
+            cid(1),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "a",
+            &DeliveryTiming::Immediate,
+            None,
+            t(0),
+        )
+        .unwrap();
         for i in 0..3 {
             transition(&c, &cid(1), CommandTransition::Dispatch, 3).unwrap();
             let failed = transition(
-                &c, &cid(1),
-                CommandTransition::Fail { reason: format!("boom {i}") }, 3,
-            ).unwrap();
+                &c,
+                &cid(1),
+                CommandTransition::Fail {
+                    reason: format!("boom {i}"),
+                },
+                3,
+            )
+            .unwrap();
             assert_eq!(failed.attempts, i + 1);
             transition(&c, &cid(1), CommandTransition::Retry, 3).unwrap();
         }
         // Third retry dead-lettered it (attempts == max).
         let dead = dead_letters(&c, 10).unwrap();
         assert_eq!(dead.len(), 1);
-        assert!(matches!(&dead[0].state, CommandState::DeadLettered { reason } if reason.contains("boom 2")));
+        assert!(
+            matches!(&dead[0].state, CommandState::DeadLettered { reason } if reason.contains("boom 2"))
+        );
         assert!(next_deliverable(&c, &wid(1)).unwrap().is_none());
     }
 
@@ -309,25 +363,73 @@ mod tests {
     fn worker_scoped_dead_letters_in_flight_and_counts() {
         let c = conn();
         // Worker 1: one dead letter, one delivered (in flight), one queued.
-        enqueue(&c, cid(1), &wid(1), &WorkerCommand::Continue, "a",
-                &DeliveryTiming::Immediate, None, t(0)).unwrap();
+        enqueue(
+            &c,
+            cid(1),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "a",
+            &DeliveryTiming::Immediate,
+            None,
+            t(0),
+        )
+        .unwrap();
         for _ in 0..3 {
             transition(&c, &cid(1), CommandTransition::Dispatch, 3).unwrap();
-            transition(&c, &cid(1), CommandTransition::Fail { reason: "x".into() }, 3).unwrap();
+            transition(
+                &c,
+                &cid(1),
+                CommandTransition::Fail { reason: "x".into() },
+                3,
+            )
+            .unwrap();
             transition(&c, &cid(1), CommandTransition::Retry, 3).unwrap();
         }
-        enqueue(&c, cid(2), &wid(1), &WorkerCommand::Continue, "b",
-                &DeliveryTiming::Immediate, None, t(1)).unwrap();
+        enqueue(
+            &c,
+            cid(2),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "b",
+            &DeliveryTiming::Immediate,
+            None,
+            t(1),
+        )
+        .unwrap();
         transition(&c, &cid(2), CommandTransition::Dispatch, 3).unwrap();
         transition(&c, &cid(2), CommandTransition::Deliver, 3).unwrap();
-        enqueue(&c, cid(3), &wid(1), &WorkerCommand::Continue, "c",
-                &DeliveryTiming::Immediate, None, t(2)).unwrap();
+        enqueue(
+            &c,
+            cid(3),
+            &wid(1),
+            &WorkerCommand::Continue,
+            "c",
+            &DeliveryTiming::Immediate,
+            None,
+            t(2),
+        )
+        .unwrap();
         // Worker 2: its own dead letter, invisible to worker 1's listing.
-        enqueue(&c, cid(4), &wid(2), &WorkerCommand::Continue, "d",
-                &DeliveryTiming::Immediate, None, t(3)).unwrap();
+        enqueue(
+            &c,
+            cid(4),
+            &wid(2),
+            &WorkerCommand::Continue,
+            "d",
+            &DeliveryTiming::Immediate,
+            None,
+            t(3),
+        )
+        .unwrap();
         for _ in 0..3 {
             transition(&c, &cid(4), CommandTransition::Dispatch, 3).unwrap();
-            transition(&c, &cid(4), CommandTransition::Fail { reason: "y".into() }, 3).unwrap();
+            transition(
+                &c,
+                &cid(4),
+                CommandTransition::Fail { reason: "y".into() },
+                3,
+            )
+            .unwrap();
             transition(&c, &cid(4), CommandTransition::Retry, 3).unwrap();
         }
 

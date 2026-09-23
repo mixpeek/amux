@@ -143,8 +143,7 @@ pub fn get_live_by_scope_name(
 /// Every row, deleted included, ordered by id (ULID = creation order).
 /// Callers needing visibility semantics go through [`list_visible`].
 pub fn list_all(conn: &Connection) -> rusqlite::Result<Vec<MemoryEntry>> {
-    let mut stmt =
-        conn.prepare(&format!("SELECT {COLS} FROM _amux_memories ORDER BY id"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM _amux_memories ORDER BY id"))?;
     let rows = stmt.query_map([], entry_from_row)?;
     rows.collect()
 }
@@ -251,16 +250,30 @@ mod tests {
         insert(&c, &entry(3, Scope::Global, "shared")).unwrap();
         insert(&c, &entry(4, Scope::Group { id: gid(7) }, "team")).unwrap();
 
-        let a = ResolutionTarget { worker: Some(wid(1)), group: Some(gid(7)) };
-        let names: Vec<String> = list_visible(&c, &a).unwrap().into_iter().map(|e| e.name).collect();
+        let a = ResolutionTarget {
+            worker: Some(wid(1)),
+            group: Some(gid(7)),
+        };
+        let names: Vec<String> = list_visible(&c, &a)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert!(names.contains(&"a-private".to_string()));
         assert!(names.contains(&"shared".to_string()));
         assert!(names.contains(&"team".to_string()));
         assert!(!names.contains(&"b-private".to_string()), "{names:?}");
 
         // B, in no group: only its own + global.
-        let b = ResolutionTarget { worker: Some(wid(2)), group: None };
-        let names: Vec<String> = list_visible(&c, &b).unwrap().into_iter().map(|e| e.name).collect();
+        let b = ResolutionTarget {
+            worker: Some(wid(2)),
+            group: None,
+        };
+        let names: Vec<String> = list_visible(&c, &b)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(!names.contains(&"a-private".to_string()));
         assert!(!names.contains(&"team".to_string()));
@@ -284,7 +297,9 @@ mod tests {
         let mut d = back;
         d.soft_delete(Utc::now()).unwrap();
         assert_eq!(persist_mutation(&c, &d, before).unwrap(), 1);
-        assert!(list_visible(&c, &ResolutionTarget::default()).unwrap().is_empty());
+        assert!(list_visible(&c, &ResolutionTarget::default())
+            .unwrap()
+            .is_empty());
         let raw = get(&c, d.id.as_str()).unwrap().unwrap();
         assert!(raw.is_deleted());
         assert_eq!(raw.version, 3);
@@ -298,7 +313,10 @@ mod tests {
         e.update("edited", Utc::now()).unwrap();
         // Wrong expected version: guarded UPDATE must not apply.
         assert_eq!(persist_mutation(&c, &e, 41).unwrap(), 0);
-        assert_eq!(get(&c, e.id.as_str()).unwrap().unwrap().content, "the content");
+        assert_eq!(
+            get(&c, e.id.as_str()).unwrap().unwrap().content,
+            "the content"
+        );
     }
 
     #[test]
@@ -306,7 +324,9 @@ mod tests {
         let c = conn();
         let mut e = entry(1, Scope::Global, "runbook");
         insert(&c, &e).unwrap();
-        assert!(get_live_by_scope_name(&c, &Scope::Global, "runbook").unwrap().is_some());
+        assert!(get_live_by_scope_name(&c, &Scope::Global, "runbook")
+            .unwrap()
+            .is_some());
         // Same name at a DIFFERENT scope is fine (uniqueness is per-scope).
         insert(&c, &entry(2, Scope::Worker { id: wid(1) }, "runbook")).unwrap();
         // Same name, same scope: the partial unique index refuses.
@@ -315,7 +335,9 @@ mod tests {
         let before = e.version;
         e.soft_delete(Utc::now()).unwrap();
         persist_mutation(&c, &e, before).unwrap();
-        assert!(get_live_by_scope_name(&c, &Scope::Global, "runbook").unwrap().is_none());
+        assert!(get_live_by_scope_name(&c, &Scope::Global, "runbook")
+            .unwrap()
+            .is_none());
         insert(&c, &entry(3, Scope::Global, "runbook")).unwrap();
     }
 }

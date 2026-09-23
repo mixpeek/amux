@@ -55,18 +55,31 @@ pub async fn tick(state: AppState) -> anyhow::Result<Vec<(String, String)>> {
 
     let mut pending: Vec<Note> = Vec::new();
     for c in &candidates {
-        let Some(card) = c.get("id").and_then(|v| v.as_str()) else { continue };
+        let Some(card) = c.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         // FIRST commit only. A card named in five commits is one fact, and five
         // log lines is the ethos rule 5 shape — at volume the card stops being
         // a task and becomes a log. The idem is per (card, sha) so a LATER
         // commit naming the same card still gets its own line, which is the
         // case where the news is genuinely new.
-        let Some(commit) = c.get("commits").and_then(|v| v.as_array()).and_then(|a| a.first())
+        let Some(commit) = c
+            .get("commits")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
         else {
             continue;
         };
-        let sha = commit.get("sha").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let subject = commit.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let sha = commit
+            .get("sha")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let subject = commit
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         if sha.is_empty() {
             continue;
         }
@@ -79,7 +92,13 @@ pub async fn tick(state: AppState) -> anyhow::Result<Vec<(String, String)>> {
     }
 
     let mut noted: Vec<(String, String)> = Vec::new();
-    for Note { card, sha, subject, idem } in pending {
+    for Note {
+        card,
+        sha,
+        subject,
+        idem,
+    } in pending
+    {
         let already = {
             let conn = state.store.read()?;
             conn.query_row(
@@ -104,14 +123,19 @@ pub async fn tick(state: AppState) -> anyhow::Result<Vec<(String, String)>> {
             .write_async(move |conn| {
                 use rusqlite::OptionalExtension;
                 let existing: Option<String> = conn
-                    .query_row("SELECT log FROM issues WHERE id=?1", rusqlite::params![c2], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT log FROM issues WHERE id=?1",
+                        rusqlite::params![c2],
+                        |r| r.get(0),
+                    )
                     .optional()?
                     .flatten();
                 let hhmm = chrono::Local::now().format("%H:%M").to_string();
                 let log = crate::db::board_store::append_log(existing.as_deref(), &hhmm, &line);
-                conn.execute("UPDATE issues SET log=?1 WHERE id=?2", rusqlite::params![log, c2])?;
+                conn.execute(
+                    "UPDATE issues SET log=?1 WHERE id=?2",
+                    rusqlite::params![log, c2],
+                )?;
                 conn.execute(
                     "INSERT OR IGNORE INTO session_events (ts, session, type, data, idem, source) \
                      VALUES (?1, '', 'board.commit_mention', ?2, ?3, 'commit-mentions')",
@@ -121,7 +145,10 @@ pub async fn tick(state: AppState) -> anyhow::Result<Vec<(String, String)>> {
                         i2
                     ],
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await?;
         noted.push((card, sha));
@@ -164,7 +191,7 @@ mod tests {
                 started: std::time::Instant::now(),
                 build_hash: "test".into(),
                 auth_token: None,
-            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
             dir,
         )
@@ -189,7 +216,10 @@ mod tests {
                      VALUES ('AMUX-9998','a card','todo','amux',0,0,0)",
                     [],
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await
             .unwrap();
@@ -216,7 +246,10 @@ mod tests {
                 continue;
             }
             let (c2, i2) = (n.card.clone(), n.idem.clone());
-            let line = format!("[amux] a merged commit names this card: {} \"{}\".", n.sha, n.subject);
+            let line = format!(
+                "[amux] a merged commit names this card: {} \"{}\".",
+                n.sha, n.subject
+            );
             st.store
                 .write_async(move |conn| {
                     use rusqlite::OptionalExtension;

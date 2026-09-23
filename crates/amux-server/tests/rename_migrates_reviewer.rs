@@ -43,12 +43,15 @@ fn run_issue_migrations(c: &rusqlite::Connection, old: &str, new: &str) {
         if !table.starts_with("issues") {
             continue;
         }
-        c.execute(sql, rusqlite::params![new, old]).unwrap_or_else(|e| panic!("{table}: {e}"));
+        c.execute(sql, rusqlite::params![new, old])
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
     }
 }
 
 fn one(c: &rusqlite::Connection, sql: &str) -> String {
-    c.query_row(sql, [], |r| r.get::<_, Option<String>>(0)).unwrap().unwrap_or_default()
+    c.query_row(sql, [], |r| r.get::<_, Option<String>>(0))
+        .unwrap()
+        .unwrap_or_default()
 }
 
 #[test]
@@ -56,14 +59,22 @@ fn a_rename_carries_owner_reviewer_and_shepherd() {
     let c = issues_fixture();
     run_issue_migrations(&c, "amux-rust", "amux");
 
-    assert_eq!(one(&c, "SELECT session FROM issues WHERE id='A'"), "amux", "owner");
+    assert_eq!(
+        one(&c, "SELECT session FROM issues WHERE id='A'"),
+        "amux",
+        "owner"
+    );
     assert_eq!(
         one(&c, "SELECT reviewer FROM issues WHERE id='B'"),
         "amux",
         "the reviewer column is what AMUX-3751 was about: a card left naming the dead lane \
          waits in `review` for a session that cannot be addressed"
     );
-    assert_eq!(one(&c, "SELECT shepherd FROM issues WHERE id='C'"), "amux", "shepherd");
+    assert_eq!(
+        one(&c, "SELECT shepherd FROM issues WHERE id='C'"),
+        "amux",
+        "shepherd"
+    );
 }
 
 #[test]
@@ -73,7 +84,10 @@ fn a_deleted_card_keeps_the_old_name() {
     // cascade is a decision rather than an accident.
     let c = issues_fixture();
     run_issue_migrations(&c, "amux-rust", "amux");
-    assert_eq!(one(&c, "SELECT reviewer FROM issues WHERE id='D'"), "amux-rust");
+    assert_eq!(
+        one(&c, "SELECT reviewer FROM issues WHERE id='D'"),
+        "amux-rust"
+    );
 }
 
 #[test]
@@ -84,7 +98,8 @@ fn the_migrations_name_columns_that_exist() {
     let c = issues_fixture();
     for (table, sql) in RENAME_MIGRATIONS {
         if table.starts_with("issues") {
-            c.execute(sql, rusqlite::params!["x", "y"]).unwrap_or_else(|e| panic!("{table}: {e}"));
+            c.execute(sql, rusqlite::params!["x", "y"])
+                .unwrap_or_else(|e| panic!("{table}: {e}"));
         }
     }
 }

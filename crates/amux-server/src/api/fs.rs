@@ -121,12 +121,14 @@ pub(crate) fn parse_body(bytes: &[u8]) -> Result<Value, String> {
             let next = chars.get(i + 1).copied();
             let valid = match next {
                 Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => true,
-                Some('u') => chars[i + 2..]
-                    .iter()
-                    .take(4)
-                    .filter(|c| c.is_ascii_hexdigit())
-                    .count()
-                    == 4,
+                Some('u') => {
+                    chars[i + 2..]
+                        .iter()
+                        .take(4)
+                        .filter(|c| c.is_ascii_hexdigit())
+                        .count()
+                        == 4
+                }
                 _ => false,
             };
             if valid {
@@ -145,7 +147,10 @@ pub(crate) fn parse_body(bytes: &[u8]) -> Result<Value, String> {
 
 /// str-typed body field with Python `.get(k) or ""` semantics.
 pub(crate) fn body_str(body: &Value, key: &str) -> String {
-    body.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    body.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Python `urllib.parse.parse_qs` equivalent: repeated keys kept, `+` is a
@@ -189,7 +194,9 @@ pub(crate) fn qs_get<'a>(qs: &'a [(String, String)], key: &str) -> Option<&'a st
 // ---------------------------------------------------------------------------
 
 fn home_dir() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// `Path(s).expanduser()`. `~user` forms are left untouched (Python would
@@ -248,7 +255,9 @@ fn resolve_nonstrict(p: &Path) -> PathBuf {
     let abs = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")).join(p)
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(p)
     };
     let mut work: VecDeque<OsString> = abs
         .components()
@@ -323,8 +332,12 @@ const BLOCKED_SYSTEM_PATHS: &[&str] = &[
     "/var/db/sudo",
     "/private/var/db/sudo",
 ];
-const BLOCKED_SYSTEM_PREFIXES: &[&str] =
-    &["/etc/ssh/", "/private/etc/ssh/", "/var/run/secrets/", "/run/secrets/"];
+const BLOCKED_SYSTEM_PREFIXES: &[&str] = &[
+    "/etc/ssh/",
+    "/private/etc/ssh/",
+    "/var/run/secrets/",
+    "/run/secrets/",
+];
 
 /// Python `_is_path_allowed` (py:93-121). Case-INSENSITIVE on purpose:
 /// macOS/APFS is case-insensitive by default and a case-sensitive check let
@@ -380,7 +393,8 @@ async fn resolve_rel(method: Method, RawQuery(q): RawQuery) -> Response {
     if !exists {
         let root = PathBuf::from(cwd.trim_end_matches('/'));
         let rel_clean = rel.trim().trim_start_matches('/').trim_start_matches("./");
-        if let Some(found) = resolve_rel_descend(&root, rel_clean, &allowed_exists, &real_list_dirs) {
+        if let Some(found) = resolve_rel_descend(&root, rel_clean, &allowed_exists, &real_list_dirs)
+        {
             let s = found.display().to_string();
             tried.push(s.clone());
             return Json(json!({ "resolved": s, "exists": true, "tried": tried })).into_response();
@@ -428,7 +442,13 @@ pub(crate) async fn git_resolve_rel(cwd: &str, rel: &str) -> Option<String> {
         let ok = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             tokio::process::Command::new("git")
-                .args(["-C", &toplevel, "cat-file", "-t", &format!("origin/main:{candidate}")])
+                .args([
+                    "-C",
+                    &toplevel,
+                    "cat-file",
+                    "-t",
+                    &format!("origin/main:{candidate}"),
+                ])
                 .output(),
         )
         .await
@@ -506,7 +526,15 @@ async fn git_toplevel_of(dir: &str) -> Option<String> {
 const DESCEND_MAX_DEPTH: usize = 3;
 const DESCEND_MAX_DIRS: usize = 500;
 const DESCEND_SKIP: &[&str] = &[
-    "node_modules", ".git", "target", "__pycache__", ".venv", "venv", ".next", "dist", "build",
+    "node_modules",
+    ".git",
+    "target",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".next",
+    "dist",
+    "build",
 ];
 
 pub(crate) fn resolve_rel_descend(
@@ -547,7 +575,13 @@ pub(crate) fn resolve_rel_descend(
 /// `resolve_rel_candidates` uses for `exists`.
 pub(crate) fn real_list_dirs(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir)
-        .map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -600,10 +634,16 @@ pub(crate) fn resolve_rel_candidates(
 pub fn is_path_allowed(p: &Path) -> bool {
     let resolved = resolve_nonstrict(p);
     let resolved_lower = resolved.to_string_lossy().to_lowercase();
-    if BLOCKED_SYSTEM_PATHS.iter().any(|b| resolved_lower == b.to_lowercase()) {
+    if BLOCKED_SYSTEM_PATHS
+        .iter()
+        .any(|b| resolved_lower == b.to_lowercase())
+    {
         return false;
     }
-    if BLOCKED_SYSTEM_PREFIXES.iter().any(|pfx| resolved_lower.starts_with(&pfx.to_lowercase())) {
+    if BLOCKED_SYSTEM_PREFIXES
+        .iter()
+        .any(|pfx| resolved_lower.starts_with(&pfx.to_lowercase()))
+    {
         return false;
     }
     let home = resolve_nonstrict(&home_dir());
@@ -617,7 +657,11 @@ pub fn is_path_allowed(p: &Path) -> bool {
             .collect();
         for sensitive in SENSITIVE_HOME {
             let sens: Vec<&str> = sensitive.split('/').collect();
-            if parts.len() >= sens.len() && parts[..sens.len()].iter().map(String::as_str).eq(sens.iter().copied())
+            if parts.len() >= sens.len()
+                && parts[..sens.len()]
+                    .iter()
+                    .map(String::as_str)
+                    .eq(sens.iter().copied())
             {
                 return false;
             }
@@ -735,7 +779,6 @@ async fn mkdir(req: Request) -> Response {
 // POST /api/fs/open (py:68339-68367) — reveal in native file manager
 // ---------------------------------------------------------------------------
 
-
 /// Is the BROWSER that sent this request running on the same machine as this
 /// server? (AF-282)
 ///
@@ -803,7 +846,6 @@ fn browser_is_on_this_machine_with(
     resolve(&hostname).into_iter().any(|ip| ip == peer)
 }
 
-
 /// The authority the client addressed, from EITHER protocol version.
 ///
 /// HTTP/2 HAS NO `Host` HEADER (RFC 9113 §8.3.1): the authority travels as the
@@ -845,7 +887,11 @@ async fn open_native(req: Request) -> Response {
         Ok(v) => v,
         Err(e) => return j(500, json!({"error": e})),
     };
-    let dir_path = body.get("path").and_then(|v| v.as_str()).unwrap_or("/").to_string();
+    let dir_path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/")
+        .to_string();
     let mut target = resolve_nonstrict(&expanduser(&dir_path));
     // Same containment as the other file APIs — prevents an existence oracle
     // AND `open`-launching an arbitrary .app bundle (Python's comment).
@@ -880,10 +926,18 @@ async fn open_native(req: Request) -> Response {
         "macos" => "open",
         "linux" => "xdg-open",
         "windows" => "explorer",
-        other => return j(400, json!({"error": format!("unsupported platform: {other}")})),
+        other => {
+            return j(
+                400,
+                json!({"error": format!("unsupported platform: {other}")}),
+            )
+        }
     };
     match std::process::Command::new(cmd).arg(&target).spawn() {
-        Ok(_) => j(200, json!({"ok": true, "path": pystr(&target), "local": true})),
+        Ok(_) => j(
+            200,
+            json!({"ok": true, "path": pystr(&target), "local": true}),
+        ),
         Err(e) => j(500, json!({"error": e.to_string()})),
     }
 }
@@ -907,7 +961,9 @@ struct MPart {
 /// `get_param` also decodes).
 fn disposition_param(header: &str, param: &str) -> Option<String> {
     for seg in header.split(';').map(str::trim) {
-        let Some((k, v)) = seg.split_once('=') else { continue };
+        let Some((k, v)) = seg.split_once('=') else {
+            continue;
+        };
         let k = k.trim().to_ascii_lowercase();
         let v = v.trim();
         if k == format!("{param}*") {
@@ -946,8 +1002,11 @@ fn boundary_of(ctype: &str) -> Option<String> {
 fn decode_cte(cte: &str, data: &[u8]) -> Vec<u8> {
     match cte.trim().to_ascii_lowercase().as_str() {
         "base64" => {
-            let compact: Vec<u8> =
-                data.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
+            let compact: Vec<u8> = data
+                .iter()
+                .copied()
+                .filter(|b| !b.is_ascii_whitespace())
+                .collect();
             base64::engine::general_purpose::STANDARD
                 .decode(&compact)
                 .unwrap_or_else(|_| data.to_vec())
@@ -966,10 +1025,9 @@ fn decode_cte(cte: &str, data: &[u8]) -> Vec<u8> {
                         continue;
                     }
                     if i + 2 < data.len() {
-                        if let Ok(b) = u8::from_str_radix(
-                            &String::from_utf8_lossy(&data[i + 1..i + 3]),
-                            16,
-                        ) {
+                        if let Ok(b) =
+                            u8::from_str_radix(&String::from_utf8_lossy(&data[i + 1..i + 3]), 16)
+                        {
                             out.push(b);
                             i += 3;
                             continue;
@@ -1062,7 +1120,11 @@ fn parse_multipart(ctype: &str, body: &[u8]) -> Option<Vec<MPart>> {
                 cte = v.trim().to_string();
             }
         }
-        parts.push(MPart { name, filename, data: decode_cte(&cte, payload) });
+        parts.push(MPart {
+            name,
+            filename,
+            data: decode_cte(&cte, payload),
+        });
     }
     if parts.is_empty() {
         return None;
@@ -1119,8 +1181,7 @@ async fn upload(req: Request) -> Response {
     for part in &parts {
         match part.name.as_deref() {
             Some("dir") => {
-                target_dir =
-                    Some(String::from_utf8_lossy(&part.data).trim().to_string());
+                target_dir = Some(String::from_utf8_lossy(&part.data).trim().to_string());
             }
             Some("overwrite") => {
                 let v = String::from_utf8_lossy(&part.data).trim().to_lowercase();
@@ -1138,7 +1199,10 @@ async fn upload(req: Request) -> Response {
         return j(403, json!({"error": "access denied"}));
     }
     if !dest_dir.is_dir() {
-        return j(400, json!({"error": format!("not a directory: {target_dir}")}));
+        return j(
+            400,
+            json!({"error": format!("not a directory: {target_dir}")}),
+        );
     }
 
     let mut saved: Vec<Value> = Vec::new();
@@ -1263,7 +1327,9 @@ async fn read_file(method: Method, RawQuery(q): RawQuery) -> Response {
     // Python: cap = min(int(max_bytes or 1048576), 8MiB); an unparsable
     // value is Python's generic 500. Negative caps read the WHOLE file
     // (Python's file.read(negative)).
-    let raw_cap = qs_get(&qs, "max_bytes").filter(|v| !v.is_empty()).unwrap_or("1048576");
+    let raw_cap = qs_get(&qs, "max_bytes")
+        .filter(|v| !v.is_empty())
+        .unwrap_or("1048576");
     let cap: i64 = match raw_cap.parse::<i64>() {
         Ok(v) => v.min(8 * 1024 * 1024),
         Err(_) => {
@@ -1314,13 +1380,22 @@ async fn read_file(method: Method, RawQuery(q): RawQuery) -> Response {
 // ---------------------------------------------------------------------------
 
 fn search_max_results() -> i64 {
-    std::env::var("AMUX_SEARCH_MAX_RESULTS").ok().and_then(|v| v.parse().ok()).unwrap_or(300)
+    std::env::var("AMUX_SEARCH_MAX_RESULTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300)
 }
 fn search_timeout_s() -> f64 {
-    std::env::var("AMUX_SEARCH_TIMEOUT_S").ok().and_then(|v| v.parse().ok()).unwrap_or(20.0)
+    std::env::var("AMUX_SEARCH_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20.0)
 }
 fn search_max_filesize() -> String {
-    std::env::var("AMUX_SEARCH_MAX_FILESIZE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "20M".into())
+    std::env::var("AMUX_SEARCH_MAX_FILESIZE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "20M".into())
 }
 
 /// The rg binary. Python's error text promises "set AMUX_SEARCH_RG to its
@@ -1373,7 +1448,11 @@ pub(crate) async fn fs_search(
     out.insert("searched_hidden".into(), json!(include_ignored));
     out.insert(
         "limit".into(),
-        json!(if limit != 0 { limit } else { search_max_results() }),
+        json!(if limit != 0 {
+            limit
+        } else {
+            search_max_results()
+        }),
     );
     if q.is_empty() {
         out.insert("error".into(), json!("missing query"));
@@ -1386,7 +1465,11 @@ pub(crate) async fn fs_search(
     }
     let rp = resolve_nonstrict(&rp);
     out.insert("root".into(), json!(pystr(&rp)));
-    let cap = if limit != 0 { limit } else { search_max_results() };
+    let cap = if limit != 0 {
+        limit
+    } else {
+        search_max_results()
+    };
 
     let Some(rg) = rg_bin() else {
         // Say so rather than silently returning nothing: a search reporting
@@ -1461,13 +1544,18 @@ pub(crate) async fn fs_search(
             truncated = true;
             break;
         }
-        let Ok(ev) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(ev) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if ev.get("type").and_then(|t| t.as_str()) != Some("match") {
             continue;
         }
         let d = ev.get("data").cloned().unwrap_or(json!({}));
         let pth = d["path"]["text"].as_str().unwrap_or("").to_string();
-        let txt = d["lines"]["text"].as_str().unwrap_or("").trim_end_matches('\n');
+        let txt = d["lines"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .trim_end_matches('\n');
         let rel = Path::new(&pth)
             .strip_prefix(&rp)
             .map(|r| r.to_string_lossy().into_owned())
@@ -1476,7 +1564,9 @@ pub(crate) async fn fs_search(
         let spans: Vec<Value> = d["submatches"]
             .as_array()
             .map(|subs| {
-                subs.iter().map(|s| json!([s.get("start"), s.get("end")])).collect()
+                subs.iter()
+                    .map(|s| json!([s.get("start"), s.get("end")]))
+                    .collect()
             })
             .unwrap_or_default();
         results.push(json!({
@@ -1508,14 +1598,19 @@ pub(crate) async fn fs_search(
     }
     if n_results == 0 {
         // Name every filter that could be responsible for the zero.
-        let mut why = vec![format!("files over {max_filesize} and binaries were skipped")];
+        let mut why = vec![format!(
+            "files over {max_filesize} and binaries were skipped"
+        )];
         if !include_ignored {
             why.insert(
                 0,
                 ".gitignore'd and hidden files were NOT searched (retry with ignored=1)".into(),
             );
         }
-        out.insert("note".into(), json!(format!("No matches. {}.", why.join("; "))));
+        out.insert(
+            "note".into(),
+            json!(format!("No matches. {}.", why.join("; "))),
+        );
     }
     out
 }
@@ -1538,12 +1633,23 @@ async fn search(method: Method, RawQuery(q): RawQuery) -> Response {
         .map(|v| v.clamp(1, 2000))
         .unwrap_or(0);
     let literal = !matches!(
-        qs_get(&qs, "literal").unwrap_or("1").to_lowercase().as_str(),
+        qs_get(&qs, "literal")
+            .unwrap_or("1")
+            .to_lowercase()
+            .as_str(),
         "0" | "false" | "no"
     );
-    let case = qs_get(&qs, "case").filter(|v| !v.is_empty()).unwrap_or("smart").to_lowercase();
-    let include_ignored =
-        matches!(qs_get(&qs, "ignored").unwrap_or("0").to_lowercase().as_str(), "1" | "true" | "yes");
+    let case = qs_get(&qs, "case")
+        .filter(|v| !v.is_empty())
+        .unwrap_or("smart")
+        .to_lowercase();
+    let include_ignored = matches!(
+        qs_get(&qs, "ignored")
+            .unwrap_or("0")
+            .to_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    );
     let globs: Vec<String> = qs
         .iter()
         .filter(|(k, v)| k == "glob" && !v.is_empty())
@@ -1716,7 +1822,10 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
         })
         .collect();
     let parent = p.parent().filter(|par| *par != p).map(pystr);
-    j(200, json!({"path": pystr(&p), "parent": parent, "entries": entries}))
+    j(
+        200,
+        json!({"path": pystr(&p), "parent": parent, "entries": entries}),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1729,8 +1838,19 @@ pub async fn ls(method: Method, RawQuery(q): RawQuery) -> Response {
 /// every depth, so `~/Library` alone does not turn a name search into a
 /// filesystem walk. Not a security boundary — `is_path_allowed` is that.
 const SCAN_SKIP: &[&str] = &[
-    "library", "applications", "node_modules", "music", "pictures", "movies",
-    "photos", ".trash", "target", "venv", ".venv", "dist", "build",
+    "library",
+    "applications",
+    "node_modules",
+    "music",
+    "pictures",
+    "movies",
+    "photos",
+    ".trash",
+    "target",
+    "venv",
+    ".venv",
+    "dist",
+    "build",
 ];
 
 /// How many directory entries one name search may look at. A budget rather
@@ -1799,7 +1919,17 @@ const AUTOCOMPLETE_WALK_TIMEOUT: std::time::Duration = std::time::Duration::from
 fn name_search_roots() -> Vec<PathBuf> {
     let home = home_dir();
     let mut roots = vec![home.clone()];
-    for c in ["Dev", "dev", "Projects", "projects", "src", "code", "Code", "Documents", "repos"] {
+    for c in [
+        "Dev",
+        "dev",
+        "Projects",
+        "projects",
+        "src",
+        "code",
+        "Code",
+        "Documents",
+        "repos",
+    ] {
         let p = home.join(c);
         if p.is_dir() {
             roots.push(p);
@@ -1861,7 +1991,9 @@ fn dirs_matching_name_budgeted(
             if budget == 0 || started.elapsed() >= time_budget {
                 return (out, true);
             }
-            let Ok(rd) = retry_eintr(|| std::fs::read_dir(&dir)) else { continue };
+            let Ok(rd) = retry_eintr(|| std::fs::read_dir(&dir)) else {
+                continue;
+            };
             // BOUND THE LISTING ITSELF, not just the loop below it. The first
             // cut of this deadline collected the whole directory first and only
             // then checked the clock per entry, so a single slow `read_dir` ran
@@ -1930,7 +2062,6 @@ fn dirs_matching_name_budgeted(
     }
     (out, false)
 }
-
 
 #[cfg(test)]
 mod name_search_tests {
@@ -2011,13 +2142,18 @@ mod name_search_tests {
         }
         let roots = [d.path().to_path_buf()];
         // TRUNCATED: the scan gave up before it could have seen everything.
-        let (hits, exhausted) = dirs_matching_name_budgeted("zzzz", &roots, 10, 5, SCAN_TIME_BUDGET);
+        let (hits, exhausted) =
+            dirs_matching_name_budgeted("zzzz", &roots, 10, 5, SCAN_TIME_BUDGET);
         assert!(hits.is_empty());
         assert!(exhausted, "a scan that ran out of budget must say so");
         // COMPLETE: same tree, same query, budget that covers it.
-        let (hits, exhausted) = dirs_matching_name_budgeted("zzzz", &roots, 10, 6000, SCAN_TIME_BUDGET);
+        let (hits, exhausted) =
+            dirs_matching_name_budgeted("zzzz", &roots, 10, 6000, SCAN_TIME_BUDGET);
         assert!(hits.is_empty());
-        assert!(!exhausted, "a complete search that found nothing must not claim truncation");
+        assert!(
+            !exhausted,
+            "a complete search that found nothing must not claim truncation"
+        );
     }
 
     /// A limit that is reached is not the same as a budget that ran out: the
@@ -2030,7 +2166,6 @@ mod name_search_tests {
         assert_eq!(hits.len(), 2);
         assert!(!exhausted);
     }
-
 
     /// Not an assertion about speed on any particular machine — a FLOOR under
     /// the thing that would make this route unusable. It runs on every keystroke
@@ -2125,7 +2260,10 @@ mod name_search_tests {
         )
         .await;
         let elapsed = started.elapsed();
-        assert!(out.is_err(), "the timeout must fire on a walk that never returns");
+        assert!(
+            out.is_err(),
+            "the timeout must fire on a walk that never returns"
+        );
         assert!(
             elapsed < std::time::Duration::from_secs(5),
             "the caller waited {elapsed:?}, so it did not stop waiting"
@@ -2183,17 +2321,21 @@ mod name_search_tests {
     fn the_walk_stops_on_its_time_budget_and_says_it_was_truncated() {
         let roots = name_search_roots();
         let t0 = std::time::Instant::now();
-        let (hits, exhausted) = dirs_matching_name_budgeted(
-            "amux",
-            &roots,
-            10,
-            SCAN_BUDGET,
-            std::time::Duration::ZERO,
-        );
+        let (hits, exhausted) =
+            dirs_matching_name_budgeted("amux", &roots, 10, SCAN_BUDGET, std::time::Duration::ZERO);
         let ms = t0.elapsed().as_millis();
-        assert!(exhausted, "a walk cut short by its deadline must report exhausted");
-        assert!(hits.is_empty(), "nothing can be found before the first entry: {hits:?}");
-        assert!(ms < 1000, "a zero deadline must return at once, took {ms}ms");
+        assert!(
+            exhausted,
+            "a walk cut short by its deadline must report exhausted"
+        );
+        assert!(
+            hits.is_empty(),
+            "nothing can be found before the first entry: {hits:?}"
+        );
+        assert!(
+            ms < 1000,
+            "a zero deadline must return at once, took {ms}ms"
+        );
 
         // THE CONTROL. Without it, a function that always returns
         // (empty, true) satisfies every assertion above, and the search would be
@@ -2232,7 +2374,10 @@ mod name_search_tests {
     fn the_home_directory_is_always_a_root_and_the_missing_ones_are_skipped() {
         let roots = name_search_roots();
         assert_eq!(roots.first(), Some(&home_dir()), "home must be searched");
-        assert!(roots.iter().all(|r| r.is_dir()), "a root that does not exist was kept: {roots:?}");
+        assert!(
+            roots.iter().all(|r| r.is_dir()),
+            "a root that does not exist was kept: {roots:?}"
+        );
     }
 }
 
@@ -2279,7 +2424,9 @@ pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response
         let q_for_walk = query.clone();
         let (hits, exhausted) = match tokio::time::timeout(
             AUTOCOMPLETE_WALK_TIMEOUT,
-            crate::db::interactions::spawn_blocking(move || dirs_matching_name(&q_for_walk, &roots, 10)),
+            crate::db::interactions::spawn_blocking(move || {
+                dirs_matching_name(&q_for_walk, &roots, 10)
+            }),
         )
         .await
         {
@@ -2331,8 +2478,12 @@ pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response
         (p.clone(), String::new())
     } else {
         (
-            p.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/")),
-            p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default(),
+            p.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/")),
+            p.file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default(),
         )
     };
     if !parent.is_dir() {
@@ -2346,7 +2497,10 @@ pub async fn autocomplete_dir(method: Method, RawQuery(q): RawQuery) -> Response
     names.sort();
     let mut results: Vec<String> = Vec::new();
     for item in names {
-        let name = item.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = item
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if name.starts_with('.') {
             continue;
         }
@@ -2456,7 +2610,11 @@ mod tests {
             Err(Error::new(ErrorKind::Interrupted, "eintr"))
         });
         assert_eq!(got.unwrap_err().kind(), ErrorKind::Interrupted);
-        assert!(calls.get() <= 8, "retry must be bounded, got {} calls", calls.get());
+        assert!(
+            calls.get() <= 8,
+            "retry must be bounded, got {} calls",
+            calls.get()
+        );
     }
     use super::*;
     use axum::body::Body;
@@ -2471,7 +2629,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -2490,9 +2648,15 @@ mod tests {
         if let Some(ct) = ctype {
             b = b.header("content-type", ct);
         }
-        let res = app.clone().oneshot(b.body(Body::from(body)).unwrap()).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(b.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, v)
     }
@@ -2513,7 +2677,10 @@ mod tests {
         let (resolved, ok, tried) = resolve_rel_candidates(cwd, "NYC/Events/Galas.md", &exists);
         assert!(ok);
         assert_eq!(resolved, format!("{vault}/NYC/Events/Galas.md"));
-        assert_eq!(tried[0], "/Users/ethan/Vault/NYC/NYC/Events/Galas.md", "the blind join was ruled out first");
+        assert_eq!(
+            tried[0], "/Users/ethan/Vault/NYC/NYC/Events/Galas.md",
+            "the blind join was ruled out first"
+        );
 
         // CONTROL — a genuinely nested NYC/NYC: the cwd join exists and WINS;
         // walking anyway would hijack real nesting.
@@ -2536,7 +2703,10 @@ mod tests {
         let (r, ok, tried) = resolve_rel_candidates(cwd, "no/such.md", &|_| false);
         assert!(!ok);
         assert_eq!(r, "/Users/ethan/Vault/NYC/no/such.md");
-        assert!(tried.len() >= 4, "the ancestor walk must have actually walked: {tried:?}");
+        assert!(
+            tried.len() >= 4,
+            "the ancestor walk must have actually walked: {tried:?}"
+        );
 
         // Absolute paths pass through untouched — no walk.
         let (r, ok, tried) = resolve_rel_candidates(cwd, "/etc/hosts", &|_| true);
@@ -2560,23 +2730,38 @@ mod tests {
         let exists = |p: &Path| {
             p == Path::new("/Users/ethan/Dev/mixpeek/homepage/public/templates/ux-session-analysis/session.webp")
         };
-        let (resolved, ok, tried) =
-            resolve_rel_candidates(cwd, "/public/templates/ux-session-analysis/session.webp", &exists);
-        assert!(ok, "the slash-stripped cwd join must be found: tried {tried:?}");
+        let (resolved, ok, tried) = resolve_rel_candidates(
+            cwd,
+            "/public/templates/ux-session-analysis/session.webp",
+            &exists,
+        );
+        assert!(
+            ok,
+            "the slash-stripped cwd join must be found: tried {tried:?}"
+        );
         assert_eq!(
             resolved,
             "/Users/ethan/Dev/mixpeek/homepage/public/templates/ux-session-analysis/session.webp"
         );
-        assert_eq!(tried[0], "/public/templates/ux-session-analysis/session.webp",
-            "the literal absolute interpretation must still be tried FIRST, not skipped");
+        assert_eq!(
+            tried[0], "/public/templates/ux-session-analysis/session.webp",
+            "the literal absolute interpretation must still be tried FIRST, not skipped"
+        );
 
         // CONTROL — a genuinely absolute path that just happens not to exist
         // must NOT be silently found somewhere else via a slash-stripped
         // reinterpretation the caller never asked for.
-        let (r, ok, tried) = resolve_rel_candidates(cwd, "/etc/does-not-exist-anywhere", &|_| false);
+        let (r, ok, tried) =
+            resolve_rel_candidates(cwd, "/etc/does-not-exist-anywhere", &|_| false);
         assert!(!ok);
-        assert_eq!(r, "/etc/does-not-exist-anywhere", "the literal path is still the honest first answer");
-        assert!(tried.len() > 1, "it still walked cwd's ancestors looking, it just found nothing: {tried:?}");
+        assert_eq!(
+            r, "/etc/does-not-exist-anywhere",
+            "the literal path is still the honest first answer"
+        );
+        assert!(
+            tried.len() > 1,
+            "it still walked cwd's ancestors looking, it just found nothing: {tried:?}"
+        );
     }
 
     /// AMUX-4661: the mirror-image case the ancestor walk cannot reach by
@@ -2653,7 +2838,10 @@ mod tests {
         // With only the past-cap file present, the walk must not reach it.
         let only_too_deep = |p: &Path| p == too_deep;
         let found = resolve_rel_descend(root, "x.py", &only_too_deep, &list_dirs);
-        assert_eq!(found, None, "a match past DESCEND_MAX_DEPTH must not be found");
+        assert_eq!(
+            found, None,
+            "a match past DESCEND_MAX_DEPTH must not be found"
+        );
     }
 
     // ---- path guards ----
@@ -2664,7 +2852,9 @@ mod tests {
         assert!(!is_path_allowed(&home.join(".ssh/id_ed25519")));
         // Case-insensitive: the ~/.SSH incident from Python's docstring.
         assert!(!is_path_allowed(&home.join(".SSH/id_ed25519")));
-        assert!(!is_path_allowed(&home.join(".config/gcloud/credentials.db")));
+        assert!(!is_path_allowed(
+            &home.join(".config/gcloud/credentials.db")
+        ));
         assert!(!is_path_allowed(Path::new("/etc/shadow")));
         assert!(!is_path_allowed(Path::new("/etc/ssh/sshd_config")));
         // A non-existent tail with `..` resolves lexically over the resolved
@@ -2686,8 +2876,12 @@ mod tests {
     fn dangerous_write_matches_python_sets() {
         assert!(is_dangerous_write(Path::new("/tmp/x/.zshrc")));
         assert!(is_dangerous_write(Path::new("/tmp/Evil.PLIST")));
-        assert!(is_dangerous_write(Path::new("/tmp/repo/.git/hooks/pre-commit")));
-        assert!(is_dangerous_write(&home_dir().join("Library/LaunchAgents/com.x.plist")));
+        assert!(is_dangerous_write(Path::new(
+            "/tmp/repo/.git/hooks/pre-commit"
+        )));
+        assert!(is_dangerous_write(
+            &home_dir().join("Library/LaunchAgents/com.x.plist")
+        ));
         // `low + "/"`: a path ENDING in /bin matches the /bin/ marker.
         assert!(is_dangerous_write(Path::new("/usr/local/bin")));
         assert!(!is_dangerous_write(Path::new("/tmp/notes.md")));
@@ -2695,7 +2889,10 @@ mod tests {
 
     #[test]
     fn sanitize_matches_python_regex() {
-        assert_eq!(sanitize_upload_name("report (final).pdf"), "report _final_.pdf");
+        assert_eq!(
+            sanitize_upload_name("report (final).pdf"),
+            "report _final_.pdf"
+        );
         assert_eq!(sanitize_upload_name("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_upload_name(""), "upload");
         assert_eq!(sanitize_upload_name("naïve café.txt"), "naïve café.txt"); // \w is unicode
@@ -2765,7 +2962,9 @@ mod tests {
     #[test]
     fn multipart_invalid_shapes_are_none() {
         assert!(parse_multipart("multipart/form-data", b"whatever").is_none()); // no boundary param
-        assert!(parse_multipart("multipart/form-data; boundary=QQ", b"no delimiter here").is_none());
+        assert!(
+            parse_multipart("multipart/form-data; boundary=QQ", b"no delimiter here").is_none()
+        );
     }
 
     // ---- endpoint behavior (statuses + bodies pinned to the Python source) ----
@@ -2797,7 +2996,10 @@ mod tests {
             v["saved"][1],
             json!({"name": "evil.plist", "error": "refused: could execute code"})
         );
-        assert_eq!(std::fs::read_to_string(td.path().join("a.txt")).unwrap(), "one");
+        assert_eq!(
+            std::fs::read_to_string(td.path().join("a.txt")).unwrap(),
+            "one"
+        );
         assert!(!td.path().join("evil.plist").exists());
 
         // Second identical upload: no clobber, suffixes _1 (py:68414-68424).
@@ -2831,13 +3033,23 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["saved"][0], json!({"name": "a.txt", "size": 5}));
-        assert_eq!(std::fs::read_to_string(td.path().join("a.txt")).unwrap(), "newer");
+        assert_eq!(
+            std::fs::read_to_string(td.path().join("a.txt")).unwrap(),
+            "newer"
+        );
     }
 
     #[tokio::test]
     async fn upload_error_contract() {
         let app = app();
-        let (st, v) = call(&app, "POST", "/api/fs/upload", Some("application/json"), b"{}".to_vec()).await;
+        let (st, v) = call(
+            &app,
+            "POST",
+            "/api/fs/upload",
+            Some("application/json"),
+            b"{}".to_vec(),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "expected multipart/form-data");
 
@@ -2853,7 +3065,13 @@ mod tests {
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "missing 'dir' field");
 
-        let body = mp_body("XX", &[("dir", None, b"/no/such/dir-xyz"), ("file", Some("a.txt"), b"x")]);
+        let body = mp_body(
+            "XX",
+            &[
+                ("dir", None, b"/no/such/dir-xyz"),
+                ("file", Some("a.txt"), b"x"),
+            ],
+        );
         let (st, v) = call(
             &app,
             "POST",
@@ -2893,9 +3111,14 @@ mod tests {
         assert_eq!(st, StatusCode::CONFLICT);
         assert_eq!(v["error"], "already exists");
         // Relative path → 400 before any containment check.
-        let (st, v) =
-            call(&app, "POST", "/api/fs/mkdir", Some("application/json"), b"{\"path\":\"rel/x\"}".to_vec())
-                .await;
+        let (st, v) = call(
+            &app,
+            "POST",
+            "/api/fs/mkdir",
+            Some("application/json"),
+            b"{\"path\":\"rel/x\"}".to_vec(),
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "absolute path required");
 
@@ -2992,7 +3215,10 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let f = td.path().join("utf8.txt");
         std::fs::write(&f, "café\n").unwrap();
-        let uri = format!("/api/fs/read?path={}&max_bytes=4", urlencode(&f.to_string_lossy()));
+        let uri = format!(
+            "/api/fs/read?path={}&max_bytes=4",
+            urlencode(&f.to_string_lossy())
+        );
         let (st, v) = call(&app, "GET", &uri, None, vec![]).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["encoding"], "base64");
@@ -3010,8 +3236,14 @@ mod tests {
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(v["error"], "missing query");
         // bad root → 200 with the named error (Python returns 200 here).
-        let (st, v) =
-            call(&app, "GET", "/api/fs/search?path=%2Fno%2Fsuch-dir-xyz&q=x", None, vec![]).await;
+        let (st, v) = call(
+            &app,
+            "GET",
+            "/api/fs/search?path=%2Fno%2Fsuch-dir-xyz&q=x",
+            None,
+            vec![],
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(v["error"], "access denied or not a directory");
         assert_eq!(v["root"], "");
@@ -3027,7 +3259,9 @@ mod open_native_locality_tests {
     use super::browser_is_on_this_machine_with;
     use std::net::IpAddr;
 
-    fn ip(s: &str) -> IpAddr { s.parse().unwrap() }
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
 
     /// THE INCIDENT, 2026-08-28. Ethan opened a folder from the dashboard he
     /// reaches at `desktop.tail5ce8f5.ts.net` — his OWN machine — and got
@@ -3041,7 +3275,7 @@ mod open_native_locality_tests {
     /// read local, and a different tailnet node must not.
     #[test]
     fn a_tailscale_name_for_your_own_machine_is_local_and_another_node_is_not() {
-        let own = ip("100.108.219.90");   // this host's tailnet address
+        let own = ip("100.108.219.90"); // this host's tailnet address
         let host = Some("desktop.tail5ce8f5.ts.net:8824");
         let dns = |_h: &str| vec![own];
 
@@ -3089,7 +3323,10 @@ mod open_native_locality_tests {
             .uri("https://desktop.tail5ce8f5.ts.net:8824/api/fs/open")
             .body(axum::body::Body::empty())
             .unwrap();
-        assert!(h2.headers().get(axum::http::header::HOST).is_none(), "fixture must have NO Host");
+        assert!(
+            h2.headers().get(axum::http::header::HOST).is_none(),
+            "fixture must have NO Host"
+        );
         assert_eq!(
             super::request_authority(&h2).as_deref(),
             Some("desktop.tail5ce8f5.ts.net:8824"),
@@ -3098,7 +3335,10 @@ mod open_native_locality_tests {
         );
 
         // Neither: still None, so the caller's fail-safe (remote) applies.
-        let bare = HttpRequest::builder().uri("/api/fs/open").body(axum::body::Body::empty()).unwrap();
+        let bare = HttpRequest::builder()
+            .uri("/api/fs/open")
+            .body(axum::body::Body::empty())
+            .unwrap();
         assert_eq!(super::request_authority(&bare), None);
     }
 
@@ -3107,8 +3347,16 @@ mod open_native_locality_tests {
     #[test]
     fn loopback_is_local_without_consulting_dns() {
         let never = |_h: &str| Vec::new();
-        assert!(browser_is_on_this_machine_with(Some(ip("127.0.0.1")), Some("localhost:8824"), never));
-        assert!(browser_is_on_this_machine_with(Some(ip("::1")), None, never));
+        assert!(browser_is_on_this_machine_with(
+            Some(ip("127.0.0.1")),
+            Some("localhost:8824"),
+            never
+        ));
+        assert!(browser_is_on_this_machine_with(
+            Some(ip("::1")),
+            None,
+            never
+        ));
     }
 
     /// FAIL SAFE. No peer (ConnectInfo absent, as in router-level tests), an
@@ -3118,9 +3366,19 @@ mod open_native_locality_tests {
     #[test]
     fn unknown_reads_remote_rather_than_local() {
         let own = ip("100.108.219.90");
-        assert!(!browser_is_on_this_machine_with(None, Some("desktop:8824"), |_| vec![own]));
-        assert!(!browser_is_on_this_machine_with(Some(own), None, |_| vec![own]));
-        assert!(!browser_is_on_this_machine_with(Some(own), Some("desktop:8824"), |_| Vec::new()));
+        assert!(!browser_is_on_this_machine_with(
+            None,
+            Some("desktop:8824"),
+            |_| vec![own]
+        ));
+        assert!(!browser_is_on_this_machine_with(Some(own), None, |_| vec![
+            own
+        ]));
+        assert!(!browser_is_on_this_machine_with(
+            Some(own),
+            Some("desktop:8824"),
+            |_| Vec::new()
+        ));
     }
 
     /// The authority is parsed, not pattern-matched: a port must be stripped and
@@ -3131,10 +3389,25 @@ mod open_native_locality_tests {
     fn the_host_authority_is_parsed() {
         let own = ip("100.108.219.90");
         let seen = std::cell::RefCell::new(String::new());
-        let spy = |h: &str| { *seen.borrow_mut() = h.to_string(); vec![own] };
-        assert!(browser_is_on_this_machine_with(Some(own), Some("desktop.tail5ce8f5.ts.net:8824"), spy));
-        assert_eq!(seen.borrow().as_str(), "desktop.tail5ce8f5.ts.net", "port stripped");
-        assert!(browser_is_on_this_machine_with(Some(own), Some("[fd7a::1]:8824"), spy));
+        let spy = |h: &str| {
+            *seen.borrow_mut() = h.to_string();
+            vec![own]
+        };
+        assert!(browser_is_on_this_machine_with(
+            Some(own),
+            Some("desktop.tail5ce8f5.ts.net:8824"),
+            spy
+        ));
+        assert_eq!(
+            seen.borrow().as_str(),
+            "desktop.tail5ce8f5.ts.net",
+            "port stripped"
+        );
+        assert!(browser_is_on_this_machine_with(
+            Some(own),
+            Some("[fd7a::1]:8824"),
+            spy
+        ));
         assert_eq!(seen.borrow().as_str(), "fd7a::1", "IPv6 brackets stripped");
     }
 }

@@ -59,9 +59,17 @@ fn cli_verbs(root: &Path) -> BTreeSet<String> {
     for line in src.lines() {
         // Case arms in the verb dispatchers sit at four spaces: `    retitle)`,
         // `    archive|unarchive)`, `    done|doing|todo|backlog|discard|...)`.
-        let Some(rest) = line.strip_prefix("    ") else { continue };
-        let Some(arm) = rest.strip_suffix(')') else { continue };
-        if arm.is_empty() || !arm.chars().all(|c| c.is_ascii_lowercase() || "|_-".contains(c)) {
+        let Some(rest) = line.strip_prefix("    ") else {
+            continue;
+        };
+        let Some(arm) = rest.strip_suffix(')') else {
+            continue;
+        };
+        if arm.is_empty()
+            || !arm
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || "|_-".contains(c))
+        {
             continue;
         }
         for v in arm.split('|') {
@@ -87,7 +95,9 @@ fn board_commands_named_by_server(root: &Path) -> Vec<(String, String)> {
     let re = regex::Regex::new(r"amux board ([a-z][a-z-]*)").expect("re");
     let mut out = Vec::new();
     for f in files {
-        let Ok(src) = std::fs::read_to_string(&f) else { continue };
+        let Ok(src) = std::fs::read_to_string(&f) else {
+            continue;
+        };
         let rel = f.strip_prefix(root).unwrap_or(&f).display().to_string();
         for c in re.captures_iter(&strip_test_modules(&src)) {
             out.push((c[1].to_string(), rel.clone()));

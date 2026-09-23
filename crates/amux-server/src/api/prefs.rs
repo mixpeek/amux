@@ -30,7 +30,9 @@ async fn get_prefs(State(state): State<AppState>, Query(q): Query<PrefsQuery>) -
     };
     if !q.key.is_empty() {
         let value: Option<String> = conn
-            .query_row("SELECT value FROM prefs WHERE key = ?1", [&q.key], |r| r.get(0))
+            .query_row("SELECT value FROM prefs WHERE key = ?1", [&q.key], |r| {
+                r.get(0)
+            })
             .ok();
         return Json(json!({"key": q.key, "value": value})).into_response();
     }
@@ -58,7 +60,11 @@ pub struct SetPref {
 
 async fn set_pref(State(state): State<AppState>, Json(body): Json<SetPref>) -> Response {
     if body.key.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "key required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "key required"})),
+        )
+            .into_response();
     }
     let key = body.key.clone();
     let value = body.value.clone();
@@ -69,10 +75,15 @@ async fn set_pref(State(state): State<AppState>, Json(body): Json<SetPref>) -> R
             // — the Python endpoint blindly rewrites, but a rev bump for an
             // unchanged pref would make every poll look like a change.
             let existing: Option<String> = conn
-                .query_row("SELECT value FROM prefs WHERE key = ?1", [&key], |r| r.get(0))
+                .query_row("SELECT value FROM prefs WHERE key = ?1", [&key], |r| {
+                    r.get(0)
+                })
                 .ok();
             if existing.as_deref() == Some(value.as_str()) {
-                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                return Ok(crate::db::WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
             }
             conn.execute(
                 "INSERT INTO prefs (key, value) VALUES (?1, ?2)

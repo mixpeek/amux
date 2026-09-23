@@ -53,7 +53,10 @@ static READY: Mutex<Option<Ready>> = Mutex::new(None);
 /// Is the pre-start path on for this process?
 pub(super) fn enabled() -> bool {
     match std::env::var(WARM_HELPER_KEY) {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"),
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
         Err(_) => true,
     }
 }
@@ -114,19 +117,37 @@ pub(super) fn parse_completion(stdout: &str) -> Result<super::ModelCompletion, S
         if line.is_empty() {
             continue;
         }
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         if event.get("type").and_then(serde_json::Value::as_str) != Some("result") {
             continue;
         }
-        let text = event.get("result").and_then(serde_json::Value::as_str).unwrap_or_default().trim().to_string();
-        answer = Some(if event.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
-            let subtype = event.get("subtype").and_then(serde_json::Value::as_str).unwrap_or("error");
-            Err(format!("helper reported {subtype}: {}", text.chars().take(200).collect::<String>()))
-        } else if text.is_empty() {
-            Err("helper returned a result event with no text".to_string())
-        } else {
-            Ok(super::ModelCompletion { text, usage: event.get("usage").filter(|v| v.is_object()).cloned() })
-        });
+        let text = event
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        answer = Some(
+            if event.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+                let subtype = event
+                    .get("subtype")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("error");
+                Err(format!(
+                    "helper reported {subtype}: {}",
+                    text.chars().take(200).collect::<String>()
+                ))
+            } else if text.is_empty() {
+                Err("helper returned a result event with no text".to_string())
+            } else {
+                Ok(super::ModelCompletion {
+                    text,
+                    usage: event.get("usage").filter(|v| v.is_object()).cloned(),
+                })
+            },
+        );
     }
     answer.unwrap_or_else(|| Err("helper produced no result event".to_string()))
 }
@@ -184,7 +205,12 @@ pub(super) fn prepare(cli: String, model: String) {
         if slot.is_some() {
             return;
         }
-        *slot = Some(Ready { cli, model, started_at, child });
+        *slot = Some(Ready {
+            cli,
+            model,
+            started_at,
+            child,
+        });
         tracing::info!(target: "amux::model_helper", verdict = "warm_helper_ready",
             measured = true, n_considered = 1, "a helper is up and waiting for the next call");
     });
@@ -202,8 +228,11 @@ mod tests {
     #[test]
     fn provider_usage_is_preserved_and_missing_usage_is_not_zero() {
         let result=parse_completion(r#"{"type":"result","result":"{}","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":80}}"#).unwrap();
-        assert_eq!(result.usage.unwrap()["cache_read_input_tokens"],80);
-        assert!(parse_completion(r#"{"type":"result","result":"{}"}"#).unwrap().usage.is_none());
+        assert_eq!(result.usage.unwrap()["cache_read_input_tokens"], 80);
+        assert!(parse_completion(r#"{"type":"result","result":"{}"}"#)
+            .unwrap()
+            .usage
+            .is_none());
     }
 
     #[test]
@@ -217,10 +246,14 @@ mod tests {
         assert!(parse_result(err).unwrap_err().contains("error_max_turns"));
 
         // A transcript that never reached a result is not an empty answer.
-        assert!(parse_result("{\"type\":\"system\"}").unwrap_err().contains("no result event"));
+        assert!(parse_result("{\"type\":\"system\"}")
+            .unwrap_err()
+            .contains("no result event"));
         assert!(parse_result("").unwrap_err().contains("no result event"));
         // Nor is a result event carrying no text.
-        assert!(parse_result("{\"type\":\"result\",\"result\":\"\"}").unwrap_err().contains("no text"));
+        assert!(parse_result("{\"type\":\"result\",\"result\":\"\"}")
+            .unwrap_err()
+            .contains("no text"));
     }
 
     #[test]
@@ -240,19 +273,43 @@ mod tests {
         let line = message_line("first\nsecond\n{\"injected\":true}");
         assert_eq!(line.lines().count(), 1, "{line}");
         let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(v["message"]["content"][0]["text"], "first\nsecond\n{\"injected\":true}");
+        assert_eq!(
+            v["message"]["content"][0]["text"],
+            "first\nsecond\n{\"injected\":true}"
+        );
     }
 
     #[test]
     fn the_command_carries_the_read_only_posture_and_the_model() {
         let cmd = stream_command("claude", "claude-haiku-4-5");
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
-        for expected in ["--print", "--input-format", "stream-json", "--output-format", "--verbose",
-            "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"] {
-            assert!(args.iter().any(|a| a == expected), "{expected} missing from {args:?}");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        for expected in [
+            "--print",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "--verbose",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+        ] {
+            assert!(
+                args.iter().any(|a| a == expected),
+                "{expected} missing from {args:?}"
+            );
         }
-        assert_eq!(args.iter().filter(|a| *a == "stream-json").count(), 2, "{args:?}");
-        let model_at = args.iter().position(|a| a == "--model").expect("model flag");
+        assert_eq!(
+            args.iter().filter(|a| *a == "stream-json").count(),
+            2,
+            "{args:?}"
+        );
+        let model_at = args
+            .iter()
+            .position(|a| a == "--model")
+            .expect("model flag");
         assert_eq!(args[model_at + 1], "claude-haiku-4-5");
     }
 
@@ -283,7 +340,8 @@ mod tests {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
         let cli = script.to_string_lossy().to_string();
 
         *READY.lock().unwrap() = None;
@@ -308,14 +366,30 @@ mod tests {
             .trim()
             .parse()
             .expect("the stand-in records nanoseconds");
-        let sent_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        assert!(started_ns < sent_ns, "the helper must already be running when the prompt is sent");
+        let sent_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        assert!(
+            started_ns < sent_ns,
+            "the helper must already be running when the prompt is sent"
+        );
 
         let message = message_line("compare these two cards");
-        let out = helper_io::exchange(child, message.as_bytes(), Duration::from_secs(20), 1024 * 1024).unwrap();
+        let out = helper_io::exchange(
+            child,
+            message.as_bytes(),
+            Duration::from_secs(20),
+            1024 * 1024,
+        )
+        .unwrap();
         assert!(out.status.success(), "{out:?}");
         let answer = parse_result(&String::from_utf8_lossy(&out.stdout)).unwrap();
-        assert_eq!(answer, format!("saw {} bytes", message.len()), "the helper answered a different message");
+        assert_eq!(
+            answer,
+            format!("saw {} bytes", message.len()),
+            "the helper answered a different message"
+        );
         *READY.lock().unwrap() = None;
     }
 
@@ -332,7 +406,13 @@ mod tests {
             started_at: Instant::now(),
             child,
         });
-        assert!(take("claude", "some-other-model").is_none(), "a different model must not be reused");
-        assert!(READY.lock().unwrap().is_none(), "the mismatched helper is dropped, not left behind");
+        assert!(
+            take("claude", "some-other-model").is_none(),
+            "a different model must not be reused"
+        );
+        assert!(
+            READY.lock().unwrap().is_none(),
+            "the mismatched helper is dropped, not left behind"
+        );
     }
 }

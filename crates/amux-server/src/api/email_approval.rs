@@ -86,11 +86,8 @@ pub fn exempt_sessions(home: &Path) -> Vec<String> {
 /// changed for one worker from the Configurations UI and can be explicitly
 /// denied at a more-specific layer.
 pub fn external_email_allowed(home: &Path, session: &str) -> bool {
-    let scoped = crate::api::session_verbs::scoped_setting_in(
-        home,
-        session,
-        "AMUX_EMAIL_EXTERNAL_ALLOW",
-    );
+    let scoped =
+        crate::api::session_verbs::scoped_setting_in(home, session, "AMUX_EMAIL_EXTERNAL_ALLOW");
     if let Some(value) = scoped {
         return matches!(
             value.trim().trim_matches('"').to_ascii_lowercase().as_str(),
@@ -133,7 +130,9 @@ pub fn approvals_dir(home: &Path) -> PathBuf {
 pub fn valid_id(id: &str) -> bool {
     id.len() == 20
         && id.starts_with("apr_")
-        && id[4..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        && id[4..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 /// Freeze a refused request to disk; returns the approval id.
@@ -157,7 +156,10 @@ pub fn create_approval(
         "payload": payload,
         "preview": preview,
     });
-    std::fs::write(approvals_dir(home).join(format!("{id}.json")), doc.to_string())?;
+    std::fs::write(
+        approvals_dir(home).join(format!("{id}.json")),
+        doc.to_string(),
+    )?;
     Ok(id)
 }
 
@@ -212,8 +214,12 @@ pub fn consume(home: &Path, id: &str) -> Consume {
     }
     let dir = approvals_dir(home);
     let live = dir.join(format!("{id}.json"));
-    let Ok(raw) = std::fs::read_to_string(&live) else { return Consume::Gone };
-    let Ok(doc) = serde_json::from_str::<Value>(&raw) else { return Consume::Gone };
+    let Ok(raw) = std::fs::read_to_string(&live) else {
+        return Consume::Gone;
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(&raw) else {
+        return Consume::Gone;
+    };
     let created = doc.get("created").and_then(Value::as_f64).unwrap_or(0.0);
     if now_f64() - created > APPROVAL_TTL_S {
         let _ = std::fs::rename(&live, dir.join(format!("{id}.expired.json")));
@@ -261,7 +267,11 @@ pub fn fate(home: &Path, id: &str) -> String {
         let by = std::fs::read_to_string(&rejected)
             .ok()
             .and_then(|r| serde_json::from_str::<Value>(&r).ok())
-            .and_then(|d| d.get("rejected_by").and_then(Value::as_str).map(str::to_string))
+            .and_then(|d| {
+                d.get("rejected_by")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_default();
         return match by.as_str() {
             "" | "unidentified" => "this approval was DISCARDED and never sent. The caller did \
@@ -320,12 +330,18 @@ pub fn list_pending(home: &Path) -> Vec<Value> {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            let Some(id) = name.strip_suffix(".json") else { continue };
+            let Some(id) = name.strip_suffix(".json") else {
+                continue;
+            };
             if !valid_id(id) {
                 continue; // .approved.json / .expired.json land here too
             }
-            let Ok(raw) = std::fs::read_to_string(e.path()) else { continue };
-            let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else { continue };
+            let Ok(raw) = std::fs::read_to_string(e.path()) else {
+                continue;
+            };
+            let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
             let created = doc.get("created").and_then(Value::as_f64).unwrap_or(0.0);
             let age = (now_f64() - created).max(0.0);
             if age > APPROVAL_TTL_S {
@@ -340,18 +356,23 @@ pub fn list_pending(home: &Path) -> Vec<Value> {
                 // Existing dashboard previews retain their compatible shape.
                 if let Some(payload) = obj.get("payload").cloned() {
                     let body = payload.get("body").and_then(Value::as_str).unwrap_or("");
-                    let attachment_count = payload.get("attachments")
-                        .and_then(Value::as_array).map_or(0, Vec::len);
-                    let complete = !body.is_empty() && body.len() <= 100_000
-                        && attachment_count == 0;
-                    obj.insert("review".into(), json!({
-                        "body": if body.len() <= 100_000 { Some(body) } else { None },
-                        "body_complete": !body.is_empty() && body.len() <= 100_000,
-                        "attachment_count": attachment_count,
-                        "includes_signature": payload.get("signature")
-                            .and_then(Value::as_bool).unwrap_or(true),
-                        "complete": complete,
-                    }));
+                    let attachment_count = payload
+                        .get("attachments")
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len);
+                    let complete =
+                        !body.is_empty() && body.len() <= 100_000 && attachment_count == 0;
+                    obj.insert(
+                        "review".into(),
+                        json!({
+                            "body": if body.len() <= 100_000 { Some(body) } else { None },
+                            "body_complete": !body.is_empty() && body.len() <= 100_000,
+                            "attachment_count": attachment_count,
+                            "includes_signature": payload.get("signature")
+                                .and_then(Value::as_bool).unwrap_or(true),
+                            "complete": complete,
+                        }),
+                    );
                     if !complete {
                         tracing::debug!(approval_id = %id, attachment_count,
                             body_bytes = body.len(), "email_approval_review_incomplete");
@@ -378,9 +399,14 @@ mod tests {
     fn pending_business_review_uses_full_body_and_announces_unreviewed_attachments() {
         let dir = tempfile::tempdir().unwrap();
         let body = "A".repeat(3000);
-        let id = create_approval(dir.path(), "business-test", "send",
+        let id = create_approval(
+            dir.path(),
+            "business-test",
+            "send",
             json!({"body": body, "attachments": [], "signature": false}),
-            json!({"body": "short preview", "to": "recipient@example.test"})).unwrap();
+            json!({"body": "short preview", "to": "recipient@example.test"}),
+        )
+        .unwrap();
         let rows = list_pending(dir.path());
         let row = rows.iter().find(|r| r["id"] == id).unwrap();
         assert_eq!(row["review"]["body"], body);
@@ -400,7 +426,10 @@ mod tests {
     #[test]
     fn classifier_external_is_external_and_every_internal_shape_is_not() {
         let internal: Vec<String> = internal_domains(Path::new("/nonexistent-home"));
-        let connected = vec!["ethan@mixpeek.com".to_string(), "esteininger21@gmail.com".to_string()];
+        let connected = vec![
+            "ethan@mixpeek.com".to_string(),
+            "esteininger21@gmail.com".to_string(),
+        ];
         // The incident's own recipients: all external.
         let ext = external_recipients(
             "hilmar.koch@autodesk.com, jonathan.brooks@autodesk.com",
@@ -414,11 +443,8 @@ mod tests {
         assert!(external_recipients("esteininger21@gmail.com", &internal, &connected).is_empty());
         assert!(external_recipients(" , not-an-address ,", &internal, &connected).is_empty());
         // Mixed list: exactly the external one survives.
-        let mixed = external_recipients(
-            "ethan@mixpeek.com, ceo@customer.com",
-            &internal,
-            &connected,
-        );
+        let mixed =
+            external_recipients("ethan@mixpeek.com, ceo@customer.com", &internal, &connected);
         assert_eq!(mixed, vec!["ceo@customer.com".to_string()]);
         // A DIFFERENT gmail address is NOT internal merely because a
         // connected account is on gmail — the exemption is the exact
@@ -459,7 +485,11 @@ mod tests {
         // scoped key is authoritative when present.
         std::fs::remove_file(home.join("env/gtm.env")).unwrap();
         std::fs::write(home.join("amux.env"), "").unwrap();
-        std::fs::write(home.join("server.env"), "AMUX_EMAIL_EXTERNAL_EXEMPT=Probe,other\n").unwrap();
+        std::fs::write(
+            home.join("server.env"),
+            "AMUX_EMAIL_EXTERNAL_EXEMPT=Probe,other\n",
+        )
+        .unwrap();
         assert!(external_email_allowed(home, "probe"));
         std::fs::write(
             home.join("sessions/probe.env"),
@@ -487,7 +517,10 @@ mod tests {
         assert!(matches!(consume(home, &id), Consume::Ready(_)));
         // …the second sees Gone (the file was renamed, not deleted).
         assert!(matches!(consume(home, &id), Consume::Gone));
-        assert!(home.join("email-approvals").join(format!("{id}.approved.json")).exists());
+        assert!(home
+            .join("email-approvals")
+            .join(format!("{id}.approved.json"))
+            .exists());
         assert!(list_pending(home).is_empty());
         // Expiry: backdate a fresh approval past the TTL.
         let id2 = create_approval(home, "s", "send", json!({}), json!({})).unwrap();
@@ -497,7 +530,13 @@ mod tests {
         std::fs::write(&p, doc.to_string()).unwrap();
         assert!(matches!(consume(home, &id2), Consume::Expired));
         // Traversal shapes never reach the filesystem.
-        for bad in ["../../etc/passwd", "apr_..", "apr_ZZZZZZZZZZZZZZZZ", "", "apr_short"] {
+        for bad in [
+            "../../etc/passwd",
+            "apr_..",
+            "apr_ZZZZZZZZZZZZZZZZ",
+            "",
+            "apr_short",
+        ] {
             assert!(!valid_id(bad), "{bad}");
             assert!(matches!(consume(home, bad), Consume::Gone));
         }

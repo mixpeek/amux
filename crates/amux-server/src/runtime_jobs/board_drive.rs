@@ -183,8 +183,12 @@ const SOURCE_REF_STALE_S: i64 = 24 * 3600;
 /// verified it. Older refs still preserve message/provenance links but do not
 /// make an otherwise actionable card undispatchable.
 pub(crate) fn fresh_source_ref_trigger(row: &bs::IssueRow, now: i64) -> bool {
-    row.source_ref.as_deref().is_some_and(|v| !v.trim().is_empty())
-        && row.last_verified_at.is_some_and(|at| at > now - SOURCE_REF_STALE_S)
+    row.source_ref
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+        && row
+            .last_verified_at
+            .is_some_and(|at| at > now - SOURCE_REF_STALE_S)
 }
 /// Idle-backlog DRAIN nudge cooldown, SCALED TO THE BACKLOG SIZE. Distinct from
 /// the 72h stale-triage above — this fires when a lane is idle (no doing) with an
@@ -250,7 +254,10 @@ fn lane_card_activity(
         )
         .and_then(|mut st| {
             st.query_map(rusqlite::params![format!("-{window_min} minutes")], |r| {
-                Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, i64>(1)?))
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, i64>(1)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
         });
@@ -353,7 +360,11 @@ fn nudge_feedback_report(conn: &Connection) -> Value {
         )
         .unwrap_or((0, 0));
     let all_24h: i64 = conn
-        .query_row("SELECT COUNT(*) FROM cmd_history WHERE ts > ?1", rusqlite::params![cutoff_ms], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM cmd_history WHERE ts > ?1",
+            rusqlite::params![cutoff_ms],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     crate::api::measured::measured(
         json!({
@@ -388,7 +399,8 @@ fn nudge_feedback_report(conn: &Connection) -> Value {
 /// Exactly one per stuck stretch: `escalated_card` gates it, and the counter
 /// resets to 0 the moment any card in the lane moves, which clears the gate.
 async fn file_nudge_escalation(state: &AppState, lane: &str, backlog: i64, unheeded: i64) {
-    let title = format!("{lane}'s backlog has not moved across {unheeded} nudges — nudging stopped");
+    let title =
+        format!("{lane}'s backlog has not moved across {unheeded} nudges — nudging stopped");
     let desc = format!(
         "board_drive nudged this lane {unheeded} times in a row about its {backlog}-card \
          backlog and not one card changed in between. It has stopped nudging.\n\n\
@@ -442,12 +454,16 @@ async fn file_nudge_escalation(state: &AppState, lane: &str, backlog: i64, unhee
     let _ = state
         .store
         .write_async(move |conn| {
-            let row = crate::db::board_store::create_issue(conn, &new, crate::config::now_f64() as i64)?;
+            let row =
+                crate::db::board_store::create_issue(conn, &new, crate::config::now_f64() as i64)?;
             conn.execute(
                 "UPDATE board_drive_nudge_state SET escalated_card=?1 WHERE session=?2",
                 rusqlite::params![row.id, l],
             )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
         })
         .await;
 }
@@ -479,7 +495,7 @@ fn nudge_unheeded_cap() -> i64 {
 /// again on the same cadence would be punishing a response we asked for.
 fn lane_board_mark(conn: &Connection, lane: &str) -> i64 {
     conn.query_row(
-        "SELECT COALESCE(MAX(updated),0) FROM issues WHERE session=?1 \
+        "SELECT COALESCE(MAX(updated),0) FROM legacy_execution_issues AS issues WHERE session=?1 \
          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
         rusqlite::params![lane],
         |r| r.get(0),
@@ -501,7 +517,13 @@ fn read_nudge_state(conn: &Connection, lane: &str) -> NudgeState {
          COALESCE(LENGTH(escalated_card),0) > 0 \
          FROM board_drive_nudge_state WHERE session=?1",
         rusqlite::params![lane],
-        |r| Ok(NudgeState { unheeded: r.get(0)?, board_mark: r.get(1)?, has_escalated: r.get(2)? }),
+        |r| {
+            Ok(NudgeState {
+                unheeded: r.get(0)?,
+                board_mark: r.get(1)?,
+                has_escalated: r.get(2)?,
+            })
+        },
     )
     .unwrap_or_default()
 }
@@ -738,7 +760,9 @@ pub trait Fleet: Send + Sync {
     fn tags(&self, lane: &str) -> Vec<String>;
     /// Isolation is a selection veto, not merely a delivery refusal: claiming
     /// first would strand work with a raw worker that must not be automated.
-    fn is_isolated(&self, _lane: &str) -> bool { false }
+    fn is_isolated(&self, _lane: &str) -> bool {
+        false
+    }
     async fn is_running(&self, lane: &str) -> bool;
     /// The turn-boundary gate. REUSED from the steering path, never
     /// reimplemented: a second copy of "is this lane mid-turn" is the
@@ -748,7 +772,9 @@ pub trait Fleet: Send + Sync {
     /// terminal) alive for this lane.  This is stronger than a generic
     /// `active` badge: it is the signal that a parent task may have been
     /// parked in To Do while its delegated work kept running.
-    fn active_child_work(&self, _lane: &str) -> bool { false }
+    fn active_child_work(&self, _lane: &str) -> bool {
+        false
+    }
     /// When a session runs out of todo cards but still has blocked/done work,
     /// keep nudging it to re-assess and continue. ON BY DEFAULT since
     /// 2026-08-11 (Ethan: "standing order whenever idle to take care of any
@@ -759,7 +785,9 @@ pub trait Fleet: Send + Sync {
     /// Start a stopped worker through the canonical provider-aware launcher.
     /// Default refusal makes a new Fleet opt in explicitly to autonomous wake.
     async fn start_for_dispatch(&self, lane: &str) -> Result<(), String> {
-        Err(format!("fleet cannot start worker '{lane}' for board dispatch"))
+        Err(format!(
+            "fleet cannot start worker '{lane}' for board dispatch"
+        ))
     }
     /// Called under the worker operation lock after a fully verified board.
     /// Implementations must recheck current activity before stopping a provider.
@@ -788,7 +816,14 @@ pub trait Fleet: Send + Sync {
     }
 
     /// One bounded blocker review per substantive card/dependency state.
-    async fn deliver_blocker_recovery(&self, lane: &str, text: &str, card: &str, rev: i64, _identity: &str) -> Result<bool, String> {
+    async fn deliver_blocker_recovery(
+        &self,
+        lane: &str,
+        text: &str,
+        card: &str,
+        rev: i64,
+        _identity: &str,
+    ) -> Result<bool, String> {
         self.deliver_about(lane, text, card, rev).await
     }
 
@@ -803,7 +838,13 @@ pub trait Fleet: Send + Sync {
     ///
     /// Default to acknowledged work delivery. A failed enqueue must not be
     /// recorded as a delivered reminder by either a live fleet or a test fake.
-    async fn deliver_about(&self, lane: &str, text: &str, _card: &str, _rev: i64) -> Result<bool, String> {
+    async fn deliver_about(
+        &self,
+        lane: &str,
+        text: &str,
+        _card: &str,
+        _rev: i64,
+    ) -> Result<bool, String> {
         self.deliver_work(lane, text).await.map(|_| true)
     }
 }
@@ -865,9 +906,13 @@ impl Fleet for LiveFleet {
         crate::api::session_verbs::is_running(lane).await
     }
     async fn at_boundary(&self, lane: &str) -> bool {
-        let status = self.signals.as_ref().and_then(|signals| signals.turn_boundary_status(lane));
+        let status = self
+            .signals
+            .as_ref()
+            .and_then(|signals| signals.turn_boundary_status(lane));
         if let Some(signals) = &self.signals {
-            let (_, explain) = signals.derive_status_explain(lane, signals.agent_running(&format!("amux-{lane}")));
+            let (_, explain) =
+                signals.derive_status_explain(lane, signals.agent_running(&format!("amux-{lane}")));
             tracing::debug!(target: "amux::board_drive", session = lane,
                 measured = status.is_some(), n_considered = 1,
                 verdict = %explain["decided_by"], at_boundary = status.as_deref() == Some("idle"),
@@ -877,12 +922,9 @@ impl Fleet for LiveFleet {
     }
     fn active_child_work(&self, lane: &str) -> bool {
         self.signals.as_ref().is_some_and(|signals| {
-            let (_, explain) = signals.derive_status_explain(
-                lane,
-                signals.agent_running(&format!("amux-{lane}")),
-            );
-            explain["subagents_working"] == true
-                || explain["provider_background_working"] == true
+            let (_, explain) =
+                signals.derive_status_explain(lane, signals.agent_running(&format!("amux-{lane}")));
+            explain["subagents_working"] == true || explain["provider_background_working"] == true
         })
     }
     async fn start_for_dispatch(&self, lane: &str) -> Result<(), String> {
@@ -930,32 +972,70 @@ impl Fleet for LiveFleet {
         };
         Ok(disposition)
     }
-    async fn deliver_blocker_recovery(&self, lane: &str, text: &str, card: &str, rev: i64, identity: &str) -> Result<bool, String> {
-        if !self.nudge_budget_admits(lane, card, "blocker-recovery").await? {
+    async fn deliver_blocker_recovery(
+        &self,
+        lane: &str,
+        text: &str,
+        card: &str,
+        rev: i64,
+        identity: &str,
+    ) -> Result<bool, String> {
+        if !self
+            .nudge_budget_admits(lane, card, "blocker-recovery")
+            .await?
+        {
             return Ok(false);
         }
         let queued = crate::api::session_verbs::enqueue_state_reminder(
-            &self.state.store, lane, text, GUARD, card, rev, identity).await?;
+            &self.state.store,
+            lane,
+            text,
+            GUARD,
+            card,
+            rev,
+            identity,
+        )
+        .await?;
         if queued {
             self.record_prompt(lane, text).await;
-            self.nudge_budget_spend(lane, card, "blocker-recovery").await;
+            self.nudge_budget_spend(lane, card, "blocker-recovery")
+                .await;
         }
         Ok(queued)
     }
-    async fn deliver_about(&self, lane: &str, text: &str, card: &str, rev: i64) -> Result<bool, String> {
-        if !self.nudge_budget_admits(lane, card, "idle-with-card").await? {
+    async fn deliver_about(
+        &self,
+        lane: &str,
+        text: &str,
+        card: &str,
+        rev: i64,
+    ) -> Result<bool, String> {
+        if !self
+            .nudge_budget_admits(lane, card, "idle-with-card")
+            .await?
+        {
             return Ok(false);
         }
-        let identity={
-            let c=self.state.store.read().map_err(|e|e.to_string())?;
-            let row=bs::get_issue(&c,card).map_err(|e|e.to_string())?.ok_or("reminder card disappeared")?;
+        let identity = {
+            let c = self.state.store.read().map_err(|e| e.to_string())?;
+            let row = bs::get_issue(&c, card)
+                .map_err(|e| e.to_string())?
+                .ok_or("reminder card disappeared")?;
             let started:f64=c.query_row("SELECT coalesce(max(ts),0) FROM session_events WHERE session=?1 AND type='session.started'",[lane],|r|r.get(0)).map_err(|e|e.to_string())?;
-            idle_reminder_identity(lane,text,&row,started)
+            idle_reminder_identity(lane, text, &row, started)
         };
-        let result=crate::api::session_verbs::enqueue_state_reminder(
-            &self.state.store,lane,text,GUARD,card,rev,&identity).await?;
+        let result = crate::api::session_verbs::enqueue_state_reminder(
+            &self.state.store,
+            lane,
+            text,
+            GUARD,
+            card,
+            rev,
+            &identity,
+        )
+        .await?;
         if result {
-            self.record_prompt(lane,text).await;
+            self.record_prompt(lane, text).await;
             self.nudge_budget_spend(lane, card, "idle-with-card").await;
         }
         Ok(result)
@@ -966,13 +1046,25 @@ impl LiveFleet {
     /// The MB-55 budget, read under the card's CURRENT status. Held and spent
     /// both answer false and log why, so a lane that stops hearing about a
     /// card is explained in the same log the delivery would have been.
-    async fn nudge_budget_admits(&self, lane: &str, card: &str, kind: &str) -> Result<bool, String> {
+    async fn nudge_budget_admits(
+        &self,
+        lane: &str,
+        card: &str,
+        kind: &str,
+    ) -> Result<bool, String> {
         let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
         let now = now_f64();
-        let verdict = self.state.store.read_async(move |conn| {
-            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
-            Ok(nudge_budget_check(conn, &l, &c, &k, &status, now)?)
-        }).await.map_err(|e| e.to_string())?;
+        let verdict = self
+            .state
+            .store
+            .read_async(move |conn| {
+                let status = bs::get_issue(conn, &c)?
+                    .map(|r| r.status)
+                    .unwrap_or_default();
+                Ok(nudge_budget_check(conn, &l, &c, &k, &status, now)?)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
         match verdict {
             NudgeBudget::Admit { .. } => Ok(true),
             NudgeBudget::Held { n, next_at } => {
@@ -993,13 +1085,22 @@ impl LiveFleet {
     async fn nudge_budget_spend(&self, lane: &str, card: &str, kind: &str) {
         let (l, c, k) = (lane.to_string(), card.to_string(), kind.to_string());
         let now = now_f64();
-        let _ = self.state.store.write_async(move |conn| {
-            let status = bs::get_issue(conn, &c)?.map(|r| r.status).unwrap_or_default();
-            // Best-effort: a budget row that fails to write must never stop a
-            // delivery that already happened from being reported.
-            let _ = nudge_budget_record(conn, &l, &c, &k, &status, now);
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).await;
+        let _ = self
+            .state
+            .store
+            .write_async(move |conn| {
+                let status = bs::get_issue(conn, &c)?
+                    .map(|r| r.status)
+                    .unwrap_or_default();
+                // Best-effort: a budget row that fails to write must never stop a
+                // delivery that already happened from being reported.
+                let _ = nudge_budget_record(conn, &l, &c, &k, &status, now);
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await;
     }
 }
 
@@ -1033,7 +1134,12 @@ pub(crate) enum NudgeBudget {
 }
 
 pub(crate) fn nudge_budget_check(
-    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+    conn: &Connection,
+    session: &str,
+    card: &str,
+    kind: &str,
+    status: &str,
+    now: f64,
 ) -> rusqlite::Result<NudgeBudget> {
     let row: Option<(i64, f64, String)> = conn
         .query_row(
@@ -1054,7 +1160,12 @@ pub(crate) fn nudge_budget_check(
 
 /// Record a delivery. Returns the delivery count under the current status.
 pub(crate) fn nudge_budget_record(
-    conn: &Connection, session: &str, card: &str, kind: &str, status: &str, now: f64,
+    conn: &Connection,
+    session: &str,
+    card: &str,
+    kind: &str,
+    status: &str,
+    now: f64,
 ) -> rusqlite::Result<i64> {
     let prior: Option<(i64, String, f64)> = conn
         .query_row(
@@ -1110,21 +1221,52 @@ pub(crate) fn nudge_budget_record(
 /// pins it; narrowing that would sweep a different path's designed behaviour.
 /// This also leaves the prompt free to keep asking for the desc write, which is
 /// worth having once complying is no longer punished.
-fn idle_reminder_identity(lane:&str,text:&str,row:&bs::IssueRow,started:f64)->String {
-    use sha2::{Digest,Sha256};
-    let state=json!([lane,text,row.id,row.status,row.lease_generation,started]);
-    format!("board-state-reminder:{:x}",Sha256::digest(state.to_string().as_bytes()))
+fn idle_reminder_identity(lane: &str, text: &str, row: &bs::IssueRow, started: f64) -> String {
+    use sha2::{Digest, Sha256};
+    let state = json!([
+        lane,
+        text,
+        row.id,
+        row.status,
+        row.lease_generation,
+        started
+    ]);
+    format!(
+        "board-state-reminder:{:x}",
+        Sha256::digest(state.to_string().as_bytes())
+    )
 }
 
-fn reminder_identity(lane:&str,text:&str,row:&bs::IssueRow,started:f64)->String {
-    use sha2::{Digest,Sha256};
-    let state=json!([lane,text,row.id,row.title,row.desc,row.status,row.item_type,
-        row.next_action,row.acceptance_criteria,row.depends_on,row.evidence,row.blocked_on,
-        row.lease_generation,started]);
-    format!("board-state-reminder:{:x}",Sha256::digest(state.to_string().as_bytes()))
+fn reminder_identity(lane: &str, text: &str, row: &bs::IssueRow, started: f64) -> String {
+    use sha2::{Digest, Sha256};
+    let state = json!([
+        lane,
+        text,
+        row.id,
+        row.title,
+        row.desc,
+        row.status,
+        row.item_type,
+        row.next_action,
+        row.acceptance_criteria,
+        row.depends_on,
+        row.evidence,
+        row.blocked_on,
+        row.lease_generation,
+        started
+    ]);
+    format!(
+        "board-state-reminder:{:x}",
+        Sha256::digest(state.to_string().as_bytes())
+    )
 }
 
 impl LiveFleet {
+    pub(crate) async fn snapshot(state: AppState) -> Self {
+        let signals = crate::api::session_verbs::boundary_signals(&state, None).await;
+        Self { state, signals }
+    }
+
     /// A durable queue insert is the work-delivery commitment. Check liveness
     /// again after a wake so a vanished worker causes claim compensation rather
     /// than a false `doing` card.
@@ -1177,7 +1319,10 @@ impl LiveFleet {
                      VALUES (?1, 'pickup', ?2, ?3, 'board-drive')",
                     rusqlite::params![text, lane, (ts * 1000.0) as i64],
                 );
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .await;
     }
@@ -1242,7 +1387,10 @@ mod drain_trigger_tests {
         // The original three terms still gate: nothing to drain, or already
         // working a card, or a dispatchable todo exists.
         assert!(!should_drain_nudge(0, 0, 0, 0), "no drainable backlog");
-        assert!(!should_drain_nudge(1, 0, 10, 0), "already has a card in doing");
+        assert!(
+            !should_drain_nudge(1, 0, 10, 0),
+            "already has a card in doing"
+        );
         assert!(!should_drain_nudge(0, 1, 10, 0), "has a dispatchable todo");
     }
 }
@@ -1255,7 +1403,9 @@ pub fn norm_actor(name: &str) -> String {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(r"[^a-z0-9]+").expect("norm regex"));
-    re.replace_all(name.trim().to_lowercase().as_str(), "-").trim_matches('-').to_string()
+    re.replace_all(name.trim().to_lowercase().as_str(), "-")
+        .trim_matches('-')
+        .to_string()
 }
 
 /// Strip a bracketed/parenthesized decoration BEFORE normalizing, then demand
@@ -1314,13 +1464,15 @@ pub fn advance_target(status: &str) -> Option<TaskStatus> {
 /// it. Widening the enforcement set moves the routing with it; py:13036 records
 /// three bugs in one night from exactly that pair drifting.
 pub fn reviewer_acts_next(status: &str) -> bool {
-    matches!(advance_target(status), Some(TaskStatus::Done) | Some(TaskStatus::Verified))
+    matches!(
+        advance_target(status),
+        Some(TaskStatus::Done) | Some(TaskStatus::Verified)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // DB reads
 // ---------------------------------------------------------------------------
-
 
 /// Has the REVIEWER written to this card since it entered `review`? (AF-214)
 ///
@@ -1401,7 +1553,6 @@ fn reviewer_left_review(log: &str, reviewer: &str) -> bool {
         .any(|l| l.contains(&needle) && l.contains("review ->"))
 }
 
-
 /// The lane's most recent nudge of ANY shape. Python kept this in memory
 /// (`_advance_last`) on a process that re-execs many times a day; deriving it
 /// from the durable event log is the same bound that actually survives.
@@ -1430,8 +1581,12 @@ fn last_advance(conn: &Connection, session: &str) -> Option<(f64, Option<String>
     .flatten()
     .map(|(ts, data)| {
         let v: Option<Value> = data.as_deref().and_then(|d| serde_json::from_str(d).ok());
-        let issue = v.as_ref().and_then(|v| v["issue"].as_str().map(str::to_string));
-        let status = v.as_ref().and_then(|v| v["status"].as_str().map(str::to_string));
+        let issue = v
+            .as_ref()
+            .and_then(|v| v["issue"].as_str().map(str::to_string));
+        let status = v
+            .as_ref()
+            .and_then(|v| v["status"].as_str().map(str::to_string));
         (ts, issue, status)
     })
 }
@@ -1511,7 +1666,10 @@ fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
     let fresh_cut = pickup_fresh_cut(now);
     let reclaim_cut = now - reclaim_cooldown_s();
     conn.query_row(
-        &format!("SELECT COUNT(*) FROM issues i WHERE {dw}", dw = dispatchable_where()),
+        &format!(
+            "SELECT COUNT(*) FROM legacy_execution_issues i WHERE {dw}",
+            dw = dispatchable_where()
+        ),
         rusqlite::params![session, fresh_cut, reclaim_cut],
         |r| r.get(0),
     )
@@ -1520,7 +1678,7 @@ fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
 
 fn open_card_count(conn: &Connection, session: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM issues WHERE session=?1 AND deleted IS NULL \
+        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
          AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent'",
         rusqlite::params![session],
         |r| r.get(0),
@@ -1577,7 +1735,8 @@ fn status_applies(conn: &Connection, status_id: &str, session: &str, tags: &[Str
 /// queries and automatic pickup. Missing/discarded dependencies stay blocked
 /// until the owner explicitly removes or replaces the required relationship.
 pub(crate) fn deps_blocking(conn: &Connection, row: &bs::IssueRow) -> Vec<String> {
-    row.depends_on.iter()
+    row.depends_on
+        .iter()
         .filter(|id| match bs::dependency_resolved(conn, id) {
             Ok(resolved) => !resolved,
             Err(error) => {
@@ -1587,7 +1746,8 @@ pub(crate) fn deps_blocking(conn: &Connection, row: &bs::IssueRow) -> Vec<String
                 true
             }
         })
-        .cloned().collect()
+        .cloned()
+        .collect()
 }
 
 /// Why each blocking dependency does NOT count, in the operator's own terms.
@@ -1652,14 +1812,21 @@ pub(crate) fn doing_is_unblocked(conn: &Connection, row: &bs::IssueRow) -> bool 
 fn holds_execution_slot(conn: &Connection, row: &bs::IssueRow) -> bool {
     !bs::is_capture_shell(row)
         && !matches!(row.item_type.as_str(), "tripwire" | "watch" | "epic")
-        && !row.tags.iter().any(|t| t.to_ascii_lowercase().starts_with("needs:you"))
+        && !row
+            .tags
+            .iter()
+            .any(|t| t.to_ascii_lowercase().starts_with("needs:you"))
         && doing_is_unblocked(conn, row)
 }
 
 fn open_execution_count(conn: &Connection, session: &str) -> rusqlite::Result<usize> {
-    let mut stmt = conn.prepare("SELECT id FROM issues WHERE session=?1 AND deleted IS NULL \
-        AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent'")?;
-    let ids = stmt.query_map([session], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
+        AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent'",
+    )?;
+    let ids = stmt
+        .query_map([session], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut count = 0;
     for id in ids {
         if let Some(row) = bs::get_issue(conn, &id)? {
@@ -1679,17 +1846,22 @@ pub(crate) fn wip_holding_ids(
 ) -> rusqlite::Result<Vec<String>> {
     let result = (|| {
         let mut stmt = conn.prepare(
-            "SELECT id FROM issues WHERE session=?1 AND status='doing' \
+            "SELECT id FROM legacy_execution_issues AS issues WHERE session=?1 AND status='doing' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 \
              AND (?2 IS NULL OR id<>?2) ORDER BY id",
         )?;
-        let ids = stmt.query_map(rusqlite::params![session, excluding], |r| r.get::<_, String>(0))?
+        let ids = stmt
+            .query_map(rusqlite::params![session, excluding], |r| {
+                r.get::<_, String>(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let n_considered = ids.len();
         let mut capture_shells = 0usize;
         let mut holding = Vec::new();
         for id in ids {
-            let Some(row) = bs::get_issue(conn, &id)? else { continue };
+            let Some(row) = bs::get_issue(conn, &id)? else {
+                continue;
+            };
             if bs::is_capture_shell(&row) {
                 capture_shells += 1;
                 continue;
@@ -1700,9 +1872,15 @@ pub(crate) fn wip_holding_ids(
             holding.push(id);
         }
         if capture_shells > 0 {
-            tracing::info!(session, measured = true, n_considered, capture_shells,
-                n_holding = holding.len(), verdict = "capture_shells_exempt",
-                "board WIP: unanswered captures do not occupy work slots");
+            tracing::info!(
+                session,
+                measured = true,
+                n_considered,
+                capture_shells,
+                n_holding = holding.len(),
+                verdict = "capture_shells_exempt",
+                "board WIP: unanswered captures do not occupy work slots"
+            );
         }
         Ok(holding)
     })();
@@ -1717,13 +1895,17 @@ pub(crate) fn wip_holding_ids(
 /// For a set of blocking dep ids, return the subset that are `backlog` cards
 /// owned by `session`. These are self-resolvable: the lane can promote them
 /// to `todo` itself without any human or cross-lane action.
-fn self_owned_backlog_blockers(conn: &Connection, dep_ids: &[String], session: &str) -> Vec<String> {
+fn self_owned_backlog_blockers(
+    conn: &Connection,
+    dep_ids: &[String],
+    session: &str,
+) -> Vec<String> {
     dep_ids
         .iter()
         .filter(|d| {
             let row: Option<(String, Option<String>)> = conn
                 .query_row(
-                    "SELECT status, session FROM issues WHERE id=?1 AND deleted IS NULL",
+                    "SELECT status, session FROM legacy_execution_issues AS issues WHERE id=?1 AND deleted IS NULL",
                     rusqlite::params![d],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -1778,7 +1960,9 @@ fn reclaim_stale_doing(
     }
     let cutoff = doing_reclaim_s();
     for id in holding {
-        let Ok(Some(row)) = bs::get_issue(conn, id) else { continue };
+        let Ok(Some(row)) = bs::get_issue(conn, id) else {
+            continue;
+        };
         // GUARD 2: `updated` moves on any edit — a note, a status log line, a
         // next_action. Untouched is the honest reading of abandoned.
         let idle_s = now - row.updated as f64;
@@ -1815,7 +1999,10 @@ pub(crate) fn dispatch_backlog_when_idle_in(
     process_value: Option<&str>,
 ) -> bool {
     fn is_on(v: &str) -> bool {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes"
+        )
     }
     if let Some(v) = process_value.filter(|v| !v.trim().is_empty()) {
         return is_on(v);
@@ -1823,14 +2010,10 @@ pub(crate) fn dispatch_backlog_when_idle_in(
     if session.is_empty() {
         return false;
     }
-    crate::api::session_verbs::scoped_setting_in(
-        home,
-        session,
-        DISPATCH_BACKLOG_KEY,
-    )
-    .as_deref()
-    .map(is_on)
-    .unwrap_or(true)
+    crate::api::session_verbs::scoped_setting_in(home, session, DISPATCH_BACKLOG_KEY)
+        .as_deref()
+        .map(is_on)
+        .unwrap_or(true)
 }
 
 pub fn dispatch_backlog_when_idle(session: &str) -> bool {
@@ -1848,7 +2031,7 @@ pub fn dispatch_backlog_when_idle(session: &str) -> bool {
 fn backlog_by_type_count(conn: &Connection, session: &str) -> usize {
     conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM issues i WHERE i.session=?1 AND i.status='backlog' \
+            "SELECT COUNT(*) FROM legacy_execution_issues i WHERE i.session=?1 AND i.status='backlog' \
                AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
                AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
                AND NOT {}",
@@ -1866,15 +2049,19 @@ fn backlog_by_type_count(conn: &Connection, session: &str) -> usize {
 
 /// The dispatch-eligible backlog rows, shared with the nudge population.
 /// Keep database failures distinct from a measured empty selection.
-fn drainable_backlog_rows(conn: &Connection, session: &str, now: f64) -> rusqlite::Result<Vec<bs::IssueRow>> {
+fn drainable_backlog_rows(
+    conn: &Connection,
+    session: &str,
+    now: f64,
+) -> rusqlite::Result<Vec<bs::IssueRow>> {
     // AMUX-4228: a parked capture is an already-delivered prompt, not an
     // external condition that eventually goes stale. Only an explicit claim
     // (or an intentional move to Todo) should dispatch that work again.
     let reclaim_cut = now - reclaim_cooldown_s();
     let verified_cut = (now as i64) - SOURCE_REF_STALE_S;
     let candidates = conn
-        .prepare(
-            &format!("SELECT i.id FROM issues i WHERE i.session=?1 AND i.status='backlog' \
+        .prepare(&format!(
+            "SELECT i.id FROM legacy_execution_issues i WHERE i.session=?1 AND i.status='backlog' \
            AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
            AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
            AND NOT {CAPTURE} \
@@ -1887,9 +2074,9 @@ fn drainable_backlog_rows(conn: &Connection, session: &str, now: f64) -> rusqlit
            AND COALESCE(i.blocked_on,'') = '' \
            AND NOT (COALESCE(i.source,'')='capture' AND COALESCE(i.source_ref,'') <> '') \
          ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC, i.id ASC",
-                CAPTURE = bs::capture_shell_sql(),
-                CLAIMED = claimed_since_sql(2)),
-        )
+            CAPTURE = bs::capture_shell_sql(),
+            CLAIMED = claimed_since_sql(2)
+        ))
         .and_then(|mut st| {
             st.query_map(rusqlite::params![session, reclaim_cut, verified_cut], |r| {
                 r.get::<_, String>(0)
@@ -1904,7 +2091,9 @@ fn drainable_backlog_rows(conn: &Connection, session: &str, now: f64) -> rusqlit
     let mut eligible = Vec::new();
     for id in candidates {
         let row = bs::get_issue(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        if deps_blocking(conn, &row).is_empty() { eligible.push(row); }
+        if deps_blocking(conn, &row).is_empty() {
+            eligible.push(row);
+        }
     }
     Ok(eligible)
 }
@@ -1969,11 +2158,21 @@ fn drainable_backlog_count(conn: &Connection, session: &str, now: f64) -> usize 
 /// regardless of intent. `PATCH /api/board/<ID>` with `{"tags":[...,
 /// "defer:focused"]}` (or without it, to clear) is the whole interface; no
 /// new column, no new verb, no CLI shorthand yet.
-fn oldest_drainable_backlog(conn: &Connection, session: &str, now: f64, continuation_gate: bool) -> Option<String> {
-    drainable_backlog_ids(conn, session, now).into_iter().find(|id| {
-        !continuation_gate || bs::get_issue(conn, id).ok().flatten().is_some_and(|row|
-            bs::continuation_verdict(row.next_action.as_deref().unwrap_or("")) == bs::ContinuationVerdict::Ok)
-    })
+fn oldest_drainable_backlog(
+    conn: &Connection,
+    session: &str,
+    now: f64,
+    continuation_gate: bool,
+) -> Option<String> {
+    drainable_backlog_ids(conn, session, now)
+        .into_iter()
+        .find(|id| {
+            !continuation_gate
+                || bs::get_issue(conn, id).ok().flatten().is_some_and(|row| {
+                    bs::continuation_verdict(row.next_action.as_deref().unwrap_or(""))
+                        == bs::ContinuationVerdict::Ok
+                })
+        })
 }
 
 /// Promote the next genuinely runnable backlog card when this lane opted into
@@ -2030,7 +2229,7 @@ fn promote_blocked_self_owned_deps(conn: &Connection, session: &str, now: f64) -
     let reclaim_cut = now - reclaim_cooldown_s();
     let ids: Vec<String> = conn
         .prepare(&format!(
-            "SELECT i.id FROM issues i WHERE {dw} ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC",
+            "SELECT i.id FROM legacy_execution_issues i WHERE {dw} ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.created,0) ASC",
             dw = dispatchable_where()
         ))
         .and_then(|mut st| {
@@ -2041,7 +2240,9 @@ fn promote_blocked_self_owned_deps(conn: &Connection, session: &str, now: f64) -
         })
         .unwrap_or_default();
     for id in &ids {
-        let Ok(Some(row)) = bs::get_issue(conn, id) else { continue };
+        let Ok(Some(row)) = bs::get_issue(conn, id) else {
+            continue;
+        };
         let blocking = deps_blocking(conn, &row);
         if blocking.is_empty() {
             continue;
@@ -2051,7 +2252,10 @@ fn promote_blocked_self_owned_deps(conn: &Connection, session: &str, now: f64) -
         // must stay a nudge, not a silent promotion.
         let self_owned = self_owned_backlog_blockers(conn, &blocking, session);
         if !self_owned.is_empty() && self_owned.len() == blocking.len() {
-            return Some(Pickup::PromoteDeps { blocked_card: id.clone(), promoted: self_owned });
+            return Some(Pickup::PromoteDeps {
+                blocked_card: id.clone(),
+                promoted: self_owned,
+            });
         }
     }
     None
@@ -2109,7 +2313,12 @@ fn promotable_deps(conn: &Connection, row: &bs::IssueRow) -> Option<Vec<String>>
 /// trigger. A blocked card with no dependency at all is left alone; its block is
 /// prose only its owner can clear, and the drain view reports it `unblockable`.
 pub(crate) fn blocked_dep_unblocks(conn: &Connection) -> Vec<(String, Vec<String>)> {
-    let rows = match bs::list_issues(conn, &["blocked".to_string()], &[], bs::ArchivedFilter::ActiveOnly) {
+    let rows = match bs::list_issues(
+        conn,
+        &["blocked".to_string()],
+        &[],
+        bs::ArchivedFilter::ActiveOnly,
+    ) {
         Ok(rows) => rows,
         Err(error) => {
             tracing::warn!(
@@ -2131,7 +2340,12 @@ fn blocked_card_is_releasable(conn: &Connection, row: &bs::IssueRow) -> bool {
         && row.owner_type == "agent"
         && row.archived == 0
         && !row.depends_on.is_empty()
-        && row.blocked_on.as_deref().map(str::trim).unwrap_or("").is_empty()
+        && row
+            .blocked_on
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
         && !parked_on_live_trigger(row, crate::runtime_jobs::registry::unix_now() as i64)
         && deps_blocking(conn, row).is_empty()
 }
@@ -2150,27 +2364,41 @@ pub(crate) async fn unblock_resolved_blocked(state: &AppState) -> usize {
             .store
             .write_async(move |conn| {
                 let Some(row) = bs::get_issue(conn, &card_w)? else {
-                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
                 };
                 if !blocked_card_is_releasable(conn, &row) {
-                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
                 }
                 let opts = crate::db::advance::AdvanceOpts {
                     expected_from: Some("blocked".into()),
                     skip_continuation: true,
                     skip_todo_wip: true,
-                    log_line: Some("Auto-unblocked: every depends_on resolved (RR-0052 drain)".into()),
+                    log_line: Some(
+                        "Auto-unblocked: every depends_on resolved (RR-0052 drain)".into(),
+                    ),
                     ..Default::default()
                 };
                 match crate::db::advance::advance(conn, &card_w, "todo", "board_drive", &opts)? {
-                    Ok(outcome) => Ok(crate::db::WriteOutcome { applied: true, events: outcome.events }),
+                    Ok(outcome) => Ok(crate::db::WriteOutcome {
+                        applied: true,
+                        events: outcome.events,
+                    }),
                     Err(refusal) => {
                         tracing::warn!(
                             target: "amux::board_drive", card = %card_w, ?refusal,
                             measured = true, n_considered = 1, verdict = "blocked_unblock_refused",
                             "board_drive: a resolved blocked card could not move to todo"
                         );
-                        Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+                        Ok(crate::db::WriteOutcome {
+                            applied: false,
+                            events: vec![],
+                        })
                     }
                 }
             })
@@ -2374,8 +2602,7 @@ fn backlog_due_promotions(conn: &Connection) -> (Vec<String>, usize) {
         if r.owner_type != "agent" || is_dormant_type(&r.item_type) {
             continue;
         }
-        if r
-            .blocked_on
+        if r.blocked_on
             .as_deref()
             .is_some_and(|reason| !reason.trim().is_empty())
         {
@@ -2403,19 +2630,22 @@ fn backlog_due_promotions(conn: &Connection) -> (Vec<String>, usize) {
     let due_total = cands.len();
     let mut todo_depth: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT COALESCE(session,''), COUNT(*) FROM issues \
+        "SELECT COALESCE(session,''), COUNT(*) FROM legacy_execution_issues \
          WHERE status='todo' AND deleted IS NULL AND COALESCE(archived,0)=0 \
          GROUP BY COALESCE(session,'')",
     ) {
-        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        {
             for kv in rows.flatten() {
                 todo_depth.insert(kv.0, kv.1);
             }
         }
     }
-    let pairs: Vec<(String, String)> =
-        cands.into_iter().map(|(id, lane, _)| (id, lane)).collect();
-    (due_drain_plan(&pairs, &todo_depth, drain_todo_ceiling()), due_total)
+    let pairs: Vec<(String, String)> = cands.into_iter().map(|(id, lane, _)| (id, lane)).collect();
+    (
+        due_drain_plan(&pairs, &todo_depth, drain_todo_ceiling()),
+        due_total,
+    )
 }
 
 fn backlog_dep_promotions(conn: &Connection, now: i64) -> (Vec<(String, Vec<String>)>, usize) {
@@ -2432,8 +2662,7 @@ fn backlog_dep_promotions(conn: &Connection, now: i64) -> (Vec<(String, Vec<Stri
         if r.owner_type != "agent" || is_dormant_type(&r.item_type) {
             continue;
         }
-        if r
-            .blocked_on
+        if r.blocked_on
             .as_deref()
             .is_some_and(|reason| !reason.trim().is_empty())
         {
@@ -2509,10 +2738,13 @@ fn epic_completion_candidates(conn: &Connection) -> Vec<(String, Vec<(String, St
     epic_completion_candidates_at(conn, &crate::config::amux_home())
 }
 
-fn epic_completion_candidates_at(conn: &Connection, home: &std::path::Path) -> Vec<(String, Vec<(String, String)>)> {
+fn epic_completion_candidates_at(
+    conn: &Connection,
+    home: &std::path::Path,
+) -> Vec<(String, Vec<(String, String)>)> {
     let epic_ids = conn
         .prepare(
-            "SELECT id FROM issues WHERE type='epic' AND deleted IS NULL \
+            "SELECT id FROM legacy_execution_issues AS issues WHERE type='epic' AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status NOT IN ('done','verified','discarded','quarantined') \
              ORDER BY created,id",
         )
@@ -2526,7 +2758,7 @@ fn epic_completion_candidates_at(conn: &Connection, home: &std::path::Path) -> V
         .filter_map(|epic| {
             let mut children = conn
                 .prepare(
-                    "SELECT id,status FROM issues WHERE epic=?1 AND deleted IS NULL \
+                    "SELECT id,status FROM legacy_execution_issues AS issues WHERE epic=?1 AND deleted IS NULL \
                      AND COALESCE(archived,0)=0 ORDER BY created,id",
                 )
                 .and_then(|mut stmt| {
@@ -2559,7 +2791,7 @@ fn epic_completion_candidates_at(conn: &Connection, home: &std::path::Path) -> V
                 if read_role(owner).get("CC_ORCHESTRATOR").is_some_and(|v| v == "1") {
                     owners.insert(owner.to_string());
                 }
-                let mut stmt = conn.prepare("SELECT DISTINCT session FROM issues WHERE epic=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND session IS NOT NULL").ok()?;
+                let mut stmt = conn.prepare("SELECT DISTINCT session FROM legacy_execution_issues AS issues WHERE epic=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND session IS NOT NULL").ok()?;
                 let assigned = stmt.query_map([&epic], |r| r.get::<_,String>(0)).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok()?;
                 for name in assigned {
                     let env = read_role(&name);
@@ -2569,7 +2801,7 @@ fn epic_completion_candidates_at(conn: &Connection, home: &std::path::Path) -> V
                 }
             }
             for owner in owners {
-                let mut stmt = conn.prepare("SELECT id,status,COALESCE(type,'code') FROM issues WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND COALESCE(type,'code')!='epic' ORDER BY created,id").ok()?;
+                let mut stmt = conn.prepare("SELECT id,status,COALESCE(type,'code') FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0 AND COALESCE(type,'code')!='epic' ORDER BY created,id").ok()?;
                 let work = stmt.query_map([&owner], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).ok()?.collect::<rusqlite::Result<Vec<_>>>().ok()?;
                 for (id, status, kind) in work {
                     if !bs::execution_is_terminal(&status, &kind) { return None; }
@@ -2686,26 +2918,39 @@ mod epic_completion_unit_tests {
         let sessions = home.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("coordinator.env"), "CC_ORCHESTRATOR=1\n").unwrap();
-        std::fs::write(sessions.join("child.env.reaped"), "CC_EPHEMERAL=1\nCC_PARENT=coordinator\n").unwrap();
+        std::fs::write(
+            sessions.join("child.env.reaped"),
+            "CC_EPHEMERAL=1\nCC_PARENT=coordinator\n",
+        )
+        .unwrap();
         let conn = crate::db::migrate::test_memdb();
-        conn.execute_batch("INSERT INTO issues(id,title,status,type,session,epic,created,updated) VALUES
+        conn.execute_batch(
+            "INSERT INTO issues(id,title,status,type,session,epic,created,updated) VALUES
             ('E','Outcome','doing','epic','coordinator',NULL,1,1),
             ('A','Assignment','verified','code','child','E',1,1),
             ('B','Child follow-up','backlog','code','child',NULL,1,1),
             ('C','Combined verification','todo','research','coordinator',NULL,1,1),
-            ('D','Unrelated work','doing','code','unrelated',NULL,1,1);").unwrap();
-        assert!(epic_completion_candidates_at(&conn,home.path()).is_empty());
-        conn.execute("UPDATE issues SET status='verified' WHERE id='B'",[]).unwrap();
-        assert!(epic_completion_candidates_at(&conn,home.path()).is_empty(), "coordinator still owns work");
-        conn.execute("UPDATE issues SET status='done' WHERE id='C'",[]).unwrap();
-        let candidates = epic_completion_candidates_at(&conn,home.path());
-        assert_eq!(candidates.len(),1);
-        assert_eq!(candidates[0].1.len(),3);
+            ('D','Unrelated work','doing','code','unrelated',NULL,1,1);",
+        )
+        .unwrap();
+        assert!(epic_completion_candidates_at(&conn, home.path()).is_empty());
+        conn.execute("UPDATE issues SET status='verified' WHERE id='B'", [])
+            .unwrap();
+        assert!(
+            epic_completion_candidates_at(&conn, home.path()).is_empty(),
+            "coordinator still owns work"
+        );
+        conn.execute("UPDATE issues SET status='done' WHERE id='C'", [])
+            .unwrap();
+        let candidates = epic_completion_candidates_at(&conn, home.path());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1.len(), 3);
         // An existing parent with its own independent backlog is not a dedicated
         // coordinator. Its unrelated work does not become a new execution gate.
         std::fs::write(sessions.join("coordinator.env"), "CC_PROVIDER=claude\n").unwrap();
-        conn.execute("UPDATE issues SET status='todo' WHERE id='C'",[]).unwrap();
-        assert_eq!(epic_completion_candidates_at(&conn,home.path()).len(),1);
+        conn.execute("UPDATE issues SET status='todo' WHERE id='C'", [])
+            .unwrap();
+        assert_eq!(epic_completion_candidates_at(&conn, home.path()).len(), 1);
     }
 
     #[test]
@@ -2725,8 +2970,12 @@ mod epic_completion_unit_tests {
         assert!(epic_completion_candidates(&conn).is_empty());
         conn.execute("UPDATE issues SET status='verified' WHERE id='C-2'", [])
             .unwrap();
-        assert!(epic_completion_candidates(&conn).is_empty(), "code done is not verified output");
-        conn.execute("UPDATE issues SET status='verified' WHERE id='C-1'", []).unwrap();
+        assert!(
+            epic_completion_candidates(&conn).is_empty(),
+            "code done is not verified output"
+        );
+        conn.execute("UPDATE issues SET status='verified' WHERE id='C-1'", [])
+            .unwrap();
         let got = epic_completion_candidates(&conn);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, "E-1");
@@ -2748,9 +2997,15 @@ pub struct EphemeralReaperReport {
     pub errors: usize,
 }
 
-pub(crate) async fn reap_ephemeral_workers<F: Fleet>(state: &AppState, fleet: &F) -> EphemeralReaperReport {
+pub(crate) async fn reap_ephemeral_workers<F: Fleet>(
+    state: &AppState,
+    fleet: &F,
+) -> EphemeralReaperReport {
     let home = crate::config::amux_home();
-    let mut report = EphemeralReaperReport { measured: true, ..Default::default() };
+    let mut report = EphemeralReaperReport {
+        measured: true,
+        ..Default::default()
+    };
     let entries = match std::fs::read_dir(home.join("sessions")) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return report,
@@ -2765,20 +3020,27 @@ pub(crate) async fn reap_ephemeral_workers<F: Fleet>(state: &AppState, fleet: &F
     for entry in entries.flatten() {
         let file = entry.file_name();
         let file = file.to_string_lossy();
-        if let Some(name) = file.strip_suffix(".env").or_else(||file.strip_suffix(".env.reaped")) {
-            if crate::config::parse_env_file(&entry.path()).get("CC_EPHEMERAL").is_some_and(|v|v=="1") {
+        if let Some(name) = file
+            .strip_suffix(".env")
+            .or_else(|| file.strip_suffix(".env.reaped"))
+        {
+            if crate::config::parse_env_file(&entry.path())
+                .get("CC_EPHEMERAL")
+                .is_some_and(|v| v == "1")
+            {
                 names.insert(name.to_string());
             }
         }
     }
     report.n_considered = names.len();
     for name in names {
-        match crate::fanout_retirement::retire(state,fleet,&home,&name).await {
+        match crate::fanout_retirement::retire(state, fleet, &home, &name).await {
             Ok(crate::fanout_retirement::Outcome::Expired) => report.reaped_done += 1,
             Ok(crate::fanout_retirement::Outcome::NeedsIntegration) => {
-                crate::fanout_workspace::queue_integration(state,&name).await;
-            },
-            Ok(crate::fanout_retirement::Outcome::Deferred) => {},
+                crate::fanout_workspace::queue_integration(state, &name).await;
+            }
+            Ok(crate::fanout_retirement::Outcome::ReviewHeld) => report.reaped_parked += 1,
+            Ok(crate::fanout_retirement::Outcome::Deferred) => {}
             Err(error) => {
                 report.errors += 1;
                 tracing::warn!(session=%name,%error,verdict="fanout_retirement_deferred",measured=true,
@@ -2829,10 +3091,16 @@ async fn promote_card(state: &AppState, card: &str, arm: PromoteArm) -> bool {
             // Pre-check: the card could have been moved, archived, deleted,
             // retyped or re-parked between the read scan and here.
             let Some(row) = bs::get_issue(conn, &card_w)? else {
-                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                return Ok(crate::db::WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
             };
             if !still_promotable(conn, &row, arm) {
-                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                return Ok(crate::db::WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
             }
             // Route through the single transition engine.
             let opts = crate::db::advance::AdvanceOpts {
@@ -2862,7 +3130,10 @@ async fn promote_card(state: &AppState, card: &str, arm: PromoteArm) -> bool {
                         verdict = "promotion_refused",
                         "selected backlog promotion was refused by the transition engine"
                     );
-                    Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+                    Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    })
                 }
             }
         })
@@ -3014,7 +3285,11 @@ fn reviewer_has_responded(conn: &Connection, card: &str, reviewer: &str) -> Opti
     let msg_ts = reviewer_msg_engagement(conn, card, reviewer);
     let best = rev_ts.max(msg_ts);
     if best > other_ts && best > 0 {
-        Some(if msg_ts > rev_ts { "message" } else { "board write" })
+        Some(if msg_ts > rev_ts {
+            "message"
+        } else {
+            "board write"
+        })
     } else {
         None
     }
@@ -3039,15 +3314,30 @@ pub enum Pickup {
     /// board_drive promotes them to `todo` automatically and re-runs pickup.
     /// `blocked_card` is the todo that was waiting; `promoted` are the backlog
     /// ids that were promoted. The lane receives no nudge — it just gets work.
-    PromoteDeps { blocked_card: String, promoted: Vec<String> },
+    PromoteDeps {
+        blocked_card: String,
+        promoted: Vec<String>,
+    },
     /// A `backlog` card selected for direct `backlog -> doing` claim because
     /// the lane has no claimable todo and opted in to automatic draining.
-    DrainBacklog { card: String, prompt: String, backlog_left: usize, todo_refusals: usize },
+    DrainBacklog {
+        card: String,
+        prompt: String,
+        backlog_left: usize,
+        todo_refusals: usize,
+    },
     /// An ABANDONED `doing` card, returned to `todo` so it stops holding the
     /// lane's WIP slot (AMUX-4042). `held_h` is how long it went untouched.
-    ReclaimStale { card: String, held_h: f64, blocking: usize },
+    ReclaimStale {
+        card: String,
+        held_h: f64,
+        blocking: usize,
+    },
     /// Nothing to do, with the reason and the detail for the trace.
-    None { reason: &'static str, detail: String },
+    None {
+        reason: &'static str,
+        detail: String,
+    },
 }
 
 /// A restart/recovery decision for work this lane has already claimed.
@@ -3069,7 +3359,11 @@ enum Resume {
     /// The exact claim is still the runtime truth, but this worker generation
     /// already owns or has received it. Preserve attribution without sending
     /// another prompt at every idle sweep.
-    Current { card: String, delivery_id: String, cause: &'static str },
+    Current {
+        card: String,
+        delivery_id: String,
+        cause: &'static str,
+    },
     /// More than one distinct exact claim still survives. Naming either one
     /// would make the driver invent ownership, so hand the complete set back
     /// to the model for reconciliation instead.
@@ -3092,7 +3386,10 @@ struct ResumeEventOrder {
 }
 
 fn event_after(left: ResumeEventOrder, right: ResumeEventOrder) -> bool {
-    left.ts.total_cmp(&right.ts).then(left.id.cmp(&right.id)).is_gt()
+    left.ts
+        .total_cmp(&right.ts)
+        .then(left.id.cmp(&right.id))
+        .is_gt()
 }
 
 /// Return whether a still-Doing row can be resumed by its exact causal claim.
@@ -3107,7 +3404,10 @@ fn resumable_claim_row(conn: &Connection, session: &str, row: &bs::IssueRow, now
         && row.owner_type == "agent"
         && row.archived == 0
         && !matches!(row.item_type.as_str(), "tripwire" | "watch" | "epic")
-        && !row.tags.iter().any(|tag| tag.to_ascii_lowercase().starts_with("needs:you"))
+        && !row
+            .tags
+            .iter()
+            .any(|tag| tag.to_ascii_lowercase().starts_with("needs:you"))
         && !fresh_source_ref_trigger(row, now as i64)
         && deps_blocking(conn, row).is_empty()
 }
@@ -3122,7 +3422,10 @@ fn resumable_claim_row(conn: &Connection, session: &str, row: &bs::IssueRow, now
 /// one exact live claim. Competing claims deliberately produce no *singular*
 /// launch card: board-drive starts the worker in its configured directory and
 /// then sends the complete set through the model-owned reconciliation path.
-pub(crate) fn exact_resume_card(conn: &Connection, session: &str) -> Result<Option<String>, String> {
+pub(crate) fn exact_resume_card(
+    conn: &Connection,
+    session: &str,
+) -> Result<Option<String>, String> {
     match select_resume(conn, session, now_f64(), false) {
         Resume::Claim { card, .. } | Resume::Current { card, .. } => Ok(Some(card)),
         Resume::None => Ok(None),
@@ -3140,7 +3443,10 @@ enum ClaimReconcilePlan {
         signature: String,
         attempt: i64,
     },
-    Cooldown { remaining_s: f64, attempt: i64 },
+    Cooldown {
+        remaining_s: f64,
+        attempt: i64,
+    },
 }
 
 /// Give an impossible multi-claim state to the worker that created it. This is
@@ -3188,7 +3494,10 @@ fn select_claim_reconcile(
             .min(CLAIM_RECONCILE_MAX_S);
         let remaining_s = gap - (now - last_ts);
         if remaining_s > 0.0 {
-            return ClaimReconcilePlan::Cooldown { remaining_s, attempt: attempts };
+            return ClaimReconcilePlan::Cooldown {
+                remaining_s,
+                attempt: attempts,
+            };
         }
     }
 
@@ -3200,9 +3509,17 @@ fn select_claim_reconcile(
                 row.id,
                 row.status,
                 row.title,
-                if row.depends_on.is_empty() { "none".into() } else { row.depends_on.join(",") },
+                if row.depends_on.is_empty() {
+                    "none".into()
+                } else {
+                    row.depends_on.join(",")
+                },
                 row.reviewer.as_deref().unwrap_or("none"),
-                if row.gate.as_deref().is_some_and(|gate| !gate.trim().is_empty()) {
+                if row
+                    .gate
+                    .as_deref()
+                    .is_some_and(|gate| !gate.trim().is_empty())
+                {
                     "card override"
                 } else {
                     "column default"
@@ -3235,13 +3552,18 @@ fn select_claim_reconcile(
 
 pub(crate) fn current_resume_delivery_id(conn: &Connection, session: &str) -> Option<String> {
     match select_resume(conn, session, now_f64(), false) {
-        Resume::Claim { delivery_id, .. } | Resume::Current { delivery_id, .. } => Some(delivery_id),
+        Resume::Claim { delivery_id, .. } | Resume::Current { delivery_id, .. } => {
+            Some(delivery_id)
+        }
         _ => None,
     }
 }
 
 pub(crate) fn resume_delivery_id(session: &str, card: Option<&str>, generation: i64) -> String {
-    format!("board-drive-resume:{session}:{}:{generation}", card.unwrap_or("scoped"))
+    format!(
+        "board-drive-resume:{session}:{}:{generation}",
+        card.unwrap_or("scoped")
+    )
 }
 
 fn select_resume(conn: &Connection, session: &str, now: f64, stopped: bool) -> Resume {
@@ -3281,10 +3603,18 @@ fn select_resume(conn: &Connection, session: &str, now: f64, stopped: bool) -> R
         .collect();
 
     let mut resumable_doing = BTreeMap::new();
-    for card in claimed_markers.iter().filter_map(|marker| marker.1.as_deref()) {
-        let Ok(Some(row)) = bs::get_issue(conn, card) else { continue };
+    for card in claimed_markers
+        .iter()
+        .filter_map(|marker| marker.1.as_deref())
+    {
+        let Ok(Some(row)) = bs::get_issue(conn, card) else {
+            continue;
+        };
         if resumable_claim_row(conn, session, &row, now) {
-            resumable_doing.insert(card.to_string(), (session.to_string(), row.title, row.updated));
+            resumable_doing.insert(
+                card.to_string(),
+                (session.to_string(), row.title, row.updated),
+            );
         }
     }
     let live = crate::api::sessions_legacy::surviving_claimed_card_ids(
@@ -3308,9 +3638,7 @@ fn select_resume(conn: &Connection, session: &str, now: f64, stopped: bool) -> R
                             && (!matching_card || event_card.as_deref() == Some(card.as_str()))
                     })
                     .map(|(order, _, _)| *order)
-                    .max_by(|left, right| {
-                        left.ts.total_cmp(&right.ts).then(left.id.cmp(&right.id))
-                    })
+                    .max_by(|left, right| left.ts.total_cmp(&right.ts).then(left.id.cmp(&right.id)))
             };
             let Some(claimed) = latest("task.claimed", true) else {
                 return Resume::None;
@@ -3322,13 +3650,11 @@ fn select_resume(conn: &Connection, session: &str, now: f64, stopped: bool) -> R
                 .filter(|start| event_after(*start, claimed))
                 .unwrap_or(claimed);
             let delivery_id = resume_delivery_id(session, Some(&card), generation.id);
-            let failed_after_success = failed.is_some_and(|failure| {
-                resumed.is_none_or(|success| event_after(failure, success))
-            });
+            let failed_after_success = failed
+                .is_some_and(|failure| resumed.is_none_or(|success| event_after(failure, success)));
             let restarted_after_claim = started.is_some_and(|start| event_after(start, claimed));
-            let resumed_this_generation = resumed.is_some_and(|success| {
-                !event_after(generation, success)
-            });
+            let resumed_this_generation =
+                resumed.is_some_and(|success| !event_after(generation, success));
             if stopped {
                 Resume::Claim {
                     prompt: resume_prompt(conn, session, &row),
@@ -3362,7 +3688,9 @@ fn select_resume(conn: &Connection, session: &str, now: f64, stopped: bool) -> R
                 }
             }
         }
-        _ => Resume::Conflicting { cards: live.into_iter().collect() },
+        _ => Resume::Conflicting {
+            cards: live.into_iter().collect(),
+        },
     }
 }
 
@@ -3384,7 +3712,9 @@ pub(crate) fn doing_reclaim_s() -> f64 {
 /// default and starves old cards until the freshness gate silently drops them).
 /// The knob reverts without a rebuild if the new ordering ever misbehaves fleet-wide.
 fn pickup_scoring_enabled() -> bool {
-    std::env::var("AMUX_PICKUP_SCORING").map(|v| v != "0").unwrap_or(true)
+    std::env::var("AMUX_PICKUP_SCORING")
+        .map(|v| v != "0")
+        .unwrap_or(true)
 }
 
 /// Severity/importance weight by card type — a shipping/blocking card outranks a
@@ -3425,7 +3755,7 @@ fn tag_severity(tags: &[String]) -> i64 {
 /// the human fleet, until now.
 fn count_dependents(conn: &Connection, id: &str) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 \
+        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 \
          AND status NOT IN ('done','verified','discarded') \
          AND depends_on LIKE '%\"' || ?1 || '\"%'",
         rusqlite::params![id],
@@ -3445,11 +3775,7 @@ fn count_dependents(conn: &Connection, id: &str) -> i64 {
 fn pickup_score(row: &bs::IssueRow, now: f64, dependents: i64, drag: i64) -> i64 {
     let age_hours = (((now as i64) - row.created).max(0)) / 3600;
     let pin = if row.pinned != 0 { 10_000 } else { 0 };
-    pin + age_hours
-        + type_weight(&row.item_type)
-        + tag_severity(&row.tags)
-        + dependents * 5
-        + drag
+    pin + age_hours + type_weight(&row.item_type) + tag_severity(&row.tags) + dependents * 5 + drag
 }
 
 /// Count todos that would be dispatchable but for the freshness gate — the
@@ -3457,7 +3783,7 @@ fn pickup_score(row: &bs::IssueRow, now: f64, dependents: i64, drag: i64) -> i64
 /// an aged-out queue is legible instead of reading as an empty one (AMUX-3779).
 fn stale_gate_excluded_todos(conn: &Connection, session: &str, fresh_cut: i64) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM issues i WHERE i.session=?1 AND i.status='todo' \
+        "SELECT COUNT(*) FROM legacy_execution_issues i WHERE i.session=?1 AND i.status='todo' \
          AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
          AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
          AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id \
@@ -3537,10 +3863,12 @@ pub fn select_pickup_with(
     let cap = wip_cap();
     let holding = match wip_holding_ids(conn, session, None) {
         Ok(holding) => holding,
-        Err(error) => return Pickup::None {
-            reason: "wip-unmeasured",
-            detail: format!("could not measure WIP capacity: {error}"),
-        },
+        Err(error) => {
+            return Pickup::None {
+                reason: "wip-unmeasured",
+                detail: format!("could not measure WIP capacity: {error}"),
+            }
+        }
     };
     if holding.len() as i64 >= cap {
         // AT THE CAP IS NOT A REASON TO LEAVE THE QUEUE BROKEN (AMUX-4040).
@@ -3560,7 +3888,12 @@ pub fn select_pickup_with(
         }
         return Pickup::None {
             reason: "wip-cap",
-            detail: format!("holding {}/{} in doing: {}", holding.len(), cap, holding.join(", ")),
+            detail: format!(
+                "holding {}/{} in doing: {}",
+                holding.len(),
+                cap,
+                holding.join(", ")
+            ),
         };
     }
 
@@ -3570,7 +3903,10 @@ pub fn select_pickup_with(
     // workers drift to side-quests and never verify their primary work.
     {
         let env = crate::api::session_verbs::parse_env(session);
-        if env.get("CC_VERIFICATION_POLICY").is_some_and(|v| v == "production") {
+        if env
+            .get("CC_VERIFICATION_POLICY")
+            .is_some_and(|v| v == "production")
+        {
             let unverified = done_card_count(conn, session);
             if unverified > 0 {
                 return Pickup::None {
@@ -3611,7 +3947,7 @@ pub fn select_pickup_with(
                 // the 256-card scoring window before its pin boost applies; then
                 // oldest-first so a deep queue never drops the oldest before it
                 // can score.
-                "SELECT i.id FROM issues i WHERE {dw} \
+                "SELECT i.id FROM legacy_execution_issues i WHERE {dw} \
                  ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC LIMIT 256",
                 dw = dispatchable_where()
             ))
@@ -3629,8 +3965,7 @@ pub fn select_pickup_with(
         // Drag rank: topmost board position (min `pos`) scores highest; ties by
         // id so the rank is deterministic.
         let n = rows.len() as i64;
-        let mut by_pos: Vec<(&str, f64)> =
-            rows.iter().map(|r| (r.id.as_str(), r.pos)).collect();
+        let mut by_pos: Vec<(&str, f64)> = rows.iter().map(|r| (r.id.as_str(), r.pos)).collect();
         by_pos.sort_by(|a, b| {
             a.1.partial_cmp(&b.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -3654,7 +3989,7 @@ pub fn select_pickup_with(
         scored.into_iter().map(|(_, _, id)| id).collect()
     } else {
         conn.prepare(&format!(
-            "SELECT i.id FROM issues i WHERE {dw} \
+            "SELECT i.id FROM legacy_execution_issues i WHERE {dw} \
              ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.pos, 0) ASC, i.created ASC LIMIT 16",
             dw = dispatchable_where()
         ))
@@ -3680,7 +4015,11 @@ pub fn select_pickup_with(
         } else {
             String::new()
         };
-        let freshness_note = if days > 0 { format!(", stale >{days}d") } else { String::new() };
+        let freshness_note = if days > 0 {
+            format!(", stale >{days}d")
+        } else {
+            String::new()
+        };
         let cooldown_s = reclaim_cooldown_s();
         let cooldown = if cooldown_s >= 3600.0 {
             format!("{:.1}h", cooldown_s / 3600.0)
@@ -3751,7 +4090,9 @@ pub fn select_pickup_with(
     let mut shells: Vec<(String, String)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     for id in &ids {
-        let Ok(Some(row)) = bs::get_issue(conn, id) else { continue };
+        let Ok(Some(row)) = bs::get_issue(conn, id) else {
+            continue;
+        };
         let blob_desc = format!("{}\n{}", row.desc, row.log.clone().unwrap_or_default());
 
         let blocking = deps_blocking(conn, &row);
@@ -3802,11 +4143,16 @@ pub fn select_pickup_with(
         }
         let lower = format!("{}\n{}", row.title, blob_desc).to_lowercase();
         if let Some(op) = irreversible_op(&lower) {
-            skipped.push(format!("{id} declined — names an irreversible operation ('{op}')"));
+            skipped.push(format!(
+                "{id} declined — names an irreversible operation ('{op}')"
+            ));
             continue;
         }
         let prompt = pickup_prompt(conn, session, &row);
-        return Pickup::Claim { card: id.clone(), prompt };
+        return Pickup::Claim {
+            card: id.clone(),
+            prompt,
+        };
     }
 
     // Every candidate was refused. If the refusals were capture shells, dispatch
@@ -3839,7 +4185,8 @@ pub fn select_pickup_with(
     // human-owned dependency). Once every todo candidate has been honestly
     // refused, continue the opted-in lane with independent backlog rather than
     // letting the blocked row shadow that work forever.
-    if let Some(pickup) = backlog_drain_pickup(conn, session, now, skipped.len(), continuation_gate) {
+    if let Some(pickup) = backlog_drain_pickup(conn, session, now, skipped.len(), continuation_gate)
+    {
         return pickup;
     }
     Pickup::None {
@@ -3900,19 +4247,45 @@ fn needs_human_sql() -> &'static str {
 /// Verification reacts to output/contract changes, never heartbeat revisions.
 fn verification_contract(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     use sha2::{Digest, Sha256};
-    let Some(row) = bs::get_issue(conn, id)? else { return Ok(None) };
+    let Some(row) = bs::get_issue(conn, id)? else {
+        return Ok(None);
+    };
     let gate = bs::effective_gate_configured(conn, &row, TaskStatus::Verified);
-    let human_hold = row.tags.iter().any(|t| t.to_ascii_lowercase().starts_with("needs:you"));
-    let mut state = json!([row.id, row.session, row.status, row.item_type, row.archived,
-        row.owner_type, human_hold, row.acceptance_criteria, row.evidence, gate]);
+    let human_hold = row
+        .tags
+        .iter()
+        .any(|t| t.to_ascii_lowercase().starts_with("needs:you"));
+    let mut state = json!([
+        row.id,
+        row.session,
+        row.status,
+        row.item_type,
+        row.archived,
+        row.owner_type,
+        human_hold,
+        row.acceptance_criteria,
+        row.evidence,
+        gate
+    ]);
     // A merge can satisfy the final prerequisite without editing the card.
     // Keep ordinary-worker signatures unchanged and ignore integration retry
     // timestamps, so deploying/retrying this fix cannot wake the whole fleet.
-    if let Some(head) = row.session.as_deref()
-        .map(|worker| crate::fanout_workspace::integrated_head(conn, worker)).transpose()?.flatten() {
-        state.as_array_mut().unwrap().push(json!({"integrated_head":head}));
+    if let Some(head) = row
+        .session
+        .as_deref()
+        .map(|worker| crate::fanout_workspace::integrated_head(conn, worker))
+        .transpose()?
+        .flatten()
+    {
+        state
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"integrated_head":head}));
     }
-    Ok(Some(format!("{:x}", Sha256::digest(state.to_string().as_bytes()))))
+    Ok(Some(format!(
+        "{:x}",
+        Sha256::digest(state.to_string().as_bytes())
+    )))
 }
 
 /// Hold an unchanged verification batch, but immediately offer the next batch
@@ -3924,14 +4297,24 @@ fn verify_batch_pending(conn: &Connection, session: &str, now: f64) -> bool {
         "SELECT data FROM session_events WHERE session=?1 AND type='verify.nudge' AND ts>?2 ORDER BY ts DESC,id DESC LIMIT 1",
         rusqlite::params![session, now - VERIFY_NUDGE_COOLDOWN_S], |r| r.get(0),
     ).optional().ok().flatten();
-    let Some(previous) = previous else { return false };
+    let Some(previous) = previous else {
+        return false;
+    };
     let data: Value = serde_json::from_str(&previous).unwrap_or(Value::Null);
-    let Some(cards) = data.get("cards").and_then(Value::as_array).filter(|ids| !ids.is_empty()) else {
+    let Some(cards) = data
+        .get("cards")
+        .and_then(Value::as_array)
+        .filter(|ids| !ids.is_empty())
+    else {
         return true; // Legacy event has no identity; retain its bounded cooldown.
     };
     cards.iter().all(|id| {
         let Some(id) = id.as_str() else { return true };
-        let Some(previous) = data.get("contracts").and_then(|v| v.get(id)).and_then(Value::as_str) else {
+        let Some(previous) = data
+            .get("contracts")
+            .and_then(|v| v.get(id))
+            .and_then(Value::as_str)
+        else {
             // Legacy batches did not record the gate they asked for. Re-measure
             // once; subsequent batches retain a fingerprint and stay bounded.
             return false;
@@ -3948,30 +4331,48 @@ fn verify_batch_pending(conn: &Connection, session: &str, now: f64) -> bool {
 /// tuples, capped at 8 for prompt brevity.
 fn done_verify_candidates(conn: &Connection, session: &str) -> Vec<(String, String, String)> {
     let measured = (|| -> rusqlite::Result<Vec<(String, String, String)>> {
-        let mut recent = conn.prepare("SELECT data FROM session_events WHERE session=?1 AND type='verify.nudge' AND ts>?2")?;
-        let history = recent.query_map(rusqlite::params![session, now_f64() - VERIFY_NUDGE_COOLDOWN_S], |r|r.get::<_,String>(0))?
+        let mut recent = conn.prepare(
+            "SELECT data FROM session_events WHERE session=?1 AND type='verify.nudge' AND ts>?2",
+        )?;
+        let history = recent
+            .query_map(
+                rusqlite::params![session, now_f64() - VERIFY_NUDGE_COOLDOWN_S],
+                |r| r.get::<_, String>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut offered = std::collections::HashSet::new();
         for raw in history {
             if let Ok(Value::Object(data)) = serde_json::from_str::<Value>(&raw) {
                 if let Some(contracts) = data.get("contracts").and_then(Value::as_object) {
                     for (id, signature) in contracts {
-                        if let Some(signature) = signature.as_str() { offered.insert((id.clone(), signature.to_string())); }
+                        if let Some(signature) = signature.as_str() {
+                            offered.insert((id.clone(), signature.to_string()));
+                        }
                     }
                 }
             }
         }
         let mut stmt = conn.prepare(&format!(
-            "SELECT id,title,COALESCE(type,'code') FROM issues WHERE session=?1 AND status='done' \
+            "SELECT id,title,COALESCE(type,'code') FROM legacy_execution_issues AS issues WHERE session=?1 AND status='done' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {} ORDER BY updated ASC,id ASC",
             unverifiable_types_sql(), needs_human_sql()))?;
-        let rows = stmt.query_map([session], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?;
+        let rows = stmt.query_map([session], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
         let mut selected = Vec::new();
         for row in rows {
             let row = row?;
-            if verification_contract(conn, &row.0)?.is_some_and(|signature| !offered.contains(&(row.0.clone(), signature))) {
+            if verification_contract(conn, &row.0)?
+                .is_some_and(|signature| !offered.contains(&(row.0.clone(), signature)))
+            {
                 selected.push(row);
-                if selected.len() == 8 { break; }
+                if selected.len() == 8 {
+                    break;
+                }
             }
         }
         Ok(selected)
@@ -3990,7 +4391,7 @@ fn done_card_count(conn: &Connection, session: &str) -> i64 {
     // they diverge the prompt states a total its own list cannot account for.
     conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='done' \
+            "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='done' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {}",
             unverifiable_types_sql(),
             needs_human_sql()
@@ -4038,7 +4439,7 @@ fn stale_backlog_candidates(
 ) -> Vec<(String, String, i64)> {
     let cutoff = now - BACKLOG_STALE_AGE_S;
     conn.prepare(
-        "SELECT id, title, created FROM issues \
+        "SELECT id, title, created FROM legacy_execution_issues \
          WHERE session=?1 AND status='backlog' AND deleted IS NULL \
          AND COALESCE(archived,0)=0 AND owner_type='agent' \
          AND created < ?2 \
@@ -4059,21 +4460,31 @@ fn stale_backlog_candidates(
 /// Reuse dispatch eligibility, including parked causes, needs:you, captures,
 /// recent claims and dependencies. Truncate only the rendered list, never count.
 fn backlog_nudge_population(
-    conn: &Connection, session: &str, now: i64,
+    conn: &Connection,
+    session: &str,
+    now: i64,
 ) -> rusqlite::Result<Vec<(String, String, i64)>> {
     let result = (|| {
         let considered: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
+            "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='backlog' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
             [session], |row| row.get(0),
         )?;
         let cards: Vec<_> = drainable_backlog_rows(conn, session, now as f64)?
-            .into_iter().map(|row| (row.id, row.title, (now - row.created) / 86400)).collect();
+            .into_iter()
+            .map(|row| (row.id, row.title, (now - row.created) / 86400))
+            .collect();
         if considered > 0 {
-            tracing::info!(marker = "backlog_nudge_population", session, measured = true,
-                n_considered = considered, eligible = cards.len(),
+            tracing::info!(
+                marker = "backlog_nudge_population",
+                session,
+                measured = true,
+                n_considered = considered,
+                eligible = cards.len(),
                 excluded = considered.saturating_sub(cards.len() as i64),
-                listed = cards.len().min(8), "backlog nudge uses one eligibility population");
+                listed = cards.len().min(8),
+                "backlog nudge uses one eligibility population"
+            );
         }
         Ok(cards)
     })();
@@ -4086,7 +4497,11 @@ fn backlog_nudge_population(
 
 #[cfg(test)]
 fn backlog_candidates(conn: &Connection, session: &str, now: i64) -> Vec<(String, String, i64)> {
-    backlog_nudge_population(conn, session, now).unwrap().into_iter().take(8).collect()
+    backlog_nudge_population(conn, session, now)
+        .unwrap()
+        .into_iter()
+        .take(8)
+        .collect()
 }
 
 /// The idle-drain prompt: a lane is doing nothing while it holds a backlog. The
@@ -4102,7 +4517,10 @@ fn backlog_drain_text(cards: &[(String, String, i64)], drainable: i64) -> String
         .collect::<Vec<_>>()
         .join("\n");
     if drainable > cards.len() as i64 {
-        list.push_str(&format!("\n  ... and {} more eligible card(s)", drainable - cards.len() as i64));
+        list.push_str(&format!(
+            "\n  ... and {} more eligible card(s)",
+            drainable - cards.len() as i64
+        ));
     }
     // `drainable` is the DRAINABLE count (source_ref-parked, dormant and epic
     // cards already excluded — same predicate as the list), NOT the raw backlog.
@@ -4136,7 +4554,7 @@ fn backlog_drain_text(cards: &[(String, String, i64)], drainable: i64) -> String
 fn stale_backlog_count(conn: &Connection, session: &str, now: i64) -> i64 {
     let cutoff = now - BACKLOG_STALE_AGE_S;
     conn.query_row(
-        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
+        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='backlog' \
          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
          AND created < ?2",
         rusqlite::params![session, cutoff],
@@ -4145,11 +4563,7 @@ fn stale_backlog_count(conn: &Connection, session: &str, now: i64) -> i64 {
     .unwrap_or(0)
 }
 
-fn backlog_triage_text(
-    cards: &[(String, String, i64)],
-    total: i64,
-    total_backlog: i64,
-) -> String {
+fn backlog_triage_text(cards: &[(String, String, i64)], total: i64, total_backlog: i64) -> String {
     let mut lines: Vec<String> = cards
         .iter()
         .map(|(id, title, age)| {
@@ -4158,7 +4572,10 @@ fn backlog_triage_text(
         })
         .collect();
     if total > cards.len() as i64 {
-        lines.push(format!("  ... and {} more stale", total - cards.len() as i64));
+        lines.push(format!(
+            "  ... and {} more stale",
+            total - cards.len() as i64
+        ));
     }
     let list = lines.join("\n");
     format!(
@@ -4221,7 +4638,9 @@ fn human_blocked_root(
             if !seen.insert(id.clone()) {
                 continue;
             }
-            let Some((status, deps)) = lookup(&id) else { continue };
+            let Some((status, deps)) = lookup(&id) else {
+                continue;
+            };
             // The START card is `blocked`, not `needsyou`; only an ANCESTOR
             // counts. Checking the start would make any card a lane retyped to
             // needsyou silence itself.
@@ -4245,11 +4664,17 @@ fn human_blocked_root(
 fn outstanding_work(
     conn: &Connection,
     session: &str,
-) -> (i64, i64, Vec<(String, String)>, Vec<(String, String, String)>, Vec<(String, String, String)>) {
+) -> (
+    i64,
+    i64,
+    Vec<(String, String)>,
+    Vec<(String, String, String)>,
+    Vec<(String, String, String)>,
+) {
     let query = |status: &str| -> (i64, Vec<(String, String)>) {
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM issues WHERE session=?1 AND status=?2 \
+                "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status=?2 \
                  AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
                 rusqlite::params![session, status],
                 |r| r.get(0),
@@ -4257,7 +4682,7 @@ fn outstanding_work(
             .unwrap_or(0);
         let cards: Vec<(String, String)> = conn
             .prepare(
-                "SELECT id, title FROM issues WHERE session=?1 AND status=?2 \
+                "SELECT id, title FROM legacy_execution_issues AS issues WHERE session=?1 AND status=?2 \
                  AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
                  ORDER BY updated DESC LIMIT 8",
             )
@@ -4276,7 +4701,7 @@ fn outstanding_work(
     // counts are small (the reporting lane's own worst case was 7).
     let all_blocked: Vec<(String, String)> = conn
         .prepare(
-            "SELECT id, title FROM issues WHERE session=?1 AND status='blocked' \
+            "SELECT id, title FROM legacy_execution_issues AS issues WHERE session=?1 AND status='blocked' \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' \
              ORDER BY updated DESC",
         )
@@ -4289,7 +4714,7 @@ fn outstanding_work(
         .unwrap_or_default();
     let lookup = |id: &str| -> CardLink {
         conn.query_row(
-            "SELECT status, COALESCE(depends_on,'') FROM issues WHERE id=?1 AND deleted IS NULL",
+            "SELECT status, COALESCE(depends_on,'') FROM legacy_execution_issues AS issues WHERE id=?1 AND deleted IS NULL",
             rusqlite::params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
@@ -4314,7 +4739,7 @@ fn outstanding_work(
         .map(|(id, title)| {
             let rv = conn
                 .query_row(
-                    "SELECT COALESCE(reviewer,'') FROM issues WHERE id=?1",
+                    "SELECT COALESCE(reviewer,'') FROM legacy_execution_issues AS issues WHERE id=?1",
                     rusqlite::params![id],
                     |r| r.get::<_, String>(0),
                 )
@@ -4339,17 +4764,22 @@ mod continue_nudge_ask_tests {
     #[test]
     fn continuation_reads_current_contract_instead_of_inventing_foreign_review_debt() {
         for reviewer in ["", "peer-lane"] {
-            let done=vec![("D-1".into(),"shipped outcome".into(),reviewer.into())];
-            let text=continue_nudge_text(0,1,&[],&done,&[]);
+            let done = vec![("D-1".into(), "shipped outcome".into(), reviewer.into())];
+            let text = continue_nudge_text(0, 1, &[], &done, &[]);
             assert!(text.contains("/api/board/contract?card=<id>"));
             assert!(text.contains("Done is terminal for non-runtime outcomes"));
-            assert!(text.contains("code, ops, blocker and tripwire outcomes still require verified"));
-            assert!(!text.contains("amux board reviewer") && !text.contains("blocked on someone else"));
-            assert!(text.contains("actual results") && text.contains("explicit authorization holds"));
+            assert!(
+                text.contains("code, ops, blocker and tripwire outcomes still require verified")
+            );
+            assert!(
+                !text.contains("amux board reviewer") && !text.contains("blocked on someone else")
+            );
+            assert!(
+                text.contains("actual results") && text.contains("explicit authorization holds")
+            );
             assert!(text.contains("D-1"));
         }
     }
-
 }
 
 fn last_continue_nudge_counts(conn: &Connection, lane: &str) -> Option<(i64, i64)> {
@@ -4386,7 +4816,10 @@ fn continue_nudge_text(
             })
             .collect();
         if blocked_count > blocked.len() as i64 {
-            lines.push(format!("  ... and {} more", blocked_count - blocked.len() as i64));
+            lines.push(format!(
+                "  ... and {} more",
+                blocked_count - blocked.len() as i64
+            ));
         }
         sections.push(format!(
             "{blocked_count} blocked card(s) — re-assess each blocker. If the \
@@ -4536,7 +4969,7 @@ fn pickup_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String
     // undispatchable with nothing saying so.
     let (qn, qoldest): (i64, i64) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(MIN(updated),0) FROM issues WHERE session=?1 \
+            "SELECT COUNT(*), COALESCE(MIN(updated),0) FROM legacy_execution_issues AS issues WHERE session=?1 \
              AND status='todo' AND owner_type='agent' AND deleted IS NULL \
              AND COALESCE(archived,0)=0",
             rusqlite::params![session],
@@ -4617,10 +5050,16 @@ fn pickup_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String
         prompt.push_str("\n\n[fan-out workspace] Own the entire board in your dedicated amux/fanout branch. Preserve the worktree across pauses. Resolve implementation dependencies locally and never create a task on another worker board. Commit your changes and record test evidence; configure CC_WORKTREE_VERIFY with the appropriate repository verification command. When completed outcomes have evidence and no implementation is active, the harness merges an isolated candidate, runs those checks, and pushes main without changing the shared checkout. Resolve returned conflicts/check failures yourself; keep driving to the resolved terminal gates. Only actual spend/customer-outbound authorization remains an approval.");
     }
     if let Some(next) = row.next_action.as_deref().filter(|v| !v.is_empty()) {
-        prompt.push_str(&format!("\nNext action: {}", quoted_card_text(next, &row.id)));
+        prompt.push_str(&format!(
+            "\nNext action: {}",
+            quoted_card_text(next, &row.id)
+        ));
     }
     if let Some(criteria) = row.acceptance_criteria.as_deref().filter(|v| !v.is_empty()) {
-        prompt.push_str(&format!("\nAcceptance criteria: {}", quoted_card_text(criteria, &row.id)));
+        prompt.push_str(&format!(
+            "\nAcceptance criteria: {}",
+            quoted_card_text(criteria, &row.id)
+        ));
     }
     let completion_gate = bs::effective_gate_configured(conn, row, TaskStatus::Done);
     prompt.push_str(&format!("\nDone gate: {}. Verify the actual outputs before acknowledging criteria. Submit with `amux board done {} --checked \"<true criterion>\" ... --evidence-stdin` (evidence on stdin). Gate acknowledgements use --checked or API gate_checked; never change the gate to bypass a refusal.", completion_gate.join("; "), row.id));
@@ -4637,7 +5076,7 @@ fn pickup_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String
              credentials/.env in your working directory (it has MIXPEEK_API_KEY and other \
              production keys). If a key is revoked or expired, provision a new one through \
              the product's key management. Do not park on missing credentials when you have \
-             the codebase and production access to resolve it yourself."
+             the codebase and production access to resolve it yourself.",
         );
     }
     let full = format!("{}\n{}", row.desc, row.log.clone().unwrap_or_default());
@@ -4669,7 +5108,9 @@ fn pickup_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String
 /// the stale-delivery guard; only the verb makes it clear this is a recovery,
 /// never a second claim.
 fn resume_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String {
-    if let Some(prompt) = crate::api::session_verbs::generation_resume_prompt(conn, session, &row.id) {
+    if let Some(prompt) =
+        crate::api::session_verbs::generation_resume_prompt(conn, session, &row.id)
+    {
         return prompt;
     }
     pickup_prompt(conn, session, row).replacen(
@@ -4731,12 +5172,7 @@ pub enum Advance {
 }
 
 /// Select the advance nudge for `session`, or say why there is none.
-pub fn select_advance(
-    conn: &Connection,
-    session: &str,
-    tags: &[String],
-    now: f64,
-) -> Advance {
+pub fn select_advance(conn: &Connection, session: &str, tags: &[String], now: f64) -> Advance {
     select_advance_with(conn, session, tags, now, &|owner, reviewer| {
         crate::api::session_verbs::reviewer_unreachable_reason(owner, reviewer)
     })
@@ -4746,7 +5182,9 @@ pub fn select_advance(
 /// requeue already use this predicate; advancement must not let the generic
 /// classifier's structured-prose exemption turn the same envelope into work.
 fn capture_cleanup_reason(row: &bs::IssueRow) -> String {
-    if row.item_type == "epic" { return String::new(); }
+    if row.item_type == "epic" {
+        return String::new();
+    }
     if bs::is_capture_shell(row) {
         return "captured command is not a unit of work until reshaped or linked as an epic".into();
     }
@@ -4759,12 +5197,14 @@ fn unnudged_capture_cleanup(conn: &Connection, session: &str) -> Option<String> 
     // Filter disposed/structured receipts before LIMIT. Looking at only the
     // newest 40 first let already-asked receipts hide all older pending intake.
     let sql = format!(
-        "SELECT i.id FROM issues i WHERE i.session=?1 \
+        "SELECT i.id FROM legacy_execution_issues i WHERE i.session=?1 \
          AND i.status IN ('doing','todo','backlog') AND i.source IN ('capture','orchestrator') \
          AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 AND i.owner_type='agent' \
          AND COALESCE(i.type,'') != 'epic' AND {} \
          AND NOT EXISTS (SELECT 1 FROM session_events e WHERE e.idem='decompose:'||i.id) \
-         ORDER BY i.created,i.id LIMIT 1", bs::capture_shell_sql());
+         ORDER BY i.created,i.id LIMIT 1",
+        bs::capture_shell_sql()
+    );
     match conn.query_row(&sql, [session], |r| r.get(0)).optional() {
         Ok(card) => card,
         Err(error) => {
@@ -4809,7 +5249,7 @@ pub fn select_advance_with(
             let moved = match (&last_card, &last_status) {
                 (Some(card), Some(prev)) => conn
                     .query_row(
-                        "SELECT status FROM issues WHERE id=?1",
+                        "SELECT status FROM legacy_execution_issues AS issues WHERE id=?1",
                         rusqlite::params![card],
                         |r| r.get::<_, String>(0),
                     )
@@ -4873,7 +5313,7 @@ pub fn select_advance_with(
             // ask and the alternative is not firing at all.
             "SELECT i.id, i.title, COALESCE(i.archived,0), \
                     COALESCE(MIN(t.added_at), i.updated) AS asked_at \
-             FROM issues i LEFT JOIN issue_tags t \
+             FROM legacy_execution_issues i LEFT JOIN issue_tags t \
                   ON t.issue_id = i.id AND lower(t.tag) LIKE 'needs:you%' \
              WHERE i.session=?1 AND i.deleted IS NULL AND i.owner_type='agent' \
              AND (t.tag IS NOT NULL OR i.status='needsyou') \
@@ -4887,7 +5327,9 @@ pub fn select_advance_with(
         .ok()
         .flatten();
     if let Some((id, title, archived, asked_at)) = stale {
-        if let Some(text) = needsyou_renag_text(conn, session, &id, &title, now - asked_at, archived, now) {
+        if let Some(text) =
+            needsyou_renag_text(conn, session, &id, &title, now - asked_at, archived, now)
+        {
             return Advance::Nudge {
                 target: session.to_string(),
                 card: id,
@@ -4903,7 +5345,7 @@ pub fn select_advance_with(
     // siblings. At most one delivery is accepted per lane/tick.
     let mut cands: Vec<(String, String)> = conn
         .prepare(
-            "SELECT id, status FROM issues WHERE session=?1 AND deleted IS NULL \
+            "SELECT id, status FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('doing','review') AND owner_type='agent' \
              AND NOT (COALESCE(type,'')='epic' AND status='doing') \
              ORDER BY CASE status WHEN 'doing' THEN 0 ELSE 1 END, updated DESC, id ASC",
@@ -4934,27 +5376,58 @@ pub fn select_advance_with(
             cands.insert(0, c);
         }
     }
-    let mut refusal = Advance::None { reason: "no-open-card", detail: "no agent-owned doing/review card to drive".into() };
+    let mut refusal = Advance::None {
+        reason: "no-open-card",
+        detail: "no agent-owned doing/review card to drive".into(),
+    };
     for (card_id, status) in cands {
-        let next = advance_card(conn, session, tags, now, reviewer_unreachable, card_id, status);
-        if let Advance::Nudge { target, card, text, .. } = &next {
+        let next = advance_card(
+            conn,
+            session,
+            tags,
+            now,
+            reviewer_unreachable,
+            card_id,
+            status,
+        );
+        if let Advance::Nudge {
+            target, card, text, ..
+        } = &next
+        {
             let measured = (|| -> rusqlite::Result<bool> {
-                let Some(row) = bs::get_issue(conn, card)? else { return Ok(false) };
+                let Some(row) = bs::get_issue(conn, card)? else {
+                    return Ok(false);
+                };
                 let started: f64 = conn.query_row(
                     "SELECT coalesce(max(ts),0) FROM session_events WHERE session=?1 AND type='session.started'",
                     [target], |r| r.get(0))?;
                 let identity = reminder_identity(target, text, &row, started);
-                let (sent, queued) = crate::api::session_verbs::state_reminder_status(conn, target, &identity)?;
+                let (sent, queued) =
+                    crate::api::session_verbs::state_reminder_status(conn, target, &identity)?;
                 Ok(sent || queued.is_some_and(|(_, rev)| rev == Some(row.rev)))
             })();
             match measured {
                 Ok(true) => {
-                    tracing::debug!(session, card, measured=true, n_considered=1,
-                        verdict="advance_suppressed_candidate_yielded", "unchanged reminder yields to the next candidate");
-                    refusal = Advance::None { reason: "unchanged-reminder", detail: format!("{card}: same state already queued or delivered") };
+                    tracing::debug!(
+                        session,
+                        card,
+                        measured = true,
+                        n_considered = 1,
+                        verdict = "advance_suppressed_candidate_yielded",
+                        "unchanged reminder yields to the next candidate"
+                    );
+                    refusal = Advance::None {
+                        reason: "unchanged-reminder",
+                        detail: format!("{card}: same state already queued or delivered"),
+                    };
                     continue;
                 }
-                Err(error) => return Advance::None { reason: "reminder-unmeasured", detail: error.to_string() },
+                Err(error) => {
+                    return Advance::None {
+                        reason: "reminder-unmeasured",
+                        detail: error.to_string(),
+                    }
+                }
                 Ok(false) => return next,
             }
         }
@@ -4964,12 +5437,19 @@ pub fn select_advance_with(
 }
 
 fn advance_card(
-    conn: &Connection, session: &str, tags: &[String], now: f64,
+    conn: &Connection,
+    session: &str,
+    tags: &[String],
+    now: f64,
     reviewer_unreachable: &dyn Fn(&str, &str) -> Option<String>,
-    card_id: String, status: String,
+    card_id: String,
+    status: String,
 ) -> Advance {
     let Ok(Some(row)) = bs::get_issue(conn, &card_id) else {
-        return Advance::None { reason: "card-vanished", detail: card_id };
+        return Advance::None {
+            reason: "card-vanished",
+            detail: card_id,
+        };
     };
 
     // Same not-a-task guard as pickup, via the SAME predicate with the SAME
@@ -5069,13 +5549,20 @@ fn advance_card(
     let blocking = deps_blocking(conn, &row);
     if let Some(dep_id) = blocking.first() {
         let dep = bs::get_issue(conn, dep_id).ok().flatten();
-        let dep_session = dep.as_ref().and_then(|d| d.session.clone()).unwrap_or_default();
+        let dep_session = dep
+            .as_ref()
+            .and_then(|d| d.session.clone())
+            .unwrap_or_default();
         if dep_session != session {
             return Advance::None {
                 reason: "dep-other-lane",
                 detail: format!(
                     "{card_id} blocked by {dep_id} ({}) — not nudging the holder",
-                    if dep_session.is_empty() { "unassigned" } else { &dep_session }
+                    if dep_session.is_empty() {
+                        "unassigned"
+                    } else {
+                        &dep_session
+                    }
                 ),
             };
         }
@@ -5148,7 +5635,11 @@ fn advance_card(
     // that HIDES the decision (a needs:you card drops out of the digest at
     // status done). An instruction satisfiable only by doing the thing you were
     // told not to do is the ethos rule 3 shape.
-    if row.tags.iter().any(|t| t.to_lowercase().starts_with("needs:you")) {
+    if row
+        .tags
+        .iter()
+        .any(|t| t.to_lowercase().starts_with("needs:you"))
+    {
         // Age the ASK, not the ROW (py:13648, AC-178). `updated` is last-touch,
         // and amux writes to descs constantly, so the needs:you cards carrying
         // the most commentary were exactly the ones whose stale-ask check could
@@ -5164,7 +5655,15 @@ fn advance_card(
                 ),
             };
         }
-        return match needsyou_renag_text(conn, session, &card_id, &row.title, asked_age, row.archived, now) {
+        return match needsyou_renag_text(
+            conn,
+            session,
+            &card_id,
+            &row.title,
+            asked_age,
+            row.archived,
+            now,
+        ) {
             Some(text) => Advance::Nudge {
                 target: session.to_string(),
                 card: card_id,
@@ -5418,12 +5917,15 @@ fn advance_card(
     let gate_txt = if gate.is_empty() {
         "  (no gate configured)".to_string()
     } else {
-        gate.iter().map(|g| format!("  - {g}")).collect::<Vec<_>>().join("\n")
+        gate.iter()
+            .map(|g| format!("  - {g}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let gate_next_s = bs::db_status_spelling(gate_next);
     let queued: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE session=?1 AND deleted IS NULL \
+            "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('todo','backlog') AND owner_type='agent'",
             rusqlite::params![session],
             |r| r.get(0),
@@ -5443,7 +5945,7 @@ fn advance_card(
     // for this reason and a clause would be inventing a problem.
     let unpickable: i64 = if bs::continuation_required(Some(session)) {
         conn.prepare(
-            "SELECT COALESCE(next_action,'') FROM issues WHERE session=?1 AND deleted IS NULL \
+            "SELECT COALESCE(next_action,'') FROM legacy_execution_issues AS issues WHERE session=?1 AND deleted IS NULL \
              AND COALESCE(archived,0)=0 AND status IN ('todo','backlog') AND owner_type='agent'",
         )
         .and_then(|mut stmt| {
@@ -5714,6 +6216,15 @@ fn needsyou_renag_text(
 /// TUBES-2459 was the live specimen. The repair is a race-safe lifecycle write,
 /// not a display exemption: `backlog` is the durable state for work that cannot
 /// run, and the existing dependency/revisit machinery is what brings it back.
+fn legacy_blocked_doing(conn: &rusqlite::Connection, row: &bs::IssueRow) -> bool {
+    row.project_group.is_none()
+        && row.status == "doing"
+        && row.owner_type == "agent"
+        && row.archived == 0
+        && !is_dormant_type(&row.item_type)
+        && row.session.as_deref().is_some_and(|s| !s.is_empty())
+        && !doing_is_unblocked(conn, row)
+}
 async fn normalize_blocked_doing(state: &AppState) -> usize {
     let candidates: Vec<String> = match state.store.read() {
         Ok(conn) => bs::list_issues(
@@ -5724,12 +6235,7 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
         )
         .unwrap_or_default()
         .into_iter()
-        .filter(|row| {
-            row.owner_type == "agent"
-                && !is_dormant_type(&row.item_type)
-                && row.session.as_deref().is_some()
-                && !doing_is_unblocked(&conn, row)
-        })
+        .filter(|row| legacy_blocked_doing(&conn, row))
         .map(|row| row.id)
         .collect(),
         Err(error) => {
@@ -5752,19 +6258,23 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
             .store
             .write_async(move |conn| {
                 let Some(row) = bs::get_issue(conn, &card_w)? else {
-                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
                 };
-                if row.status != "doing"
-                    || row.owner_type != "agent"
-                    || row.archived != 0
-                    || is_dormant_type(&row.item_type)
-                    || doing_is_unblocked(conn, &row)
-                {
-                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                if !legacy_blocked_doing(conn, &row) {
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
                 }
                 let lane = row.session.clone().unwrap_or_default();
                 if lane.is_empty() {
-                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
                 }
                 let blocking = deps_blocking(conn, &row);
                 let blocked_on = row
@@ -5792,13 +6302,7 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
                     )),
                     ..Default::default()
                 };
-                match crate::db::advance::advance(
-                    conn,
-                    &card_w,
-                    "backlog",
-                    "board_drive",
-                    &opts,
-                )? {
+                match crate::db::advance::advance(conn, &card_w, "backlog", "board_drive", &opts)? {
                     Ok(outcome) => {
                         conn.execute(
                             "INSERT INTO session_events (ts,session,type,data,source) \
@@ -5820,7 +6324,10 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
                                 .to_string()
                             ],
                         )?;
-                        Ok(crate::db::WriteOutcome { applied: true, events: outcome.events })
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events: outcome.events,
+                        })
                     }
                     Err(refusal) => {
                         tracing::warn!(
@@ -5832,7 +6339,10 @@ async fn normalize_blocked_doing(state: &AppState) -> usize {
                             verdict = "blocked_doing_normalization_refused",
                             "board_drive: transition engine refused blocked Doing normalization"
                         );
-                        Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+                        Ok(crate::db::WriteOutcome {
+                            applied: false,
+                            events: vec![],
+                        })
                     }
                 }
             })
@@ -5895,7 +6405,11 @@ pub struct LeaseReaperReport {
 /// nothing until it returns. So the reaper asks the same turn-boundary question
 /// steering asks before it reclaims: a holder that is mid-turn, or whose child
 /// work is still running, keeps its card.
-pub(crate) fn lease_verdict(running: bool, at_boundary: bool, child_work: bool) -> (bool, &'static str) {
+pub(crate) fn lease_verdict(
+    running: bool,
+    at_boundary: bool,
+    child_work: bool,
+) -> (bool, &'static str) {
     if !running {
         return (false, "holder_not_running");
     }
@@ -5921,7 +6435,10 @@ pub(crate) fn lease_verdict(running: bool, at_boundary: bool, child_work: bool) 
 /// lane heads-down in tool calls read as dead and lost its card at the TTL. Now
 /// every self-report renews the lease (`refresh_lease_heartbeat`), and an expired
 /// lease is judged by `lease_verdict` from the same boundary gate steering uses.
-pub(crate) async fn reclaim_expired_leases<F: Fleet>(state: &AppState, fleet: &F) -> LeaseReaperReport {
+pub(crate) async fn reclaim_expired_leases<F: Fleet>(
+    state: &AppState,
+    fleet: &F,
+) -> LeaseReaperReport {
     let ttl = bs::lease_ttl_s();
     let now = chrono::Utc::now().timestamp();
     let mut report = LeaseReaperReport {
@@ -5933,15 +6450,24 @@ pub(crate) async fn reclaim_expired_leases<F: Fleet>(state: &AppState, fleet: &F
         .read()
         .map_err(|e| e.to_string())
         .and_then(|conn| {
-            bs::list_issues(&conn, &["doing".to_string()], &[], bs::ArchivedFilter::ActiveOnly)
-                .map_err(|e| e.to_string())
+            bs::list_issues(
+                &conn,
+                &["doing".to_string()],
+                &[],
+                bs::ArchivedFilter::ActiveOnly,
+            )
+            .map_err(|e| e.to_string())
         }) {
         Ok(rows) => rows
             .into_iter()
             .filter_map(|row| {
                 let owner = row.lease_owner.clone()?;
                 let exp = row.lease_expires_at?;
-                (exp < now && row.owner_type == "agent").then_some((row.id, owner, row.lease_generation))
+                (exp < now && row.owner_type == "agent").then_some((
+                    row.id,
+                    owner,
+                    row.lease_generation,
+                ))
             })
             .collect(),
         Err(error) => {
@@ -5964,7 +6490,10 @@ pub(crate) async fn reclaim_expired_leases<F: Fleet>(state: &AppState, fleet: &F
         .write_async(move |conn| {
             let n = crate::db::attempts::reconcile_orphans(conn, now)?;
             orphaned_w.store(n, std::sync::atomic::Ordering::Relaxed);
-            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            Ok(crate::db::WriteOutcome {
+                applied: n > 0,
+                events: vec![],
+            })
         })
         .await
     {
@@ -5985,7 +6514,11 @@ pub(crate) async fn reclaim_expired_leases<F: Fleet>(state: &AppState, fleet: &F
     }
     for (card, owner, generation) in expired {
         let running = fleet.is_running(&owner).await;
-        let at_boundary = if running { fleet.at_boundary(&owner).await } else { true };
+        let at_boundary = if running {
+            fleet.at_boundary(&owner).await
+        } else {
+            true
+        };
         let child_work = running && fleet.active_child_work(&owner);
         let (keep, reason) = lease_verdict(running, at_boundary, child_work);
         let (card_w, owner_w) = (card.clone(), owner.clone());
@@ -6173,7 +6706,11 @@ pub async fn drive_session(state: &AppState, lane: &str) -> LaneTrace {
         signals: crate::api::session_verbs::boundary_signals(state, None).await,
     };
     if !fleet.lanes().iter().any(|candidate| candidate == lane) {
-        let trace = LaneTrace::skip(lane, "not-registered", "worker is not in the live fleet registry");
+        let trace = LaneTrace::skip(
+            lane,
+            "not-registered",
+            "worker is not in the live fleet registry",
+        );
         publish_lane(trace.clone());
         return trace;
     }
@@ -6341,7 +6878,10 @@ async fn reconcile_child_task_claim(state: &AppState, lane: &str) -> ChildClaimR
         );
         return ChildClaimReconcile::None;
     }
-    let result = slot.lock().unwrap_or_else(|poison| poison.into_inner()).clone();
+    let result = slot
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
     if let ChildClaimReconcile::Restored(card) = &result {
         tracing::warn!(
             target: "amux::board_drive",
@@ -6358,12 +6898,23 @@ async fn reconcile_child_task_claim(state: &AppState, lane: &str) -> ChildClaimR
 
 fn publish_lane(trace: LaneTrace) {
     if let Ok(mut slot) = report_slot().write() {
-        let report = slot.get_or_insert_with(|| DriveReport { started_at: now_f64(), ..Default::default() });
+        let report = slot.get_or_insert_with(|| DriveReport {
+            started_at: now_f64(),
+            ..Default::default()
+        });
         report.lanes.retain(|row| row.session != trace.session);
         report.lanes.push(trace);
         report.finished_at = now_f64();
-        report.assigned = report.lanes.iter().filter(|row| row.outcome == "assigned").count();
-        report.nudged = report.lanes.iter().filter(|row| row.outcome != "assigned" && row.outcome != "skipped").count();
+        report.assigned = report
+            .lanes
+            .iter()
+            .filter(|row| row.outcome == "assigned")
+            .count();
+        report.nudged = report
+            .lanes
+            .iter()
+            .filter(|row| row.outcome != "assigned" && row.outcome != "skipped")
+            .count();
     }
 }
 
@@ -6371,8 +6922,12 @@ fn nudge_delivery_failed(lane: &str, target: &str, card: &str, error: &str) -> L
     tracing::warn!(session = lane, target_worker = target, card, error,
         verdict = "board_nudge_enqueue_failed",
         "board_drive: reminder was not queued; no cooldown or nudge budget consumed; retry next tick");
-    LaneTrace::skip(lane, "nudge-delivery-failed", format!("enqueue to {target} failed: {error}; retry next tick"))
-        .with_card(card)
+    LaneTrace::skip(
+        lane,
+        "nudge-delivery-failed",
+        format!("enqueue to {target} failed: {error}; retry next tick"),
+    )
+    .with_card(card)
 }
 
 struct BlockerRecovery {
@@ -6389,32 +6944,57 @@ fn blocker_recoveries(conn: &Connection, lane: &str) -> rusqlite::Result<Vec<Blo
     blocker_recoveries_with_policy(conn, lane, &bs::approval_types(Some(lane)))
 }
 
-fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &[String]) -> rusqlite::Result<Vec<BlockerRecovery>> {
+fn blocker_recoveries_with_policy(
+    conn: &Connection,
+    lane: &str,
+    allowed_asks: &[String],
+) -> rusqlite::Result<Vec<BlockerRecovery>> {
     use sha2::{Digest, Sha256};
     let mut stmt = conn.prepare(&format!(
-        "SELECT i.id FROM issues i WHERE i.session=?1 AND i.owner_type='agent' \
+        "SELECT i.id FROM legacy_execution_issues i WHERE i.session=?1 AND i.owner_type='agent' \
          AND i.status IN ('todo','backlog','blocked','doing','needsyou','needs_you') AND i.deleted IS NULL \
          AND COALESCE(i.archived,0)=0 AND COALESCE(i.type,'') NOT IN ('epic','watch','tripwire') \
          AND NOT {capture} AND COALESCE(i.source,'')<>'capture' \
          AND (i.status IN ('needsyou','needs_you') OR NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id AND lower(t.tag) LIKE 'needs:you%')) \
          ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC, i.id ASC",
         capture = bs::capture_shell_sql()))?;
-    let ids = stmt.query_map([lane], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let ids = stmt
+        .query_map([lane], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut result = Vec::new();
     for id in ids {
-        let Some(row) = bs::get_issue(conn, &id)? else { continue; };
-        let needsyou = bs::parse_status(&row.status) == Some(amux_core::board::TaskStatus::NeedsYou);
-        let ask_type = row.ask_type.as_deref().unwrap_or("").trim().to_ascii_lowercase();
-        let ask_outside_policy = needsyou && !allowed_asks.iter().any(|s| s == "*" || s == &ask_type);
+        let Some(row) = bs::get_issue(conn, &id)? else {
+            continue;
+        };
+        let needsyou =
+            bs::parse_status(&row.status) == Some(amux_core::board::TaskStatus::NeedsYou);
+        let ask_type = row
+            .ask_type
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let ask_outside_policy =
+            needsyou && !allowed_asks.iter().any(|s| s == "*" || s == &ask_type);
         // Current approval holds are not a reason to spend another model turn.
         // Historical asks outside the owner's policy need one semantic repair,
         // not an automatic approval or a permanent exclusion from recovery.
-        if needsyou && !ask_outside_policy { continue; }
+        if needsyou && !ask_outside_policy {
+            continue;
+        }
         let deps = deps_blocking(conn, &row);
         let blocked = row.blocked_on.as_deref().unwrap_or("").trim();
         let trigger = row.source_ref.as_deref().unwrap_or("").trim();
-        let missing_next = bs::continuation_verdict(row.next_action.as_deref().unwrap_or("")) != bs::ContinuationVerdict::Ok;
-        if deps.is_empty() && blocked.is_empty() && trigger.is_empty() && !missing_next && !ask_outside_policy { continue; }
+        let missing_next = bs::continuation_verdict(row.next_action.as_deref().unwrap_or(""))
+            != bs::ContinuationVerdict::Ok;
+        if deps.is_empty()
+            && blocked.is_empty()
+            && trigger.is_empty()
+            && !missing_next
+            && !ask_outside_policy
+        {
+            continue;
+        }
         // Include dependency OUTPUT state, not its owner's availability or log
         // churn. Closing an unrelated card or rechecking a date cannot rearm.
         let dep_state = deps.iter().map(|id| {
@@ -6455,10 +7035,25 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
         // (the blocker genuinely cleared) and editing the wording afterwards
         // never does. Progress notes, evidence and criteria are the worker's
         // record of the same blocker, not a different one.
-        let signature = json!([lane,row.id,row.item_type,row.status,missing_next,
-            row.depends_on,row.blocked_on,row.source_ref,row.waiting_on,
-            row.ask_type,ask_outside_policy,allowed_asks,dep_state]);
-        let identity = format!("board-blocker:{:x}", Sha256::digest(signature.to_string().as_bytes()));
+        let signature = json!([
+            lane,
+            row.id,
+            row.item_type,
+            row.status,
+            missing_next,
+            row.depends_on,
+            row.blocked_on,
+            row.source_ref,
+            row.waiting_on,
+            row.ask_type,
+            ask_outside_policy,
+            allowed_asks,
+            dep_state
+        ]);
+        let identity = format!(
+            "board-blocker:{:x}",
+            Sha256::digest(signature.to_string().as_bytes())
+        );
         let context = json!({"card":row.id,"title":row.title,"status":row.status,
             "blocked_on":row.blocked_on,"trigger":row.source_ref,"waiting_on":row.waiting_on,
             "missing_next_action":missing_next,"unresolved_dependencies":deps,
@@ -6469,12 +7064,23 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
              Read this card and its named prerequisites. Keep responsibility for the complete outcome: implement a missing component yourself within existing authority, using an isolated checkout if necessary. Another worker's ownership, availability, approval of an ordinary implementation choice, or dirty checkout is not itself a dependency. Reuse existing canonical tasks and verified artifacts; do not create duplicate requests or wait an arbitrary time. For a cross-worker edge, retain the real artifact requirement in this task or a canonical prerequisite on this SAME board, remove the foreign execution edge, and own the missing implementation. Never relocate a peer wait into source_ref, blocked_on, next_action or gate text. For a local prerequisite, remove its edge only after establishing that its artifact is available or unnecessary.\n\
              If ask_outside_policy is true, classify the actual existing ask: retain and correctly type real budget/customer-outbound approval; otherwise own the ordinary decision, or record a precise real access blocker and complete independent work. Never treat policy cleanup as permission or fabricate authorization. Reconcile depends_on, blocked_on, source_ref AND the card gate together; removing an edge while its old wait survives elsewhere does not unblock work. Cross-worker tasks are evidence references, not dependencies or assignments: own the complete outcome on this board. Correct evidence-only tasks to investigation/doc rather than requiring a nonexistent deployment. Put completion requirements in acceptance_criteria and use the predefined column gates; never acknowledge completed results just to start. Preserve actual access restrictions, explicit owner holds, new-spend approval and customer-outbound approval. If one still blocks execution, record the exact observable condition and evidence, and perform any independent preparation that is allowed. Do not claim held work is running or fabricate completion. Supply next_action and acceptance_criteria on the existing card; track any actual execution as Doing and finish through the predefined gates. Resolve the same prerequisite for other affected cards in this lane in this turn when possible. No repeated whole-board audit. An unchanged blocker is re-offered on a widening backoff, 1h then 4h then 24h, and stops entirely after the fourth until the card's STATUS changes. Recording what this prompt asks for does not shorten that and no longer restarts it.",
             row.id, context);
-        result.push(BlockerRecovery {card:row.id,rev:row.rev,identity,text});
+        result.push(BlockerRecovery {
+            card: row.id,
+            rev: row.rev,
+            identity,
+            text,
+        });
     }
     Ok(result)
 }
 
 async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTrace {
+    if crate::api::session_verbs::parse_env(lane)
+        .get("CC_PROJECT")
+        .is_some()
+    {
+        return LaneTrace::skip(lane, "project-managed", "project planner owns execution");
+    }
     let lane_lock = lane_drive_lock(state, lane);
     let _lane_guard = lane_lock.lock().await;
     // COUNT THE BACKLOG BEFORE THE GATES, ALWAYS. Found by reading this
@@ -6487,9 +7093,16 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     // answer was reported as zero. Every trace row now carries the true depth,
     // whatever stopped the lane.
     let (eligible, open) = match state.store.read() {
-        Ok(conn) => (eligible_todo_count(&conn, lane, crate::config::now_f64()), open_card_count(&conn, lane)),
+        Ok(conn) => (
+            eligible_todo_count(&conn, lane, crate::config::now_f64()),
+            open_card_count(&conn, lane),
+        ),
         Err(_) => {
-            return LaneTrace::skip(lane, "store-unavailable", "could not open a read connection")
+            return LaneTrace::skip(
+                lane,
+                "store-unavailable",
+                "could not open a read connection",
+            )
         }
     };
 
@@ -6524,9 +7137,14 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     // mutation. An exact surviving claim comes first: resuming its own Doing
     // work is not a second WIP claim and must not be hidden by the WIP cap.
     let woke_for_dispatch = if !fleet.is_running(lane).await {
-        crate::fanout_workspace::adopt_at_boundary(state,lane).await;
-        if crate::fanout_workspace::queue_integration(state,lane).await {
-            return LaneTrace::skip(lane,"integrating","validating completed worker changes before resuming terminal gates").with_counts(eligible,open);
+        crate::fanout_workspace::adopt_at_boundary(state, lane).await;
+        if crate::fanout_workspace::queue_integration(state, lane).await {
+            return LaneTrace::skip(
+                lane,
+                "integrating",
+                "validating completed worker changes before resuming terminal gates",
+            )
+            .with_counts(eligible, open);
         }
         let should_wake = match state.store.read() {
             Ok(conn) => match select_resume(&conn, lane, now_f64(), true) {
@@ -6537,18 +7155,31 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 Resume::Conflicting { .. } => true,
                 Resume::Current { .. } => true,
                 Resume::None => {
-                    matches!(select_pickup(&conn, lane, now_f64()), Pickup::Claim { .. } | Pickup::DrainBacklog { .. })
-                        || matches!(select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
-                            Advance::Nudge { kind: "advance-nudged" | "decompose-asked", .. })
-                        || (eligible == 0 && open_execution_count(&conn,lane).ok() == Some(0)
-                            && !verify_batch_pending(&conn,lane,now_f64())
-                            && !done_verify_candidates(&conn,lane).is_empty())
-                },
+                    matches!(
+                        select_pickup(&conn, lane, now_f64()),
+                        Pickup::Claim { .. } | Pickup::DrainBacklog { .. }
+                    ) || matches!(
+                        select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
+                        Advance::Nudge {
+                            kind: "advance-nudged" | "decompose-asked",
+                            ..
+                        }
+                    ) || (eligible == 0
+                        && open_execution_count(&conn, lane).ok() == Some(0)
+                        && !verify_batch_pending(&conn, lane, now_f64())
+                        && !done_verify_candidates(&conn, lane).is_empty())
+                }
             },
-            Err(_) => return LaneTrace::skip(lane, "store-unavailable", "could not preflight stopped worker")
-                .with_counts(eligible, open),
+            Err(_) => {
+                return LaneTrace::skip(
+                    lane,
+                    "store-unavailable",
+                    "could not preflight stopped worker",
+                )
+                .with_counts(eligible, open)
+            }
         };
-        if !should_wake && !crate::fanout_workspace::integration_followup_needed(state,lane) {
+        if !should_wake && !crate::fanout_workspace::integration_followup_needed(state, lane) {
             return LaneTrace::skip(
                 lane,
                 "not-running-no-dispatchable-work",
@@ -6567,18 +7198,28 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 tracing::warn!(target: "amux::board_drive", session = lane,
                     measured = true, n_considered = 1, verdict = "start_reported_not_running",
                     "board_drive: start returned success but worker was absent; no card was claimed");
-                return LaneTrace::skip(lane, "start-not-running", "start returned success but no live worker remained")
-                    .with_counts(eligible, open);
+                return LaneTrace::skip(
+                    lane,
+                    "start-not-running",
+                    "start returned success but no live worker remained",
+                )
+                .with_counts(eligible, open);
             }
             Err(error) => {
                 tracing::warn!(target: "amux::board_drive", session = lane, %error,
                     measured = true, n_considered = 1, verdict = "eligible_work_start_failed",
                     "board_drive: eligible work did not claim because the worker failed to start");
-                return LaneTrace::skip(lane, "start-failed", format!("eligible work left untouched: {error}"))
-                    .with_counts(eligible, open);
+                return LaneTrace::skip(
+                    lane,
+                    "start-failed",
+                    format!("eligible work left untouched: {error}"),
+                )
+                .with_counts(eligible, open);
             }
         }
-    } else { false };
+    } else {
+        false
+    };
     // THE TURN-BOUNDARY GATE, reused from the steering path. Fails CLOSED:
     // anything not positively known to be idle is left alone. A nudge that waits
     // one more tick costs nothing; a nudge delivered mid-turn is an interruption.
@@ -6638,25 +7279,43 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
 
     crate::fanout_workspace::adopt_at_boundary(state, lane).await;
     if crate::fanout_workspace::queue_integration(state, lane).await {
-        return LaneTrace::skip(lane, "integrating", "repository validation and main integration are running").with_counts(eligible, open);
+        return LaneTrace::skip(
+            lane,
+            "integrating",
+            "repository validation and main integration are running",
+        )
+        .with_counts(eligible, open);
     }
     let now = now_f64();
     let tags = fleet.tags(lane);
     let Ok(conn) = state.store.read() else {
-        return LaneTrace::skip(lane, "store-unavailable", "could not open a read connection")
-            .with_counts(eligible, open);
+        return LaneTrace::skip(
+            lane,
+            "store-unavailable",
+            "could not open a read connection",
+        )
+        .with_counts(eligible, open);
     };
     let resume = select_resume(&conn, lane, now, woke_for_dispatch);
     drop(conn);
     let mut current_claim = None;
     if !matches!(&resume, Resume::None) {
         match resume {
-            Resume::Claim { card, prompt, delivery_id, cause } => {
-                match fleet.deliver_resume(lane, &prompt, &delivery_id).await {
+            Resume::Claim {
+                card,
+                prompt,
+                delivery_id,
+                cause,
+            } => match fleet.deliver_resume(lane, &prompt, &delivery_id).await {
                 Ok(disposition) => {
                     crate::api::session_verbs::record_resume_accepted(
-                        state, lane, Some(&card), &delivery_id, cause,
-                    ).await;
+                        state,
+                        lane,
+                        Some(&card),
+                        &delivery_id,
+                        cause,
+                    )
+                    .await;
                     if disposition == ResumeDelivery::Queued {
                         tracing::info!(target: "amux::board_drive", session = lane, %card,
                             %delivery_id, cause, measured = true, n_considered = 1,
@@ -6706,9 +7365,12 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     )
                     .with_counts(eligible, open);
                 }
-                }
-            }
-            Resume::Current { card, delivery_id, cause } => {
+            },
+            Resume::Current {
+                card,
+                delivery_id,
+                cause,
+            } => {
                 crate::api::session_verbs::emit_event(
                     state,
                     lane,
@@ -6731,17 +7393,26 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             Resume::Conflicting { cards } => {
                 let plan = match state.store.read() {
                     Ok(conn) => select_claim_reconcile(&conn, lane, &cards, now),
-                    Err(_) => return LaneTrace::skip(
-                        lane,
-                        "store-unavailable",
-                        "could not prepare automatic claim reconciliation",
-                    ).with_counts(eligible, open),
+                    Err(_) => {
+                        return LaneTrace::skip(
+                            lane,
+                            "store-unavailable",
+                            "could not prepare automatic claim reconciliation",
+                        )
+                        .with_counts(eligible, open)
+                    }
                 };
                 let (prompt, delivery_id, signature, attempt) = match plan {
-                    ClaimReconcilePlan::Ready { prompt, delivery_id, signature, attempt } => {
-                        (prompt, delivery_id, signature, attempt)
-                    }
-                    ClaimReconcilePlan::Cooldown { remaining_s, attempt } => {
+                    ClaimReconcilePlan::Ready {
+                        prompt,
+                        delivery_id,
+                        signature,
+                        attempt,
+                    } => (prompt, delivery_id, signature, attempt),
+                    ClaimReconcilePlan::Cooldown {
+                        remaining_s,
+                        attempt,
+                    } => {
                         return LaneTrace::skip(
                             lane,
                             "claim-reconcile-cooldown",
@@ -6785,7 +7456,8 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                             cards.first().map(String::as_str).unwrap_or(""),
                             format!(
                                 "automatic attempt {attempt} {disposition:?} for {} claims: {}",
-                                cards.len(), cards.join(", ")
+                                cards.len(),
+                                cards.join(", ")
                             ),
                         )
                         .with_counts(eligible, open);
@@ -6811,7 +7483,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                         return LaneTrace::skip(
                             lane,
                             "claim-reconcile-delivery-failed",
-                            format!("automatic reconciliation for {} failed: {error}; retry next tick", cards.join(", ")),
+                            format!(
+                                "automatic reconciliation for {} failed: {error}; retry next tick",
+                                cards.join(", ")
+                            ),
                         )
                         .with_counts(eligible, open);
                     }
@@ -6821,8 +7496,12 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         }
     }
     let Ok(conn) = state.store.read() else {
-        return LaneTrace::skip(lane, "store-unavailable", "could not select canonical advancement")
-            .with_counts(eligible, open);
+        return LaneTrace::skip(
+            lane,
+            "store-unavailable",
+            "could not select canonical advancement",
+        )
+        .with_counts(eligible, open);
     };
     let advance = select_advance(&conn, lane, &tags, now);
     let pickup = select_pickup(&conn, lane, now);
@@ -6830,36 +7509,53 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
 
     let advance_reason = match &advance {
         Advance::None { reason, detail } => (*reason, detail.clone()),
-        Advance::Nudge { .. } => ("unchanged-reminder", "same card state already queued or delivered".into()),
+        Advance::Nudge { .. } => (
+            "unchanged-reminder",
+            "same card state already queued or delivered".into(),
+        ),
     };
     'reminder: {
-        if let Advance::Nudge { target, card, status, text, kind } = advance {
+        if let Advance::Nudge {
+            target,
+            card,
+            status,
+            text,
+            kind,
+        } = advance
+        {
             // A NUDGE IS ABOUT A CARD, so it carries that card's revision and the
             // delivery loop drops it if the card moves first (AMUX-3659). Read
             // here, at compute time, because that is the state the text describes.
             // A card whose rev cannot be read delivers unconditionally — the same
             // behaviour as before, since refusing to nudge because a read failed
             // would be a worse trade than an occasionally-stale nudge.
-            let rev: Option<i64> = state
-                .store
-                .read()
+            let rev: Option<i64> = state.store.read().ok().and_then(|c| {
+                c.query_row(
+                    "SELECT rev FROM legacy_execution_issues AS issues WHERE id=?1",
+                    rusqlite::params![&card],
+                    |r| r.get(0),
+                )
                 .ok()
-                .and_then(|c| {
-                    c.query_row("SELECT rev FROM issues WHERE id=?1", rusqlite::params![&card], |r| r.get(0))
-                        .ok()
-                });
+            });
             let delivery = match rev {
                 Some(r) => fleet.deliver_about(&target, &text, &card, r).await,
-                None => fleet.deliver_work(&target, &text).await.map(|_|true),
+                None => fleet.deliver_work(&target, &text).await.map(|_| true),
             };
             match delivery {
-                Err(error)=>return nudge_delivery_failed(lane,&target,&card,&error).with_counts(eligible,open),
+                Err(error) => {
+                    return nudge_delivery_failed(lane, &target, &card, &error)
+                        .with_counts(eligible, open)
+                }
                 Ok(false) => {
-                    tracing::info!(session = lane, card, verdict = "duplicate_reminder_yields_to_pickup",
-                        "board_drive: suppressed reminder does not suppress independent work");
+                    tracing::info!(
+                        session = lane,
+                        card,
+                        verdict = "duplicate_reminder_yields_to_pickup",
+                        "board_drive: suppressed reminder does not suppress independent work"
+                    );
                     break 'reminder;
-                },
-                Ok(true)=>{},
+                }
+                Ok(true) => {}
             }
             // THE COOLDOWN IS PER LANE, AND A REVIEW ROUTE INVOLVES TWO OF THEM.
             // `advance.nudged` is recorded under the REVIEWER (python:13817 — it
@@ -6891,8 +7587,11 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // class and it should stay one thing. The arm is carried in `kind`
             // inside the data, which is where a per-branch counter can read it
             // without splitting the class (AMUX-3777).
-            let etype =
-                if kind.starts_with("renag") { "needsyou.renag" } else { "advance.nudged" };
+            let etype = if kind.starts_with("renag") {
+                "needsyou.renag"
+            } else {
+                "advance.nudged"
+            };
             let idem = if kind == "decompose-asked" {
                 Some(format!("decompose:{card}"))
             } else {
@@ -6913,7 +7612,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             return LaneTrace::acted(lane, kind, &card, format!("delivered to {target}"))
                 .with_counts(eligible, open);
         }
-
     }
 
     if let Some((card, cause)) = current_claim {
@@ -6921,7 +7619,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         // the canonical recovery of that same abandoned WIP slot forever.
         // Also preserve the existing capture-shell WIP exemption: a reminder
         // already sent about a raw prompt is not an executable task claim.
-        let capture_exempt = state.store.read().ok()
+        let capture_exempt = state
+            .store
+            .read()
+            .ok()
             .and_then(|conn| bs::get_issue(&conn, &card).ok().flatten())
             .is_some_and(|row| bs::is_capture_shell(&row) || row.item_type == "epic");
         let recovery = matches!(&pickup, Pickup::ReclaimStale { card: stale, .. } if stale == &card)
@@ -6944,10 +7645,15 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // caught: skip, do not deliver finished work.
             if claim_card(state, lane, &card).await {
                 match fleet.deliver_work(lane, &prompt).await {
-                    Ok(()) => LaneTrace::acted(lane, "assigned", &card, "claimed and prompt queued")
-                        .with_counts(eligible, open),
+                    Ok(()) => {
+                        LaneTrace::acted(lane, "assigned", &card, "claimed and prompt queued")
+                            .with_counts(eligible, open)
+                    }
                     Err(error) => {
-                        let released = release_claim_after_dispatch_failure(state, lane, &card, "todo", &error).await;
+                        let released = release_claim_after_dispatch_failure(
+                            state, lane, &card, "todo", &error,
+                        )
+                        .await;
                         LaneTrace::skip(lane,
                             if released { "delivery-failed-released" } else { "delivery-failed-release-raced" },
                             format!("{card} was not dispatched: {error}; {}", if released {
@@ -6965,7 +7671,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 .with_counts(eligible, open)
             }
         }
-        Pickup::PromoteDeps { blocked_card, promoted } => {
+        Pickup::PromoteDeps {
+            blocked_card,
+            promoted,
+        } => {
             // The blocked todo's only blockers are this session's own backlog
             // cards. Promote them to todo now so the next select_pickup pass
             // can claim the unblocked card. No nudge — the lane gets work
@@ -6983,7 +7692,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                             log_line: Some("auto-promoted: own backlog dep cleared".into()),
                             ..Default::default()
                         };
-                        if let Ok(outcome) = crate::db::advance::advance(conn, dep_id, "todo", "board_drive", &opts)? {
+                        if let Ok(outcome) =
+                            crate::db::advance::advance(conn, dep_id, "todo", "board_drive", &opts)?
+                        {
                             promoted_ids.push(dep_id.clone());
                             all_events.extend(outcome.events);
                         }
@@ -7028,7 +7739,12 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 .with_counts(eligible, open),
             }
         }
-        Pickup::DrainBacklog { card, prompt, backlog_left, todo_refusals } => {
+        Pickup::DrainBacklog {
+            card,
+            prompt,
+            backlog_left,
+            todo_refusals,
+        } => {
             // A direct CAS eliminates the old backlog -> todo -> next-tick gap.
             match claim_card_from_outcome(state, lane, &card, "backlog").await {
                 ClaimCardOutcome::Claimed => match fleet.deliver_work(lane, &prompt).await {
@@ -7045,7 +7761,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                             .with_counts(eligible, open)
                     }
                     Err(error) => {
-                        let released = release_claim_after_dispatch_failure(state, lane, &card, "backlog", &error).await;
+                        let released = release_claim_after_dispatch_failure(
+                            state, lane, &card, "backlog", &error,
+                        )
+                        .await;
                         LaneTrace::skip(lane,
                             if released { "delivery-failed-released" } else { "delivery-failed-release-raced" },
                             format!("{card} backlog claim was not dispatched: {error}; {}", if released {
@@ -7054,15 +7773,28 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                             .with_counts(eligible, open)
                     }
                 },
-                ClaimCardOutcome::DependencyBlocked(blocking) => LaneTrace::skip(lane, "drain-dependency-raced",
-                    format!("{card} gained unfinished prerequisite(s): {}", blocking.join(", ")))
-                    .with_counts(eligible, open),
-                ClaimCardOutcome::NotApplied => LaneTrace::skip(lane, "drain-raced",
-                    format!("{card} left backlog before the atomic claim landed"))
-                    .with_counts(eligible, open),
+                ClaimCardOutcome::DependencyBlocked(blocking) => LaneTrace::skip(
+                    lane,
+                    "drain-dependency-raced",
+                    format!(
+                        "{card} gained unfinished prerequisite(s): {}",
+                        blocking.join(", ")
+                    ),
+                )
+                .with_counts(eligible, open),
+                ClaimCardOutcome::NotApplied => LaneTrace::skip(
+                    lane,
+                    "drain-raced",
+                    format!("{card} left backlog before the atomic claim landed"),
+                )
+                .with_counts(eligible, open),
             }
         }
-        Pickup::ReclaimStale { card, held_h, blocking } => {
+        Pickup::ReclaimStale {
+            card,
+            held_h,
+            blocking,
+        } => {
             // Revalidate the complete selector on the serialized writer. A
             // status-only CAS cannot detect a new note, dependency or human hold.
             let card_c = card.clone();
@@ -7077,7 +7809,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     if !matches!(select_pickup(conn, &lane_c, now_f64()),
                         Pickup::ReclaimStale { card: selected, .. } if selected == card_c)
                     {
-                        return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                        return Ok(crate::db::WriteOutcome {
+                            applied: false,
+                            events: vec![],
+                        });
                     }
                     let opts = crate::db::advance::AdvanceOpts {
                         expected_from: Some("doing".into()),
@@ -7175,8 +7910,13 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 "board-drive",
             )
             .await;
-            LaneTrace::acted(lane, "decompose-asked", ids.first().map(String::as_str).unwrap_or(""), "queue is all capture shells")
-                .with_counts(eligible, open)
+            LaneTrace::acted(
+                lane,
+                "decompose-asked",
+                ids.first().map(String::as_str).unwrap_or(""),
+                "queue is all capture shells",
+            )
+            .with_counts(eligible, open)
         }
         Pickup::None { reason, detail } => {
             // Before generic verification/triage: missing continuations and
@@ -7191,14 +7931,40 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 }).await;
                 let recoveries = match recoveries {
                     Ok(Some(rows)) => rows,
-                    Ok(None) => return LaneTrace::skip(lane, "blocker-recovery-pending", "one specific review is already awaiting delivery").with_counts(eligible, open),
-                    Err(error) => return LaneTrace::skip(lane, "blocker-recovery-unmeasured", error.to_string()).with_counts(eligible, open),
+                    Ok(None) => {
+                        return LaneTrace::skip(
+                            lane,
+                            "blocker-recovery-pending",
+                            "one specific review is already awaiting delivery",
+                        )
+                        .with_counts(eligible, open)
+                    }
+                    Err(error) => {
+                        return LaneTrace::skip(
+                            lane,
+                            "blocker-recovery-unmeasured",
+                            error.to_string(),
+                        )
+                        .with_counts(eligible, open)
+                    }
                 };
                 let considered = recoveries.len();
                 for recovery in recoveries {
-                    match fleet.deliver_blocker_recovery(lane, &recovery.text, &recovery.card, recovery.rev, &recovery.identity).await {
+                    match fleet
+                        .deliver_blocker_recovery(
+                            lane,
+                            &recovery.text,
+                            &recovery.card,
+                            recovery.rev,
+                            &recovery.identity,
+                        )
+                        .await
+                    {
                         Ok(false) => continue,
-                        Err(error) => return nudge_delivery_failed(lane, lane, &recovery.card, &error).with_counts(eligible, open),
+                        Err(error) => {
+                            return nudge_delivery_failed(lane, lane, &recovery.card, &error)
+                                .with_counts(eligible, open)
+                        }
                         Ok(true) => {
                             crate::api::session_verbs::emit_event(state, lane, "task.blocker_recovery",
                                 Some(json!({"issue":recovery.card,"identity":recovery.identity,
@@ -7227,15 +7993,22 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 // because the pickup gate (AMUX-5002) blocks those todos anyway.
                 let is_verification_policy = {
                     let env = crate::api::session_verbs::parse_env(lane);
-                    env.get("CC_VERIFICATION_POLICY").is_some_and(|v| v == "production")
+                    env.get("CC_VERIFICATION_POLICY")
+                        .is_some_and(|v| v == "production")
                 };
-                if eligible > 0 && !is_verification_policy { break 'verify None; }
-                let Ok(conn) = state.store.read() else { break 'verify None; };
+                if eligible > 0 && !is_verification_policy {
+                    break 'verify None;
+                }
+                let Ok(conn) = state.store.read() else {
+                    break 'verify None;
+                };
                 if !is_verification_policy {
                     match open_execution_count(&conn, lane) {
-                        Ok(0) => {},
+                        Ok(0) => {}
                         Ok(_) => break 'verify None,
-                        Err(error) => break 'verify Some(format!("execution population unmeasured: {error}")),
+                        Err(error) => {
+                            break 'verify Some(format!("execution population unmeasured: {error}"))
+                        }
                     }
                 }
                 let total = done_card_count(&conn, lane);
@@ -7252,14 +8025,23 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 if cards.is_empty() {
                     break 'verify None;
                 }
-                let contracts: serde_json::Map<String, Value> = cards.iter().filter_map(|(id,_,_)|
-                    verification_contract(&conn,id).ok().flatten().map(|signature|(id.clone(),json!(signature)))
-                ).collect();
-                if contracts.len() != cards.len() { break 'verify Some("verification contracts unmeasured".into()); }
+                let contracts: serde_json::Map<String, Value> = cards
+                    .iter()
+                    .filter_map(|(id, _, _)| {
+                        verification_contract(&conn, id)
+                            .ok()
+                            .flatten()
+                            .map(|signature| (id.clone(), json!(signature)))
+                    })
+                    .collect();
+                if contracts.len() != cards.len() {
+                    break 'verify Some("verification contracts unmeasured".into());
+                }
                 drop(conn);
                 let text = verify_nudge_text(&cards, total);
                 if let Err(error) = fleet.deliver_work(lane, &text).await {
-                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                    return nudge_delivery_failed(lane, lane, "", &error)
+                        .with_counts(eligible, open);
                 }
                 crate::api::session_verbs::emit_event(
                     state,
@@ -7276,7 +8058,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 return LaneTrace::acted(
                     lane,
                     "verify-nudge",
-                    cards.first().map(|(id,_,_)| id.as_str()).unwrap_or(""),
+                    cards.first().map(|(id, _, _)| id.as_str()).unwrap_or(""),
                     format!("{total} done card(s), batched verify prompt delivered"),
                 )
                 .with_counts(eligible, open);
@@ -7285,7 +8067,9 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             if unchanged_recoveries > 0 {
                 // Suppress generic repetition of the held work, not unrelated
                 // verification. Preserve the real holds and their diagnostics.
-                let verify = verify_trace.map(|v| format!(" | verify: {v}")).unwrap_or_default();
+                let verify = verify_trace
+                    .map(|v| format!(" | verify: {v}"))
+                    .unwrap_or_default();
                 return LaneTrace::skip(lane, "blocker-recovery-unchanged",
                     format!("{unchanged_recoveries} parked/incomplete cards already reviewed; independent verification considered{verify}"))
                     .with_counts(eligible, open);
@@ -7304,7 +8088,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 let stale_count = stale_backlog_count(&conn, lane, now_i);
                 let total_backlog: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
+                        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='backlog' \
                          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
                         rusqlite::params![lane],
                         |r| r.get(0),
@@ -7312,7 +8096,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     .unwrap_or(0);
                 let doing_count: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='doing' \
+                        "SELECT COUNT(*) FROM legacy_execution_issues AS issues WHERE session=?1 AND status='doing' \
                          AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
                         rusqlite::params![lane],
                         |r| r.get(0),
@@ -7387,8 +8171,12 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     .copied()
                     .unwrap_or(0);
                 let lane_working = recent_card_events > 0;
-                let idle_drain =
-                    should_drain_nudge(doing_count, eligible, drainable_backlog, recent_card_events);
+                let idle_drain = should_drain_nudge(
+                    doing_count,
+                    eligible,
+                    drainable_backlog,
+                    recent_card_events,
+                );
                 if doing_count == 0 && eligible == 0 && drainable_backlog > 0 && lane_working {
                     // Countable, so the suppression cannot become invisible.
                     // If this fires constantly for a lane whose backlog never
@@ -7405,7 +8193,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     break 'triage None;
                 }
                 let (event_type, base_cooldown_s) = if idle_drain {
-                    ("backlog.drain_nudge", idle_backlog_drain_cooldown_s(drainable_backlog))
+                    (
+                        "backlog.drain_nudge",
+                        idle_backlog_drain_cooldown_s(drainable_backlog),
+                    )
                 } else {
                     ("backlog.triage_nudge", BACKLOG_TRIAGE_COOLDOWN_S)
                 };
@@ -7478,7 +8269,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                                    board_mark=excluded.board_mark",
                                 rusqlite::params![l, unheeded_after, now, mark_now],
                             )?;
-                            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                            Ok(crate::db::WriteOutcome {
+                                applied: true,
+                                events: vec![],
+                            })
                         })
                         .await;
                     let _ = esc;
@@ -7515,7 +8309,8 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     backlog_triage_text(&cards, stale_count, total_backlog)
                 };
                 if let Err(error) = fleet.deliver_work(lane, &text).await {
-                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                    return nudge_delivery_failed(lane, lane, "", &error)
+                        .with_counts(eligible, open);
                 }
                 crate::api::session_verbs::emit_event(
                     state,
@@ -7639,7 +8434,8 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 drop(conn);
                 let text = continue_nudge_text(bc, dc, &blocked, &done, &human_blocked);
                 if let Err(error) = fleet.deliver_work(lane, &text).await {
-                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                    return nudge_delivery_failed(lane, lane, "", &error)
+                        .with_counts(eligible, open);
                 }
                 crate::api::session_verbs::emit_event(
                     state,
@@ -7732,7 +8528,7 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
     let now = now_f64() as i64;
     let held = state.store.read().ok().and_then(|conn| {
         conn.query_row(
-            "SELECT id FROM issues WHERE status='doing' AND deleted IS NULL AND COALESCE(archived,0)=0 \
+            "SELECT id FROM legacy_execution_issues AS issues WHERE status='doing' AND deleted IS NULL AND COALESCE(archived,0)=0 \
              AND (lease_owner=?1 OR (lease_owner IS NULL AND session=?1)) \
              ORDER BY COALESCE(lease_acquired_at, updated) DESC LIMIT 1",
             [lane],
@@ -7773,17 +8569,34 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
         match pickup {
             Pickup::Claim { card, prompt } => {
                 if claim_card(state, lane, &card).await {
-                    return LeaseNext { verdict: "leased", card: Some(card), prompt: Some(prompt), reason: None, drain: drain(state) };
+                    return LeaseNext {
+                        verdict: "leased",
+                        card: Some(card),
+                        prompt: Some(prompt),
+                        reason: None,
+                        drain: drain(state),
+                    };
                 }
                 reason = format!("{card} was claimed by another writer first");
             }
             Pickup::DrainBacklog { card, prompt, .. } => {
-                if claim_card_from_outcome(state, lane, &card, "backlog").await == ClaimCardOutcome::Claimed {
-                    return LeaseNext { verdict: "leased", card: Some(card), prompt: Some(prompt), reason: None, drain: drain(state) };
+                if claim_card_from_outcome(state, lane, &card, "backlog").await
+                    == ClaimCardOutcome::Claimed
+                {
+                    return LeaseNext {
+                        verdict: "leased",
+                        card: Some(card),
+                        prompt: Some(prompt),
+                        reason: None,
+                        drain: drain(state),
+                    };
                 }
                 reason = format!("{card} left backlog before the claim landed");
             }
-            Pickup::PromoteDeps { blocked_card, promoted } => {
+            Pickup::PromoteDeps {
+                blocked_card,
+                promoted,
+            } => {
                 reason = format!(
                     "{blocked_card} waits on this lane's own backlog {}; the board driver promotes them on its next tick",
                     promoted.join(", ")
@@ -7795,10 +8608,16 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
                 break;
             }
             Pickup::Decompose { ids, .. } => {
-                reason = format!("only capture shells are queued ({}); split them into real tasks first", ids.join(", "));
+                reason = format!(
+                    "only capture shells are queued ({}); split them into real tasks first",
+                    ids.join(", ")
+                );
                 break;
             }
-            Pickup::None { reason: why, detail } => {
+            Pickup::None {
+                reason: why,
+                detail,
+            } => {
                 reason = format!("{why}: {detail}");
                 break;
             }
@@ -7809,7 +8628,13 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
         verdict = "lease_next_none", reason = %reason,
         "board: lease-next found nothing to lease (RR-0052 Invariant 3)"
     );
-    LeaseNext { verdict: "none", card: None, prompt: None, reason: Some(reason), drain: drain(state) }
+    LeaseNext {
+        verdict: "none",
+        card: None,
+        prompt: None,
+        reason: Some(reason),
+        drain: drain(state),
+    }
 }
 
 pub async fn claim_card(state: &AppState, session: &str, card: &str) -> bool {
@@ -7885,7 +8710,7 @@ pub(crate) async fn claim_card_from_outcome(
             let Some(row) = bs::get_issue(conn, &card_s)? else {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             };
-            if row.status != from {
+            if row.project_group.is_some() || row.status != from {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             }
             let blockers = deps_blocking(conn, &row);
@@ -7939,7 +8764,11 @@ pub(crate) async fn claim_card_from_outcome(
             }
         })
         .await;
-    let blockers = dependency_blockers.lock().ok().map(|g| g.clone()).unwrap_or_default();
+    let blockers = dependency_blockers
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
     if !blockers.is_empty() {
         let n_considered = blockers.len();
         tracing::warn!(
@@ -8002,7 +8831,11 @@ pub(crate) async fn claim_card_from_outcome(
 /// receipt share one writer transaction; a human reassignment wins the race
 /// rather than being overwritten by this compensation.
 async fn release_claim_after_dispatch_failure(
-    state: &AppState, session: &str, card: &str, from: &'static str, error: &str,
+    state: &AppState,
+    session: &str,
+    card: &str,
+    from: &'static str,
+    error: &str,
 ) -> bool {
     let (session, card, error) = (session.to_string(), card.to_string(), error.to_string());
     let (session_w, card_w, error_w) = (session.clone(), card.clone(), error.clone());
@@ -8211,7 +9044,7 @@ fn fleet_queue_shape(conn: &Connection) -> Value {
     let mut by_status = serde_json::Map::new();
     let mut total = 0i64;
     if let Ok(mut st) = conn.prepare(&format!(
-        "SELECT status, COUNT(*) FROM issues WHERE status IN {OPEN} \
+        "SELECT status, COUNT(*) FROM legacy_execution_issues AS issues WHERE status IN {OPEN} \
          AND deleted IS NULL AND COALESCE(archived,0)=0 GROUP BY status"
     )) {
         if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
@@ -8224,20 +9057,23 @@ fn fleet_queue_shape(conn: &Connection) -> Value {
     // Reuse the exact per-lane predicate; a raw Todo count is not a ready count.
     let now = now_f64();
     let lanes: Vec<String> = conn
-        .prepare("SELECT DISTINCT session FROM issues WHERE session IS NOT NULL AND session <> '' AND status='todo' AND deleted IS NULL AND COALESCE(archived,0)=0")
+        .prepare("SELECT DISTINCT session FROM legacy_execution_issues AS issues WHERE session IS NOT NULL AND session <> '' AND status='todo' AND deleted IS NULL AND COALESCE(archived,0)=0")
         .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect()))
         .unwrap_or_default();
-    let dispatchable: i64 = lanes.iter().map(|lane| eligible_todo_count(conn, lane, now)).sum();
+    let dispatchable: i64 = lanes
+        .iter()
+        .map(|lane| eligible_todo_count(conn, lane, now))
+        .sum();
     // Median age of the human-blocked pile, in days. The COUNT alone reads the
     // same for 387 questions asked this morning and 387 asked a fortnight ago,
     // and only the second is a bottleneck.
     let needsyou_median_age_d: Option<f64> = conn
         .query_row(
             "SELECT (strftime('%s','now') - COALESCE(updated, created)) / 86400.0 \
-             FROM issues WHERE status='needsyou' AND deleted IS NULL \
+             FROM legacy_execution_issues AS issues WHERE status='needsyou' AND deleted IS NULL \
                AND COALESCE(archived,0)=0 \
              ORDER BY COALESCE(updated, created) DESC \
-             LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM issues WHERE status='needsyou' \
+             LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM legacy_execution_issues AS issues WHERE status='needsyou' \
                              AND deleted IS NULL AND COALESCE(archived,0)=0)",
             [],
             |r| r.get(0),
@@ -8330,10 +9166,14 @@ fn capture_shell_cost(conn: &rusqlite::Connection) -> Value {
     // is the signal: `captured_delegations` alone cannot tell "the carve-out
     // selects nothing any more" from "nobody delegated this week", and
     // `captured_envelopes` beside it can.
-    let envelopes =
-        q(&format!("SELECT COUNT(*) FROM issues i WHERE {}", bs::capture_envelope_sql()));
-    let delegations =
-        q(&format!("SELECT COUNT(*) FROM issues i WHERE {}", bs::capture_delegation_row_sql()));
+    let envelopes = q(&format!(
+        "SELECT COUNT(*) FROM legacy_execution_issues i WHERE {}",
+        bs::capture_envelope_sql()
+    ));
+    let delegations = q(&format!(
+        "SELECT COUNT(*) FROM legacy_execution_issues i WHERE {}",
+        bs::capture_delegation_row_sql()
+    ));
     json!({
         "note": "one nudge per card ever (idem decompose:<id>), so `nudges` is the count of \
                  lanes woken to dispose of a card amux minted. Watch discarded_pct: it is the \
@@ -8374,8 +9214,14 @@ pub async fn get_nudges() -> axum::response::Response {
         for entry in rd.flatten() {
             let p = entry.path();
             if p.extension().and_then(|e| e.to_str()) == Some("env") {
-                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                if name.is_empty() { continue; }
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
                 let val = crate::config::parse_env_file(&p)
                     .into_iter()
                     .find(|(k, _)| k == "CC_STANDING_ORDERS")
@@ -8398,7 +9244,9 @@ pub async fn get_nudges() -> axum::response::Response {
                     let val = crate::config::parse_env_file(&env_path)
                         .into_iter()
                         .find(|(k, _)| k == "CC_STANDING_ORDERS")
-                        .map(|(_, v)| crate::api::session_verbs::auto_continue_on(Some(v.as_str())));
+                        .map(|(_, v)| {
+                            crate::api::session_verbs::auto_continue_on(Some(v.as_str()))
+                        });
                     if let Some(b) = val {
                         workers.insert(name, Value::Bool(b));
                     }
@@ -8418,8 +9266,8 @@ pub async fn get_nudges() -> axum::response::Response {
 
 #[derive(serde::Deserialize)]
 pub struct NudgesPatch {
-    pub level: String,          // "global" | "group" | "worker"
-    pub name: Option<String>,   // group or worker name (required unless level=global)
+    pub level: String,        // "global" | "group" | "worker"
+    pub name: Option<String>, // group or worker name (required unless level=global)
     pub enabled: bool,
 }
 
@@ -8431,31 +9279,40 @@ pub struct NudgesPatch {
 ///
 /// Writes/removes CC_STANDING_ORDERS in the appropriate env file, which is the
 /// same file `standing_orders_on` reads. No restart required.
-pub async fn patch_nudges(
-    axum::Json(body): axum::Json<NudgesPatch>,
-) -> axum::response::Response {
+pub async fn patch_nudges(axum::Json(body): axum::Json<NudgesPatch>) -> axum::response::Response {
     use axum::response::IntoResponse;
     let home = crate::api::session_verbs::home();
     let level = body.level.as_str();
     let name = body.name.as_deref().unwrap_or("");
 
     if matches!(level, "group" | "worker") && name.is_empty() {
-        return (axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": "name is required for group/worker level"}))).into_response();
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "name is required for group/worker level"})),
+        )
+            .into_response();
     }
 
     let path = match level {
         "global" => home.join("amux.env"),
-        "group"  => home.join("env").join(format!("{name}.env")),
+        "group" => home.join("env").join(format!("{name}.env")),
         "worker" => home.join("workers").join(name).join("env"),
-        _ => return (axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": "level must be global, group, or worker"}))).into_response(),
+        _ => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error": "level must be global, group, or worker"})),
+            )
+                .into_response()
+        }
     };
 
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()}))).into_response();
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
         }
     }
 
@@ -8467,34 +9324,47 @@ pub async fn patch_nudges(
     };
 
     if body.enabled {
-        env.remove("CC_STANDING_ORDERS");  // remove = default ON; explicit True is redundant
+        env.remove("CC_STANDING_ORDERS"); // remove = default ON; explicit True is redundant
     } else {
         env.insert("CC_STANDING_ORDERS".into(), "False".into());
     }
 
     let text: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
     if let Err(e) = std::fs::write(&path, text) {
-        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": e.to_string()}))).into_response();
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": e.to_string()})),
+        )
+            .into_response();
     }
 
-    (axum::http::StatusCode::OK, axum::Json(json!({
-        "ok": true,
-        "level": level,
-        "name": name,
-        "enabled": body.enabled,
-        "note": if body.enabled {
-            "CC_STANDING_ORDERS removed from env (nudges on by default)"
-        } else {
-            "CC_STANDING_ORDERS=False written to env (nudges disabled)"
-        },
-    }))).into_response()
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(json!({
+            "ok": true,
+            "level": level,
+            "name": name,
+            "enabled": body.enabled,
+            "note": if body.enabled {
+                "CC_STANDING_ORDERS removed from env (nudges on by default)"
+            } else {
+                "CC_STANDING_ORDERS=False written to env (nudges disabled)"
+            },
+        })),
+    )
+        .into_response()
 }
 
 pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()
-        .route("/api/debug/board-drive", axum::routing::get(debug_board_drive))
-        .route("/api/board/nudges", axum::routing::get(get_nudges).patch(patch_nudges))
+        .route(
+            "/api/debug/board-drive",
+            axum::routing::get(debug_board_drive),
+        )
+        .route(
+            "/api/board/nudges",
+            axum::routing::get(get_nudges).patch(patch_nudges),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -8624,7 +9494,10 @@ mod reviewer_renag_tests {
         let log = "\
 `14:20` amux-frustrations: doing -> review
 `14:33` amux: desc +2140 chars";
-        assert!(!reviewer_left_review(log, "amux"), "nobody has left review yet");
+        assert!(
+            !reviewer_left_review(log, "amux"),
+            "nobody has left review yet"
+        );
         // ...and the existing edge DOES see it, so the two are complementary
         // rather than leaving a gap between them.
         assert!(reviewer_acted_since_review(log, "amux"));
@@ -8716,7 +9589,13 @@ mod tests {
             conn.execute(
                 "INSERT INTO issues (id, title, status, type, created, updated)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-                rusqlite::params![id, format!("t {id}"), status, item_type, 1_760_000_000.0_f64],
+                rusqlite::params![
+                    id,
+                    format!("t {id}"),
+                    status,
+                    item_type,
+                    1_760_000_000.0_f64
+                ],
             )
             .expect("insert");
         };
@@ -8727,26 +9606,49 @@ mod tests {
         // Terminal but never proof of resolution.
         add("DEP-DISCARDED", "discarded", "doc");
 
-        let ids: Vec<String> =
-            ["DEP-UNTYPED", "DEP-DOC", "DEP-DISCARDED"].iter().map(|s| s.to_string()).collect();
+        let ids: Vec<String> = ["DEP-UNTYPED", "DEP-DOC", "DEP-DISCARDED"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let reasons = dep_block_reasons(&conn, &ids);
 
         // THE POINT: the untyped `done` card must say it is done AND why that is
         // not enough. Asserting on "done" alone would pass on the old message.
-        assert!(reasons[0].contains("done"), "must name the real status: {:?}", reasons[0]);
+        assert!(
+            reasons[0].contains("done"),
+            "must name the real status: {:?}",
+            reasons[0]
+        );
         assert!(
             reasons[0].contains("completes at verified"),
             "must name the boundary that makes a done card still block: {:?}",
             reasons[0]
         );
-        assert!(reasons[0].contains("unset->code"), "must say the type defaulted: {:?}", reasons[0]);
+        assert!(
+            reasons[0].contains("unset->code"),
+            "must say the type defaulted: {:?}",
+            reasons[0]
+        );
 
         // CONTROLS. Without these, a helper that appends the same clause to
         // everything passes the block above.
-        assert!(!deps_blocking_contains(&conn, "DEP-DOC"), "a doc card at `done` is resolved");
-        assert!(deps_blocking_contains(&conn, "DEP-UNTYPED"), "untyped defaults to code");
-        assert!(deps_blocking_contains(&conn, "DEP-DISCARDED"), "discarded is not resolution");
-        assert!(reasons[2].contains("discarded"), "names its real status: {:?}", reasons[2]);
+        assert!(
+            !deps_blocking_contains(&conn, "DEP-DOC"),
+            "a doc card at `done` is resolved"
+        );
+        assert!(
+            deps_blocking_contains(&conn, "DEP-UNTYPED"),
+            "untyped defaults to code"
+        );
+        assert!(
+            deps_blocking_contains(&conn, "DEP-DISCARDED"),
+            "discarded is not resolution"
+        );
+        assert!(
+            reasons[2].contains("discarded"),
+            "names its real status: {:?}",
+            reasons[2]
+        );
 
         // Absent and unreadable are their own answers, never "unfinished".
         let missing = dep_block_reasons(&conn, &["NOPE-1".to_string()]);
@@ -8777,7 +9679,11 @@ mod tests {
     fn unheeded_counts_only_when_a_comparison_was_actually_possible() {
         // First sighting: no prior mark. Counts as movement, never as silence.
         assert_eq!(nudge_feedback(0, 1_700_000_000, 0), (0, true));
-        assert_eq!(nudge_feedback(0, 1_700_000_000, 7), (0, true), "and it CLEARS a stuck count");
+        assert_eq!(
+            nudge_feedback(0, 1_700_000_000, 7),
+            (0, true),
+            "and it CLEARS a stuck count"
+        );
 
         // A card moved: the watermark advanced.
         assert_eq!(nudge_feedback(1_700_000_000, 1_700_000_050, 2), (0, true));
@@ -8797,7 +9703,11 @@ mod tests {
     #[test]
     fn the_backoff_doubles_and_is_bounded() {
         let floor = 20.0 * 60.0;
-        assert_eq!(unheeded_backoff(floor, 0), floor, "a responsive lane is untouched");
+        assert_eq!(
+            unheeded_backoff(floor, 0),
+            floor,
+            "a responsive lane is untouched"
+        );
         assert_eq!(unheeded_backoff(floor, 1), floor * 2.0);
         assert_eq!(unheeded_backoff(floor, 2), floor * 4.0);
         // Bounded, so a long-dead lane cannot overflow the multiplier into a
@@ -8818,7 +9728,10 @@ mod tests {
     #[test]
     fn a_silent_lane_is_escalated_within_a_few_ticks_not_eighty() {
         let cap = nudge_unheeded_cap();
-        assert!(cap >= 1, "a cap of 0 would suppress the first nudge, which is not the fix");
+        assert!(
+            cap >= 1,
+            "a cap of 0 would suppress the first nudge, which is not the fix"
+        );
         let mut unheeded = 0;
         let mark = 1_700_000_000;
         let mut fired = 0;
@@ -8837,7 +9750,6 @@ mod tests {
         );
     }
 
-
     /// amux's review question, made into a test rather than answered in prose:
     /// "can a card promoted by the revisit arm be distinguished, after the
     /// fact, from one promoted by the original arm? If both write the same
@@ -8854,8 +9766,14 @@ mod tests {
         assert_ne!(a, b, "both arms would write the same history line");
         // Each must name its OWN cause, not just differ. "Re-activated" alone
         // on both would pass assert_ne while leaving the reader no better off.
-        assert!(a.contains("depends_on"), "deps arm must name its cause: {a}");
-        assert!(b.contains("revisit date"), "revisit arm must name its cause: {b}");
+        assert!(
+            a.contains("depends_on"),
+            "deps arm must name its cause: {a}"
+        );
+        assert!(
+            b.contains("revisit date"),
+            "revisit arm must name its cause: {b}"
+        );
     }
 
     /// The rate limit is the part that fails INVISIBLY: an off-by-one that
@@ -8912,7 +9830,11 @@ mod tests {
         // silently exclude every lane with a clean todo column, which is
         // exactly the set the drain is for.
         let got = due_drain_plan(&cands, &depth, 2);
-        assert_eq!(got, vec!["A-1", "B-1", "B-2"], "backend gets 1 slot, mvs-infra 2");
+        assert_eq!(
+            got,
+            vec!["A-1", "B-1", "B-2"],
+            "backend gets 1 slot, mvs-infra 2"
+        );
     }
     use super::*;
     use rusqlite::Connection;
@@ -8949,7 +9871,10 @@ mod tests {
         let mut prev = f64::INFINITY;
         for n in [1, 10, 25, 40, 60, 100, 200, 500] {
             let c = drain_cooldown_scaled(n, base, floor, per);
-            assert!(c <= prev, "cadence must not slow as backlog grows: {n} -> {c} > {prev}");
+            assert!(
+                c <= prev,
+                "cadence must not slow as backlog grows: {n} -> {c} > {prev}"
+            );
             assert!(c >= floor, "never below the floor");
             prev = c;
         }
@@ -9000,7 +9925,11 @@ mod tests {
     /// into `review`) and must not recommend `ask` for this population.
     #[test]
     fn the_reviewer_named_nudge_keeps_verification_on_the_owners_board() {
-        let done = vec![("D-1".to_string(), "a done card".to_string(), "peer-lane".to_string())];
+        let done = vec![(
+            "D-1".to_string(),
+            "a done card".to_string(),
+            "peer-lane".to_string(),
+        )];
         let text = continue_nudge_text(0, 1, &[], &done, &[]);
         assert!(
             text.contains("Own that verification") && text.contains("/api/board/contract"),
@@ -9019,7 +9948,11 @@ mod tests {
     /// warns about, for a done+reviewer card whose code has not shipped.
     #[test]
     fn the_reviewer_named_nudge_warns_the_review_gate_is_not_universal() {
-        let done = vec![("D-1".to_string(), "a done card".to_string(), "peer-lane".to_string())];
+        let done = vec![(
+            "D-1".to_string(),
+            "a done card".to_string(),
+            "peer-lane".to_string(),
+        )];
         let text = continue_nudge_text(0, 1, &[], &done, &[]);
         assert!(
             text.contains("code") && text.contains("has not shipped"),
@@ -9049,22 +9982,38 @@ mod tests {
             ("S-1", "needsyou", &[]),
         ];
         let lookup = |id: &str| -> CardLink {
-            table.iter().find(|(i, _, _)| *i == id).map(|(_, s, d)| {
-                (s.to_string(), d.iter().map(|x| x.to_string()).collect())
-            })
+            table
+                .iter()
+                .find(|(i, _, _)| *i == id)
+                .map(|(_, s, d)| (s.to_string(), d.iter().map(|x| x.to_string()).collect()))
         };
         assert_eq!(
             human_blocked_root("MG-1356", &lookup, DEPENDS_ON_MAX_DEPTH),
             Some("MG-1369".into()),
             "a three-hop chain to a needsyou card is blocked on the human"
         );
-        assert_eq!(human_blocked_root("MG-1354", &lookup, DEPENDS_ON_MAX_DEPTH), Some("MG-1369".into()));
+        assert_eq!(
+            human_blocked_root("MG-1354", &lookup, DEPENDS_ON_MAX_DEPTH),
+            Some("MG-1369".into())
+        );
         // THE CONTROLS. Each of these would silence a card nobody is waiting on,
         // which is the same defect as the nudge that never stops, pointed the
         // other way.
-        assert_eq!(human_blocked_root("W-1", &lookup, DEPENDS_ON_MAX_DEPTH), None, "root is todo");
-        assert_eq!(human_blocked_root("D-1", &lookup, DEPENDS_ON_MAX_DEPTH), None, "dangling id");
-        assert_eq!(human_blocked_root("C-1", &lookup, DEPENDS_ON_MAX_DEPTH), None, "a cycle terminates");
+        assert_eq!(
+            human_blocked_root("W-1", &lookup, DEPENDS_ON_MAX_DEPTH),
+            None,
+            "root is todo"
+        );
+        assert_eq!(
+            human_blocked_root("D-1", &lookup, DEPENDS_ON_MAX_DEPTH),
+            None,
+            "dangling id"
+        );
+        assert_eq!(
+            human_blocked_root("C-1", &lookup, DEPENDS_ON_MAX_DEPTH),
+            None,
+            "a cycle terminates"
+        );
         // NOTE, from amux-frustrations' review: this cycle assertion does NOT
         // test the seen-set. A two-node cycle keeps the frontier at one element
         // per level, so the loop runs out of depth and returns None whether or
@@ -9076,7 +10025,11 @@ mod tests {
             "the START card's own status must not count, or a card retyped to needsyou silences itself"
         );
         // The cap holds: one hop is not enough to reach MG-1369 from MG-1356.
-        assert_eq!(human_blocked_root("MG-1356", &lookup, 1), None, "depth is bounded");
+        assert_eq!(
+            human_blocked_root("MG-1356", &lookup, 1),
+            None,
+            "depth is bounded"
+        );
     }
 
     /// THE SEEN-SET, which the cycle cell above cannot test (amux-frustrations,
@@ -9099,9 +10052,9 @@ mod tests {
         let lookup = |id: &str| -> CardLink {
             calls.set(calls.get() + 1);
             // "L<level>-<branch>" -> both nodes of the next level.
-            let (lvl, _) = id.split_once('-').and_then(|(l, b)| {
-                Some((l.strip_prefix('L')?.parse::<usize>().ok()?, b))
-            })?;
+            let (lvl, _) = id
+                .split_once('-')
+                .and_then(|(l, b)| Some((l.strip_prefix('L')?.parse::<usize>().ok()?, b)))?;
             if lvl >= LEVELS {
                 return Some(("blocked".to_string(), vec![]));
             }
@@ -9110,7 +10063,10 @@ mod tests {
                 vec![format!("L{}-a", lvl + 1), format!("L{}-b", lvl + 1)],
             ))
         };
-        assert_eq!(human_blocked_root("L0-a", &lookup, DEPENDS_ON_MAX_DEPTH), None);
+        assert_eq!(
+            human_blocked_root("L0-a", &lookup, DEPENDS_ON_MAX_DEPTH),
+            None
+        );
         // With dedup the walk visits at most 2 nodes per level plus the start.
         // Without it the frontier doubles: 2^12 = 4096 expansions before the
         // depth bound stops it. The bound is deliberately far below that and far
@@ -9150,19 +10106,35 @@ mod tests {
         ins("MG-1426", "blocked", None);
 
         let (bc, _dc, blocked, _done, human_blocked) = outstanding_work(&conn, "me");
-        assert_eq!(bc, 1, "only the actionable one arms the nudge, not all four");
+        assert_eq!(
+            bc, 1,
+            "only the actionable one arms the nudge, not all four"
+        );
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].0, "MG-1426");
-        assert_eq!(human_blocked.len(), 3, "the three chaining to MG-1369 are set aside");
+        assert_eq!(
+            human_blocked.len(),
+            3,
+            "the three chaining to MG-1369 are set aside"
+        );
         assert!(human_blocked.iter().all(|(_, _, root)| root == "MG-1369"));
 
         // NAMED, NOT DROPPED (ethos rule 1). A version that just filtered them
         // out would pass every assertion above and leave the lane with a count
         // that silently disagrees with its own board.
         let text = continue_nudge_text(bc, 0, &blocked, &[], &human_blocked);
-        assert!(text.contains("MG-1426"), "the actionable one is still asked about: {text}");
-        assert!(text.contains("MG-1369"), "and the human root is named: {text}");
-        assert!(text.contains("MG-1356"), "and the excluded cards are listed: {text}");
+        assert!(
+            text.contains("MG-1426"),
+            "the actionable one is still asked about: {text}"
+        );
+        assert!(
+            text.contains("MG-1369"),
+            "and the human root is named: {text}"
+        );
+        assert!(
+            text.contains("MG-1356"),
+            "and the excluded cards are listed: {text}"
+        );
         assert!(
             text.contains("Nothing for you to do"),
             "the excluded ones carry no ask: {text}"
@@ -9172,10 +10144,18 @@ mod tests {
 
         // AND WITH NOTHING ACTIONABLE, bc IS ZERO — which is what makes the
         // nudge stop, since the caller's trigger is `bc > 0`.
-        conn.execute("UPDATE issues SET status='todo' WHERE id='MG-1426'", []).expect("update");
+        conn.execute("UPDATE issues SET status='todo' WHERE id='MG-1426'", [])
+            .expect("update");
         let (bc2, _, _, _, hb2) = outstanding_work(&conn, "me");
-        assert_eq!(bc2, 0, "a lane whose every blocker is human-rooted is not nudged");
-        assert_eq!(hb2.len(), 3, "and they are still visible to the caller, not lost");
+        assert_eq!(
+            bc2, 0,
+            "a lane whose every blocker is human-rooted is not nudged"
+        );
+        assert_eq!(
+            hb2.len(),
+            3,
+            "and they are still visible to the caller, not lost"
+        );
     }
 
     /// AMUX-2903. The continue-nudge's cooldown is a RATE limit, not an exit,
@@ -9224,7 +10204,9 @@ mod tests {
             )
             .expect("schema");
         for bad in [Some("not json"), Some("{}"), Some(r#"{"blocked":1}"#), None] {
-            conn2.execute("DELETE FROM session_events", []).expect("clear");
+            conn2
+                .execute("DELETE FROM session_events", [])
+                .expect("clear");
             conn2
                 .execute(
                     "INSERT INTO session_events (ts, session, type, data) VALUES (1,'me','continue.nudge',?1)",
@@ -9275,7 +10257,10 @@ mod tests {
                 t.as_str()
             );
         }
-        assert!(ids.contains("T-bug"), "an unknown type must stay verifiable, not be silently dropped");
+        assert!(
+            ids.contains("T-bug"),
+            "an unknown type must stay verifiable, not be silently dropped"
+        );
         assert_eq!(
             done_card_count(&conn, "me") as usize,
             ids.len(),
@@ -9288,24 +10273,37 @@ mod tests {
     #[test]
     fn verify_candidates_never_include_a_humans_card_or_an_archived_one() {
         let conn = board_db();
-        let ins = |id: &str, session: &str, status: &str, owner: &str, arch: i64, del: Option<i64>| {
+        let ins = |id: &str,
+                   session: &str,
+                   status: &str,
+                   owner: &str,
+                   arch: i64,
+                   del: Option<i64>| {
             conn.execute(
                 "INSERT INTO issues (id,title,status,session,owner_type,archived,deleted,type,updated,created)                  VALUES (?1,?2,?3,?4,?5,?6,?7,'code',100,100)",
                 rusqlite::params![id, format!("card {id}"), status, session, owner, arch, del],
             )
             .expect("insert");
         };
-        ins("A-1", "me", "done", "agent", 0, None);      // the only one that qualifies
-        ins("A-2", "me", "done", "human", 0, None);      // ethos rule 8: never sweep a human's work
-        ins("A-3", "me", "done", "agent", 1, None);      // archived
-        ins("A-4", "me", "done", "agent", 0, Some(1));   // deleted
-        ins("A-5", "me", "todo", "agent", 0, None);      // not done
-        ins("A-6", "other", "done", "agent", 0, None);   // another lane
+        ins("A-1", "me", "done", "agent", 0, None); // the only one that qualifies
+        ins("A-2", "me", "done", "human", 0, None); // ethos rule 8: never sweep a human's work
+        ins("A-3", "me", "done", "agent", 1, None); // archived
+        ins("A-4", "me", "done", "agent", 0, Some(1)); // deleted
+        ins("A-5", "me", "todo", "agent", 0, None); // not done
+        ins("A-6", "other", "done", "agent", 0, None); // another lane
 
         let got = done_verify_candidates(&conn, "me");
         let ids: Vec<&str> = got.iter().map(|(i, _, _)| i.as_str()).collect();
-        assert_eq!(ids, vec!["A-1"], "only this lane's own live agent-owned done card");
-        assert_eq!(done_card_count(&conn, "me"), 1, "the count must share the selector's predicate");
+        assert_eq!(
+            ids,
+            vec!["A-1"],
+            "only this lane's own live agent-owned done card"
+        );
+        assert_eq!(
+            done_card_count(&conn, "me"),
+            1,
+            "the count must share the selector's predicate"
+        );
     }
 
     /// The nudge's closing line NAMES `needs:you` as the way out. Until AEAB-9
@@ -9384,11 +10382,17 @@ mod tests {
 
         let text = verify_nudge_text(&cards, total);
         assert!(text.contains("... and 3 more"), "11 - 8 = 3; got: {text}");
-        assert!(text.contains("11 runtime-changing"), "the headline must state the true total");
+        assert!(
+            text.contains("11 runtime-changing"),
+            "the headline must state the true total"
+        );
         // Every listed card must actually appear, or the list and the count
         // describe different sets.
         for (id, _, _) in &cards {
-            assert!(text.contains(id.as_str()), "{id} listed in the selector but absent from the prompt");
+            assert!(
+                text.contains(id.as_str()),
+                "{id} listed in the selector but absent from the prompt"
+            );
         }
     }
 
@@ -9398,10 +10402,12 @@ mod tests {
     /// family: instruction and enforcement disagreeing about what the gate is).
     #[test]
     fn the_verify_nudge_points_at_the_resolved_gate_and_restates_nothing() {
-        let cards: Vec<(String, String, String)> =
-            vec![("A-1".into(), "t".into(), "code".into())];
+        let cards: Vec<(String, String, String)> = vec![("A-1".into(), "t".into(), "code".into())];
         let text = verify_nudge_text(&cards, 1);
-        assert!(text.contains("/api/board/contract?card="), "must name the contract read: {text}");
+        assert!(
+            text.contains("/api/board/contract?card="),
+            "must name the contract read: {text}"
+        );
         assert!(
             !text.contains("CI/CD passed") && !text.contains("deployed to production"),
             "hardcoded criteria are the defect, not the fix: {text}"
@@ -9411,8 +10417,9 @@ mod tests {
     /// A lane with exactly the cap must not be told there are "0 more".
     #[test]
     fn no_and_n_more_line_when_nothing_was_dropped() {
-        let cards: Vec<(String, String, String)> =
-            (0..3).map(|i| (format!("A-{i}"), "t".into(), "code".into())).collect();
+        let cards: Vec<(String, String, String)> = (0..3)
+            .map(|i| (format!("A-{i}"), "t".into(), "code".into()))
+            .collect();
         let text = verify_nudge_text(&cards, 3);
         assert!(!text.contains("more"), "nothing was dropped; got: {text}");
     }
@@ -9438,7 +10445,8 @@ mod tests {
     }
     impl Default for BoundaryFleet {
         fn default() -> Self {
-            Self { delivered: std::sync::Mutex::new(vec![]),
+            Self {
+                delivered: std::sync::Mutex::new(vec![]),
                 resume_ids: std::sync::Mutex::new(HashSet::new()),
                 resume_disposition: std::sync::Mutex::new(None),
                 running: std::sync::atomic::AtomicBool::new(true),
@@ -9447,41 +10455,86 @@ mod tests {
                 enabled: std::sync::atomic::AtomicBool::new(true),
                 isolated: std::sync::atomic::AtomicBool::new(false),
                 starts: std::sync::atomic::AtomicUsize::new(0),
-                start_error: std::sync::Mutex::new(None), delivery_error: std::sync::Mutex::new(None),
-                suppress_about: std::sync::atomic::AtomicBool::new(false) }
+                start_error: std::sync::Mutex::new(None),
+                delivery_error: std::sync::Mutex::new(None),
+                suppress_about: std::sync::atomic::AtomicBool::new(false),
+            }
         }
     }
     impl Fleet for BoundaryFleet {
-        fn lanes(&self) -> Vec<String> { vec!["lane".into()] }
-        fn auto_pickup_enabled(&self, _: &str) -> bool { self.enabled.load(std::sync::atomic::Ordering::SeqCst) }
-        fn tags(&self, _: &str) -> Vec<String> { vec![] }
-        fn is_isolated(&self, _: &str) -> bool { self.isolated.load(std::sync::atomic::Ordering::SeqCst) }
-        async fn is_running(&self, _: &str) -> bool { self.running.load(std::sync::atomic::Ordering::SeqCst) }
-        async fn at_boundary(&self, _: &str) -> bool { self.boundary.load(std::sync::atomic::Ordering::SeqCst) }
+        fn lanes(&self) -> Vec<String> {
+            vec!["lane".into()]
+        }
+        fn auto_pickup_enabled(&self, _: &str) -> bool {
+            self.enabled.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn tags(&self, _: &str) -> Vec<String> {
+            vec![]
+        }
+        fn is_isolated(&self, _: &str) -> bool {
+            self.isolated.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        async fn is_running(&self, _: &str) -> bool {
+            self.running.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        async fn at_boundary(&self, _: &str) -> bool {
+            self.boundary.load(std::sync::atomic::Ordering::SeqCst)
+        }
         fn active_child_work(&self, _: &str) -> bool {
             self.active_child.load(std::sync::atomic::Ordering::SeqCst)
         }
-        fn auto_continue_enabled(&self, _: &str) -> bool { true }
+        fn auto_continue_enabled(&self, _: &str) -> bool {
+            true
+        }
         async fn start_for_dispatch(&self, _: &str) -> Result<(), String> {
-            self.starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if let Some(error) = self.start_error.lock().unwrap().clone() { return Err(error); }
-            self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(error) = self.start_error.lock().unwrap().clone() {
+                return Err(error);
+            }
+            self.running
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         async fn deliver(&self, lane: &str, text: &str) {
-            self.delivered.lock().unwrap().push((lane.into(), text.into()));
+            self.delivered
+                .lock()
+                .unwrap()
+                .push((lane.into(), text.into()));
         }
         async fn deliver_work(&self, lane: &str, text: &str) -> Result<(), String> {
-            if let Some(error) = self.delivery_error.lock().unwrap().clone() { return Err(error); }
+            if let Some(error) = self.delivery_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             self.deliver(lane, text).await;
             Ok(())
         }
-        async fn deliver_about(&self, lane: &str, text: &str, _: &str, _: i64) -> Result<bool, String> {
-            if self.suppress_about.load(std::sync::atomic::Ordering::SeqCst) { return Ok(false); }
+        async fn deliver_about(
+            &self,
+            lane: &str,
+            text: &str,
+            _: &str,
+            _: i64,
+        ) -> Result<bool, String> {
+            if self
+                .suppress_about
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Ok(false);
+            }
             self.deliver_work(lane, text).await.map(|_| true)
         }
-        async fn deliver_blocker_recovery(&self, lane: &str, text: &str, _card: &str, _rev: i64, identity: &str) -> Result<bool, String> {
-            self.deliver_resume(lane, text, identity).await.map(|d| d == ResumeDelivery::Queued)
+        async fn deliver_blocker_recovery(
+            &self,
+            lane: &str,
+            text: &str,
+            _card: &str,
+            _rev: i64,
+            identity: &str,
+        ) -> Result<bool, String> {
+            self.deliver_resume(lane, text, identity)
+                .await
+                .map(|d| d == ResumeDelivery::Queued)
         }
         async fn deliver_resume(
             &self,
@@ -9493,10 +10546,18 @@ mod tests {
                 return Err(error);
             }
             if let Some(disposition) = self.resume_disposition.lock().unwrap().take() {
-                self.resume_ids.lock().unwrap().insert(delivery_id.to_string());
+                self.resume_ids
+                    .lock()
+                    .unwrap()
+                    .insert(delivery_id.to_string());
                 return Ok(disposition);
             }
-            if !self.resume_ids.lock().unwrap().insert(delivery_id.to_string()) {
+            if !self
+                .resume_ids
+                .lock()
+                .unwrap()
+                .insert(delivery_id.to_string())
+            {
                 return Ok(ResumeDelivery::AlreadyDelivered);
             }
             self.deliver(lane, text).await;
@@ -9522,7 +10583,11 @@ mod tests {
     #[test]
     fn a_blocked_card_is_released_only_when_its_dependencies_are_all_that_held_it() {
         let conn = crate::db::migrate::test_memdb();
-        let ins = |id: &str, status: &str, deps: &str, blocked_on: Option<&str>, source_ref: Option<&str>| {
+        let ins = |id: &str,
+                   status: &str,
+                   deps: &str,
+                   blocked_on: Option<&str>,
+                   source_ref: Option<&str>| {
             conn.execute(
                 "INSERT INTO issues (id,title,desc,status,session,created,updated,owner_type,type,depends_on,blocked_on,source_ref) \
                  VALUES (?1,?1,'',?2,'lane',1,1,'agent','chore',?3,?4,?5)",
@@ -9532,15 +10597,33 @@ mod tests {
         ins("DONE-DEP", "verified", "[]", None, None);
         ins("OPEN-DEP", "doing", "[]", None, None);
         ins("FREE", "blocked", "[\"DONE-DEP\"]", None, None);
-        ins("WATCHED", "blocked", "[\"DONE-DEP\"]", Some("vendor ships the fix"), None);
-        ins("TRIGGERED", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        ins(
+            "WATCHED",
+            "blocked",
+            "[\"DONE-DEP\"]",
+            Some("vendor ships the fix"),
+            None,
+        );
+        ins(
+            "TRIGGERED",
+            "blocked",
+            "[\"DONE-DEP\"]",
+            None,
+            Some("staging deploy is green"),
+        );
         // A trigger holds only while the owner has verified it recently (MB-53).
         conn.execute(
             "UPDATE issues SET last_verified_at=?1 WHERE id='TRIGGERED'",
             [now_f64() as i64],
         )
         .unwrap();
-        ins("STALE-TRIGGER", "blocked", "[\"DONE-DEP\"]", None, Some("staging deploy is green"));
+        ins(
+            "STALE-TRIGGER",
+            "blocked",
+            "[\"DONE-DEP\"]",
+            None,
+            Some("staging deploy is green"),
+        );
         conn.execute(
             "UPDATE issues SET last_verified_at=?1 WHERE id='STALE-TRIGGER'",
             [now_f64() as i64 - 30 * 24 * 3600],
@@ -9548,7 +10631,10 @@ mod tests {
         .unwrap();
         ins("STILL", "blocked", "[\"OPEN-DEP\"]", None, None);
         ins("PROSE", "blocked", "[]", None, None);
-        let got: Vec<String> = blocked_dep_unblocks(&conn).into_iter().map(|(id, _)| id).collect();
+        let got: Vec<String> = blocked_dep_unblocks(&conn)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         assert_eq!(got, vec!["FREE".to_string(), "STALE-TRIGGER".to_string()],
             "a card whose dependencies were the whole block is released, and a trigger nobody has verified in 30 days no longer counts as a block (MB-53)");
     }
@@ -9583,55 +10669,97 @@ mod tests {
             conn.execute("UPDATE issues SET rev=rev+1, log='checked again', last_verified_at=?1 WHERE id='PARKED'", [now_f64() as i64])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "blocker-recovery-unchanged");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.reason,
+            "blocker-recovery-unchanged"
+        );
         assert_eq!(fleet.delivered.lock().unwrap().len(), 1);
         // Actual output becoming available re-arms recovery; the explicit hold stays.
         store.write(|conn| {
             conn.execute("UPDATE issues SET status='verified', evidence='library test passed' WHERE id='EXTERNAL'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "blocker-recovery"
+        );
         assert_eq!(drive_status(&store, "PARKED"), "backlog");
         assert_eq!(drive_events(&store, "task.blocker_recovery"), 2);
     }
 
     #[tokio::test]
     async fn pending_blocker_review_suppresses_more_reviews_and_generic_nudges() {
-        let (_dir,state,store)=drive_state();
-        for id in ["PARKED-A","PARKED-B"] { drive_card(&store,id,"backlog","agent","code"); }
+        let (_dir, state, store) = drive_state();
+        for id in ["PARKED-A", "PARKED-B"] {
+            drive_card(&store, id, "backlog", "agent", "code");
+        }
         store.write(|conn| {
             conn.execute("UPDATE issues SET blocked_on='peer availability' WHERE id LIKE 'PARKED-%'",[])?;
             conn.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES ('board-blocker:first:1','lane','Review A',1,'board-drive')",[])?;
             Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
         }).unwrap();
-        let fleet=BoundaryFleet::default();
+        let fleet = BoundaryFleet::default();
         for _ in 0..3 {
-            assert_eq!(drive_lane(&state,&fleet,"lane").await.reason,"blocker-recovery-pending");
+            assert_eq!(
+                drive_lane(&state, &fleet, "lane").await.reason,
+                "blocker-recovery-pending"
+            );
         }
         assert!(fleet.delivered.lock().unwrap().is_empty());
-        assert_eq!(drive_events(&store,"task.blocker_recovery"),0);
-        store.write(|conn| {conn.execute("DELETE FROM steering_queue",[])?;
-            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})}).unwrap();
-        assert_eq!(drive_lane(&state,&fleet,"lane").await.outcome,"blocker-recovery");
+        assert_eq!(drive_events(&store, "task.blocker_recovery"), 0);
+        store
+            .write(|conn| {
+                conn.execute("DELETE FROM steering_queue", [])?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "blocker-recovery"
+        );
     }
 
     #[tokio::test]
     async fn blocker_recovery_does_not_run_into_busy_isolated_or_stopped_workers() {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "PARKED", "backlog", "agent", "code");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET blocked_on='peer availability' WHERE id='PARKED'", [])?;
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET blocked_on='peer availability' WHERE id='PARKED'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let fleet = BoundaryFleet::default();
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "mid-turn");
-        fleet.boundary.store(true, std::sync::atomic::Ordering::SeqCst);
-        fleet.isolated.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .isolated
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "isolated");
-        fleet.isolated.store(false, std::sync::atomic::Ordering::SeqCst);
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "not-running-no-dispatchable-work");
+        fleet
+            .isolated
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.reason,
+            "not-running-no-dispatchable-work"
+        );
         assert!(fleet.delivered.lock().unwrap().is_empty());
         assert_eq!(drive_status(&store, "PARKED"), "backlog");
     }
@@ -9648,14 +10776,27 @@ mod tests {
             conn.execute("UPDATE issues SET ask_type='customer_outbound' WHERE id='OUTBOUND'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        let conn=store.read().unwrap();
-        let reviews=blocker_recoveries_with_policy(&conn,"lane", &["budget".into(),"customer_outbound".into()]).unwrap();
-        assert_eq!(reviews.len(),1);
-        assert_eq!(reviews[0].card,"OLD-ASK");
+        let conn = store.read().unwrap();
+        let reviews = blocker_recoveries_with_policy(
+            &conn,
+            "lane",
+            &["budget".into(), "customer_outbound".into()],
+        )
+        .unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].card, "OLD-ASK");
         assert!(reviews[0].text.contains("\"ask_outside_policy\":true"));
-        assert!(reviews[0].text.contains("Never treat policy cleanup as permission"));
-        assert_eq!(bs::get_issue(&conn,"OLD-ASK").unwrap().unwrap().status,"needsyou", "review is not an approval");
-        assert!(blocker_recoveries_with_policy(&conn,"lane", &["*".into()]).unwrap().is_empty());
+        assert!(reviews[0]
+            .text
+            .contains("Never treat policy cleanup as permission"));
+        assert_eq!(
+            bs::get_issue(&conn, "OLD-ASK").unwrap().unwrap().status,
+            "needsyou",
+            "review is not an approval"
+        );
+        assert!(blocker_recoveries_with_policy(&conn, "lane", &["*".into()])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -9666,21 +10807,37 @@ mod tests {
         let _home = crate::api::settings::test_env::set_home(home.path());
         let (_dir, _state, store) = drive_state();
         drive_card(&store, "WAIT", "backlog", "agent", "code");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET blocked_on='input artifact missing' WHERE id='WAIT'", [])?;
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
-        let identity = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET blocked_on='input artifact missing' WHERE id='WAIT'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        let identity = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0]
+            .identity
+            .clone();
         store.write(|conn| {
             conn.execute("UPDATE issues SET desc=desc||' Still waiting; checked again.',rev=rev+1 WHERE id='WAIT'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        assert_eq!(blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity);
+        assert_eq!(
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity,
+            identity
+        );
         store.write(|conn| {
             conn.execute("UPDATE issues SET blocked_on='required artifact now available; validate its signature' WHERE id='WAIT'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        assert_ne!(blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity);
+        assert_ne!(
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity,
+            identity
+        );
     }
 
     #[test]
@@ -9698,20 +10855,28 @@ mod tests {
             conn.execute("UPDATE issues SET blocked_on='one IAM binding, grantable only by the owner' WHERE id='HELD'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        let identity = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
+        let identity = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0]
+            .identity
+            .clone();
         // Every field the prompt tells the worker to write, in one turn.
-        store.write(|conn| {
-            conn.execute(
+        store
+            .write(|conn| {
+                conn.execute(
                 "UPDATE issues SET next_action='Ask the owner to grant the binding, then retry',\
                  acceptance_criteria='[\"the binding exists on the service account\"]',\
                  evidence='checked 09:00 and 11:00; still absent',\
                  gate='[\"Implemented and merged\"]',\
                  ask_question='grant the binding?',ask_unblocks='the tenant roll',\
                  title='Held on one IAM binding',rev=rev+1 WHERE id='HELD'", [])?;
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         assert_eq!(
-            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity,
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity,
+            identity,
             "recording exactly what the prompt demanded re-armed the prompt"
         );
         // A genuinely different blocking condition still earns a turn.
@@ -9720,7 +10885,8 @@ mod tests {
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         assert_ne!(
-            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity,
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity,
+            identity,
             "a changed blocking condition must still re-arm"
         );
     }
@@ -9739,19 +10905,27 @@ mod tests {
             conn.execute("UPDATE issues SET blocked_on='waiting on an upstream artifact',next_action=NULL WHERE id='NOCONT'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        let missing = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
+        let missing = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0]
+            .identity
+            .clone();
         store.write(|conn| {
             conn.execute("UPDATE issues SET next_action='Poll the upstream artifact, then validate it' WHERE id='NOCONT'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
-        let supplied = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
-        assert_ne!(supplied, missing, "a missing continuation becoming present IS a changed blocker");
+        let supplied = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0]
+            .identity
+            .clone();
+        assert_ne!(
+            supplied, missing,
+            "a missing continuation becoming present IS a changed blocker"
+        );
         store.write(|conn| {
             conn.execute("UPDATE issues SET next_action='Poll the upstream artifact hourly, then validate its signature' WHERE id='NOCONT'", [])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         assert_eq!(
-            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, supplied,
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity,
+            supplied,
             "rewording a continuation that already exists is not a changed blocker"
         );
     }
@@ -9760,17 +10934,33 @@ mod tests {
     fn missing_continuation_backlog_is_prepared_instead_of_repeatedly_failing_claim() {
         let (_dir, _state, store) = drive_state();
         drive_card(&store, "INCOMPLETE", "backlog", "agent", "code");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET next_action=NULL WHERE id='INCOMPLETE'", [])?;
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET next_action=NULL WHERE id='INCOMPLETE'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let conn = store.read().unwrap();
-        assert!(matches!(select_pickup_with(&conn, "lane", now_f64(), true), Pickup::None{..}));
+        assert!(matches!(
+            select_pickup_with(&conn, "lane", now_f64(), true),
+            Pickup::None { .. }
+        ));
         let recovery = blocker_recoveries(&conn, "lane").unwrap();
         assert_eq!(recovery.len(), 1);
         assert_eq!(recovery[0].card, "INCOMPLETE");
-        assert!(matches!(select_pickup_with(&conn, "lane", now_f64(), false), Pickup::DrainBacklog{..}),
-            "the explicit continuation opt-out still works");
+        assert!(
+            matches!(
+                select_pickup_with(&conn, "lane", now_f64(), false),
+                Pickup::DrainBacklog { .. }
+            ),
+            "the explicit continuation opt-out still works"
+        );
     }
 
     #[tokio::test]
@@ -9787,8 +10977,13 @@ mod tests {
         assert!(failed.reason.contains("delivery"), "{failed:?}");
         assert_eq!(drive_events(&store, "task.blocker_recovery"), 0);
         *fleet.delivery_error.lock().unwrap() = None;
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
-        assert!(fleet.delivered.lock().unwrap()[0].1.contains("missing_next_action\":true"));
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "blocker-recovery"
+        );
+        assert!(fleet.delivered.lock().unwrap()[0]
+            .1
+            .contains("missing_next_action\":true"));
     }
 
     #[tokio::test]
@@ -9796,23 +10991,44 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "B-DEP", "verified", "agent", "chore");
         drive_card(&store, "B-CARD", "blocked", "agent", "chore");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET depends_on='[\"B-DEP\"]' WHERE id='B-CARD'", [])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET depends_on='[\"B-DEP\"]' WHERE id='B-CARD'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         assert_eq!(unblock_resolved_blocked(&state).await, 1);
         assert_eq!(drive_status(&store, "B-CARD"), "todo");
-        assert_eq!(unblock_resolved_blocked(&state).await, 0, "a second pass has nothing left to move");
+        assert_eq!(
+            unblock_resolved_blocked(&state).await,
+            0,
+            "a second pass has nothing left to move"
+        );
     }
 
     #[test]
     fn lease_verdict_keeps_only_a_provably_live_holder() {
-        assert_eq!(lease_verdict(false, true, false), (false, "holder_not_running"));
-        assert_eq!(lease_verdict(false, false, true), (false, "holder_not_running"),
-            "a stopped lane cannot be mid-turn, whatever a stale boundary probe says");
+        assert_eq!(
+            lease_verdict(false, true, false),
+            (false, "holder_not_running")
+        );
+        assert_eq!(
+            lease_verdict(false, false, true),
+            (false, "holder_not_running"),
+            "a stopped lane cannot be mid-turn, whatever a stale boundary probe says"
+        );
         assert_eq!(lease_verdict(true, false, false), (true, "holder_mid_turn"));
         assert_eq!(lease_verdict(true, true, true), (true, "holder_child_work"));
-        assert_eq!(lease_verdict(true, true, false), (false, "holder_idle_past_ttl"));
+        assert_eq!(
+            lease_verdict(true, true, false),
+            (false, "holder_idle_past_ttl")
+        );
     }
 
     #[tokio::test]
@@ -9820,14 +11036,26 @@ mod tests {
         let (_dir, state, store) = drive_state();
         expired_lease_card(&store, "T-LIVE");
         let fleet = BoundaryFleet::default();
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst); // mid-turn
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst); // mid-turn
         let r = reclaim_expired_leases(&state, &fleet).await;
         assert!(r.measured);
         assert_eq!((r.n_considered, r.reclaimed, r.extended), (1, 0, 1));
         assert_eq!(drive_status(&store, "T-LIVE"), "doing");
-        let exp: i64 = store.read().unwrap()
-            .query_row("SELECT lease_expires_at FROM issues WHERE id='T-LIVE'", [], |r| r.get(0)).unwrap();
-        assert!(exp > now_f64() as i64, "renewal must push the expiry into the future");
+        let exp: i64 = store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT lease_expires_at FROM issues WHERE id='T-LIVE'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            exp > now_f64() as i64,
+            "renewal must push the expiry into the future"
+        );
         assert_eq!(drive_events(&store, "task.lease_reclaimed"), 0);
     }
 
@@ -9840,11 +11068,20 @@ mod tests {
         assert_eq!((r.n_considered, r.reclaimed, r.extended), (1, 1, 0));
         assert_eq!(drive_status(&store, "T-IDLE"), "todo");
         assert_eq!(drive_events(&store, "task.lease_reclaimed"), 1);
-        let (owner, gen): (Option<String>, i64) = store.read().unwrap()
-            .query_row("SELECT lease_owner, lease_generation FROM issues WHERE id='T-IDLE'", [],
-                |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (owner, gen): (Option<String>, i64) = store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT lease_owner, lease_generation FROM issues WHERE id='T-IDLE'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(owner, None, "a reclaimed card carries no lease");
-        assert!(gen > 1, "release bumps the generation so a stale claimant is recognizable");
+        assert!(
+            gen > 1,
+            "release bumps the generation so a stale claimant is recognizable"
+        );
     }
 
     #[tokio::test]
@@ -9852,8 +11089,12 @@ mod tests {
         let (_dir, state, store) = drive_state();
         expired_lease_card(&store, "T-DEAD");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        fleet.active_child.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .active_child
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let r = reclaim_expired_leases(&state, &fleet).await;
         assert_eq!((r.reclaimed, r.extended), (1, 0));
         assert_eq!(drive_status(&store, "T-DEAD"), "todo");
@@ -9872,14 +11113,19 @@ mod tests {
         let now = now_f64() as i64;
         let counts = std::sync::Arc::new(std::sync::Mutex::new((0usize, 0usize, 0usize)));
         let c2 = counts.clone();
-        store.write(move |conn| {
-            let other = bs::refresh_lease_heartbeat(conn, "someone-else", now)?;
-            let mine = bs::refresh_lease_heartbeat(conn, "lane", now)?;
-            // Throttled: a second report inside the gap writes nothing.
-            let again = bs::refresh_lease_heartbeat(conn, "lane", now + 5)?;
-            *c2.lock().unwrap() = (other, mine, again);
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(move |conn| {
+                let other = bs::refresh_lease_heartbeat(conn, "someone-else", now)?;
+                let mine = bs::refresh_lease_heartbeat(conn, "lane", now)?;
+                // Throttled: a second report inside the gap writes nothing.
+                let again = bs::refresh_lease_heartbeat(conn, "lane", now + 5)?;
+                *c2.lock().unwrap() = (other, mine, again);
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         assert_eq!(*counts.lock().unwrap(), (0, 1, 0));
         let (hb, exp, updated) = read(&store);
         assert!(hb0 < now);
@@ -9888,15 +11134,36 @@ mod tests {
         assert_eq!(updated, updated0, "a heartbeat is not a card edit");
     }
 
-    fn drive_state() -> (tempfile::TempDir, AppState, std::sync::Arc<crate::db::Store>) {
+    fn drive_state() -> (
+        tempfile::TempDir,
+        AppState,
+        std::sync::Arc<crate::db::Store>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("drive.db")).unwrap());
-        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(),
-            auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let store =
+            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("drive.db")).unwrap());
+        let state = AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
         (dir, state, store)
     }
-    fn drive_card(store: &std::sync::Arc<crate::db::Store>, id: &str, status: &str, owner: &str, kind: &str) {
-        let (id, status, owner, kind) = (id.to_string(), status.to_string(), owner.to_string(), kind.to_string());
+    fn drive_card(
+        store: &std::sync::Arc<crate::db::Store>,
+        id: &str,
+        status: &str,
+        owner: &str,
+        kind: &str,
+    ) {
+        let (id, status, owner, kind) = (
+            id.to_string(),
+            status.to_string(),
+            owner.to_string(),
+            kind.to_string(),
+        );
         let now = now_f64() as i64;
         store.write(move |conn| {
             // These tests exercise dispatch and compensation, so the fixture
@@ -9908,10 +11175,22 @@ mod tests {
         }).unwrap();
     }
     fn drive_status(store: &std::sync::Arc<crate::db::Store>, id: &str) -> String {
-        store.read().unwrap().query_row("SELECT status FROM issues WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        store
+            .read()
+            .unwrap()
+            .query_row("SELECT status FROM issues WHERE id=?1", [id], |r| r.get(0))
+            .unwrap()
     }
     fn drive_events(store: &std::sync::Arc<crate::db::Store>, kind: &str) -> i64 {
-        store.read().unwrap().query_row("SELECT COUNT(*) FROM session_events WHERE type=?1", [kind], |r| r.get(0)).unwrap()
+        store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_events WHERE type=?1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
     fn drive_claim(store: &std::sync::Arc<crate::db::Store>, id: &str) {
         let id = id.to_string();
@@ -9924,14 +11203,19 @@ mod tests {
         }).unwrap();
     }
     fn drive_started(store: &std::sync::Arc<crate::db::Store>) {
-        store.write(|conn| {
-            conn.execute(
-                "INSERT INTO session_events (ts,session,type,data,source) \
+        store
+            .write(|conn| {
+                conn.execute(
+                    "INSERT INTO session_events (ts,session,type,data,source) \
                  VALUES (?1,'lane','session.started','{}','test')",
-                rusqlite::params![now_f64()],
-            )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+                    rusqlite::params![now_f64()],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
     }
 
     #[tokio::test]
@@ -9940,12 +11224,18 @@ mod tests {
         drive_card(&store, "REVIEW-1", "review", "agent", "code");
         drive_card(&store, "READY-1", "todo", "agent", "code");
         let fleet = BoundaryFleet::default();
-        fleet.suppress_about.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .suppress_about
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.outcome, "assigned", "{trace:?}");
         assert_eq!(drive_status(&store, "READY-1"), "doing");
         assert_eq!(drive_status(&store, "REVIEW-1"), "review");
-        assert_eq!(fleet.delivered.lock().unwrap().len(), 1, "only new work consumes a turn");
+        assert_eq!(
+            fleet.delivered.lock().unwrap().len(),
+            1,
+            "only new work consumes a turn"
+        );
     }
 
     #[test]
@@ -9953,22 +11243,52 @@ mod tests {
         let conn = board_db();
         for n in 0..45 {
             let id = format!("RAW-{n:02}");
-            add_card(&conn,&id,"lane","backlog","Fix parser","**Prompt:** Fix the parser regression");
+            add_card(
+                &conn,
+                &id,
+                "lane",
+                "backlog",
+                "Fix parser",
+                "**Prompt:** Fix the parser regression",
+            );
             conn.execute("UPDATE issues SET creator='amux',source='capture',created=?2,updated=?2 WHERE id=?1",rusqlite::params![id,n+1]).unwrap();
-            if n>0 {
+            if n > 0 {
                 conn.execute("INSERT INTO session_events(ts,session,type,data,idem,source) VALUES (1,'lane','advance.nudged','{}',?1,'test')",[format!("decompose:{id}")]).unwrap();
             }
         }
-        assert_eq!(unnudged_capture_cleanup(&conn,"lane"),Some("RAW-00".into()));
+        assert_eq!(
+            unnudged_capture_cleanup(&conn, "lane"),
+            Some("RAW-00".into())
+        );
     }
 
     #[test]
     fn queued_capture_gets_intake_even_with_an_existing_review_card() {
         let conn = board_db();
-        add_card(&conn, "REVIEW-1", "lane", "review", "Review parser fix", "SCOPE: tests");
-        add_card(&conn, "RAW-1", "lane", "backlog", "1", "**Prompt:** 1. Fix parser\n2. Add regression");
-        conn.execute("UPDATE issues SET creator='amux',source='capture' WHERE id='RAW-1'", []).unwrap();
-        assert!(matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, kind: "decompose-asked", .. } if card=="RAW-1"));
+        add_card(
+            &conn,
+            "REVIEW-1",
+            "lane",
+            "review",
+            "Review parser fix",
+            "SCOPE: tests",
+        );
+        add_card(
+            &conn,
+            "RAW-1",
+            "lane",
+            "backlog",
+            "1",
+            "**Prompt:** 1. Fix parser\n2. Add regression",
+        );
+        conn.execute(
+            "UPDATE issues SET creator='amux',source='capture' WHERE id='RAW-1'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, kind: "decompose-asked", .. } if card=="RAW-1")
+        );
     }
 
     #[tokio::test]
@@ -9977,10 +11297,18 @@ mod tests {
         drive_card(&store, "ABANDONED", "doing", "agent", "code");
         drive_card(&store, "NEXT", "todo", "agent", "code");
         drive_claim(&store, "ABANDONED");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET updated=?1 WHERE id='ABANDONED'", [now_f64() as i64 - 48 * 3600])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET updated=?1 WHERE id='ABANDONED'",
+                    [now_f64() as i64 - 48 * 3600],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let fleet = BoundaryFleet::default();
         let recovery = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(recovery.outcome, "reclaim-stale", "{recovery:?}");
@@ -9989,7 +11317,11 @@ mod tests {
         let pickup = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(pickup.card.as_deref(), Some("NEXT"), "{pickup:?}");
         assert_eq!(drive_status(&store, "NEXT"), "doing");
-        assert_eq!(drive_status(&store, "ABANDONED"), "todo", "reclaimed card yields instead of churning");
+        assert_eq!(
+            drive_status(&store, "ABANDONED"),
+            "todo",
+            "reclaimed card yields instead of churning"
+        );
         assert_eq!(fleet.delivered.lock().unwrap().len(), 1);
     }
 
@@ -10009,7 +11341,11 @@ mod tests {
         let pickup = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(pickup.card.as_deref(), Some("REAL"), "{pickup:?}");
         assert_eq!(drive_status(&store, "REAL"), "doing");
-        assert_eq!(drive_status(&store, "SHELL"), "doing", "never silently discard the user's captured request");
+        assert_eq!(
+            drive_status(&store, "SHELL"),
+            "doing",
+            "never silently discard the user's captured request"
+        );
         assert_eq!(fleet.delivered.lock().unwrap().len(), 1);
     }
 
@@ -10018,26 +11354,50 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "HELD", "backlog", "agent", "code");
         drive_card(&store, "READY", "done", "agent", "code");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET blocked_on='explicit owner deployment hold' WHERE id='HELD'", [])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET blocked_on='explicit owner deployment hold' WHERE id='HELD'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let fleet = BoundaryFleet::default();
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "blocker-recovery"
+        );
         let second = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(second.outcome, "verify-nudge", "{second:?}");
         assert_eq!(second.card.as_deref(), Some("READY"));
         assert_eq!(drive_status(&store, "HELD"), "backlog");
         assert_eq!(drive_events(&store, "task.blocker_recovery"), 1);
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.reason, "blocker-recovery-unchanged");
-        assert_eq!(fleet.delivered.lock().unwrap().len(), 2, "neither held work nor unchanged verification repeats");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.reason,
+            "blocker-recovery-unchanged"
+        );
+        assert_eq!(
+            fleet.delivered.lock().unwrap().len(),
+            2,
+            "neither held work nor unchanged verification repeats"
+        );
     }
 
     #[tokio::test]
     async fn container_and_already_asked_capture_do_not_hide_child_verification() {
         for capture in [false, true] {
             let (_dir, state, store) = drive_state();
-            drive_card(&store, "CONTAINER", "doing", "agent", if capture { "code" } else { "epic" });
+            drive_card(
+                &store,
+                "CONTAINER",
+                "doing",
+                "agent",
+                if capture { "code" } else { "epic" },
+            );
             drive_card(&store, "CHILD", "done", "agent", "code");
             drive_claim(&store, "CONTAINER");
             if capture {
@@ -10049,44 +11409,79 @@ mod tests {
             }
             let fleet = BoundaryFleet::default();
             let result = drive_lane(&state, &fleet, "lane").await;
-            assert_eq!(result.outcome, "verify-nudge", "capture={capture}: {result:?}");
-            assert_eq!(drive_status(&store, "CONTAINER"), "doing", "selection never fabricates completion");
+            assert_eq!(
+                result.outcome, "verify-nudge",
+                "capture={capture}: {result:?}"
+            );
+            assert_eq!(
+                drive_status(&store, "CONTAINER"),
+                "doing",
+                "selection never fabricates completion"
+            );
         }
     }
 
     #[tokio::test]
     async fn partial_verification_progress_offers_other_cards_without_repeating_unresolved_ones() {
         let (_dir, state, store) = drive_state();
-        for n in 0..10 { drive_card(&store, &format!("VERIFY-{n}"), "done", "agent", "code"); }
+        for n in 0..10 {
+            drive_card(&store, &format!("VERIFY-{n}"), "done", "agent", "code");
+        }
         let fleet = BoundaryFleet::default();
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "verify-nudge");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "verify-nudge"
+        );
         assert_eq!(drive_events(&store, "verify.nudge"), 1);
         drive_lane(&state, &fleet, "lane").await;
-        assert_eq!(drive_events(&store, "verify.nudge"), 1, "no progress means no extra paid turn");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET status='verified' WHERE id='VERIFY-0'", [])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        assert_eq!(
+            drive_events(&store, "verify.nudge"),
+            1,
+            "no progress means no extra paid turn"
+        );
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET status='verified' WHERE id='VERIFY-0'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let second = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(second.outcome, "verify-nudge", "{second:?}");
         let messages = fleet.delivered.lock().unwrap();
         assert!(messages[1].1.contains("VERIFY-8") && messages[1].1.contains("VERIFY-9"));
-        assert!(!messages[1].1.contains("VERIFY-1"), "unresolved member of previous batch stays quiet");
+        assert!(
+            !messages[1].1.contains("VERIFY-1"),
+            "unresolved member of previous batch stays quiet"
+        );
         assert_eq!(drive_status(&store, "VERIFY-1"), "done");
     }
 
     #[tokio::test]
     async fn stopped_worker_with_only_verification_work_wakes_once() {
-        let (_dir,state,store)=drive_state();
-        drive_card(&store,"DONE","done","agent","code");
-        let fleet=BoundaryFleet::default();
-        fleet.running.store(false,std::sync::atomic::Ordering::SeqCst);
-        let result=drive_lane(&state,&fleet,"lane").await;
-        assert_eq!(result.outcome,"verify-nudge","{result:?}");
-        assert_eq!(fleet.starts.load(std::sync::atomic::Ordering::SeqCst),1);
-        fleet.running.store(false,std::sync::atomic::Ordering::SeqCst);
-        drive_lane(&state,&fleet,"lane").await;
-        assert_eq!(fleet.starts.load(std::sync::atomic::Ordering::SeqCst),1,"unchanged batch cannot repeatedly restart a worker");
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "DONE", "done", "agent", "code");
+        let fleet = BoundaryFleet::default();
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let result = drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(result.outcome, "verify-nudge", "{result:?}");
+        assert_eq!(fleet.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(
+            fleet.starts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "unchanged batch cannot repeatedly restart a worker"
+        );
     }
 
     #[tokio::test]
@@ -10094,86 +11489,194 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "DONE", "done", "agent", "code");
         let fleet = BoundaryFleet::default();
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "verify-nudge");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "verify-nudge"
+        );
         let original = verification_contract(&store.read().unwrap(), "DONE").unwrap();
         crate::fanout_workspace::record_integrated_head(&store, "other-lane", "other").await;
         drive_lane(&state, &fleet, "lane").await;
-        assert_eq!(drive_events(&store, "verify.nudge"), 1, "another worker's merge cannot consume a turn");
+        assert_eq!(
+            drive_events(&store, "verify.nudge"),
+            1,
+            "another worker's merge cannot consume a turn"
+        );
 
         crate::fanout_workspace::record_integrated_head(&store, "lane", "first").await;
-        assert_ne!(verification_contract(&store.read().unwrap(), "DONE").unwrap(), original);
+        assert_ne!(
+            verification_contract(&store.read().unwrap(), "DONE").unwrap(),
+            original
+        );
         // A stopped provider must also wake for the newly integrated output.
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "verify-nudge");
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "verify-nudge"
+        );
         assert_eq!(fleet.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
         for _ in 0..3 {
             crate::fanout_workspace::record_integrated_head(&store, "lane", "first").await;
             drive_lane(&state, &fleet, "lane").await;
         }
-        assert_eq!(drive_events(&store, "fanout.integrated"), 2, "one receipt per changed worker output");
-        assert_eq!(drive_events(&store, "verify.nudge"), 2, "receipt retries cannot spend more turns");
+        assert_eq!(
+            drive_events(&store, "fanout.integrated"),
+            2,
+            "one receipt per changed worker output"
+        );
+        assert_eq!(
+            drive_events(&store, "verify.nudge"),
+            2,
+            "receipt retries cannot spend more turns"
+        );
         crate::fanout_workspace::record_integrated_head(&store, "lane", "second").await;
-        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "verify-nudge");
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "verify-nudge"
+        );
         assert_eq!(drive_events(&store, "verify.nudge"), 3);
-        assert_eq!(drive_status(&store, "DONE"), "done", "integration never fabricates verification");
+        assert_eq!(
+            drive_status(&store, "DONE"),
+            "done",
+            "integration never fabricates verification"
+        );
     }
 
     #[tokio::test]
     async fn changed_verification_gate_rearms_once_but_log_churn_does_not() {
         let (_dir, state, store) = drive_state();
-        drive_card(&store,"DONE","done","agent","code");
-        let fleet=BoundaryFleet::default();
-        assert_eq!(drive_lane(&state,&fleet,"lane").await.outcome,"verify-nudge");
-        store.write(|c| {
-            c.execute("UPDATE issues SET rev=rev+1,log='checked again' WHERE id='DONE'",[])?;
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
-        drive_lane(&state,&fleet,"lane").await;
-        assert_eq!(drive_events(&store,"verify.nudge"),1);
-        store.write(|c| {
-            c.execute("INSERT INTO session_gates(session,status,gate) VALUES('lane','verified',?1)", [json!(["Reproduce the current output with recorded evidence"]).to_string()])?;
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
-        assert_eq!(drive_lane(&state,&fleet,"lane").await.outcome,"verify-nudge");
-        drive_lane(&state,&fleet,"lane").await;
-        assert_eq!(drive_events(&store,"verify.nudge"),2);
-        assert_eq!(drive_status(&store,"DONE"),"done");
+        drive_card(&store, "DONE", "done", "agent", "code");
+        let fleet = BoundaryFleet::default();
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "verify-nudge"
+        );
+        store
+            .write(|c| {
+                c.execute(
+                    "UPDATE issues SET rev=rev+1,log='checked again' WHERE id='DONE'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(drive_events(&store, "verify.nudge"), 1);
+        store
+            .write(|c| {
+                c.execute(
+                    "INSERT INTO session_gates(session,status,gate) VALUES('lane','verified',?1)",
+                    [json!(["Reproduce the current output with recorded evidence"]).to_string()],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            drive_lane(&state, &fleet, "lane").await.outcome,
+            "verify-nudge"
+        );
+        drive_lane(&state, &fleet, "lane").await;
+        assert_eq!(drive_events(&store, "verify.nudge"), 2);
+        assert_eq!(drive_status(&store, "DONE"), "done");
     }
 
     #[test]
     fn asked_capture_prefix_cannot_hide_review_work_beyond_the_old_scan_limit() {
         let conn = board_db();
         for n in 0..45 {
-            let id=format!("RAW-{n}");
-            add_card(&conn,&id,"lane","doing","1","**Prompt:** 1. Fix parser");
-            conn.execute("UPDATE issues SET creator='amux',source='capture' WHERE id=?1",[&id]).unwrap();
+            let id = format!("RAW-{n}");
+            add_card(
+                &conn,
+                &id,
+                "lane",
+                "doing",
+                "1",
+                "**Prompt:** 1. Fix parser",
+            );
+            conn.execute(
+                "UPDATE issues SET creator='amux',source='capture' WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
             conn.execute("INSERT INTO session_events(ts,session,type,data,idem) VALUES(1,'lane','advance.nudged','{}',?1)",
                 [format!("decompose:{id}")]).unwrap();
         }
-        add_card(&conn,"REVIEW","lane","review","Verify the parser bounds","SCOPE: parser regression");
-        assert!(matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, .. } if card == "REVIEW"));
+        add_card(
+            &conn,
+            "REVIEW",
+            "lane",
+            "review",
+            "Verify the parser bounds",
+            "SCOPE: parser regression",
+        );
+        assert!(
+            matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, .. } if card == "REVIEW")
+        );
     }
 
     #[test]
     fn advance_scans_past_asked_captures_and_confirmed_reminders() {
         let conn = board_db();
-        add_card(&conn, "RAW", "lane", "doing", "1", "**Prompt:** 1. Fix parser");
-        add_card(&conn, "REVIEW", "lane", "review", "Verify parser bounds", "SCOPE: parser regression");
-        conn.execute("UPDATE issues SET creator='amux',source='capture' WHERE id='RAW'", []).unwrap();
+        add_card(
+            &conn,
+            "RAW",
+            "lane",
+            "doing",
+            "1",
+            "**Prompt:** 1. Fix parser",
+        );
+        add_card(
+            &conn,
+            "REVIEW",
+            "lane",
+            "review",
+            "Verify parser bounds",
+            "SCOPE: parser regression",
+        );
+        conn.execute(
+            "UPDATE issues SET creator='amux',source='capture' WHERE id='RAW'",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO session_events(ts,session,type,data,idem) VALUES(1,'lane','advance.nudged','{}','decompose:RAW')", []).unwrap();
         let next = select_advance(&conn, "lane", &[], now_f64());
         assert!(matches!(&next, Advance::Nudge { card, .. } if card == "REVIEW"));
-        let Advance::Nudge { target, card, text, .. } = next else { unreachable!() };
+        let Advance::Nudge {
+            target, card, text, ..
+        } = next
+        else {
+            unreachable!()
+        };
         let row = bs::get_issue(&conn, &card).unwrap().unwrap();
         let identity = reminder_identity(&target, &text, &row, 0.0);
         conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) VALUES(?1,'lane',?2,1,2,'sent')",
             rusqlite::params![format!("{identity}:{}", row.rev), text]).unwrap();
-        add_card(&conn, "OTHER", "lane", "review", "Verify unrelated fix", "SCOPE: separate regression");
-        conn.execute("UPDATE issues SET updated=1 WHERE id='OTHER'", []).unwrap();
-        assert!(matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, .. } if card == "OTHER"));
+        add_card(
+            &conn,
+            "OTHER",
+            "lane",
+            "review",
+            "Verify unrelated fix",
+            "SCOPE: separate regression",
+        );
+        conn.execute("UPDATE issues SET updated=1 WHERE id='OTHER'", [])
+            .unwrap();
+        assert!(
+            matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, .. } if card == "OTHER")
+        );
         // A failed/voided attempt is not confirmation and must not be skipped.
-        conn.execute("UPDATE steering_history SET outcome='void:card-stale'", []).unwrap();
-        assert!(matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, .. } if card == "REVIEW"));
+        conn.execute("UPDATE steering_history SET outcome='void:card-stale'", [])
+            .unwrap();
+        assert!(
+            matches!(select_advance(&conn,"lane",&[],now_f64()), Advance::Nudge { card, .. } if card == "REVIEW")
+        );
     }
 
     #[tokio::test]
@@ -10191,24 +11694,38 @@ mod tests {
         assert_eq!(accepted.outcome, "verify-nudge", "{accepted:?}");
         assert_eq!(drive_events(&store, "verify.nudge"), 1);
         drive_lane(&state, &fleet, "lane").await;
-        assert_eq!(fleet.delivered.lock().unwrap().len(), 1, "unchanged batch stays quiet");
+        assert_eq!(
+            fleet.delivered.lock().unwrap().len(),
+            1,
+            "unchanged batch stays quiet"
+        );
     }
 
     #[tokio::test]
     async fn completed_verification_batch_drains_next_batch_without_daily_delay() {
         let (_dir, state, store) = drive_state();
-        for n in 0..10 { drive_card(&store, &format!("VERIFY-{n}"), "done", "agent", "code"); }
+        for n in 0..10 {
+            drive_card(&store, &format!("VERIFY-{n}"), "done", "agent", "code");
+        }
         let fleet = BoundaryFleet::default();
         let first = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(first.outcome, "verify-nudge", "{first:?}");
         // Observe exactly which cards the driver offered, then simulate the
         // worker completing those cards. Do not age or delete the cooldown.
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET status='verified' WHERE id IN \
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE issues SET status='verified' WHERE id IN \
                 (SELECT value FROM json_each((SELECT data FROM session_events \
-                 WHERE type='verify.nudge' ORDER BY id DESC LIMIT 1),'$.cards'))", [])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+                 WHERE type='verify.nudge' ORDER BY id DESC LIMIT 1),'$.cards'))",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         assert_eq!(done_card_count(&store.read().unwrap(), "lane"), 2);
         let next = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(next.outcome, "verify-nudge", "{next:?}");
@@ -10235,11 +11752,18 @@ mod tests {
     async fn atomic_claim_rolls_back_when_the_causal_marker_is_rejected() {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "ATOMIC", "todo", "agent", "code");
-        store.write(|conn| {
-            conn.execute_batch("CREATE TRIGGER reject_marker BEFORE INSERT ON session_events \
-                WHEN NEW.type='task.claimed' BEGIN SELECT RAISE(ABORT, 'marker'); END;")?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_marker BEFORE INSERT ON session_events \
+                WHEN NEW.type='task.claimed' BEGIN SELECT RAISE(ABORT, 'marker'); END;",
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         assert!(!claim_card(&state, "lane", "ATOMIC").await);
         assert_eq!(drive_status(&store, "ATOMIC"), "todo");
         assert_eq!(drive_events(&store, "task.claimed"), 0);
@@ -10260,7 +11784,9 @@ mod tests {
         drive_card(&store, "HUMAN", "backlog", "human", "code");
         drive_card(&store, "WATCH", "backlog", "agent", "watch");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.outcome, "assigned", "{trace:?}");
         assert_eq!(trace.card.as_deref(), Some("READY"));
@@ -10291,7 +11817,9 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "STARTFAIL", "todo", "agent", "code");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         *fleet.start_error.lock().unwrap() = Some("provider rejected restart".into());
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.reason, "start-failed");
@@ -10322,14 +11850,22 @@ mod tests {
         drive_card(&store, "STALE-OTHER", "doing", "agent", "code");
         drive_claim(&store, "RESUME");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.outcome, "resumed", "{trace:?}");
         assert_eq!(trace.card.as_deref(), Some("RESUME"));
         assert_eq!(drive_status(&store, "RESUME"), "doing");
-        assert_eq!(drive_events(&store, "task.claimed"), 1, "resume must not create a second claim");
+        assert_eq!(
+            drive_events(&store, "task.claimed"),
+            1,
+            "resume must not create a second claim"
+        );
         assert_eq!(drive_events(&store, "task.resumed"), 1);
         assert_eq!(fleet.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
         {
@@ -10341,7 +11877,9 @@ mod tests {
 
         // Another idle sweep in the SAME worker generation preserves the
         // exact runtime card but must not enqueue or record another resume.
-        fleet.boundary.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let repeated = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(repeated.reason, "active-claim-current", "{repeated:?}");
         assert_eq!(fleet.delivered.lock().unwrap().len(), 1);
@@ -10372,17 +11910,30 @@ mod tests {
         let mut signals = crate::api::sessions_legacy::tests::signals();
         signals.running.insert("amux-lane".into());
         signals.started.insert("lane".into(), signals.now - 7200.0);
-        signals.codex_turns.insert("lane".into(), crate::api::session_verbs::CodexTurnSignal {
-            state: "active".into(), ts: signals.now - 3600.0,
-            heartbeat_ts: signals.now - 3500.0, boundary: "task_started".into(),
-            rollout_file: None,
-        });
-        let mut fleet = LiveFleet { state, signals: Some(signals) };
+        signals.codex_turns.insert(
+            "lane".into(),
+            crate::api::session_verbs::CodexTurnSignal {
+                state: "active".into(),
+                ts: signals.now - 3600.0,
+                heartbeat_ts: signals.now - 3500.0,
+                boundary: "task_started".into(),
+                rollout_file: None,
+            },
+        );
+        let mut fleet = LiveFleet {
+            state,
+            signals: Some(signals),
+        };
         // There is no real lane/pane in this fixture. A per-lane reload or the
         // old pane-only gate would refuse, instead of using the tick snapshot.
         assert!(fleet.at_boundary("lane").await);
         assert!(fleet.at_boundary("lane").await);
-        fleet.signals.as_mut().unwrap().provider_child_activity.insert("lane".into());
+        fleet
+            .signals
+            .as_mut()
+            .unwrap()
+            .provider_child_activity
+            .insert("lane".into());
         assert!(!fleet.at_boundary("lane").await);
         assert!(!fleet.at_boundary("unknown-worker").await);
     }
@@ -10392,13 +11943,24 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "CURRENT", "doing", "agent", "code");
         drive_claim(&store, "CURRENT");
-        store.write(|conn| {
-            conn.execute("UPDATE session_events SET ts=ts-?1 WHERE type='task.claimed'", [ADVANCE_COOLDOWN_S + 1.0])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE session_events SET ts=ts-?1 WHERE type='task.claimed'",
+                    [ADVANCE_COOLDOWN_S + 1.0],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let fleet = BoundaryFleet::default();
         let trace = drive_lane(&state, &fleet, "lane").await;
-        assert_ne!(trace.outcome, "skipped", "Current must reach canonical advancement: {trace:?}");
+        assert_ne!(
+            trace.outcome, "skipped",
+            "Current must reach canonical advancement: {trace:?}"
+        );
         assert_eq!(trace.card.as_deref(), Some("CURRENT"));
         assert_eq!(drive_events(&store, "advance.nudged"), 1);
         assert_eq!(drive_events(&store, "task.resumed"), 0);
@@ -10422,7 +11984,10 @@ mod tests {
 
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.outcome, "claim-reconcile", "{trace:?}");
-        assert!(trace.detail.contains("FIRST") && trace.detail.contains("SECOND"), "{trace:?}");
+        assert!(
+            trace.detail.contains("FIRST") && trace.detail.contains("SECOND"),
+            "{trace:?}"
+        );
         {
             let delivered = fleet.delivered.lock().unwrap();
             assert_eq!(delivered.len(), 1, "one stable reconciliation request");
@@ -10435,19 +12000,32 @@ mod tests {
 
         let repeated = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(repeated.reason, "claim-reconcile-cooldown", "{repeated:?}");
-        assert_eq!(fleet.delivered.lock().unwrap().len(), 1, "cooldown prevents duplicate queue rows");
+        assert_eq!(
+            fleet.delivered.lock().unwrap().len(),
+            1,
+            "cooldown prevents duplicate queue rows"
+        );
         assert_eq!(drive_events(&store, "task.claim_reconcile_requested"), 1);
 
-        store.write(|conn| {
-            conn.execute(
-                "UPDATE session_events SET ts=ts-?1 WHERE session='lane'",
-                [CLAIM_RECONCILE_BASE_S + 1.0],
-            )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE session_events SET ts=ts-?1 WHERE session='lane'",
+                    [CLAIM_RECONCILE_BASE_S + 1.0],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let retried = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(retried.outcome, "claim-reconcile", "{retried:?}");
-        assert_eq!(fleet.delivered.lock().unwrap().len(), 2, "an unresolved conflict is retried after its backoff");
+        assert_eq!(
+            fleet.delivered.lock().unwrap().len(),
+            2,
+            "an unresolved conflict is retried after its backoff"
+        );
         assert_eq!(drive_events(&store, "task.claim_reconcile_requested"), 2);
     }
 
@@ -10459,8 +12037,12 @@ mod tests {
         drive_claim(&store, "FIRST");
         drive_claim(&store, "SECOND");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         assert_eq!(
             exact_resume_card(&store.read().unwrap(), "lane").unwrap(),
@@ -10485,7 +12067,10 @@ mod tests {
         *fleet.delivery_error.lock().unwrap() = Some("queue offline".into());
 
         let failed = drive_lane(&state, &fleet, "lane").await;
-        assert_eq!(failed.reason, "claim-reconcile-delivery-failed", "{failed:?}");
+        assert_eq!(
+            failed.reason, "claim-reconcile-delivery-failed",
+            "{failed:?}"
+        );
         assert_eq!(drive_events(&store, "task.claim_reconcile_requested"), 0);
         assert_eq!(drive_events(&store, "task.claim_reconcile_failed"), 1);
 
@@ -10502,7 +12087,9 @@ mod tests {
         drive_card(&store, "ACTIVE", "doing", "agent", "code");
         drive_claim(&store, "ACTIVE");
         let fleet = BoundaryFleet::default();
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.reason, "mid-turn", "{trace:?}");
@@ -10518,8 +12105,12 @@ mod tests {
         drive_card(&store, "CHILD-1", "todo", "agent", "code");
         drive_claim(&store, "CHILD-1");
         let fleet = BoundaryFleet::default();
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
-        fleet.active_child.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .active_child
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.reason, "active-child-claim-restored", "{trace:?}");
@@ -10530,7 +12121,10 @@ mod tests {
 
         // The next tick observes the now-correct Doing state and is a no-op.
         let repeated = drive_lane(&state, &fleet, "lane").await;
-        assert_eq!(repeated.reason, "active-child-claim-current", "{repeated:?}");
+        assert_eq!(
+            repeated.reason, "active-child-claim-current",
+            "{repeated:?}"
+        );
         assert_eq!(drive_events(&store, "task.claimed"), 2);
     }
 
@@ -10539,20 +12133,29 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "OLD-1", "todo", "agent", "code");
         drive_claim(&store, "OLD-1");
-        store.write(|conn| {
-            conn.execute(
-                "INSERT INTO session_events (ts,session,type,data,source) \
+        store
+            .write(|conn| {
+                conn.execute(
+                    "INSERT INTO session_events (ts,session,type,data,source) \
                  VALUES (?1,'lane','task.cardless',?2,'prompt-capture')",
-                rusqlite::params![
-                    now_f64() + 0.001,
-                    json!({"reason": "informational-query"}).to_string(),
-                ],
-            )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+                    rusqlite::params![
+                        now_f64() + 0.001,
+                        json!({"reason": "informational-query"}).to_string(),
+                    ],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let fleet = BoundaryFleet::default();
-        fleet.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
-        fleet.active_child.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .active_child
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.reason, "mid-turn", "{trace:?}");
@@ -10566,7 +12169,9 @@ mod tests {
         drive_card(&store, "RETRY", "doing", "agent", "code");
         drive_claim(&store, "RETRY");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         *fleet.delivery_error.lock().unwrap() = Some("worker vanished before queue insert".into());
 
         let failed = drive_lane(&state, &fleet, "lane").await;
@@ -10581,7 +12186,11 @@ mod tests {
         let retried = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(retried.outcome, "resumed", "{retried:?}");
         assert_eq!(retried.card.as_deref(), Some("RETRY"));
-        assert_eq!(drive_events(&store, "task.claimed"), 1, "retry must preserve the old claim");
+        assert_eq!(
+            drive_events(&store, "task.claimed"),
+            1,
+            "retry must preserve the old claim"
+        );
         assert_eq!(drive_events(&store, "task.resumed"), 1);
     }
 
@@ -10591,7 +12200,9 @@ mod tests {
         drive_card(&store, "RESTART", "doing", "agent", "code");
         drive_claim(&store, "RESTART");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         let first = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(first.outcome, "resumed", "{first:?}");
@@ -10619,10 +12230,18 @@ mod tests {
         let _home = crate::api::settings::test_env::set_home(dir.path());
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("lane.env"), format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\n", dir.path().display())).unwrap();
+        std::fs::write(
+            sessions.join("lane.env"),
+            format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\n", dir.path().display()),
+        )
+        .unwrap();
         drive_card(&store, "ATE-92", "doing", "agent", "code");
         drive_claim(&store, "ATE-92");
-        let context = sv::StructuredResumeContext { session: "lane".into(), card: Some("ATE-92".into()), cwd: dir.path().to_string_lossy().into() };
+        let context = sv::StructuredResumeContext {
+            session: "lane".into(),
+            card: Some("ATE-92".into()),
+            cwd: dir.path().to_string_lossy().into(),
+        };
         for generation_number in 1..=2 {
             let token = format!("swap-{generation_number}");
             let pending = json!({"cc_cwd": context.cwd, "pending_structured_resume": 1,
@@ -10636,37 +12255,99 @@ mod tests {
                     rusqlite::params![now_f64(), start_data])?;
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             }).unwrap();
-            let generation: i64 = store.read().unwrap().query_row("SELECT MAX(id) FROM session_events WHERE type='session.started'", [], |r| r.get(0)).unwrap();
-            let Resume::Claim { prompt, delivery_id, .. } = select_resume(&store.read().unwrap(), "lane", now_f64(), false) else { panic!("new generation needs recovery") };
+            let generation: i64 = store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT MAX(id) FROM session_events WHERE type='session.started'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let Resume::Claim {
+                prompt,
+                delivery_id,
+                ..
+            } = select_resume(&store.read().unwrap(), "lane", now_f64(), false)
+            else {
+                panic!("new generation needs recovery")
+            };
             assert!(prompt.contains(&context.cwd) && prompt.contains("amux board show ATE-92"));
             assert!(!prompt.contains("board ls --session") && !prompt.contains(".amux/logs"));
             if generation_number == 1 {
                 store.write(|conn| { conn.execute_batch("CREATE TRIGGER refuse_resume BEFORE INSERT ON steering_queue BEGIN SELECT RAISE(ABORT,'injected queue failure'); END;")?;
                     Ok(crate::db::WriteOutcome { applied: true, events: vec![] }) }).unwrap();
-                assert!(sv::enqueue_generation_resume(&state, &context, generation, "provider swap").await.is_err());
-                assert_eq!(std::fs::read_to_string(&meta_path).unwrap(), pending.to_string());
+                assert!(sv::enqueue_generation_resume(
+                    &state,
+                    &context,
+                    generation,
+                    "provider swap"
+                )
+                .await
+                .is_err());
+                assert_eq!(
+                    std::fs::read_to_string(&meta_path).unwrap(),
+                    pending.to_string()
+                );
                 assert_eq!(drive_events(&store, "task.resumed"), 0);
-                store.write(|conn| { conn.execute_batch("DROP TRIGGER refuse_resume;")?;
-                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+                store
+                    .write(|conn| {
+                        conn.execute_batch("DROP TRIGGER refuse_resume;")?;
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events: vec![],
+                        })
+                    })
+                    .unwrap();
             }
             // Startup and a board tick selected before either producer commits.
             let (startup, board) = tokio::join!(
                 sv::enqueue_generation_resume(&state, &context, generation, "provider swap"),
-                sv::steer_enqueue_idempotent_report(&state, "lane", &prompt, sv::BOARD_DRIVE_GUARD, "", &delivery_id),
+                sv::steer_enqueue_idempotent_report(
+                    &state,
+                    "lane",
+                    &prompt,
+                    sv::BOARD_DRIVE_GUARD,
+                    "",
+                    &delivery_id
+                ),
             );
             let startup = startup.unwrap();
             let board = board.unwrap();
             assert_eq!(startup.id, board.id);
-            assert_ne!(startup.disposition == sv::StableEnqueueDisposition::New,
-                       board.disposition == sv::StableEnqueueDisposition::New);
-            let queued: i64 = store.read().unwrap().query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1", [&delivery_id], |r| r.get(0)).unwrap();
+            assert_ne!(
+                startup.disposition == sv::StableEnqueueDisposition::New,
+                board.disposition == sv::StableEnqueueDisposition::New
+            );
+            let queued: i64 = store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM steering_queue WHERE id=?1",
+                    [&delivery_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(queued, 1);
-            let accepted: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-            assert!(accepted.get("pending_structured_resume_context").is_none(), "accepted queue commit consumes only its own pending token: {accepted}");
+            let accepted: Value =
+                serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+            assert!(
+                accepted.get("pending_structured_resume_context").is_none(),
+                "accepted queue commit consumes only its own pending token: {accepted}"
+            );
             for _ in 0..3 {
-                let again = sv::enqueue_generation_resume(&state, &context, generation, "provider swap").await.unwrap();
-                assert_eq!(again.disposition, sv::StableEnqueueDisposition::AlreadyQueued);
-                assert!(matches!(select_resume(&store.read().unwrap(), "lane", now_f64(), false), Resume::Current { .. }));
+                let again =
+                    sv::enqueue_generation_resume(&state, &context, generation, "provider swap")
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    again.disposition,
+                    sv::StableEnqueueDisposition::AlreadyQueued
+                );
+                assert!(matches!(
+                    select_resume(&store.read().unwrap(), "lane", now_f64(), false),
+                    Resume::Current { .. }
+                ));
             }
             // Persist delivery, then reopen the DB to simulate a server/model
             // process losing every in-memory receipt.
@@ -10677,9 +12358,20 @@ mod tests {
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             }).unwrap();
             let mut reopened_state = state.clone();
-            reopened_state.store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("drive.db")).unwrap());
-            let recovered = sv::enqueue_generation_resume(&reopened_state, &context, generation, "provider swap").await.unwrap();
-            assert_eq!(recovered.disposition, sv::StableEnqueueDisposition::AlreadyDelivered);
+            reopened_state.store =
+                std::sync::Arc::new(crate::db::Store::open(&dir.path().join("drive.db")).unwrap());
+            let recovered = sv::enqueue_generation_resume(
+                &reopened_state,
+                &context,
+                generation,
+                "provider swap",
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                recovered.disposition,
+                sv::StableEnqueueDisposition::AlreadyDelivered
+            );
             assert_eq!(drive_events(&store, "task.resumed"), generation_number);
         }
     }
@@ -10690,7 +12382,9 @@ mod tests {
         drive_card(&store, "CRASH", "doing", "agent", "code");
         drive_claim(&store, "CRASH");
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         *fleet.resume_disposition.lock().unwrap() = Some(ResumeDelivery::AlreadyDelivered);
 
         // Simulate a prior process which durably committed/delivered the stable
@@ -10727,10 +12421,15 @@ mod tests {
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         let trace = drive_lane(&state, &fleet, "lane").await;
-        assert_eq!(trace.reason, "not-running-no-dispatchable-work", "{trace:?}");
+        assert_eq!(
+            trace.reason, "not-running-no-dispatchable-work",
+            "{trace:?}"
+        );
         assert_eq!(fleet.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(fleet.delivered.lock().unwrap().is_empty());
     }
@@ -10767,13 +12466,23 @@ mod tests {
         drive_card(&store, "DEP", "doing", "agent", "code");
         drive_card(&store, "BLOCKED", "todo", "agent", "code");
         drive_card(&store, "BACKLOG", "backlog", "agent", "code");
-        store.write(|conn| {
-            conn.execute("UPDATE issues SET session='other' WHERE id='DEP'", [])?;
-            conn.execute("UPDATE issues SET depends_on='[\"DEP\"]' WHERE id='BLOCKED'", [])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                conn.execute("UPDATE issues SET session='other' WHERE id='DEP'", [])?;
+                conn.execute(
+                    "UPDATE issues SET depends_on='[\"DEP\"]' WHERE id='BLOCKED'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let fleet = BoundaryFleet::default();
-        fleet.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let trace = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(trace.card.as_deref(), Some("BACKLOG"));
         assert_eq!(drive_status(&store, "BACKLOG"), "doing");
@@ -10804,7 +12513,10 @@ mod tests {
                      WHERE id='TUBES-2459'",
                     [],
                 )?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
 
@@ -10836,11 +12548,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_output_wait_never_enters_legacy_normalization() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "PROJECT-WAIT", "doing", "agent", "code");
+        store.write(|c| {c.execute("UPDATE issues SET project_group='sample',depends_on='[\"MISSING\"]',execution_state='{\"stage\":\"waiting\",\"wait_category\":\"required_outputs\"}' WHERE id='PROJECT-WAIT'",[])?;Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        {
+            let c = store.read().unwrap();
+            let row = bs::get_issue(&c, "PROJECT-WAIT").unwrap().unwrap();
+            assert!(!legacy_blocked_doing(&c, &row));
+        }
+        assert_eq!(normalize_blocked_doing(&state).await, 0);
+        assert_eq!(normalize_blocked_doing(&state).await, 0);
+        assert_eq!(drive_status(&store, "PROJECT-WAIT"), "doing");
+        assert_eq!(drive_events(&store, "task.blocked_normalized"), 0);
+    }
+
+    #[tokio::test]
     async fn stale_subagent_and_protected_work_never_wake_or_claim() {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "STALE", "todo", "agent", "code");
         let busy = BoundaryFleet::default();
-        busy.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
+        busy.boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(drive_lane(&state, &busy, "lane").await.reason, "mid-turn");
         assert_eq!(drive_status(&store, "STALE"), "todo");
 
@@ -10851,28 +12580,55 @@ mod tests {
         drive_card(&store, "TRIGGER", "backlog", "agent", "code");
         drive_card(&store, "DEP", "doing", "agent", "code");
         drive_card(&store, "BLOCKED", "todo", "agent", "code");
-        store.write(|conn| {
-            let now = now_f64() as i64;
-            conn.execute("UPDATE issues SET source_ref='watch', last_verified_at=?1 WHERE id='TRIGGER'", [now])?;
-            conn.execute("UPDATE issues SET session='other' WHERE id='DEP'", [])?;
-            conn.execute("UPDATE issues SET depends_on='[\"DEP\"]' WHERE id='BLOCKED'", [])?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(|conn| {
+                let now = now_f64() as i64;
+                conn.execute(
+                    "UPDATE issues SET source_ref='watch', last_verified_at=?1 WHERE id='TRIGGER'",
+                    [now],
+                )?;
+                conn.execute("UPDATE issues SET session='other' WHERE id='DEP'", [])?;
+                conn.execute(
+                    "UPDATE issues SET depends_on='[\"DEP\"]' WHERE id='BLOCKED'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let stopped = BoundaryFleet::default();
-        stopped.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(drive_lane(&state, &stopped, "lane").await.reason, "not-running-no-dispatchable-work");
+        stopped
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            drive_lane(&state, &stopped, "lane").await.reason,
+            "not-running-no-dispatchable-work"
+        );
         assert_eq!(stopped.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
 
         // AMUX-4542: an isolated lane is skipped before the wake decision, so
         // a stopped isolated worker is never started for dispatch either.
         let isolated = BoundaryFleet::default();
-        isolated.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        isolated.isolated.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(drive_lane(&state, &isolated, "lane").await.reason, "isolated");
+        isolated
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        isolated
+            .isolated
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            drive_lane(&state, &isolated, "lane").await.reason,
+            "isolated"
+        );
         assert_eq!(isolated.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
         let opted = BoundaryFleet::default();
-        opted.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        opted.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+        opted
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        opted
+            .enabled
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(drive_lane(&state, &opted, "lane").await.reason, "opted-out");
     }
 
@@ -10886,13 +12642,24 @@ mod tests {
         let (_dir, state, store) = drive_state();
         drive_card(&store, "ISO", "todo", "agent", "code");
         let isolated = BoundaryFleet::default();
-        isolated.isolated.store(true, std::sync::atomic::Ordering::SeqCst);
+        isolated
+            .isolated
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let trace = drive_lane(&state, &isolated, "lane").await;
         assert_eq!(trace.reason, "isolated", "{trace:?}");
-        assert_eq!(drive_events(&store, "task.claimed"), 0, "no claim to revert");
-        assert!(isolated.delivered.lock().unwrap().is_empty(), "nothing typed into an isolated lane");
+        assert_eq!(
+            drive_events(&store, "task.claimed"),
+            0,
+            "no claim to revert"
+        );
+        assert!(
+            isolated.delivered.lock().unwrap().is_empty(),
+            "nothing typed into an isolated lane"
+        );
         let conn = store.read().unwrap();
-        let status: String = conn.query_row("SELECT status FROM issues WHERE id='ISO'", [], |r| r.get(0)).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM issues WHERE id='ISO'", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(status, "todo");
 
         // The control: the same lane NOT isolated claims and delivers.
@@ -10909,17 +12676,36 @@ mod tests {
         drive_card(&store, "RACE", "todo", "agent", "code");
         let one = BoundaryFleet::default();
         let two = BoundaryFleet::default();
-        let (a, b) = tokio::join!(drive_lane(&state, &one, "lane"), drive_lane(&state, &two, "lane"));
-        assert_eq!([a.outcome, b.outcome].iter().filter(|v| **v == "assigned").count(), 1);
+        let (a, b) = tokio::join!(
+            drive_lane(&state, &one, "lane"),
+            drive_lane(&state, &two, "lane")
+        );
+        assert_eq!(
+            [a.outcome, b.outcome]
+                .iter()
+                .filter(|v| **v == "assigned")
+                .count(),
+            1
+        );
         assert_eq!(drive_events(&store, "task.claimed"), 1);
-        assert_eq!(one.delivered.lock().unwrap().len() + two.delivered.lock().unwrap().len(), 1);
+        assert_eq!(
+            one.delivered.lock().unwrap().len() + two.delivered.lock().unwrap().len(),
+            1
+        );
 
         let (_dir, state, store) = drive_state();
         drive_card(&store, "RESTART", "todo", "agent", "code");
         let restart = BoundaryFleet::default();
-        restart.running.store(false, std::sync::atomic::Ordering::SeqCst);
-        restart.boundary.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(drive_lane(&state, &restart, "lane").await.card.as_deref(), Some("RESTART"));
+        restart
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        restart
+            .boundary
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            drive_lane(&state, &restart, "lane").await.card.as_deref(),
+            Some("RESTART")
+        );
         assert_eq!(restart.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -10957,20 +12743,48 @@ mod tests {
     fn stale_reclaim_cools_the_reclaimed_card_so_the_next_card_runs() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "BR-51", "byo-ray", "todo", "Reclaimed old card", "SCOPE: x");
-        add_card(&conn, "BR-142", "byo-ray", "todo", "Independent queued work", "SCOPE: y");
-        conn.execute("UPDATE issues SET pos=-100 WHERE id='BR-51'", []).unwrap();
-        assert_eq!(claimed(&select_pickup_with(&conn, "byo-ray", now, false)), Some("BR-51"),
-            "control: without the reclaim event the old card wins");
-        conn.execute("INSERT INTO session_events (ts,session,type,data) VALUES (?1,'byo-ray', \
-            'pickup.reclaimed_stale','{\"issue\":\"BR-51\"}')", [now]).unwrap();
+        add_card(
+            &conn,
+            "BR-51",
+            "byo-ray",
+            "todo",
+            "Reclaimed old card",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "BR-142",
+            "byo-ray",
+            "todo",
+            "Independent queued work",
+            "SCOPE: y",
+        );
+        conn.execute("UPDATE issues SET pos=-100 WHERE id='BR-51'", [])
+            .unwrap();
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "byo-ray", now, false)),
+            Some("BR-51"),
+            "control: without the reclaim event the old card wins"
+        );
+        conn.execute(
+            "INSERT INTO session_events (ts,session,type,data) VALUES (?1,'byo-ray', \
+            'pickup.reclaimed_stale','{\"issue\":\"BR-51\"}')",
+            [now],
+        )
+        .unwrap();
         assert_eq!(eligible_todo_count(&conn, "byo-ray", now), 1);
-        assert_eq!(claimed(&select_pickup_with(&conn, "byo-ray", now, false)), Some("BR-142"),
-            "recovery must unblock different work, not immediately reclaim the same card");
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "byo-ray", now, false)),
+            Some("BR-142"),
+            "recovery must unblock different work, not immediately reclaim the same card"
+        );
         let later = now + reclaim_cooldown_s() + 1.0;
         assert_eq!(eligible_todo_count(&conn, "byo-ray", later), 2);
-        assert_eq!(claimed(&select_pickup_with(&conn, "byo-ray", later, false)), Some("BR-51"),
-            "reclaimed work stays reachable after its bounded cooldown");
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "byo-ray", later, false)),
+            Some("BR-51"),
+            "reclaimed work stays reachable after its bounded cooldown"
+        );
     }
 
     // ---- pickup scoring (AMUX-3779) --------------------------------------
@@ -11014,20 +12828,48 @@ mod tests {
         // which sits at the top of the column; scoring surfaces the starved one.
         let conn = board_db();
         let now = 1_000_000.0;
-        add_full(&conn, "OLD", "lane", "todo", "code", now as i64 - 3 * 86400, -1024.0, 0);
-        add_full(&conn, "NEW", "lane", "todo", "code", now as i64, -99999.0, 0); // topmost pos
+        add_full(
+            &conn,
+            "OLD",
+            "lane",
+            "todo",
+            "code",
+            now as i64 - 3 * 86400,
+            -1024.0,
+            0,
+        );
+        add_full(
+            &conn, "NEW", "lane", "todo", "code", now as i64, -99999.0, 0,
+        ); // topmost pos
         let p = select_pickup_with(&conn, "lane", now, false);
-        assert_eq!(claimed(&p), Some("OLD"), "the 3-day-old card must be worked before the fresh one");
+        assert_eq!(
+            claimed(&p),
+            Some("OLD"),
+            "the 3-day-old card must be worked before the fresh one"
+        );
     }
 
     #[test]
     fn a_pinned_todo_leads_regardless_of_age() {
         let conn = board_db();
         let now = 1_000_000.0;
-        add_full(&conn, "OLD", "lane", "todo", "code", now as i64 - 5 * 86400, -1024.0, 0);
+        add_full(
+            &conn,
+            "OLD",
+            "lane",
+            "todo",
+            "code",
+            now as i64 - 5 * 86400,
+            -1024.0,
+            0,
+        );
         add_full(&conn, "PIN", "lane", "todo", "code", now as i64, -50.0, 1); // pinned, fresh
         let p = select_pickup_with(&conn, "lane", now, false);
-        assert_eq!(claimed(&p), Some("PIN"), "a pinned card is the hard human override");
+        assert_eq!(
+            claimed(&p),
+            Some("PIN"),
+            "a pinned card is the hard human override"
+        );
     }
 
     #[test]
@@ -11038,34 +12880,65 @@ mod tests {
         // drains its backlog, not the oldest by accident (AMUX-4498 follow-up).
         let conn = board_db();
         let now = 1_000_000.0;
-        add_full(&conn, "OLDB", "lane", "backlog", "code", now as i64 - 5 * 86400, 0.0, 0);
+        add_full(
+            &conn,
+            "OLDB",
+            "lane",
+            "backlog",
+            "code",
+            now as i64 - 5 * 86400,
+            0.0,
+            0,
+        );
         add_full(&conn, "PINB", "lane", "backlog", "code", now as i64, 0.0, 1); // pinned, fresher
         let order = drainable_backlog_ids(&conn, "lane", now);
-        assert_eq!(order.first().map(String::as_str), Some("PINB"),
-            "a pinned backlog card must drain first, ahead of an older unpinned one: {order:?}");
+        assert_eq!(
+            order.first().map(String::as_str),
+            Some("PINB"),
+            "a pinned backlog card must drain first, ahead of an older unpinned one: {order:?}"
+        );
     }
 
     #[test]
     fn a_p0_tag_lifts_a_fresh_bug_over_an_older_chore() {
         let conn = board_db();
         let now = 1_000_000.0;
-        add_full(&conn, "CHORE", "lane", "todo", "chore", now as i64 - 2 * 86400, -1024.0, 0);
+        add_full(
+            &conn,
+            "CHORE",
+            "lane",
+            "todo",
+            "chore",
+            now as i64 - 2 * 86400,
+            -1024.0,
+            0,
+        );
         add_full(&conn, "BUG", "lane", "todo", "bug", now as i64, -50.0, 0);
         tag(&conn, "BUG", "p0", now);
         let p = select_pickup_with(&conn, "lane", now, false);
-        assert_eq!(claimed(&p), Some("BUG"), "a fresh p0 bug must outrank a 2-day-old chore");
+        assert_eq!(
+            claimed(&p),
+            Some("BUG"),
+            "a fresh p0 bug must outrank a 2-day-old chore"
+        );
     }
 
     #[test]
     fn dependents_lift_a_card_on_the_critical_path() {
         let conn = board_db();
         let now = 1_000_000.0;
-        add_full(&conn, "PLAIN", "lane", "todo", "code", now as i64, -99999.0, 0); // topmost
+        add_full(
+            &conn, "PLAIN", "lane", "todo", "code", now as i64, -99999.0, 0,
+        ); // topmost
         add_full(&conn, "DEP", "lane", "todo", "code", now as i64, -50.0, 0);
         add_dependent(&conn, "D1", "DEP");
         add_dependent(&conn, "D2", "DEP");
         let p = select_pickup_with(&conn, "lane", now, false);
-        assert_eq!(claimed(&p), Some("DEP"), "the card two others depend on must lead");
+        assert_eq!(
+            claimed(&p),
+            Some("DEP"),
+            "the card two others depend on must lead"
+        );
     }
 
     #[test]
@@ -11073,7 +12946,11 @@ mod tests {
         assert!(type_weight("blocker") > type_weight("code"));
         assert!(type_weight("bug") > type_weight("doc"));
         assert_eq!(type_weight("chore"), 0);
-        assert_eq!(type_weight("unknown-legacy"), 6, "unknown defaults code-like");
+        assert_eq!(
+            type_weight("unknown-legacy"),
+            6,
+            "unknown defaults code-like"
+        );
         assert!(tag_severity(&["p0".into()]) > tag_severity(&["p1".into()]));
         assert_eq!(tag_severity(&["nope".into()]), 0);
     }
@@ -11081,11 +12958,23 @@ mod tests {
     #[test]
     fn an_eligible_todo_is_selected_and_the_prompt_names_the_card() {
         let conn = board_db();
-        add_card(&conn, "T-1", "lane", "todo", "Fix the parser", "SCOPE: real work\n- [ ] do it");
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "todo",
+            "Fix the parser",
+            "SCOPE: real work\n- [ ] do it",
+        );
         let p = select_pickup_with(&conn, "lane", now_f64(), false);
         assert_eq!(claimed(&p), Some("T-1"), "an eligible todo must be claimed");
-        let Pickup::Claim { prompt, .. } = &p else { unreachable!() };
-        assert!(prompt.contains("T-1"), "the prompt must name the card id: {prompt}");
+        let Pickup::Claim { prompt, .. } = &p else {
+            unreachable!()
+        };
+        assert!(
+            prompt.contains("T-1"),
+            "the prompt must name the card id: {prompt}"
+        );
     }
 
     /// AC-223, hit three times in one session by two different lanes. A card
@@ -11095,11 +12984,25 @@ mod tests {
     fn a_needs_you_card_is_never_picked_up() {
         for t in ["needs:you", "needs:you:decision", "NEEDS:YOU"] {
             let conn = board_db();
-            add_card(&conn, "T-1", "lane", "todo", "Ask Ethan about pricing", "SCOPE: x\n- [ ] y");
+            add_card(
+                &conn,
+                "T-1",
+                "lane",
+                "todo",
+                "Ask Ethan about pricing",
+                "SCOPE: x\n- [ ] y",
+            );
             tag(&conn, "T-1", t, now_f64());
             let p = select_pickup_with(&conn, "lane", now_f64(), false);
-            assert!(claimed(&p).is_none(), "{t} must exempt the card from pickup");
-            assert_eq!(eligible_todo_count(&conn, "lane", 1_000_000.0), 0, "{t} must not count as eligible");
+            assert!(
+                claimed(&p).is_none(),
+                "{t} must exempt the card from pickup"
+            );
+            assert_eq!(
+                eligible_todo_count(&conn, "lane", 1_000_000.0),
+                0,
+                "{t} must not count as eligible"
+            );
         }
     }
 
@@ -11130,21 +13033,31 @@ mod tests {
             rusqlite::params![now as i64],
         )
         .unwrap();
-        let listed: Vec<String> =
-            backlog_candidates(&conn, "blk", now as i64).into_iter().map(|c| c.0).collect();
-        assert!(listed.is_empty(), "the drain NUDGE offered a blocked card: {listed:?}");
-        let counted = backlog_nudge_population(&conn, "blk", now as i64).unwrap().len() as i64;
-        assert_eq!(counted, 0, "the actual nudge denominator must exclude blocked cards too");
-        assert!(!should_drain_nudge(0, 0, counted, 0), "blocked-only backlog cannot trigger escalation");
+        let listed: Vec<String> = backlog_candidates(&conn, "blk", now as i64)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert!(
+            listed.is_empty(),
+            "the drain NUDGE offered a blocked card: {listed:?}"
+        );
+        let counted = backlog_nudge_population(&conn, "blk", now as i64)
+            .unwrap()
+            .len() as i64;
+        assert_eq!(
+            counted, 0,
+            "the actual nudge denominator must exclude blocked cards too"
+        );
+        assert!(
+            !should_drain_nudge(0, 0, counted, 0),
+            "blocked-only backlog cannot trigger escalation"
+        );
         assert!(
             drainable_backlog_ids(&conn, "blk", now).is_empty(),
             "the DRAIN itself offered a blocked card"
         );
-        conn.execute(
-            "UPDATE issues SET due=date('now') WHERE id='BL-1'",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE issues SET due=date('now') WHERE id='BL-1'", [])
+            .unwrap();
         let (due_promotions, due_total) = backlog_due_promotions(&conn);
         assert!(
             due_promotions.is_empty(),
@@ -11166,10 +13079,19 @@ mod tests {
             rusqlite::params![now as i64],
         )
         .unwrap();
-        let listed: Vec<String> =
-            backlog_candidates(&conn, "blk", now as i64).into_iter().map(|c| c.0).collect();
-        assert_eq!(listed, vec!["BL-2".to_string()], "an unblocked card must still drain");
-        assert_eq!(drainable_backlog_ids(&conn, "blk", now), vec!["BL-2".to_string()]);
+        let listed: Vec<String> = backlog_candidates(&conn, "blk", now as i64)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(
+            listed,
+            vec!["BL-2".to_string()],
+            "an unblocked card must still drain"
+        );
+        assert_eq!(
+            drainable_backlog_ids(&conn, "blk", now),
+            vec!["BL-2".to_string()]
+        );
     }
 
     /// AF-514. mixpeek-studio's MS-1331/MS-1314/MS-1275 each auto-drained 3+
@@ -11188,7 +13110,14 @@ mod tests {
     fn a_card_tagged_defer_focused_is_not_drainable_regardless_of_source_ref_or_due() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "MS-1", "studio", "backlog", "large focused turn", "SCOPE: x");
+        add_card(
+            &conn,
+            "MS-1",
+            "studio",
+            "backlog",
+            "large focused turn",
+            "SCOPE: x",
+        );
         tag(&conn, "MS-1", "defer:focused", now);
         assert!(
             drainable_backlog_ids(&conn, "studio", now).is_empty(),
@@ -11213,8 +13142,13 @@ mod tests {
         // Also clears the fresh source_ref set above -- otherwise THAT lever
         // alone would still exclude it, and this cell would prove nothing
         // about the tag specifically.
-        conn.execute("DELETE FROM issue_tags WHERE issue_id='MS-1'", []).unwrap();
-        conn.execute("UPDATE issues SET source_ref='', last_verified_at=NULL WHERE id='MS-1'", []).unwrap();
+        conn.execute("DELETE FROM issue_tags WHERE issue_id='MS-1'", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE issues SET source_ref='', last_verified_at=NULL WHERE id='MS-1'",
+            [],
+        )
+        .unwrap();
         assert_eq!(
             drainable_backlog_ids(&conn, "studio", now),
             vec!["MS-1".to_string()],
@@ -11224,7 +13158,14 @@ mod tests {
         // AND A DIFFERENT TAG must not accidentally match -- this excludes an
         // exact tag, not a prefix the way needs:you% does, so a lane naming
         // something merely SIMILAR does not silently get the same exclusion.
-        add_card(&conn, "MS-2", "studio", "backlog", "unrelated work", "SCOPE: x");
+        add_card(
+            &conn,
+            "MS-2",
+            "studio",
+            "backlog",
+            "unrelated work",
+            "SCOPE: x",
+        );
         tag(&conn, "MS-2", "defer:focused-ish", now);
         assert_eq!(
             drainable_backlog_ids(&conn, "studio", now),
@@ -11311,29 +13252,69 @@ mod tests {
         let conn = board_db();
         let now = now_f64() as i64;
         for i in 0..12 {
-            add_card(&conn, &format!("READY-{i:02}"), "lane", "backlog", "ready", "SCOPE: x");
+            add_card(
+                &conn,
+                &format!("READY-{i:02}"),
+                "lane",
+                "backlog",
+                "ready",
+                "SCOPE: x",
+            );
         }
-        for id in ["BLOCKED", "FRESH", "STALE", "CAPTURE", "HUMAN", "WATCH", "EPIC", "DEPENDENT", "CLAIMED"] {
+        for id in [
+            "BLOCKED",
+            "FRESH",
+            "STALE",
+            "CAPTURE",
+            "HUMAN",
+            "WATCH",
+            "EPIC",
+            "DEPENDENT",
+            "CLAIMED",
+        ] {
             add_card(&conn, id, "lane", "backlog", "parked", "SCOPE: x");
         }
         conn.execute("UPDATE issues SET blocked_on='waiting on peer', source_ref='condition', last_verified_at=0 WHERE id='BLOCKED'", []).unwrap();
-        conn.execute("UPDATE issues SET source_ref='condition', last_verified_at=?1 WHERE id='FRESH'", [now]).unwrap();
-        conn.execute("UPDATE issues SET source_ref='condition', last_verified_at=?1 WHERE id='STALE'", [now - SOURCE_REF_STALE_S - 1]).unwrap();
+        conn.execute(
+            "UPDATE issues SET source_ref='condition', last_verified_at=?1 WHERE id='FRESH'",
+            [now],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE issues SET source_ref='condition', last_verified_at=?1 WHERE id='STALE'",
+            [now - SOURCE_REF_STALE_S - 1],
+        )
+        .unwrap();
         conn.execute("UPDATE issues SET source='capture', source_ref='delivered', last_verified_at=0 WHERE id='CAPTURE'", []).unwrap();
         tag(&conn, "HUMAN", "needs:you", now as f64);
-        conn.execute("UPDATE issues SET type='watch' WHERE id='WATCH'", []).unwrap();
-        conn.execute("UPDATE issues SET type='epic' WHERE id='EPIC'", []).unwrap();
-        conn.execute("UPDATE issues SET depends_on='[\"MISSING\"]' WHERE id='DEPENDENT'", []).unwrap();
+        conn.execute("UPDATE issues SET type='watch' WHERE id='WATCH'", [])
+            .unwrap();
+        conn.execute("UPDATE issues SET type='epic' WHERE id='EPIC'", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"MISSING\"]' WHERE id='DEPENDENT'",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO session_events (ts,session,type,data,source) VALUES (?1,'lane','task.claimed','{\"issue\":\"CLAIMED\"}','test')", [now as f64]).unwrap();
         let population = backlog_nudge_population(&conn, "lane", now).unwrap();
         let ids: Vec<_> = population.iter().map(|row| row.0.clone()).collect();
-        assert_eq!(ids.len(), 13, "12 ready plus one stale unblocked trigger: {ids:?}");
+        assert_eq!(
+            ids.len(),
+            13,
+            "12 ready plus one stale unblocked trigger: {ids:?}"
+        );
         assert!(ids.contains(&"STALE".to_string()));
-        assert!(ids.iter().all(|id| id.starts_with("READY-") || id == "STALE"));
+        assert!(ids
+            .iter()
+            .all(|id| id.starts_with("READY-") || id == "STALE"));
         assert_eq!(ids, drainable_backlog_ids(&conn, "lane", now as f64));
         let display = &population[..8];
         let text = backlog_drain_text(display, population.len() as i64);
-        assert!(text.contains("13 drainable") && text.contains("5 more eligible card(s)"), "{text}");
+        assert!(
+            text.contains("13 drainable") && text.contains("5 more eligible card(s)"),
+            "{text}"
+        );
         assert!(should_drain_nudge(0, 0, population.len() as i64, 0));
     }
 
@@ -11347,10 +13328,18 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test, "--nocapture"])
             .env("AMUX_BOARD_LOG_TEST_CHILD", test)
-            .output().expect("run isolated board diagnostic contract");
+            .output()
+            .expect("run isolated board diagnostic contract");
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
-        assert!(stdout.contains("1 passed"), "diagnostic child did not run: {stdout}");
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "diagnostic child did not run: {stdout}"
+        );
         true
     }
 
@@ -11363,38 +13352,84 @@ mod tests {
         struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
         impl std::io::Write for Sink {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len())
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let output = bytes.clone();
-        let subscriber = tracing_subscriber::fmt().with_ansi(false).without_time()
-            .with_max_level(tracing::Level::INFO).with_writer(move || Sink(output.clone())).finish();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || Sink(output.clone()))
+            .finish();
         let conn = board_db();
         add_card(&conn, "READY", "lane", "backlog", "ready", "SCOPE: x");
         add_card(&conn, "PARKED", "lane", "backlog", "parked", "SCOPE: x");
-        conn.execute("UPDATE issues SET blocked_on='peer reply' WHERE id='PARKED'", []).unwrap();
+        conn.execute(
+            "UPDATE issues SET blocked_on='peer reply' WHERE id='PARKED'",
+            [],
+        )
+        .unwrap();
         tracing::subscriber::with_default(subscriber, || {
-            assert_eq!(backlog_nudge_population(&conn, "lane", now_f64() as i64).unwrap().len(), 1);
-            assert!(backlog_nudge_population(&Connection::open_in_memory().unwrap(), "lane", now_f64() as i64).is_err());
+            assert_eq!(
+                backlog_nudge_population(&conn, "lane", now_f64() as i64)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(backlog_nudge_population(
+                &Connection::open_in_memory().unwrap(),
+                "lane",
+                now_f64() as i64
+            )
+            .is_err());
             // The population query itself works, but its dependency on tags does not.
-            conn.execute("ALTER TABLE issue_tags RENAME TO unavailable_tags", []).unwrap();
+            conn.execute("ALTER TABLE issue_tags RENAME TO unavailable_tags", [])
+                .unwrap();
             assert!(backlog_nudge_population(&conn, "lane", now_f64() as i64).is_err());
         });
         let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-        assert!(log.contains("backlog_nudge_population") && log.contains("measured=true")
-            && log.contains("n_considered=2") && log.contains("eligible=1")
-            && log.contains("excluded=1") && log.contains("listed=1"), "{log}");
-        assert!(log.contains("backlog_nudge_population_unmeasured") && log.contains("measured=false")
-            && log.contains("why_unmeasured="), "{log}");
+        assert!(
+            log.contains("backlog_nudge_population")
+                && log.contains("measured=true")
+                && log.contains("n_considered=2")
+                && log.contains("eligible=1")
+                && log.contains("excluded=1")
+                && log.contains("listed=1"),
+            "{log}"
+        );
+        assert!(
+            log.contains("backlog_nudge_population_unmeasured")
+                && log.contains("measured=false")
+                && log.contains("why_unmeasured="),
+            "{log}"
+        );
     }
 
     #[test]
     fn delivered_capture_is_not_redispatched_after_its_trigger_ages() {
         let conn = board_db();
-        add_card(&conn, "DELIVERED", "lane", "backlog", "Owner follow-up", "SCOPE: already delivered");
-        add_card(&conn, "ORDINARY", "lane", "backlog", "Independent work", "SCOPE: ready to dispatch");
+        add_card(
+            &conn,
+            "DELIVERED",
+            "lane",
+            "backlog",
+            "Owner follow-up",
+            "SCOPE: already delivered",
+        );
+        add_card(
+            &conn,
+            "ORDINARY",
+            "lane",
+            "backlog",
+            "Independent work",
+            "SCOPE: ready to dispatch",
+        );
         conn.execute("UPDATE issues SET source='capture',source_ref='Already delivered; claim explicitly',last_verified_at=1 WHERE id='DELIVERED'", []).unwrap();
         assert_eq!(drainable_backlog_ids(&conn, "lane", now_f64()), vec!["ORDINARY".to_string()],
             "an aged observation must not replay a delivered owner prompt; ordinary backlog remains eligible");
@@ -11405,15 +13440,33 @@ mod tests {
         let conn = board_db();
         let now = now_f64();
         // The tubescience shape: fresh backlog, nothing in todo/doing.
-        add_card(&conn, "B-1", "lane", "backlog", "fresh batch item one", "SCOPE: x");
-        add_card(&conn, "B-2", "lane", "backlog", "fresh batch item two", "SCOPE: x");
+        add_card(
+            &conn,
+            "B-1",
+            "lane",
+            "backlog",
+            "fresh batch item one",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "B-2",
+            "lane",
+            "backlog",
+            "fresh batch item two",
+            "SCOPE: x",
+        );
         assert_eq!(
             eligible_todo_count(&conn, "lane", 1_000_000.0),
             0,
             "a backlog-only lane has nothing dispatchable — this is what makes it a drain, not a pickup"
         );
         let cands = backlog_candidates(&conn, "lane", now as i64);
-        assert_eq!(cands.len(), 2, "both backlog cards are drain candidates: {cands:?}");
+        assert_eq!(
+            cands.len(),
+            2,
+            "both backlog cards are drain candidates: {cands:?}"
+        );
         let text = backlog_drain_text(&cands, 2);
         assert!(
             text.contains("idle") && text.contains("B-1") && text.contains("backlog"),
@@ -11422,7 +13475,14 @@ mod tests {
 
         // Control that proves the discriminator can fail: a todo card is
         // DISPATCHED (eligible > 0), so the lane is never in the drain branch.
-        add_card(&conn, "T-1", "lane2", "todo", "actionable", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "T-1",
+            "lane2",
+            "todo",
+            "actionable",
+            "SCOPE: x\n- [ ] y",
+        );
         assert!(
             eligible_todo_count(&conn, "lane2", 1_000_000.0) > 0,
             "a lane with a todo is dispatched by the normal path, not drained"
@@ -11451,7 +13511,6 @@ mod tests {
             parked.is_empty(),
             "a tripwire and a FRESHLY-verified source_ref-triggered card are correctly parked, not drainable: {parked:?}"
         );
-
 
         // SOURCE_REF_STALE_S: a trigger nobody has re-checked in 24h+ is NOT a
         // live park — it must return as a drain candidate exactly like an
@@ -11483,7 +13542,14 @@ mod tests {
         let conn = board_db();
         let now = now_f64();
         // Control: a real code todo on the epic's lane IS dispatchable.
-        add_card(&conn, "C-1", "elane", "todo", "real work", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "C-1",
+            "elane",
+            "todo",
+            "real work",
+            "SCOPE: x\n- [ ] y",
+        );
         assert!(
             eligible_todo_count(&conn, "elane", 1_000_000.0) > 0,
             "control: a code todo must be dispatchable, or this test proves nothing"
@@ -11521,10 +13587,16 @@ mod tests {
         assert!(bs::dependency_is_resolved("done", "doc"));
         assert!(bs::dependency_is_resolved("verified", "code"));
         for item_type in ["code", "ops", "blocker", "tripwire"] {
-            assert!(!bs::dependency_is_resolved("done", item_type), "{item_type} still needs verification");
+            assert!(
+                !bs::dependency_is_resolved("done", item_type),
+                "{item_type} still needs verification"
+            );
         }
         for status in ["doing", "review", "discarded", "quarantined", "backlog"] {
-            assert!(!bs::dependency_is_resolved(status, "chore"), "{status} is not successful resolution");
+            assert!(
+                !bs::dependency_is_resolved(status, "chore"),
+                "{status} is not successful resolution"
+            );
         }
     }
 
@@ -11541,7 +13613,8 @@ mod tests {
             .expect("dep");
         };
         dep("A-done", "done");
-        conn.execute("UPDATE issues SET type='chore' WHERE id='A-done'", []).unwrap();
+        conn.execute("UPDATE issues SET type='chore' WHERE id='A-done'", [])
+            .unwrap();
         dep("A-code-done", "done");
         dep("A-discarded", "discarded");
         dep("A-verified", "verified");
@@ -11563,7 +13636,7 @@ mod tests {
         parked("P-missing", "code", r#"["A-done","GONE"]"#); // NOT: a dep resolves to nothing
         parked("W-watch", "watch", r#"["A-done"]"#); // NOT: dormant type
         parked("E-epic", "epic", r#"["A-verified"]"#); // NOT: container type
-        // A triggers-only park: NULL depends_on, terminal-deps irrelevant.
+                                                       // A triggers-only park: NULL depends_on, terminal-deps irrelevant.
         conn.execute(
             "INSERT INTO issues (id,title,status,session,owner_type,type,updated,created) \
              VALUES ('P-nodeps','P-nodeps','backlog','me','agent','code',100,100)",
@@ -11581,20 +13654,48 @@ mod tests {
         let (got, _held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
 
-        assert!(ids.contains("P-all-terminal"), "all-terminal deps must promote: {ids:?}");
-        assert!(!ids.contains("P-unverified"), "done code has not been verified");
-        assert!(!ids.contains("P-discarded"), "discarded is not successful completion");
+        assert!(
+            ids.contains("P-all-terminal"),
+            "all-terminal deps must promote: {ids:?}"
+        );
+        assert!(
+            !ids.contains("P-unverified"),
+            "done code has not been verified"
+        );
+        assert!(
+            !ids.contains("P-discarded"),
+            "discarded is not successful completion"
+        );
         assert!(!ids.contains("P-one-open"), "one open dep must NOT promote");
-        assert!(!ids.contains("P-missing"), "a missing dep must NOT promote (conservative)");
-        assert!(!ids.contains("W-watch"), "a watch is dormant — never promote");
-        assert!(!ids.contains("E-epic"), "an epic is a container — never promote");
-        assert!(!ids.contains("P-nodeps"), "a card with no depends_on is not dependency-parked");
-        assert!(!ids.contains("H-1"), "never re-activate a human's card (ethos rule 8)");
+        assert!(
+            !ids.contains("P-missing"),
+            "a missing dep must NOT promote (conservative)"
+        );
+        assert!(
+            !ids.contains("W-watch"),
+            "a watch is dormant — never promote"
+        );
+        assert!(
+            !ids.contains("E-epic"),
+            "an epic is a container — never promote"
+        );
+        assert!(
+            !ids.contains("P-nodeps"),
+            "a card with no depends_on is not dependency-parked"
+        );
+        assert!(
+            !ids.contains("H-1"),
+            "never re-activate a human's card (ethos rule 8)"
+        );
         assert_eq!(ids.len(), 1, "exactly the one promotable card: {ids:?}");
 
         // The cleared deps ride along so the promotion log can name them.
         let (_, cleared) = got.iter().find(|(i, _)| i == "P-all-terminal").unwrap();
-        assert_eq!(cleared.len(), 2, "both cleared deps are reported for the log line");
+        assert_eq!(
+            cleared.len(),
+            2,
+            "both cleared deps are reported for the log line"
+        );
     }
 
     /// A card parked on a live `source_ref` trigger is NEVER promoted, even when
@@ -11654,7 +13755,10 @@ mod tests {
 
         let (got, held) = backlog_dep_promotions(&conn, 1_000_000);
         let ids: std::collections::HashSet<&str> = got.iter().map(|(i, _)| i.as_str()).collect();
-        assert!(!ids.contains("T-armed"), "a live-trigger park must NOT be promoted: {ids:?}");
+        assert!(
+            !ids.contains("T-armed"),
+            "a live-trigger park must NOT be promoted: {ids:?}"
+        );
         assert!(
             ids.contains("T-stale"),
             "a trigger unverified for 30 days no longer holds a deps-cleared card (MB-53): {ids:?}"
@@ -11671,7 +13775,10 @@ mod tests {
             ids.contains("T-blank"),
             "a whitespace-only source_ref is not a live trigger: {ids:?}"
         );
-        assert_eq!(held, 1, "exactly the one FRESH live-trigger card is counted as held");
+        assert_eq!(
+            held, 1,
+            "exactly the one FRESH live-trigger card is counted as held"
+        );
     }
 
     /// AMUX-3777: the HELD-CARD re-nag arm, which had NO coverage at all.
@@ -11698,7 +13805,14 @@ mod tests {
         let stale = now - (needsyou_renag_days() + 2.0) * 86400.0;
         // The lane HOLDS this card (doing), it is tagged needs:you, and the ask
         // is older than the window. That is arm 2's precondition.
-        add_card(&conn, "H-1", "lane", "doing", "held and unanswered", "SCOPE: x");
+        add_card(
+            &conn,
+            "H-1",
+            "lane",
+            "doing",
+            "held and unanswered",
+            "SCOPE: x",
+        );
         tag(&conn, "H-1", "needs:you", stale);
 
         // ARM 2 IS HEAVILY SHADOWED, which is why it had no coverage: the
@@ -11713,7 +13827,14 @@ mod tests {
         // watching it hit arm 1 — variant 3 of random's taxonomy (an arm made
         // unreachable by an earlier one), found in the branch AMUX-3768 flagged
         // as uncountable.
-        add_card(&conn, "A-0", "lane", "needsyou", "older, already nagged", "SCOPE: x");
+        add_card(
+            &conn,
+            "A-0",
+            "lane",
+            "needsyou",
+            "older, already nagged",
+            "SCOPE: x",
+        );
         tag(&conn, "A-0", "needs:you", stale - 86400.0);
         conn.execute(
             "INSERT INTO session_events (ts,session,type,data,source) \
@@ -11732,7 +13853,10 @@ mod tests {
         let Advance::Nudge { kind, card, .. } = select_advance(&conn, "lane", &[], now) else {
             panic!("a held needs:you card past the window must re-nag");
         };
-        assert_eq!(card, "H-1", "the deduped older card must not be the one nudged about");
+        assert_eq!(
+            card, "H-1",
+            "the deduped older card must not be the one nudged about"
+        );
         assert_eq!(
             kind, "renag-held",
             "the held-card arm must be distinguishable in the ledger from the queue scan — \
@@ -11743,12 +13867,22 @@ mod tests {
         // is just "any held needs:you card nudges" and the staleness gate is
         // untested.
         let conn2 = board_db();
-        add_card(&conn2, "H-2", "lane", "doing", "held, asked recently", "SCOPE: x");
+        add_card(
+            &conn2,
+            "H-2",
+            "lane",
+            "doing",
+            "held, asked recently",
+            "SCOPE: x",
+        );
         tag(&conn2, "H-2", "needs:you", now - 3600.0);
         assert!(
             matches!(
                 select_advance(&conn2, "lane", &[], now),
-                Advance::None { reason: "needsyou", .. }
+                Advance::None {
+                    reason: "needsyou",
+                    ..
+                }
             ),
             "a fresh ask is the human's to answer, not a lane to nag"
         );
@@ -11768,11 +13902,21 @@ mod tests {
     fn a_status_only_needsyou_card_still_re_nags() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "N-1", "lane", "needsyou", "Ask Ethan about pricing", "SCOPE: x");
+        add_card(
+            &conn,
+            "N-1",
+            "lane",
+            "needsyou",
+            "Ask Ethan about pricing",
+            "SCOPE: x",
+        );
         // No tag(): status alone, which is the whole point of the case.
         let old = (now - 5.0 * 86400.0) as i64;
-        conn.execute("UPDATE issues SET updated=?1 WHERE id='N-1'", rusqlite::params![old])
-            .expect("age the ask");
+        conn.execute(
+            "UPDATE issues SET updated=?1 WHERE id='N-1'",
+            rusqlite::params![old],
+        )
+        .expect("age the ask");
         match select_advance(&conn, "lane", &[], now) {
             Advance::Nudge { card, kind, .. } => {
                 assert_eq!(card, "N-1");
@@ -11791,12 +13935,25 @@ mod tests {
     fn a_fresh_status_only_needsyou_card_does_not_re_nag() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "N-1", "lane", "needsyou", "Ask Ethan about pricing", "SCOPE: x");
+        add_card(
+            &conn,
+            "N-1",
+            "lane",
+            "needsyou",
+            "Ask Ethan about pricing",
+            "SCOPE: x",
+        );
         let recent = (now - 3600.0) as i64;
-        conn.execute("UPDATE issues SET updated=?1 WHERE id='N-1'", rusqlite::params![recent])
-            .expect("freshen");
+        conn.execute(
+            "UPDATE issues SET updated=?1 WHERE id='N-1'",
+            rusqlite::params![recent],
+        )
+        .expect("freshen");
         assert!(
-            !matches!(select_advance(&conn, "lane", &[], now), Advance::Nudge { kind: "renag", .. }),
+            !matches!(
+                select_advance(&conn, "lane", &[], now),
+                Advance::Nudge { kind: "renag", .. }
+            ),
             "an ask made an hour ago is not stale and must not re-nag"
         );
     }
@@ -11810,7 +13967,14 @@ mod tests {
     fn a_tagged_ask_ages_from_the_tag_not_the_row() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "N-1", "lane", "todo", "Ask Ethan about pricing", "SCOPE: x");
+        add_card(
+            &conn,
+            "N-1",
+            "lane",
+            "todo",
+            "Ask Ethan about pricing",
+            "SCOPE: x",
+        );
         tag(&conn, "N-1", "needs:you", now - 5.0 * 86400.0);
         // Touched a minute ago — under `updated` this ask would look brand new.
         conn.execute(
@@ -11819,7 +13983,10 @@ mod tests {
         )
         .expect("touch");
         assert!(
-            matches!(select_advance(&conn, "lane", &[], now), Advance::Nudge { kind: "renag", .. }),
+            matches!(
+                select_advance(&conn, "lane", &[], now),
+                Advance::Nudge { kind: "renag", .. }
+            ),
             "a 5-day-old TAG on a freshly-touched row must still re-nag"
         );
     }
@@ -11830,12 +13997,23 @@ mod tests {
     fn the_trace_count_agrees_with_the_selector() {
         let conn = board_db();
         add_card(&conn, "T-1", "lane", "todo", "real", "SCOPE: x\n- [ ] y");
-        add_card(&conn, "T-2", "lane", "todo", "also real", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "T-2",
+            "lane",
+            "todo",
+            "also real",
+            "SCOPE: x\n- [ ] y",
+        );
         add_card(&conn, "T-3", "lane", "todo", "human", "SCOPE: x\n- [ ] y");
         tag(&conn, "T-3", "needs:you", now_f64());
-        conn.execute("UPDATE issues SET archived=1 WHERE id='T-2'", []).expect("archive");
+        conn.execute("UPDATE issues SET archived=1 WHERE id='T-2'", [])
+            .expect("archive");
         assert_eq!(eligible_todo_count(&conn, "lane", 1_000_000.0), 1);
-        assert_eq!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)), Some("T-1"));
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("T-1")
+        );
     }
 
     /// AMUX-2983 (gtm-videos): the auto-pickup claimed GV-648 while it was
@@ -11847,14 +14025,13 @@ mod tests {
     #[tokio::test]
     async fn claim_refuses_a_closed_card_and_does_not_reopen_it() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let state = crate::api::AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let ins = |id: &str, status: &str| {
             let (id, status) = (id.to_string(), status.to_string());
@@ -11878,14 +14055,27 @@ mod tests {
         };
         // The GV-648 shape: a DONE card. The claim must refuse and not reopen.
         ins("GV-1", "done");
-        assert!(!claim_card(&state, "lane", "GV-1").await, "claiming a done card must return false");
-        assert_eq!(status_of("GV-1"), "done", "a done card must NOT be reopened to 'doing'");
+        assert!(
+            !claim_card(&state, "lane", "GV-1").await,
+            "claiming a done card must return false"
+        );
+        assert_eq!(
+            status_of("GV-1"),
+            "done",
+            "a done card must NOT be reopened to 'doing'"
+        );
         // The control that proves the swap can succeed: a real todo claims.
         ins("T-1", "todo");
-        assert!(claim_card(&state, "lane", "T-1").await, "a todo card claims");
+        assert!(
+            claim_card(&state, "lane", "T-1").await,
+            "a todo card claims"
+        );
         assert_eq!(status_of("T-1"), "doing");
         // And a second claim of the now-doing card refuses (idempotent).
-        assert!(!claim_card(&state, "lane", "T-1").await, "re-claiming a doing card must refuse");
+        assert!(
+            !claim_card(&state, "lane", "T-1").await,
+            "re-claiming a doing card must refuse"
+        );
     }
 
     /// AMUX-3450: the CLI help always promised "claim a todo/backlog card";
@@ -11898,14 +14088,13 @@ mod tests {
     #[tokio::test]
     async fn backlog_claims_manually_but_never_via_the_todo_cas() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let state = crate::api::AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         store
             .write(move |conn| {
@@ -11932,7 +14121,11 @@ mod tests {
             !claim_card(&state, "lane", "B-1").await,
             "the todo CAS must refuse a parked card"
         );
-        assert_eq!(read_row("status"), "backlog", "the refused claim must leave it parked");
+        assert_eq!(
+            read_row("status"),
+            "backlog",
+            "the refused claim must leave it parked"
+        );
         assert!(
             claim_card_from(&state, "lane", "B-1", "backlog").await,
             "an explicit manual claim of a named backlog card must work"
@@ -11971,7 +14164,14 @@ mod tests {
     #[test]
     fn pickup_skips_a_card_that_cannot_say_what_to_do_next() {
         let conn = board_db();
-        add_card(&conn, "AF-90", "lane", "todo", "no continuation", "SCOPE: real\n- [ ] do it");
+        add_card(
+            &conn,
+            "AF-90",
+            "lane",
+            "todo",
+            "no continuation",
+            "SCOPE: real\n- [ ] do it",
+        );
 
         // GATE OFF: the card is workable and pickup offers it. Without this the
         // cell below passes for a pickup that is simply broken.
@@ -12008,9 +14208,22 @@ mod tests {
     fn pickup_offers_a_card_only_to_its_session_owner() {
         let conn = board_db();
         // Owned by `amux`; a different lane created it (as in the incident).
-        add_card(&conn, "AF-78", "amux", "todo", "owned by amux", "SCOPE: real\n- [ ] do it");
+        add_card(
+            &conn,
+            "AF-78",
+            "amux",
+            "todo",
+            "owned by amux",
+            "SCOPE: real\n- [ ] do it",
+        );
         assert!(
-            claimed(&select_pickup_with(&conn, "amux-frustrations", now_f64(), false)).is_none(),
+            claimed(&select_pickup_with(
+                &conn,
+                "amux-frustrations",
+                now_f64(),
+                false
+            ))
+            .is_none(),
             "a card owned by 'amux' must never be offered to a non-owner lane"
         );
         assert_eq!(
@@ -12037,14 +14250,13 @@ mod tests {
     #[tokio::test]
     async fn claim_log_names_the_lane_and_records_a_reassignment() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let state = crate::api::AppState {
             store: store.clone(),
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let ins = |id: &str, owner: &str| {
             let (id, owner) = (id.to_string(), owner.to_string());
@@ -12074,7 +14286,10 @@ mod tests {
         // Same-owner claim (the auto-pickup case): the log names the claimer and
         // does NOT invent a reassignment.
         ins("AF-78", "amux-frustrations");
-        assert!(claim_card(&state, "amux-frustrations", "AF-78").await, "a todo card claims");
+        assert!(
+            claim_card(&state, "amux-frustrations", "AF-78").await,
+            "a todo card claims"
+        );
         let log = log_of("AF-78");
         assert!(
             log.contains("Auto-picked up from queue by amux-frustrations"),
@@ -12088,7 +14303,10 @@ mod tests {
         // Cross-owner claim (unreachable from the guarded callers; the safety net
         // for a real mis-dispatch): the log records the ownership change.
         ins("AF-99", "amux");
-        assert!(claim_card(&state, "amux-frustrations", "AF-99").await, "a todo card claims");
+        assert!(
+            claim_card(&state, "amux-frustrations", "AF-99").await,
+            "a todo card claims"
+        );
         let log = log_of("AF-99");
         assert!(
             log.contains("by amux-frustrations") && log.contains("reassigned from amux"),
@@ -12110,12 +14328,17 @@ mod tests {
                 .unwrap()
                 .prepare("SELECT COALESCE(data,'') FROM session_events WHERE type=?1")
                 .and_then(|mut st| {
-                    st.query_map([t], |r| r.get::<_, String>(0)).map(|r| r.flatten().collect())
+                    st.query_map([t], |r| r.get::<_, String>(0))
+                        .map(|r| r.flatten().collect())
                 })
                 .unwrap_or_default()
         };
         let cross = rows("claim.cross_owner");
-        assert_eq!(cross.len(), 1, "exactly the ONE cross-owner claim files a row: {cross:?}");
+        assert_eq!(
+            cross.len(),
+            1,
+            "exactly the ONE cross-owner claim files a row: {cross:?}"
+        );
         assert!(
             cross[0].contains("AF-99") && cross[0].contains("amux"),
             "the row must name the card and the prior owner, or it cannot be investigated: {}",
@@ -12184,10 +14407,26 @@ mod tests {
         let build = || {
             let conn = board_db();
             // No todo at all: the only state where this may fire.
-            add_card(&conn, "B-1", "lane", "backlog", "oldest", "SCOPE: x\n- [ ] y");
-            add_card(&conn, "B-2", "lane", "backlog", "newer", "SCOPE: x\n- [ ] y");
-            conn.execute("UPDATE issues SET created=100 WHERE id='B-1'", []).unwrap();
-            conn.execute("UPDATE issues SET created=200 WHERE id='B-2'", []).unwrap();
+            add_card(
+                &conn,
+                "B-1",
+                "lane",
+                "backlog",
+                "oldest",
+                "SCOPE: x\n- [ ] y",
+            );
+            add_card(
+                &conn,
+                "B-2",
+                "lane",
+                "backlog",
+                "newer",
+                "SCOPE: x\n- [ ] y",
+            );
+            conn.execute("UPDATE issues SET created=100 WHERE id='B-1'", [])
+                .unwrap();
+            conn.execute("UPDATE issues SET created=200 WHERE id='B-2'", [])
+                .unwrap();
             conn
         };
 
@@ -12195,9 +14434,20 @@ mod tests {
         // needing a redundant opt-in key.
         std::env::remove_var(DISPATCH_BACKLOG_KEY);
         match select_pickup_with(&build(), "lane", now_f64(), false) {
-            Pickup::DrainBacklog { card, backlog_left, todo_refusals, .. } => {
-                assert_eq!(card, "B-1", "oldest first, so a starved card is not starved further");
-                assert_eq!(backlog_left, 2, "the count reports what is drainable, before the move");
+            Pickup::DrainBacklog {
+                card,
+                backlog_left,
+                todo_refusals,
+                ..
+            } => {
+                assert_eq!(
+                    card, "B-1",
+                    "oldest first, so a starved card is not starved further"
+                );
+                assert_eq!(
+                    backlog_left, 2,
+                    "the count reports what is drainable, before the move"
+                );
                 assert_eq!(todo_refusals, 0, "an empty todo queue has no refusals");
             }
             other => panic!("default-on backlog dispatch did not run: {other:?}"),
@@ -12223,7 +14473,14 @@ mod tests {
     fn the_trace_says_why_a_drain_declined() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = board_db();
-        add_card(&conn, "P-1", "lane", "backlog", "parked on a trigger", "SCOPE: x");
+        add_card(
+            &conn,
+            "P-1",
+            "lane",
+            "backlog",
+            "parked on a trigger",
+            "SCOPE: x",
+        );
         conn.execute(
             "UPDATE issues SET source_ref='watch:thing', last_verified_at=?1 WHERE id='P-1'",
             rusqlite::params![now_f64() as i64],
@@ -12236,8 +14493,14 @@ mod tests {
         std::env::set_var(DISPATCH_BACKLOG_KEY, "1");
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { detail, .. } => {
-                assert!(detail.contains("drain: ON"), "the note must say the drain ran: {detail}");
-                assert!(detail.contains("parked"), "...and that the cards are parked: {detail}");
+                assert!(
+                    detail.contains("drain: ON"),
+                    "the note must say the drain ran: {detail}"
+                );
+                assert!(
+                    detail.contains("parked"),
+                    "...and that the cards are parked: {detail}"
+                );
             }
             other => panic!("a fully parked backlog must not drain: {other:?}"),
         }
@@ -12262,12 +14525,29 @@ mod tests {
         std::env::set_var(DISPATCH_BACKLOG_KEY, "1");
         let conn = board_db();
         // Parked ON A HUMAN.
-        add_card(&conn, "H-1", "lane", "backlog", "waiting on a person", "SCOPE: x");
-        conn.execute("INSERT INTO issue_tags (issue_id, tag) VALUES ('H-1','needs:you')", [])
-            .unwrap();
+        add_card(
+            &conn,
+            "H-1",
+            "lane",
+            "backlog",
+            "waiting on a person",
+            "SCOPE: x",
+        );
+        conn.execute(
+            "INSERT INTO issue_tags (issue_id, tag) VALUES ('H-1','needs:you')",
+            [],
+        )
+        .unwrap();
         // Parked on a LIVE TRIGGER: a source_ref its owner re-confirmed recently.
         // Draining this would override a deliberate re-park, which is MG-1388.
-        add_card(&conn, "T-1", "lane", "backlog", "waiting on a condition", "SCOPE: x");
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "backlog",
+            "waiting on a condition",
+            "SCOPE: x",
+        );
         conn.execute(
             "UPDATE issues SET source_ref='watch:thing', last_verified_at=?1 WHERE id='T-1'",
             rusqlite::params![now_f64() as i64],
@@ -12275,7 +14555,9 @@ mod tests {
         .unwrap();
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { reason, .. } => assert_eq!(reason, "no-eligible-card"),
-            other => panic!("neither a human-parked nor a trigger-parked card may drain: {other:?}"),
+            other => {
+                panic!("neither a human-parked nor a trigger-parked card may drain: {other:?}")
+            }
         }
         std::env::remove_var(DISPATCH_BACKLOG_KEY);
     }
@@ -12284,10 +14566,31 @@ mod tests {
     fn a_capped_lane_still_promotes_its_own_blocked_dependency() {
         let conn = board_db();
         // The cap is full, exactly as rtsp-connection's was.
-        add_card(&conn, "RC-80", "lane", "doing", "holding the slot", "SCOPE: x");
+        add_card(
+            &conn,
+            "RC-80",
+            "lane",
+            "doing",
+            "holding the slot",
+            "SCOPE: x",
+        );
         // ...and the head of the chain is blocked by this lane's OWN backlog card.
-        add_card(&conn, "RC-66", "lane", "backlog", "the parked blocker", "SCOPE: x");
-        add_card(&conn, "RC-67", "lane", "todo", "blocked head", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "RC-66",
+            "lane",
+            "backlog",
+            "the parked blocker",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "RC-67",
+            "lane",
+            "todo",
+            "blocked head",
+            "SCOPE: x\n- [ ] y",
+        );
         conn.execute(
             "UPDATE issues SET depends_on=?1 WHERE id='RC-67'",
             rusqlite::params!["[\"RC-66\"]"],
@@ -12295,7 +14598,10 @@ mod tests {
         .expect("set dep");
 
         match select_pickup_with(&conn, "lane", now_f64(), false) {
-            Pickup::PromoteDeps { blocked_card, promoted } => {
+            Pickup::PromoteDeps {
+                blocked_card,
+                promoted,
+            } => {
                 assert_eq!(blocked_card, "RC-67");
                 assert_eq!(promoted, vec!["RC-66"]);
             }
@@ -12312,12 +14618,36 @@ mod tests {
     #[test]
     fn a_capped_lane_with_nothing_promotable_still_reports_the_cap() {
         let conn = board_db();
-        add_card(&conn, "D-1", "lane", "doing", "holding the slot", "SCOPE: x");
+        add_card(
+            &conn,
+            "D-1",
+            "lane",
+            "doing",
+            "holding the slot",
+            "SCOPE: x",
+        );
         // Blocked by ANOTHER lane's card — not this lane's to promote.
-        add_card(&conn, "X-9", "other", "backlog", "someone else's blocker", "SCOPE: x");
-        add_card(&conn, "T-2", "lane", "todo", "blocked by a peer", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET depends_on=?1 WHERE id='T-2'", rusqlite::params!["[\"X-9\"]"])
-            .expect("set dep");
+        add_card(
+            &conn,
+            "X-9",
+            "other",
+            "backlog",
+            "someone else's blocker",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "T-2",
+            "lane",
+            "todo",
+            "blocked by a peer",
+            "SCOPE: x\n- [ ] y",
+        );
+        conn.execute(
+            "UPDATE issues SET depends_on=?1 WHERE id='T-2'",
+            rusqlite::params!["[\"X-9\"]"],
+        )
+        .expect("set dep");
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { reason, .. } => assert_eq!(reason, "wip-cap"),
             other => panic!("another lane's backlog card is not ours to promote: {other:?}"),
@@ -12339,19 +14669,36 @@ mod tests {
         let setup = |touched: f64, with_todo: bool| {
             let conn = board_db();
             add_card(&conn, "BR-51", "lane", "doing", "abandoned", "SCOPE: x");
-            conn.execute("UPDATE issues SET updated=?1 WHERE id='BR-51'", rusqlite::params![touched as i64])
-                .expect("age the card");
+            conn.execute(
+                "UPDATE issues SET updated=?1 WHERE id='BR-51'",
+                rusqlite::params![touched as i64],
+            )
+            .expect("age the card");
             if with_todo {
-                add_card(&conn, "BR-3", "lane", "todo", "waiting behind it", "SCOPE: x\n- [ ] y");
+                add_card(
+                    &conn,
+                    "BR-3",
+                    "lane",
+                    "todo",
+                    "waiting behind it",
+                    "SCOPE: x\n- [ ] y",
+                );
             }
             conn
         };
 
         // THE SPECIMEN: untouched past the window, with work waiting behind it.
         match select_pickup_with(&setup(stale, true), "lane", now_f64(), false) {
-            Pickup::ReclaimStale { card, held_h, blocking } => {
+            Pickup::ReclaimStale {
+                card,
+                held_h,
+                blocking,
+            } => {
                 assert_eq!(card, "BR-51");
-                assert!(held_h >= 6.0, "held_h must report the real idle time: {held_h}");
+                assert!(
+                    held_h >= 6.0,
+                    "held_h must report the real idle time: {held_h}"
+                );
                 assert_eq!(blocking, 1, "and how much work it was holding up");
             }
             other => panic!("an abandoned card holding the only slot must be reclaimed: {other:?}"),
@@ -12379,7 +14726,14 @@ mod tests {
     #[test]
     fn a_needs_you_card_is_never_reclaimed() {
         let conn = board_db();
-        add_card(&conn, "H-1", "lane", "doing", "waiting on a human", "SCOPE: x");
+        add_card(
+            &conn,
+            "H-1",
+            "lane",
+            "doing",
+            "waiting on a human",
+            "SCOPE: x",
+        );
         conn.execute(
             "UPDATE issues SET updated=?1 WHERE id='H-1'",
             rusqlite::params![(now_f64() - 48.0 * 3600.0) as i64],
@@ -12390,7 +14744,14 @@ mod tests {
             [],
         )
         .expect("tag it");
-        add_card(&conn, "T-9", "lane", "todo", "behind it", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "T-9",
+            "lane",
+            "todo",
+            "behind it",
+            "SCOPE: x\n- [ ] y",
+        );
         // Any other outcome is fine — the card does not hold WIP, so the lane is
         // free to be handed T-9. The one thing that must never happen is the
         // reclaim.
@@ -12409,7 +14770,10 @@ mod tests {
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { reason, detail } => {
                 assert_eq!(reason, "wip-cap");
-                assert!(detail.contains("D-1"), "the trace must name what is held: {detail}");
+                assert!(
+                    detail.contains("D-1"),
+                    "the trace must name what is held: {detail}"
+                );
             }
             _ => panic!("a lane holding a doing card must not be handed a second"),
         }
@@ -12423,9 +14787,13 @@ mod tests {
     fn an_archived_doing_card_does_not_hold_wip() {
         let conn = board_db();
         add_card(&conn, "D-1", "lane", "doing", "cleared", "SCOPE: x");
-        conn.execute("UPDATE issues SET archived=1 WHERE id='D-1'", []).expect("archive");
+        conn.execute("UPDATE issues SET archived=1 WHERE id='D-1'", [])
+            .expect("archive");
         add_card(&conn, "T-1", "lane", "todo", "next", "SCOPE: x\n- [ ] y");
-        assert_eq!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)), Some("T-1"));
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("T-1")
+        );
     }
 
     /// AMUX-3757, Ethan 2026-08-26: "why do i need to push @tubescience to
@@ -12448,8 +14816,16 @@ mod tests {
     #[test]
     fn a_capture_shell_does_not_hold_the_wip_slot_but_a_reshaped_card_does() {
         let conn = board_db();
-        add_card(&conn, "C-1", "lane", "doing", "Why are you stopping", "**Prompt:** why are you stopping? you should continue");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-1'", []).expect("mint");
+        add_card(
+            &conn,
+            "C-1",
+            "lane",
+            "doing",
+            "Why are you stopping",
+            "**Prompt:** why are you stopping? you should continue",
+        );
+        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-1'", [])
+            .expect("mint");
         add_card(&conn, "T-1", "lane", "todo", "next", "SCOPE: x\n- [ ] y");
         assert_eq!(
             claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
@@ -12463,11 +14839,15 @@ mod tests {
             [],
         )
         .expect("reshape");
-        conn.execute("UPDATE issues SET status='todo' WHERE id='T-1'", []).expect("reset");
+        conn.execute("UPDATE issues SET status='todo' WHERE id='T-1'", [])
+            .expect("reset");
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { reason, detail } => {
                 assert_eq!(reason, "wip-cap");
-                assert!(detail.contains("C-1"), "the reshaped card holds the slot: {detail}");
+                assert!(
+                    detail.contains("C-1"),
+                    "the reshaped card holds the slot: {detail}"
+                );
             }
             other => panic!(
                 "a reshaped capture is real work and must hold WIP, got {:?}",
@@ -12487,20 +14867,41 @@ mod tests {
     #[test]
     fn a_captured_delegation_is_dispatchable_and_captured_chatter_is_not() {
         let conn = board_db();
-        add_card(&conn, "C-ASK", "lane", "backlog", "ASK: pick up MF-1165", concat!(
-            "**Prompt:** ASK (Ethan, resumed you for this): pick up MF-1165 on the finances ",
-            "board, WS5 of epic MF-1168.\nCard has full scope + acceptance."));
-        add_card(&conn, "C-CHAT", "lane", "backlog", "landed",
-            "**Prompt:** landed 3f79021a; say the word if you want me to ask about MF-1165 next");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id IN ('C-ASK','C-CHAT')", [])
-            .expect("mint");
+        add_card(
+            &conn,
+            "C-ASK",
+            "lane",
+            "backlog",
+            "ASK: pick up MF-1165",
+            concat!(
+                "**Prompt:** ASK (Ethan, resumed you for this): pick up MF-1165 on the finances ",
+                "board, WS5 of epic MF-1168.\nCard has full scope + acceptance."
+            ),
+        );
+        add_card(
+            &conn,
+            "C-CHAT",
+            "lane",
+            "backlog",
+            "landed",
+            "**Prompt:** landed 3f79021a; say the word if you want me to ask about MF-1165 next",
+        );
+        conn.execute(
+            "UPDATE issues SET creator='amux' WHERE id IN ('C-ASK','C-CHAT')",
+            [],
+        )
+        .expect("mint");
 
         let dealt: Vec<String> = drainable_backlog_rows(&conn, "lane", now_f64())
             .expect("drainable")
             .into_iter()
             .map(|r| r.id)
             .collect();
-        assert_eq!(dealt, vec!["C-ASK"], "the delegation is work; the status line is not");
+        assert_eq!(
+            dealt,
+            vec!["C-ASK"],
+            "the delegation is work; the status line is not"
+        );
         assert_eq!(
             backlog_by_type_count(&conn, "lane"),
             1,
@@ -12511,17 +14912,35 @@ mod tests {
     #[test]
     fn wip_capacity_uses_the_capture_predicate_and_rejects_an_unreadable_population() {
         let conn = board_db();
-        add_card(&conn, "C-1", "lane", "doing", "Unanswered", "\n  **Prompt:** continue");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-1'", []).unwrap();
-        assert!(wip_holding_ids(&conn, "lane", None).unwrap().is_empty(),
-            "WIP must use is_capture_shell's whitespace handling too");
-        conn.execute("UPDATE issues SET \"desc\"='SCOPE: real work' WHERE id='C-1'", []).unwrap();
+        add_card(
+            &conn,
+            "C-1",
+            "lane",
+            "doing",
+            "Unanswered",
+            "\n  **Prompt:** continue",
+        );
+        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-1'", [])
+            .unwrap();
+        assert!(
+            wip_holding_ids(&conn, "lane", None).unwrap().is_empty(),
+            "WIP must use is_capture_shell's whitespace handling too"
+        );
+        conn.execute(
+            "UPDATE issues SET \"desc\"='SCOPE: real work' WHERE id='C-1'",
+            [],
+        )
+        .unwrap();
         assert_eq!(wip_holding_ids(&conn, "lane", None).unwrap(), vec!["C-1"]);
-        assert!(wip_holding_ids(&conn, "lane", Some("C-1")).unwrap().is_empty());
+        assert!(wip_holding_ids(&conn, "lane", Some("C-1"))
+            .unwrap()
+            .is_empty());
 
         let unreadable = Connection::open_in_memory().unwrap();
-        assert!(wip_holding_ids(&unreadable, "lane", None).is_err(),
-            "a missing population must not masquerade as free capacity");
+        assert!(
+            wip_holding_ids(&unreadable, "lane", None).is_err(),
+            "a missing population must not masquerade as free capacity"
+        );
         match select_pickup_with(&unreadable, "lane", now_f64(), false) {
             Pickup::None { reason, .. } => assert_eq!(reason, "wip-unmeasured"),
             _ => panic!("unreadable WIP must not permit a pickup"),
@@ -12540,7 +14959,9 @@ mod tests {
                 self.0.lock().unwrap().extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = bytes.clone();
@@ -12551,18 +14972,35 @@ mod tests {
             .with_writer(move || Sink(sink.clone()))
             .finish();
         let conn = board_db();
-        add_card(&conn, "C-1", "lane", "doing", "Unanswered", "**Prompt:** continue");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-1'", []).unwrap();
+        add_card(
+            &conn,
+            "C-1",
+            "lane",
+            "doing",
+            "Unanswered",
+            "**Prompt:** continue",
+        );
+        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-1'", [])
+            .unwrap();
         tracing::subscriber::with_default(subscriber, || {
             assert!(wip_holding_ids(&conn, "lane", None).unwrap().is_empty());
             assert!(wip_holding_ids(&Connection::open_in_memory().unwrap(), "lane", None).is_err());
         });
         let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-        assert!(log.contains("capture_shells_exempt") && log.contains("measured=true")
-            && log.contains("n_considered=1") && log.contains("capture_shells=1")
-            && log.contains("n_holding=0"), "{log}");
-        assert!(log.contains("wip_unmeasured") && log.contains("measured=false")
-            && log.contains("why_unmeasured="), "{log}");
+        assert!(
+            log.contains("capture_shells_exempt")
+                && log.contains("measured=true")
+                && log.contains("n_considered=1")
+                && log.contains("capture_shells=1")
+                && log.contains("n_holding=0"),
+            "{log}"
+        );
+        assert!(
+            log.contains("wip_unmeasured")
+                && log.contains("measured=false")
+                && log.contains("why_unmeasured="),
+            "{log}"
+        );
     }
 
     /// AMUX-3758. The number that answers "we need to rethink how we do amux
@@ -12577,10 +15015,29 @@ mod tests {
     #[test]
     fn a_decomposed_capture_epic_is_not_asked_to_decompose_again() {
         let conn = board_db();
-        add_card(&conn, "EPIC-1", "lane", "doing", "Build the invoice tool", "**Prompt:** build and review the invoice tool");
-        conn.execute("UPDATE issues SET type='epic', source='capture', creator='amux' WHERE id='EPIC-1'", []).unwrap();
-        add_card(&conn, "CHILD-1", "lane", "doing", "Implement the parser", "SCOPE: parse strict integer cents\n- [ ] malformed amounts fail");
-        conn.execute("UPDATE issues SET epic='EPIC-1' WHERE id='CHILD-1'", []).unwrap();
+        add_card(
+            &conn,
+            "EPIC-1",
+            "lane",
+            "doing",
+            "Build the invoice tool",
+            "**Prompt:** build and review the invoice tool",
+        );
+        conn.execute(
+            "UPDATE issues SET type='epic', source='capture', creator='amux' WHERE id='EPIC-1'",
+            [],
+        )
+        .unwrap();
+        add_card(
+            &conn,
+            "CHILD-1",
+            "lane",
+            "doing",
+            "Implement the parser",
+            "SCOPE: parse strict integer cents\n- [ ] malformed amounts fail",
+        );
+        conn.execute("UPDATE issues SET epic='EPIC-1' WHERE id='CHILD-1'", [])
+            .unwrap();
         assert!(unnudged_capture_cleanup(&conn, "lane").is_none());
         match select_advance(&conn, "lane", &[], now_f64()) {
             Advance::Nudge { card, kind, .. } => {
@@ -12596,7 +15053,14 @@ mod tests {
         let conn = board_db();
         let now = now_f64();
         add_card(&conn, "T-1", "lane", "todo", "workable", "SCOPE: x");
-        add_card(&conn, "T-PARKED", "lane", "todo", "waiting on owner", "SCOPE: x");
+        add_card(
+            &conn,
+            "T-PARKED",
+            "lane",
+            "todo",
+            "waiting on owner",
+            "SCOPE: x",
+        );
         tag(&conn, "T-PARKED", "needs:you:decision", now);
         for (n, days) in [("N-1", 2.0), ("N-2", 10.0), ("N-3", 30.0)] {
             add_card(&conn, n, "lane", "needsyou", "asked a human", "SCOPE: x");
@@ -12613,12 +15077,21 @@ mod tests {
         // otherwise dispatchable_pct falls as the board is TIDIED, which reads
         // as the fleet getting worse.
         add_card(&conn, "Z-1", "lane", "backlog", "cleared", "SCOPE: x");
-        conn.execute("UPDATE issues SET archived=1 WHERE id='Z-1'", []).expect("archive");
+        conn.execute("UPDATE issues SET archived=1 WHERE id='Z-1'", [])
+            .expect("archive");
 
         let s = fleet_queue_shape(&conn);
-        assert_eq!(s["open_total"], json!(11), "2 raw todo + 3 needsyou + 6 backlog: {s}");
+        assert_eq!(
+            s["open_total"],
+            json!(11),
+            "2 raw todo + 3 needsyou + 6 backlog: {s}"
+        );
         assert_eq!(s["dispatchable_todo"], json!(1));
-        assert_eq!(s["dispatchable_pct"], json!(9.1), "1 of 11, to one decimal: {s}");
+        assert_eq!(
+            s["dispatchable_pct"],
+            json!(9.1),
+            "1 of 11, to one decimal: {s}"
+        );
         assert_eq!(s["by_status"]["todo"], json!(2));
         assert_eq!(s["by_status"]["backlog"], json!(6));
         assert_eq!(s["by_status"]["needsyou"], json!(3));
@@ -12633,7 +15106,11 @@ mod tests {
         let empty = board_db();
         let e = fleet_queue_shape(&empty);
         assert_eq!(e["dispatchable_pct"], json!(0.0));
-        assert_eq!(e["open_total"], json!(0), "zero%% with zero open is 'nothing to do': {e}");
+        assert_eq!(
+            e["open_total"],
+            json!(0),
+            "zero%% with zero open is 'nothing to do': {e}"
+        );
         assert!(e["needsyou_median_age_d"].is_null(), "no pile, no age: {e}");
     }
 
@@ -12659,7 +15136,10 @@ mod tests {
         add_card(&conn, "P-1", "lane", "todo", "short card", short);
         let row = bs::get_issue(&conn, "P-1").unwrap().unwrap();
         let p = pickup_prompt(&conn, "lane", &row);
-        assert!(p.contains("rotate the key"), "the whole definition must ride along: {p}");
+        assert!(
+            p.contains("rotate the key"),
+            "the whole definition must ride along: {p}"
+        );
         assert!(
             !p.contains("excerpt cut at"),
             "a card that fits is not truncated and must not claim to be: {p}"
@@ -12714,24 +15194,63 @@ mod tests {
         let conn = board_db();
         let (s, c, k) = ("lane", "CARD-1", "blocker-recovery");
         let t0 = 1_000_000.0;
-        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
-        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0).unwrap(), 1);
+        assert_eq!(
+            nudge_budget_check(&conn, s, c, k, "backlog", t0).unwrap(),
+            NudgeBudget::Admit { n: 0 }
+        );
+        assert_eq!(
+            nudge_budget_record(&conn, s, c, k, "backlog", t0).unwrap(),
+            1
+        );
         // 1h backoff after the first delivery.
-        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 10.0).unwrap(), NudgeBudget::Held { n: 1, .. }));
-        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), NudgeBudget::Admit { n: 1 });
+        assert!(matches!(
+            nudge_budget_check(&conn, s, c, k, "backlog", t0 + 10.0).unwrap(),
+            NudgeBudget::Held { n: 1, .. }
+        ));
+        assert_eq!(
+            nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(),
+            NudgeBudget::Admit { n: 1 }
+        );
         // 4h after the second, 24h after the third.
-        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(), 2);
-        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0 + 3.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 2, .. }));
-        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 20_000.0).unwrap(), 3);
-        assert!(matches!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 20_000.0 + 23.0 * 3600.0).unwrap(), NudgeBudget::Held { n: 3, .. }));
-        assert_eq!(nudge_budget_record(&conn, s, c, k, "backlog", t0 + 200_000.0).unwrap(), 4);
+        assert_eq!(
+            nudge_budget_record(&conn, s, c, k, "backlog", t0 + 3601.0).unwrap(),
+            2
+        );
+        assert!(matches!(
+            nudge_budget_check(&conn, s, c, k, "backlog", t0 + 3601.0 + 3.0 * 3600.0).unwrap(),
+            NudgeBudget::Held { n: 2, .. }
+        ));
+        assert_eq!(
+            nudge_budget_record(&conn, s, c, k, "backlog", t0 + 20_000.0).unwrap(),
+            3
+        );
+        assert!(matches!(
+            nudge_budget_check(&conn, s, c, k, "backlog", t0 + 20_000.0 + 23.0 * 3600.0).unwrap(),
+            NudgeBudget::Held { n: 3, .. }
+        ));
+        assert_eq!(
+            nudge_budget_record(&conn, s, c, k, "backlog", t0 + 200_000.0).unwrap(),
+            4
+        );
         // Four deliveries with no status change: spent, whatever the clock says.
-        assert_eq!(nudge_budget_check(&conn, s, c, k, "backlog", t0 + 9_000_000.0).unwrap(), NudgeBudget::Spent { n: 4 });
+        assert_eq!(
+            nudge_budget_check(&conn, s, c, k, "backlog", t0 + 9_000_000.0).unwrap(),
+            NudgeBudget::Spent { n: 4 }
+        );
         // Another kind on the same card has its own budget.
-        assert_eq!(nudge_budget_check(&conn, s, c, "idle-with-card", "backlog", t0).unwrap(), NudgeBudget::Admit { n: 0 });
+        assert_eq!(
+            nudge_budget_check(&conn, s, c, "idle-with-card", "backlog", t0).unwrap(),
+            NudgeBudget::Admit { n: 0 }
+        );
         // A status change resets it.
-        assert_eq!(nudge_budget_check(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), NudgeBudget::Admit { n: 0 });
-        assert_eq!(nudge_budget_record(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), 1);
+        assert_eq!(
+            nudge_budget_check(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(),
+            NudgeBudget::Admit { n: 0 }
+        );
+        assert_eq!(
+            nudge_budget_record(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(),
+            1
+        );
     }
 
     /// AMUX-4953. The idle nudge tells the worker to write desc, next_action,
@@ -12739,81 +15258,139 @@ mod tests {
     /// Complying rotated it and earned another nudge; doing nothing did not.
     #[test]
     fn writing_what_the_idle_nudge_asked_for_does_not_earn_another_idle_nudge() {
-        let conn=board_db();add_card(&conn,"IDLE-1","lane","doing","Report","Current requirements");
-        let mut row=bs::get_issue(&conn,"IDLE-1").unwrap().unwrap();
-        let before=idle_reminder_identity("lane","idle nudge",&row,10.0);
+        let conn = board_db();
+        add_card(
+            &conn,
+            "IDLE-1",
+            "lane",
+            "doing",
+            "Report",
+            "Current requirements",
+        );
+        let mut row = bs::get_issue(&conn, "IDLE-1").unwrap().unwrap();
+        let before = idle_reminder_identity("lane", "idle nudge", &row, 10.0);
 
         // EVERY field the nudge's own text asks the worker to write.
-        row.desc="current state, as the nudge asked for".into();
-        row.next_action=Some("what the next actor should do".into());
-        row.acceptance_criteria=Some("[\"include gamma\"]".into());
-        row.evidence=Some("the command and its result line".into());
+        row.desc = "current state, as the nudge asked for".into();
+        row.next_action = Some("what the next actor should do".into());
+        row.acceptance_criteria = Some("[\"include gamma\"]".into());
+        row.evidence = Some("the command and its result line".into());
         assert_eq!(
-            idle_reminder_identity("lane","idle nudge",&row,10.0), before,
+            idle_reminder_identity("lane", "idle nudge", &row, 10.0),
+            before,
             "complying with the nudge must not rotate the key it is suppressed by"
         );
 
         // THE CONTROLS, and the half that must not rot. A key that ignored
         // everything would satisfy the assertion above.
-        row.status="review".into();
-        assert_ne!(idle_reminder_identity("lane","idle nudge",&row,10.0),before,
-            "a status change is a new situation");
-        row.status="doing".into();
-        row.lease_generation+=1;
-        assert_ne!(idle_reminder_identity("lane","idle nudge",&row,10.0),before,
-            "a re-claim is a new situation");
-        row.lease_generation-=1;
-        assert_ne!(idle_reminder_identity("lane","idle nudge",&row,20.0),before,
-            "a worker restart is a new situation");
-        assert_ne!(idle_reminder_identity("lane","a different nudge",&row,10.0),before,
-            "different nudge text is a different reminder");
+        row.status = "review".into();
+        assert_ne!(
+            idle_reminder_identity("lane", "idle nudge", &row, 10.0),
+            before,
+            "a status change is a new situation"
+        );
+        row.status = "doing".into();
+        row.lease_generation += 1;
+        assert_ne!(
+            idle_reminder_identity("lane", "idle nudge", &row, 10.0),
+            before,
+            "a re-claim is a new situation"
+        );
+        row.lease_generation -= 1;
+        assert_ne!(
+            idle_reminder_identity("lane", "idle nudge", &row, 20.0),
+            before,
+            "a worker restart is a new situation"
+        );
+        assert_ne!(
+            idle_reminder_identity("lane", "a different nudge", &row, 10.0),
+            before,
+            "different nudge text is a different reminder"
+        );
     }
 
     /// The GENERAL reminder is deliberately unchanged: tracking requirement
     /// changes is intended there, and this pins that AMUX-4953 did not sweep it.
     #[test]
     fn the_general_reminder_still_tracks_requirements_after_the_idle_key_was_narrowed() {
-        let conn=board_db();add_card(&conn,"GEN-1","lane","doing","Report","Current requirements");
-        let mut row=bs::get_issue(&conn,"GEN-1").unwrap().unwrap();
-        let before=reminder_identity("lane","finish",&row,10.0);
-        row.acceptance_criteria=Some("[\"include gamma\"]".into());
-        assert_ne!(reminder_identity("lane","finish",&row,10.0),before);
-        row.acceptance_criteria=None;
-        row.desc="rewritten".into();
-        assert_ne!(reminder_identity("lane","finish",&row,10.0),before);
+        let conn = board_db();
+        add_card(
+            &conn,
+            "GEN-1",
+            "lane",
+            "doing",
+            "Report",
+            "Current requirements",
+        );
+        let mut row = bs::get_issue(&conn, "GEN-1").unwrap().unwrap();
+        let before = reminder_identity("lane", "finish", &row, 10.0);
+        row.acceptance_criteria = Some("[\"include gamma\"]".into());
+        assert_ne!(reminder_identity("lane", "finish", &row, 10.0), before);
+        row.acceptance_criteria = None;
+        row.desc = "rewritten".into();
+        assert_ne!(reminder_identity("lane", "finish", &row, 10.0), before);
     }
 
     #[test]
     fn reminder_identity_ignores_heartbeat_but_tracks_requirements_and_worker_lifetime() {
-        let conn=board_db();add_card(&conn,"STATE-1","lane","doing","Report","Current report requirements");
-        let mut row=bs::get_issue(&conn,"STATE-1").unwrap().unwrap();
-        let before=reminder_identity("lane","finish",&row,10.0);
-        row.rev+=1;row.updated+=1;row.log=Some("heartbeat".into());
-        assert_eq!(reminder_identity("lane","finish",&row,10.0),before);
-        assert_ne!(reminder_identity("lane","finish",&row,20.0),before);
-        row.acceptance_criteria=Some("[\"include gamma\"]".into());
-        assert_ne!(reminder_identity("lane","finish",&row,10.0),before);
+        let conn = board_db();
+        add_card(
+            &conn,
+            "STATE-1",
+            "lane",
+            "doing",
+            "Report",
+            "Current report requirements",
+        );
+        let mut row = bs::get_issue(&conn, "STATE-1").unwrap().unwrap();
+        let before = reminder_identity("lane", "finish", &row, 10.0);
+        row.rev += 1;
+        row.updated += 1;
+        row.log = Some("heartbeat".into());
+        assert_eq!(reminder_identity("lane", "finish", &row, 10.0), before);
+        assert_ne!(reminder_identity("lane", "finish", &row, 20.0), before);
+        row.acceptance_criteria = Some("[\"include gamma\"]".into());
+        assert_ne!(reminder_identity("lane", "finish", &row, 10.0), before);
     }
 
     #[test]
     fn pickup_delivers_current_criteria_and_effective_gate_without_a_lookup_turn() {
-        let conn=board_db();
-        add_card(&conn,"BRIEF-1","lane","doing","Report","Generate the report");
+        let conn = board_db();
+        add_card(
+            &conn,
+            "BRIEF-1",
+            "lane",
+            "doing",
+            "Report",
+            "Generate the report",
+        );
         conn.execute("UPDATE issues SET type='chore',next_action='Read the existing seed first',acceptance_criteria='[\"names.txt contains alpha and beta\"]' WHERE id='BRIEF-1'",[]).unwrap();
-        let row=bs::get_issue(&conn,"BRIEF-1").unwrap().unwrap();
-        let prompt=pickup_prompt(&conn,"lane",&row);
+        let row = bs::get_issue(&conn, "BRIEF-1").unwrap().unwrap();
+        let prompt = pickup_prompt(&conn, "lane", &row);
         assert!(prompt.contains("Read the existing seed first"));
         assert!(prompt.contains("names.txt contains alpha and beta"));
-        for gate in bs::effective_gate_configured(&conn,&row,TaskStatus::Done) { assert!(prompt.contains(&gate)); }
+        for gate in bs::effective_gate_configured(&conn, &row, TaskStatus::Done) {
+            assert!(prompt.contains(&gate));
+        }
         assert!(prompt.contains("--checked"));
         assert!(!prompt.contains("decision only Ethan can make"));
-        assert_eq!(crate::api::session_verbs::pickup_card_id(&prompt).as_deref(),Some("BRIEF-1"));
+        assert_eq!(
+            crate::api::session_verbs::pickup_card_id(&prompt).as_deref(),
+            Some("BRIEF-1")
+        );
     }
 
     #[test]
     fn pickup_prompt_round_trips_through_the_stale_guard() {
         let conn = board_db();
-        add_card(&conn, "RT-42", "lane", "doing", "round trip", "SCOPE: whatever\n- [ ] x");
+        add_card(
+            &conn,
+            "RT-42",
+            "lane",
+            "doing",
+            "round trip",
+            "SCOPE: whatever\n- [ ] x",
+        );
         let row = bs::get_issue(&conn, "RT-42").unwrap().unwrap();
         let prompt = pickup_prompt(&conn, "lane", &row);
 
@@ -12858,19 +15435,41 @@ mod tests {
     #[test]
     fn the_decompose_nudge_does_not_claim_a_blockage_the_wip_query_exempts() {
         let conn = board_db();
-        add_card(&conn, "C-9", "lane", "doing", "Why are you stopping", "**Prompt:** why are you stopping?");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-9'", []).expect("mint");
-        add_card(&conn, "T-9", "lane", "todo", "real work", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "C-9",
+            "lane",
+            "doing",
+            "Why are you stopping",
+            "**Prompt:** why are you stopping?",
+        );
+        conn.execute("UPDATE issues SET creator='amux' WHERE id='C-9'", [])
+            .expect("mint");
+        add_card(
+            &conn,
+            "T-9",
+            "lane",
+            "todo",
+            "real work",
+            "SCOPE: x\n- [ ] y",
+        );
 
         // The MECHANISM: it does not hold the slot.
         let blocks_pickup = matches!(
             select_pickup_with(&conn, "lane", now_f64(), false),
-            Pickup::None { reason: "wip-cap", .. }
+            Pickup::None {
+                reason: "wip-cap",
+                ..
+            }
         );
-        assert!(!blocks_pickup, "AMUX-3757: a capture shell must not hold the WIP slot");
+        assert!(
+            !blocks_pickup,
+            "AMUX-3757: a capture shell must not hold the WIP slot"
+        );
 
         // The VIEW: so it must not say it does.
-        let Advance::Nudge { text, kind, .. } = select_advance(&conn, "lane", &[], now_f64()) else {
+        let Advance::Nudge { text, kind, .. } = select_advance(&conn, "lane", &[], now_f64())
+        else {
             panic!("a capture shell in doing must still draw a decompose nudge");
         };
         assert_eq!(kind, "decompose-asked");
@@ -12906,15 +15505,32 @@ mod tests {
         let conn = board_db();
         let now = now_f64();
         for n in 1..=3 {
-            add_card(&conn, &format!("B-{n}"), "lane", "todo", "bounced back", "SCOPE: x\n- [ ] y");
+            add_card(
+                &conn,
+                &format!("B-{n}"),
+                "lane",
+                "todo",
+                "bounced back",
+                "SCOPE: x\n- [ ] y",
+            );
             conn.execute(
                 "INSERT INTO session_events (session, type, ts, data) VALUES ('lane','task.claimed',?1,?2)",
                 rusqlite::params![now - 30.0 * n as f64, format!("{{\"issue\":\"B-{n}\",\"status\":\"doing\"}}")],
             )
             .expect("claim event");
         }
-        add_card(&conn, "T-1", "lane", "todo", "fresh work", "SCOPE: x\n- [ ] y");
-        assert_eq!(claimed(&select_pickup_with(&conn, "lane", now, false)), Some("T-1"));
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "todo",
+            "fresh work",
+            "SCOPE: x\n- [ ] y",
+        );
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now, false)),
+            Some("T-1")
+        );
     }
 
     /// Ethan/backend 2026-08-11: BACKE-3249 sat `doing` + needs:you for 31
@@ -12928,9 +15544,23 @@ mod tests {
     fn a_needs_you_doing_card_does_not_hold_wip() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "D-1", "lane", "doing", "waiting on Ethan", "SCOPE: x");
+        add_card(
+            &conn,
+            "D-1",
+            "lane",
+            "doing",
+            "waiting on Ethan",
+            "SCOPE: x",
+        );
         tag(&conn, "D-1", "needs:you", now - 31.0 * 3600.0);
-        add_card(&conn, "T-1", "lane", "todo", "next real work", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "todo",
+            "next real work",
+            "SCOPE: x\n- [ ] y",
+        );
         assert_eq!(
             claimed(&select_pickup_with(&conn, "lane", now, false)),
             Some("T-1"),
@@ -12938,7 +15568,14 @@ mod tests {
         );
         // Sub-tagged asks are the same state (the LIKE form both loops share).
         let conn2 = board_db();
-        add_card(&conn2, "D-2", "lane", "doing", "waiting on a decision", "SCOPE: x");
+        add_card(
+            &conn2,
+            "D-2",
+            "lane",
+            "doing",
+            "waiting on a decision",
+            "SCOPE: x",
+        );
         tag(&conn2, "D-2", "needs:you:decision", now);
         add_card(&conn2, "T-2", "lane", "todo", "next", "SCOPE: x\n- [ ] y");
         assert_eq!(
@@ -12953,9 +15590,11 @@ mod tests {
     fn dormant_types_neither_hold_wip_nor_get_dispatched() {
         let conn = board_db();
         add_card(&conn, "W-1", "lane", "doing", "watch prod", "SCOPE: x");
-        conn.execute("UPDATE issues SET type='watch' WHERE id='W-1'", []).expect("type");
+        conn.execute("UPDATE issues SET type='watch' WHERE id='W-1'", [])
+            .expect("type");
         add_card(&conn, "W-2", "lane", "todo", "tripwire card", "SCOPE: x");
-        conn.execute("UPDATE issues SET type='tripwire' WHERE id='W-2'", []).expect("type");
+        conn.execute("UPDATE issues SET type='tripwire' WHERE id='W-2'", [])
+            .expect("type");
         add_card(&conn, "T-1", "lane", "todo", "real", "SCOPE: x\n- [ ] y");
         assert_eq!(
             claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
@@ -12970,8 +15609,16 @@ mod tests {
     #[test]
     fn a_human_owned_card_is_never_auto_run() {
         let conn = board_db();
-        add_card(&conn, "H-1", "lane", "todo", "Ethan: call the bank", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET owner_type='human' WHERE id='H-1'", []).expect("owner");
+        add_card(
+            &conn,
+            "H-1",
+            "lane",
+            "todo",
+            "Ethan: call the bank",
+            "SCOPE: x\n- [ ] y",
+        );
+        conn.execute("UPDATE issues SET owner_type='human' WHERE id='H-1'", [])
+            .expect("owner");
         assert!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)).is_none());
         assert_eq!(eligible_todo_count(&conn, "lane", now_f64()), 0);
     }
@@ -12983,9 +15630,17 @@ mod tests {
     fn a_recently_claimed_card_cools_down_but_the_dead_zone_is_closed() {
         // Brief per-card anti-spin window, never a multi-hour hidden state.
         let conn = board_db();
-        add_card(&conn, "T-1", "lane", "todo", "returned", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "todo",
+            "returned",
+            "SCOPE: x\n- [ ] y",
+        );
         let claim_at = |ts: f64| {
-            conn.execute("DELETE FROM session_events WHERE data LIKE '%T-1%'", []).ok();
+            conn.execute("DELETE FROM session_events WHERE data LIKE '%T-1%'", [])
+                .ok();
             conn.execute(
                 "INSERT INTO session_events (ts,session,type,data,source) \
                  VALUES (?1,'lane','task.claimed','{\"issue\": \"T-1\"}','board-drive')",
@@ -13016,7 +15671,10 @@ mod tests {
             rusqlite::params![now_f64() as i64 - 8 * 86400],
         )
         .expect("age");
-        assert_eq!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)), Some("T-1"));
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("T-1")
+        );
     }
 
     /// py:14581, AMUX-2128: refusals used to RETURN, so one refusable card at the
@@ -13026,11 +15684,23 @@ mod tests {
     fn a_refusable_head_does_not_stall_the_queue() {
         let conn = board_db();
         // pos orders the queue, so the shell is first.
-        add_card(&conn, "S-1", "lane", "todo", "shell", "**Prompt:** do a thing for me");
-        conn.execute("UPDATE issues SET pos=1, creator='amux' WHERE id='S-1'", []).expect("pos");
+        add_card(
+            &conn,
+            "S-1",
+            "lane",
+            "todo",
+            "shell",
+            "**Prompt:** do a thing for me",
+        );
+        conn.execute("UPDATE issues SET pos=1, creator='amux' WHERE id='S-1'", [])
+            .expect("pos");
         add_card(&conn, "T-1", "lane", "todo", "real", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET pos=2 WHERE id='T-1'", []).expect("pos");
-        assert_eq!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)), Some("T-1"));
+        conn.execute("UPDATE issues SET pos=2 WHERE id='T-1'", [])
+            .expect("pos");
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("T-1")
+        );
     }
 
     #[test]
@@ -13051,11 +15721,26 @@ mod tests {
     fn a_card_blocked_by_an_open_dependency_is_skipped_and_a_closed_one_is_not() {
         let conn = board_db();
         add_card(&conn, "B-1", "other", "doing", "blocker", "SCOPE: x");
-        add_card(&conn, "T-1", "lane", "todo", "dependent", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET depends_on='[\"B-1\"]' WHERE id='T-1'", []).expect("dep");
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "todo",
+            "dependent",
+            "SCOPE: x\n- [ ] y",
+        );
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"B-1\"]' WHERE id='T-1'",
+            [],
+        )
+        .expect("dep");
         assert!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)).is_none());
-        conn.execute("UPDATE issues SET status='verified' WHERE id='B-1'", []).expect("close");
-        assert_eq!(claimed(&select_pickup_with(&conn, "lane", now_f64(), false)), Some("T-1"));
+        conn.execute("UPDATE issues SET status='verified' WHERE id='B-1'", [])
+            .expect("close");
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("T-1")
+        );
     }
 
     /// When a todo card is blocked only by the same session's own backlog cards,
@@ -13067,12 +15752,32 @@ mod tests {
     fn own_backlog_dep_returns_promote_deps() {
         let conn = board_db();
         // Same session owns both cards: the backlog dep and the todo that needs it.
-        add_card(&conn, "D-1", "lane", "backlog", "prerequisite work", "SCOPE: x");
-        add_card(&conn, "D-2", "lane", "todo", "downstream work", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET depends_on='[\"D-1\"]' WHERE id='D-2'", [])
-            .expect("dep");
+        add_card(
+            &conn,
+            "D-1",
+            "lane",
+            "backlog",
+            "prerequisite work",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "D-2",
+            "lane",
+            "todo",
+            "downstream work",
+            "SCOPE: x\n- [ ] y",
+        );
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"D-1\"]' WHERE id='D-2'",
+            [],
+        )
+        .expect("dep");
         match select_pickup_with(&conn, "lane", now_f64(), false) {
-            Pickup::PromoteDeps { blocked_card, promoted } => {
+            Pickup::PromoteDeps {
+                blocked_card,
+                promoted,
+            } => {
                 assert_eq!(blocked_card, "D-2");
                 assert_eq!(promoted, vec!["D-1"]);
             }
@@ -13085,10 +15790,27 @@ mod tests {
     #[test]
     fn other_session_backlog_dep_does_not_promote() {
         let conn = board_db();
-        add_card(&conn, "X-1", "other-lane", "backlog", "other session dep", "SCOPE: x");
-        add_card(&conn, "X-2", "lane", "todo", "blocked card", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET depends_on='[\"X-1\"]' WHERE id='X-2'", [])
-            .expect("dep");
+        add_card(
+            &conn,
+            "X-1",
+            "other-lane",
+            "backlog",
+            "other session dep",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "X-2",
+            "lane",
+            "todo",
+            "blocked card",
+            "SCOPE: x\n- [ ] y",
+        );
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"X-1\"]' WHERE id='X-2'",
+            [],
+        )
+        .expect("dep");
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { reason, .. } => {
                 assert_eq!(reason, "all-candidates-refused");
@@ -13106,25 +15828,64 @@ mod tests {
     fn a_blocked_todo_does_not_hide_actionable_backlog_from_auto_drain() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "H-1", "human", "todo", "external prerequisite", "SCOPE: x");
-        add_card(&conn, "T-1", "lane", "todo", "blocked todo", "SCOPE: x\n- [ ] y");
-        conn.execute("UPDATE issues SET depends_on='[\"H-1\"]' WHERE id='T-1'", [])
-            .expect("dep");
-        add_card(&conn, "B-0", "lane", "backlog", "older blocked backlog", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "H-1",
+            "human",
+            "todo",
+            "external prerequisite",
+            "SCOPE: x",
+        );
+        add_card(
+            &conn,
+            "T-1",
+            "lane",
+            "todo",
+            "blocked todo",
+            "SCOPE: x\n- [ ] y",
+        );
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"H-1\"]' WHERE id='T-1'",
+            [],
+        )
+        .expect("dep");
+        add_card(
+            &conn,
+            "B-0",
+            "lane",
+            "backlog",
+            "older blocked backlog",
+            "SCOPE: x\n- [ ] y",
+        );
         conn.execute(
             "UPDATE issues SET depends_on='[\"H-1\"]', created=1 WHERE id='B-0'",
             [],
         )
         .expect("blocked backlog dep");
-        add_card(&conn, "B-1", "lane", "backlog", "independent backlog", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "B-1",
+            "lane",
+            "backlog",
+            "independent backlog",
+            "SCOPE: x\n- [ ] y",
+        );
         conn.execute("UPDATE issues SET created=2 WHERE id='B-1'", [])
             .expect("backlog order");
 
         match select_pickup_with(&conn, "lane", now, false) {
-            Pickup::DrainBacklog { card, backlog_left, todo_refusals, .. } => {
+            Pickup::DrainBacklog {
+                card,
+                backlog_left,
+                todo_refusals,
+                ..
+            } => {
                 assert_eq!(card, "B-1");
                 assert_eq!(backlog_left, 1);
-                assert_eq!(todo_refusals, 1, "the trace must expose the blocked todo bypass");
+                assert_eq!(
+                    todo_refusals, 1,
+                    "the trace must expose the blocked todo bypass"
+                );
             }
             other => panic!("blocked todo must not strand independent backlog: {other:?}"),
         }
@@ -13138,7 +15899,10 @@ mod tests {
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::None { reason, detail } => {
                 assert_eq!(reason, "no-eligible-card");
-                assert!(!detail.is_empty(), "an empty board must still explain itself");
+                assert!(
+                    !detail.is_empty(),
+                    "an empty board must still explain itself"
+                );
             }
             _ => panic!("nothing should have been claimed"),
         }
@@ -13147,14 +15911,33 @@ mod tests {
     #[test]
     fn every_shell_in_the_queue_produces_a_decompose_ask_not_silence() {
         let conn = board_db();
-        add_card(&conn, "S-1", "lane", "todo", "shell one", "**Prompt:** please do a thing");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id='S-1'", []).expect("creator");
-        add_card(&conn, "S-2", "lane", "todo", "shell two", "**Prompt:** capture session prompt");
-        conn.execute("UPDATE issues SET creator='amux' WHERE id='S-2'", []).expect("creator");
+        add_card(
+            &conn,
+            "S-1",
+            "lane",
+            "todo",
+            "shell one",
+            "**Prompt:** please do a thing",
+        );
+        conn.execute("UPDATE issues SET creator='amux' WHERE id='S-1'", [])
+            .expect("creator");
+        add_card(
+            &conn,
+            "S-2",
+            "lane",
+            "todo",
+            "shell two",
+            "**Prompt:** capture session prompt",
+        );
+        conn.execute("UPDATE issues SET creator='amux' WHERE id='S-2'", [])
+            .expect("creator");
         match select_pickup_with(&conn, "lane", now_f64(), false) {
             Pickup::Decompose { ids, text } => {
                 assert_eq!(ids.len(), 2);
-                assert!(text.contains("S-1") && text.contains("S-2"), "must name the ids: {text}");
+                assert!(
+                    text.contains("S-1") && text.contains("S-2"),
+                    "must name the ids: {text}"
+                );
             }
             _ => panic!("an all-shell queue must ask for a decomposition"),
         }
@@ -13165,9 +15948,22 @@ mod tests {
     #[test]
     fn a_lane_holding_a_doing_card_is_nudged_with_the_gate_for_the_next_status() {
         let conn = board_db();
-        add_card(&conn, "D-1", "lane", "doing", "the work", "SCOPE: x\n- [ ] y");
+        add_card(
+            &conn,
+            "D-1",
+            "lane",
+            "doing",
+            "the work",
+            "SCOPE: x\n- [ ] y",
+        );
         match select_advance(&conn, "lane", &[], now_f64()) {
-            Advance::Nudge { target, card, text, kind, .. } => {
+            Advance::Nudge {
+                target,
+                card,
+                text,
+                kind,
+                ..
+            } => {
                 assert_eq!(target, "lane");
                 assert_eq!(card, "D-1");
                 assert_eq!(kind, "advance-nudged");
@@ -13199,8 +15995,11 @@ mod tests {
         add_card(&conn, "D-1", "lane", "doing", "asked Ethan", "SCOPE: x");
         let asked = now_f64() - 10.0 * 86400.0;
         tag(&conn, "D-1", "needs:you", asked);
-        conn.execute("UPDATE issues SET updated=?1 WHERE id='D-1'", rusqlite::params![asked as i64])
-            .expect("age");
+        conn.execute(
+            "UPDATE issues SET updated=?1 WHERE id='D-1'",
+            rusqlite::params![asked as i64],
+        )
+        .expect("age");
         let first = select_advance(&conn, "lane", &[], now_f64());
         let Advance::Nudge { kind, .. } = &first else {
             panic!("a 10-day-old ask must be re-nagged once");
@@ -13215,7 +16014,9 @@ mod tests {
         .expect("event");
         match select_advance(&conn, "lane", &[], now_f64() + 1.0) {
             Advance::None { .. } => {}
-            Advance::Nudge { text, .. } => panic!("re-nag must not repeat inside the window: {text}"),
+            Advance::Nudge { text, .. } => {
+                panic!("re-nag must not repeat inside the window: {text}")
+            }
         }
     }
 
@@ -13241,7 +16042,10 @@ mod tests {
 
         let arch = needsyou_renag_text(&conn, "lane", "D-2", "t", 10.0 * 86400.0, 1, now_f64())
             .expect("an archived needs:you card is still re-nagged");
-        assert!(arch.contains("ARCHIVED"), "it must still disclose the state: {arch}");
+        assert!(
+            arch.contains("ARCHIVED"),
+            "it must still disclose the state: {arch}"
+        );
         assert!(
             arch.contains("amux board unarchive D-2"),
             "prescribing the move without the step that unblocks it is the defect: {arch}"
@@ -13314,7 +16118,8 @@ mod tests {
     fn the_gate_refuses_a_reviewer_no_nudge_can_reach() {
         let conn = board_db();
         add_card(&conn, "R-9", "lane", "review", "needs a peer", "SCOPE: x");
-        conn.execute("UPDATE issues SET reviewer='amux-rust' WHERE id='R-9'", []).expect("rev");
+        conn.execute("UPDATE issues SET reviewer='amux-rust' WHERE id='R-9'", [])
+            .expect("rev");
 
         // AMUX-3821: the guarantee here is that no nudge is addressed to a
         // session that does not exist. It used to be enforced by nudging NOBODY,
@@ -13327,9 +16132,18 @@ mod tests {
             Some(format!("`{r}` is not a registered worker"))
         }) {
             Advance::Nudge { target, text, .. } => {
-                assert_ne!(target, "amux-rust", "never address a session that does not exist");
-                assert_eq!(target, "lane", "the OWNER wrote the field and is the one who can fix it");
-                assert!(text.contains("amux-rust"), "must name the dead reviewer: {text}");
+                assert_ne!(
+                    target, "amux-rust",
+                    "never address a session that does not exist"
+                );
+                assert_eq!(
+                    target, "lane",
+                    "the OWNER wrote the field and is the one who can fix it"
+                );
+                assert!(
+                    text.contains("amux-rust"),
+                    "must name the dead reviewer: {text}"
+                );
                 assert!(
                     text.contains("not a registered worker"),
                     "and must carry the REASON, which already names both ways out: {text}"
@@ -13347,7 +16161,9 @@ mod tests {
                 assert_eq!(target, "amux-rust", "a REACHABLE reviewer is still routed");
                 assert_eq!(kind, "review-routed");
             }
-            Advance::None { reason, detail } => panic!("the gate must only refuse the unreachable case, got {reason}: {detail}"),
+            Advance::None { reason, detail } => {
+                panic!("the gate must only refuse the unreachable case, got {reason}: {detail}")
+            }
         }
     }
 
@@ -13357,12 +16173,18 @@ mod tests {
     fn a_review_card_routes_to_the_reviewer_not_the_author() {
         let conn = board_db();
         add_card(&conn, "R-1", "lane", "review", "needs a peer", "SCOPE: x");
-        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", []).expect("rev");
+        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", [])
+            .expect("rev");
         match select_advance(&conn, "lane", &[], now_f64()) {
-            Advance::Nudge { target, kind, text, .. } => {
+            Advance::Nudge {
+                target, kind, text, ..
+            } => {
                 assert_eq!(target, "peer", "the reviewer is the one who can act");
                 assert_eq!(kind, "review-routed");
-                assert!(text.contains("review->done"), "must name the real transition: {text}");
+                assert!(
+                    text.contains("review->done"),
+                    "must name the real transition: {text}"
+                );
             }
             Advance::None { reason, detail } => panic!("expected routing, got {reason}: {detail}"),
         }
@@ -13383,7 +16205,8 @@ mod tests {
     fn a_message_naming_the_card_is_not_a_review_response_when_the_board_channel_is_empty() {
         let conn = board_db();
         add_card(&conn, "R-2", "lane", "review", "needs a peer", "SCOPE: x");
-        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-2'", []).expect("rev");
+        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-2'", [])
+            .expect("rev");
         // The reviewer names the card in a message — an announcement, a
         // hand-off, a status ping. Not a review action.
         conn.execute(
@@ -13427,7 +16250,8 @@ mod tests {
     fn a_reviewer_who_already_responded_is_not_renudged_and_the_author_is_told() {
         let conn = board_db();
         add_card(&conn, "R-1", "lane", "review", "needs a peer", "SCOPE: x");
-        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", []).expect("rev");
+        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", [])
+            .expect("rev");
         conn.execute(
             "INSERT INTO interaction_log (ts,kind,actor,target,action) \
              VALUES (?1,'board','peer','R-1','patch')",
@@ -13435,7 +16259,9 @@ mod tests {
         )
         .expect("ilog");
         match select_advance(&conn, "lane", &[], now_f64()) {
-            Advance::Nudge { target, kind, text, .. } => {
+            Advance::Nudge {
+                target, kind, text, ..
+            } => {
                 assert_eq!(target, "lane", "the ball is with the author");
                 assert_eq!(kind, "advance-nudged");
                 assert!(
@@ -13443,7 +16269,9 @@ mod tests {
                     "the author must be told the reviewer answered: {text}"
                 );
             }
-            Advance::None { reason, detail } => panic!("expected an author nudge, got {reason}: {detail}"),
+            Advance::None { reason, detail } => {
+                panic!("expected an author nudge, got {reason}: {detail}")
+            }
         }
     }
 
@@ -13474,14 +16302,39 @@ mod tests {
     #[test]
     fn a_dependency_the_lane_cannot_act_on_is_not_nudged() {
         let conn = board_db();
-        add_card(&conn, "B-1", "lane", "review", "blocker in review", "SCOPE: x");
-        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='B-1'", []).expect("rev");
+        add_card(
+            &conn,
+            "B-1",
+            "lane",
+            "review",
+            "blocker in review",
+            "SCOPE: x",
+        );
+        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='B-1'", [])
+            .expect("rev");
         add_card(&conn, "D-1", "lane", "doing", "dependent", "SCOPE: x");
-        conn.execute("UPDATE issues SET depends_on='[\"B-1\"]' WHERE id='D-1'", []).expect("dep");
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"B-1\"]' WHERE id='D-1'",
+            [],
+        )
+        .expect("dep");
         // The dependent cannot be advanced; the independently actionable
         // review is still considered instead of the first refusal ending the lane.
-        assert!(matches!(advance_card(&conn, "lane", &[], now_f64(), &|_,_|None,
-            "D-1".into(), "doing".into()), Advance::None { reason: "dep-not-actionable", .. }));
+        assert!(matches!(
+            advance_card(
+                &conn,
+                "lane",
+                &[],
+                now_f64(),
+                &|_, _| None,
+                "D-1".into(),
+                "doing".into()
+            ),
+            Advance::None {
+                reason: "dep-not-actionable",
+                ..
+            }
+        ));
         assert!(matches!(select_advance(&conn, "lane", &[], now_f64()),
             Advance::Nudge { card, .. } if card == "B-1"));
     }
@@ -13496,15 +16349,31 @@ mod tests {
     #[test]
     fn a_dependency_parked_on_a_human_is_not_nudged() {
         let conn = board_db();
-        add_card(&conn, "B-1", "lane", "needsyou", "waiting on Ethan", "SCOPE: x");
+        add_card(
+            &conn,
+            "B-1",
+            "lane",
+            "needsyou",
+            "waiting on Ethan",
+            "SCOPE: x",
+        );
         add_card(&conn, "D-1", "lane", "doing", "dependent", "SCOPE: x");
-        conn.execute("UPDATE issues SET depends_on='[\"B-1\"]' WHERE id='D-1'", []).expect("dep");
+        conn.execute(
+            "UPDATE issues SET depends_on='[\"B-1\"]' WHERE id='D-1'",
+            [],
+        )
+        .expect("dep");
         match select_advance(&conn, "lane", &[], now_f64()) {
             Advance::None { reason, detail } => {
                 assert_eq!(reason, "dep-needsyou");
-                assert!(detail.contains("B-1") && detail.contains("needs:you"), "{detail}");
+                assert!(
+                    detail.contains("B-1") && detail.contains("needs:you"),
+                    "{detail}"
+                );
             }
-            Advance::Nudge { text, .. } => panic!("must not nudge a human-parked dependency: {text}"),
+            Advance::Nudge { text, .. } => {
+                panic!("must not nudge a human-parked dependency: {text}")
+            }
         }
     }
 
@@ -13525,10 +16394,13 @@ mod tests {
             Advance::Nudge { text, .. } => panic!("inside the cooldown with no progress: {text}"),
         }
         // The lane moved it. The next card should come immediately.
-        conn.execute("UPDATE issues SET status='review' WHERE id='D-1'", []).expect("move");
+        conn.execute("UPDATE issues SET status='review' WHERE id='D-1'", [])
+            .expect("move");
         match select_advance(&conn, "lane", &[], now_f64()) {
             Advance::Nudge { card, .. } => assert_eq!(card, "D-1"),
-            Advance::None { reason, detail } => panic!("progress must yield the cooldown, got {reason}: {detail}"),
+            Advance::None { reason, detail } => {
+                panic!("progress must yield the cooldown, got {reason}: {detail}")
+            }
         }
     }
 
@@ -13543,7 +16415,14 @@ mod tests {
     fn a_new_capture_cleanup_bypasses_an_unrelated_lane_cooldown_once() {
         let conn = board_db();
         let now = now_f64();
-        add_card(&conn, "PRIMI-203", "primis", "doing", "prior work", "SCOPE: real work");
+        add_card(
+            &conn,
+            "PRIMI-203",
+            "primis",
+            "doing",
+            "prior work",
+            "SCOPE: real work",
+        );
         conn.execute(
             "INSERT INTO session_events (ts,session,type,data,source) VALUES \
              (?1,'primis','advance.nudged',\
@@ -13559,8 +16438,11 @@ mod tests {
             "Post-fix status verification only",
             "**Prompt:** Post-fix status verification only; do not create or retain a board task.",
         );
-        conn.execute("UPDATE issues SET source='capture', creator='amux' WHERE id='PRIMI-204'", [])
-            .expect("capture source");
+        conn.execute(
+            "UPDATE issues SET source='capture', creator='amux' WHERE id='PRIMI-204'",
+            [],
+        )
+        .expect("capture source");
 
         match select_advance(&conn, "primis", &[], now) {
             Advance::Nudge { card, kind, .. } => {
@@ -13582,7 +16464,9 @@ mod tests {
         .expect("durable per-card cleanup event");
         match select_advance(&conn, "primis", &[], now + 1.0) {
             Advance::None { reason, .. } => assert_eq!(reason, "cooldown"),
-            Advance::Nudge { text, .. } => panic!("the same shell must not be prompted twice: {text}"),
+            Advance::Nudge { text, .. } => {
+                panic!("the same shell must not be prompted twice: {text}")
+            }
         }
     }
 
@@ -13592,27 +16476,52 @@ mod tests {
         let now = now_f64();
         add_card(&conn, "MF-1231", "finances", "doing", "Make sure the entire board drains overnight",
             "**Prompt:** make sure the entire board drains overnight\n\nSCOPE: own all deployment and migration tasks.\n- [ ] verify every outcome\nSTATE: override landed; waiting for the resolver.");
-        conn.execute("UPDATE issues SET creator='amux', source='capture', type='ops' WHERE id='MF-1231'", []).unwrap();
+        conn.execute(
+            "UPDATE issues SET creator='amux', source='capture', type='ops' WHERE id='MF-1231'",
+            [],
+        )
+        .unwrap();
         for age in [7200.0, 3600.0, 60.0] {
             conn.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES (?1,'finances','advance.nudged','{\"issue\":\"MF-1231\",\"status\":\"doing\",\"kind\":\"advance-nudged\"}','board-drive')", [now-age]).unwrap();
         }
         assert!(wip_holding_ids(&conn, "finances", None).unwrap().is_empty());
-        let Advance::Nudge { card, kind, text, .. } = select_advance(&conn, "finances", &[], now) else {
-            panic!("the first disposition must survive both cooldown and generic budget exhaustion");
+        let Advance::Nudge {
+            card, kind, text, ..
+        } = select_advance(&conn, "finances", &[], now)
+        else {
+            panic!(
+                "the first disposition must survive both cooldown and generic budget exhaustion"
+            );
         };
         assert_eq!(card, "MF-1231");
         assert_eq!(kind, "decompose-asked");
-        assert!(text.contains("amux board epic") && text.contains("refusal body"), "{text}");
+        assert!(
+            text.contains("amux board epic") && text.contains("refusal body"),
+            "{text}"
+        );
         conn.execute("INSERT INTO session_events(ts,session,type,data,source,idem) VALUES (?1,'finances','advance.nudged','{\"issue\":\"MF-1231\",\"status\":\"doing\",\"kind\":\"decompose-asked\"}','board-drive','decompose:MF-1231')", [now]).unwrap();
         for age in [1.0, 1800.0, 90000.0] {
-            assert!(matches!(select_advance(&conn, "finances", &[], now+age), Advance::None { .. }),
-                "an ignored disposition must not buy another worker turn, even tomorrow");
+            assert!(
+                matches!(
+                    select_advance(&conn, "finances", &[], now + age),
+                    Advance::None { .. }
+                ),
+                "an ignored disposition must not buy another worker turn, even tomorrow"
+            );
         }
         // A semantic repair, not elapsed time, makes this a real task again.
         conn.execute("UPDATE issues SET desc='SCOPE: verify resolver output for run 35234445237 and record rollout evidence' WHERE id='MF-1231'", []).unwrap();
-        assert_eq!(wip_holding_ids(&conn, "finances", None).unwrap(), vec!["MF-1231"]);
-        assert!(matches!(select_advance(&conn, "finances", &[], now+90000.0),
-            Advance::Nudge { kind: "advance-nudged", .. }));
+        assert_eq!(
+            wip_holding_ids(&conn, "finances", None).unwrap(),
+            vec!["MF-1231"]
+        );
+        assert!(matches!(
+            select_advance(&conn, "finances", &[], now + 90000.0),
+            Advance::Nudge {
+                kind: "advance-nudged",
+                ..
+            }
+        ));
     }
 
     /// REBUILT FROM THE LIVE SPECIMEN, not a convenient fixture: amux-agent was
@@ -13625,7 +16534,8 @@ mod tests {
     fn routing_a_review_quiets_the_owner_lane_for_the_cooldown() {
         let conn = board_db();
         add_card(&conn, "R-1", "lane", "review", "needs a peer", "SCOPE: x");
-        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", []).expect("rev");
+        conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", [])
+            .expect("rev");
         let Advance::Nudge { target, kind, .. } = select_advance(&conn, "lane", &[], now_f64())
         else {
             panic!("expected the first route");
@@ -13664,11 +16574,15 @@ mod tests {
             "Fix the logo",
             "SCOPE: real work\n- [ ] see @/Users/ethan/.amux/uploads/b7965e0b2a8f-image.png",
         );
-        let Pickup::Claim { prompt, .. } = select_pickup_with(&conn, "lane", now_f64(), false) else {
+        let Pickup::Claim { prompt, .. } = select_pickup_with(&conn, "lane", now_f64(), false)
+        else {
             panic!("the card is otherwise dispatchable and must still be claimed");
         };
         assert!(prompt.contains("T-1"), "the card id must survive: {prompt}");
-        assert!(prompt.contains("amux board show T-1"), "must point at the card: {prompt}");
+        assert!(
+            prompt.contains("amux board show T-1"),
+            "must point at the card: {prompt}"
+        );
         // ...and the verb must EXIST. Asserting only that we TELL an agent to run
         // a command, while nothing checks the command is real, is how AF-66
         // shipped: `amux board show` fell through to the help text and exited 2,
@@ -13682,13 +16596,22 @@ mod tests {
         // POSITIVE CONTROL: without an @-mention the desc is quoted in full, so
         // this test is measuring the filter and not a prompt that never quotes.
         let conn2 = board_db();
-        add_card(&conn2, "T-2", "lane", "todo", "Fix the logo", "SCOPE: real work\n- [ ] do it");
-        let Pickup::Claim { prompt: p2, .. } =
-            select_pickup_with(&conn2, "lane", now_f64(), false)
+        add_card(
+            &conn2,
+            "T-2",
+            "lane",
+            "todo",
+            "Fix the logo",
+            "SCOPE: real work\n- [ ] do it",
+        );
+        let Pickup::Claim { prompt: p2, .. } = select_pickup_with(&conn2, "lane", now_f64(), false)
         else {
             panic!("expected a claim");
         };
-        assert!(p2.contains("- [ ] do it"), "ordinary card text must be quoted: {p2}");
+        assert!(
+            p2.contains("- [ ] do it"),
+            "ordinary card text must be quoted: {p2}"
+        );
         assert!(!p2.contains("withheld"));
     }
 
@@ -13701,7 +16624,14 @@ mod tests {
     #[test]
     fn a_lane_just_handed_a_card_is_not_immediately_told_to_advance_it() {
         let conn = board_db();
-        add_card(&conn, "BDQ-1", "lane", "doing", "Port the parser guard", "SCOPE: real work");
+        add_card(
+            &conn,
+            "BDQ-1",
+            "lane",
+            "doing",
+            "Port the parser guard",
+            "SCOPE: real work",
+        );
         conn.execute(
             "INSERT INTO session_events (ts,session,type,data,source) VALUES \
              (?1,'lane','task.claimed','{\"issue\":\"BDQ-1\",\"status\":\"doing\"}','board-drive')",
@@ -13716,9 +16646,13 @@ mod tests {
         }
         // ...but the claim does not buy silence forever: once the lane MOVES it,
         // progress yields the cooldown exactly as it does after a nudge.
-        conn.execute("UPDATE issues SET status='review' WHERE id='BDQ-1'", []).expect("move");
+        conn.execute("UPDATE issues SET status='review' WHERE id='BDQ-1'", [])
+            .expect("move");
         assert!(
-            matches!(select_advance(&conn, "lane", &[], now_f64()), Advance::Nudge { .. }),
+            matches!(
+                select_advance(&conn, "lane", &[], now_f64()),
+                Advance::Nudge { .. }
+            ),
             "progress after a claim must still yield the cooldown"
         );
     }
@@ -13759,20 +16693,35 @@ mod tests {
             [],
         )
         .expect("scope");
-        conn.execute("DELETE FROM session_events", []).expect("clear");
+        conn.execute("DELETE FROM session_events", [])
+            .expect("clear");
         let Advance::Nudge { text, .. } =
             select_advance(&conn, "lane", &["infra".into()], now_f64())
         else {
             panic!("expected a nudge");
         };
-        assert!(text.contains("verified"), "must aim at verified once opted in: {text}");
+        assert!(
+            text.contains("verified"),
+            "must aim at verified once opted in: {text}"
+        );
     }
 
     #[test]
     fn a_shell_card_in_doing_gets_a_split_ask_not_an_advance_nudge() {
         let conn = board_db();
-        add_card(&conn, "S-1", "lane", "doing", "shell", "**Prompt:** please do a thing");
-        conn.execute("UPDATE issues SET creator='amux', source='capture' WHERE id='S-1'", []).expect("capture shell");
+        add_card(
+            &conn,
+            "S-1",
+            "lane",
+            "doing",
+            "shell",
+            "**Prompt:** please do a thing",
+        );
+        conn.execute(
+            "UPDATE issues SET creator='amux', source='capture' WHERE id='S-1'",
+            [],
+        )
+        .expect("capture shell");
         match select_advance(&conn, "lane", &[], now_f64()) {
             Advance::Nudge { kind, text, .. } => {
                 assert_eq!(kind, "decompose-asked");
@@ -13803,9 +16752,14 @@ mod tests {
                 // spend a turn working out how. 120 is slack over the current ~85,
                 // not a target to grow into.
                 let words = text.split_whitespace().count();
-                assert!(words <= 120, "the decompose ask has grown back to {words} words: {text}");
+                assert!(
+                    words <= 120,
+                    "the decompose ask has grown back to {words} words: {text}"
+                );
             }
-            Advance::None { reason, detail } => panic!("expected a split ask, got {reason}: {detail}"),
+            Advance::None { reason, detail } => {
+                panic!("expected a split ask, got {reason}: {detail}")
+            }
         }
     }
 
@@ -13815,8 +16769,14 @@ mod tests {
     fn norm_actor_flattens_the_real_origin_spellings() {
         assert_eq!(norm_actor("mixpeek-frustrations"), "mixpeek-frustrations");
         assert_eq!(norm_actor("mixpeek frustrations"), "mixpeek-frustrations");
-        assert!(origin_matches("mixpeek frustrations [manual:ip:1.2.3.4]", "mixpeek-frustrations"));
-        assert!(!origin_matches("amux-cloud", "amux"), "prefixes must not match (AC-316)");
+        assert!(origin_matches(
+            "mixpeek frustrations [manual:ip:1.2.3.4]",
+            "mixpeek-frustrations"
+        ));
+        assert!(
+            !origin_matches("amux-cloud", "amux"),
+            "prefixes must not match (AC-316)"
+        );
     }
 
     #[test]
@@ -13829,7 +16789,10 @@ mod tests {
         // the transitions that need a sign-off.
         assert!(reviewer_acts_next("review"));
         assert!(reviewer_acts_next("done"));
-        assert!(!reviewer_acts_next("doing"), "doing->review is not a sign-off");
+        assert!(
+            !reviewer_acts_next("doing"),
+            "doing->review is not a sign-off"
+        );
     }
 
     /// RR-0052 Invariant 4. The verbs `needs` and `fail` shipped in 8ed50510
@@ -13863,7 +16826,10 @@ mod tests {
             "amux board fail AX-1",
             "amux board backlog AX-1",
         ] {
-            assert!(text.contains(cmd), "the nudge must name `{cmd}`; got:\n{text}");
+            assert!(
+                text.contains(cmd),
+                "the nudge must name `{cmd}`; got:\n{text}"
+            );
         }
         // A reviewer holding the gate changes who acts, not which exits exist:
         // a lane waiting on feedback can still be blocked or defeated.
@@ -13882,10 +16848,22 @@ mod tests {
             approval_types: "budget",
             unpickable: 0,
         });
-        assert!(waiting.contains("peer-lane"), "the reviewer must still be named:\n{waiting}");
-        assert!(waiting.contains("amux board needs AX-2"), "a waiting card can still be blocked:\n{waiting}");
-        assert!(waiting.contains("amux board fail AX-2"), "a waiting card can still fail:\n{waiting}");
-        assert!(waiting.contains("amux board verified AX-2"), "its terminal is verified, not done:\n{waiting}");
+        assert!(
+            waiting.contains("peer-lane"),
+            "the reviewer must still be named:\n{waiting}"
+        );
+        assert!(
+            waiting.contains("amux board needs AX-2"),
+            "a waiting card can still be blocked:\n{waiting}"
+        );
+        assert!(
+            waiting.contains("amux board fail AX-2"),
+            "a waiting card can still fail:\n{waiting}"
+        );
+        assert!(
+            waiting.contains("amux board verified AX-2"),
+            "its terminal is verified, not done:\n{waiting}"
+        );
     }
 
     /// AMUX-4748 follow-up: a queue depth must say how much of it is REACHABLE.
@@ -13955,14 +16933,34 @@ mod tests {
     #[test]
     fn backlog_triage_text_names_both_totals_and_every_card() {
         let cards = vec![
-            ("B-1".to_string(), "Investigate the flaky retry".to_string(), 20),
-            ("B-2".to_string(), "Old finding nobody triaged".to_string(), 45),
+            (
+                "B-1".to_string(),
+                "Investigate the flaky retry".to_string(),
+                20,
+            ),
+            (
+                "B-2".to_string(),
+                "Old finding nobody triaged".to_string(),
+                45,
+            ),
         ];
         let text = backlog_triage_text(&cards, 2, 6);
-        assert!(text.contains("6 cards in `backlog`"), "must state the true backlog total: {text}");
-        assert!(text.contains("2 of which are over"), "must state the stale total: {text}");
-        assert!(text.contains("B-1") && text.contains("B-2"), "every listed card must appear: {text}");
-        assert!(text.contains("20d old") && text.contains("45d old"), "age must be shown: {text}");
+        assert!(
+            text.contains("6 cards in `backlog`"),
+            "must state the true backlog total: {text}"
+        );
+        assert!(
+            text.contains("2 of which are over"),
+            "must state the stale total: {text}"
+        );
+        assert!(
+            text.contains("B-1") && text.contains("B-2"),
+            "every listed card must appear: {text}"
+        );
+        assert!(
+            text.contains("20d old") && text.contains("45d old"),
+            "age must be shown: {text}"
+        );
         assert!(!text.contains("more"), "nothing was dropped; got: {text}");
     }
 
@@ -13972,12 +16970,19 @@ mod tests {
     /// cannot account for.
     #[test]
     fn backlog_triage_and_n_more_agrees_with_the_stale_total() {
-        let cards: Vec<(String, String, i64)> =
-            (0..10).map(|i| (format!("B-{i}"), format!("card {i}"), 15 + i)).collect();
+        let cards: Vec<(String, String, i64)> = (0..10)
+            .map(|i| (format!("B-{i}"), format!("card {i}"), 15 + i))
+            .collect();
         let text = backlog_triage_text(&cards, 14, 20);
-        assert!(text.contains("... and 4 more stale"), "14 - 10 = 4; got: {text}");
+        assert!(
+            text.contains("... and 4 more stale"),
+            "14 - 10 = 4; got: {text}"
+        );
         for (id, _, _) in &cards {
-            assert!(text.contains(id.as_str()), "{id} listed in the candidates but absent from the prompt");
+            assert!(
+                text.contains(id.as_str()),
+                "{id} listed in the candidates but absent from the prompt"
+            );
         }
     }
 
@@ -13998,9 +17003,18 @@ mod tests {
         let long_title = "x".repeat(200);
         let cards = vec![("B-1".to_string(), long_title.clone(), 20)];
         let text = backlog_triage_text(&cards, 1, 1);
-        assert!(!text.contains(&long_title), "the full 200-char title must not appear verbatim: {text}");
-        assert!(text.contains(&"x".repeat(65)), "the first 65 chars must survive: {text}");
-        assert!(!text.contains(&"x".repeat(66)), "must be truncated at exactly 65 chars: {text}");
+        assert!(
+            !text.contains(&long_title),
+            "the full 200-char title must not appear verbatim: {text}"
+        );
+        assert!(
+            text.contains(&"x".repeat(65)),
+            "the first 65 chars must survive: {text}"
+        );
+        assert!(
+            !text.contains(&"x".repeat(66)),
+            "must be truncated at exactly 65 chars: {text}"
+        );
     }
 
     /// The nudge names the three sanctioned exits so a lane reading it has an
@@ -14009,9 +17023,18 @@ mod tests {
     fn backlog_triage_text_names_the_three_triage_exits() {
         let cards = vec![("B-1".to_string(), "stale thing".to_string(), 30)];
         let text = backlog_triage_text(&cards, 1, 1);
-        assert!(text.contains("archive"), "must offer the archive exit: {text}");
-        assert!(text.contains("`todo`"), "must offer the promote-to-todo exit: {text}");
-        assert!(text.contains("needs:you"), "must offer the needs:you exit: {text}");
+        assert!(
+            text.contains("archive"),
+            "must offer the archive exit: {text}"
+        );
+        assert!(
+            text.contains("`todo`"),
+            "must offer the promote-to-todo exit: {text}"
+        );
+        assert!(
+            text.contains("needs:you"),
+            "must offer the needs:you exit: {text}"
+        );
     }
 
     /// The DB predicates behind the triage nudge. Every excluded row must
@@ -14024,7 +17047,13 @@ mod tests {
         let now = 100 * 86400; // day 100, arbitrary epoch anchor
         let old = now - BACKLOG_STALE_AGE_S - 86400; // 15 days old: stale
         let fresh = now - 86400; // 1 day old: not stale
-        let ins = |id: &str, session: &str, status: &str, owner: &str, arch: i64, del: Option<i64>, created: i64| {
+        let ins = |id: &str,
+                   session: &str,
+                   status: &str,
+                   owner: &str,
+                   arch: i64,
+                   del: Option<i64>,
+                   created: i64| {
             conn.execute(
                 "INSERT INTO issues (id,title,status,session,owner_type,archived,deleted,type,created,updated) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,'code',?8,?8)",
@@ -14042,8 +17071,16 @@ mod tests {
 
         let candidates = stale_backlog_candidates(&conn, "lane", now);
         let ids: Vec<&str> = candidates.iter().map(|(i, _, _)| i.as_str()).collect();
-        assert_eq!(ids, vec!["S-1"], "only this lane's own live agent-owned stale backlog card");
-        assert_eq!(stale_backlog_count(&conn, "lane", now), 1, "the count must share the candidates' predicate");
+        assert_eq!(
+            ids,
+            vec!["S-1"],
+            "only this lane's own live agent-owned stale backlog card"
+        );
+        assert_eq!(
+            stale_backlog_count(&conn, "lane", now),
+            1,
+            "the count must share the candidates' predicate"
+        );
     }
 
     /// Age is reported in whole days, and the oldest card leads the list —
@@ -14067,8 +17104,10 @@ mod tests {
         let candidates = stale_backlog_candidates(&conn, "lane", now);
         let ids: Vec<&str> = candidates.iter().map(|(i, _, _)| i.as_str()).collect();
         assert_eq!(ids, vec!["O-2", "O-1", "O-3"], "oldest-first ordering");
-        let ages: std::collections::HashMap<&str, i64> =
-            candidates.iter().map(|(i, _, a)| (i.as_str(), *a)).collect();
+        let ages: std::collections::HashMap<&str, i64> = candidates
+            .iter()
+            .map(|(i, _, a)| (i.as_str(), *a))
+            .collect();
         assert_eq!(ages["O-2"], 30);
         assert_eq!(ages["O-1"], 20);
         assert_eq!(ages["O-3"], 15);
@@ -14091,7 +17130,11 @@ mod tests {
         }
         let candidates = stale_backlog_candidates(&conn, "lane", now);
         assert_eq!(candidates.len(), 10, "capped for prompt brevity");
-        assert_eq!(stale_backlog_count(&conn, "lane", now), 15, "but the count sees all of them");
+        assert_eq!(
+            stale_backlog_count(&conn, "lane", now),
+            15,
+            "but the count sees all of them"
+        );
     }
 
     /// A card created exactly at the 14-day boundary is not yet stale — the
@@ -14109,20 +17152,33 @@ mod tests {
             .expect("insert");
         };
         ins("E-1", now - BACKLOG_STALE_AGE_S); // exactly 14 days old
-        assert_eq!(stale_backlog_count(&conn, "lane", now), 0, "exactly-14-days is not yet over 14 days");
+        assert_eq!(
+            stale_backlog_count(&conn, "lane", now),
+            0,
+            "exactly-14-days is not yet over 14 days"
+        );
         ins("E-2", now - BACKLOG_STALE_AGE_S - 1); // one second past
-        assert_eq!(stale_backlog_count(&conn, "lane", now), 1, "one second past the cutoff is stale");
+        assert_eq!(
+            stale_backlog_count(&conn, "lane", now),
+            1,
+            "one second past the cutoff is stale"
+        );
     }
     /// The board verbs the SHIPPED bash CLI actually handles, parsed from
     /// `cmd_board()`'s own case labels. Reading the CLI source is the point: a
     /// hardcoded list here would drift from the CLI exactly like the docs did.
     fn cli_board_verbs() -> std::collections::HashSet<String> {
         const CLI: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../amux"));
-        let start = CLI.find("cmd_board() {").expect("the CLI defines cmd_board");
+        let start = CLI
+            .find("cmd_board() {")
+            .expect("the CLI defines cmd_board");
         // Stop at the next top-level function so a later function's labels
         // cannot smuggle a verb in (`show)` really does live in cmd_defaults).
         let rest = &CLI[start + 13..];
-        let end = rest.find("\ncmd_").map(|e| start + 13 + e).unwrap_or(CLI.len());
+        let end = rest
+            .find("\ncmd_")
+            .map(|e| start + 13 + e)
+            .unwrap_or(CLI.len());
         let body = &CLI[start..end];
         let re = regex::Regex::new(r"(?m)^\s{4}([a-z][a-z0-9|_-]*)\)").unwrap();
         let mut out = std::collections::HashSet::new();
@@ -14166,13 +17222,29 @@ mod tests {
     #[test]
     fn the_capture_shell_meter_reports_the_outcome_split_not_just_a_total() {
         let conn = board_db();
-        conn.execute("DELETE FROM session_events", []).expect("clear");
+        conn.execute("DELETE FROM session_events", [])
+            .expect("clear");
         // Three nudged capture cards: one discarded (foregone), one promoted to
         // an epic (real judgment), one still open.
-        add_card(&conn, "C-1", "lane", "discarded", "q", "**Prompt:** what is x");
-        add_card(&conn, "C-2", "lane", "doing", "real", "**Prompt:** do a thing");
+        add_card(
+            &conn,
+            "C-1",
+            "lane",
+            "discarded",
+            "q",
+            "**Prompt:** what is x",
+        );
+        add_card(
+            &conn,
+            "C-2",
+            "lane",
+            "doing",
+            "real",
+            "**Prompt:** do a thing",
+        );
         add_card(&conn, "C-3", "lane", "doing", "open", "**Prompt:** another");
-        conn.execute("UPDATE issues SET type='epic' WHERE id='C-2'", []).expect("retype");
+        conn.execute("UPDATE issues SET type='epic' WHERE id='C-2'", [])
+            .expect("retype");
         for id in ["C-1", "C-2", "C-3"] {
             conn.execute(
                 "INSERT INTO session_events (ts,session,type,data,idem,source) \
@@ -14191,7 +17263,8 @@ mod tests {
 
         // ...and it must MOVE when the outcomes move, or it is a constant with a
         // plausible value — the shape that gets believed and never rechecked.
-        conn.execute("UPDATE issues SET status='discarded' WHERE id='C-3'", []).expect("upd");
+        conn.execute("UPDATE issues SET status='discarded' WHERE id='C-3'", [])
+            .expect("upd");
         let m2 = capture_shell_cost(&conn);
         assert_eq!(m2["outcome_discarded"], 2, "{m2}");
         assert_eq!(m2["discarded_pct"], 66.7, "{m2}");
@@ -14244,13 +17317,31 @@ mod tests {
         let render = |n: i64, nudges: i64| -> f64 {
             let exact = n as f64 * 100.0 / nudges as f64;
             let rounded = (exact * 10.0).round() / 10.0;
-            if rounded == 0.0 && n > 0 { exact } else { rounded }
+            if rounded == 0.0 && n > 0 {
+                exact
+            } else {
+                rounded
+            }
         };
-        assert_eq!(render(1, 2000), 0.1, "1-of-2000 is exactly 0.5 and rounds AWAY from zero");
-        assert!(render(1, 2001) > 0.0, "the first ratio past the floor must not be 0.0");
-        assert!(render(1, 2001) < 0.05, "...and it is the exact value, not a rounded one");
-        assert_eq!(render(0, 2001), 0.0, "a genuine ZERO still renders zero — the guard is \
-                                          about nonzero counts, not about hiding zeros");
+        assert_eq!(
+            render(1, 2000),
+            0.1,
+            "1-of-2000 is exactly 0.5 and rounds AWAY from zero"
+        );
+        assert!(
+            render(1, 2001) > 0.0,
+            "the first ratio past the floor must not be 0.0"
+        );
+        assert!(
+            render(1, 2001) < 0.05,
+            "...and it is the exact value, not a rounded one"
+        );
+        assert_eq!(
+            render(0, 2001),
+            0.0,
+            "a genuine ZERO still renders zero — the guard is \
+                                          about nonzero counts, not about hiding zeros"
+        );
 
         // AMUX-4677's pair, and it has to MOVE. `captured_delegations` on its
         // own cannot separate "the carve-out stopped selecting anything" from
@@ -14258,11 +17349,25 @@ mod tests {
         // These fixtures carry no creator, so amux minted none of them yet.
         assert_eq!(m3["captured_envelopes"], 0, "{m3}");
         assert_eq!(m3["captured_delegations"], 0, "{m3}");
-        add_card(&conn, "C-4", "lane", "backlog", "ASK", "**Prompt:** ASK (finances): pick up MF-1165");
-        conn.execute("UPDATE issues SET creator='amux'", []).expect("mint");
+        add_card(
+            &conn,
+            "C-4",
+            "lane",
+            "backlog",
+            "ASK",
+            "**Prompt:** ASK (finances): pick up MF-1165",
+        );
+        conn.execute("UPDATE issues SET creator='amux'", [])
+            .expect("mint");
         let m4 = capture_shell_cost(&conn);
-        assert_eq!(m4["captured_envelopes"], 4, "all four are capture envelopes now: {m4}");
-        assert_eq!(m4["captured_delegations"], 1, "and exactly one is a delegation: {m4}");
+        assert_eq!(
+            m4["captured_envelopes"], 4,
+            "all four are capture envelopes now: {m4}"
+        );
+        assert_eq!(
+            m4["captured_delegations"], 1,
+            "and exactly one is a delegation: {m4}"
+        );
     }
 
     /// Distinct ids for the padding rows above. A counter, not randomness:
@@ -14311,9 +17416,11 @@ mod tests {
         };
         let p = std::path::Path::new(&home).join(".claude/CLAUDE.md");
         let Ok(txt) = std::fs::read_to_string(&p) else {
-            println!("UNMEASURED: {} is absent (expected on a cloud image); \
+            println!(
+                "UNMEASURED: {} is absent (expected on a cloud image); \
                       the key/doc agreement is UNCHECKED on this box, not confirmed",
-                     p.display());
+                p.display()
+            );
             return;
         };
         assert!(
@@ -14342,7 +17449,6 @@ mod tests {
     fn the_real_board_verbs_are_accepted() {
         assert_cli_verbs_exist("amux board show X, amux board done X, amux board reviewer X y");
     }
-
 }
 
 #[cfg(test)]

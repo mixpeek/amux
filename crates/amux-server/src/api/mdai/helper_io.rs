@@ -268,7 +268,10 @@ mod tests {
         while !pre.exited() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(pre.exited(), "a helper that exited while idle must be detectable");
+        assert!(
+            pre.exited(),
+            "a helper that exited while idle must be detectable"
+        );
     }
 
     #[test]

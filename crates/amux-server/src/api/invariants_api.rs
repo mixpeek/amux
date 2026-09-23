@@ -40,7 +40,10 @@ fn verdict_build_agreement(
             let matches = b == serving;
             (json!(b), json!(matches))
         }
-        _ => (json!(builds.iter().cloned().collect::<Vec<_>>()), json!(false)),
+        _ => (
+            json!(builds.iter().cloned().collect::<Vec<_>>()),
+            json!(false),
+        ),
     }
 }
 
@@ -89,8 +92,11 @@ async fn health(
         // AF-320: a filtered body that matches nothing and a pass that never ran
         // both come back empty. n_considered is the invariants evaluated.
         let n = results.len();
-        return Json(crate::api::measured::measured(filtered_body(&results, want), n))
-            .into_response();
+        return Json(crate::api::measured::measured(
+            filtered_body(&results, want),
+            n,
+        ))
+        .into_response();
     }
     let want_live = q
         .get("live")
@@ -99,8 +105,11 @@ async fn health(
     if want_live {
         let results = monitor::evaluate_all(&state).await;
         let n = results.len();
-        return Json(crate::api::measured::measured(live_body(&results, &state), n))
-            .into_response();
+        return Json(crate::api::measured::measured(
+            live_body(&results, &state),
+            n,
+        ))
+        .into_response();
     }
 
     // DEFAULT: stored + producer liveness.
@@ -123,7 +132,10 @@ async fn health(
     let has_stored = !latest.is_empty();
     let confidence = stored_confidence(mon_fresh, has_stored, fail, unknown);
     let live = store::live_incidents(&state.store).unwrap_or_default();
-    let last_age = snap.as_ref().and_then(|s| s.last_tick_at).map(|t| ((now - t).max(0.0) * 10.0).round() / 10.0);
+    let last_age = snap
+        .as_ref()
+        .and_then(|s| s.last_tick_at)
+        .map(|t| ((now - t).max(0.0) * 10.0).round() / 10.0);
     // The build the stored verdicts came from. Taken from the rows rather than
     // from a process global, because that is the fact being reported.
     // DISAGREEMENT AMONG ROWS IS REPORTED, NOT COLLAPSED: the builder can swap
@@ -241,7 +253,12 @@ fn monitor_liveness(
 /// NEVER be served off a monitor that is not running fresh, nor off an empty
 /// store — has a test that can fail on that exact bug, rather than living only
 /// inside an async handler that reads global state.
-fn stored_confidence(mon_fresh: bool, has_stored: bool, fail: usize, unknown: usize) -> &'static str {
+fn stored_confidence(
+    mon_fresh: bool,
+    has_stored: bool,
+    fail: usize,
+    unknown: usize,
+) -> &'static str {
     if !mon_fresh || !has_stored {
         "unknown"
     } else if fail > 0 {
@@ -256,7 +273,10 @@ fn stored_confidence(mon_fresh: bool, has_stored: bool, fail: usize, unknown: us
 /// The live (?live=1) full body — a synchronous re-evaluation, the pre-AMUX-3841
 /// default kept as an escape hatch. Extracted so the stored path and the live
 /// path are two named things, not one function with a branch.
-fn live_body(results: &[crate::invariants::InvariantResult], state: &AppState) -> serde_json::Value {
+fn live_body(
+    results: &[crate::invariants::InvariantResult],
+    state: &AppState,
+) -> serde_json::Value {
     let conf = rollup(results);
     let (mut pass, mut fail, mut unknown) = (0, 0, 0);
     for r in results {
@@ -396,9 +416,9 @@ async fn debug(State(state): State<AppState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{filtered_body, monitor_liveness, stored_confidence, verdict_build_agreement};
-    use serde_json::json;
     use crate::invariants::InvariantResult;
     use crate::runtime_jobs::registry::Snapshot;
+    use serde_json::json;
 
     fn snap(dead: bool, ticks: u64, last_tick_at: Option<f64>, spawned_at: f64) -> Snapshot {
         Snapshot {
@@ -427,17 +447,23 @@ mod tests {
     fn a_dead_or_stalled_monitor_trips_not_fresh_and_never_renders_stored_green() {
         let now = 1_000_000.0;
         // Control: a live monitor that ticked 2s ago is fresh.
-        let (state, fresh) = monitor_liveness(Some(&snap(false, 18, Some(now - 2.0), now - 600.0)), now);
+        let (state, fresh) =
+            monitor_liveness(Some(&snap(false, 18, Some(now - 2.0), now - 600.0)), now);
         assert_eq!(state, "ok");
-        assert!(fresh, "a monitor ticking on cadence must read fresh (the control)");
+        assert!(
+            fresh,
+            "a monitor ticking on cadence must read fresh (the control)"
+        );
 
         // Trip 1 — DEAD: the driving task exited. Not fresh, whatever it stored.
-        let (state, fresh) = monitor_liveness(Some(&snap(true, 18, Some(now - 2.0), now - 600.0)), now);
+        let (state, fresh) =
+            monitor_liveness(Some(&snap(true, 18, Some(now - 2.0), now - 600.0)), now);
         assert_eq!(state, "dead");
         assert!(!fresh);
 
         // Trip 2 — STALLED: last tick is older than stall_after_s(30)=90s.
-        let (state, fresh) = monitor_liveness(Some(&snap(false, 18, Some(now - 200.0), now - 600.0)), now);
+        let (state, fresh) =
+            monitor_liveness(Some(&snap(false, 18, Some(now - 200.0), now - 600.0)), now);
         assert_eq!(state, "stalled");
         assert!(!fresh);
 
@@ -501,7 +527,10 @@ mod tests {
         };
 
         let (ran, known, body) = matched("hooks.report_hooks_wired");
-        assert!(ran, "a PASSING invariant must report ran=true — it is invisible in the rollup");
+        assert!(
+            ran,
+            "a PASSING invariant must report ran=true — it is invisible in the rollup"
+        );
         assert!(known.is_empty(), "known_ids is noise once the id resolved");
         assert_eq!(body["results"][0]["status"], "pass");
         assert_eq!(body["note"], "", "a resolved id needs no caveat");
@@ -523,7 +552,10 @@ mod tests {
 
         // And a FAILING invariant still RAN — `ran` is about evaluation, not verdict.
         let (ran, _, body) = matched("queue.has_live_consumer");
-        assert!(ran, "a failing check ran; ran must not be a synonym for passed");
+        assert!(
+            ran,
+            "a failing check ran; ran must not be a synonym for passed"
+        );
         assert_eq!(body["results"][0]["status"], "fail");
     }
 
@@ -544,18 +576,34 @@ mod tests {
         // re-run yet, and the endpoint is serving the retired image's verdicts.
         // Pre-fix this was indistinguishable from agreement.
         let (b, ok) = verdict_build_agreement(&set(&["old-build"]), "new-build");
-        assert_eq!(b, json!("old-build"), "the reader must see WHICH build produced them");
+        assert_eq!(
+            b,
+            json!("old-build"),
+            "the reader must see WHICH build produced them"
+        );
         assert_eq!(ok, json!(false));
 
         // UNKNOWN IS NULL, NOT FALSE. Rows predating migration 0078 carry no
         // build; answering "no" there asserts something nothing measured.
         let (b, ok) = verdict_build_agreement(&set(&[]), "any-build");
-        assert_eq!(b, serde_json::Value::Null, "an unmeasured build is null, not a mismatch");
-        assert_eq!(ok, serde_json::Value::Null, "and the agreement is null, not false");
+        assert_eq!(
+            b,
+            serde_json::Value::Null,
+            "an unmeasured build is null, not a mismatch"
+        );
+        assert_eq!(
+            ok,
+            serde_json::Value::Null,
+            "and the agreement is null, not false"
+        );
 
         // A batch spanning a mid-pass swap reports BOTH rather than picking.
         let (b, ok) = verdict_build_agreement(&set(&["one", "two"]), "one");
-        assert_eq!(b, json!(["one", "two"]), "a split batch must report both builds");
+        assert_eq!(
+            b,
+            json!(["one", "two"]),
+            "a split batch must report both builds"
+        );
         assert_eq!(
             ok, json!(false),
             "a batch that spans a swap is not wholly from the serving build, even though one row is"

@@ -113,7 +113,6 @@ pub struct Runtime {
     pub resume_stagger_secs: u64,
 }
 
-
 /// True when a board status is outside the closed `TaskStatus` vocabulary.
 ///
 /// Deliberately asks `parse_status` rather than keeping a second list — a
@@ -143,7 +142,6 @@ fn agent_accepts_boundary_delivery(
     }
 }
 
-
 /// WHICH SECTION OF A SLOW TICK BLOCKED (AMUX-4955).
 ///
 /// `runtime_job_blocking_poll` names the JOB and how long one poll held a
@@ -168,7 +166,11 @@ struct TickSections {
 impl TickSections {
     fn new() -> Self {
         let now = std::time::Instant::now();
-        Self { marks: Vec::new(), last: now, started: now }
+        Self {
+            marks: Vec::new(),
+            last: now,
+            started: now,
+        }
     }
 
     fn mark(&mut self, name: &'static str) {
@@ -197,8 +199,10 @@ impl TickSections {
             .max_by_key(|(_, d)| *d)
             .map(|(n, d)| (*n, d.as_millis() as u64))
             .unwrap_or(("none", 0));
-        let breakdown: Vec<String> =
-            marks.iter().map(|(n, d)| format!("{n}={}ms", d.as_millis())).collect();
+        let breakdown: Vec<String> = marks
+            .iter()
+            .map(|(n, d)| format!("{n}={}ms", d.as_millis()))
+            .collect();
         (worst, breakdown.join(" "))
     }
 
@@ -242,7 +246,9 @@ impl Runtime {
                     // silently — its sessions would all read as "missing"
                     // and mass-ending them on a flaky probe would be the
                     // reaper incident all over again.
-                    report.backend_probe_failures.push(format!("{}: {e}", b.name()));
+                    report
+                        .backend_probe_failures
+                        .push(format!("{}: {e}", b.name()));
                 }
             }
         }
@@ -255,16 +261,18 @@ impl Runtime {
                 "SELECT id, worker_id, backend_ref FROM _amux_sessions WHERE ended_at IS NULL",
             )?;
             let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
             })?;
             rows.collect::<Result<_, _>>()?
         };
 
         for (session_id, worker_id, backend_ref) in db_live {
-            let live_in_backend = matches!(
-                backend_refs.get(&backend_ref),
-                Some(BackendStatus::Running)
-            );
+            let live_in_backend =
+                matches!(backend_refs.get(&backend_ref), Some(BackendStatus::Running));
             if !live_in_backend && probe_ok {
                 // DB says running, backend says gone -> mark interrupted.
                 report.interrupted.push(worker_id.clone());
@@ -303,8 +311,8 @@ impl Runtime {
         // rule 8: it may be someone's live work — never auto-kill on sight).
         let db_refs: std::collections::BTreeSet<String> = {
             let conn = self.store.read()?;
-            let mut stmt = conn
-                .prepare("SELECT backend_ref FROM _amux_sessions WHERE ended_at IS NULL")?;
+            let mut stmt =
+                conn.prepare("SELECT backend_ref FROM _amux_sessions WHERE ended_at IS NULL")?;
             let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             rows.collect::<Result<_, _>>()?
         };
@@ -367,8 +375,9 @@ impl Runtime {
             Vec<(&Worker, DateTime<Utc>)>,
         > = BTreeMap::new();
         for worker in workers {
-            if let amux_core::worker::WorkerState::RateLimited { reset_at: Some(reset) } =
-                &worker.state
+            if let amux_core::worker::WorkerState::RateLimited {
+                reset_at: Some(reset),
+            } = &worker.state
             {
                 parked_by_provider
                     .entry(worker.config.provider.clone())
@@ -379,8 +388,10 @@ impl Runtime {
 
         let mut recovered = 0usize;
         for (provider, parked) in parked_by_provider {
-            let order: Vec<amux_core::ids::WorkerId> =
-                parked.iter().map(|(worker, _)| worker.id().clone()).collect();
+            let order: Vec<amux_core::ids::WorkerId> = parked
+                .iter()
+                .map(|(worker, _)| worker.id().clone())
+                .collect();
             for (worker, reset_at) in parked {
                 let eligible_at =
                     amux_core::provider_fleet::resume_schedule(&order, reset_at, stagger)
@@ -395,35 +406,39 @@ impl Runtime {
                 let worker_id = worker.id().to_string();
                 let state_at = now;
                 let updated_at = now.to_rfc3339();
-                let reply = self.store.write_async(move |conn| {
-                    let n = crate::db::queries::update_worker_state(
-                        conn,
-                        &worker_id,
-                        &amux_core::worker::WorkerState::Idle { since: state_at },
-                        &updated_at,
-                    )?;
-                    let payload = if n > 0 {
-                        crate::db::queries::get_worker(conn, &worker_id)?.map(|row| row.snapshot())
-                    } else {
-                        None
-                    };
-                    Ok(WriteOutcome {
-                        applied: n > 0,
-                        events: if n > 0 {
-                            vec![PendingEvent {
-                                entity_type: EntityType::Worker,
-                                entity_id: worker_id.clone(),
-                                mutation: MutationKind::StatusChanged {
-                                    from: "rate_limited".into(),
-                                    to: "idle".into(),
-                                },
-                                payload,
-                            }]
+                let reply = self
+                    .store
+                    .write_async(move |conn| {
+                        let n = crate::db::queries::update_worker_state(
+                            conn,
+                            &worker_id,
+                            &amux_core::worker::WorkerState::Idle { since: state_at },
+                            &updated_at,
+                        )?;
+                        let payload = if n > 0 {
+                            crate::db::queries::get_worker(conn, &worker_id)?
+                                .map(|row| row.snapshot())
                         } else {
-                            vec![]
-                        },
+                            None
+                        };
+                        Ok(WriteOutcome {
+                            applied: n > 0,
+                            events: if n > 0 {
+                                vec![PendingEvent {
+                                    entity_type: EntityType::Worker,
+                                    entity_id: worker_id.clone(),
+                                    mutation: MutationKind::StatusChanged {
+                                        from: "rate_limited".into(),
+                                        to: "idle".into(),
+                                    },
+                                    payload,
+                                }]
+                            } else {
+                                vec![]
+                            },
+                        })
                     })
-                }).await?;
+                    .await?;
                 if reply.applied {
                     recovered += 1;
                     tracing::info!(
@@ -514,52 +529,59 @@ impl Runtime {
         // recorded from the real wait for this transaction.
         let metric_tasks = tasks.clone();
         let metric_wait_started = std::time::Instant::now();
-        self.store.write_async(move |conn| {
-            let lock_wait_ms = metric_wait_started.elapsed().as_millis() as u64;
-            let observed =
-                crate::db::throughput_store::observe_runtime_queue(conn, &metric_tasks, now)?;
-            let lock_metric = if lock_wait_ms >= 100 {
-                Some(crate::db::throughput_store::record_metric(
-                    conn, "lock_wait", "runtime", Some(lock_wait_ms), None,
-                    Some("orchestrator writer queue"), now,
-                )?)
-            } else {
-                None
-            };
-            let before = crate::db::throughput_store::get_wip_state(conn)?;
-            let after = crate::db::throughput_store::evaluate_wip(conn, now)?;
-            let changed = before.current_limit != after.current_limit
-                || before.recommended != after.recommended;
-            let mut events = Vec::new();
-            if observed > 0 {
-                events.push(PendingEvent {
-                    entity_type: EntityType::Other("work_metric".into()),
-                    entity_id: format!("runtime-queue:{observed}"),
-                    mutation: MutationKind::Created,
-                    payload: None,
-                });
-            }
-            if let Some(id) = lock_metric {
-                events.push(PendingEvent {
-                    entity_type: EntityType::Other("work_metric".into()),
-                    entity_id: id,
-                    mutation: MutationKind::Created,
-                    payload: None,
-                });
-            }
-            if changed {
-                events.push(PendingEvent {
-                    entity_type: EntityType::Other("adaptive_wip".into()),
-                    entity_id: "singleton".into(),
-                    mutation: MutationKind::Updated,
-                    payload: serde_json::to_value(&after).ok(),
-                });
-            }
-            Ok(WriteOutcome {
-                applied: observed > 0 || lock_wait_ms >= 100 || changed,
-                events,
+        self.store
+            .write_async(move |conn| {
+                let lock_wait_ms = metric_wait_started.elapsed().as_millis() as u64;
+                let observed =
+                    crate::db::throughput_store::observe_runtime_queue(conn, &metric_tasks, now)?;
+                let lock_metric = if lock_wait_ms >= 100 {
+                    Some(crate::db::throughput_store::record_metric(
+                        conn,
+                        "lock_wait",
+                        "runtime",
+                        Some(lock_wait_ms),
+                        None,
+                        Some("orchestrator writer queue"),
+                        now,
+                    )?)
+                } else {
+                    None
+                };
+                let before = crate::db::throughput_store::get_wip_state(conn)?;
+                let after = crate::db::throughput_store::evaluate_wip(conn, now)?;
+                let changed = before.current_limit != after.current_limit
+                    || before.recommended != after.recommended;
+                let mut events = Vec::new();
+                if observed > 0 {
+                    events.push(PendingEvent {
+                        entity_type: EntityType::Other("work_metric".into()),
+                        entity_id: format!("runtime-queue:{observed}"),
+                        mutation: MutationKind::Created,
+                        payload: None,
+                    });
+                }
+                if let Some(id) = lock_metric {
+                    events.push(PendingEvent {
+                        entity_type: EntityType::Other("work_metric".into()),
+                        entity_id: id,
+                        mutation: MutationKind::Created,
+                        payload: None,
+                    });
+                }
+                if changed {
+                    events.push(PendingEvent {
+                        entity_type: EntityType::Other("adaptive_wip".into()),
+                        entity_id: "singleton".into(),
+                        mutation: MutationKind::Updated,
+                        payload: serde_json::to_value(&after).ok(),
+                    });
+                }
+                Ok(WriteOutcome {
+                    applied: observed > 0 || lock_wait_ms >= 100 || changed,
+                    events,
+                })
             })
-        }).await?;
+            .await?;
 
         // Command delivery pump (Invariant 34): drain each worker's queue
         // head through the agent protocol, honoring DeliveryTiming. Queue and
@@ -604,10 +626,8 @@ impl Runtime {
             let mut proceed = Vec::new();
             let mut exhaustion = Vec::new();
             for assignment in plan.assignments.clone() {
-                let semantic = crate::orchestrator::context::issue_by_internal_id(
-                    &conn,
-                    &assignment.task,
-                )?;
+                let semantic =
+                    crate::orchestrator::context::issue_by_internal_id(&conn, &assignment.task)?;
                 let limits = match semantic.as_ref() {
                     Some(row) => crate::db::harness_store::get_budget(&conn, &row.id)?
                         .map(|(limits, _)| limits)
@@ -630,7 +650,10 @@ impl Runtime {
             }
             (proceed, exhaustion)
         };
-        let plan = TickPlan { assignments: proceed, ..plan };
+        let plan = TickPlan {
+            assignments: proceed,
+            ..plan
+        };
         self.execute(&plan).await?;
         sections.mark("execute");
         for action in exhaustion {
@@ -643,9 +666,7 @@ impl Runtime {
                 workers_total: workers.len(),
                 workers_active: workers
                     .iter()
-                    .filter(|w| {
-                        matches!(w.state, amux_core::worker::WorkerState::Active { .. })
-                    })
+                    .filter(|w| matches!(w.state, amux_core::worker::WorkerState::Active { .. }))
                     .count(),
                 live_leases: leases.iter().filter(|l| !l.is_expired(now)).count(),
                 reclaimed_last_tick: plan.reclaim.len(),
@@ -682,29 +703,40 @@ impl Runtime {
         let completed: u32 = conn.query_row(
             r#"SELECT COUNT(*) FROM _amux_state_events WHERE at > ?1
              AND entity_type = 'task' AND mutation LIKE '%"to":"verified"%'"#,
-            params![cutoff], |r| r.get(0))?;
+            params![cutoff],
+            |r| r.get(0),
+        )?;
         let attempt_failures: u32 = conn.query_row(
             "SELECT COUNT(*) FROM _amux_attempts WHERE at > ?1",
-            params![cutoff], |r| r.get(0))?;
+            params![cutoff],
+            |r| r.get(0),
+        )?;
         let verification_failures: u32 = conn.query_row(
             "SELECT COUNT(*) FROM _amux_verifications WHERE created_at > ?1 AND verdict='failed'",
-            params![cutoff_epoch], |r| r.get(0))?;
+            params![cutoff_epoch],
+            |r| r.get(0),
+        )?;
         let tokens_spent: u64 = conn.query_row(
             "SELECT COALESCE(SUM(input+cache_read+cache_write+output),0)
              FROM token_ledger WHERE ts > ?1",
-            params![cutoff_epoch], |r| r.get(0))?;
+            params![cutoff_epoch],
+            |r| r.get(0),
+        )?;
         let has_live_work: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0
              AND LOWER(status) IN ('backlog','todo','doing','in progress','review','needsyou',
                                    'needs you','blocked'))",
-            [], |r| r.get(0))?;
+            [],
+            |r| r.get(0),
+        )?;
         let runnable_or_assigned: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0
              AND LOWER(status) IN ('todo','doing','in progress'))",
-            [], |r| r.get(0))?;
-        let earliest_event: Option<String> = conn.query_row(
-            "SELECT MIN(at) FROM _amux_state_events",
-            [], |r| r.get(0))?;
+            [],
+            |r| r.get(0),
+        )?;
+        let earliest_event: Option<String> =
+            conn.query_row("SELECT MIN(at) FROM _amux_state_events", [], |r| r.get(0))?;
         let earliest_event = earliest_event
             .map(|at| at.parse::<DateTime<Utc>>())
             .transpose()?;
@@ -718,7 +750,10 @@ impl Runtime {
         })
     }
 
-    async fn publish_fleet_state(&self, state: &amux_core::circuit::FleetState) -> anyhow::Result<()> {
+    async fn publish_fleet_state(
+        &self,
+        state: &amux_core::circuit::FleetState,
+    ) -> anyhow::Result<()> {
         let payload = serde_json::to_string(state)?;
         let persisted = payload.clone();
         self.store
@@ -776,7 +811,9 @@ impl Runtime {
             for w in workers {
                 names.insert(w.config.display_name.to_lowercase(), w.id().clone());
                 for a in &w.config.name_aliases {
-                    names.entry(a.to_lowercase()).or_insert_with(|| w.id().clone());
+                    names
+                        .entry(a.to_lowercase())
+                        .or_insert_with(|| w.id().clone());
                 }
             }
             names
@@ -814,7 +851,11 @@ impl Runtime {
             // name is a card that reads as a dependency wait and will be
             // debugged as one, so the raw status is named here where the row
             // still has it.
-            let crate::db::board_store::PlanningRow { mut task, raw_status, session } = row;
+            let crate::db::board_store::PlanningRow {
+                mut task,
+                raw_status,
+                session,
+            } = row;
             if amux_server_parse_status_is_unmodelled(&raw_status) {
                 tracing::warn!(
                     card = %task.id,
@@ -852,12 +893,9 @@ impl Runtime {
     ) -> anyhow::Result<BTreeMap<amux_core::ids::TaskId, Vec<amux_core::limits::AttemptRecord>>>
     {
         let conn = self.store.read()?;
-        let mut stmt = conn.prepare(
-            "SELECT task_id, record FROM _amux_attempts ORDER BY at ASC, attempt ASC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
+        let mut stmt = conn
+            .prepare("SELECT task_id, record FROM _amux_attempts ORDER BY at ASC, attempt ASC")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         let mut out: BTreeMap<amux_core::ids::TaskId, Vec<amux_core::limits::AttemptRecord>> =
             BTreeMap::new();
         for row in rows {
@@ -936,8 +974,13 @@ impl Runtime {
                             .num_milliseconds()
                             .max(0) as u64;
                         let id = crate::db::throughput_store::record_metric(
-                            conn, "recovery", "runtime", Some(recovery_ms), Some(&task),
-                            Some("expired lease reclaimed"), measured_at,
+                            conn,
+                            "recovery",
+                            "runtime",
+                            Some(recovery_ms),
+                            Some(&task),
+                            Some("expired lease reclaimed"),
+                            measured_at,
                         )?;
                         events.push(PendingEvent {
                             entity_type: EntityType::Other("work_metric".into()),
@@ -1079,13 +1122,19 @@ impl Runtime {
                     let Some(task) =
                         crate::orchestrator::context::task_by_internal_id(conn, &task_id)?
                     else {
-                        return Ok(WriteOutcome { applied: false, events: vec![] });
+                        return Ok(WriteOutcome {
+                            applied: false,
+                            events: vec![],
+                        });
                     };
                     let handoff_recorded = crate::orchestrator::context::record_assignment_handoff(
                         conn, &worker_id, &task, &key,
                     )?;
                     let snap = crate::orchestrator::context::assemble_context_with_budget(
-                        conn, &worker_id, &task, context_budget,
+                        conn,
+                        &worker_id,
+                        &task,
+                        context_budget,
                     )?;
                     let recorded = crate::orchestrator::context::record_snapshot(
                         conn, &key, &task_id, &worker_id, &snap,
@@ -1134,7 +1183,10 @@ impl Runtime {
                         None,
                         Utc::now(),
                     )?;
-                    Ok(WriteOutcome { applied: created, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: created,
+                        events: vec![],
+                    })
                 })
                 .await?;
         }
@@ -1541,13 +1593,24 @@ impl Runtime {
             rows.collect::<Result<_, _>>()?
         };
         for wid_str in worker_ids {
-            let row = { let conn = self.store.read()?; crate::db::queries::get_worker(&conn, &wid_str)? };
+            let row = {
+                let conn = self.store.read()?;
+                crate::db::queries::get_worker(&conn, &wid_str)?
+            };
             // Missing rows retain the ordinary delivery/failure path; only a
             // known inactive worker parks its queue without consuming retries.
-            let lock = crate::api::workers::lifecycle_lock(row.as_ref().map_or(&wid_str, |r| &r.display_name));
+            let lock = crate::api::workers::lifecycle_lock(
+                row.as_ref().map_or(&wid_str, |r| &r.display_name),
+            );
             let _guard = lock.lock().await;
-            let active = { let conn = self.store.read()?; crate::db::queries::get_worker(&conn, &wid_str)?.is_none_or(|r| r.lifecycle.is_drivable()) };
-            if !active { continue; }
+            let active = {
+                let conn = self.store.read()?;
+                crate::db::queries::get_worker(&conn, &wid_str)?
+                    .is_none_or(|r| r.lifecycle.is_drivable())
+            };
+            if !active {
+                continue;
+            }
             let Ok(worker) = amux_core::ids::WorkerId::parse(&wid_str) else {
                 continue;
             };
@@ -1620,7 +1683,10 @@ impl Runtime {
                                 },
                                 3,
                             )?;
-                            Ok(WriteOutcome { applied: true, events: vec![] })
+                            Ok(WriteOutcome {
+                                applied: true,
+                                events: vec![],
+                            })
                         })
                         .await?;
                     continue;
@@ -1639,7 +1705,10 @@ impl Runtime {
                             amux_core::protocol::CommandTransition::Dispatch,
                             3,
                         )?;
-                        Ok(WriteOutcome { applied: true, events: vec![] })
+                        Ok(WriteOutcome {
+                            applied: true,
+                            events: vec![],
+                        })
                     }
                 })
                 .await?;
@@ -1665,7 +1734,9 @@ impl Runtime {
                     match body {
                         Ok(body) => {
                             delivered_body = Some(body.clone());
-                            protocol.deliver_message(&worker, msg_id.clone(), body).await
+                            protocol
+                                .deliver_message(&worker, msg_id.clone(), body)
+                                .await
                         }
                         Err(e) => Err(crate::opencode::ProtocolError::Transport(format!(
                             "message body lookup failed for {}: {e}",
@@ -1680,10 +1751,7 @@ impl Runtime {
                     // dropping prior attempts entirely.
                     let snapshot = {
                         let conn = self.store.read()?;
-                        crate::orchestrator::context::load_snapshot(
-                            &conn,
-                            &cmd.idempotency_key,
-                        )?
+                        crate::orchestrator::context::load_snapshot(&conn, &cmd.idempotency_key)?
                     };
                     match snapshot {
                         Some(snapshot) => {
@@ -1739,7 +1807,8 @@ impl Runtime {
                         }
                     }
                     let mid = msg_id.to_string();
-                    let delivered = serde_json::json!({"state": "delivered", "at": now.to_rfc3339()});
+                    let delivered =
+                        serde_json::json!({"state": "delivered", "at": now.to_rfc3339()});
                     self.store
                         .write_async(move |conn| {
                             let n = conn.execute(
@@ -1810,7 +1879,10 @@ impl Runtime {
                             });
                         }
                     }
-                    Ok(WriteOutcome { applied: true, events })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events,
+                    })
                 })
                 .await?;
         }
@@ -1923,9 +1995,7 @@ pub struct ReconcileReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{
-        AttachInfo, BackendError, BackendSession, ProcessRef, SessionSpec,
-    };
+    use crate::backend::{AttachInfo, BackendError, BackendSession, ProcessRef, SessionSpec};
     use async_trait::async_trait;
 
     /// Scripted fake backend for reconciliation tests (Invariant 22).
@@ -2019,18 +2089,23 @@ mod tests {
     async fn reconcile_marks_vanished_sessions_interrupted() {
         let store = store();
         seed_live_session(&store, "ses_a", "wrk_a", "amux-wrk_a");
-        let rt = test_runtime(store.clone(), vec![Arc::new(FakeBackend {
-            hosted: vec![], // backend hosts nothing
-            fail_probe: false,
-        })]);
+        let rt = test_runtime(
+            store.clone(),
+            vec![Arc::new(FakeBackend {
+                hosted: vec![], // backend hosts nothing
+                fail_probe: false,
+            })],
+        );
         let report = rt.reconcile_on_startup().await.unwrap();
         assert_eq!(report.interrupted, vec!["wrk_a".to_string()]);
         // The session row is ended.
         let conn = store.read().unwrap();
         let ended: Option<String> = conn
-            .query_row("SELECT ended_at FROM _amux_sessions WHERE id='ses_a'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT ended_at FROM _amux_sessions WHERE id='ses_a'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(ended.is_some());
     }
@@ -2038,13 +2113,16 @@ mod tests {
     #[tokio::test]
     async fn reconcile_reports_stale_backend_refs_without_killing() {
         let store = store();
-        let rt = test_runtime(store, vec![Arc::new(FakeBackend {
-            hosted: vec![BackendSession {
-                backend_ref: "amux-wrk_ghost".into(),
-                status: BackendStatus::Running,
-            }],
-            fail_probe: false,
-        })]);
+        let rt = test_runtime(
+            store,
+            vec![Arc::new(FakeBackend {
+                hosted: vec![BackendSession {
+                    backend_ref: "amux-wrk_ghost".into(),
+                    status: BackendStatus::Running,
+                }],
+                fail_probe: false,
+            })],
+        );
         let report = rt.reconcile_on_startup().await.unwrap();
         assert_eq!(report.stale_backend, vec!["amux-wrk_ghost".to_string()]);
     }
@@ -2053,18 +2131,23 @@ mod tests {
     async fn failed_probe_never_mass_ends_sessions() {
         let store = store();
         seed_live_session(&store, "ses_b", "wrk_b", "amux-wrk_b");
-        let rt = test_runtime(store.clone(), vec![Arc::new(FakeBackend {
-            hosted: vec![],
-            fail_probe: true, // probe down != sessions gone
-        })]);
+        let rt = test_runtime(
+            store.clone(),
+            vec![Arc::new(FakeBackend {
+                hosted: vec![],
+                fail_probe: true, // probe down != sessions gone
+            })],
+        );
         let report = rt.reconcile_on_startup().await.unwrap();
         assert!(report.interrupted.is_empty(), "flaky probe must not reap");
         assert_eq!(report.backend_probe_failures.len(), 1);
         let conn = store.read().unwrap();
         let ended: Option<String> = conn
-            .query_row("SELECT ended_at FROM _amux_sessions WHERE id='ses_b'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT ended_at FROM _amux_sessions WHERE id='ses_b'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(ended.is_none(), "session must survive a failed probe");
     }
@@ -2098,7 +2181,10 @@ mod tests {
             kinds.push(format!("{:?}", ev.entity_type));
         }
         assert!(kinds.iter().any(|k| k.contains("lease")), "{kinds:?}");
-        assert!(kinds.iter().any(|k| k.contains("fleet_progress")), "{kinds:?}");
+        assert!(
+            kinds.iter().any(|k| k.contains("fleet_progress")),
+            "{kinds:?}"
+        );
     }
 }
 
@@ -2149,35 +2235,78 @@ mod pump_tests {
         protocol.register(wid(), AgentState::Idle);
         let cmd_id = CommandId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 504));
         let id = cmd_id.clone();
-        store.write(move |conn| {
-            let mut row = crate::db::queries::WorkerRow::new(&wid(), &WorkerConfig {
-                display_name: "paused-pump".into(), name_aliases: vec![], cwd: "/tmp".into(),
-                provider: amux_core::provider::ProviderId::new("claude"), model: None,
-                backend: amux_core::session::BackendId::herdr(), environment: Default::default(),
-                permissions: vec![], group: None,
-            }, "2026-09-14T00:00:00Z");
-            row.lifecycle = WorkerLifecycle::Paused;
-            crate::db::queries::insert_worker(conn, &row)?;
-            crate::db::commands::enqueue(conn, id, &wid(), &WorkerCommand::Continue,
-                "paused-immediate", &DeliveryTiming::Immediate, None, Utc::now())?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
+        store
+            .write(move |conn| {
+                let mut row = crate::db::queries::WorkerRow::new(
+                    &wid(),
+                    &WorkerConfig {
+                        display_name: "paused-pump".into(),
+                        name_aliases: vec![],
+                        cwd: "/tmp".into(),
+                        provider: amux_core::provider::ProviderId::new("claude"),
+                        model: None,
+                        backend: amux_core::session::BackendId::herdr(),
+                        environment: Default::default(),
+                        permissions: vec![],
+                        group: None,
+                    },
+                    "2026-09-14T00:00:00Z",
+                );
+                row.lifecycle = WorkerLifecycle::Paused;
+                crate::db::queries::insert_worker(conn, &row)?;
+                crate::db::commands::enqueue(
+                    conn,
+                    id,
+                    &wid(),
+                    &WorkerCommand::Continue,
+                    "paused-immediate",
+                    &DeliveryTiming::Immediate,
+                    None,
+                    Utc::now(),
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
         let rt = runtime_with(store.clone(), protocol.clone());
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
-        assert!(protocol.calls().is_empty(), "Pause must gate even Immediate delivery");
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
+        assert!(
+            protocol.calls().is_empty(),
+            "Pause must gate even Immediate delivery"
+        );
         {
             let conn = store.read().unwrap();
             let cmd = crate::db::commands::by_id(&conn, &cmd_id).unwrap().unwrap();
             assert_eq!(cmd.state, CommandState::Queued);
             assert_eq!(cmd.attempts, 0);
         }
-        store.write(|conn| {
-            crate::db::queries::update_worker_lifecycle(conn, wid().as_str(),
-                &[WorkerLifecycle::Paused], WorkerLifecycle::Active, "2026-09-14T00:01:00Z")?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
-        }).unwrap();
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
-        assert_eq!(protocol.calls().len(), 1, "Resume releases the same queued command once");
+        store
+            .write(|conn| {
+                crate::db::queries::update_worker_lifecycle(
+                    conn,
+                    wid().as_str(),
+                    &[WorkerLifecycle::Paused],
+                    WorkerLifecycle::Active,
+                    "2026-09-14T00:01:00Z",
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .unwrap();
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            protocol.calls().len(),
+            1,
+            "Resume releases the same queued command once"
+        );
     }
 
     #[tokio::test]
@@ -2185,22 +2314,39 @@ mod pump_tests {
         let store = store();
         let protocol = Arc::new(MockProtocol::new());
         // Worker mid-turn: an AtTurnBoundary command must WAIT.
-        protocol.register(wid(), AgentState::Working { turn: None, progress: None });
+        protocol.register(
+            wid(),
+            AgentState::Working {
+                turn: None,
+                progress: None,
+            },
+        );
         let cmd_id = CommandId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 501));
         {
             let id = cmd_id.clone();
             store
                 .write(move |conn| {
                     crate::db::commands::enqueue(
-                        conn, id, &wid(), &WorkerCommand::Continue, "pump-k1",
-                        &DeliveryTiming::AtTurnBoundary, None, Utc::now(),
+                        conn,
+                        id,
+                        &wid(),
+                        &WorkerCommand::Continue,
+                        "pump-k1",
+                        &DeliveryTiming::AtTurnBoundary,
+                        None,
+                        Utc::now(),
                     )?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
         let rt = runtime_with(store.clone(), protocol.clone());
-        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
         assert!(protocol.calls().is_empty(), "mid-turn: nothing delivered");
         {
             let conn = store.read().unwrap();
@@ -2210,7 +2356,9 @@ mod pump_tests {
 
         // Turn ends -> delivery goes through and the state advances.
         protocol.set_state(&wid(), AgentState::Idle, None);
-        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
         let calls = protocol.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert!(matches!(&calls[0], RecordedCall::SendPrompt { worker, .. } if worker == &wid()));
@@ -2236,10 +2384,19 @@ mod pump_tests {
             store
                 .write(move |conn| {
                     crate::db::commands::enqueue(
-                        conn, id, &wid(), &WorkerCommand::Continue, "pump-k3",
-                        &DeliveryTiming::Immediate, None, Utc::now(),
+                        conn,
+                        id,
+                        &wid(),
+                        &WorkerCommand::Continue,
+                        "pump-k3",
+                        &DeliveryTiming::Immediate,
+                        None,
+                        Utc::now(),
                     )?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
@@ -2269,19 +2426,29 @@ mod pump_tests {
         let sibling = WorkerId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 78));
         let workers = vec![
             mk(wid(), amux_core::worker::WorkerState::Idle { since: now }),
-            mk(sibling, amux_core::worker::WorkerState::RateLimited {
-                reset_at: Some(now + chrono::Duration::hours(1)),
-            }),
+            mk(
+                sibling,
+                amux_core::worker::WorkerState::RateLimited {
+                    reset_at: Some(now + chrono::Duration::hours(1)),
+                },
+            ),
         ];
         let exhausted = amux_core::provider_fleet::derive(&workers, now, 5);
 
         let rt = runtime_with(store.clone(), protocol.clone());
         rt.pump_commands(now, &exhausted).await.unwrap();
-        assert!(protocol.calls().is_empty(), "exhausted provider: nothing delivered");
+        assert!(
+            protocol.calls().is_empty(),
+            "exhausted provider: nothing delivered"
+        );
         {
             let conn = store.read().unwrap();
             let cmd = crate::db::commands::by_id(&conn, &cmd_id).unwrap().unwrap();
-            assert_eq!(cmd.state, CommandState::Queued, "parked, not failed — nothing lost");
+            assert_eq!(
+                cmd.state,
+                CommandState::Queued,
+                "parked, not failed — nothing lost"
+            );
             assert_eq!(cmd.attempts, 0, "no retry budget spent while parked");
         }
 
@@ -2295,7 +2462,11 @@ mod pump_tests {
         ];
         let recovered = amux_core::provider_fleet::derive(&workers, now, 5);
         rt.pump_commands(now, &recovered).await.unwrap();
-        assert_eq!(protocol.calls().len(), 1, "recovered provider: delivery drains");
+        assert_eq!(
+            protocol.calls().len(),
+            1,
+            "recovered provider: delivery drains"
+        );
         let conn = store.read().unwrap();
         let cmd = crate::db::commands::by_id(&conn, &cmd_id).unwrap().unwrap();
         assert_eq!(cmd.state, CommandState::Delivered);
@@ -2312,20 +2483,32 @@ mod pump_tests {
             store
                 .write(move |conn| {
                     crate::db::commands::enqueue(
-                        conn, id, &wid(), &WorkerCommand::Continue, "pump-k2",
-                        &DeliveryTiming::Immediate, None, Utc::now(),
+                        conn,
+                        id,
+                        &wid(),
+                        &WorkerCommand::Continue,
+                        "pump-k2",
+                        &DeliveryTiming::Immediate,
+                        None,
+                        Utc::now(),
                     )?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
         }
         let rt = runtime_with(store.clone(), protocol);
-        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &std::collections::BTreeMap::new())
+            .await
+            .unwrap();
         let conn = store.read().unwrap();
         let cmd = crate::db::commands::by_id(&conn, &cmd_id).unwrap().unwrap();
         assert!(
             matches!(&cmd.state, CommandState::Failed { reason } if reason.contains("delivery failed")),
-            "{:?}", cmd.state
+            "{:?}",
+            cmd.state
         );
         assert_eq!(cmd.attempts, 1, "failure recorded for the retry budget");
     }
@@ -2384,15 +2567,17 @@ mod adherence_tests {
                     &WorkerState::Idle { since: Utc::now() },
                     "2026-01-01T00:00:00Z",
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         id
     }
 
     fn seed_issue(store: &SharedStore, title: &str, session: &str, status: &str) -> String {
-        let (title, session, status) =
-            (title.to_string(), session.to_string(), status.to_string());
+        let (title, session, status) = (title.to_string(), session.to_string(), status.to_string());
         let out: Arc<std::sync::Mutex<String>> = Arc::default();
         let out_w = out.clone();
         store
@@ -2429,7 +2614,10 @@ mod adherence_tests {
                     1_700_000_000,
                 )?;
                 *out_w.lock().unwrap() = row.id;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         let sem = out.lock().unwrap().clone();
@@ -2513,7 +2701,10 @@ mod adherence_tests {
 
         runtime.tick_once(false).await.unwrap();
         assert_eq!(issue_field(&store, &semantic, "status"), "blocked");
-        assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_policy_receipts"), 1);
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM _amux_policy_receipts"),
+            1
+        );
         assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_commands"), 0);
         assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_leases"), 0);
 
@@ -2550,11 +2741,23 @@ mod adherence_tests {
         let mut rx = store.subscribe();
         rt.tick_once(true).await.unwrap();
 
-        assert!(protocol.calls().is_empty(), "no eligible card -> no prompt: {:?}", protocol.calls());
+        assert!(
+            protocol.calls().is_empty(),
+            "no eligible card -> no prompt: {:?}",
+            protocol.calls()
+        );
         assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_commands"), 0);
         assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_leases"), 0);
-        assert_eq!(issue_field(&store, &sem_py, "status"), before_py.0, "python card untouched");
-        assert_eq!(issue_field(&store, &sem_py, "rev"), before_py.1, "python card rev unmoved");
+        assert_eq!(
+            issue_field(&store, &sem_py, "status"),
+            before_py.0,
+            "python card untouched"
+        );
+        assert_eq!(
+            issue_field(&store, &sem_py, "rev"),
+            before_py.1,
+            "python card rev unmoved"
+        );
         // Foreign/unowned cards are not this worker's stalls either.
         let mut stall_total = 0u64;
         while let Ok(ev) = rx.try_recv() {
@@ -2626,7 +2829,10 @@ mod adherence_tests {
                         ],
                     )?;
                 }
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
 
@@ -2651,7 +2857,11 @@ mod adherence_tests {
         let rev = issue_field(&store, &sem, "rev");
         rt.tick_once(false).await.unwrap();
         assert_eq!(issue_field(&store, &sem, "status"), "quarantined");
-        assert_eq!(issue_field(&store, &sem, "rev"), rev, "quarantine writes once");
+        assert_eq!(
+            issue_field(&store, &sem, "rev"),
+            rev,
+            "quarantine writes once"
+        );
     }
 
     /// M5: NO SILENT WORK. A prompt delivered directly to a Rust worker
@@ -2672,7 +2882,9 @@ mod adherence_tests {
         enqueue_deliver(&store, &w, &msg, "cap-k1");
 
         let rt = runtime(store.clone(), Some(protocol.clone()), false);
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
         assert!(
             matches!(&protocol.calls()[..], [RecordedCall::DeliverMessage { .. }]),
             "{:?}",
@@ -2681,7 +2893,13 @@ mod adherence_tests {
 
         let conn = store.read().unwrap();
         let (sem, title, status, session, owner_type, log, notified): (
-            String, String, String, String, String, String, i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
         ) = conn
             .query_row(
                 "SELECT id, title, status, session, owner_type, COALESCE(log,''), notified
@@ -2689,7 +2907,12 @@ mod adherence_tests {
                 [],
                 |r| {
                     Ok((
-                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
                         r.get(6)?,
                     ))
                 },
@@ -2702,8 +2925,14 @@ mod adherence_tests {
         );
         assert_eq!(session, "alpha", "attributed to the receiving worker");
         assert_eq!(owner_type, "agent");
-        assert!(log.contains("capture: session prompt"), "durable marker: {log}");
-        assert_eq!(notified, 1, "the worker already received this prompt; not news");
+        assert!(
+            log.contains("capture: session prompt"),
+            "durable marker: {log}"
+        );
+        assert_eq!(
+            notified, 1,
+            "the worker already received this prompt; not news"
+        );
         assert!(!sem.is_empty());
     }
 
@@ -2715,16 +2944,44 @@ mod adherence_tests {
         let now = Utc::now();
         let body = "1. Fix the flaky parser\n2. Verify the regression";
         rt.capture_prompt_card(&worker, body, now).await.unwrap();
-        rt.capture_prompt_card(&worker, body, now + chrono::Duration::minutes(20)).await.unwrap();
-        rt.capture_prompt_card(&worker, "Add a route for the archive endpoint", now).await.unwrap();
-        rt.capture_prompt_card(&worker, "Thanks, looks good", now).await.unwrap();
+        rt.capture_prompt_card(&worker, body, now + chrono::Duration::minutes(20))
+            .await
+            .unwrap();
+        rt.capture_prompt_card(&worker, "Add a route for the archive endpoint", now)
+            .await
+            .unwrap();
+        rt.capture_prompt_card(&worker, "Thanks, looks good", now)
+            .await
+            .unwrap();
         let conn = store.read().unwrap();
-        assert_eq!(conn.query_row("SELECT count(*) FROM issues", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
-        let rows = conn.prepare("SELECT title,status,source FROM issues ORDER BY created,id").unwrap()
-            .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))).unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
-        assert!(rows.contains(&("Fix the flaky parser".into(), "doing".into(), "capture".into())));
-        assert!(rows.contains(&("Add a route for the archive endpoint".into(), "backlog".into(), "capture".into())));
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let rows = conn
+            .prepare("SELECT title,status,source FROM issues ORDER BY created,id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(rows.contains(&(
+            "Fix the flaky parser".into(),
+            "doing".into(),
+            "capture".into()
+        )));
+        assert!(rows.contains(&(
+            "Add a route for the archive endpoint".into(),
+            "backlog".into(),
+            "capture".into()
+        )));
     }
 
     #[tokio::test]
@@ -2777,20 +3034,35 @@ mod adherence_tests {
         let rt = runtime(store.clone(), Some(protocol.clone()), false);
 
         let msg = MessageId::from_ulid(ulid::Ulid::new());
-        seed_message(&store, &msg, "please fix the flaky auth test. It only fails on CI.");
+        seed_message(
+            &store,
+            &msg,
+            "please fix the flaky auth test. It only fails on CI.",
+        );
         enqueue_deliver(&store, &w, &msg, "cap-k9");
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
-        assert_eq!(count(&store, "SELECT COUNT(*) FROM issues"), 1, "ledger card minted");
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM issues"),
+            1,
+            "ledger card minted"
+        );
 
         // The tick that pre-fix re-dispatched the card as an ExecuteTask.
         rt.tick_once(false).await.unwrap();
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
 
         let execute_cmds = count(
             &store,
             "SELECT COUNT(*) FROM _amux_commands WHERE command LIKE '%execute_task%'",
         );
-        assert_eq!(execute_cmds, 0, "the ledger of a delivered prompt is not new work");
+        assert_eq!(
+            execute_cmds, 0,
+            "the ledger of a delivered prompt is not new work"
+        );
         assert!(
             matches!(&protocol.calls()[..], [RecordedCall::DeliverMessage { .. }]),
             "exactly ONE delivery ever reaches the worker: {:?}",
@@ -2829,7 +3101,9 @@ mod adherence_tests {
         let msg = MessageId::from_ulid(ulid::Ulid::new());
         seed_message(&store, &msg, "this should be one row");
         enqueue_deliver(&store, &w, &msg, "cap-2604");
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
 
         let (id, title, tags, log): (String, String, String, String) = store
             .read()
@@ -2842,8 +3116,14 @@ mod adherence_tests {
             )
             .expect("the card is still minted — flagged, not suppressed");
         assert_eq!(title, "This should be one row");
-        assert!(tags.contains("needs-self-description"), "durable flag missing: {tags}");
-        assert!(log.contains("needs self-description"), "the log must say WHY: {log}");
+        assert!(
+            tags.contains("needs-self-description"),
+            "durable flag missing: {tags}"
+        );
+        assert!(
+            log.contains("needs self-description"),
+            "the log must say WHY: {log}"
+        );
 
         // The ask is queued for the worker, keyed to the card, once.
         let (n, session, guard, text): (i64, String, String, String) = store
@@ -2857,21 +3137,36 @@ mod adherence_tests {
             )
             .unwrap();
         assert_eq!(n, 1, "exactly one ask");
-        assert_eq!(session, "alpha", "addressed to the worker that got the prompt");
-        assert_eq!(guard, format!("self-describe:{id}"), "dedupe key is the card");
+        assert_eq!(
+            session, "alpha",
+            "addressed to the worker that got the prompt"
+        );
+        assert_eq!(
+            guard,
+            format!("self-describe:{id}"),
+            "dedupe key is the card"
+        );
         assert!(text.contains(&id), "the ask must name the card: {text}");
         // It must name a SANCTIONED next step, not leave the worker to
         // hand-roll a PATCH (which is how attribution gets lost).
-        assert!(text.contains("amux board retitle"), "no walkable next step: {text}");
+        assert!(
+            text.contains("amux board retitle"),
+            "no walkable next step: {text}"
+        );
 
         // A SECOND capture for the same card cannot stack a second ask — the
         // guard replaces. (A worker is asked once, not every turn.)
         let m2 = MessageId::from_ulid(ulid::Ulid::new());
         seed_message(&store, &m2, "this should be one row");
         enqueue_deliver(&store, &w, &m2, "cap-2604b");
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
         assert_eq!(
-            count(&store, "SELECT COUNT(*) FROM steering_queue WHERE guard LIKE 'self-describe:%'"),
+            count(
+                &store,
+                "SELECT COUNT(*) FROM steering_queue WHERE guard LIKE 'self-describe:%'"
+            ),
             1,
             "the ask stacked — a worker must be asked once, not every turn"
         );
@@ -2889,9 +3184,15 @@ mod adherence_tests {
         let rt = runtime(store.clone(), Some(protocol.clone()), false);
 
         let msg = MessageId::from_ulid(ulid::Ulid::new());
-        seed_message(&store, &msg, "please fix the flaky auth test. It only fails on CI.");
+        seed_message(
+            &store,
+            &msg,
+            "please fix the flaky auth test. It only fails on CI.",
+        );
         enqueue_deliver(&store, &w, &msg, "cap-2604c");
-        rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+        rt.pump_commands(Utc::now(), &BTreeMap::new())
+            .await
+            .unwrap();
 
         let tags: String = store
             .read()
@@ -2903,7 +3204,10 @@ mod adherence_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(!tags.contains("needs-self-description"), "false positive: {tags}");
+        assert!(
+            !tags.contains("needs-self-description"),
+            "false positive: {tags}"
+        );
         assert_eq!(
             count(&store, "SELECT COUNT(*) FROM steering_queue"),
             0,
@@ -2925,7 +3229,11 @@ mod adherence_tests {
         // Control word: retained as a message by the caller, but not a task.
         let now = Utc::now();
         rt.capture_prompt_card(&w, "continue", now).await.unwrap();
-        assert_eq!(count(&store, "SELECT COUNT(*) FROM issues"), 0, "steering mints nothing");
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM issues"),
+            0,
+            "steering mints nothing"
+        );
 
         // Open card: a DISTINCT prompt is still distinct work.
         seed_issue(&store, "already in flight", "alpha", "doing");
@@ -2946,30 +3254,59 @@ mod adherence_tests {
         // messages. Only the redundant board receipts are consolidated.
         for key in ["repeat-one", "repeat-two"] {
             let message = MessageId::from_ulid(ulid::Ulid::new());
-            seed_message(&store, &message, "also handle the retry path in the same module please");
+            seed_message(
+                &store,
+                &message,
+                "also handle the retry path in the same module please",
+            );
             enqueue_deliver(&store, &w, &message, key);
-            rt.pump_commands(Utc::now(), &BTreeMap::new()).await.unwrap();
+            rt.pump_commands(Utc::now(), &BTreeMap::new())
+                .await
+                .unwrap();
             // The mock does not emit provider acknowledgements. Confirm this
             // delivery through the command state machine before the next one.
-            store.write(move |conn| {
-                let id: String = conn.query_row(
-                    "SELECT id FROM _amux_commands WHERE idempotency_key=?1", [key], |r| r.get(0),
-                )?;
-                crate::db::commands::transition(conn, &CommandId::parse(&id).unwrap(),
-                    amux_core::protocol::CommandTransition::Confirm, 3)?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
-            }).unwrap();
+            store
+                .write(move |conn| {
+                    let id: String = conn.query_row(
+                        "SELECT id FROM _amux_commands WHERE idempotency_key=?1",
+                        [key],
+                        |r| r.get(0),
+                    )?;
+                    crate::db::commands::transition(
+                        conn,
+                        &CommandId::parse(&id).unwrap(),
+                        amux_core::protocol::CommandTransition::Confirm,
+                        3,
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .unwrap();
         }
-        assert_eq!(protocol.calls().iter().filter(|call|
-            matches!(call, RecordedCall::DeliverMessage { .. })).count(), 2);
+        assert_eq!(
+            protocol
+                .calls()
+                .iter()
+                .filter(|call| matches!(call, RecordedCall::DeliverMessage { .. }))
+                .count(),
+            2
+        );
         assert_eq!(count(&store, "SELECT COUNT(*) FROM _amux_messages"), 2);
         assert_eq!(
             count(&store, "SELECT COUNT(*) FROM issues"),
             2,
             "repeated delivery must not duplicate the same unfinished board outcome"
         );
-        assert_eq!(count(&store, "SELECT COUNT(*) FROM issues WHERE status='doing'"), 1);
-        assert_eq!(count(&store, "SELECT COUNT(*) FROM issues WHERE status='backlog'"), 1);
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM issues WHERE status='doing'"),
+            1
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM issues WHERE status='backlog'"),
+            1
+        );
     }
 
     fn seed_message(store: &SharedStore, id: &MessageId, body: &str) {
@@ -3007,7 +3344,10 @@ mod adherence_tests {
                     None,
                     Utc::now(),
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
     }
@@ -3016,19 +3356,21 @@ mod adherence_tests {
 #[cfg(test)]
 mod rate_limit_recovery_tests {
     use super::*;
+    use crate::opencode::AgentState;
     use amux_core::protocol::{RateLimit, RateLimitKind};
     use amux_core::worker::{WorkerConfig, WorkerState};
-    use crate::opencode::AgentState;
 
     #[test]
     fn every_protocol_worker_becomes_deliverable_at_its_reported_reset() {
         let now = Utc::now();
-        let limited = |reset_at| AgentState::RateLimited(RateLimit {
-            kind: RateLimitKind::Weekly,
-            reset_at,
-            provider: amux_core::provider::ProviderId::new("claude-code"),
-            raw: None,
-        });
+        let limited = |reset_at| {
+            AgentState::RateLimited(RateLimit {
+                kind: RateLimitKind::Weekly,
+                reset_at,
+                provider: amux_core::provider::ProviderId::new("claude-code"),
+                raw: None,
+            })
+        };
 
         // "All" is the vector, not one convenient worker: every expired
         // Claude protocol state releases, while future and unknown clocks
@@ -3039,25 +3381,33 @@ mod rate_limit_recovery_tests {
             limited(Some(now - chrono::Duration::hours(5))),
         ];
         assert!(
-            expired_workers.iter().all(|state| agent_accepts_boundary_delivery(state, now)),
+            expired_workers
+                .iter()
+                .all(|state| agent_accepts_boundary_delivery(state, now)),
             "every worker at/past its provider reset must accept queued work"
         );
         assert!(!agent_accepts_boundary_delivery(
-            &limited(Some(now + chrono::Duration::seconds(1))), now
+            &limited(Some(now + chrono::Duration::seconds(1))),
+            now
         ));
         assert!(!agent_accepts_boundary_delivery(&limited(None), now));
         assert!(agent_accepts_boundary_delivery(&AgentState::Idle, now));
-        assert!(agent_accepts_boundary_delivery(&AgentState::WaitingForInput, now));
+        assert!(agent_accepts_boundary_delivery(
+            &AgentState::WaitingForInput,
+            now
+        ));
     }
 
     #[tokio::test]
     async fn expired_rate_limit_recovers_to_idle_and_unexpired_stays() {
         let dir = tempfile::tempdir().unwrap();
-        let store: SharedStore = Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let store: SharedStore =
+            Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         std::mem::forget(dir);
         let now = Utc::now();
         let seed = |n: u128, reset: Option<DateTime<Utc>>| {
-            let id = amux_core::ids::WorkerId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, n));
+            let id =
+                amux_core::ids::WorkerId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, n));
             let idc = id.clone();
             store
                 .write(move |conn| {
@@ -3083,7 +3433,10 @@ mod rate_limit_recovery_tests {
                         &WorkerState::RateLimited { reset_at: reset },
                         "2026-01-01T00:00:00Z",
                     )?;
-                    Ok(WriteOutcome { applied: true, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
                 })
                 .unwrap();
             id
@@ -3120,7 +3473,11 @@ mod rate_limit_recovery_tests {
             .unwrap()
         };
         assert_eq!(state_of(&expired), "idle", "past reset -> recovered");
-        assert_eq!(state_of(&future), "rate_limited", "future reset stays parked");
+        assert_eq!(
+            state_of(&future),
+            "rate_limited",
+            "future reset stays parked"
+        );
         // No reset time: stays parked — inventing a retry would be guessing
         // (Inv 20), and Credit caps clear on payment, not clocks (AF-14).
         assert_eq!(state_of(&unknown), "rate_limited");
@@ -3157,7 +3514,10 @@ mod rate_limit_recovery_tests {
                     &WorkerState::RateLimited { reset_at: reset },
                     "2026-01-01T00:00:00Z",
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         id
@@ -3233,11 +3593,18 @@ mod rate_limit_recovery_tests {
                     },
                     "2026-01-01T00:00:00Z",
                 )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
         rt.tick_once(false).await.unwrap();
-        assert_eq!(db_state_of(&store, &w3), "idle", "own slot passed -> recovered");
+        assert_eq!(
+            db_state_of(&store, &w3),
+            "idle",
+            "own slot passed -> recovered"
+        );
     }
 
     /// RR-0044b: redistribution is a RECOMMENDATION event, deduped per
@@ -3299,19 +3666,30 @@ mod tick_bracket_guard {
         // BOUND THE SLICE TO THE FUNCTION. A fixed window sweeps into this test,
         // whose assertions contain the literal being searched for, and the guard
         // then matches its own source. That trap has fired repeatedly here.
-        let start = src.find("pub async fn run(self: Arc<Self>)").expect("run exists");
+        let start = src
+            .find("pub async fn run(self: Arc<Self>)")
+            .expect("run exists");
         let rest = &src[start..];
-        let body = &rest[..rest.find("\n    }\n").map(|i| i + 6).expect("run is closed")];
+        let body = &rest[..rest
+            .find("\n    }\n")
+            .map(|i| i + 6)
+            .expect("run is closed")];
         let code: String = body
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let start_at = code.find("tick_start(").expect("the pass is bracketed with tick_start");
-        let work_at = code.find("self.tick_once(").expect("the loop runs the pass");
+        let start_at = code
+            .find("tick_start(")
+            .expect("the pass is bracketed with tick_start");
+        let work_at = code
+            .find("self.tick_once(")
+            .expect("the loop runs the pass");
         let end_at = code.find("tick_end(").expect("the loop records a tick_end");
-        let ok_at = code.find("Ok(()) =>").expect("the completed arm is matched explicitly");
+        let ok_at = code
+            .find("Ok(()) =>")
+            .expect("the completed arm is matched explicitly");
         assert!(start_at < work_at, "tick_start must precede the pass");
         assert!(
             work_at < end_at,
@@ -3355,7 +3733,12 @@ mod tick_section_tests {
         // dominated" and "load_board_tasks dominated while everything else was
         // also slow" are different findings and only the second rules out a
         // fleet-wide stall.
-        for name in ["load_state", "window_stats", "load_board_tasks", "pump_commands"] {
+        for name in [
+            "load_state",
+            "window_stats",
+            "load_board_tasks",
+            "pump_commands",
+        ] {
             assert!(breakdown.contains(name), "{name} missing from {breakdown}");
         }
     }

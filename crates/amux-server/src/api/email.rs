@@ -19,16 +19,14 @@
 //! contract.
 
 use super::AppState;
-use crate::integrations::email::{
-    email_log, read_email_log, Attachment, GmailClient, OUR_DOMAINS,
-};
-use base64::Engine as _;
+use crate::integrations::email::{email_log, read_email_log, Attachment, GmailClient, OUR_DOMAINS};
 use crate::integrations::{self, IntegrationRegistry, IntegrationState};
 use axum::extract::{Path, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
+use base64::Engine as _;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,7 +51,10 @@ pub fn routes_with(ctx: Arc<EmailCtx>) -> Router<AppState> {
         .route("/reply", post(reply))
         .route("/inbox", get(inbox))
         .route("/message/{id}", get(message))
-        .route("/message/{id}/attachments/{attachment_id}", get(message_attachment))
+        .route(
+            "/message/{id}/attachments/{attachment_id}",
+            get(message_attachment),
+        )
         .route("/search", get(search))
         .route("/log", get(send_log))
         // AMUX-3510: the human approval half of the external-send gate.
@@ -155,7 +156,11 @@ fn email_err_with(e: &str, extra: Value) -> Response {
     // would drift, and that warning applies to quota codes identically.
     if let Some(start) = e.find('{') {
         if let Ok(body) = serde_json::from_str::<Value>(&e[start..]) {
-            let status = if e.contains("gmail api 429") { 429 } else { 403 };
+            let status = if e.contains("gmail api 429") {
+                429
+            } else {
+                403
+            };
             if crate::integrations::email::GmailClient::gmail_rate_limited(status, &body) {
                 let mut r = err(
                     StatusCode::TOO_MANY_REQUESTS,
@@ -185,7 +190,11 @@ fn email_err_with(e: &str, extra: Value) -> Response {
 /// round-trips as Python's `null`.
 fn hdr_worker(headers: &HeaderMap) -> Option<String> {
     for name in ["x-amux-worker", "x-amux-session"] {
-        if let Some(v) = headers.get(name).and_then(|v| v.to_str().ok()).map(str::trim) {
+        if let Some(v) = headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+        {
             if !v.is_empty() {
                 return Some(v.to_string());
             }
@@ -226,7 +235,11 @@ fn gmail_scope_allowed(home: &std::path::Path, lane: &str) -> Option<Vec<String>
 /// its FIRST allowed account rather than to a global default it may not hold —
 /// otherwise "scoped to the personal account" would still send as ethan@ whenever
 /// `from` was omitted, which is the same bug wearing a default.
-fn gmail_scope_check(home: &std::path::Path, lane: &str, from: &str) -> Result<Option<String>, Value> {
+fn gmail_scope_check(
+    home: &std::path::Path,
+    lane: &str,
+    from: &str,
+) -> Result<Option<String>, Value> {
     let Some(allowed) = gmail_scope_allowed(home, lane) else {
         return Ok(None); // unrestricted: caller's `from` stands
     };
@@ -251,12 +264,22 @@ fn gmail_scope_check(home: &std::path::Path, lane: &str, from: &str) -> Result<O
 }
 
 fn body_str(body: &Value, k: &str) -> String {
-    body.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    body.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// A MIME content type from a filename extension; octet-stream when unknown.
 fn guess_content_type(name: &str) -> &'static str {
-    match name.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+    match name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         "pdf" => "application/pdf",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -281,7 +304,9 @@ fn guess_content_type(name: &str) -> &'static str {
 /// `{"filename": "...", "content_base64": "...", "content_type": "..."}`. Caps
 /// the total at Gmail's 25MB. Returns a 400-worthy message on any bad entry.
 fn parse_attachments(body: &Value) -> Result<Vec<Attachment>, String> {
-    let Some(v) = body.get("attachments") else { return Ok(vec![]) };
+    let Some(v) = body.get("attachments") else {
+        return Ok(vec![]);
+    };
     if v.is_null() {
         return Ok(vec![]);
     }
@@ -297,24 +322,47 @@ fn parse_attachments(body: &Value) -> Result<Vec<Attachment>, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "attachment".into());
-            (fname, a.get("content_type").and_then(Value::as_str).map(String::from), data)
+            (
+                fname,
+                a.get("content_type")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                data,
+            )
         } else if let Some(b64) = a.get("content_base64").and_then(Value::as_str) {
             let data = base64::engine::general_purpose::STANDARD
                 .decode(b64.trim())
                 .map_err(|e| format!("attachment {i}: invalid base64: {e}"))?;
-            let fname =
-                a.get("filename").and_then(Value::as_str).unwrap_or("attachment").to_string();
-            (fname, a.get("content_type").and_then(Value::as_str).map(String::from), data)
+            let fname = a
+                .get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or("attachment")
+                .to_string();
+            (
+                fname,
+                a.get("content_type")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                data,
+            )
         } else {
-            return Err(format!("attachment {i}: needs a 'path' or 'content_base64'"));
+            return Err(format!(
+                "attachment {i}: needs a 'path' or 'content_base64'"
+            ));
         };
         total += data.len();
         if total > MAX_TOTAL {
-            return Err(format!("attachments exceed {}MB (Gmail cap)", MAX_TOTAL / 1024 / 1024));
+            return Err(format!(
+                "attachments exceed {}MB (Gmail cap)",
+                MAX_TOTAL / 1024 / 1024
+            ));
         }
-        let content_type =
-            ct_opt.unwrap_or_else(|| guess_content_type(&filename).to_string());
-        out.push(Attachment { filename, content_type, data });
+        let content_type = ct_opt.unwrap_or_else(|| guess_content_type(&filename).to_string());
+        out.push(Attachment {
+            filename,
+            content_type,
+            data,
+        });
     }
     Ok(out)
 }
@@ -401,7 +449,11 @@ pub async fn send(
     // Reject threading headers — Python's exact refusal (threaded replies
     // belong on /reply, where In-Reply-To/References are derived correctly).
     for forbidden_key in ["in_reply_to", "references", "inReplyTo"] {
-        if body.get(forbidden_key).map(|v| !v.is_null() && v != &json!("")).unwrap_or(false) {
+        if body
+            .get(forbidden_key)
+            .map(|v| !v.is_null() && v != &json!(""))
+            .unwrap_or(false)
+        {
             return err(
                 StatusCode::BAD_REQUEST,
                 json!({
@@ -483,7 +535,11 @@ pub async fn send(
                 "attachments": body.get("attachments").cloned().unwrap_or(Value::Null),
             });
             return match crate::api::email_approval::create_approval(
-                &home, &lane, "send", payload, preview.clone(),
+                &home,
+                &lane,
+                "send",
+                payload,
+                preview.clone(),
             ) {
                 Ok(id) => {
                     email_log(
@@ -580,9 +636,23 @@ pub async fn send(
     if !from_acct.is_empty() && connected.contains(&from_acct) {
         let res = ctx
             .client
-            .compose_send(&from_acct, &to, &subject, &message, &cc, "", "", "", include_sig, &attachments)
+            .compose_send(
+                &from_acct,
+                &to,
+                &subject,
+                &message,
+                &cc,
+                "",
+                "",
+                "",
+                include_sig,
+                &attachments,
+            )
             .await;
-        report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+        report_outcome(
+            &ctx.registry,
+            &res.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
         return match res {
             Err(e) => email_err(&e),
             Ok(res) => {
@@ -645,15 +715,21 @@ pub async fn reply(
             }
             accts.extend(connected.iter().filter(|a| **a != pref).cloned());
             for a in &accts {
-                resolved = ctx.client.latest_matching(a, &sel_from, "", &subj_c, 0).await;
+                resolved = ctx
+                    .client
+                    .latest_matching(a, &sel_from, "", &subj_c, 0)
+                    .await;
                 if resolved.is_some() {
                     break;
                 }
             }
             match &resolved {
                 Some(r) => {
-                    message_id =
-                        r.get("message_id").and_then(Value::as_str).unwrap_or("").to_string()
+                    message_id = r
+                        .get("message_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
                 }
                 None => {
                     let mut msg = format!("no message from {sel_from}");
@@ -681,8 +757,11 @@ pub async fn reply(
         }))
         .into_response();
     }
-    let gmail_from =
-        if from_acct.is_empty() { body_str(&body, "account") } else { from_acct.clone() };
+    let gmail_from = if from_acct.is_empty() {
+        body_str(&body, "account")
+    } else {
+        from_acct.clone()
+    };
     let include_sig = body.get("signature") != Some(&Value::Bool(false));
     let attachments = match parse_attachments(&body) {
         Ok(a) => a,
@@ -727,7 +806,11 @@ pub async fn reply(
                         "attachments": body.get("attachments").cloned().unwrap_or(Value::Null),
                     });
                     return match crate::api::email_approval::create_approval(
-                        &home, &lane, "reply", payload, preview.clone(),
+                        &home,
+                        &lane,
+                        "reply",
+                        payload,
+                        preview.clone(),
                     ) {
                         Ok(id) => {
                             email_log(
@@ -755,9 +838,20 @@ pub async fn reply(
         }
         let res = ctx
             .client
-            .reply_send(&gmail_from, &message_id, &reply_body, include_sig, reply_all, allow_self, &attachments)
+            .reply_send(
+                &gmail_from,
+                &message_id,
+                &reply_body,
+                include_sig,
+                reply_all,
+                allow_self,
+                &attachments,
+            )
             .await;
-        report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+        report_outcome(
+            &ctx.registry,
+            &res.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
         return match res {
             Err(e) => email_err(&e),
             Ok(res) => {
@@ -877,7 +971,11 @@ pub async fn reject(
     // what left two probe drafts in Ethan's banner.
     match crate::api::email_approval::discard(&home, &id, &by) {
         Some(doc) => {
-            let session = doc.get("session").and_then(Value::as_str).unwrap_or("").to_string();
+            let session = doc
+                .get("session")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             tracing::info!(
                 approval = %id, session = %session, by = %by, reason = %reason,
                 "[email] approval DISCARDED — the draft was never sent (AMUX-3698)"
@@ -896,7 +994,11 @@ pub async fn reject(
             let d_preview = doc.get("preview").cloned().unwrap_or(Value::Null);
             let d_payload = doc.get("payload").cloned().unwrap_or(Value::Null);
             let dp = |k: &str| {
-                d_payload.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+                d_payload
+                    .get(k)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
             };
             email_log(
                 ctx.client.home(),
@@ -1097,7 +1199,11 @@ pub async fn approve(
         .filter(|b| !b.trim().is_empty());
     let mut approver_edited = false;
     if let Some(edited) = edited_body {
-        let before = payload.get("body").and_then(Value::as_str).unwrap_or("").to_string();
+        let before = payload
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if edited != before {
             approver_edited = true;
             tracing::warn!(
@@ -1112,9 +1218,23 @@ pub async fn approve(
             }
         }
     }
-    let session = doc.get("session").and_then(Value::as_str).unwrap_or("").to_string();
-    let endpoint = doc.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
-    let p = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let session = doc
+        .get("session")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let endpoint = doc
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let p = |k: &str| {
+        payload
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     // AMUX-4974: see `resolved_envelope`. `p` reads the FROZEN PAYLOAD, and a
     // reply's payload has no recipient or subject.
     let include_sig = payload.get("signature") != Some(&Value::Bool(false));
@@ -1126,8 +1246,16 @@ pub async fn approve(
         "send" => {
             ctx.client
                 .compose_send(
-                    &p("from"), &p("to"), &p("subject"), &p("body"), &p("cc"),
-                    "", "", "", include_sig, &attachments,
+                    &p("from"),
+                    &p("to"),
+                    &p("subject"),
+                    &p("body"),
+                    &p("cc"),
+                    "",
+                    "",
+                    "",
+                    include_sig,
+                    &attachments,
                 )
                 .await
         }
@@ -1136,8 +1264,13 @@ pub async fn approve(
             let allow_self = payload.get("allow_self").map(truthy).unwrap_or(false);
             ctx.client
                 .reply_send(
-                    &p("from"), &p("message_id"), &p("body"), include_sig,
-                    reply_all, allow_self, &attachments,
+                    &p("from"),
+                    &p("message_id"),
+                    &p("body"),
+                    include_sig,
+                    reply_all,
+                    allow_self,
+                    &attachments,
                 )
                 .await
         }
@@ -1148,7 +1281,10 @@ pub async fn approve(
             )
         }
     };
-    report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+    report_outcome(
+        &ctx.registry,
+        &res.as_ref().map(|_| ()).map_err(Clone::clone),
+    );
     match res {
         // Same classification as every other path (AMUX-3809): a revoked token is
         // a refusal here too. `approval_id` is merged in so the caller keeps the
@@ -1218,8 +1354,11 @@ pub async fn inbox(
     Query(qs): Query<HashMap<String, String>>,
 ) -> Response {
     let account_filter = qs.get("account").cloned().unwrap_or_default();
-    let count: usize =
-        qs.get("count").and_then(|v| v.parse().ok()).unwrap_or(20).min(500);
+    let count: usize = qs
+        .get("count")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20)
+        .min(500);
     let lookback_days: f64 = qs.get("days").and_then(|v| v.parse().ok()).unwrap_or(7.0);
     let envelope = matches!(
         qs.get("envelope").map(String::as_str),
@@ -1241,31 +1380,46 @@ pub async fn inbox(
             }),
         );
     }
-    let reply_shape = |msgs: Vec<Value>, truncated: bool, next_page_token: Option<String>| -> Response {
-        if envelope {
-            Json(json!({
-                "messages": msgs, "returned": msgs.len(),
-                "truncated": truncated, "window_days": lookback_days,
-                "next_page_token": next_page_token,
-            }))
-            .into_response()
-        } else {
-            Json(Value::Array(msgs)).into_response()
-        }
-    };
+    let reply_shape =
+        |msgs: Vec<Value>, truncated: bool, next_page_token: Option<String>| -> Response {
+            if envelope {
+                Json(json!({
+                    "messages": msgs, "returned": msgs.len(),
+                    "truncated": truncated, "window_days": lookback_days,
+                    "next_page_token": next_page_token,
+                }))
+                .into_response()
+            } else {
+                Json(Value::Array(msgs)).into_response()
+            }
+        };
     let connected = ctx.client.connected_accounts();
     if !account_filter.is_empty() && connected.contains(&account_filter) {
         let res = ctx
             .client
-            .inbox_messages(&account_filter, count, "", lookback_days, page_token.as_deref())
+            .inbox_messages(
+                &account_filter,
+                count,
+                "",
+                lookback_days,
+                page_token.as_deref(),
+            )
             .await;
-        report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+        report_outcome(
+            &ctx.registry,
+            &res.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
         return match res {
             Err(e) => email_err(&e),
             Ok(v) => reply_shape(
-                v.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(),
+                v.get("messages")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
                 v.get("truncated").and_then(Value::as_bool).unwrap_or(false),
-                v.get("next_page_token").and_then(Value::as_str).map(String::from),
+                v.get("next_page_token")
+                    .and_then(Value::as_str)
+                    .map(String::from),
             ),
         };
     }
@@ -1302,7 +1456,11 @@ pub async fn inbox(
             ctx.registry.set("email", IntegrationState::Available);
         }
         // Newest first; an unparseable date sinks, never errors.
-        msgs.sort_by(|a, b| recv_ts(b).partial_cmp(&recv_ts(a)).unwrap_or(std::cmp::Ordering::Equal));
+        msgs.sort_by(|a, b| {
+            recv_ts(b)
+                .partial_cmp(&recv_ts(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if msgs.len() > count {
             any_trunc = true;
         }
@@ -1333,11 +1491,22 @@ pub async fn message(
     Path(id): Path<String>,
     Query(qs): Query<HashMap<String, String>>,
 ) -> Response {
-    let id = id.trim().trim_start_matches('<').trim_end_matches('>').trim().to_string();
+    let id = id
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_string();
     if id.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "message id required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "message id required" }),
+        );
     }
-    let account = qs.get("account").map(|s| s.trim().to_string()).unwrap_or_default();
+    let account = qs
+        .get("account")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     let explicit_account = !account.is_empty();
     let connected = ctx.client.connected_accounts();
     let accounts: Vec<String> = if !account.is_empty() {
@@ -1352,7 +1521,10 @@ pub async fn message(
         connected.clone()
     };
     if accounts.is_empty() {
-        return err(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": "no connected Gmail accounts" }));
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "error": "no connected Gmail accounts" }),
+        );
     }
     // Resolve the RFC822 id to a gmail message id, then fetch format=full so the
     // FULL body + attachments come back — not the list-path snippet (AMUX-3354,
@@ -1439,12 +1611,23 @@ pub async fn message_attachment(
     Path((id, attachment_id)): Path<(String, String)>,
     Query(qs): Query<HashMap<String, String>>,
 ) -> Response {
-    let id = id.trim().trim_start_matches('<').trim_end_matches('>').trim().to_string();
-    let account = qs.get("account").map(|s| s.trim().to_string()).unwrap_or_default();
+    let id = id
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_string();
+    let account = qs
+        .get("account")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     let connected = ctx.client.connected_accounts();
     let accounts: Vec<String> = if !account.is_empty() {
         if !connected.contains(&account) {
-            return err(StatusCode::BAD_REQUEST, json!({ "error": format!("account {account} is not connected") }));
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("account {account} is not connected") }),
+            );
         }
         vec![account]
     } else {
@@ -1455,12 +1638,23 @@ pub async fn message_attachment(
             if let Some(gid) = meta.get("id").and_then(Value::as_str) {
                 return match ctx.client.get_attachment(acct, gid, &attachment_id).await {
                     Ok(bytes) => {
-                        let fname = qs.get("filename").map(String::as_str).unwrap_or("attachment").replace(['"', '\r', '\n'], "");
-                        let ct = qs.get("content_type").map(String::as_str).unwrap_or("application/octet-stream").to_string();
+                        let fname = qs
+                            .get("filename")
+                            .map(String::as_str)
+                            .unwrap_or("attachment")
+                            .replace(['"', '\r', '\n'], "");
+                        let ct = qs
+                            .get("content_type")
+                            .map(String::as_str)
+                            .unwrap_or("application/octet-stream")
+                            .to_string();
                         (
                             [
                                 (axum::http::header::CONTENT_TYPE, ct),
-                                (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{fname}\"")),
+                                (
+                                    axum::http::header::CONTENT_DISPOSITION,
+                                    format!("attachment; filename=\"{fname}\""),
+                                ),
                             ],
                             bytes,
                         )
@@ -1471,21 +1665,40 @@ pub async fn message_attachment(
             }
         }
     }
-    err(StatusCode::NOT_FOUND, json!({ "error": "message not found", "id": id }))
+    err(
+        StatusCode::NOT_FOUND,
+        json!({ "error": "message not found", "id": id }),
+    )
 }
 
 pub async fn search(
     Extension(ctx): Extension<Arc<EmailCtx>>,
     Query(qs): Query<HashMap<String, String>>,
 ) -> Response {
-    let q = qs.get("q").map(|s| s.trim().to_string()).unwrap_or_default();
+    let q = qs
+        .get("q")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     if q.is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "q parameter is required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "q parameter is required" }),
+        );
     }
-    let account = qs.get("account").map(|s| s.trim().to_string()).unwrap_or_default();
-    let limit: usize = qs.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).min(100);
+    let account = qs
+        .get("account")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let limit: usize = qs
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20)
+        .min(100);
     let days: i64 = qs.get("days").and_then(|v| v.parse().ok()).unwrap_or(30);
-    let mailbox = qs.get("mailbox").map(|s| s.trim().to_string()).unwrap_or_default();
+    let mailbox = qs
+        .get("mailbox")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
 
     // Python `_gmail_query`: mailbox maps to a Gmail operator; `days` is a
     // real filter (it was silently ignored once — kept fixed).
@@ -1505,8 +1718,14 @@ pub async fn search(
 
     let connected = ctx.client.connected_accounts();
     if !account.is_empty() && connected.contains(&account) {
-        let res = ctx.client.inbox_messages(&account, limit, &gq, 0.0, None).await;
-        report_outcome(&ctx.registry, &res.as_ref().map(|_| ()).map_err(Clone::clone));
+        let res = ctx
+            .client
+            .inbox_messages(&account, limit, &gq, 0.0, None)
+            .await;
+        report_outcome(
+            &ctx.registry,
+            &res.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
         return match res {
             Err(e) => email_err(&e),
             Ok(v) => Json(v.get("messages").cloned().unwrap_or(json!([]))).into_response(),
@@ -1526,7 +1745,9 @@ pub async fn search(
             }
         }
         merged.sort_by(|a, b| {
-            recv_ts(b).partial_cmp(&recv_ts(a)).unwrap_or(std::cmp::Ordering::Equal)
+            recv_ts(b)
+                .partial_cmp(&recv_ts(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         merged.truncate(limit);
         return Json(Value::Array(merged)).into_response();
@@ -1597,7 +1818,6 @@ pub async fn approval_fate(
     .into_response()
 }
 
-
 // ---- GET /api/email/log ---------------------------------------------------
 
 /// The send-audit ledger (AMUX-1897): one call answers "who sent X and
@@ -1607,8 +1827,15 @@ pub async fn send_log(
     Query(qs): Query<HashMap<String, String>>,
 ) -> Response {
     let days: i64 = qs.get("days").and_then(|v| v.parse().ok()).unwrap_or(7);
-    let limit: usize = qs.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).min(500);
-    let session = qs.get("session").map(|s| s.trim().to_string()).unwrap_or_default();
+    let limit: usize = qs
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+        .min(500);
+    let session = qs
+        .get("session")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     Json(read_email_log(ctx.client.home(), days, limit, &session)).into_response()
 }
 
@@ -1616,7 +1843,6 @@ pub async fn send_log(
 // Tests — mocked transport + temp homes only. No network, no live token
 // files, no credential values.
 // ---------------------------------------------------------------------------
-
 
 /// Pick an envelope field for the send-audit row: the value the send actually
 /// RESOLVED, else the frozen payload's, else null.
@@ -1683,7 +1909,10 @@ mod tests {
     fn unscoped_lane_is_unrestricted_so_nothing_breaks_on_rollout() {
         let d = scope_home(&[("worker", "w", "CC_TAGS=gtm\n")]);
         // No AMUX_GMAIL_ACCOUNTS anywhere: the caller's `from` stands untouched.
-        assert!(matches!(gmail_scope_check(d.path(), "w", "anyone@example.com"), Ok(None)));
+        assert!(matches!(
+            gmail_scope_check(d.path(), "w", "anyone@example.com"),
+            Ok(None)
+        ));
     }
 
     #[test]
@@ -1695,17 +1924,33 @@ mod tests {
         assert_eq!(denial["requested"], "ethan@mixpeek.com");
         // The refusal must be actionable: naming the allowed set is what stops
         // the caller retrying the same thing (the AMUX-2325 lesson).
-        assert!(denial["error"].as_str().unwrap().contains("personal@gmail.com"));
-        assert!(denial["how_to_change"].as_str().unwrap().contains("AMUX_GMAIL_ACCOUNTS"));
+        assert!(denial["error"]
+            .as_str()
+            .unwrap()
+            .contains("personal@gmail.com"));
+        assert!(denial["how_to_change"]
+            .as_str()
+            .unwrap()
+            .contains("AMUX_GMAIL_ACCOUNTS"));
     }
 
     #[test]
     fn right_account_is_allowed_case_insensitively() {
-        let d = scope_home(&[("worker", "w", "AMUX_GMAIL_ACCOUNTS=info@mixpeek.com,ethan@mixpeek.com\n")]);
-        assert!(matches!(gmail_scope_check(d.path(), "w", "ethan@mixpeek.com"), Ok(None)));
+        let d = scope_home(&[(
+            "worker",
+            "w",
+            "AMUX_GMAIL_ACCOUNTS=info@mixpeek.com,ethan@mixpeek.com\n",
+        )]);
+        assert!(matches!(
+            gmail_scope_check(d.path(), "w", "ethan@mixpeek.com"),
+            Ok(None)
+        ));
         // Addresses are case-insensitive; a scope that rejected Ethan@ would be a
         // deny-the-right-account bug, which is the failure users report as broken.
-        assert!(matches!(gmail_scope_check(d.path(), "w", "Ethan@Mixpeek.com"), Ok(None)));
+        assert!(matches!(
+            gmail_scope_check(d.path(), "w", "Ethan@Mixpeek.com"),
+            Ok(None)
+        ));
     }
 
     #[test]
@@ -1728,15 +1973,29 @@ mod tests {
         // than being a second mechanism.
         let d = scope_home(&[
             ("global", "", "AMUX_GMAIL_ACCOUNTS=info@mixpeek.com\n"),
-            ("group", "mixpeek", "AMUX_GMAIL_ACCOUNTS=info@mixpeek.com,ethan@mixpeek.com\n"),
-            ("worker", "refresh-house", "CC_TAGS=mixpeek\nAMUX_GMAIL_ACCOUNTS=personal@gmail.com\n"),
+            (
+                "group",
+                "mixpeek",
+                "AMUX_GMAIL_ACCOUNTS=info@mixpeek.com,ethan@mixpeek.com\n",
+            ),
+            (
+                "worker",
+                "refresh-house",
+                "CC_TAGS=mixpeek\nAMUX_GMAIL_ACCOUNTS=personal@gmail.com\n",
+            ),
             ("worker", "backend", "CC_TAGS=mixpeek\n"),
         ]);
         // worker layer wins for the overridden lane
         assert!(gmail_scope_check(d.path(), "refresh-house", "ethan@mixpeek.com").is_err());
-        assert!(matches!(gmail_scope_check(d.path(), "refresh-house", "personal@gmail.com"), Ok(None)));
+        assert!(matches!(
+            gmail_scope_check(d.path(), "refresh-house", "personal@gmail.com"),
+            Ok(None)
+        ));
         // a lane with no worker override inherits the GROUP layer, not global
-        assert!(matches!(gmail_scope_check(d.path(), "backend", "ethan@mixpeek.com"), Ok(None)));
+        assert!(matches!(
+            gmail_scope_check(d.path(), "backend", "ethan@mixpeek.com"),
+            Ok(None)
+        ));
         assert!(gmail_scope_check(d.path(), "backend", "personal@gmail.com").is_err());
     }
 
@@ -1767,11 +2026,20 @@ mod tests {
                 ),
             })
         }
-        fn answer(&self, method: &str, url: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
-            self.calls.lock().unwrap().push((method.into(), url.into(), body.cloned()));
+        fn answer(
+            &self,
+            method: &str,
+            url: &str,
+            body: Option<&Value>,
+        ) -> Result<(u16, Value), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((method.into(), url.into(), body.cloned()));
             let mut script = self.script.lock().unwrap();
-            if let Some(pos) =
-                script.iter().position(|(m, sub, _, _)| m == method && url.contains(sub.as_str()))
+            if let Some(pos) = script
+                .iter()
+                .position(|(m, sub, _, _)| m == method && url.contains(sub.as_str()))
             {
                 let (_, _, status, v) = script.remove(pos);
                 return Ok((status, v));
@@ -1797,7 +2065,11 @@ mod tests {
             url: &str,
             form: &[(String, String)],
         ) -> Result<(u16, Value), String> {
-            let v = Value::Object(form.iter().map(|(k, val)| (k.clone(), json!(val))).collect());
+            let v = Value::Object(
+                form.iter()
+                    .map(|(k, val)| (k.clone(), json!(val)))
+                    .collect(),
+            );
             self.answer("FORM", url, Some(&v))
         }
         async fn post_raw(
@@ -1808,7 +2080,12 @@ mod tests {
             body: String,
         ) -> Result<(u16, String), String> {
             let (st, v) = self.answer("RAW", url, Some(&Value::String(body)))?;
-            Ok((st, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+            Ok((
+                st,
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string()),
+            ))
         }
     }
 
@@ -1846,14 +2123,16 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let registry = Arc::new(IntegrationRegistry::new());
         let ctx = Arc::new(EmailCtx {
             client: Arc::new(GmailClient::new(http, home.to_path_buf())),
             registry: registry.clone(),
         });
-        let router = Router::new().nest("/api/email", routes_with(ctx)).with_state(state);
+        let router = Router::new()
+            .nest("/api/email", routes_with(ctx))
+            .with_state(state);
         (router, dir, registry)
     }
 
@@ -1872,28 +2151,66 @@ mod tests {
         let (app, _d, _r) = app_with(MockHttp::new(vec![]), home.path());
 
         // 1. an id nothing has ever heard of
-        let (st, v) = send_req(&app, "GET", "/api/email/approval/apr_0000000000000000", None, &[]).await;
-        assert_eq!(st, StatusCode::OK, "a read must not 404: the answer IS the payload");
+        let (st, v) = send_req(
+            &app,
+            "GET",
+            "/api/email/approval/apr_0000000000000000",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "a read must not 404: the answer IS the payload"
+        );
         assert_eq!(v["state"], json!("unknown"));
-        assert_eq!(v["retry_is_safe"], json!(false), "we cannot say a retry is safe for an id we never saw");
+        assert_eq!(
+            v["retry_is_safe"],
+            json!(false),
+            "we cannot say a retry is safe for an id we never saw"
+        );
 
         // 2. pending — the one state the caller can still act on, and the one
         //    fate() alone answers non-committally because no terminal file exists.
         let id = crate::api::email_approval::create_approval(
-            home.path(), "gtm-ticker", "send",
-            json!({"to": "x@example.invalid"}), json!({"subject": "s"}),
-        ).unwrap();
+            home.path(),
+            "gtm-ticker",
+            "send",
+            json!({"to": "x@example.invalid"}),
+            json!({"subject": "s"}),
+        )
+        .unwrap();
         let (_, v) = send_req(&app, "GET", &format!("/api/email/approval/{id}"), None, &[]).await;
         assert_eq!(v["state"], json!("pending"), "{v}");
-        assert!(v["expires_in_s"].as_i64().unwrap() > 0, "a pending approval must say how long is left: {v}");
-        assert_eq!(v["retry_is_safe"], json!(false), "re-asking while one is still pending would duplicate it");
+        assert!(
+            v["expires_in_s"].as_i64().unwrap() > 0,
+            "a pending approval must say how long is left: {v}"
+        );
+        assert_eq!(
+            v["retry_is_safe"],
+            json!(false),
+            "re-asking while one is still pending would duplicate it"
+        );
 
         // 3. rejected
         let rid = crate::api::email_approval::create_approval(
-            home.path(), "gtm-ticker", "send", json!({}), json!({}),
-        ).unwrap();
+            home.path(),
+            "gtm-ticker",
+            "send",
+            json!({}),
+            json!({}),
+        )
+        .unwrap();
         crate::api::email_approval::discard(home.path(), &rid, "dashboard");
-        let (_, v) = send_req(&app, "GET", &format!("/api/email/approval/{rid}"), None, &[]).await;
+        let (_, v) = send_req(
+            &app,
+            "GET",
+            &format!("/api/email/approval/{rid}"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(v["state"], json!("rejected"), "{v}");
         assert_eq!(v["retry_is_safe"], json!(true));
 
@@ -1901,25 +2218,52 @@ mod tests {
         //    reason this route exists. Aged past the TTL, then swept by the
         //    lister exactly as it is in production.
         let eid = crate::api::email_approval::create_approval(
-            home.path(), "gtm-ticker", "send", json!({}), json!({}),
-        ).unwrap();
+            home.path(),
+            "gtm-ticker",
+            "send",
+            json!({}),
+            json!({}),
+        )
+        .unwrap();
         let dir = crate::api::email_approval::approvals_dir(home.path());
         let f = dir.join(format!("{eid}.json"));
         let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
-        doc["created"] = json!(doc["created"].as_f64().unwrap()
-            - crate::api::email_approval::APPROVAL_TTL_S - 5.0);
+        doc["created"] = json!(
+            doc["created"].as_f64().unwrap() - crate::api::email_approval::APPROVAL_TTL_S - 5.0
+        );
         std::fs::write(&f, doc.to_string()).unwrap();
         let _ = crate::api::email_approval::list_pending(home.path()); // sweeps it to .expired.json
-        let (_, v) = send_req(&app, "GET", &format!("/api/email/approval/{eid}"), None, &[]).await;
+        let (_, v) = send_req(
+            &app,
+            "GET",
+            &format!("/api/email/approval/{eid}"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(v["state"], json!("expired"), "{v}");
         assert!(v["fate"].as_str().unwrap().contains("EXPIRED"), "{v}");
-        assert_eq!(v["retry_is_safe"], json!(true), "the whole point: the caller may ask again");
+        assert_eq!(
+            v["retry_is_safe"],
+            json!(true),
+            "the whole point: the caller may ask again"
+        );
 
         // 5. THE CONTROL. expired and unknown must not collapse into each other —
         //    that blur is the defect, and a test that only checked `ok` would pass
         //    with both answering the same string.
-        let (_, unk) = send_req(&app, "GET", "/api/email/approval/apr_1111111111111111", None, &[]).await;
-        assert_ne!(unk["state"], v["state"], "expired and never-existed must stay distinguishable");
+        let (_, unk) = send_req(
+            &app,
+            "GET",
+            "/api/email/approval/apr_1111111111111111",
+            None,
+            &[],
+        )
+        .await;
+        assert_ne!(
+            unk["state"], v["state"],
+            "expired and never-existed must stay distinguishable"
+        );
         assert_ne!(unk["fate"], v["fate"]);
     }
 
@@ -1943,7 +2287,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
         (status, v)
@@ -1973,7 +2319,10 @@ mod tests {
     #[test]
     fn a_revoked_token_is_403_but_a_real_fault_stays_502() {
         let revoked = r#"token refresh failed (400): {"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#;
-        assert_eq!(oauth_refusal_code(revoked).as_deref(), Some("invalid_grant"));
+        assert_eq!(
+            oauth_refusal_code(revoked).as_deref(),
+            Some("invalid_grant")
+        );
         assert_eq!(email_err(revoked).status(), StatusCode::FORBIDDEN);
 
         // CONTROL 1: an upstream 5xx with no OAuth code is a genuine fault.
@@ -1983,7 +2332,8 @@ mod tests {
 
         // CONTROL 2: a fault whose body MENTIONS a refusal code, without it
         // being the error, must stay 502. Substring matching fails this.
-        let mentions = r#"gmail API returned 500: {"error":"internal","detail":"not invalid_grant"}"#;
+        let mentions =
+            r#"gmail API returned 500: {"error":"internal","detail":"not invalid_grant"}"#;
         assert_eq!(oauth_refusal_code(mentions).as_deref(), Some("internal"));
         assert_eq!(email_err(mentions).status(), StatusCode::BAD_GATEWAY);
     }
@@ -2002,10 +2352,19 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
-        assert!(e["error"].as_str().unwrap().contains("'in_reply_to' is not supported"));
+        assert!(e["error"]
+            .as_str()
+            .unwrap()
+            .contains("'in_reply_to' is not supported"));
         // Required fields.
-        let (st, e) =
-            send_req(&app, "POST", "/api/email/send", Some(json!({ "to": "x@y.co" })), &[]).await;
+        let (st, e) = send_req(
+            &app,
+            "POST",
+            "/api/email/send",
+            Some(json!({ "to": "x@y.co" })),
+            &[],
+        )
+        .await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
         assert_eq!(e["error"], json!("to, subject, and body are required"));
         // Address validation, comma lists validated per part.
@@ -2031,8 +2390,10 @@ mod tests {
             "/api/email/send",
             // Internal recipient: the AMUX-3510 gate must not preempt the
             // 501 this test pins (external+worker is gated first by design).
-            Some(json!({ "to": "ops@mixpeek.com", "subject": "s", "body": "b",
-                         "from": "other@nowhere.com", "force_new_thread": true })),
+            Some(
+                json!({ "to": "ops@mixpeek.com", "subject": "s", "body": "b",
+                         "from": "other@nowhere.com", "force_new_thread": true }),
+            ),
             &[("x-amux-session", "gtm-lane")],
         )
         .await;
@@ -2056,7 +2417,9 @@ mod tests {
         assert_eq!(refused["session"], json!("gtm-lane"));
         // A refusal must never be recorded as a successful gmail send.
         assert!(
-            entries.iter().all(|x| x.get("via") != Some(&json!("gmail"))),
+            entries
+                .iter()
+                .all(|x| x.get("via") != Some(&json!("gmail"))),
             "a refused send must not appear as via:gmail"
         );
     }
@@ -2068,7 +2431,12 @@ mod tests {
             // Guard probe finds no active thread.
             ("GET", "/messages?q=", 200, json!({ "messages": [] })),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "m1", "threadId": "t1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m1", "threadId": "t1" }),
+            ),
         ]);
         let (app, _d, reg) = app_with(http, home.path());
         let (st, res) = send_req(
@@ -2078,8 +2446,10 @@ mod tests {
             // ops@mixpeek.com: INTERNAL, so this stays a plain attributed
             // send — worker sends to external recipients are the approval
             // gate's own cells now (AMUX-3510).
-            Some(json!({ "to": "ops@mixpeek.com", "subject": "Hi", "body": "hello",
-                         "from": ACCT, "cc": "" })),
+            Some(
+                json!({ "to": "ops@mixpeek.com", "subject": "Hi", "body": "hello",
+                         "from": ACCT, "cc": "" }),
+            ),
             &[("x-amux-session", "tester-session")],
         )
         .await;
@@ -2098,8 +2468,14 @@ mod tests {
         assert_eq!(log["log"][0]["endpoint"], json!("send"));
         assert_eq!(log["log"][0]["to"], json!("ops@mixpeek.com"));
         // ...and the filter works both ways.
-        let (_, none) =
-            send_req(&app, "GET", "/api/email/log?session=unattributed", None, &[]).await;
+        let (_, none) = send_req(
+            &app,
+            "GET",
+            "/api/email/log?session=unattributed",
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(none["count"], json!(0));
         // A real successful call is what proves email available (RR-0073).
         assert_eq!(reg.get("email"), Some(IntegrationState::Available));
@@ -2118,7 +2494,12 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "/messages?q=", 200, json!({ "messages": [{ "id": "g9" }] })),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({ "messages": [{ "id": "g9" }] }),
+            ),
             ("GET", "/messages/g9", 200, meta),
         ]);
         let (app, _d, _r) = app_with(http, home.path());
@@ -2134,22 +2515,32 @@ mod tests {
         assert_eq!(e["blocked"], json!(true));
         assert_eq!(e["recipient"], json!("ceo@customer.com"));
         assert_eq!(e["candidate_thread"]["message_id"], json!("<pilot@x>"));
-        assert_eq!(e["reply_instead"]["endpoint"], json!("POST /api/email/reply"));
+        assert_eq!(
+            e["reply_instead"]["endpoint"],
+            json!("POST /api/email/reply")
+        );
         assert_eq!(e["reply_instead"]["body"]["message_id"], json!("<pilot@x>"));
         assert_eq!(e["or_force"]["force_new_thread"], json!(true));
 
         // force_new_thread skips the guard and sends.
         let http2 = MockHttp::new(vec![
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "m2", "threadId": "t2" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m2", "threadId": "t2" }),
+            ),
         ]);
         let (app2, _d2, _r2) = app_with(http2, home.path());
         let (st, res) = send_req(
             &app2,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "ceo@customer.com", "subject": "s", "body": "b",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "ceo@customer.com", "subject": "s", "body": "b",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[],
         )
         .await;
@@ -2180,7 +2571,10 @@ mod tests {
         assert_eq!(st, StatusCode::OK);
         assert_eq!(res["dry_run"], json!(true));
         assert_eq!(res["would_reply_to"], json!("<m@x>"));
-        assert_eq!(res["note"], json!("no email sent — repeat without dry_run to send"));
+        assert_eq!(
+            res["note"],
+            json!("no email sent — repeat without dry_run to send")
+        );
     }
 
     #[tokio::test]
@@ -2190,8 +2584,11 @@ mod tests {
         // threads by construction, so every worker reply is external-facing
         // and would hit the AMUX-3510 gate — the exemption keeps this the
         // plain threading-proof case AND exercises the env knob end to end.
-        std::fs::write(home.path().join("server.env"), "AMUX_EMAIL_EXTERNAL_EXEMPT=w1\n")
-            .unwrap();
+        std::fs::write(
+            home.path().join("server.env"),
+            "AMUX_EMAIL_EXTERNAL_EXEMPT=w1\n",
+        )
+        .unwrap();
         let orig = json!({
             "id": "g1", "threadId": "T1",
             "payload": { "headers": [
@@ -2202,10 +2599,20 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "q=rfc822msgid", 200, json!({ "messages": [{ "id": "g1" }] })),
+            (
+                "GET",
+                "q=rfc822msgid",
+                200,
+                json!({ "messages": [{ "id": "g1" }] }),
+            ),
             ("GET", "/messages/g1", 200, orig),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "m3", "threadId": "T1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m3", "threadId": "T1" }),
+            ),
         ]);
         let (app, _d, _reg) = app_with(http, home.path());
         let (st, res) = send_req(
@@ -2252,7 +2659,12 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "/messages?q=", 200, json!({ "messages": [{ "id": "g1" }] })),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({ "messages": [{ "id": "g1" }] }),
+            ),
             ("GET", "/messages/g1", 200, meta),
         ]);
         let (app, _d, _r) = app_with(http, home.path());
@@ -2307,7 +2719,11 @@ mod tests {
         // nothing here is broken, the account needs re-consent. Asserting 502
         // encoded the defect the 5xx detector then filed a card about.
         assert_eq!(st, StatusCode::FORBIDDEN, "{e}");
-        assert_eq!(e["needs_auth"], json!(true), "and it must say what is needed: {e}");
+        assert_eq!(
+            e["needs_auth"],
+            json!(true),
+            "and it must say what is needed: {e}"
+        );
         match reg.get("email") {
             Some(IntegrationState::Unavailable { reason }) => {
                 assert!(reason.contains("invalid_grant"), "{reason}");
@@ -2333,15 +2749,22 @@ mod tests {
             // never masks a leak as a transport error.
             ("GET", "/messages?q=", 200, json!({ "messages": [] })),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "leak", "threadId": "t" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "leak", "threadId": "t" }),
+            ),
         ]);
         let (app, _d, _r) = app_with(http.clone(), home.path());
         let (st, res) = send_req(
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "hilmar.koch@autodesk.com", "subject": "Update",
-                         "body": "hello", "from": ACCT })),
+            Some(
+                json!({ "to": "hilmar.koch@autodesk.com", "subject": "Update",
+                         "body": "hello", "from": ACCT }),
+            ),
             &[("x-amux-session", "autodesk")],
         )
         .await;
@@ -2349,10 +2772,17 @@ mod tests {
         assert_eq!(res["code"], json!("approval_required"));
         let apr = res["approval_id"].as_str().unwrap().to_string();
         assert!(crate::api::email_approval::valid_id(&apr));
-        assert_eq!(res["preview"]["external_recipients"][0], json!("hilmar.koch@autodesk.com"));
+        assert_eq!(
+            res["preview"]["external_recipients"][0],
+            json!("hilmar.koch@autodesk.com")
+        );
         // NOTHING reached the transport.
         assert!(
-            http.calls.lock().unwrap().iter().all(|(m, u, _)| !(m == "POST" && u.contains("/send"))),
+            http.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(m, u, _)| !(m == "POST" && u.contains("/send"))),
             "the gate must hold the send, not fire it"
         );
         // The hold is visible where a human looks: the approvals list and the
@@ -2379,15 +2809,22 @@ mod tests {
         let http = MockHttp::new(vec![
             ("GET", "/messages?q=", 200, json!({ "messages": [] })),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "m9", "threadId": "t9" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m9", "threadId": "t9" }),
+            ),
         ]);
         let (app, _d, _r) = app_with(http, home.path());
         let (st, res) = send_req(
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "ceo@customer.com", "subject": "Hi", "body": "b",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "ceo@customer.com", "subject": "Hi", "body": "b",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[],
         )
         .await;
@@ -2396,20 +2833,30 @@ mod tests {
 
         // Exempt lane (server.env, Ethan's one line): flows with its origin.
         let home2 = temp_home();
-        std::fs::write(home2.path().join("server.env"), "AMUX_EMAIL_EXTERNAL_EXEMPT=gtm-ticker\n")
-            .unwrap();
+        std::fs::write(
+            home2.path().join("server.env"),
+            "AMUX_EMAIL_EXTERNAL_EXEMPT=gtm-ticker\n",
+        )
+        .unwrap();
         let http2 = MockHttp::new(vec![
             ("GET", "/messages?q=", 200, json!({ "messages": [] })),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "m10", "threadId": "t10" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m10", "threadId": "t10" }),
+            ),
         ]);
         let (app2, _d2, _r2) = app_with(http2, home2.path());
         let (st, res) = send_req(
             &app2,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "lead@prospect.com", "subject": "Hi", "body": "b",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "lead@prospect.com", "subject": "Hi", "body": "b",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[("x-amux-session", "gtm-ticker")],
         )
         .await;
@@ -2427,15 +2874,22 @@ mod tests {
         let http3 = MockHttp::new(vec![
             ("GET", "/messages?q=", 200, json!({ "messages": [] })),
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "m11", "threadId": "t11" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m11", "threadId": "t11" }),
+            ),
         ]);
         let (app3, _d3, _r3) = app_with(http3, home3.path());
         let (st, res) = send_req(
             &app3,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "lead@prospect.com", "subject": "Hi", "body": "b",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "lead@prospect.com", "subject": "Hi", "body": "b",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[("x-amux-session", "campaign")],
         )
         .await;
@@ -2454,20 +2908,30 @@ mod tests {
         let home = temp_home();
         let http = MockHttp::new(vec![
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "n", "threadId": "t" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "n", "threadId": "t" }),
+            ),
         ]);
         let (app, _d, _r) = app_with(http, home.path());
         let (st, res) = send_req(
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "gate-probe@example.invalid", "subject": "probe", "body": "b",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "gate-probe@example.invalid", "subject": "probe", "body": "b",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[("x-amux-session", "autodesk")],
         )
         .await;
         assert_eq!(st, StatusCode::FORBIDDEN, "premise: held: {res}");
-        let id = res["approval_id"].as_str().expect("approval_id").to_string();
+        let id = res["approval_id"]
+            .as_str()
+            .expect("approval_id")
+            .to_string();
 
         let (st, ok) = send_req(
             &app,
@@ -2492,8 +2956,10 @@ mod tests {
         let rej = rows
             .iter()
             .find(|r| r.get("rejected") == Some(&json!(true)))
-            .expect("the discard must be a ledger row — 'why was this not sent' was \
-                     unanswerable for ANY unsent draft before this");
+            .expect(
+                "the discard must be a ledger row — 'why was this not sent' was \
+                     unanswerable for ANY unsent draft before this",
+            );
         assert_eq!(rej["rejected_by"], json!("dashboard"));
         assert_eq!(rej["reason"], json!("worker probe, not a real send"));
 
@@ -2522,7 +2988,10 @@ mod tests {
             "name the rejecter this doc actually recorded: {e}"
         );
         assert!(
-            e["error"].as_str().unwrap().contains("CLAIMED, not verified"),
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("CLAIMED, not verified"),
             "and say the identity is unverified, because nothing here checked it: {e}"
         );
 
@@ -2534,18 +3003,22 @@ mod tests {
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "someone@customer.com", "subject": "s2", "body": "b",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "someone@customer.com", "subject": "s2", "body": "b",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[("x-amux-session", "autodesk")],
         )
         .await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{res2}");
         let id2 = res2["approval_id"].as_str().unwrap().to_string();
-        let (st, _) =
-            send_req(&app, "POST", &format!("/api/email/reject/{id2}"), None, &[]).await;
-        assert_eq!(st, StatusCode::OK, "a headerless discard fails safe and is allowed");
-        let (_, e3) =
-            send_req(&app, "POST", &format!("/api/email/reject/{id2}"), None, &[]).await;
+        let (st, _) = send_req(&app, "POST", &format!("/api/email/reject/{id2}"), None, &[]).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "a headerless discard fails safe and is allowed"
+        );
+        let (_, e3) = send_req(&app, "POST", &format!("/api/email/reject/{id2}"), None, &[]).await;
         let msg = e3["error"].as_str().unwrap();
         assert!(
             !msg.contains("a human"),
@@ -2595,20 +3068,34 @@ mod tests {
         let home = temp_home();
         let http = MockHttp::new(vec![
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "x", "threadId": "t" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "x", "threadId": "t" }),
+            ),
         ]);
         let (app, d, _r) = app_with(http, home.path());
         let (st, res) = send_req(
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[("x-amux-session", name)],
         )
         .await;
-        assert_eq!(st, StatusCode::FORBIDDEN, "premise: the send must be HELD: {res}");
-        let id = res["approval_id"].as_str().expect("approval_id").to_string();
+        assert_eq!(
+            st,
+            StatusCode::FORBIDDEN,
+            "premise: the send must be HELD: {res}"
+        );
+        let id = res["approval_id"]
+            .as_str()
+            .expect("approval_id")
+            .to_string();
         (app, d, home, id)
     }
 
@@ -2616,8 +3103,7 @@ mod tests {
     async fn approve_refuses_an_absent_or_self_named_approver() {
         // THE ORIGINAL BYPASS: no headers at all.
         let (app, _d, _h, id) = held("autodesk").await;
-        let (st, e) =
-            send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &[]).await;
+        let (st, e) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &[]).await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{e}");
         assert_eq!(e["code"], json!("approver_unidentified"), "{e}");
 
@@ -2634,9 +3120,19 @@ mod tests {
             vec![("x-amux-session", ""), ("x-amux-approver", " ")],
         ] {
             let (app, _d, _h, id) = held("autodesk").await;
-            let (st, e) =
-                send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &hdrs).await;
-            assert_eq!(st, StatusCode::FORBIDDEN, "empty/blank must fail closed: {hdrs:?} -> {e}");
+            let (st, e) = send_req(
+                &app,
+                "POST",
+                &format!("/api/email/approve/{id}"),
+                None,
+                &hdrs,
+            )
+            .await;
+            assert_eq!(
+                st,
+                StatusCode::FORBIDDEN,
+                "empty/blank must fail closed: {hdrs:?} -> {e}"
+            );
             assert_eq!(e["code"], json!("approver_unidentified"), "{hdrs:?} -> {e}");
         }
 
@@ -2696,7 +3192,11 @@ mod tests {
             &[("x-amux-approver", "dashboard")],
         )
         .await;
-        assert_eq!(st, StatusCode::OK, "a NAMED approver who is not the creator must succeed: {ok}");
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "a NAMED approver who is not the creator must succeed: {ok}"
+        );
         assert_eq!(ok["approved"], json!(true), "{ok}");
     }
 
@@ -2780,15 +3280,22 @@ mod tests {
         let home = temp_home();
         let http = MockHttp::new(vec![
             ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
-            ("POST", "/messages/send", 200, json!({ "id": "rel1", "threadId": "tr1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "rel1", "threadId": "tr1" }),
+            ),
         ]);
         let (app, _d, _r) = app_with(http, home.path());
         let (st, res) = send_req(
             &app,
             "POST",
             "/api/email/send",
-            Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
-                         "from": ACCT, "force_new_thread": true })),
+            Some(
+                json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
+                         "from": ACCT, "force_new_thread": true }),
+            ),
             &[("x-amux-session", "autodesk")],
         )
         .await;
@@ -2837,11 +3344,19 @@ mod tests {
             .find(|x| x.get("approved") == Some(&json!(true)))
             .expect("the approved send must be a ledger row");
         assert_eq!(sent["approval_id"], json!(apr));
-        assert_eq!(sent["session"], json!("autodesk"), "the AUTHOR stays on the row");
+        assert_eq!(
+            sent["session"],
+            json!("autodesk"),
+            "the AUTHOR stays on the row"
+        );
         // The ledger records the CLAIM and says it is unverified. It used to
         // assert "dashboard (no worker origin)" on the strength of an absence,
         // which was an affirmative false exculpation in AUTOD-48's specimen.
-        assert_eq!(sent["approved_by"], json!("dashboard"), "the claim, verbatim");
+        assert_eq!(
+            sent["approved_by"],
+            json!("dashboard"),
+            "the claim, verbatim"
+        );
         assert_eq!(
             sent["approver_verified"],
             json!(false),
@@ -2880,9 +3395,19 @@ mod tests {
             ]},
         });
         let http = MockHttp::new(vec![
-            ("GET", "q=rfc822msgid", 200, json!({ "messages": [{ "id": "g1" }] })),
+            (
+                "GET",
+                "q=rfc822msgid",
+                200,
+                json!({ "messages": [{ "id": "g1" }] }),
+            ),
             ("GET", "/messages/g1", 200, orig),
-            ("POST", "/messages/send", 200, json!({ "id": "leak", "threadId": "T1" })),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "leak", "threadId": "T1" }),
+            ),
         ]);
         let (app, _d, _r) = app_with(http.clone(), home.path());
         let (st, res) = send_req(
@@ -2897,9 +3422,17 @@ mod tests {
         assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
         assert_eq!(res["code"], json!("approval_required"));
         let ext = res["preview"]["external_recipients"].as_array().unwrap();
-        assert_eq!(ext.len(), 2, "both thread participants the caller never named: {ext:?}");
+        assert_eq!(
+            ext.len(),
+            2,
+            "both thread participants the caller never named: {ext:?}"
+        );
         assert!(
-            http.calls.lock().unwrap().iter().all(|(m, u, _)| !(m == "POST" && u.contains("/send"))),
+            http.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(m, u, _)| !(m == "POST" && u.contains("/send"))),
             "the reply must be held, not sent"
         );
     }
@@ -2982,7 +3515,10 @@ mod resolved_envelope_tests {
     #[test]
     fn an_approved_reply_takes_the_recipient_the_send_resolved() {
         let res = json!({"to": "ilrick@example.com", "subject": "Re: demo", "id": "abc"});
-        assert_eq!(resolved_envelope(&res, "to", ""), json!("ilrick@example.com"));
+        assert_eq!(
+            resolved_envelope(&res, "to", ""),
+            json!("ilrick@example.com")
+        );
         assert_eq!(resolved_envelope(&res, "subject", ""), json!("Re: demo"));
     }
 

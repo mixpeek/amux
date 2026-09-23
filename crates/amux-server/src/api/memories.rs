@@ -121,53 +121,51 @@ pub struct ListParams {
     pub group: Option<String>,
 }
 
-pub async fn list_memories(
-    State(state): State<AppState>,
-    Query(p): Query<ListParams>,
-) -> Response {
+pub async fn list_memories(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
     let store = state.store.clone();
-    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Result<_, Response>> {
-        let conn = store.read()?;
-        let mut target = ResolutionTarget::default();
-        if let Some(w) = &p.worker {
-            if let Ok(id) = WorkerId::parse(w) {
-                // A raw wrk_ id resolves even if the worker row is gone —
-                // its memories outlive it (they are history, Invariant 42).
-                target.group = queries::get_worker(&conn, w)?
-                    .and_then(|row| row.group_id)
-                    .and_then(|g| GroupId::parse(&g).ok());
-                target.worker = Some(id);
-            } else {
-                match queries::get_worker(&conn, w)? {
-                    Some(row) => {
-                        target.worker = WorkerId::parse(&row.id).ok();
-                        target.group =
-                            row.group_id.as_deref().and_then(|g| GroupId::parse(g).ok());
+    let joined =
+        crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Result<_, Response>> {
+            let conn = store.read()?;
+            let mut target = ResolutionTarget::default();
+            if let Some(w) = &p.worker {
+                if let Ok(id) = WorkerId::parse(w) {
+                    // A raw wrk_ id resolves even if the worker row is gone —
+                    // its memories outlive it (they are history, Invariant 42).
+                    target.group = queries::get_worker(&conn, w)?
+                        .and_then(|row| row.group_id)
+                        .and_then(|g| GroupId::parse(&g).ok());
+                    target.worker = Some(id);
+                } else {
+                    match queries::get_worker(&conn, w)? {
+                        Some(row) => {
+                            target.worker = WorkerId::parse(&row.id).ok();
+                            target.group =
+                                row.group_id.as_deref().and_then(|g| GroupId::parse(g).ok());
+                        }
+                        None => {
+                            return Ok(Err(err(
+                                StatusCode::NOT_FOUND,
+                                json!({ "error": "worker not found", "worker": w }),
+                            )))
+                        }
                     }
-                    None => {
+                }
+            }
+            if let Some(g) = &p.group {
+                match GroupId::parse(g) {
+                    Ok(id) => target.group = Some(id),
+                    Err(e) => {
                         return Ok(Err(err(
-                            StatusCode::NOT_FOUND,
-                            json!({ "error": "worker not found", "worker": w }),
+                            StatusCode::BAD_REQUEST,
+                            json!({ "error": e.to_string(), "group": g }),
                         )))
                     }
                 }
             }
-        }
-        if let Some(g) = &p.group {
-            match GroupId::parse(g) {
-                Ok(id) => target.group = Some(id),
-                Err(e) => {
-                    return Ok(Err(err(
-                        StatusCode::BAD_REQUEST,
-                        json!({ "error": e.to_string(), "group": g }),
-                    )))
-                }
-            }
-        }
-        let items = memories::list_visible(&conn, &target)?;
-        Ok(Ok(items))
-    })
-    .await;
+            let items = memories::list_visible(&conn, &target)?;
+            Ok(Ok(items))
+        })
+        .await;
     let items = match joined {
         Ok(Ok(Ok(items))) => items,
         Ok(Ok(Err(resp))) => return resp,
@@ -214,7 +212,10 @@ pub async fn create_memory(
     Json(body): Json<CreateMemoryBody>,
 ) -> Response {
     if body.name.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, json!({ "error": "name is required" }));
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "name is required" }),
+        );
     }
     if let Err(resp) = validate_scope(&body.scope) {
         return *resp;
@@ -255,7 +256,9 @@ pub async fn create_memory(
             {
                 return finish(
                     &slot_w,
-                    CreateOutcome::Duplicate { existing_id: existing.id.as_str().to_string() },
+                    CreateOutcome::Duplicate {
+                        existing_id: existing.id.as_str().to_string(),
+                    },
                     no_write(),
                 );
             }
@@ -331,11 +334,19 @@ pub struct PatchMemoryBody {
 
 enum MutateOutcome {
     NotFound,
-    Conflict { current_version: u64 },
+    Conflict {
+        current_version: u64,
+    },
     /// Soft-deleted rows refuse mutation (Invariant 42) -> 409.
-    Deleted { deleted_at: String },
-    Noop { body: Value },
-    Applied { body: Value },
+    Deleted {
+        deleted_at: String,
+    },
+    Noop {
+        body: Value,
+    },
+    Applied {
+        body: Value,
+    },
 }
 
 pub async fn patch_memory(
@@ -358,7 +369,9 @@ pub async fn patch_memory(
                 if expect != e.version {
                     return finish(
                         &slot_w,
-                        MutateOutcome::Conflict { current_version: e.version },
+                        MutateOutcome::Conflict {
+                            current_version: e.version,
+                        },
                         no_write(),
                     );
                 }
@@ -374,23 +387,28 @@ pub async fn patch_memory(
                 Err(MemoryError::AlreadyDeleted { .. }) => finish(
                     &slot_w,
                     MutateOutcome::Deleted {
-                        deleted_at: e
-                            .deleted_at
-                            .map(|t| t.to_rfc3339())
-                            .unwrap_or_default(),
+                        deleted_at: e.deleted_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
                     },
                     no_write(),
                 ),
                 Ok(false) => {
                     // Identical content: honest no-op — no version bump, no
                     // rev bump, no event (Invariant 37).
-                    finish(&slot_w, MutateOutcome::Noop { body: entry_body(&e) }, no_write())
+                    finish(
+                        &slot_w,
+                        MutateOutcome::Noop {
+                            body: entry_body(&e),
+                        },
+                        no_write(),
+                    )
                 }
                 Ok(true) => {
                     memories::persist_mutation(conn, &e, before)?;
                     finish(
                         &slot_w,
-                        MutateOutcome::Applied { body: entry_body(&e) },
+                        MutateOutcome::Applied {
+                            body: entry_body(&e),
+                        },
                         WriteOutcome {
                             applied: true,
                             events: vec![ev(e.id.as_str(), MutationKind::Updated)],
@@ -423,10 +441,7 @@ pub async fn delete_memory(State(state): State<AppState>, Path(id): Path<String>
                 Err(MemoryError::AlreadyDeleted { .. }) => finish(
                     &slot_w,
                     MutateOutcome::Deleted {
-                        deleted_at: e
-                            .deleted_at
-                            .map(|t| t.to_rfc3339())
-                            .unwrap_or_default(),
+                        deleted_at: e.deleted_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
                     },
                     no_write(),
                 ),
@@ -434,7 +449,9 @@ pub async fn delete_memory(State(state): State<AppState>, Path(id): Path<String>
                     memories::persist_mutation(conn, &e, before)?;
                     finish(
                         &slot_w,
-                        MutateOutcome::Applied { body: entry_body(&e) },
+                        MutateOutcome::Applied {
+                            body: entry_body(&e),
+                        },
                         WriteOutcome {
                             applied: true,
                             events: vec![ev(e.id.as_str(), MutationKind::Deleted)],
@@ -502,7 +519,7 @@ mod tests {
             started: std::time::Instant::now(),
             build_hash: "test".into(),
             auth_token: None,
-        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         (router(state), dir)
     }
@@ -523,7 +540,9 @@ mod tests {
         };
         let res = app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let v = if bytes.is_empty() {
             Value::Null
         } else {

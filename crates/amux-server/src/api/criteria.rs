@@ -21,10 +21,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route(
-        "/{id}",
-        axum::routing::get(get_criteria).put(put_criteria),
-    )
+    Router::new().route("/{id}", axum::routing::get(get_criteria).put(put_criteria))
 }
 
 pub fn load(
@@ -53,7 +50,9 @@ pub fn todo_exit_permitted(
     conn: &rusqlite::Connection,
     task_id: &str,
 ) -> rusqlite::Result<std::result::Result<(), String>> {
-    let enforced = std::env::var("AMUX_RS_REQUIRE_CRITERIA").map(|v| v == "1").unwrap_or(false);
+    let enforced = std::env::var("AMUX_RS_REQUIRE_CRITERIA")
+        .map(|v| v == "1")
+        .unwrap_or(false);
     if !enforced {
         return Ok(Ok(()));
     }
@@ -112,7 +111,10 @@ async fn put_criteria(
         let row = match board_store::get_issue(&conn, &id) {
             Ok(Some(r)) => r,
             Ok(None) => {
-                return (StatusCode::NOT_FOUND, Json(json!({"error": "no such task", "item": id})))
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "no such task", "item": id})),
+                )
                     .into_response()
             }
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -185,7 +187,7 @@ async fn put_criteria(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use amux_core::criteria::{Criterion, CriteriaAuthor};
+    use amux_core::criteria::{CriteriaAuthor, Criterion};
     use amux_core::ids::CriterionId;
 
     #[test]

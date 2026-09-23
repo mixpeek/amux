@@ -134,11 +134,7 @@ pub fn adaptive_wip(inputs: &AdaptiveWipInputs) -> AdaptiveWipDecision {
             reason: "contention or rework exceeded the safe band".into(),
         };
     }
-    let demand = inputs.queue_depth
-        > inputs
-            .active_workers
-            .max(1)
-            .saturating_mul(current as u64)
+    let demand = inputs.queue_depth > inputs.active_workers.max(1).saturating_mul(current as u64)
         && inputs.average_queue_wait_ms.is_some_and(|ms| ms > 30_000.0);
     let safe_to_expand = inputs.average_lock_wait_ms.unwrap_or(0.0) < 1_000.0
         && inputs.conflict_rate.unwrap_or(0.0) < 0.05
@@ -237,13 +233,17 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
     // tick) AND terminal completion — a lease on a verified/discarded/
     // quarantined task pins its worker's WIP slot for nothing (the RR-0084
     // golden had to time-warp expiries to converge before this existed).
-    let task_by_id: BTreeMap<&TaskId, &Task> =
-        inputs.tasks.iter().map(|t| (&t.id, t)).collect();
+    let task_by_id: BTreeMap<&TaskId, &Task> = inputs.tasks.iter().map(|t| (&t.id, t)).collect();
     let mut live_leases: Vec<&Lease> = vec![];
     for lease in inputs.leases {
         let task_terminal = task_by_id
             .get(&lease.task)
-            .map(|t| matches!(disposition(t, inputs.tasks, inputs.gates), TaskDisposition::Terminal))
+            .map(|t| {
+                matches!(
+                    disposition(t, inputs.tasks, inputs.gates),
+                    TaskDisposition::Terminal
+                )
+            })
             .unwrap_or(false);
         if lease.is_expired(inputs.now) || task_terminal {
             plan.reclaim.push(lease.clone());
@@ -327,11 +327,7 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             }
         };
         if let Some(worker) = chosen {
-            let attempt_history = inputs
-                .attempts
-                .get(&task.id)
-                .cloned()
-                .unwrap_or_default();
+            let attempt_history = inputs.attempts.get(&task.id).cloned().unwrap_or_default();
             let attempt = attempt_history.len() as u32 + 1;
             let lease = Lease {
                 task: task.id.clone(),
@@ -482,10 +478,9 @@ mod tests {
 
     /// Shared empty provider map ('static so the helper below stays
     /// signature-compatible with every existing call site).
-    fn no_providers() -> &'static BTreeMap<
-        crate::provider::ProviderId,
-        crate::provider_fleet::ProviderFleetState,
-    > {
+    fn no_providers(
+    ) -> &'static BTreeMap<crate::provider::ProviderId, crate::provider_fleet::ProviderFleetState>
+    {
         static EMPTY: std::sync::OnceLock<
             BTreeMap<crate::provider::ProviderId, crate::provider_fleet::ProviderFleetState>,
         > = std::sync::OnceLock::new();
@@ -554,9 +549,20 @@ mod tests {
             generation: 3,
         }];
         let (h, a) = (BTreeMap::new(), BTreeMap::new());
-        let plan = plan_tick(&inputs(&tasks, &workers, &leases, &FleetState::Normal, &h, &a));
+        let plan = plan_tick(&inputs(
+            &tasks,
+            &workers,
+            &leases,
+            &FleetState::Normal,
+            &h,
+            &a,
+        ));
         assert_eq!(plan.reclaim.len(), 1);
-        assert_eq!(plan.assignments.len(), 1, "reclaim frees the task this tick");
+        assert_eq!(
+            plan.assignments.len(),
+            1,
+            "reclaim frees the task this tick"
+        );
     }
 
     #[test]
@@ -571,7 +577,14 @@ mod tests {
             generation: 0,
         }];
         let (h, a) = (BTreeMap::new(), BTreeMap::new());
-        let plan = plan_tick(&inputs(&tasks, &workers, &leases, &FleetState::Normal, &h, &a));
+        let plan = plan_tick(&inputs(
+            &tasks,
+            &workers,
+            &leases,
+            &FleetState::Normal,
+            &h,
+            &a,
+        ));
         assert!(plan.assignments.is_empty());
         assert!(plan.reclaim.is_empty());
     }
@@ -590,8 +603,15 @@ mod tests {
         let workers = vec![worker(1, WorkerState::Idle { since: now() })];
         let (h, a) = (BTreeMap::new(), BTreeMap::new());
         let plan = plan_tick(&inputs(&tasks, &workers, &[], &FleetState::Normal, &h, &a));
-        assert!(plan.assignments.is_empty(), "a doing card is never re-assigned");
-        assert_eq!(plan.stalls.len(), 1, "idle owner + unleased doing card = stall");
+        assert!(
+            plan.assignments.is_empty(),
+            "a doing card is never re-assigned"
+        );
+        assert_eq!(
+            plan.stalls.len(),
+            1,
+            "idle owner + unleased doing card = stall"
+        );
         assert_eq!(plan.stalls[0].reason, StallReason::WorkerIdle);
         assert_eq!(plan.stalls[0].task, tid(1));
         assert_eq!(plan.stalls[0].worker, wid(1));
@@ -605,8 +625,19 @@ mod tests {
             expires_at: now() + chrono::Duration::hours(1),
             generation: 0,
         }];
-        let plan = plan_tick(&inputs(&tasks, &workers, &leases, &FleetState::Normal, &h, &a));
-        assert!(plan.stalls.is_empty(), "leased doing card is not a stall: {:?}", plan.stalls);
+        let plan = plan_tick(&inputs(
+            &tasks,
+            &workers,
+            &leases,
+            &FleetState::Normal,
+            &h,
+            &a,
+        ));
+        assert!(
+            plan.stalls.is_empty(),
+            "leased doing card is not a stall: {:?}",
+            plan.stalls
+        );
 
         // A worker mid-turn (Active) is not idle: no stall — the pause is
         // the work happening.
@@ -646,7 +677,14 @@ mod tests {
             },
         );
         let a = BTreeMap::new();
-        let plan = plan_tick(&inputs(&tasks, &workers, &[], &FleetState::Normal, &hints, &a));
+        let plan = plan_tick(&inputs(
+            &tasks,
+            &workers,
+            &[],
+            &FleetState::Normal,
+            &hints,
+            &a,
+        ));
         assert_eq!(plan.assignments.len(), 1);
         assert_eq!(plan.assignments[0].task, tid(2), "explicit priority wins");
     }
@@ -672,7 +710,14 @@ mod tests {
             }],
         );
         let h = BTreeMap::new();
-        let plan = plan_tick(&inputs(&tasks, &workers, &[], &FleetState::Normal, &h, &attempts));
+        let plan = plan_tick(&inputs(
+            &tasks,
+            &workers,
+            &[],
+            &FleetState::Normal,
+            &h,
+            &attempts,
+        ));
         assert_eq!(plan.assignments[0].attempt, 2);
         assert_eq!(plan.assignments[0].prior_attempts.len(), 1);
         assert!(plan.assignments[0].prior_attempts[0]
@@ -689,7 +734,13 @@ mod tests {
             .map(|n| worker(n, WorkerState::Idle { since: now() }))
             .collect();
         let tasks: Vec<Task> = (0..200)
-            .map(|n| task(n, TaskStatus::Todo, if n % 3 == 0 { Some(n % 50) } else { None }))
+            .map(|n| {
+                task(
+                    n,
+                    TaskStatus::Todo,
+                    if n % 3 == 0 { Some(n % 50) } else { None },
+                )
+            })
             .collect();
         let (h, a) = (BTreeMap::new(), BTreeMap::new());
         let i = inputs(&tasks, &workers, &[], &FleetState::Normal, &h, &a);
@@ -726,7 +777,9 @@ pub const MAX_DISCOVERED_ITEMS_PER_RUN: u32 = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum DecompositionError {
-    #[error("decomposition depth {attempted} exceeds cap {max} — quarantine instead of digging deeper")]
+    #[error(
+        "decomposition depth {attempted} exceeds cap {max} — quarantine instead of digging deeper"
+    )]
     DepthExceeded { attempted: u32, max: u32 },
     #[error("child count {attempted} exceeds cap {max} for one task")]
     TooManyChildren { attempted: u32, max: u32 },
@@ -830,7 +883,10 @@ mod livelock_tests {
     }
 
     fn tid(n: u32) -> TaskId {
-        TaskId::from_ulid(ulid::Ulid::from_parts(1_700_000_000_000, 20_000 + n as u128))
+        TaskId::from_ulid(ulid::Ulid::from_parts(
+            1_700_000_000_000,
+            20_000 + n as u128,
+        ))
     }
 
     fn wid() -> WorkerId {
@@ -872,8 +928,12 @@ mod livelock_tests {
     #[test]
     fn within_limits_proceeds() {
         let limits = ExecutionLimits::default();
-        let (proceed, actions) =
-            enforce_limits(vec![asg(tid(1), vec![attempt(1, false, 1000)])], &limits, now(), &BTreeMap::new());
+        let (proceed, actions) = enforce_limits(
+            vec![asg(tid(1), vec![attempt(1, false, 1000)])],
+            &limits,
+            now(),
+            &BTreeMap::new(),
+        );
         assert_eq!(proceed.len(), 1);
         assert!(actions.is_empty());
     }
@@ -885,12 +945,19 @@ mod livelock_tests {
             ..Default::default()
         };
         let attempts = vec![attempt(1, false, 1000), attempt(2, false, 1000)];
-        let (proceed, actions) =
-            enforce_limits(vec![asg(tid(1), attempts)], &limits, now(), &BTreeMap::new());
+        let (proceed, actions) = enforce_limits(
+            vec![asg(tid(1), attempts)],
+            &limits,
+            now(),
+            &BTreeMap::new(),
+        );
         assert!(proceed.is_empty());
         assert_eq!(
             actions,
-            vec![ExhaustionAction::Decompose { task: tid(1), depth: 1 }]
+            vec![ExhaustionAction::Decompose {
+                task: tid(1),
+                depth: 1
+            }]
         );
     }
 
@@ -901,8 +968,12 @@ mod livelock_tests {
             ..Default::default()
         };
         let attempts = vec![attempt(1, true, 1000), attempt(2, true, 1000)];
-        let (_, actions) =
-            enforce_limits(vec![asg(tid(1), attempts)], &limits, now(), &BTreeMap::new());
+        let (_, actions) = enforce_limits(
+            vec![asg(tid(1), attempts)],
+            &limits,
+            now(),
+            &BTreeMap::new(),
+        );
         assert!(
             matches!(&actions[0], ExhaustionAction::Quarantine { task, reason }
                 if task == &tid(1) && reason.contains("2 failed decompositions")),
@@ -918,8 +989,12 @@ mod livelock_tests {
         };
         let mut depths = BTreeMap::new();
         depths.insert(tid(1), MAX_DECOMPOSITION_DEPTH);
-        let (_, actions) =
-            enforce_limits(vec![asg(tid(1), vec![attempt(1, false, 100)])], &limits, now(), &depths);
+        let (_, actions) = enforce_limits(
+            vec![asg(tid(1), vec![attempt(1, false, 100)])],
+            &limits,
+            now(),
+            &depths,
+        );
         assert!(
             matches!(&actions[0], ExhaustionAction::Quarantine { reason, .. }
                 if reason.contains("max decomposition depth")),
@@ -932,11 +1007,17 @@ mod livelock_tests {
         assert!(check_decomposition(3, 10).is_ok());
         assert!(matches!(
             check_decomposition(4, 1),
-            Err(DecompositionError::DepthExceeded { attempted: 4, max: 3 })
+            Err(DecompositionError::DepthExceeded {
+                attempted: 4,
+                max: 3
+            })
         ));
         assert!(matches!(
             check_decomposition(1, 11),
-            Err(DecompositionError::TooManyChildren { attempted: 11, max: 10 })
+            Err(DecompositionError::TooManyChildren {
+                attempted: 11,
+                max: 10
+            })
         ));
     }
 
@@ -947,8 +1028,12 @@ mod livelock_tests {
             ..Default::default()
         };
         let attempts = vec![attempt(1, false, 1000), attempt(2, false, 1000)];
-        let (proceed, actions) =
-            enforce_limits(vec![asg(tid(1), attempts)], &limits, now(), &BTreeMap::new());
+        let (proceed, actions) = enforce_limits(
+            vec![asg(tid(1), attempts)],
+            &limits,
+            now(),
+            &BTreeMap::new(),
+        );
         assert!(proceed.is_empty());
         assert_eq!(actions.len(), 1);
     }
@@ -975,7 +1060,10 @@ pub fn assignment_prompt(title: &str, desc: &str, asg: &WorkAssignment) -> Strin
             asg.prior_attempts.len()
         ));
         for a in &asg.prior_attempts {
-            p.push_str(&format!("Attempt {}: FAILED — {}\n", a.attempt, a.failure_reason));
+            p.push_str(&format!(
+                "Attempt {}: FAILED — {}\n",
+                a.attempt, a.failure_reason
+            ));
             for ev in &a.rejected_evidence {
                 p.push_str(&format!("  rejected evidence: {ev}\n"));
             }
@@ -1067,7 +1155,9 @@ mod lease_release_tests {
             tid.clone(),
             "done deal",
             ItemType::Code,
-            crate::events::Actor::System { component: "t".into() },
+            crate::events::Actor::System {
+                component: "t".into(),
+            },
             now,
         );
         task.status = TaskStatus::Verified; // terminal

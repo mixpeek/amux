@@ -48,15 +48,37 @@ fn execute_command(cmd: &str, cwd: &str, timeout: Duration) -> VerifierDetail {
     let mut stdout = match tempfile::tempfile() {
         Ok(f) => f,
         Err(e) => {
-            let result = VerificationResult::Failed { reason: format!("cannot allocate verifier stdout: {e}") };
-            return VerifierDetail { verifier: VerifierKind::Command { cmd: cmd.into(), expected_exit: 0 }, result, duration_ms: 0, stdout: String::new(), stderr: String::new() };
+            let result = VerificationResult::Failed {
+                reason: format!("cannot allocate verifier stdout: {e}"),
+            };
+            return VerifierDetail {
+                verifier: VerifierKind::Command {
+                    cmd: cmd.into(),
+                    expected_exit: 0,
+                },
+                result,
+                duration_ms: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            };
         }
     };
     let mut stderr = match tempfile::tempfile() {
         Ok(f) => f,
         Err(e) => {
-            let result = VerificationResult::Failed { reason: format!("cannot allocate verifier stderr: {e}") };
-            return VerifierDetail { verifier: VerifierKind::Command { cmd: cmd.into(), expected_exit: 0 }, result, duration_ms: 0, stdout: String::new(), stderr: String::new() };
+            let result = VerificationResult::Failed {
+                reason: format!("cannot allocate verifier stderr: {e}"),
+            };
+            return VerifierDetail {
+                verifier: VerifierKind::Command {
+                    cmd: cmd.into(),
+                    expected_exit: 0,
+                },
+                result,
+                duration_ms: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            };
         }
     };
     let child = std::process::Command::new("sh")
@@ -64,35 +86,73 @@ fn execute_command(cmd: &str, cwd: &str, timeout: Duration) -> VerifierDetail {
         .arg(cmd)
         .current_dir(if cwd.is_empty() { "." } else { cwd })
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(stdout.try_clone().expect("temp stdout clone")))
-        .stderr(std::process::Stdio::from(stderr.try_clone().expect("temp stderr clone")))
+        .stdout(std::process::Stdio::from(
+            stdout.try_clone().expect("temp stdout clone"),
+        ))
+        .stderr(std::process::Stdio::from(
+            stderr.try_clone().expect("temp stderr clone"),
+        ))
         .spawn();
     let (result, timed_out) = match child {
-        Err(e) => (VerificationResult::Failed { reason: format!("command failed to start: {cmd}: {e}") }, false),
+        Err(e) => (
+            VerificationResult::Failed {
+                reason: format!("command failed to start: {cmd}: {e}"),
+            },
+            false,
+        ),
         Ok(mut child) => loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let code = status.code().unwrap_or(-1);
-                    break (VerificationResult::Failed { reason: format!("command exited {code}: {cmd}") }, false);
+                    break (
+                        VerificationResult::Failed {
+                            reason: format!("command exited {code}: {cmd}"),
+                        },
+                        false,
+                    );
                 }
-                Ok(None) if started.elapsed() < timeout => std::thread::sleep(Duration::from_millis(10)),
+                Ok(None) if started.elapsed() < timeout => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break (VerificationResult::Failed { reason: format!("command timed out after {}s: {cmd}", timeout.as_secs()) }, true);
+                    break (
+                        VerificationResult::Failed {
+                            reason: format!(
+                                "command timed out after {}s: {cmd}",
+                                timeout.as_secs()
+                            ),
+                        },
+                        true,
+                    );
                 }
-                Err(e) => break (VerificationResult::Failed { reason: format!("command wait failed: {cmd}: {e}") }, false),
+                Err(e) => {
+                    break (
+                        VerificationResult::Failed {
+                            reason: format!("command wait failed: {cmd}: {e}"),
+                        },
+                        false,
+                    )
+                }
             }
         },
     };
     let stdout_text = bounded_read(&mut stdout);
     let stderr_text = bounded_read(&mut stderr);
     VerifierDetail {
-        verifier: VerifierKind::Command { cmd: cmd.into(), expected_exit: 0 },
+        verifier: VerifierKind::Command {
+            cmd: cmd.into(),
+            expected_exit: 0,
+        },
         result,
         duration_ms: started.elapsed().as_millis() as u64,
         stdout: stdout_text,
-        stderr: if timed_out { format!("{stderr_text}\n[terminated by verifier timeout]") } else { stderr_text },
+        stderr: if timed_out {
+            format!("{stderr_text}\n[terminated by verifier timeout]")
+        } else {
+            stderr_text
+        },
     }
 }
 
@@ -129,7 +189,10 @@ fn execute(kind: &VerifierKind, cwd: &str) -> VerifierDetail {
             detail.verifier = kind.clone();
             expect_exit(detail, *expected_exit)
         }
-        VerifierKind::HttpCheck { url, expected_status } => {
+        VerifierKind::HttpCheck {
+            url,
+            expected_status,
+        } => {
             let client = reqwest::blocking::Client::builder()
                 .timeout(VERIFIER_TIMEOUT)
                 .danger_accept_invalid_certs(url.starts_with("https://localhost"))
@@ -144,9 +207,23 @@ fn execute(kind: &VerifierKind, cwd: &str) -> VerifierDetail {
                             reason: format!("{url} returned {got}, expected {expected_status}"),
                         }
                     };
-                    VerifierDetail { verifier: kind.clone(), result, duration_ms: 0, stdout: format!("HTTP {got}"), stderr: String::new() }
+                    VerifierDetail {
+                        verifier: kind.clone(),
+                        result,
+                        duration_ms: 0,
+                        stdout: format!("HTTP {got}"),
+                        stderr: String::new(),
+                    }
                 }
-                Err(e) => VerifierDetail { verifier: kind.clone(), result: VerificationResult::Failed { reason: format!("http check unreachable: {url}: {e}") }, duration_ms: 0, stdout: String::new(), stderr: e.to_string() },
+                Err(e) => VerifierDetail {
+                    verifier: kind.clone(),
+                    result: VerificationResult::Failed {
+                        reason: format!("http check unreachable: {url}: {e}"),
+                    },
+                    duration_ms: 0,
+                    stdout: String::new(),
+                    stderr: e.to_string(),
+                },
             }
         }
         VerifierKind::FileExists { path } => {
@@ -162,7 +239,13 @@ fn execute(kind: &VerifierKind, cwd: &str) -> VerifierDetail {
                     reason: format!("artifact missing: {}", resolved.display()),
                 }
             };
-            VerifierDetail { verifier: kind.clone(), result, duration_ms: 0, stdout: resolved.display().to_string(), stderr: String::new() }
+            VerifierDetail {
+                verifier: kind.clone(),
+                result,
+                duration_ms: 0,
+                stdout: resolved.display().to_string(),
+                stderr: String::new(),
+            }
         }
         VerifierKind::Temporal { after } => {
             let now = chrono::Utc::now();
@@ -177,17 +260,29 @@ fn execute(kind: &VerifierKind, cwd: &str) -> VerifierDetail {
                     ),
                 }
             };
-            VerifierDetail { verifier: kind.clone(), result, duration_ms: 0, stdout: now.to_rfc3339(), stderr: String::new() }
+            VerifierDetail {
+                verifier: kind.clone(),
+                result,
+                duration_ms: 0,
+                stdout: now.to_rfc3339(),
+                stderr: String::new(),
+            }
         }
         VerifierKind::PlaywrightAssertion { script } => {
-            let mut detail = execute_command(&format!("node -e {}", shell_quote(script)), cwd, VERIFIER_TIMEOUT);
+            let mut detail = execute_command(
+                &format!("node -e {}", shell_quote(script)),
+                cwd,
+                VERIFIER_TIMEOUT,
+            );
             detail.verifier = kind.clone();
             expect_exit(detail, 0)
         }
         VerifierKind::ModelJudgment { prompt } => VerifierDetail {
             verifier: kind.clone(),
             result: VerificationResult::Failed {
-                reason: format!("model judgment requires a configured independent verifier: {prompt}"),
+                reason: format!(
+                    "model judgment requires a configured independent verifier: {prompt}"
+                ),
             },
             duration_ms: 0,
             stdout: String::new(),
@@ -266,27 +361,51 @@ mod tests {
     #[test]
     fn command_verifier_passes_and_fails_on_exit_code() {
         let run = run_verification(
-            &[crit(VerifierKind::Command { cmd: "true".into(), expected_exit: 0 }, true)],
+            &[crit(
+                VerifierKind::Command {
+                    cmd: "true".into(),
+                    expected_exit: 0,
+                },
+                true,
+            )],
             "",
         );
         assert_eq!(run.verdict, VerificationResult::Passed);
 
         let run = run_verification(
-            &[crit(VerifierKind::Command { cmd: "false".into(), expected_exit: 0 }, true)],
+            &[crit(
+                VerifierKind::Command {
+                    cmd: "false".into(),
+                    expected_exit: 0,
+                },
+                true,
+            )],
             "",
         );
-        assert!(matches!(&run.verdict, VerificationResult::Failed { reason } if reason.contains("exited 1")));
+        assert!(
+            matches!(&run.verdict, VerificationResult::Failed { reason } if reason.contains("exited 1"))
+        );
     }
 
     #[test]
     fn file_exists_verifier() {
         let run = run_verification(
-            &[crit(VerifierKind::FileExists { path: "/etc/hosts".into() }, true)],
+            &[crit(
+                VerifierKind::FileExists {
+                    path: "/etc/hosts".into(),
+                },
+                true,
+            )],
             "",
         );
         assert_eq!(run.verdict, VerificationResult::Passed);
         let run = run_verification(
-            &[crit(VerifierKind::FileExists { path: "/nonexistent-xyz".into() }, true)],
+            &[crit(
+                VerifierKind::FileExists {
+                    path: "/nonexistent-xyz".into(),
+                },
+                true,
+            )],
             "",
         );
         assert!(matches!(run.verdict, VerificationResult::Failed { .. }));
@@ -314,8 +433,19 @@ mod tests {
         // never execute (rule 2: no model calls a free check can preempt).
         let run = run_verification(
             &[
-                crit(VerifierKind::ModelJudgment { prompt: "judge".into() }, true),
-                crit(VerifierKind::Command { cmd: "false".into(), expected_exit: 0 }, true),
+                crit(
+                    VerifierKind::ModelJudgment {
+                        prompt: "judge".into(),
+                    },
+                    true,
+                ),
+                crit(
+                    VerifierKind::Command {
+                        cmd: "false".into(),
+                        expected_exit: 0,
+                    },
+                    true,
+                ),
             ],
             "",
         );
@@ -358,7 +488,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("marker"), "x").unwrap();
         let run = run_verification(
-            &[crit(VerifierKind::Command { cmd: "test -f marker".into(), expected_exit: 0 }, true)],
+            &[crit(
+                VerifierKind::Command {
+                    cmd: "test -f marker".into(),
+                    expected_exit: 0,
+                },
+                true,
+            )],
             dir.to_str().unwrap(),
         );
         assert_eq!(run.verdict, VerificationResult::Passed);

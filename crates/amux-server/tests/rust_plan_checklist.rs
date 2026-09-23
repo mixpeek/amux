@@ -36,7 +36,11 @@ fn doc() -> String {
     // script — a copy of a check is not the check, and it would pass forever while
     // the real one rotted. Unset in every normal run.
     let p = std::env::var("AMUX_PLAN_DOC").unwrap_or_else(|_| {
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/rust-rebuild-plan.md").to_string()
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/rust-rebuild-plan.md"
+        )
+        .to_string()
     });
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {p}: {e}"))
 }
@@ -65,7 +69,9 @@ fn items(src: &str) -> Vec<Item> {
                 Some((" ", r)) => (false, r),
                 _ => continue,
             };
-            let Some(id) = rest.split_whitespace().next() else { continue };
+            let Some(id) = rest.split_whitespace().next() else {
+                continue;
+            };
             if !id.starts_with("RR-") {
                 continue;
             }
@@ -129,11 +135,14 @@ fn a_completed_item_carries_its_evidence() {
     let done = ["IMPLEMENTED", "VERIFYING", "VERIFIED"];
     let bad: Vec<_> = items(&src)
         .into_iter()
-        .filter(|i| {
-            i.status.as_deref().is_some_and(|s| done.contains(&s)) && i.evidence.is_none()
-        })
+        .filter(|i| i.status.as_deref().is_some_and(|s| done.contains(&s)) && i.evidence.is_none())
         .map(|i| {
-            format!("  {}:{} — Status: {} with no Evidence", i.line, i.id, i.status.unwrap())
+            format!(
+                "  {}:{} — Status: {} with no Evidence",
+                i.line,
+                i.id,
+                i.status.unwrap()
+            )
         })
         .collect();
     assert!(
@@ -165,7 +174,12 @@ fn evidence_is_not_hidden_in_an_html_comment() {
                 .iter()
                 .any(|k| c.to_ascii_lowercase().contains(k));
             carries_state.then(|| {
-                format!("  {}:{} — <!-- {} -->", i.line, i.id, c.chars().take(70).collect::<String>())
+                format!(
+                    "  {}:{} — <!-- {} -->",
+                    i.line,
+                    i.id,
+                    c.chars().take(70).collect::<String>()
+                )
             })
         })
         .collect();
@@ -204,11 +218,15 @@ fn the_parser_still_understands_the_checklist_format() {
     );
     let mut by_status: BTreeMap<&str, usize> = BTreeMap::new();
     for i in &all {
-        *by_status.entry(i.status.as_deref().unwrap_or("(none)")).or_default() += 1;
+        *by_status
+            .entry(i.status.as_deref().unwrap_or("(none)"))
+            .or_default() += 1;
     }
     // Both cells above need at least one item in a completed state to be meaningful.
     assert!(
-        by_status.keys().any(|s| ["IMPLEMENTED", "VERIFYING", "VERIFIED"].contains(s)),
+        by_status
+            .keys()
+            .any(|s| ["IMPLEMENTED", "VERIFYING", "VERIFIED"].contains(s)),
         "no item is in a completed state, so a_completed_item_carries_its_evidence cannot \
          fail: {by_status:?}"
     );

@@ -29,7 +29,9 @@ fn every_timeout_wrapped_command_sets_kill_on_drop() {
 
     let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -39,7 +41,9 @@ fn every_timeout_wrapped_command_sets_kill_on_drop() {
             if p.extension().and_then(|x| x.to_str()) != Some("rs") {
                 continue;
             }
-            let Ok(src) = std::fs::read_to_string(&p) else { continue };
+            let Ok(src) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             let lines: Vec<&str> = src.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 if !line.contains("timeout(") {
@@ -62,7 +66,9 @@ fn every_timeout_wrapped_command_sets_kill_on_drop() {
                         .iter()
                         .any(|l| l.contains("let fut") && l.contains("Command::new"))
                     || (line.contains(", fut)")
-                        && lines[i.saturating_sub(10)..i].iter().any(|l| l.contains("let fut"))
+                        && lines[i.saturating_sub(10)..i]
+                            .iter()
+                            .any(|l| l.contains("let fut"))
                         && lines[i.saturating_sub(10)..i]
                             .iter()
                             .any(|l| l.contains("Command::new")));

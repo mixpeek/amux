@@ -18,9 +18,6 @@ pub mod advance;
 pub mod artifact_store;
 pub mod attempts;
 pub mod board_store;
-pub mod task_graph_store;
-pub mod trace_store;
-pub mod throughput_store;
 pub mod commands;
 pub mod harness_store;
 pub mod interactions;
@@ -28,7 +25,10 @@ pub mod memories;
 pub mod migrate;
 pub mod queries;
 pub mod replay;
+pub mod task_graph_store;
 pub mod telegram;
+pub mod throughput_store;
+pub mod trace_store;
 pub mod verification_store;
 pub mod workflow_store;
 
@@ -266,10 +266,18 @@ fn claim_sole_writer(db_path: &Path) -> WriterLockOutcome {
     let mut buf = String::new();
     let mut f = &file;
     let _ = f.read_to_string(&mut buf);
-    let existing = serde_json::from_str::<serde_json::Value>(&buf).ok().map(|v| ExistingWriter {
-        pid: v.get("pid").and_then(serde_json::Value::as_u64).map(|x| x as u32),
-        port: v.get("port").and_then(serde_json::Value::as_u64).map(|x| x as u16),
-    });
+    let existing = serde_json::from_str::<serde_json::Value>(&buf)
+        .ok()
+        .map(|v| ExistingWriter {
+            pid: v
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .map(|x| x as u32),
+            port: v
+                .get("port")
+                .and_then(serde_json::Value::as_u64)
+                .map(|x| x as u16),
+        });
     if existing.as_ref().and_then(|e| e.pid) == Some(std::process::id()) {
         WriterLockOutcome::HeldBySelf
     } else {
@@ -279,7 +287,9 @@ fn claim_sole_writer(db_path: &Path) -> WriterLockOutcome {
 
 /// Tokio worker threads, which is also what `available_parallelism` returns.
 pub(crate) fn worker_threads() -> u32 {
-    std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4)
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(4)
 }
 
 /// Read connections, DECOUPLED from the tokio worker count (AMUX-4955).
@@ -445,7 +455,11 @@ impl Store {
     where
         F: FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + Send + 'static,
     {
-        self.write_correlated(f, interactions::current_id(), std::panic::Location::caller())
+        self.write_correlated(
+            f,
+            interactions::current_id(),
+            std::panic::Location::caller(),
+        )
     }
 
     fn write_correlated<F>(
@@ -498,7 +512,8 @@ impl Store {
         // These two atomics are readable on /api/health at any instant, which
         // is where someone looks while a POST is hanging in front of them.
         let waited_ms = started.elapsed().as_millis() as u64;
-        self.write_wait_max_ms.fetch_max(waited_ms, Ordering::Relaxed);
+        self.write_wait_max_ms
+            .fetch_max(waited_ms, Ordering::Relaxed);
         out
     }
 
@@ -522,23 +537,23 @@ impl Store {
         let queued = std::time::Instant::now();
         let site = std::panic::Location::caller();
         async move {
-        tokio::task::spawn_blocking(move || {
-            // TIME SPENT WAITING FOR A BLOCKING THREAD, which every other
-            // instrument on this path is structurally blind to (AMUX-4744).
-            //
-            // `writer_slow` and `write_wait_max_ms` are both measured INSIDE
-            // `write_correlated`, which by then is already running on a blocking
-            // thread. Neither can see the wait to GET that thread. So if the
-            // blocking pool is saturated, a request stalls for a minute and
-            // every existing verdict stays silent and truthful.
-            //
-            // That makes this the discriminator rather than another counter:
-            // a 90s request with a small `queued_ms` and a large value here
-            // means the writer was never the problem.
-            record_blocking_dispatch(&dispatch, queued.elapsed());
-            this.write_correlated(f, interaction_id, site)
-        })
-        .await?
+            tokio::task::spawn_blocking(move || {
+                // TIME SPENT WAITING FOR A BLOCKING THREAD, which every other
+                // instrument on this path is structurally blind to (AMUX-4744).
+                //
+                // `writer_slow` and `write_wait_max_ms` are both measured INSIDE
+                // `write_correlated`, which by then is already running on a blocking
+                // thread. Neither can see the wait to GET that thread. So if the
+                // blocking pool is saturated, a request stalls for a minute and
+                // every existing verdict stays silent and truthful.
+                //
+                // That makes this the discriminator rather than another counter:
+                // a 90s request with a small `queued_ms` and a large value here
+                // means the writer was never the problem.
+                record_blocking_dispatch(&dispatch, queued.elapsed());
+                this.write_correlated(f, interaction_id, site)
+            })
+            .await?
         }
     }
 
@@ -662,8 +677,7 @@ impl Store {
         }
         let conn = Connection::open_with_flags(
             self.db_path.as_ref(),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "query_only", "ON")?;
@@ -674,7 +688,8 @@ impl Store {
     /// Current global revision.
     pub fn current_rev(&self) -> anyhow::Result<StateRevision> {
         let conn = self.read()?;
-        let rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
+        let rev: u64 =
+            conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
         Ok(StateRevision(rev))
     }
 
@@ -688,7 +703,11 @@ impl Store {
     /// in the event journal the client must full-sync rather than trust a
     /// silently incomplete delta (Invariant 40 — an omission must announce
     /// itself).
-    pub fn events_since(&self, since: StateRevision, limit: usize) -> anyhow::Result<(Vec<StateEvent>, bool)> {
+    pub fn events_since(
+        &self,
+        since: StateRevision,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<StateEvent>, bool)> {
         let conn = self.read()?;
         let oldest: Option<u64> = conn
             .query_row("SELECT MIN(rev) FROM _amux_state_events", [], |r| r.get(0))
@@ -720,8 +739,7 @@ impl Store {
                 rev: StateRevision(rev),
                 entity_type: parse_entity_type(&entity_type),
                 entity_id,
-                mutation: serde_json::from_str(&mutation)
-                    .unwrap_or(MutationKind::Updated),
+                mutation: serde_json::from_str(&mutation).unwrap_or(MutationKind::Updated),
                 at: at.parse().unwrap_or_default(),
             });
         }
@@ -812,11 +830,13 @@ fn writer_loop(
         // later mutation. The transaction guard rolls back during unwinding.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             apply_write(&conn, req.work, &events_tx, req.interaction_id.as_deref())
-        })).unwrap_or_else(|_| {
+        }))
+        .unwrap_or_else(|_| {
             tracing::error!(target: "store", verdict = "writer_mutation_panicked",
                 "mutation panicked; transaction rolled back, writer remains available");
             Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                std::io::Error::other("writer mutation panicked; transaction rolled back"))))
+                std::io::Error::other("writer mutation panicked; transaction rolled back"),
+            )))
         });
         let work_ms = started.elapsed().as_millis() as u64;
         // SPLIT THE HOLD (AMUX-4830, corrected by AMUX-4837). This comment used
@@ -900,8 +920,12 @@ fn apply_write(
     // busy handler sleeps. Stamping after `work` would fold the lock wait back
     // into statement time, which is the conflation this split exists to end.
     let begin_started = std::time::Instant::now();
-    let transaction = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    LAST_BEGIN_MS.store(begin_started.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    LAST_BEGIN_MS.store(
+        begin_started.elapsed().as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let outcome = work(&transaction)?;
     let mut committed_events = Vec::new();
     let rev = if outcome.applied {
@@ -909,12 +933,19 @@ fn apply_write(
         // from this transaction shares the revision, which is what makes
         // "give me everything after rev N" exact.
         conn.execute("UPDATE _amux_rev SET rev = rev + 1 WHERE id = 1", [])?;
-        let rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
+        let rev: u64 =
+            conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
         let now = chrono::Utc::now();
         if let Some(id) = interaction_id {
-            conn.execute("UPDATE _amux_interactions SET applied_writes=applied_writes+1,
+            conn.execute(
+                "UPDATE _amux_interactions SET applied_writes=applied_writes+1,
                 unjournaled_writes=unjournaled_writes+?2, updated_at=?3 WHERE id=?1",
-                rusqlite::params![id, i64::from(outcome.events.is_empty()), now.timestamp_millis()])?;
+                rusqlite::params![
+                    id,
+                    i64::from(outcome.events.is_empty()),
+                    now.timestamp_millis()
+                ],
+            )?;
         }
         for ev in outcome.events {
             // The COLUMN stores the BARE tag ("worker", "task",
@@ -961,12 +992,16 @@ fn apply_write(
         }
         StateRevision(rev)
     } else {
-        let rev: u64 = conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
+        let rev: u64 =
+            conn.query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))?;
         StateRevision(rev)
     };
     let commit_started = std::time::Instant::now();
     transaction.commit()?;
-    LAST_COMMIT_MS.store(commit_started.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    LAST_COMMIT_MS.store(
+        commit_started.elapsed().as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     // Publish only after commit: a subscriber must never see an event whose
     // transaction later rolled back.
     for ev in &committed_events {
@@ -1087,7 +1122,10 @@ mod amux4744_write_queue_tests {
             std::thread::spawn(move || {
                 s.write(move |_conn| {
                     std::thread::sleep(hold);
-                    Ok(WriteOutcome { applied: false, events: vec![] })
+                    Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    })
                 })
             })
         };
@@ -1098,11 +1136,17 @@ mod amux4744_write_queue_tests {
         store
             .write(|conn| {
                 conn.execute_batch("CREATE TABLE IF NOT EXISTS wq_probe (id INTEGER)")?;
-                Ok(WriteOutcome { applied: false, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                })
             })
             .expect("the queued write still completes");
         let observed = started.elapsed();
-        blocker.join().expect("blocker joins").expect("blocker write");
+        blocker
+            .join()
+            .expect("blocker joins")
+            .expect("blocker write");
 
         assert!(
             observed >= std::time::Duration::from_millis(WRITE_WAIT_WARN_MS),
@@ -1189,8 +1233,14 @@ mod amux4744_write_queue_tests {
         // `stmt_ms` arithmetic above the macro, so a version of this that
         // scanned the whole body stayed GREEN when the field was deleted from
         // the warn itself. Measured: that mutation passed.
-        let warn_at = body.find("writer_slow").expect("the verdict is in this function");
-        let warn = &body[warn_at..body[warn_at..].find(");").map(|i| warn_at + i).unwrap_or(body.len())];
+        let warn_at = body
+            .find("writer_slow")
+            .expect("the verdict is in this function");
+        let warn = &body[warn_at
+            ..body[warn_at..]
+                .find(");")
+                .map(|i| warn_at + i)
+                .unwrap_or(body.len())];
         for field in [
             "queued_ms",
             "work_ms",
@@ -1226,7 +1276,10 @@ mod amux4744_write_queue_tests {
             .write(|conn| {
                 conn.execute("CREATE TABLE IF NOT EXISTS t_split (k INTEGER)", [])?;
                 conn.execute("INSERT INTO t_split (k) VALUES (1)", [])?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
 
@@ -1287,15 +1340,22 @@ mod amux4744_write_queue_tests {
         store
             .write(|conn| {
                 conn.execute("CREATE TABLE IF NOT EXISTS t_begin (k INTEGER)", [])?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
 
         // A SECOND connection holds the write lock for a while. The store's
         // writer must sit in BEGIN IMMEDIATE until this one commits.
         let blocker = Connection::open(&path).unwrap();
-        blocker.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
-        blocker.execute_batch("BEGIN IMMEDIATE; INSERT INTO t_begin (k) VALUES (99);").unwrap();
+        blocker
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        blocker
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO t_begin (k) VALUES (99);")
+            .unwrap();
 
         let (tx, rx) = mpsc::channel();
         let held_ms = 400;
@@ -1308,10 +1368,14 @@ mod amux4744_write_queue_tests {
         store
             .write(|conn| {
                 conn.execute("INSERT INTO t_begin (k) VALUES (1)", [])?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
             })
             .unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(10)).expect("blocker committed");
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("blocker committed");
 
         let begin = LAST_BEGIN_MS.load(std::sync::atomic::Ordering::Relaxed);
         // Generous floor: the point is that the wait lands in `begin_ms` at all,
@@ -1347,7 +1411,10 @@ mod amux4744_write_queue_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("sites.db")).unwrap();
         let noop = |_: &Connection| {
-            Ok(WriteOutcome { applied: false, events: vec![] })
+            Ok(WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
         };
         // Two calls, two LINES, one identical closure body: `origin` cannot
         // separate these and `site` must.
@@ -1386,7 +1453,12 @@ mod amux4744_write_queue_tests {
         let store = Store::open(&dir.path().join("wq2.db")).unwrap();
         for _ in 0..20 {
             store
-                .write(|_conn| Ok(WriteOutcome { applied: false, events: vec![] }))
+                .write(|_conn| {
+                    Ok(WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    })
+                })
                 .expect("write");
         }
         let recorded = store.write_wait_max_ms.load(Ordering::Relaxed);
@@ -1431,7 +1503,8 @@ mod af640_read_pool_tests {
 
             let s2 = store.clone();
             let reader = tokio::spawn(async move {
-                s2.read_async(|c| Ok(c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?)).await
+                s2.read_async(|c| Ok(c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?))
+                    .await
             });
 
             // THE POINT: while that read waits for a connection, the single
@@ -1449,7 +1522,11 @@ mod af640_read_pool_tests {
 
             drop(held);
             let got = reader.await.expect("join");
-            assert_eq!(got.unwrap(), 1, "the read still returns once a connection frees");
+            assert_eq!(
+                got.unwrap(),
+                1,
+                "the read still returns once a connection frees"
+            );
         });
     }
 
@@ -1510,14 +1587,23 @@ mod af640_read_pool_tests {
         assert!(max >= 1, "a pool with no connections cannot be exhausted");
 
         // Hold every connection, so the next acquire has nowhere to go.
-        let held: Vec<_> = (0..max).map(|_| store.read().expect("initial fill")).collect();
-        assert_eq!(store.read_pool.state().idle_connections, 0, "the pool must be empty");
+        let held: Vec<_> = (0..max)
+            .map(|_| store.read().expect("initial fill"))
+            .collect();
+        assert_eq!(
+            store.read_pool.state().idle_connections,
+            0,
+            "the pool must be empty"
+        );
 
         let t0 = std::time::Instant::now();
         let denied = store.read();
         let waited = t0.elapsed();
 
-        assert!(denied.is_err(), "an exhausted pool must refuse, not hand out a 29th connection");
+        assert!(
+            denied.is_err(),
+            "an exhausted pool must refuse, not hand out a 29th connection"
+        );
         // THE POINT: it fails in ~5s, not r2d2's default 30s. The upper bound is
         // what this card is about; the lower bound catches a timeout set so
         // small that ordinary contention would start failing.
@@ -1535,7 +1621,10 @@ mod af640_read_pool_tests {
 
         // CONTROL: after releasing, a read must succeed again. Without this the
         // assertions above are satisfied by a pool that is simply broken.
-        assert!(store.read().is_ok(), "the pool must recover once connections are returned");
+        assert!(
+            store.read().is_ok(),
+            "the pool must recover once connections are returned"
+        );
     }
 }
 
@@ -1590,14 +1679,13 @@ mod af937_writer_lock_tests {
         use std::io::Write;
         use std::os::unix::io::AsRawFd;
         let lock_path = holder_lock_path(db_path);
-        let file =
-            std::fs::OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .truncate(false)
-                .open(&lock_path)
-                .unwrap();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc, 0, "test setup must win an uncontended lock");
         let mut f = &file;
@@ -1614,7 +1702,10 @@ mod af937_writer_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("t.db");
         let (store, logs) = with_captured_logs(|| Store::open(&db_path).unwrap());
-        assert!(store.holds_writer_lock(), "the only opener must win the lock");
+        assert!(
+            store.holds_writer_lock(),
+            "the only opener must win the lock"
+        );
         assert!(
             !logs.contains("concurrent_writer_detected"),
             "a lone opener must not warn about contention: {logs}"
@@ -1646,7 +1737,10 @@ mod af937_writer_lock_tests {
             logs.contains(&fake_pid.to_string()),
             "the warning must name the OTHER process's pid, not just that one exists: {logs}"
         );
-        assert!(logs.contains("8823"), "the warning must carry the other process's port too: {logs}");
+        assert!(
+            logs.contains("8823"),
+            "the warning must carry the other process's port too: {logs}"
+        );
     }
 
     /// The false-positive this design specifically avoids: the SAME process
@@ -1794,7 +1888,10 @@ mod read_pool_sizing_tests {
         // configuring a pool nobody can acquire from.
         for bad in ["0", "-1", "", "lots"] {
             std::env::set_var("AMUX_READ_POOL_SIZE", bad);
-            assert!(read_pool_size() > worker_threads(), "bad value {bad:?} must fall back");
+            assert!(
+                read_pool_size() > worker_threads(),
+                "bad value {bad:?} must fall back"
+            );
         }
         std::env::remove_var("AMUX_READ_POOL_SIZE");
     }

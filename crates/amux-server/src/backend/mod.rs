@@ -104,7 +104,10 @@ pub fn backends_from_env(
     env: &std::collections::BTreeMap<String, String>,
 ) -> Vec<Arc<dyn SessionBackend>> {
     let mut backends: Vec<Arc<dyn SessionBackend>> = vec![Arc::new(tmux::TmuxBackend::new())];
-    if let Some(session) = env.get("AMUX_HERDR_SESSION").map(|s| s.trim()).filter(|s| !s.is_empty())
+    if let Some(session) = env
+        .get("AMUX_HERDR_SESSION")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
     {
         backends.push(Arc::new(herdr::HerdrBackend::new(session.to_string())));
     }
@@ -210,7 +213,10 @@ mod tests {
     #[tokio::test]
     async fn default_send_text_refuses_and_names_the_backend() {
         let tmux = tmux::TmuxBackend::new();
-        let proc = ProcessRef { backend_ref: "amux-wrk_x".into(), pid: None };
+        let proc = ProcessRef {
+            backend_ref: "amux-wrk_x".into(),
+            pid: None,
+        };
         let err = tmux
             .send_text(&proc, "hello")
             .await

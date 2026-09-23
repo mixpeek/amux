@@ -24,7 +24,7 @@
 //!   mounts must be claimed by NATIVE_FAMILIES or PROXIED_FAMILIES (a view
 //!   must share the predicate of the mechanism it describes — ethos rule 1).
 
-use amux_server::api::{router, py_proxy, AppState};
+use amux_server::api::{py_proxy, router, AppState};
 use amux_server::db::Store;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -39,7 +39,7 @@ fn app() -> (axum::Router, tempfile::TempDir) {
         started: std::time::Instant::now(),
         build_hash: "test".into(),
         auth_token: None,
-    reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     (router(state), dir)
 }
@@ -58,8 +58,15 @@ async fn get(app: &axum::Router, path: &str) -> (StatusCode, String, String, boo
         .unwrap_or("")
         .to_string();
     let proxied = res.headers().get("x-amux-answered-by").is_some();
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    (status, ct, String::from_utf8_lossy(&bytes).into_owned(), proxied)
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        ct,
+        String::from_utf8_lossy(&bytes).into_owned(),
+        proxied,
+    )
 }
 
 /// One test fn on purpose: it mutates process env (AMUX_PY_URL, AMUX_HOME),
@@ -91,7 +98,10 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
         py_proxy::PROXIED_FAMILIES.is_empty(),
         "PROXIED_FAMILIES must stay empty post-cutover; a new row reintroduces \
          the python proxy: {:?}",
-        py_proxy::PROXIED_FAMILIES.iter().map(|f| f.family).collect::<Vec<_>>()
+        py_proxy::PROXIED_FAMILIES
+            .iter()
+            .map(|f| f.family)
+            .collect::<Vec<_>>()
     );
 
     // -- /api/scope answers NATIVELY (was the last proxied family): with
@@ -122,7 +132,15 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
         // `connectors` is the 7th, added intentionally (df798ca): a connector is
         // a scopable capability, not a new subsystem (docs/design/connectors.md).
         // Publication order is SCOPE_CAPS order, so it follows status_mode.
-        vec!["memory", "rules", "env", "gates", "skin", "status_mode", "connectors"],
+        vec![
+            "memory",
+            "rules",
+            "env",
+            "gates",
+            "skin",
+            "status_mode",
+            "connectors"
+        ],
         "the scope contract's capabilities, in publication order: {body}"
     );
     // The hermetic fleet (w1: alpha, beta) shows through the global read.
@@ -148,9 +166,12 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!proxied, "/api/groups must be NATIVE");
     let v: Value = serde_json::from_slice(body.as_bytes()).unwrap();
-    assert_eq!(v["groups"], serde_json::json!([
-        {"name": "alpha", "workers": 1}, {"name": "beta", "workers": 1}
-    ]));
+    assert_eq!(
+        v["groups"],
+        serde_json::json!([
+            {"name": "alpha", "workers": 1}, {"name": "beta", "workers": 1}
+        ])
+    );
 
     let (status, _, body, proxied) = get(&app, "/api/tags").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -169,9 +190,15 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
     let (status, ct, body, proxied) = get(&app, "/api/sessions/definitely-not/peek").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert!(ct.starts_with("application/json"), "{ct}");
-    assert!(!proxied, "missing-session 404 must be NATIVE, not a python 502");
+    assert!(
+        !proxied,
+        "missing-session 404 must be NATIVE, not a python 502"
+    );
     let v: Value = serde_json::from_slice(body.as_bytes()).unwrap();
-    assert_eq!(v["error"], serde_json::json!("session 'definitely-not' not found"));
+    assert_eq!(
+        v["error"],
+        serde_json::json!("session 'definitely-not' not found")
+    );
     let (status, _, body, proxied) = get(&app, "/api/sessions/w1/instructions").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!proxied);
@@ -222,16 +249,24 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
-    assert!(res.headers().get("x-amux-answered-by").is_none(), "/api/file/raw must be NATIVE");
+    assert!(
+        res.headers().get("x-amux-answered-by").is_none(),
+        "/api/file/raw must be NATIVE"
+    );
     assert_eq!(res.headers()["content-range"], "bytes 0-4/13");
-    let raw_body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let raw_body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(&raw_body[..], b"hello");
 
     let (status, _, body, proxied) = get(&app, &format!("/api/library?path={dirq}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!proxied, "/api/library must be NATIVE");
     let v: Value = serde_json::from_slice(body.as_bytes()).unwrap();
-    assert_eq!(v["is_library"], false, "hermetic home holds no ebooks: {body}");
+    assert_eq!(
+        v["is_library"], false,
+        "hermetic home holds no ebooks: {body}"
+    );
 
     // Unknown /api/file subpaths: the module's python-shape 404, no proxy.
     let (status, ct, body, proxied) = get(&app, "/api/file/definitely-not").await;
@@ -240,7 +275,12 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
     assert!(!proxied);
 
     // Unknown paths in native namespaces: python's generic JSON 404 shape.
-    for path in ["/api/fs", "/api/fs/definitely-not", "/api/tags/mytag", "/api/groups/x/y"] {
+    for path in [
+        "/api/fs",
+        "/api/fs/definitely-not",
+        "/api/tags/mytag",
+        "/api/groups/x/y",
+    ] {
         let (status, ct, body, proxied) = get(&app, path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
         assert!(ct.starts_with("application/json"), "{path}: {ct}");
@@ -260,7 +300,10 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
     let v: Value = serde_json::from_slice(body.as_bytes()).unwrap();
     assert_eq!(v["email"], "");
     assert_eq!(v["is_cloud"], false);
-    assert_eq!(v["managed_upstream"], false, "no server.env in the hermetic home");
+    assert_eq!(
+        v["managed_upstream"], false,
+        "no server.env in the hermetic home"
+    );
     assert_eq!(v["key_valid"], Value::Null);
     for k in ["has_api_key", "has_oauth", "key_error"] {
         assert!(v.get(k).is_some(), "identity payload missing {k}: {body}");
@@ -297,7 +340,10 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
     assert!(!proxied);
     let v: Value = serde_json::from_slice(body.as_bytes()).unwrap();
     assert!(
-        v["error"].as_str().unwrap().starts_with("browser route not found"),
+        v["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("browser route not found"),
         "{body}"
     );
     assert!(v["routes"].is_array() && v["actions"].is_array(), "{body}");
@@ -321,7 +367,14 @@ async fn boundary_routes_proxied_to_python_native_stays_native() {
     assert!(ct.starts_with("application/json"), "{ct}");
     assert!(!proxied, "/api/dictation/config must be NATIVE");
     let v: Value = serde_json::from_slice(body.as_bytes()).unwrap();
-    for k in ["configured", "source", "model", "local", "local_model", "engine"] {
+    for k in [
+        "configured",
+        "source",
+        "model",
+        "local",
+        "local_model",
+        "engine",
+    ] {
         assert!(v.get(k).is_some(), "config payload missing {k}: {body}");
     }
 
@@ -368,8 +421,7 @@ fn every_mounted_api_family_is_claimed_by_the_registry() {
             let rest = &t[start + 1..];
             let path = &rest[..rest.find('"').unwrap_or(rest.len())];
             // Family root: first two segments ("/api/xxx").
-            let family: String =
-                path.split('/').take(3).collect::<Vec<_>>().join("/");
+            let family: String = path.split('/').take(3).collect::<Vec<_>>().join("/");
             mounted.insert(family);
         }
     }
@@ -383,8 +435,12 @@ fn every_mounted_api_family_is_claimed_by_the_registry() {
     // family_routes(); mod.rs itself should carry no proxy path literals.
     for fam in &mounted {
         let claimed = native.contains(fam.as_str())
-            || native.iter().any(|n| fam.starts_with(*n) && fam[n.len()..].starts_with('.'))
-            || py_proxy::PROXIED_FAMILIES.iter().any(|p| p.family.contains(fam.as_str()));
+            || native
+                .iter()
+                .any(|n| fam.starts_with(*n) && fam[n.len()..].starts_with('.'))
+            || py_proxy::PROXIED_FAMILIES
+                .iter()
+                .any(|p| p.family.contains(fam.as_str()));
         assert!(
             claimed,
             "mod.rs mounts {fam} but the boundary registry (py_proxy.rs \
@@ -395,7 +451,9 @@ fn every_mounted_api_family_is_claimed_by_the_registry() {
     for p in py_proxy::PROXIED_FAMILIES {
         for (n, _) in py_proxy::NATIVE_FAMILIES {
             assert!(
-                !p.family.starts_with(*n) || p.family.contains("sessions") || p.family.contains("browser"),
+                !p.family.starts_with(*n)
+                    || p.family.contains("sessions")
+                    || p.family.contains("browser"),
                 "family {n} is claimed native AND proxied ({})",
                 p.family
             );

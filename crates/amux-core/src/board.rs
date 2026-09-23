@@ -1158,19 +1158,57 @@ pub fn would_cycle(
 /// a new one. A card for "continue" is noise that buries the cards that mean
 /// something. Mirrors the Python board's `_AUTOTASK_SKIP` set.
 const CAPTURE_SKIP: [&str; 26] = [
-    "continue", "go", "yes", "y", "no", "n", "ok", "okay", "yep", "yeah", "sure",
-    "stop", "wait", "retry", "again", "next", "done", "thanks", "ty", "k",
-    "proceed", "resume", "keep going", "carry on", "do it", "sounds good",
+    "continue",
+    "go",
+    "yes",
+    "y",
+    "no",
+    "n",
+    "ok",
+    "okay",
+    "yep",
+    "yeah",
+    "sure",
+    "stop",
+    "wait",
+    "retry",
+    "again",
+    "next",
+    "done",
+    "thanks",
+    "ty",
+    "k",
+    "proceed",
+    "resume",
+    "keep going",
+    "carry on",
+    "do it",
+    "sounds good",
 ];
 
 /// Conversational lead-ins stripped so the derived title is the ACTION
 /// ("Please can you fix X" -> "Fix X"). Checked case-insensitively,
 /// repeatedly, longest-first at each step.
 const CAPTURE_FILLER: [&str; 19] = [
-    "i would like you to ", "i want you to ", "i need you to ", "could you please ",
-    "can you please ", "would you please ", "i want to ", "i need to ", "we need to ",
-    "we should ", "could you ", "can you ", "would you ", "will you ", "let's ",
-    "lets ", "please ", "kindly ", "pls ",
+    "i would like you to ",
+    "i want you to ",
+    "i need you to ",
+    "could you please ",
+    "can you please ",
+    "would you please ",
+    "i want to ",
+    "i need to ",
+    "we need to ",
+    "we should ",
+    "could you ",
+    "can you ",
+    "would you ",
+    "will you ",
+    "let's ",
+    "lets ",
+    "please ",
+    "kindly ",
+    "pls ",
 ];
 
 /// Derive a board-card title from a prompt's own first clause — COMPUTED,
@@ -1286,18 +1324,26 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     // at its first period produced the live task title "1" (MFEM1-53).
     // Keep the full message for classification, but derive the label from its
     // first nonempty content line after removing a Markdown list prefix.
-    let label = t.lines().map(str::trim).find_map(|line| {
-        let line = line.strip_prefix(['-', '*', '+'])
-            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-            .unwrap_or(line).trim_start();
-        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
-        let line = line.get(digits..)
-            .filter(|rest| digits > 0 && (rest.starts_with('.') || rest.starts_with(')')))
-            .map(|rest| &rest[1..])
-            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-            .unwrap_or(line).trim_start();
-        (!line.is_empty()).then_some(line)
-    }).unwrap_or(t);
+    let label = t
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let line = line
+                .strip_prefix(['-', '*', '+'])
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+                .unwrap_or(line)
+                .trim_start();
+            let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+            let line = line
+                .get(digits..)
+                .filter(|rest| digits > 0 && (rest.starts_with('.') || rest.starts_with(')')))
+                .map(|rest| &rest[1..])
+                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+                .unwrap_or(line)
+                .trim_start();
+            (!line.is_empty()).then_some(line)
+        })
+        .unwrap_or(t);
     let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
     let bare = collapsed
         .trim_end_matches(['.', '!', '?'])
@@ -1322,7 +1368,9 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
             break;
         }
     }
-    let mut head = head.trim_matches([' ', '-', '–', '—', ':', ',']).to_string();
+    let mut head = head
+        .trim_matches([' ', '-', '–', '—', ':', ','])
+        .to_string();
 
     // Strip conversational filler, repeatedly (they stack: "ok please ...").
     loop {
@@ -1351,7 +1399,9 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     if out.chars().count() > 64 {
         let cut: String = out.chars().take(63).collect();
         let cut = match cut.rfind(' ') {
-            Some(i) => cut[..i].trim_end_matches([' ', '-', '–', '—', ':', ',']).to_string(),
+            Some(i) => cut[..i]
+                .trim_end_matches([' ', '-', '–', '—', ':', ','])
+                .to_string(),
             None => cut,
         };
         out = format!("{cut}…");
@@ -1371,11 +1421,32 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
 /// Every marker carries its trailing space so the test is a word boundary:
 /// without it `"or "` would fire on "order the parts".
 const QUALIFIER_OPENERS: [&str; 26] = [
-    "and ", "also ", "and also ", "oh and ", "plus ", "but ", "or ", "& ",
-    "with respect to ", "with regard to ", "w/r/t ", "regarding ", "re: ",
-    "in addition ", "as well as ", "along with ", "same for ", "same goes ",
-    "including ", "not just ", "from ", "for ", "btw ", "by the way ",
-    "specifically ", "ditto ",
+    "and ",
+    "also ",
+    "and also ",
+    "oh and ",
+    "plus ",
+    "but ",
+    "or ",
+    "& ",
+    "with respect to ",
+    "with regard to ",
+    "w/r/t ",
+    "regarding ",
+    "re: ",
+    "in addition ",
+    "as well as ",
+    "along with ",
+    "same for ",
+    "same goes ",
+    "including ",
+    "not just ",
+    "from ",
+    "for ",
+    "btw ",
+    "by the way ",
+    "specifically ",
+    "ditto ",
 ];
 
 /// Longest a follow-on can be and still read as a modifier rather than a brief.
@@ -1421,16 +1492,47 @@ pub fn reads_as_qualifier(text: &str) -> bool {
         return false;
     }
     let lower = collapsed.to_lowercase();
-    QUALIFIER_OPENERS.iter().any(|m| lower.starts_with(m))
-        && !capture_clause_starts_task(&lower)
+    QUALIFIER_OPENERS.iter().any(|m| lower.starts_with(m)) && !capture_clause_starts_task(&lower)
 }
 
 const CAPTURE_TASK_VERBS: &[&str] = &[
-    "add ", "audit ", "build ", "change ", "check ", "clean ", "close ", "commit ",
-    "configure ", "create ", "delete ", "deploy ", "diagnose ", "document ", "edit ",
-    "find ", "fix ", "generate ", "implement ", "install ", "investigate ", "make ",
-    "move ", "open ", "push ", "refactor ", "remove ", "reproduce ", "research ",
-    "run ", "ship ", "submit ", "take ", "test ", "try ", "update ", "verify ",
+    "add ",
+    "audit ",
+    "build ",
+    "change ",
+    "check ",
+    "clean ",
+    "close ",
+    "commit ",
+    "configure ",
+    "create ",
+    "delete ",
+    "deploy ",
+    "diagnose ",
+    "document ",
+    "edit ",
+    "find ",
+    "fix ",
+    "generate ",
+    "implement ",
+    "install ",
+    "investigate ",
+    "make ",
+    "move ",
+    "open ",
+    "push ",
+    "refactor ",
+    "remove ",
+    "reproduce ",
+    "research ",
+    "run ",
+    "ship ",
+    "submit ",
+    "take ",
+    "test ",
+    "try ",
+    "update ",
+    "verify ",
     "write ",
 ];
 
@@ -1444,7 +1546,9 @@ fn capture_clause_starts_task(raw: &str) -> bool {
         .trim_start_matches("can you ")
         .trim_start_matches("could you ")
         .trim_start_matches("if not, ");
-    CAPTURE_TASK_VERBS.iter().any(|verb| clause.starts_with(verb))
+    CAPTURE_TASK_VERBS
+        .iter()
+        .any(|verb| clause.starts_with(verb))
 }
 
 fn capture_has_task_followup(lower: &str) -> bool {
@@ -1461,8 +1565,8 @@ fn capture_has_task_followup(lower: &str) -> bool {
         " and could you ",
         " if not,",
     ]
-        .iter()
-        .any(|marker| lower.split(marker).skip(1).any(capture_clause_starts_task))
+    .iter()
+    .any(|marker| lower.split(marker).skip(1).any(capture_clause_starts_task))
 }
 
 /// A pure status / information query about existing work: "status on MSG-29602?",
@@ -1500,19 +1604,39 @@ pub fn is_status_query(text: &str) -> bool {
         return false;
     }
     const STATUS_OPENERS: &[&str] = &[
-        "status on ", "status of ", "status for ", "status update", "status report",
-        "what's the status", "whats the status", "what is the status",
-        "how's the status", "hows the status",
-        "any update on", "any updates on", "any news on", "any progress on",
-        "update on ", "where are we on", "where are we with", "where do we stand",
-        "is it done", "are we done", "did you finish",
+        "status on ",
+        "status of ",
+        "status for ",
+        "status update",
+        "status report",
+        "what's the status",
+        "whats the status",
+        "what is the status",
+        "how's the status",
+        "hows the status",
+        "any update on",
+        "any updates on",
+        "any news on",
+        "any progress on",
+        "update on ",
+        "where are we on",
+        "where are we with",
+        "where do we stand",
+        "is it done",
+        "are we done",
+        "did you finish",
         // Pure explanation-seeking questions (AMUX-3408: "why is the photo
         // analysis worker downloading qwen if i'm using gemini?" carded as
         // code/doing and held a WIP slot). The ≤100-char cap and mandatory
         // trailing `?` above already exclude compound ask-then-fix prompts;
         // a why-question whose ANSWER spawns work gets its card from the
         // follow-up prompt that asks for the work.
-        "why is ", "why are ", "why does ", "why did ", "why was ", "why were ",
+        "why is ",
+        "why are ",
+        "why does ",
+        "why did ",
+        "why was ",
+        "why were ",
     ];
     STATUS_OPENERS.iter().any(|o| lower.starts_with(o)) && !capture_has_task_followup(&lower)
 }
@@ -1558,8 +1682,16 @@ pub fn is_informational_query(text: &str) -> bool {
 
     let polite = intent.strip_prefix("please ").unwrap_or(intent);
     const ANSWER_ONLY_COMMANDS: &[&str] = &[
-        "answer ", "compare ", "clarify ", "describe ", "explain ", "recap ",
-        "summarize ", "tell me ", "give me a summary ", "help me understand ",
+        "answer ",
+        "compare ",
+        "clarify ",
+        "describe ",
+        "explain ",
+        "recap ",
+        "summarize ",
+        "tell me ",
+        "give me a summary ",
+        "help me understand ",
     ];
     if !intent.contains('?') {
         return ANSWER_ONLY_COMMANDS.iter().any(|p| polite.starts_with(p));
@@ -1578,9 +1710,9 @@ pub fn is_informational_query(text: &str) -> bool {
     // memorized phrasing.
     if !tail.is_empty() {
         const QUESTION_TAILS: &[&str] = &[
-            "are ", "can ", "could ", "did ", "do ", "does ", "has ", "have ", "how ",
-            "is ", "should ", "was ", "were ", "what ", "when ", "where ", "which ",
-            "who ", "why ", "will ", "would ",
+            "are ", "can ", "could ", "did ", "do ", "does ", "has ", "have ", "how ", "is ",
+            "should ", "was ", "were ", "what ", "when ", "where ", "which ", "who ", "why ",
+            "will ", "would ",
         ];
         if !is_non_mutating_answer_tail(tail)
             && !(tail.ends_with('?') && QUESTION_TAILS.iter().any(|p| tail.starts_with(p)))
@@ -1590,20 +1722,32 @@ pub fn is_informational_query(text: &str) -> bool {
     }
 
     const QUESTION_WORDS: &[&str] = &[
-        "how ", "how's ", "hows ", "what ", "what's ", "whats ", "when ", "where ",
-        "which ", "who ", "who's ", "whos ", "why ",
+        "how ", "how's ", "hows ", "what ", "what's ", "whats ", "when ", "where ", "which ",
+        "who ", "who's ", "whos ", "why ",
     ];
     if QUESTION_WORDS.iter().any(|p| question.starts_with(p)) {
         return true;
     }
 
     const ANSWER_REQUESTS: &[&str] = &[
-        "can you answer ", "can you compare ", "can you describe ", "can you explain ",
-        "can you help me understand ", "can you please explain ", "can you summarize ",
-        "can you tell me ", "could you answer ", "could you compare ",
-        "could you describe ", "could you explain ", "could you help me understand ",
-        "could you please explain ", "could you summarize ", "could you tell me ",
-        "would you explain ", "would you tell me ",
+        "can you answer ",
+        "can you compare ",
+        "can you describe ",
+        "can you explain ",
+        "can you help me understand ",
+        "can you please explain ",
+        "can you summarize ",
+        "can you tell me ",
+        "could you answer ",
+        "could you compare ",
+        "could you describe ",
+        "could you explain ",
+        "could you help me understand ",
+        "could you please explain ",
+        "could you summarize ",
+        "could you tell me ",
+        "would you explain ",
+        "would you tell me ",
     ];
     if ANSWER_REQUESTS.iter().any(|p| question.starts_with(p)) {
         return true;
@@ -1612,8 +1756,13 @@ pub fn is_informational_query(text: &str) -> bool {
     // running the build/test/deploy, so they are work even though grammatical
     // questions surround them.
     const OPERATIONAL_CHECKS: &[&str] = &[
-        "does this build", "does it build", "do the tests pass", "does the test pass",
-        "did the tests pass", "can this compile", "will this deploy",
+        "does this build",
+        "does it build",
+        "do the tests pass",
+        "does the test pass",
+        "did the tests pass",
+        "can this compile",
+        "will this deploy",
     ];
     if OPERATIONAL_CHECKS.iter().any(|p| question.starts_with(p)) {
         return false;
@@ -1625,8 +1774,8 @@ pub fn is_informational_query(text: &str) -> bool {
         return false;
     }
     const YES_NO_QUESTIONS: &[&str] = &[
-        "are ", "can ", "could ", "did ", "do ", "does ", "has ", "have ", "is ",
-        "should ", "was ", "were ", "will ", "would ",
+        "are ", "can ", "could ", "did ", "do ", "does ", "has ", "have ", "is ", "should ",
+        "was ", "were ", "will ", "would ",
     ];
     YES_NO_QUESTIONS.iter().any(|p| question.starts_with(p))
 }
@@ -1638,14 +1787,26 @@ fn is_non_mutating_answer_tail(tail: &str) -> bool {
     const ANSWER_ONLY: &[&str] = &["answer only", "just answer", "please answer only"];
     const ANSWER_FORMAT_PREFIXES: &[&str] = &["answer in ", "reply in ", "respond in "];
     const ANSWER_FORMAT_WORDS: &[&str] = &[
-        "a", "one", "two", "three", "single", "short", "brief", "concise",
-        "word", "words", "line", "lines", "sentence", "sentences", "paragraph",
+        "a",
+        "one",
+        "two",
+        "three",
+        "single",
+        "short",
+        "brief",
+        "concise",
+        "word",
+        "words",
+        "line",
+        "lines",
+        "sentence",
+        "sentences",
+        "paragraph",
         "paragraphs",
     ];
     const MUTATION_WORDS: &[&str] = &[
-        "change", "changes", "edit", "modify", "write", "create", "delete", "run",
-        "build", "fix", "make", "file", "files", "commit", "push", "deploy", "board",
-        "task", "tasks", "work",
+        "change", "changes", "edit", "modify", "write", "create", "delete", "run", "build", "fix",
+        "make", "file", "files", "commit", "push", "deploy", "board", "task", "tasks", "work",
     ];
 
     let mut saw_clause = false;
@@ -1667,10 +1828,14 @@ fn is_non_mutating_answer_tail(tail: &str) -> bool {
             .iter()
             .find_map(|prefix| clause.strip_prefix(prefix))
         {
-            let words = format.split_whitespace().map(|word| {
-                word.trim_matches(|c: char| !c.is_ascii_alphanumeric())
-            });
-            if !format.is_empty() && words.clone().all(|word| ANSWER_FORMAT_WORDS.contains(&word)) {
+            let words = format
+                .split_whitespace()
+                .map(|word| word.trim_matches(|c: char| !c.is_ascii_alphanumeric()));
+            if !format.is_empty()
+                && words
+                    .clone()
+                    .all(|word| ANSWER_FORMAT_WORDS.contains(&word))
+            {
                 continue;
             }
         }
@@ -1680,9 +1845,11 @@ fn is_non_mutating_answer_tail(tail: &str) -> bool {
             .or_else(|| clause.strip_prefix("do not "))
             .or_else(|| clause.strip_prefix("don't "));
         let Some(scope) = negated else { return false };
-        if !MUTATION_WORDS.iter().any(|word| scope.split_whitespace().any(|w| {
-            w.trim_matches(|c: char| !c.is_ascii_alphanumeric()) == *word
-        })) {
+        if !MUTATION_WORDS.iter().any(|word| {
+            scope
+                .split_whitespace()
+                .any(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()) == *word)
+        }) {
             return false;
         }
         // Negation ended before a new imperative: do not edit X, then deploy Y.
@@ -1797,10 +1964,27 @@ pub fn is_status_report(text: &str) -> bool {
     //    at 50 chars and so misses detailed acks like "Received, and it is mine.
     //    Carded BACKE-4266. Thanks for the isolation ...".
     const ACK_OPENERS: &[&str] = &[
-        "received,", "received ", "received.", "both taken", "both applies",
-        "both received", "got it", "all clear", "all-clear", "acknowledged",
-        "noted", "roger", "copy that", "understood", "will do", "standing by",
-        "thanks for", "thank you", "thanks,", "reaffirmed", "reaffirming",
+        "received,",
+        "received ",
+        "received.",
+        "both taken",
+        "both applies",
+        "both received",
+        "got it",
+        "all clear",
+        "all-clear",
+        "acknowledged",
+        "noted",
+        "roger",
+        "copy that",
+        "understood",
+        "will do",
+        "standing by",
+        "thanks for",
+        "thank you",
+        "thanks,",
+        "reaffirmed",
+        "reaffirming",
     ];
     if ACK_OPENERS.iter().any(|p| first.starts_with(p)) {
         return true;
@@ -1809,9 +1993,21 @@ pub fn is_status_report(text: &str) -> bool {
     // B. Broadcast / fleet-coordination announcements. One send is relayed to
     //    many boards, so each is coordination, not one task per recipient.
     const BROADCAST_OPENERS: &[&str] = &[
-        "quiesce", "heads-up", "heads up", "fyi ", "fyi:", "override from",
-        "override:", "override,", "do not push", "do not pull", "do not merge",
-        "hold any new", "hold all", "it is already restored", "ethan asked at",
+        "quiesce",
+        "heads-up",
+        "heads up",
+        "fyi ",
+        "fyi:",
+        "override from",
+        "override:",
+        "override,",
+        "do not push",
+        "do not pull",
+        "do not merge",
+        "hold any new",
+        "hold all",
+        "it is already restored",
+        "ethan asked at",
         "ethan asked to",
     ];
     if BROADCAST_OPENERS.iter().any(|p| first.starts_with(p)) {
@@ -1837,10 +2033,19 @@ pub fn is_status_report(text: &str) -> bool {
     }
     // Specific, unambiguous completion phrases — no length limit.
     const REPORT_PHRASES: &[&str] = &[
-        "confirmed green", "verified on origin", "verified on main",
-        "verified in prod", "landed on origin", "landed on main", "merged to main",
-        "is refused", "was refused", "is settled in git", "is already settled",
-        "completed success", "run succeeded",
+        "confirmed green",
+        "verified on origin",
+        "verified on main",
+        "verified in prod",
+        "landed on origin",
+        "landed on main",
+        "merged to main",
+        "is refused",
+        "was refused",
+        "is settled in git",
+        "is already settled",
+        "completed success",
+        "run succeeded",
     ];
     if REPORT_PHRASES.iter().any(|p| first.contains(p)) {
         return true;
@@ -1848,8 +2053,13 @@ pub fn is_status_report(text: &str) -> bool {
     // The bare "<subject> is green" family is looser, so it only counts in a
     // SHORT declarative clause ("main is GREEN again", "FAST CHECKS IS GREEN"),
     // never buried in a longer sentence.
-    const GREEN_PHRASES: &[&str] =
-        &[" is green", " are green", "back to green", "green again", "ci is green"];
+    const GREEN_PHRASES: &[&str] = &[
+        " is green",
+        " are green",
+        "back to green",
+        "green again",
+        "ci is green",
+    ];
     if first.chars().count() <= 45 && GREEN_PHRASES.iter().any(|p| first.contains(p)) {
         return true;
     }
@@ -1879,14 +2089,21 @@ fn contains_card_ref(s: &str) -> bool {
 /// "..., now <verb>" as a clause break, and it does NOT read "Run 34762983943
 /// completed" (a CI run id) as the imperative "run".
 fn report_has_task_request(lower: &str) -> bool {
-    const MARKERS: &[&str] =
-        &["; ", " — ", " -- ", ". ", "! ", "? ", ", now ", ", then ", ", also "];
+    const MARKERS: &[&str] = &[
+        "; ", " — ", " -- ", ". ", "! ", "? ", ", now ", ", then ", ", also ",
+    ];
     for marker in MARKERS {
         for clause in lower.split(marker).skip(1) {
-            let clause = clause.trim_start_matches("now ").trim_start_matches("then ");
+            let clause = clause
+                .trim_start_matches("now ")
+                .trim_start_matches("then ");
             // "run <digits/hash>" is a noun (a CI run), not the imperative verb.
             if let Some(rest) = clause.strip_prefix("run ") {
-                if rest.chars().next().is_some_and(|c| !c.is_ascii_alphabetic()) {
+                if rest
+                    .chars()
+                    .next()
+                    .is_some_and(|c| !c.is_ascii_alphabetic())
+                {
                     continue;
                 }
             }
@@ -1933,15 +2150,51 @@ pub fn peer_message_wants_action(text: &str) -> bool {
     // Explicit request / delegation / hand-off markers. Generous on purpose
     // (see the doc above): carding a borderline is the safe direction.
     const ASK_MARKERS: &[&str] = &[
-        "please ", "can you", "could you", "would you", "will you",
-        "request", "requesting", "route ", "routing ", "reroute", "assign",
-        "attach ", "action needed", "action required", "your action",
-        "your call", "you need to", "you have to", "you must", "you should ",
-        "needs your", "need your", "need you to", "want you to",
-        "hand off", "handing ", "handoff", "hand this", "take over", "take this",
-        "own this", "pick up", "picking this up", "to you:", "for you to",
-        "yours to ", "over to you", "your turn", "waiting on you", "blocked on you",
-        "at risk", "heads up:", "please review", "review request", "approve ",
+        "please ",
+        "can you",
+        "could you",
+        "would you",
+        "will you",
+        "request",
+        "requesting",
+        "route ",
+        "routing ",
+        "reroute",
+        "assign",
+        "attach ",
+        "action needed",
+        "action required",
+        "your action",
+        "your call",
+        "you need to",
+        "you have to",
+        "you must",
+        "you should ",
+        "needs your",
+        "need your",
+        "need you to",
+        "want you to",
+        "hand off",
+        "handing ",
+        "handoff",
+        "hand this",
+        "take over",
+        "take this",
+        "own this",
+        "pick up",
+        "picking this up",
+        "to you:",
+        "for you to",
+        "yours to ",
+        "over to you",
+        "your turn",
+        "waiting on you",
+        "blocked on you",
+        "at risk",
+        "heads up:",
+        "please review",
+        "review request",
+        "approve ",
         // A delegation that asks for the result back (AMUX-4534). 8c22d717 left
         // "Coordinate the rollout with the other lane and report back" with no
         // marker, so the inter-session capture contract stopped carding it.
@@ -1980,9 +2233,22 @@ pub fn item_type_for_capture(body: &str) -> &'static str {
         return "code";
     }
     const REQUEST_VERBS: &[&str] = &[
-        "please", "can you", "could you", "would you", "review", "check",
-        "fix", "investigate", "confirm", "verify", "implement", "add",
-        "route", "handle", "look into", "take a look",
+        "please",
+        "can you",
+        "could you",
+        "would you",
+        "review",
+        "check",
+        "fix",
+        "investigate",
+        "confirm",
+        "verify",
+        "implement",
+        "add",
+        "route",
+        "handle",
+        "look into",
+        "take a look",
     ];
     let lower = t.to_lowercase();
     if REQUEST_VERBS.iter().any(|v| lower.contains(v)) {
@@ -1992,7 +2258,9 @@ pub fn item_type_for_capture(body: &str) -> &'static str {
 }
 
 /// Bare demonstratives/pronouns: words whose referent lives OUTSIDE the title.
-const DEICTIC: [&str; 9] = ["this", "that", "these", "those", "it", "they", "them", "here", "there"];
+const DEICTIC: [&str; 9] = [
+    "this", "that", "these", "those", "it", "they", "them", "here", "there",
+];
 
 /// Words that, following a demonstrative, mean it was used as a bare SUBJECT
 /// ("this should…", "that broke…") rather than as a determiner with its own
@@ -2005,18 +2273,58 @@ const DEICTIC: [&str; 9] = ["this", "that", "these", "those", "it", "they", "the
 /// nobody can action, which is the defect. Precision is preserved by the
 /// determiner cases pinned in `self_contained_titles_are_left_alone`.
 const DEICTIC_VERBS: [&str; 46] = [
-    "should", "shouldn't", "is", "isn't", "are", "aren't", "was", "wasn't", "were",
-    "needs", "need", "will", "won't", "can", "can't", "must", "does", "doesn't",
-    "has", "hasn't", "have", "looks", "seems", "seemed", "breaks", "broke", "broken",
-    "fail", "fails", "failed", "work", "works", "worked", "happened", "went",
-    "stopped", "started", "keeps", "kept", "got", "gets", "did", "didn't",
-    "still", "just", "also",
+    "should",
+    "shouldn't",
+    "is",
+    "isn't",
+    "are",
+    "aren't",
+    "was",
+    "wasn't",
+    "were",
+    "needs",
+    "need",
+    "will",
+    "won't",
+    "can",
+    "can't",
+    "must",
+    "does",
+    "doesn't",
+    "has",
+    "hasn't",
+    "have",
+    "looks",
+    "seems",
+    "seemed",
+    "breaks",
+    "broke",
+    "broken",
+    "fail",
+    "fails",
+    "failed",
+    "work",
+    "works",
+    "worked",
+    "happened",
+    "went",
+    "stopped",
+    "started",
+    "keeps",
+    "kept",
+    "got",
+    "gets",
+    "did",
+    "didn't",
+    "still",
+    "just",
+    "also",
 ];
 
 /// Imperative openers that carry no object of their own.
 const IMPERATIVES: [&str; 14] = [
-    "fix", "update", "change", "remove", "delete", "add", "move", "revert",
-    "check", "make", "do", "redo", "undo", "adjust",
+    "fix", "update", "change", "remove", "delete", "add", "move", "revert", "check", "make", "do",
+    "redo", "undo", "adjust",
 ];
 
 /// Why a captured title cannot be dispatched, or `None` when it is fine
@@ -2039,13 +2347,19 @@ const IMPERATIVES: [&str; 14] = [
 pub fn title_needs_self_description(title: &str) -> Option<&'static str> {
     let words: Vec<String> = title
         .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_lowercase())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                .to_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .collect();
     if words.is_empty() {
         return Some("it contains no task subject");
     }
-    if words.iter().all(|word| word.chars().all(|c| c.is_numeric())) {
+    if words
+        .iter()
+        .all(|word| word.chars().all(|c| c.is_numeric()))
+    {
         return Some("it contains only a list number, not a task subject");
     }
     let n = words.len();
@@ -2080,7 +2394,10 @@ pub fn title_needs_self_description(title: &str) -> Option<&'static str> {
     //    which NAME their subject outright and are perfectly dispatchable.
     //    Requiring the article is what separates presupposing a referent from
     //    stating one.
-    if n <= 4 && IMPERATIVES.contains(&w(0)) && ["the", "a", "an", "this", "that", "it"].contains(&w(1)) {
+    if n <= 4
+        && IMPERATIVES.contains(&w(0))
+        && ["the", "a", "an", "this", "that", "it"].contains(&w(1))
+    {
         return Some("it points at \"the <thing>\" without saying which one or where");
     }
     None
@@ -2134,7 +2451,6 @@ pub fn verified_is_meaningful(item_type: ItemType) -> bool {
     }
 }
 
-
 #[cfg(test)]
 mod capture_tests {
     use super::*;
@@ -2155,7 +2471,15 @@ mod capture_tests {
 
     #[test]
     fn control_words_and_short_fragments_mint_no_card() {
-        for s in ["continue", "yes", "ok", "keep going", "do it", "  go  ", "Retry."] {
+        for s in [
+            "continue",
+            "yes",
+            "ok",
+            "keep going",
+            "do it",
+            "  go  ",
+            "Retry.",
+        ] {
             assert_eq!(title_from_prompt(s), None, "{s:?} is steering, not a task");
         }
         assert_eq!(title_from_prompt("fix it"), None, "too short to be a brief");
@@ -2169,7 +2493,11 @@ mod capture_tests {
             "[08:51 AM] [no-board] What is backlog? Answer only.",
             "[amux-origin: dashboard] [no_board] Explain this without making changes.",
         ] {
-            assert_eq!(title_from_prompt(stamped), None, "stamped opt-out: {stamped}");
+            assert_eq!(
+                title_from_prompt(stamped),
+                None,
+                "stamped opt-out: {stamped}"
+            );
         }
     }
 
@@ -2182,11 +2510,11 @@ mod capture_tests {
         // Specimens lifted from cmd_history, with the length the old
         // 12-character floor sorted them by.
         for s in [
-            "and TS",                                                          // 6 chars: caught before
-            "and verified",                                                    // 12: passed before
-            "from the accordions",                                             // 19
-            "And improve the UI accordingly",                                  // 30
-            "and do the same for kd@worldlabs.ai",                             // 35
+            "and TS",                              // 6 chars: caught before
+            "and verified",                        // 12: passed before
+            "from the accordions",                 // 19
+            "And improve the UI accordingly",      // 30
+            "and do the same for kd@worldlabs.ai", // 35
             "with respect to the full lifecycle (standalone and orchestrate/fanout)", // 70: the incident
             "or sedro wooley",
             "also this could be more aesthetic",
@@ -2207,8 +2535,8 @@ mod capture_tests {
             "we should have no python, its just rust !!!!",
             "do the ful backlog and needs:you",
             "it should be entirely powered by mixpeek too",
-            "order the replacement drive",  // "or " must not fire mid-word
-            "format the changelog images",  // "for " likewise
+            "order the replacement drive", // "or " must not fire mid-word
+            "format the changelog images", // "for " likewise
         ] {
             assert!(!reads_as_qualifier(s), "{s:?} stands on its own");
         }
@@ -2435,7 +2763,10 @@ mod capture_tests {
             // The inter-session capture test's own specimen (AMUX-4534).
             "Coordinate the rollout with the other lane and report back",
         ] {
-            assert!(peer_message_wants_action(s), "{s:?} is a genuine ask and must card");
+            assert!(
+                peer_message_wants_action(s),
+                "{s:?} is a genuine ask and must card"
+            );
         }
     }
 
@@ -2798,10 +3129,19 @@ mod tests {
             t
         };
         // holder_guard is the single enforcement point.
-        assert!(holder_guard(&doing, &worker_actor("BBBB")).is_ok(), "the holder passes");
+        assert!(
+            holder_guard(&doing, &worker_actor("BBBB")).is_ok(),
+            "the holder passes"
+        );
         assert!(holder_guard(&doing, &sys()).is_ok(), "the system passes");
         assert!(
-            holder_guard(&doing, &Actor::Human { name: "ethan".into() }).is_ok(),
+            holder_guard(
+                &doing,
+                &Actor::Human {
+                    name: "ethan".into()
+                }
+            )
+            .is_ok(),
             "a human passes"
         );
         assert!(
@@ -2826,7 +3166,10 @@ mod tests {
         // Force is never holder-gated (the audited bypass stays exempt).
         assert!(apply_transition(
             &doing,
-            BoardTransition::Force { status: TaskStatus::Todo, reason: "override".into() },
+            BoardTransition::Force {
+                status: TaskStatus::Todo,
+                reason: "override".into()
+            },
             &worker_actor("CCCC"),
             &[],
             t1(),
@@ -3214,14 +3557,19 @@ mod self_description_tests {
 
     /// The card's own examples, plus the shapes the amux-rust queue actually
     /// filled up with.
-        /// The narrowing decision (AMUX-2816), pinned so nobody widens it back by
+    /// The narrowing decision (AMUX-2816), pinned so nobody widens it back by
     /// accident. The measurement behind it: verification went 256/day -> 2/day
     /// leaving 1,153 unverified done cards, and most of those should never reach
     /// `verified` at all.
     #[test]
     fn verified_is_only_meaningful_where_there_is_a_production_to_confirm_in() {
         // Ships something a user runs: the 4-part prod gate is a real claim.
-        for t in [ItemType::Code, ItemType::Ops, ItemType::Blocker, ItemType::Tripwire] {
+        for t in [
+            ItemType::Code,
+            ItemType::Ops,
+            ItemType::Blocker,
+            ItemType::Tripwire,
+        ] {
             assert!(verified_is_meaningful(t), "{t:?} changes a running system");
         }
         // Ships nothing. Their verified gate is "outcome confirmed to still
@@ -3235,11 +3583,14 @@ mod self_description_tests {
             ItemType::Escalation,
             ItemType::Watch,
         ] {
-            assert!(!verified_is_meaningful(t), "{t:?} has no prod to confirm in");
+            assert!(
+                !verified_is_meaningful(t),
+                "{t:?} has no prod to confirm in"
+            );
         }
     }
 
-#[test]
+    #[test]
     fn deictic_titles_are_flagged() {
         for s in [
             "This should be one row",
@@ -3314,10 +3665,18 @@ mod self_description_tests {
     #[test]
     fn numbered_requests_have_a_subject_not_a_list_number() {
         for prefix in ["1. ", "12) ", "1.\t", "1.\n", "- ", "* ", "+ "] {
-            assert_eq!(title_from_prompt(&format!("[02:58 PM] {prefix}retire Celery safely\n2. reduce unused capacity")),
-                Some("Retire Celery safely".into()), "{prefix:?}");
+            assert_eq!(
+                title_from_prompt(&format!(
+                    "[02:58 PM] {prefix}retire Celery safely\n2. reduce unused capacity"
+                )),
+                Some("Retire Celery safely".into()),
+                "{prefix:?}"
+            );
         }
-        assert_eq!(title_from_prompt("1.5 times more memory is needed"), Some("1.5 times more memory is needed".into()));
+        assert_eq!(
+            title_from_prompt("1.5 times more memory is needed"),
+            Some("1.5 times more memory is needed".into())
+        );
         assert!(title_needs_self_description("1").is_some());
         assert!(title_needs_self_description("12.").is_some());
     }
@@ -3339,8 +3698,12 @@ mod self_description_tests {
 
     #[test]
     fn real_work_is_not_an_ack() {
-        assert!(!is_conversational_ack("fix the auth middleware to handle expired tokens correctly and add a test"));
-        assert!(!is_conversational_ack("add a new endpoint for /api/board/clear-done"));
+        assert!(!is_conversational_ack(
+            "fix the auth middleware to handle expired tokens correctly and add a test"
+        ));
+        assert!(!is_conversational_ack(
+            "add a new endpoint for /api/board/clear-done"
+        ));
         assert!(!is_conversational_ack("continue refactoring the entire session management layer to use the new connection pool and update all tests"));
     }
 
@@ -3372,7 +3735,10 @@ mod self_description_tests {
         // No [amux-origin: ...] stamp at all -- a human send, never a peer
         // relay -- must keep the original behaviour regardless of content.
         assert_eq!(item_type_for_capture("fix the flaky test in ci"), "code");
-        assert_eq!(item_type_for_capture("done, no more work needed here"), "code");
+        assert_eq!(
+            item_type_for_capture("done, no more work needed here"),
+            "code"
+        );
     }
 
     #[test]
