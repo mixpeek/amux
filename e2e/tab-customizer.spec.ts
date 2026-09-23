@@ -18,6 +18,21 @@ test.use({ serviceWorkers: 'block' });
 // The customizer is static markup, so it needs a visible overlay, not a live worker —
 // openPeek() is called directly rather than seeding a session the harness has none of.
 async function openPeek(page) {
+  // SUPPRESS THE WALKTHROUGH (AMUX-4986). `_wtMaybeStart` opens it 1500ms
+  // after load when `sessions.length === 0` and this key is unset. Every CI
+  // project gets an isolated server with a clean home and therefore NO
+  // workers, so that is the normal state there and never the normal state on
+  // a dev box with a live fleet — which is why this passed locally and died
+  // in CI. The tooltip covers the button and `locator.click` retries against
+  // it until the entire test budget is gone.
+  //
+  // Verbatim from the e2e-shards(4) trace on b08e1802:
+  //   locator.click: Test timeout of 90000ms exceeded
+  //     - <div id="wt-tooltip">…</div> intercepts pointer events
+  //
+  // Reproduced locally by stubbing /api/sessions to [] and waiting past
+  // 1500ms; fixed by this line, same probe, 3 passed.
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openPeek === 'function', { timeout: 20000 });
   await page.evaluate(() => (window as any).openPeek('e2e-probe'));
