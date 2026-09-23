@@ -547,6 +547,51 @@ fn write_integration_status(home: &Path, name: &str, record: &serde_json::Value)
 /// Verification certifies the current artifact, not the worker's acknowledgement.
 /// Run Git outside the SQLite writer; the caller binds this observation to its
 /// card revision before changing state. Ordinary workers retain their own gates.
+/// AMUX-4922. `done` on an EPHEMERAL fan-out worker, whose worktree is deleted
+/// when it retires.
+///
+/// DELIBERATELY NOT verification_ready's gate, and the difference is the whole
+/// design. This does NOT require an integration receipt. Integration can be
+/// impossible for reasons outside the worker's control, and a gate with no
+/// truthful exit is the ethos rule 3 failure this board keeps repairing.
+/// AMUX-4921 was exactly such a reason and was live while this was written: a
+/// workspace recorded an empty creation base, so its integration could never
+/// succeed no matter what the worker did.
+///
+/// What it DOES refuse is the half the worker can always fix in one command:
+/// UNCOMMITTED changes. Measured 2026-09-20 on the fan-out lifecycle, a worker
+/// marked its card `done` with `M docs/reference/diagnostics.md` still modified
+/// in its worktree. Not merely unmerged, uncommitted, in a directory scheduled
+/// for deletion. That `done` was a claim about work that was about to become
+/// both unverifiable and gone.
+///
+/// Silent OK when there is no workspace record or no worktree on disk: there is
+/// nothing truthful to measure, and refusing on an absence would be a gate with
+/// no exit of a different kind.
+pub(crate) async fn done_ready(name: &str) -> Result<(), String> {
+    let env = crate::api::session_verbs::parse_env(name);
+    if env.get("CC_EPHEMERAL") != Some("1") || env.get("CC_WORKTREE_AUTO_MERGE") == Some("0") {
+        return Ok(());
+    }
+    let home = crate::config::amux_home();
+    let Some(workspace) = load(&home, name) else {
+        return Ok(());
+    };
+    if !Path::new(&workspace.path).join(".git").exists() {
+        return Ok(());
+    }
+    let dirty = git(&workspace.path, &["status", "--porcelain"]).await?;
+    if dirty.is_empty() {
+        return Ok(());
+    }
+    let named = dirty.lines().take(5).collect::<Vec<_>>().join("; ");
+    let more = dirty.lines().count().saturating_sub(5);
+    Err(format!(
+        "This worker is ephemeral, so its worktree is deleted when it retires, and it has          uncommitted changes: `done` would claim work whose only copy is scheduled for          destruction. Commit them, then move the card. Uncommitted: {named}{}",
+        if more > 0 { format!(" (+{more} more)") } else { String::new() }
+    ))
+}
+
 pub(crate) async fn verification_ready(name: &str) -> Result<(), String> {
     let env = crate::api::session_verbs::parse_env(name);
     // An explicit manual-integration configuration retains its existing gates.
@@ -905,6 +950,52 @@ mod tests {
             "an empty recorded base was copied forward; the stall is permanent"
         );
         assert!(!load(&home, "child-a").unwrap().base.is_empty());
+    }
+
+    /// AMUX-4922. `done` is refused for UNCOMMITTED work and allowed otherwise.
+    ///
+    /// Three cells, and the two permissive ones are the point: this gate must
+    /// not become the thing it was written to avoid. It does NOT require an
+    /// integration receipt (that would have no truthful exit when integration
+    /// is impossible, which AMUX-4921 was live proof of), and it does not
+    /// touch a worker that is not an ephemeral fan-out.
+    #[tokio::test]
+    async fn done_refuses_uncommitted_work_only_on_an_ephemeral_fanout_worker() {
+        let (d, w) = fixture().await;
+        let home = d.path().join("home");
+        let _guard = crate::api::settings::test_env::set_home(&home);
+        let env = home.join("sessions");
+        std::fs::create_dir_all(&env).unwrap();
+        let env_file = env.join("child-a.env");
+        std::fs::write(&env_file, "CC_EPHEMERAL=1\n").unwrap();
+
+        // CLEAN: nothing to refuse. The fixture committed everything.
+        assert!(
+            done_ready("child-a").await.is_ok(),
+            "a clean ephemeral worktree must be allowed to reach done"
+        );
+
+        // DIRTY: the measured case. A worker marked done with a modified file
+        // still sitting in a worktree scheduled for deletion.
+        std::fs::write(Path::new(&w.path).join("app.txt"), "uncommitted work\n").unwrap();
+        let refused = done_ready("child-a").await;
+        let detail = refused.expect_err("uncommitted work in a doomed worktree must refuse done");
+        assert!(
+            detail.contains("app.txt"),
+            "the refusal must name what is uncommitted, not just that something is: {detail}"
+        );
+        assert!(
+            detail.contains("Commit"),
+            "the refusal must name the one-command exit, or it is a gate with no way out: {detail}"
+        );
+
+        // NOT EPHEMERAL: same dirty worktree, no opinion. `done` on an ordinary
+        // worker is a self-report and this gate is not about that.
+        std::fs::write(&env_file, "CC_WORKER=1\n").unwrap();
+        assert!(
+            done_ready("child-a").await.is_ok(),
+            "a non-ephemeral worker keeps its existing done semantics"
+        );
     }
 
     async fn fixture() -> (tempfile::TempDir, Workspace) {

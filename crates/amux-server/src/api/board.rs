@@ -4306,6 +4306,23 @@ fn needsyou_ask_refusal(verdict: bs::AskVerdict, id: &str, session: Option<&str>
     )
 }
 
+/// AMUX-4922. The `done` door's own refusal, and it must not be the
+/// verification one.
+///
+/// `fanout_verification_refusal` tells the reader to "keep implemented work in
+/// review/done with evidence", which is exactly the move being refused here.
+/// A refusal that recommends the thing it just blocked is worse than no
+/// message: it reads as a bug in the gate rather than a fact about the work.
+fn fanout_done_refusal(id: &str, session: Option<&str>, detail: &str) -> Value {
+    tracing::warn!(card=id, session, measured=true, n_considered=1,
+        verdict="fanout_done_requires_committed_worktree", detail,
+        "refused done on an ephemeral worker with uncommitted work in a worktree due for deletion");
+    json!({
+        "error":detail, "code":"fanout_done_requires_committed_worktree", "item":id,
+        "how_to_fix":"Commit the changes in this worker's worktree, then move the card. `done` is NOT gated on integration: if integration is blocked for reasons outside your control, say so on the card and move it anyway. Only uncommitted work is refused, because this worktree is deleted when the worker retires."
+    })
+}
+
 fn fanout_verification_refusal(id: &str, session: Option<&str>, detail: &str) -> Value {
     tracing::warn!(card=id, session, measured=true, n_considered=1,
         verdict="fanout_verification_requires_integration", detail,
@@ -4853,6 +4870,13 @@ pub async fn create_item(
     if bs::parse_status(&status_in) == Some(TaskStatus::Verified) && !session.is_empty() {
         if let Err(detail) = crate::fanout_workspace::verification_ready(&session).await {
             return err(StatusCode::CONFLICT, fanout_verification_refusal("(new card)", Some(&session), &detail));
+        }
+    }
+    // THE SAME PREDICATE ON BOTH DOORS (AMUX-3929's lesson, applied to
+    // AMUX-4922). A gate that holds on PATCH and not on POST is not a gate.
+    if bs::parse_status(&status_in) == Some(TaskStatus::Done) && !session.is_empty() {
+        if let Err(detail) = crate::fanout_workspace::done_ready(&session).await {
+            return err(StatusCode::CONFLICT, fanout_done_refusal("(new card)", Some(&session), &detail));
         }
     }
     // THE SAME PREDICATE ON THE CREATE DOOR (AMUX-3929). The transition gate
@@ -10065,7 +10089,16 @@ pub async fn patch_item(
     // Measure integration outside the writer. The revision/owner check inside
     // the transaction prevents a concurrent reassignment from borrowing this
     // observation. Gate acknowledgements and force cannot invent a merge.
-    let workspace_verification = if body_str(&map, "status").as_deref().and_then(bs::parse_status) == Some(TaskStatus::Verified) {
+    // BOTH TERMINAL DOORS, NOT JUST VERIFIED (AMUX-4922). `verified` was gated
+    // on integration and `done` on nothing, so a fan-out card could read
+    // delivered while its commits sat in a worktree, and in the measured run
+    // one of them had not even been committed.
+    let workspace_gate_target = match body_str(&map, "status").as_deref().and_then(bs::parse_status) {
+        Some(TaskStatus::Verified) => Some(TaskStatus::Verified),
+        Some(TaskStatus::Done) => Some(TaskStatus::Done),
+        _ => None,
+    };
+    let workspace_verification = if workspace_gate_target.is_some() {
         let lookup = id.clone();
         let row = match state.store.read_async(move |conn| Ok(bs::get_issue(conn, &lookup)?)).await {
             Ok(row) => row,
@@ -10078,11 +10111,14 @@ pub async fn patch_item(
             let owner = body_opt_str(&map, "session")
                 .map(|value| value.filter(|name| !name.trim().is_empty()))
                 .unwrap_or_else(|| row.session.clone());
-            let verdict = match owner.as_deref() {
-                Some(name) => crate::fanout_workspace::verification_ready(name).await,
-                None => Ok(()),
+            let verdict = match (owner.as_deref(), workspace_gate_target) {
+                (Some(name), Some(TaskStatus::Done)) => {
+                    crate::fanout_workspace::done_ready(name).await
+                }
+                (Some(name), _) => crate::fanout_workspace::verification_ready(name).await,
+                (None, _) => Ok(()),
             };
-            Some((row.rev, owner, verdict))
+            Some((row.rev, owner, verdict, workspace_gate_target))
         } else { None }
     } else { None };
     let slot_w = slot.clone();
@@ -11176,7 +11212,7 @@ pub async fn patch_item(
                 }
             }
 
-            if let Some((observed_rev, owner, verdict)) = &workspace_verification {
+            if let Some((observed_rev, owner, verdict, gate_target)) = &workspace_verification {
                 if row.rev != *observed_rev || next.session.as_deref() != owner.as_deref() {
                     tracing::warn!(target: "amux::verification", card = %row.id,
                         observed_rev, current_rev = row.rev, observed_owner = ?owner,
@@ -11186,8 +11222,13 @@ pub async fn patch_item(
                         json!({"error":"card changed during verification; re-read and retry", "code":"verification_observation_stale", "item":row.id})), no_write());
                 }
                 if let Err(detail) = verdict {
-                    return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT,
-                        fanout_verification_refusal(&row.id, next.session.as_deref(), detail)), no_write());
+                    let body = if *gate_target == Some(TaskStatus::Done) {
+                        fanout_done_refusal(&row.id, next.session.as_deref(), detail)
+                    } else {
+                        fanout_verification_refusal(&row.id, next.session.as_deref(), detail)
+                    };
+                    return finish(&slot_w,
+                        PatchOut::Refused(StatusCode::CONFLICT, body), no_write());
                 }
             }
 
