@@ -14,9 +14,22 @@ struct ShareView: View {
     @State private var loading = true
     @State private var filter = ""
     @State private var sort: SortOrder = .activity
-    /// ACTIVE ONLY, BY DEFAULT (Ethan, 2026-09-23). 165 sessions exist and 17
-    /// are lifecycle-active; the other 148 are paused or archived and cannot
-    /// take a share. Offering them is offering a mistake.
+    /// ACTIVE ONLY, BY DEFAULT (Ethan, 2026-09-23; AMUX-5015).
+    ///
+    /// LIFECYCLE, NOT `running`. Measured on this fleet: 165 sessions, 86
+    /// archived (already dropped in AmuxClient), 17 lifecycle-active and 62
+    /// paused. Of the 17 active, only 10 are running.
+    ///
+    /// Filtering on `running` would have hidden the other 7, and those 7 can
+    /// receive a share: a send to a stopped-but-active lane queues and
+    /// delivers when it starts. A send to a PAUSED lane parks indefinitely —
+    /// 61 such messages, oldest 9.1 days, are what AMUX-5006 is about. That
+    /// difference is the whole point of the filter, and `lifecycle` is the
+    /// field that expresses it.
+    ///
+    /// `@State`, so it RESETS to active every time the sheet is presented.
+    /// A share sheet is opened for one message; carrying a widened filter into
+    /// the next share would be a setting nobody asked to keep.
     @State private var activeOnly = true
 
     /// ACTIVITY IS THE DEFAULT because the worker you want is almost always the
@@ -38,7 +51,7 @@ struct ShareView: View {
         // it does not exist is worse than a longer list: the one case where you
         // are sure which worker you want is the one where hiding it is most
         // annoying. The header says which population is on screen.
-        let pool = (activeOnly && filter.isEmpty) ? workers.filter(\.running) : workers
+        let pool = (activeOnly && filter.isEmpty) ? workers.filter { $0.lifecycle == "active" } : workers
         let matched = filter.isEmpty ? pool : pool.filter {
             $0.name.localizedCaseInsensitiveContains(filter)
                 || $0.task.localizedCaseInsensitiveContains(filter)
@@ -164,6 +177,10 @@ struct ShareView: View {
                                 Text(countLabel)
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                    // Addressable, because matching this by
+                                    // prose picks up the toggle's own label
+                                    // "Active workers only" first.
+                                    .accessibilityIdentifier("population")
                             }
                         } footer: {
                             Text(summary)
@@ -204,7 +221,12 @@ struct ShareView: View {
             return "\(shown.count) of \(workers.count), all workers"
         }
         if activeOnly {
-            return "\(running) running · \(workers.count - running) hidden"
+            // COUNTED FROM `shown`, the rows actually on the list, not from a
+            // second filter over `workers`. Computing it independently let the
+            // header be right while the list was wrong — and the UI test reads
+            // this label, so it would have passed either way.
+            let onScreen = shown.count
+            return "\(onScreen) active, \(running) running · \(workers.count - onScreen) paused hidden"
         }
         return "\(workers.count) workers · \(running) running"
     }

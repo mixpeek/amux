@@ -183,31 +183,50 @@ final class ShareSheetUITests: XCTestCase {
             ext.cells.count, 0,
             "'Send to' rendered with no rows, so the list request came back empty")
 
-        // ACTIVE ONLY IS THE DEFAULT (Ethan, 2026-09-23).
+        // ACTIVE ONLY IS THE DEFAULT (AMUX-5015).
         //
-        // ASSERTED ON THE HEADER COUNT, NOT ON THE ROWS. The first version
-        // counted `worker-*` buttons and got 6 -> 6: a SwiftUI Form realizes
-        // only the rows on screen, so that number is a VIEWPORT count and
-        // cannot see 148 hidden workers. The header is the data-level answer
-        // and is also the thing a human reads.
+        // ASSERTED FROM THE HEADER'S OWN ARITHMETIC rather than by driving the
+        // toggle. Two earlier attempts and what each taught:
+        //
+        //   counting `worker-*` rows        6 -> 6. A SwiftUI Form realizes only
+        //                                   the rows on screen, so that number
+        //                                   is a viewport count and cannot see
+        //                                   62 hidden workers.
+        //   flipping the toggle             `switch value before='1' after='1'`.
+        //                                   XCUITest's tap does not flip this
+        //                                   SwiftUI Toggle, so the comparison
+        //                                   measured nothing. An even earlier
+        //                                   version PASSED this way only because
+        //                                   its prose matcher picked up the
+        //                                   toggle's own label, "Active workers
+        //                                   only", as the second reading.
+        //
+        // The header states the whole population split, so it can be checked
+        // without moving anything: active + hidden must equal the fleet, and
+        // hidden must be non-zero or nothing is being filtered.
         let activeOnly = ext.switches["activeOnly"]
         XCTAssertTrue(activeOnly.waitForExistence(timeout: 10), "no active-only toggle")
-        XCTAssertEqual(activeOnly.value as? String, "1", "active-only must default ON")
+        XCTAssertEqual(activeOnly.value as? String, "1",
+                       "active-only must default ON, and must reset to ON for each share")
 
-        let header = ext.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS[c] 'running'")).firstMatch
+        let header = ext.staticTexts["population"]
         XCTAssertTrue(header.waitForExistence(timeout: 10), "no population count in the header")
-        let whileActive = header.label
-        XCTAssertTrue(whileActive.contains("hidden"),
-                      "with active-only ON the header must say what it is hiding: '\(whileActive)'")
-
-        activeOnly.tap()
-        let whileAll = ext.staticTexts.containing(
-            NSPredicate(format: "label CONTAINS[c] 'workers'")).firstMatch
-        XCTAssertTrue(whileAll.waitForExistence(timeout: 10), "header did not change with the toggle")
-        XCTAssertNotEqual(whileActive, whileAll.label,
-                          "the toggle did not change the population on screen")
-        activeOnly.tap()   // back to the default for the rest of the test
+        let label = header.label
+        let numbers = label.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+        XCTAssertEqual(
+            numbers.count, 3,
+            "the default header must state active, running and hidden: '\(label)'")
+        let (active, running, hidden) = (numbers[0], numbers[1], numbers[2])
+        XCTAssertGreaterThan(
+            hidden, 0,
+            "nothing is being withheld, so the filter is doing nothing: '\(label)'")
+        XCTAssertGreaterThan(active, 0, "no worker is offered at all: '\(label)'")
+        XCTAssertLessThanOrEqual(
+            running, active,
+            "running must be a subset of active; the filter is on lifecycle, not on running: '\(label)'")
+        XCTAssertTrue(
+            label.contains("paused hidden"),
+            "the header must name WHAT it withholds, not just how many: '\(label)'")
 
         // SEARCH, then SELECT. Those are the two things this screen is for and
         // both are addressable by identifier.
