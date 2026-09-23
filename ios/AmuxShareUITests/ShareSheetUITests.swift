@@ -228,6 +228,27 @@ final class ShareSheetUITests: XCTestCase {
             label.contains("paused hidden"),
             "the header must name WHAT it withholds, not just how many: '\(label)'")
 
+        // CROSS-CHECKED AGAINST THE SERVER (AMUX-4990). Everything above is
+        // internally consistent arithmetic: it proves SOMETHING is withheld and
+        // not that the RIGHT set is on screen. A filter that dropped one active
+        // worker and admitted one paused one would satisfy all of it.
+        //
+        // So the displayed population is compared to the population the server
+        // reports. Read over loopback, where amux answers anonymously, so this
+        // needs no credential and cannot accidentally re-prove the auth path.
+        let fleet = try fleetLifecycleCounts()
+        XCTAssertEqual(
+            active, fleet.active,
+            "the list shows \(active) workers but the server reports \(fleet.active) "
+            + "lifecycle-active (of \(fleet.total) unarchived). Header: '\(label)'")
+        XCTAssertEqual(
+            hidden, fleet.total - fleet.active,
+            "\(hidden) withheld but \(fleet.total - fleet.active) are inactive. Header: '\(label)'")
+        XCTAssertGreaterThan(
+            fleet.total - fleet.active, 0,
+            "this fleet has no inactive workers, so the exclusion half of this test "
+            + "proves nothing right now — pause one and re-run")
+
         // SEARCH, then SELECT. Those are the two things this screen is for and
         // both are addressable by identifier.
         let search = ext.searchFields.firstMatch
@@ -258,6 +279,29 @@ final class ShareSheetUITests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// What the SERVER says the fleet looks like, so the UI's claim can be
+    /// checked against something other than itself.
+    ///
+    /// Counts only unarchived sessions, because `AmuxClient.workers` drops
+    /// archived rows before the list is built — comparing against the raw total
+    /// would fail for a reason that has nothing to do with this filter.
+    private func fleetLifecycleCounts() throws -> (total: Int, active: Int) {
+        let url = URL(string: "https://localhost:8823/api/sessions")!
+        let session = URLSession(configuration: .ephemeral, delegate: TrustAll(), delegateQueue: nil)
+        let sem = DispatchSemaphore(value: 0)
+        var payload: Data?
+        session.dataTask(with: url) { data, _, _ in payload = data; sem.signal() }.resume()
+        _ = sem.wait(timeout: .now() + 30)
+        guard let payload,
+              let rows = try JSONSerialization.jsonObject(with: payload) as? [[String: Any]] else {
+            throw XCTSkip(
+                "could not read /api/sessions over loopback, so the UI's population cannot be "
+                + "cross-checked. That is a rig gap, not a filter failure.")
+        }
+        let live = rows.filter { ($0["archived"] as? Bool) != true }
+        return (live.count, live.filter { ($0["lifecycle"] as? String) == "active" }.count)
+    }
 
     /// The amux server serves a self-signed certificate.
     private final class TrustAll: NSObject, URLSessionDelegate {
