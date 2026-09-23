@@ -277,6 +277,38 @@ fn claim_sole_writer(db_path: &Path) -> WriterLockOutcome {
     }
 }
 
+/// Tokio worker threads, which is also what `available_parallelism` returns.
+pub(crate) fn worker_threads() -> u32 {
+    std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4)
+}
+
+/// Read connections, DECOUPLED from the tokio worker count (AMUX-4955).
+///
+/// This was exactly `available_parallelism`, which is ALSO tokio's default
+/// worker count. The comment on the builder has said since AF-640 that such a
+/// pool "can pin every worker at once" and that the result "is
+/// self-sustaining" — and it is, because a worker blocked in `read()` waiting
+/// for a connection cannot release the connection it is waiting behind.
+///
+/// Measured 2026-09-23 over ~57k blocking-poll samples: 824
+/// `read_pool_slow_acquire` events, 97% of them with `idle=0` at 28/28, waits
+/// up to 4.3s — the 5s `connection_timeout` is what bounds them, not demand.
+/// With the pool strictly LARGER than the worker count, a tokio worker cannot
+/// be made to wait for a read connection by other tokio workers, which removes
+/// the self-sustaining half of that loop.
+///
+/// HEADROOM, NOT A GUARANTEE, and the difference is worth stating: `read_async`
+/// runs on spawn_blocking threads that draw from this same pool, and there are
+/// far more of those than workers. This bounds worker-to-worker starvation; it
+/// does not bound the pool.
+pub(crate) fn read_pool_size() -> u32 {
+    std::env::var("AMUX_READ_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| worker_threads().saturating_mul(2).max(8))
+}
+
 impl Store {
     /// Open the store: apply migrations, start the writer thread, build the
     /// read pool.
@@ -332,7 +364,7 @@ impl Store {
             Ok(())
         });
         let read_pool = r2d2::Pool::builder()
-            .max_size(std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4))
+            .max_size(read_pool_size())
             // FAIL FAST, because a blocked acquire pins a tokio worker (AF-640).
             //
             // r2d2's default is 30 SECONDS and it was never set, which is why
@@ -341,9 +373,10 @@ impl Store {
             // waited half a minute to be told no.
             //
             // WHY WAITING IS WORSE THAN FAILING HERE. `read()` is synchronous
-            // and there is no `read_async` to match `write_async`, whose own
-            // doc says it exists so a handler "can await a write without
-            // pinning a runtime worker". So every one of the ~440 `read()` call
+            // and — when this was written — there was no `read_async` to match
+            // `write_async`. There is one now, used in five modules, so the
+            // claim below is narrower than it reads: it holds for the ~440
+            // BLOCKING `read()` sites, not for the codebase (AMUX-4955). So every one of the ~440 `read()` call
             // sites blocks its thread for the whole acquire. The pool's
             // max_size is `available_parallelism`, which is ALSO tokio's default
             // worker count, so a saturated pool can pin every worker at once
@@ -1708,5 +1741,61 @@ mod pragma_decision_tests {
                  reads as an oversight and gets 'fixed'"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod read_pool_sizing_tests {
+    use super::*;
+
+    /// These two tests MUTATE AND READ the same process env var, so they must
+    /// not run concurrently — `cargo` runs them on parallel threads in one
+    /// process. Caught by mutation: reverting the pool size reddened only the
+    /// tunable test, because the other had already observed the 64 its
+    /// neighbour set. That is AMUX-4963's defect, in a test I was about to
+    /// ship while fixing it elsewhere.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// AMUX-4955. The property, not the number: the read pool must be able to
+    /// serve every tokio worker at once.
+    ///
+    /// It used to be exactly `available_parallelism`, which is also tokio's
+    /// default worker count, so a saturated pool could pin every worker
+    /// simultaneously — the builder's own comment calls that self-sustaining,
+    /// because a worker blocked waiting for a connection cannot release the one
+    /// it is waiting behind. Measured 2026-09-23: 824 read_pool_slow_acquire
+    /// events, 97% with idle=0 at 28/28.
+    #[test]
+    fn the_read_pool_is_strictly_larger_than_the_worker_count() {
+        let _env = env_guard();
+        std::env::remove_var("AMUX_READ_POOL_SIZE");
+        let workers = worker_threads();
+        assert!(
+            read_pool_size() > workers,
+            "a pool no larger than the worker count lets workers starve each other: \
+             pool {} vs {workers} workers",
+            read_pool_size()
+        );
+        // A tiny box must still get a usable pool rather than 2.
+        assert!(read_pool_size() >= 8);
+    }
+
+    /// Operable without a rebuild: the measurement that justified the default
+    /// came from one box, and the next one may disagree.
+    #[test]
+    fn the_read_pool_size_is_tunable_and_rejects_nonsense() {
+        let _env = env_guard();
+        std::env::set_var("AMUX_READ_POOL_SIZE", "64");
+        assert_eq!(read_pool_size(), 64);
+        // Garbage and zero fall back to the computed default rather than
+        // configuring a pool nobody can acquire from.
+        for bad in ["0", "-1", "", "lots"] {
+            std::env::set_var("AMUX_READ_POOL_SIZE", bad);
+            assert!(read_pool_size() > worker_threads(), "bad value {bad:?} must fall back");
+        }
+        std::env::remove_var("AMUX_READ_POOL_SIZE");
     }
 }
