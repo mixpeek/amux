@@ -1709,15 +1709,44 @@ pub async fn start(
             } else {
                 ""
             };
+            let tail = chrome_stderr_tail(&stderr_path);
             if delegated {
                 tracing::warn!(
                     ?pid, port, dir = %target.user_data_dir.display(),
                     "browser: launch delegated to an existing Chrome and exited 0 before CDP bound (AMUX-3207)"
                 );
+            } else {
+                // A CRASH BEFORE CDP REACHED THE CALLER AS A 502 AND LOGGED
+                // NOTHING (AMUX-4939). Both neighbours WARN — the delegation
+                // arm above, and the CDP-timeout arm below which says so in as
+                // many words ("WARN so a log sweep sees the CLASS") — and this
+                // arm, the one that fires when Chrome dies outright, was the
+                // silent one. Measured 2026-09-22: two launches were SIGKILLed
+                // 7s apart, each caller got a 502, and this module logged not
+                // one line all day. The card exists only because the autofix
+                // 5xx path reads the request log; no log sweep could have
+                // found it.
+                //
+                // `signal` is the field to group on, because it splits two
+                // causes needing opposite responses. A SIGNAL is someone else
+                // killing Chrome: the 2026-09-22 specimen was macOS amfid
+                // failing code-signature validation at exec ~370ms in, hours
+                // after a Chrome self-update, which is nothing amux can fix. A
+                // NON-ZERO EXIT is Chrome itself refusing what we asked for.
+                // `stderr_empty` separates them further — a Chrome that never
+                // wrote a byte never reached its own startup, which points
+                // outside Chrome.
+                let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+                tracing::warn!(
+                    ?pid, port, dir = %target.user_data_dir.display(),
+                    ?signal, code = ?status.code(), stderr_empty = tail.is_empty(),
+                    verdict = classify_launch_death(&status),
+                    "browser: Chrome died before CDP bound — launch failed (AMUX-4939)"
+                );
             }
             let msg = format!(
                 "Chrome (pid {pid:?}) exited {status} before CDP on port {port} came up{}{hint}",
-                chrome_stderr_tail(&stderr_path)
+                tail
             );
             // Same string either way; only the TYPE differs, and only when the
             // caller can act (AF-381).
@@ -2500,6 +2529,30 @@ impl std::error::Error for ProfileMissing {}
 /// as AF-438). The launch loop needs a real Chrome to exercise; this does not.
 pub fn is_delegation_exit(status: &std::process::ExitStatus) -> bool {
     status.success()
+}
+
+/// Which KIND of death a Chrome that never reached CDP suffered (AMUX-4939).
+///
+/// Extracted for the same reason `describe_cdp_probe` and `is_delegation_exit`
+/// are: the distinction is the one an investigator acts on, and pinning it must
+/// not require spawning a Chrome that dies on cue.
+///
+/// The split is between causes that need OPPOSITE responses. `killed_by_signal`
+/// is somebody else killing Chrome, so the thing to go read is the host: the
+/// 2026-09-22 specimen was macOS `amfid` failing code-signature validation at
+/// exec ~370ms in, hours after a Chrome self-update, and no amux change would
+/// have prevented it. `exited_nonzero` is Chrome itself refusing what amux
+/// asked for, which IS amux's to fix. Grouping both under one "launch failed"
+/// counter sends every reader to the wrong half of that.
+///
+/// Exit 0 never reaches here: `is_delegation_exit` consumes it upstream, so
+/// `exited_nonzero` is accurate at the only call site.
+pub fn classify_launch_death(status: &std::process::ExitStatus) -> &'static str {
+    if std::os::unix::process::ExitStatusExt::signal(status).is_some() {
+        "killed_by_signal"
+    } else {
+        "exited_nonzero"
+    }
 }
 
 impl From<anyhow::Error> for DriverError {

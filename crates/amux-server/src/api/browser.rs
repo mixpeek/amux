@@ -4365,6 +4365,37 @@ mod tests {
         assert!(!chrome::is_delegation_exit(&code(127)), "exit 127 is a genuine launch failure");
     }
 
+    /// AMUX-4939. The two causes behind "Chrome died before CDP" need OPPOSITE
+    /// responses, so the verdict a log sweep groups on has to separate them.
+    ///
+    /// The specimen: two launches SIGKILLed 7s apart on 2026-09-22, each
+    /// answering its caller 502, with not one line from the browser module all
+    /// day. macOS `amfid` had failed code-signature validation at exec, hours
+    /// after a Chrome self-update — a HOST fault amux cannot fix. Folded in
+    /// with Chrome refusing its own flags, every reader goes looking in amux.
+    #[cfg(unix)]
+    #[test]
+    fn a_signalled_chrome_and_a_refusing_chrome_get_different_verdicts() {
+        use std::os::unix::process::ExitStatusExt;
+        let signalled = |s: i32| std::process::ExitStatus::from_raw(s);
+        let code = |c: i32| std::process::ExitStatus::from_raw(c << 8);
+
+        assert_eq!(
+            chrome::classify_launch_death(&signalled(9)),
+            "killed_by_signal",
+            "SIGKILL is somebody else killing Chrome — the HOST is what to go read"
+        );
+        assert_eq!(chrome::classify_launch_death(&signalled(11)), "killed_by_signal");
+        // The CONTROL: Chrome refusing what amux asked for must NOT read as an
+        // external kill, or a defect amux owns gets filed against the machine.
+        assert_eq!(
+            chrome::classify_launch_death(&code(1)),
+            "exited_nonzero",
+            "a non-zero exit is Chrome refusing amux's own flags"
+        );
+        assert_eq!(chrome::classify_launch_death(&code(127)), "exited_nonzero");
+    }
+
     /// AMUX-98. A malformed selector (Playwright-style `text=...` syntax
     /// reaching a native `document.querySelector`) throws INSIDE the page,
     /// which `CdpClient::eval` now carries as a `PageException` rather than
