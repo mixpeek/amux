@@ -2646,7 +2646,19 @@ pub(crate) async fn accounts_rollup(http: &Arc<dyn HttpTransport>, home: &std::p
             format!("POST /api/connectors/{f}/auth?account={account} → open authorize_url, approve once")
         });
         if let Some(rc) = &reconnect {
-            needs_reauth.push(json!({"account": account, "broken": broken, "reconnect": rc}));
+            // The age travels with the finding, so a reader sees the clock
+            // without going to the log (AMUX-5019).
+            let last_ok = ["google", "slack", "mattermost"]
+                .iter()
+                .map(|f| store_path(home, f, &account))
+                .find_map(|p| grant_last_ok_age_days(&p));
+            needs_reauth.push(json!({
+                "account": account,
+                "broken": broken,
+                "reconnect": rc,
+                "last_ok_age_days": last_ok,
+                "measured": last_ok.is_some(),
+            }));
         }
         accounts.push(json!({
             "account": account,
@@ -2685,6 +2697,29 @@ pub(crate) async fn accounts_rollup(http: &Arc<dyn HttpTransport>, home: &std::p
 /// refresh so the next reader skips the round trip. Same discriminator as the
 /// gmail probe: `invalid_grant` → needs_reauth, anything else unusable →
 /// not_connected.
+/// Days since this grant last refreshed successfully (AMUX-5019).
+///
+/// Read from the store file's mtime, because a successful refresh REWRITES the
+/// file with the new access token and a failed one does not. So the mtime is
+/// the last moment the grant demonstrably worked, and it needs no new column.
+///
+/// This number is the whole point: "needs_reauth" on its own has been true for
+/// these accounts repeatedly and says nothing about the clock they die on.
+/// Measured 2026-09-23 across one OAuth client, five accounts:
+///   ethan@mixpeek.com, info@mixpeek.com   refresh OK
+///   beefinethan@gmail.com, hello@amux.io,
+///   esteininger21@gmail.com               invalid_grant,
+///                                         "Token has been expired or revoked."
+/// The two that survive are in the same Google Workspace as the Cloud project
+/// that owns the client (mixpeek-inference-463103). That is the documented
+/// exemption from the 7-day refresh-token expiry an app in TESTING gives every
+/// other user. With this age recorded, the next occurrence says so itself.
+fn grant_last_ok_age_days(path: &std::path::Path) -> Option<f64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let secs = std::time::SystemTime::now().duration_since(modified).ok()?.as_secs_f64();
+    Some(secs / 86_400.0)
+}
+
 async fn probe_google_refresh(http: &Arc<dyn HttpTransport>, path: &std::path::Path, tf: &Value) -> String {
     let s = |k: &str| tf.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let refresh = s("refresh_token");
@@ -2714,7 +2749,27 @@ async fn probe_google_refresh(http: &Arc<dyn HttpTransport>, path: &std::path::P
             let _ = write_store_file(path, &Value::Object(m));
             "ok".into()
         }
-        Ok((_, body)) if body.to_string().contains("invalid_grant") => "needs_reauth".into(),
+        Ok((_, body)) if body.to_string().contains("invalid_grant") => {
+            // THE PROVIDER'S OWN WORDS, PLUS THE CLOCK. "needs_reauth" alone
+            // has been true for these accounts repeatedly and cannot show that
+            // they die on a schedule (AMUX-5019).
+            let desc = body
+                .get("error_description")
+                .and_then(Value::as_str)
+                .unwrap_or("no description")
+                .to_string();
+            let age = grant_last_ok_age_days(path);
+            tracing::warn!(
+                account = %path.file_stem().and_then(|s| s.to_str()).unwrap_or("?"),
+                provider_error = %desc,
+                last_ok_age_days = age.unwrap_or(-1.0),
+                measured = age.is_some(),
+                n_considered = 1,
+                verdict = "connector_grant_expired",
+                "a stored Google grant no longer refreshes; the age is how long it lasted"
+            );
+            "needs_reauth".into()
+        }
         _ => "not_connected".into(),
     }
 }
