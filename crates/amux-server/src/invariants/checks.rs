@@ -708,6 +708,95 @@ pub const BUILDER_MAX_INTERVALS: f64 = 10.0;
 /// builds. At 10 intervals this still catches the 59-cycle outage in a sixth of
 /// the time it actually took to notice, and a check that cries wolf gets muted,
 /// which is the failure mode that leaves the next outage silent again.
+/// How far the SERVED build is behind the repo (AMUX-4957).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployLag {
+    pub served: String,
+    pub origin_head: String,
+    pub behind: i64,
+    /// Age of the OLDEST unserved commit. Derived from git rather than from a
+    /// process-local timer, so it survives a server restart — and a restart is
+    /// exactly what a deploy causes, which would reset a timer at the worst
+    /// possible moment.
+    pub oldest_unserved_age_s: i64,
+}
+
+/// Default patience before a lag is a stall. A release build on this hardware
+/// was measured at 26m48s (CLAUDE.md), so the builder needs room to notice and
+/// finish one. Env-tunable because that is one box's number.
+pub fn deploy_lag_threshold_s() -> i64 {
+    std::env::var("AMUX_DEPLOY_LAG_WARN_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(1_800)
+}
+
+/// DOES THE SERVED COMMIT ADVANCE WHEN origin/main MOVES? (AMUX-4957)
+///
+/// The check that would have caught AMUX-4947 on day one and did not exist.
+/// Through that wedge `deploy.builder_is_ticking` PASSED continuously: it takes
+/// one input, the builder log's age, and the builder was emitting 92
+/// `cargo_build_backoff` lines at ~60s intervals. Meanwhile /health's commit sat
+/// frozen at 2c375773 while origin/main was four commits ahead, with 177 BUILD
+/// FAILED lines in the same log. Days of fleet-wide deploy outage under a green
+/// tick on the one check whose stated purpose was to catch it.
+///
+/// NOT A WIDENED `builder_is_ticking`. Log age and deploy progress are
+/// different questions with different healthy states: a builder can be
+/// legitimately quiet mid-build, and legitimately busy while shipping nothing.
+/// One name with two failure modes would tell a reader neither.
+///
+/// A COMMIT MID-BUILD IS NORMAL and must not fire, which is why the predicate
+/// is the age of the OLDEST unserved commit rather than the mere existence of
+/// one. An unreadable origin or an unavailable served commit is UNKNOWN, never
+/// pass: an unmeasured probe is not health.
+pub fn served_commit_is_current(
+    lag: Option<&DeployLag>,
+    why_unmeasured: &str,
+    threshold_s: i64,
+) -> Vec<InvariantResult> {
+    const ID: &str = "deploy.served_commit_is_current";
+    let Some(lag) = lag else {
+        return vec![InvariantResult::unknown(ID, why_unmeasured.to_string())];
+    };
+    if lag.behind <= 0 {
+        return vec![InvariantResult::pass(ID).evidence(json!({
+            "served": lag.served, "origin_head": lag.origin_head,
+            "behind": 0, "measured": true,
+        }))];
+    }
+    let evidence = json!({
+        "served": lag.served,
+        "origin_head": lag.origin_head,
+        "behind": lag.behind,
+        "oldest_unserved_age_s": lag.oldest_unserved_age_s,
+        "threshold_s": threshold_s,
+        "measured": true,
+    });
+    if lag.oldest_unserved_age_s <= threshold_s {
+        // Behind, but not yet longer than a build plausibly takes.
+        return vec![InvariantResult::pass(ID).evidence(evidence)];
+    }
+    vec![InvariantResult::fail(
+        ID,
+        "the served commit advances when origin/main moves".to_string(),
+        format!(
+            "serving {} while origin/main is {} — {} commit(s) behind, and the oldest unserved \
+             commit has been waiting {}s (over the {}s a build is given). The builder may be \
+             ticking and still shipping nothing; check `cargo_build_backoff` and BUILD FAILED \
+             in the builder log (AMUX-4947/AMUX-4957).",
+            short(&lag.served), short(&lag.origin_head), lag.behind,
+            lag.oldest_unserved_age_s, threshold_s,
+        ),
+    )
+    .evidence(evidence)]
+}
+
+fn short(sha: &str) -> String {
+    sha.chars().take(12).collect()
+}
+
 pub fn builder_has_ticked_recently(
     log_age_s: Option<f64>,
     interval_s: f64,
@@ -8810,6 +8899,79 @@ mod repeat_offer_tests {
         // ...and the threshold, or a later reader cannot tell whether the zero
         // means "nothing cycled" or "the bar was set impossibly high".
         assert!(d.contains("threshold"), "{d}");
+    }
+}
+
+#[cfg(test)]
+mod served_commit_tests {
+    use super::*;
+
+    fn lag(behind: i64, age: i64) -> DeployLag {
+        DeployLag {
+            served: "2c375773aaaaaaaa".into(),
+            origin_head: "888eaa71bbbbbbbb".into(),
+            behind,
+            oldest_unserved_age_s: age,
+        }
+    }
+
+    /// THE AMUX-4947 PAIR, which is the whole reason this check exists.
+    ///
+    /// Through that wedge the builder log was FRESH — 92 cargo_build_backoff
+    /// lines at ~60s — so `builder_is_ticking` passed continuously, while the
+    /// served commit sat frozen and origin/main was four commits ahead. The two
+    /// checks must disagree on exactly that input, or the new one has not added
+    /// an input and is just the old one wearing a second name.
+    #[test]
+    fn a_ticking_builder_that_ships_nothing_passes_one_check_and_fails_this_one() {
+        // Fresh log: the old check is happy, and must stay happy — its own
+        // negative control (the 59-missed-cycle replay) still tests what it
+        // tests.
+        let ticking = builder_has_ticked_recently(Some(30.0), BUILDER_INTERVAL_S, BUILDER_MAX_INTERVALS);
+        assert_eq!(ticking[0].status, Status::Pass, "a fresh builder log is not the fault");
+
+        // Same moment, the question it cannot ask: four commits behind for
+        // longer than a build takes.
+        let stalled = served_commit_is_current(Some(&lag(4, 6 * 3600)), "", 1_800);
+        assert_eq!(stalled[0].status, Status::Fail);
+        let observed = stalled[0].observed.clone();
+        assert!(observed.contains("2c375773"), "name the served sha: {observed}");
+        assert!(observed.contains("888eaa71"), "name origin's sha: {observed}");
+        assert!(observed.contains("21600s"), "name how long it has been behind: {observed}");
+    }
+
+    /// A commit landing mid-build is normal and must not fire. Without this the
+    /// check would page on every push, which is how a check gets ignored.
+    #[test]
+    fn a_commit_mid_build_does_not_fire() {
+        let fresh = served_commit_is_current(Some(&lag(1, 60)), "", 1_800);
+        assert_eq!(fresh[0].status, Status::Pass);
+        // ...and the boundary itself is a pass, not a fail: "a build is given
+        // 1800s" must mean 1800 is still inside the allowance.
+        let boundary = served_commit_is_current(Some(&lag(1, 1_800)), "", 1_800);
+        assert_eq!(boundary[0].status, Status::Pass);
+        let over = served_commit_is_current(Some(&lag(1, 1_801)), "", 1_800);
+        assert_eq!(over[0].status, Status::Fail);
+    }
+
+    /// Up to date is a pass, and it must say what it compared.
+    #[test]
+    fn a_current_build_passes_and_publishes_both_shas() {
+        let out = served_commit_is_current(Some(&lag(0, 0)), "", 1_800);
+        assert_eq!(out[0].status, Status::Pass);
+        assert_eq!(out[0].evidence["behind"], json!(0));
+        assert_eq!(out[0].evidence["measured"], json!(true));
+    }
+
+    /// UNKNOWN, NEVER PASS. An unreadable origin is not a healthy deploy
+    /// pipeline — that conflation is exactly what AMUX-4947 cost days to.
+    #[test]
+    fn an_unreadable_origin_is_unknown_rather_than_healthy() {
+        let out = served_commit_is_current(None, "AMUX_REPO_DIR is unset", 1_800);
+        assert_eq!(out[0].status, Status::Unknown);
+        assert_ne!(out[0].status, Status::Pass);
+        assert!(out[0].observed.contains("AMUX_REPO_DIR") || out[0].expected.contains("AMUX_REPO_DIR")
+            || format!("{:?}", out[0]).contains("AMUX_REPO_DIR"), "the reason must travel");
     }
 }
 

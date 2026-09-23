@@ -419,6 +419,9 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             checks::BUILDER_INTERVAL_S,
             checks::BUILDER_MAX_INTERVALS,
         ));
+        // The SECOND question, which the one above structurally cannot answer:
+        // is anything actually landing? (AMUX-4957)
+        out.extend(served_commit_check().await);
 
         // The helper-model read router is the third consumer of the same
         // installed-script rule. Keeping it here means an uncommitted runtime
@@ -2365,6 +2368,79 @@ fn repeat_offer_check(state: &AppState) -> Vec<InvariantResult> {
 /// The predicate is `tmux::env_pair_is_argv_safe`, the SAME one the spawn guard
 /// refuses on, so the detector and the mechanism cannot come to disagree about
 /// what counts as a secret.
+/// AMUX-4957: compare the SERVED commit to origin/main.
+///
+/// `AMUX_REPO_DIR` is the same knob the builder itself reads, so the check
+/// cannot end up looking at a different checkout from the one that deploys.
+/// Every failure to read is UNKNOWN with a reason, never a pass — an
+/// unmeasured deploy pipeline is not a healthy one, which is the entire lesson
+/// of AMUX-4947.
+async fn served_commit_check() -> Vec<InvariantResult> {
+    let served = env!("AMUX_BUILD_COMMIT_FULL");
+    let Some(repo) = std::env::var("AMUX_REPO_DIR")
+        .or_else(|_| std::env::var("AMUX_REPO"))
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+    else {
+        return checks::served_commit_is_current(
+            None,
+            "AMUX_REPO_DIR is unset, so origin/main cannot be read",
+            checks::deploy_lag_threshold_s(),
+        );
+    };
+    let git = |args: Vec<String>| {
+        let repo = repo.clone();
+        async move {
+            let out = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(&args)
+                .output()
+                .await
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+    };
+    let Some(origin_head) = git(vec!["rev-parse".into(), "origin/main".into()]).await else {
+        let why = format!("git rev-parse origin/main failed in {repo}");
+        return checks::served_commit_is_current(None, &why, checks::deploy_lag_threshold_s());
+    };
+    let range = format!("{served}..origin/main");
+    let Some(behind) = git(vec!["rev-list".into(), "--count".into(), range.clone()]).await
+    else {
+        // The served commit is not in this repo — an unpushed or foreign build.
+        // That is unmeasurable here, not healthy.
+        let why = format!("the served commit {served} is not present in {repo}");
+        return checks::served_commit_is_current(None, &why, checks::deploy_lag_threshold_s());
+    };
+    let behind: i64 = behind.parse().unwrap_or(0);
+    // Age of the OLDEST unserved commit: git's own record, so a server restart
+    // (which a deploy causes) cannot reset it.
+    let oldest_unserved_age_s = if behind > 0 {
+        let stamps = git(vec!["log".into(), "--format=%ct".into(), range]).await.unwrap_or_default();
+        stamps
+            .lines()
+            .last()
+            .and_then(|t| t.trim().parse::<i64>().ok())
+            .map(|t| chrono::Utc::now().timestamp() - t)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    checks::served_commit_is_current(
+        Some(&checks::DeployLag {
+            served: served.to_string(),
+            origin_head,
+            behind,
+            oldest_unserved_age_s,
+        }),
+        "",
+        checks::deploy_lag_threshold_s(),
+    )
+}
+
 async fn argv_secret_check() -> Vec<InvariantResult> {
     const ID: &str = "security.no_secrets_in_process_argv";
     let output =
