@@ -69,24 +69,54 @@ cat > "$CC/sessions/af78smoke.env" <<ENVEOF
 CC_DIR="$WORK/workdir"
 CC_PROVIDER="claude"
 ENVEOF
-# Stub tmux. has-session => "not running" (exit 1) so cmd_start proceeds past the
-# already-running early return into the real launch; new-session/set-option succeed
-# without spawning. NOTHING is forwarded to a real tmux server.
+# Stub tmux. has-session must answer DIFFERENTLY before and after the launch, the
+# way the real thing does:
+#   before new-session  exit 1, so cmd_start proceeds past its already-running
+#                       early return into the real launch this test exists to reach
+#   after new-session   exit 0, because the pane now exists
+#
+# It used to answer 1 unconditionally, which was correct for every verb cmd_start
+# called at the time. 619f0162 added a post-launch liveness check — a start that
+# cannot verify its pane now refuses to claim success (AMUX-5005) — and against the
+# old stub that check saw a pane that never existed and failed every launch,
+# including the unmodified CLI. The guard was right and the stub had stopped
+# modelling tmux.
+#
+# A marker file is the whole mechanism: no state is shared with any real tmux server
+# and NOTHING is forwarded to one.
 STUB="$WORK/stub"; mkdir -p "$STUB"
 cat > "$STUB/tmux" <<'TMUXEOF'
 #!/usr/bin/env bash
-case "${1:-}" in
-  has-session) exit 1 ;;
+# $TMUX_STUB_STATE is exported by the harness; a bare invocation without it
+# behaves exactly like the old unconditional stub.
+marker="${TMUX_STUB_STATE:-}/spawned"
+# THE VERB IS NOT ALWAYS $1. The CLI calls `tmux -N new-session ...` when it has
+# decided to pass -N (amux:1010, AMUX-4203), so a stub that switched on $1 saw
+# `-N` and fell through to the catch-all — the marker was never written and the
+# post-launch liveness check read every launch as a dead pane. Skip leading
+# flags and switch on the first real word, the way tmux itself parses.
+verb=""
+for a in "$@"; do
+  case "$a" in -*) continue ;; *) verb="$a"; break ;; esac
+done
+case "$verb" in
+  has-session) [ -n "${TMUX_STUB_STATE:-}" ] && [ -f "$marker" ] && exit 0; exit 1 ;;
+  new-session) [ -n "${TMUX_STUB_STATE:-}" ] && : > "$marker"; exit 0 ;;
   *)           exit 0 ;;
 esac
 TMUXEOF
 chmod +x "$STUB/tmux"
+STUB_STATE="$WORK/tmuxstate"; mkdir -p "$STUB_STATE"
+export TMUX_STUB_STATE="$STUB_STATE"
 
 # Run `amux start af78smoke --detach` against $1 with AMUX_API UNSET and tmux stubbed.
 # --detach returns right after the inject at amux:650 WITHOUT attaching. Output
 # (stdout+stderr) lands in $WORK/out; the caller reads $? for the exit code. Run
 # DIRECTLY (not in $(...)) so the exit code is the parent's, not a lost subshell's.
 run_launch() {
+  # Each case starts with no pane, so has-session answers "not running" on the
+  # way in and "running" after the launch — one launch per case, no carry-over.
+  rm -f "$STUB_STATE/spawned"
   env -u AMUX_API -u AMUX_URL \
     PATH="$STUB:$PATH" HOME="$FAKE_HOME" CC_HOME="$CC" \
     AMUX_SESSION=af78smoke-test AMUX_WORKER=af78smoke-test \
