@@ -1,0 +1,80 @@
+name: iOS — build on change
+
+# AMUX-4981. ios.yml is a nightly TestFlight RELEASE job (schedule +
+# workflow_dispatch only), so NOTHING compiled the app in response to a commit.
+# A Swift change that does not build was discovered by that night's release,
+# hours later, and attributed to whoever pushed last rather than to the commit
+# that broke it.
+#
+# SCOPED HARD, ON PURPOSE. macos runners bill at a 10x minute multiplier, so
+# this must not behave like the Rust workflow:
+#   - paths: ios/** only. Nothing else can start it.
+#   - concurrency cancels superseded runs, the same shape rust.yml already uses.
+#   - one job, one destination, no matrix.
+# ios/ changes rarely, so the expected cost is a handful of runs a month.
+#
+# It does NOT sign, upload, or tag. Release stays entirely in ios.yml; this
+# answers one question — does the app still compile — and nothing else.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-build.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ios-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen || true
+
+      # The .xcodeproj is gitignored and generated from project.yml, so a
+      # checkout alone cannot be built. Generating here is also the only thing
+      # that would catch a project.yml that no longer produces a valid project.
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # CODE_SIGNING_ALLOWED=NO: this is a compile check, and signing would
+      # need the match credentials the release job carries. Entitlements are
+      # stripped by that, which is fine here and is NOT fine for a release —
+      # another reason this stays separate from ios.yml.
+      - name: Build app + share extension for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AmuxApp.xcodeproj \
+            -scheme AmuxApp \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tail -40
+
+      # A build that silently stopped producing the extension would still be
+      # "BUILD SUCCEEDED", and the share feature would ship broken. Name the
+      # artifact rather than trusting the exit code (ethos rule 4).
+      - name: The share extension must actually be embedded
+        run: |
+          APP=$(find ~/Library/Developer/Xcode/DerivedData -name 'AmuxApp.app' -maxdepth 6 | head -1)
+          [ -n "$APP" ] || { echo "::error::no AmuxApp.app was produced"; exit 1; }
+          echo "app: $APP"
+          if [ ! -d "$APP/PlugIns/AmuxShare.appex" ]; then
+            echo "::error::AmuxShare.appex is missing from the built app — the share extension did not build or stopped being embedded"
+            exit 1
+          fi
+          echo "AmuxShare.appex present"
