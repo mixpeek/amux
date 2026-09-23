@@ -396,6 +396,18 @@ tr:hover td { background: var(--bg-2); }
 
 .btn-primary:hover { opacity: 0.85; color: var(--bg); }
 
+/* Touch target. At 13px/7px this control is ~32px tall, under the 44px minimum
+   a finger needs, and it is the primary action on /cloud and /concierge. Fixed
+   on the SHARED class rather than with a page-local variant, so every existing
+   .btn gets it and the next one does not have to remember. Desktop is
+   unchanged: the rule is scoped to the breakpoint this file already uses. */
+@media (max-width: 640px) {
+  .btn {
+    min-height: 44px;
+    padding: 10px 16px;
+  }
+}
+
 /* ── CTA BOX ── */
 .cta-box {
   background: var(--bg-2);
