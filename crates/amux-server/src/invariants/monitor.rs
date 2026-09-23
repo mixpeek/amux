@@ -2352,10 +2352,12 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                 let (pid, rest) = line.split_once(' ').unwrap_or((line, ""));
                 for token in rest.split_whitespace() {
                     let Some((key, value)) = token.split_once('=') else { continue };
-                    let identifier = !key.is_empty()
-                        && !key.starts_with(|c: char| c.is_ascii_digit())
-                        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                    if identifier && !crate::backend::tmux::env_pair_is_argv_safe(key, value) {
+                    // ENV-VAR SHAPE, not merely identifier shape (AMUX-4964).
+                    // Identifier shape alone matched `jsonwebtoken`, an npm
+                    // package whose name uppercases to contain TOKEN.
+                    if checks::argv_key_is_env_shaped(key)
+                        && !crate::backend::tmux::env_pair_is_argv_safe(key, value)
+                    {
                         found.push(checks::ArgvSecret {
                             pid: pid.to_string(),
                             key: key.to_string(),

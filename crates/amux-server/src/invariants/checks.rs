@@ -2543,6 +2543,30 @@ pub struct ArgvSecret {
     pub value_len: usize,
 }
 
+/// Does this argv key have the SHAPE of an environment variable? (AMUX-4964)
+///
+/// The spawn guard `env_pair_is_argv_safe` is deliberately case-INSENSITIVE,
+/// and correctly so: it decides what amux itself is allowed to create, where a
+/// lowercase `openai_api_key` is an evasion rather than a coincidence. Its own
+/// test says "case is not a defence".
+///
+/// Reading the WHOLE process table is a different problem, and reusing that
+/// predicate there was my mistake. It filed within hours on
+/// `jsonwebtoken (len 86)` — the npm JWT library, whose name uppercases to
+/// contain TOKEN. Nothing was leaked; a package name was read as a credential.
+///
+/// So the scanner additionally requires the key to look like an env var:
+/// no lowercase. Credentials on this box are UPPER_SNAKE without exception,
+/// and the guard above still refuses a lowercase spelling at the point of
+/// creation, so the layer that can be evaded is not the layer that matters.
+/// A security invariant that cries wolf is one people learn to skip past,
+/// which is worse than not having it.
+pub fn argv_key_is_env_shaped(key: &str) -> bool {
+    !key.is_empty()
+        && !key.starts_with(|c: char| c.is_ascii_digit())
+        && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// AMUX-4946: is any live process carrying a credential in its argv?
 ///
 /// Process arguments are world-readable, and a tmux SERVER keeps the argv of
@@ -8785,6 +8809,23 @@ mod argv_secret_invariant_tests {
         // The LENGTH does travel, and is what separates a real key from the
         // empty `ANTHROPIC_API_KEY=` an OAuth worker uses to suppress one.
         assert!(rendered.contains(&VALUE.len().to_string()), "the length is the usable signal");
+    }
+
+    /// AMUX-4964. The specimen that proved the scanner needed a tighter shape
+    /// than the spawn guard it borrowed from.
+    #[test]
+    fn a_package_name_that_uppercases_to_contain_token_is_not_a_credential() {
+        // The literal specimen: filed within hours of shipping the invariant.
+        assert!(!argv_key_is_env_shaped("jsonwebtoken"));
+        assert!(!argv_key_is_env_shaped("accessToken"));
+        assert!(!argv_key_is_env_shaped("my_secret_thing"));
+        // ...and the real ones must still be reached, or the noise fix becomes
+        // a blindfold. This is the half that must not rot.
+        for real in ["OPENAI_API_KEY", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "PGPASSWORD", "K8S_TOKEN_2"] {
+            assert!(argv_key_is_env_shaped(real), "{real} is an env var name");
+        }
+        assert!(!argv_key_is_env_shaped(""));
+        assert!(!argv_key_is_env_shaped("2FA_TOKEN"), "an env var cannot start with a digit");
     }
 
     /// Several pairs on one process are one exposed process, not several.
