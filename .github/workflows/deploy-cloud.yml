@@ -237,7 +237,31 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
+          # REACHABILITY IS A DIFFERENT FAILURE FROM AUTHENTICATION, and this
+          # step could express neither. Against a host that does not answer,
+          # ssh-keyscan exits 1 and prints NOTHING on stdout and NOTHING on
+          # stderr, so under `bash -e` the step died here in silence: the log
+          # showed the script echoed, then "Process completed with exit code 1"
+          # five seconds later (ssh-keyscan's default timeout) with not one line
+          # in between. Ethos rule 4 — the instrument could not express the
+          # answer, so 13 consecutive failures all looked like the auth problem
+          # the comment below documents, and were read as one.
+          #
+          # Measured 2026-09-23: CLOUD_HOST 34.121.177.76 refused port 22 and
+          # cloud.amux.io returned zero bytes through Cloudflare. The key was
+          # never the problem, and the one line that would have said so could
+          # not run because it sits AFTER this.
+          #
+          # So the failure is deferred rather than immediate: record it, let the
+          # key fingerprint below print, and exit at the end. The log then always
+          # carries BOTH facts, whichever one broke.
+          KEYSCAN_OK=1
+          if ssh-keyscan -H "$CLOUD_HOST" > /tmp/keyscan.out 2>/tmp/keyscan.err; then
+            cat /tmp/keyscan.out >> ~/.ssh/known_hosts
+            echo "CLOUD_HOST $CLOUD_HOST answered on port 22 ($(wc -l < /tmp/keyscan.out | tr -d ' ') host key line(s))"
+          else
+            KEYSCAN_OK=0
+          fi
           chmod 644 ~/.ssh/known_hosts
           # PRINT WHICH KEY WE OFFER. A fingerprint is not secret; the key is, and
           # is never echoed. This exists because "Permission denied (publickey)"
@@ -259,6 +283,11 @@ jobs:
           # authorize this key or replace the secret. No guessing which end is wrong.
           ssh-keygen -lf ~/.ssh/amux_cloud | sed 's/^/CI offers key: /' || \
             echo "CI offers key: UNREADABLE — secrets.CLOUD_SSH_KEY is empty or not a valid private key"
+          if [ "$KEYSCAN_OK" = 0 ]; then
+            echo "::error::CLOUD_HOST $CLOUD_HOST did not answer on port 22. This is a HOST REACHABILITY failure, not an auth failure: the VM is down, its address changed, or a firewall blocks the runner. CLOUD_HOST is hardcoded in this workflow, so a changed IP needs an edit here. The key fingerprint above is printed for completeness and is NOT implicated."
+            sed 's/^/  ssh-keyscan stderr: /' /tmp/keyscan.err || true
+            exit 1
+          fi
 
       - name: Snapshot gateway.py + gateway.env BEFORE any writes (restart only if they change)
         run: |
@@ -555,7 +584,31 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
+          # REACHABILITY IS A DIFFERENT FAILURE FROM AUTHENTICATION, and this
+          # step could express neither. Against a host that does not answer,
+          # ssh-keyscan exits 1 and prints NOTHING on stdout and NOTHING on
+          # stderr, so under `bash -e` the step died here in silence: the log
+          # showed the script echoed, then "Process completed with exit code 1"
+          # five seconds later (ssh-keyscan's default timeout) with not one line
+          # in between. Ethos rule 4 — the instrument could not express the
+          # answer, so 13 consecutive failures all looked like the auth problem
+          # the comment below documents, and were read as one.
+          #
+          # Measured 2026-09-23: CLOUD_HOST 34.121.177.76 refused port 22 and
+          # cloud.amux.io returned zero bytes through Cloudflare. The key was
+          # never the problem, and the one line that would have said so could
+          # not run because it sits AFTER this.
+          #
+          # So the failure is deferred rather than immediate: record it, let the
+          # key fingerprint below print, and exit at the end. The log then always
+          # carries BOTH facts, whichever one broke.
+          KEYSCAN_OK=1
+          if ssh-keyscan -H "$CLOUD_HOST" > /tmp/keyscan.out 2>/tmp/keyscan.err; then
+            cat /tmp/keyscan.out >> ~/.ssh/known_hosts
+            echo "CLOUD_HOST $CLOUD_HOST answered on port 22 ($(wc -l < /tmp/keyscan.out | tr -d ' ') host key line(s))"
+          else
+            KEYSCAN_OK=0
+          fi
           chmod 644 ~/.ssh/known_hosts
           # PRINT WHICH KEY WE OFFER. A fingerprint is not secret; the key is, and
           # is never echoed. This exists because "Permission denied (publickey)"
@@ -577,6 +630,11 @@ jobs:
           # authorize this key or replace the secret. No guessing which end is wrong.
           ssh-keygen -lf ~/.ssh/amux_cloud | sed 's/^/CI offers key: /' || \
             echo "CI offers key: UNREADABLE — secrets.CLOUD_SSH_KEY is empty or not a valid private key"
+          if [ "$KEYSCAN_OK" = 0 ]; then
+            echo "::error::CLOUD_HOST $CLOUD_HOST did not answer on port 22. This is a HOST REACHABILITY failure, not an auth failure: the VM is down, its address changed, or a firewall blocks the runner. CLOUD_HOST is hardcoded in this workflow, so a changed IP needs an edit here. The key fingerprint above is printed for completeness and is NOT implicated."
+            sed 's/^/  ssh-keyscan stderr: /' /tmp/keyscan.err || true
+            exit 1
+          fi
 
       - name: Recreate running workspaces and prove the new server answers
         run: |
