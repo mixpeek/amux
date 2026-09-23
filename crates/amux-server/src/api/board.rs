@@ -13155,6 +13155,66 @@ pub async fn patch_item(
                                     next.due = Some(when);
                                     changed.push("due".into());
                                 }
+                            } else if !map.contains_key("due")
+                                && bs::revisit_arrived(next.due.as_deref(), &now.format("%Y-%m-%d").to_string())
+                                && body_str(&map, "source_ref").is_some_and(|v| {
+                                    !v.trim().is_empty() && !v.starts_with("autofix:")
+                                })
+                            {
+                                // AF-469-CLASS GAP, THE due SIDE (found live
+                                // 2026-09-23, INFRA-9). `--trigger` stamps
+                                // source_ref + last_verified_at (the repair a
+                                // few hundred lines up, AMUX-4168) but never
+                                // touches `due`, and the blank-fill arm just
+                                // above deliberately never overwrites an
+                                // EXISTING date — so a card re-parked with a
+                                // brand new trigger silently kept whatever due
+                                // date it happened to have from before,
+                                // including one already in the past. A passed
+                                // due date makes `backlog_due_promotions`
+                                // (board_drive.rs) re-promote the card on
+                                // EVERY tick regardless of how fresh the
+                                // trigger note is — the two arms never talk to
+                                // each other. Caught live: a card re-parked
+                                // with a fresh external-condition trigger got
+                                // re-picked-up every few minutes for two days
+                                // straight, because a due date from an
+                                // unrelated, much earlier park had never been
+                                // cleared.
+                                //
+                                // Scoped exactly as narrow as the blank-fill
+                                // arm: only a NEW, real (non-autofix) trigger
+                                // in THIS SAME PATCH triggers a refresh, and
+                                // only when the existing date has actually
+                                // passed — a future date the caller chose is
+                                // never touched, same guarantee the comment
+                                // above already makes for the blank case. And
+                                // `!map.contains_key("due")` is the same rule
+                                // one more time, for a THIRD case the first
+                                // draft of this fix missed: a caller who sets
+                                // `due` and `source_ref` in the SAME PATCH —
+                                // even to a deliberately past date — is a
+                                // choice too, not a stale leftover, and must
+                                // survive exactly like the blank-fill arm's
+                                // own caller-supplied date already does.
+                                if let Some(days) =
+                                    bs::default_revisit_days(target, next.session.as_deref())
+                                {
+                                    let when = bs::revisit_date(days);
+                                    next.log = Some(bs::append_log(
+                                        next.log.as_deref(),
+                                        &stamp,
+                                        &format!(
+                                            "revisit {when} (default {days}d for {target_raw}): \
+                                             the previous revisit date had already passed and a \
+                                             new trigger was just set on this {target_raw} card — \
+                                             refreshed so the stale date does not re-promote it on \
+                                             every tick regardless of the trigger's own freshness"
+                                        ),
+                                    ));
+                                    next.due = Some(when);
+                                    changed.push("due".into());
+                                }
                             }
                             status_event = Some((from_raw, target_raw));
                             changed.push("status".into());

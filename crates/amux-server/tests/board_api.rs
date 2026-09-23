@@ -5855,6 +5855,141 @@ async fn a_caller_supplied_revisit_date_survives_the_default() {
     assert_eq!(got["due"].as_str(), Some("2027-01-15"), "the caller's date must win");
 }
 
+/// AF-469-CLASS GAP, THE due SIDE (found live 2026-09-23, INFRA-9): `amux
+/// board backlog <ID> --trigger "..."` stamps `source_ref` + `last_verified_at`
+/// (the repair `entering_an_undrained_status_stamps_a_revisit_date`'s sibling
+/// covers) but never touched `due` — and the blank-fill default above
+/// deliberately never overwrites an EXISTING date, so a card re-parked with a
+/// brand new trigger silently kept whatever due date it happened to have from
+/// an earlier, unrelated park, including one already in the past. A passed
+/// due date makes the board-drive due arm re-promote the card on every tick
+/// regardless of how fresh the trigger note is — observed live re-promoting a
+/// genuinely externally-blocked card every few minutes for two days straight.
+#[tokio::test]
+async fn a_fresh_trigger_refreshes_an_already_passed_due_date() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({ "title": "waiting on an external condition" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    // Park it once, with a due date that is ALREADY in the past — the exact
+    // state INFRA-9 was found in (a stale date surviving from an earlier,
+    // unrelated park).
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "due": "2020-01-01", "source_ref": "waiting on X", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(got["due"].as_str(), Some("2020-01-01"), "setup: the past date must land as sent");
+
+    // The REAL sequence this bug happens in: an idle-loop claim (backlog ->
+    // doing — the due arm's own re-promotion, or a plain claim) followed by a
+    // re-park with a fresh trigger (doing -> backlog). Re-sending "backlog"
+    // while ALREADY in backlog is a different, narrower case this fix does
+    // not need to cover — the actual status TRANSITION is what board_drive's
+    // due arm and the auto-pickup cycle both produce every time.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "doing", "gate_ack": true, "next_action": "check the external condition" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "claim: {v}");
+
+    // Re-park with a FRESH, real trigger — the `--trigger` re-fire path.
+    // `due` is not mentioned in this PATCH at all.
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "source_ref": "waiting on Y now instead", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    let due = got["due"].as_str().unwrap_or("");
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(due > today.as_str(), "the stale date must be refreshed into the future, got {due:?}");
+    let want = (chrono::Local::now() + chrono::Duration::days(14))
+        .format("%Y-%m-%d")
+        .to_string();
+    assert_eq!(due, want, "must use the same default window as the blank-fill case");
+    let log = got["log"].as_str().unwrap_or("");
+    assert!(log.contains(&format!("revisit {due}")), "log must name the refreshed date: {log}");
+}
+
+/// The refresh above must not fire on an ordinary edit that happens to share a
+/// PATCH with nothing new about the trigger — only a genuinely NEW, non-empty
+/// `source_ref` in THIS SAME request may touch `due`. Otherwise any unrelated
+/// field edit on an already-stale backlog card would silently reset its clock.
+#[tokio::test]
+async fn an_unrelated_edit_does_not_refresh_a_stale_due_date() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({ "title": "stale but untouched" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "due": "2020-01-01", "source_ref": "waiting on X", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    // An edit that does NOT mention source_ref at all.
+    let (st, _, v) =
+        send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "desc": "adding a note" }))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(
+        got["due"].as_str(),
+        Some("2020-01-01"),
+        "an edit that never touched source_ref must not refresh the stale due date"
+    );
+}
+
+/// The refresh must never touch a due date that is still in the future — the
+/// same "the owner's choice survives" guarantee `a_caller_supplied_revisit_date_survives_the_default`
+/// already covers for the blank case, extended to the refresh path.
+#[tokio::test]
+async fn a_fresh_trigger_never_touches_a_still_future_due_date() {
+    let (app, _tmp) = app();
+    let c = create(&app, json!({ "title": "deliberately dated ahead" })).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "due": "2099-01-01", "source_ref": "waiting on X", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (st, _, v) = send(
+        &app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "source_ref": "waiting on Y now instead", "gate_ack": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+
+    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(
+        got["due"].as_str(),
+        Some("2099-01-01"),
+        "a future date is the owner's choice and must survive a fresh trigger"
+    );
+}
+
 /// Every status with a next actor must be left alone. A `doing` card carrying
 /// an auto-stamped due date would read as a deadline nobody set, and `done`
 /// would acquire one after the work finished.
