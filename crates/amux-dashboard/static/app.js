@@ -11002,12 +11002,12 @@ function _renderPeekIssuesBody() {
   // The per-session panel shows the lane's FULL record including archived, so
   // it is the second consumer that needs the lazy set (AMUX-2271).
   if (!allScope) _ensureArchived();
-  const scoped = _bqHideArchived(
+  const scoped = _bqHideDiscarded(_bqHideArchived(
     // Per-session panel shows the FULL record — every column, archived
     // included (Ethan: "all columns visible when I click each session").
     // The all-sessions scope stays archived-hidden like the global board.
     (boardItems || []).filter(i => !i.deleted && (allScope ? !i.archived : i.session === peekSession)),
-    _peekIssuesQuery);
+    _peekIssuesQuery), _peekIssuesQuery);
   // Scope first, then query — so "3 of 12" counts within the session you are
   // looking at, not against the whole board.
   const items = _bqFilter(scoped, _peekIssuesQuery);
@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1017';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1018';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -29268,6 +29268,27 @@ function _bqHideArchived(items, q) {
   return items;
 }
 
+// Same shape as _bqHideArchived, for the `discarded` STATUS rather than the
+// `archived` FLAG (Ethan, 2026-09-23: "Clear board" moves everything on a
+// worker's board to discarded, and a board that is now mostly discarded
+// cards should not bury the few live ones). Hidden by default, revealed by
+// `status:discarded` — the same token the "+ Filter" menu's Status group
+// already appends (_bfOpenMenu), so no new query syntax exists to learn.
+// Deliberately NOT the `_collapsedCols` kanban-column collapse: that is
+// CSS-only `display:none` with no search integration, so a query matching a
+// card inside a collapsed column still finds nothing — exactly what "still
+// searchable" rules out. Filtering the underlying array instead means a
+// matching query always includes the card, the same guarantee archived
+// cards already get.
+function _bqWantsDiscarded(q) {
+  return /(^|\s)-?status:(\S*,)?discarded\b/i.test(String(q || ''));
+}
+function _bqHideDiscarded(items, q) {
+  if (!_bqWantsDiscarded(q) && !_BQ_ID_RE.test(String(q || '')))
+    return items.filter(i => _statusCanon(i.status) !== 'discarded');
+  return items;
+}
+
 // ── Filter bar (AMUX-2151, Linear-oriented) ────────────────────────────────
 // The UI COMPILES to the existing query language: chips are a parsed render
 // of boardSearchQuery and the menu appends tokens to it. One filter
@@ -29982,6 +30003,52 @@ async function _colMigrateAll(from, to, lane) {
   } catch (e) {
     showToast('Migrate failed: ' + e.message);
   }
+}
+// "Clear board" (Ethan, 2026-09-23): the per-worker peek Board tab's version
+// of _colMigrateAll above, generalized to sweep EVERY status this worker has
+// cards in, not just one column. bulk-migrate takes one `from` per call, so
+// this is one call per status that actually has cards — `discarded` itself
+// is skipped (nothing to move) and `_statusCanon` groups any legacy status
+// spelling the same way the filter bar already does.
+async function clearPeekBoard() {
+  const lane = peekSession;
+  if (!lane) return;
+  const live = (boardItems || []).filter(i =>
+    !i.archived && !i.deleted && i.session === lane && _statusCanon(i.status) !== 'discarded');
+  const n = live.length;
+  if (!n) { showToast('Nothing to clear — ' + lane + '’s board is already empty or discarded'); return; }
+  // SAY HOW MANY, and say it is not undoable — same rule _colMigrateAll's
+  // dialog follows for the single-column case.
+  if (!await showConfirm(
+      'Move all ' + n + ' card' + (n === 1 ? '' : 's') + ' on ' + lane + '’s board to Discarded?\n\n'
+      + 'Each move is recorded on the card, but there is no single undo; reversing this means '
+      + 'moving them back individually.',
+      'Clear board', true)) return;
+  const froms = [...new Set(live.map(i => _statusCanon(i.status)))];
+  let moved = 0, considered = 0, refused = 0, anon = false;
+  for (const from of froms) {
+    try {
+      const r = await fetch(API + '/api/board/bulk-migrate', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+        body: JSON.stringify({ from: from, to: 'discarded', session: lane }),
+      });
+      const d = await r.json();
+      if (!r.ok) { console.warn('[clear-board] "' + from + '" refused:', d.error || r.status); continue; }
+      moved += d.moved || 0;
+      considered += d.considered || 0;
+      refused += (d.refused || []).length;
+      if (d.actor === 'api-anonymous') anon = true;
+      if ((d.refused || []).length) console.warn('[clear-board] "' + from + '" refused:', d.refused);
+    } catch (e) {
+      console.warn('[clear-board] "' + from + '" failed:', e.message);
+    }
+  }
+  showToast('Cleared ' + moved + ' of ' + considered + ' card' + (considered === 1 ? '' : 's')
+    + (refused ? ', ' + refused + ' refused (see console)' : '')
+    + (anon ? '. Recorded with NO actor.' : ''));
+  await fetchBoard();
+  renderPeekIssues();
 }
 document.addEventListener('click', () => _colMenuClose());
 
@@ -30962,6 +31029,7 @@ function renderBoard() {
   // facets derived from live session state. Bare words still substring-match,
   // so the old search behaviour is a strict subset of this.
   visible = _bqHideArchived(visible, boardSearchQuery);
+  visible = _bqHideDiscarded(visible, boardSearchQuery);
   visible = _bqFilter(visible, boardSearchQuery);
 
   // EXPORT READS THIS, rather than re-deriving the filter pipeline (owner

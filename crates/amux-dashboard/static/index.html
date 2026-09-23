@@ -2584,6 +2584,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button id="piv-kanban" class="bv-btn" onclick="setPeekIssuesView('kanban')" title="Board view">&#x25A4;</button>
       </div>
       <button id="piv-scope" class="btn" style="flex:0 0 auto;font-size:0.72rem;padding:4px 9px;" onclick="togglePeekIssuesAll()" title="Toggle between this worker's issues and all workers'">This worker</button>
+      <!-- Always scoped to THIS worker (peekSession), regardless of the
+           This worker/All workers VIEW toggle above — clearing the global
+           board is not what a per-worker button should ever do. -->
+      <button id="piv-clear-board" class="btn danger" style="flex:0 0 auto;font-size:0.72rem;padding:4px 9px;" onclick="clearPeekBoard()" title="Move every card on this worker's board to Discarded">Clear board</button>
       <span id="peek-issues-count" style="flex:0 0 auto;font-size:0.78rem;color:var(--dim);align-self:center;white-space:nowrap;"></span>
       <!-- Export THIS worker's board, FULL descriptions, straight from the
            server (AMUX-3868). Not the main Board tab's client-side export:
