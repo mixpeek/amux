@@ -106,10 +106,13 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     async fn models(&self) -> Vec<String> {
-        // Subscription OAuth has no listing endpoint. Use the same typed,
-        // dated fallback the dashboard serves; explicit future ids remain
-        // legal because WorkerConfig.model is an open string.
-        crate::provider::model_catalog::worker_model_ids("claude")
+        // Subscription OAuth has no listing endpoint, but a configured
+        // ANTHROPIC_API_KEY does (a separate credential — see
+        // live_catalog's fetch_anthropic doc). live_catalog::worker_model_ids
+        // reads whatever the periodic refresh last cached and falls back to
+        // the same typed, dated static list this used to call directly when
+        // no key is configured or the last probe failed.
+        crate::provider::live_catalog::worker_model_ids("claude")
     }
 
     fn build_command(&self, prompt_mode: PromptMode) -> Vec<String> {

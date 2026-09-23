@@ -49,7 +49,9 @@ impl ProviderAdapter for GeminiAdapter {
     }
 
     async fn models(&self) -> Vec<String> {
-        crate::provider::model_catalog::worker_model_ids("gemini")
+        // Live when GEMINI_API_KEY is configured (live_catalog's periodic
+        // refresh); the same typed, dated static list otherwise.
+        crate::provider::live_catalog::worker_model_ids("gemini")
     }
 
     fn build_command(&self, prompt_mode: PromptMode) -> Vec<String> {
@@ -99,10 +101,12 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     async fn models(&self) -> Vec<String> {
-        // Codex itself has no subscription model-listing command. The dated
-        // official fallback is therefore the enumerable surface, while the
-        // configured model remains an unrestricted open string.
-        crate::provider::model_catalog::worker_model_ids("codex")
+        // Codex itself has no subscription model-listing command, but the
+        // OpenAI API does (OPENAI_API_KEY, live_catalog's periodic refresh).
+        // The dated static fallback is used when no key is configured or the
+        // last probe failed; the configured model always remains an
+        // unrestricted open string either way.
+        crate::provider::live_catalog::worker_model_ids("codex")
     }
 
     fn build_command(&self, prompt_mode: PromptMode) -> Vec<String> {

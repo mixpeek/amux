@@ -138,20 +138,56 @@ pub async fn ollama_models() -> impl IntoResponse {
 }
 
 /// `GET /api/models` — the typed, provider-aware model catalog used by every
-/// dashboard picker. The age signal is intentional: static fallbacks are the
-/// honest answer for subscription CLIs without model-listing APIs, but a
-/// fallback that nobody revisits becomes silent drift. One WARN per process
-/// makes an overdue catalog visible to the ordinary log/autofix sweep.
+/// dashboard picker. Backed by `provider::live_catalog`: whenever a vendor
+/// API key (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY) is configured,
+/// the periodic `model-catalog-refresh` job has already asked that vendor
+/// directly, and its cached snapshot — a union over the static catalog, so a
+/// probe failure never removes a previously offered id — is what this route
+/// serves. No live snapshot yet (fresh boot, no keys configured, or every
+/// probe has failed) falls back to the compiled-in static catalog alone, and
+/// that fallback's own age is the honest signal worth a WARN: a working live
+/// probe already answers the "is this current" question a human would
+/// otherwise have to.
 pub async fn model_catalog() -> impl IntoResponse {
+    use crate::provider::live_catalog;
     use crate::provider::model_catalog::{catalog, CATALOG_UPDATED_AT};
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let models = catalog();
+    let live = live_catalog::current();
+    let (models, live_providers): (Vec<Value>, Vec<Value>) = match &live {
+        Some(snap) => (
+            snap.entries
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                .collect(),
+            snap.providers
+                .iter()
+                .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+                .collect(),
+        ),
+        None => (
+            catalog()
+                .into_iter()
+                .map(|m| {
+                    json!({
+                        "vendor": m.vendor,
+                        "provider": m.provider,
+                        "id": m.id,
+                        "model_type": m.model_type,
+                        "worker_selectable": m.worker_selectable,
+                        "source": "static",
+                    })
+                })
+                .collect(),
+            Vec::new(),
+        ),
+    };
+
     let updated = chrono::NaiveDate::parse_from_str(CATALOG_UPDATED_AT, "%Y-%m-%d").ok();
     let age_days = updated.map(|date| (chrono::Utc::now().date_naive() - date).num_days());
     let review_due = age_days.is_none_or(|days| days > 45);
     static WARNED_STALE: AtomicBool = AtomicBool::new(false);
-    if review_due && !WARNED_STALE.swap(true, Ordering::Relaxed) {
+    if review_due && live.is_none() && !WARNED_STALE.swap(true, Ordering::Relaxed) {
         tracing::warn!(
             kind = "provider_model_catalog_stale",
             verdict = "review_required",
@@ -159,7 +195,8 @@ pub async fn model_catalog() -> impl IntoResponse {
             n_considered = models.len(),
             catalog_updated_at = CATALOG_UPDATED_AT,
             age_days = age_days.unwrap_or(-1),
-            "provider model catalog is overdue for comparison with vendor catalogs"
+            "static provider model catalog is overdue for comparison with vendor catalogs, \
+             and no live refresh has run to cover the gap"
         );
     }
 
@@ -171,6 +208,11 @@ pub async fn model_catalog() -> impl IntoResponse {
         "measured": true,
         "n_considered": models.len(),
         "why_unmeasured": null,
+        "live_catalog": {
+            "measured": live.is_some(),
+            "computed_at": live.as_ref().map(|s| s.computed_at),
+            "providers": live_providers,
+        },
         "sources": {
             "openai": "https://developers.openai.com/api/docs/models/all",
             "anthropic": "https://platform.claude.com/docs/en/models/overview",

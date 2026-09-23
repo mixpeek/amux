@@ -53,7 +53,9 @@ grep -oE '^[A-Z0-9_]+=' ~/.amux/server.env | tr -d '=' | sort
 
 | Key | Purpose |
 |---|---|
-| `OPENAI_API_KEY` | OpenAI. |
+| `OPENAI_API_KEY` | OpenAI. Also lets `provider::live_catalog` fetch OpenAI's real model list for the `codex` provider instead of the static fallback (`GET /api/models`). |
+| `ANTHROPIC_API_KEY` | Anthropic's standalone API key — separate credential from the Claude Code subscription OAuth token (`~/.claude/.credentials.json` / keychain), which has no listing endpoint. Lets `provider::live_catalog` fetch Anthropic's real model list for the `claude` provider. |
+| `GEMINI_API_KEY` | Lets `provider::live_catalog` fetch Google's real model list for the `gemini` provider. |
 | `GOOGLE_API_KEY`, `GOOGLE_MAPS_API_KEY` | Google APIs / Maps. |
 | `ELEVENLABS_API_KEY` | Voice synthesis. |
 | `LIGHTFIELD_API_KEY` | Lightfield. |

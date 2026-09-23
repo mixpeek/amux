@@ -396,7 +396,11 @@ test('settings_api_key_anthropic', async ({ page, request }, testInfo) => {
     page.waitForResponse(
       (r) => r.url().includes('/api/settings/env') && r.request().method() === 'PATCH',
     ),
-    page.locator('#settings-apikeys-section button', { hasText: 'Save' }).click(),
+    // Scoped to the Anthropic row specifically: the API Keys section now has
+    // three Save buttons (Anthropic/OpenAI/Gemini, each feeding
+    // provider::live_catalog), so the old section-wide locator resolves to
+    // more than one element and Playwright's strict mode refuses to click.
+    page.locator('#settings-apikey-row-anthropic button', { hasText: 'Save' }).click(),
   ]);
   expect(res.status()).toBe(200);
   expect(await res.json()).toMatchObject({ ok: true });
@@ -482,7 +486,11 @@ test('settings_api_key_survives_slow_env_refresh', async ({ page, request }) => 
     page.waitForResponse(
       (r) => r.url().includes('/api/settings/env') && r.request().method() === 'PATCH',
     ),
-    page.locator('#settings-apikeys-section button', { hasText: 'Save' }).click(),
+    // Scoped to the Anthropic row specifically: the API Keys section now has
+    // three Save buttons (Anthropic/OpenAI/Gemini, each feeding
+    // provider::live_catalog), so the old section-wide locator resolves to
+    // more than one element and Playwright's strict mode refuses to click.
+    page.locator('#settings-apikey-row-anthropic button', { hasText: 'Save' }).click(),
   ]);
   expect(res.status()).toBe(200);
 

@@ -545,6 +545,11 @@ async fn async_main() {
     drop(runtime_jobs::token_ledger::spawn(state.clone()));
     drop(runtime_jobs::board_hygiene::spawn(state.clone()));
     drop(runtime_jobs::message_capture::spawn(state.clone()));
+    // Live model catalog (this task, 2026-09-23): probes each vendor's own
+    // list-models API when a key is configured, so /api/models and every
+    // ProviderAdapter::models() serve the vendor's real current list instead
+    // of only the hand-typed, dated fallback in provider::model_catalog.
+    drop(runtime_jobs::model_catalog_refresh::spawn());
 
     // THE SCHEDULE FIRING LOOP (AMUX-2647). `run_scheduler` existed, was
     // documented, was gated behind `AMUX_RS_SCHEDULER=1` — and had ZERO call

@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1011';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1012';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -36958,30 +36958,46 @@ async function saveHelperModel(val) {
 }
 
 // ── API Keys ───────────────────────────────────────────────────────────────────
+// Same 3 keys provider::live_catalog (server) can probe for a real model
+// list; the placeholder/status ids match what api/settings.rs's PROVIDER_ENV_KEYS
+// allows it to read/write. ANTHROPIC_API_KEY keeps its ORIGINAL element ids
+// (settings-anthropic-key / settings-apikey-status, no suffix) — e2e/settings.spec.ts
+// locates them unsuffixed and saveApiKey() with no argument is a real call site
+// (index.html's own onclick used to omit it), so both stay working unchanged.
+const API_KEY_FIELDS = [
+  { key: 'ANTHROPIC_API_KEY', input: 'settings-anthropic-key', status: 'settings-apikey-status', placeholder: 'sk-ant-...' },
+  { key: 'OPENAI_API_KEY', input: 'settings-openai-key', status: 'settings-apikey-status-openai', placeholder: 'sk-...' },
+  { key: 'GEMINI_API_KEY', input: 'settings-gemini-key', status: 'settings-apikey-status-gemini', placeholder: 'AIza...' },
+];
+
 async function loadApiKeys() {
   try {
     const r = await fetch('/api/settings/env');
     const data = await r.json();
-    const inp = document.getElementById('settings-anthropic-key');
-    const st = document.getElementById('settings-apikey-status');
-    if (!inp) return;
-    inp.placeholder = data.ANTHROPIC_API_KEY ? data.ANTHROPIC_API_KEY : 'sk-ant-...';
-    // Never clear a NON-EMPTY input: this callback is async and can land
-    // AFTER someone started typing into the field — the unconditional
-    // `inp.value = ''` here wiped the entry mid-flight, and Save then hit
-    // its empty-value early return as a silent no-op. That was the
-    // settings_api_key_anthropic CI flake (6/8 runs: fill won the race on a
-    // loaded runner, the refresh wiped it, waitForResponse hung 60s) and is
-    // the same bug a fast human hits as "my key vanished while I typed".
-    // The one writer that needs the field cleared — saveApiKey after a
-    // successful PATCH — clears it itself before calling us.
-    if (st) st.textContent = data.ANTHROPIC_API_KEY ? 'Key saved ✓' : 'No key set';
+    for (const f of API_KEY_FIELDS) {
+      const inp = document.getElementById(f.input);
+      const st = document.getElementById(f.status);
+      if (!inp) continue;
+      inp.placeholder = data[f.key] ? data[f.key] : f.placeholder;
+      // Never clear a NON-EMPTY input: this callback is async and can land
+      // AFTER someone started typing into the field — the unconditional
+      // `inp.value = ''` here wiped the entry mid-flight, and Save then hit
+      // its empty-value early return as a silent no-op. That was the
+      // settings_api_key_anthropic CI flake (6/8 runs: fill won the race on a
+      // loaded runner, the refresh wiped it, waitForResponse hung 60s) and is
+      // the same bug a fast human hits as "my key vanished while I typed".
+      // The one writer that needs the field cleared — saveApiKey after a
+      // successful PATCH — clears it itself before calling us.
+      if (st) st.textContent = data[f.key] ? 'Key saved ✓' : 'No key set';
+    }
   } catch(e) {}
 }
 
-async function saveApiKey() {
-  const inp = document.getElementById('settings-anthropic-key');
-  const st = document.getElementById('settings-apikey-status');
+async function saveApiKey(providerKey) {
+  const f = API_KEY_FIELDS.find(x => x.key === (providerKey || 'ANTHROPIC_API_KEY'));
+  if (!f) return;
+  const inp = document.getElementById(f.input);
+  const st = document.getElementById(f.status);
   const val = inp ? inp.value.trim() : '';
   if (!val) {
     // Say so instead of silently no-oping: when the refresh race above wiped
@@ -36993,8 +37009,9 @@ async function saveApiKey() {
   }
   st && (st.textContent = 'Saving…');
   try {
+    const body = {}; body[f.key] = val;
     const r = await fetch('/api/settings/env', {method:'PATCH', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ANTHROPIC_API_KEY: val})});
+      body: JSON.stringify(body)});
     if (r.ok) {
       if (inp) inp.value = '';
       if (st) st.textContent = 'Saved ✓';

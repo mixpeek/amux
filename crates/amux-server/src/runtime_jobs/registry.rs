@@ -125,6 +125,7 @@ pub mod ids {
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
     pub const RECORDINGS_TRANSCRIBE: &str = "recordings-transcribe";
+    pub const MODEL_CATALOG_REFRESH: &str = "model-catalog-refresh";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -168,6 +169,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
     ids::RECORDINGS_TRANSCRIBE,
+    ids::MODEL_CATALOG_REFRESH,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -686,6 +688,18 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/recordings/config"),
+    },
+    Doc {
+        id: ids::MODEL_CATALOG_REFRESH,
+        name: "Model catalog refresh",
+        purpose: "Probes each vendor's own list-models API (Anthropic, OpenAI, Gemini) when a key is configured and caches the merged result for /api/models and every ProviderAdapter::models(); a vendor with no key or a failed probe just keeps serving the static fallback.",
+        env: &[EnvControl {
+            var: "AMUX_MODEL_CATALOG_REFRESH_SECS",
+            effect: "tick seconds; 0 disables the job (static catalog only)",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/models"),
     },
 ];
 

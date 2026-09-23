@@ -430,15 +430,42 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="settings-tab-panel" id="stab-integrations" data-stab="integrations">
         <div class="settings-section" id="settings-apikeys-section">
           <div class="settings-section-label">API Keys</div>
-          <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Anthropic API key for Claude workers</div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            <input id="settings-anthropic-key" type="password" autocomplete="off"
-              class="search-input" placeholder="sk-ant-..."
-              style="flex:1;font-size:0.78rem;padding:5px 8px;box-sizing:border-box;min-width:0;">
-            <button class="btn" style="font-size:0.7rem;padding:3px 10px;white-space:nowrap;"
-              onclick="saveApiKey()">Save</button>
+          <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Also used to fetch each vendor's own live model list instead of amux's static fallback.</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div id="settings-apikey-row-anthropic">
+              <div style="font-size:0.68rem;color:var(--dim);margin-bottom:2px;">Anthropic</div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input id="settings-anthropic-key" type="password" autocomplete="off"
+                  class="search-input" placeholder="sk-ant-..."
+                  style="flex:1;font-size:0.78rem;padding:5px 8px;box-sizing:border-box;min-width:0;">
+                <button class="btn" style="font-size:0.7rem;padding:3px 10px;white-space:nowrap;"
+                  onclick="saveApiKey('ANTHROPIC_API_KEY')">Save</button>
+              </div>
+              <div id="settings-apikey-status" style="font-size:0.7rem;color:var(--dim);margin-top:2px;"></div>
+            </div>
+            <div id="settings-apikey-row-openai">
+              <div style="font-size:0.68rem;color:var(--dim);margin-bottom:2px;">OpenAI</div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input id="settings-openai-key" type="password" autocomplete="off"
+                  class="search-input" placeholder="sk-..."
+                  style="flex:1;font-size:0.78rem;padding:5px 8px;box-sizing:border-box;min-width:0;">
+                <button class="btn" style="font-size:0.7rem;padding:3px 10px;white-space:nowrap;"
+                  onclick="saveApiKey('OPENAI_API_KEY')">Save</button>
+              </div>
+              <div id="settings-apikey-status-openai" style="font-size:0.7rem;color:var(--dim);margin-top:2px;"></div>
+            </div>
+            <div id="settings-apikey-row-gemini">
+              <div style="font-size:0.68rem;color:var(--dim);margin-bottom:2px;">Gemini</div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <input id="settings-gemini-key" type="password" autocomplete="off"
+                  class="search-input" placeholder="AIza..."
+                  style="flex:1;font-size:0.78rem;padding:5px 8px;box-sizing:border-box;min-width:0;">
+                <button class="btn" style="font-size:0.7rem;padding:3px 10px;white-space:nowrap;"
+                  onclick="saveApiKey('GEMINI_API_KEY')">Save</button>
+              </div>
+              <div id="settings-apikey-status-gemini" style="font-size:0.7rem;color:var(--dim);margin-top:2px;"></div>
+            </div>
           </div>
-          <div id="settings-apikey-status" style="font-size:0.7rem;color:var(--dim);margin-top:4px;"></div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section" id="settings-connections-section">
