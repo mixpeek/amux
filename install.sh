@@ -328,15 +328,28 @@ install_hook_from_head() {
 # file: it could not be reviewed, diffed, or rolled back, and "can't reproduce on
 # the current file" could not tell already-fixed from changed-under-us. The source
 # now lives in the repo (scripts/git-hooks/) and is INSTALLED from there, so the
-# committed copy is authoritative. We record its sha256 alongside it; the server's
-# `hooks.shared_guard_matches_committed` invariant compares the running file against
-# the sha embedded in the binary and surfaces any drift in /api/health/invariants.
+# committed copy is authoritative. Drift is caught by the server's
+# `hooks.shared_guard_matches_committed` invariant, which hashes the RUNNING file
+# and compares it against the COMMITTED source read at check time
+# (invariants/checks.rs, AF-132 — deliberately not a sha baked into the binary,
+# because a script-only commit left that stale and the check fired on a healthy
+# state).
+#
+# NO `.sha256` SIDECAR IS WRITTEN (AMUX-4975). One used to be, and nothing ever
+# read it: grep found exactly one reference, the line that wrote it. It was also
+# unsound as a tamper check, because it sat in the same directory with the same
+# permissions as the file it pinned, so anyone able to edit the guard could edit
+# the pin. And it drifted: install-hooks.sh refreshes the guard but never the
+# sidecar, so on 2026-09-23 the recorded hash disagreed with a guard that was
+# byte-identical to origin/main. A pin that cannot fail, cannot detect the thing
+# it names, and reads as a guarantee to anyone who finds it is worse than none.
+# Any legacy sidecar is removed below.
 if [[ -f "$SCRIPT_DIR/scripts/git-hooks/git-shared-guard.py" ]]; then
   mkdir -p "$AMUX_HOME/hooks"
   install_hook_from_head scripts/git-hooks/git-shared-guard.py "$AMUX_HOME/hooks/git-shared-guard.py"
   chmod +x "$AMUX_HOME/hooks/git-shared-guard.py"
   _guard_sha="$(shasum -a 256 "$AMUX_HOME/hooks/git-shared-guard.py" | cut -d' ' -f1)"
-  printf '%s  git-shared-guard.py\n' "$_guard_sha" > "$AMUX_HOME/hooks/git-shared-guard.py.sha256"
+  rm -f "${AMUX_HOME:?}/hooks/git-shared-guard.py.sha256"
   say "git guard: $AMUX_HOME/hooks/git-shared-guard.py (sha ${_guard_sha:0:12})"
 fi
 
@@ -349,7 +362,7 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/large-read-guard.py" ]]; then
   install_hook_from_head scripts/hooks/large-read-guard.py "$AMUX_HOME/hooks/large-read-guard.py"
   chmod +x "$AMUX_HOME/hooks/large-read-guard.py"
   _read_guard_sha="$(shasum -a 256 "$AMUX_HOME/hooks/large-read-guard.py" | cut -d' ' -f1)"
-  printf '%s  large-read-guard.py\n' "$_read_guard_sha" > "$AMUX_HOME/hooks/large-read-guard.py.sha256"
+  rm -f "${AMUX_HOME:?}/hooks/large-read-guard.py.sha256"
   say "read router: $AMUX_HOME/hooks/large-read-guard.py (sha ${_read_guard_sha:0:12})"
 fi
 
@@ -371,7 +384,7 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/hook-report.sh" ]]; then
   install_hook_from_head scripts/hooks/hook-report.sh "$AMUX_HOME/hook-report.sh"
   chmod +x "$AMUX_HOME/hook-report.sh"
   _rep_sha="$(shasum -a 256 "$AMUX_HOME/hook-report.sh" | cut -d' ' -f1)"
-  printf '%s  hook-report.sh\n' "$_rep_sha" > "$AMUX_HOME/hook-report.sh.sha256"
+  rm -f "${AMUX_HOME:?}/hook-report.sh.sha256"
   say "report hook: $AMUX_HOME/hook-report.sh (sha ${_rep_sha:0:12})"
 
   # Copying a hook that settings.json never invokes is an inert installation.
