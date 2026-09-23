@@ -495,6 +495,46 @@ pub fn integration_status(home: &Path, name: &str) -> serde_json::Value {
     .unwrap_or(serde_json::Value::Null)
 }
 
+/// Did this integration receipt say the work reached origin/main? (AMUX-4956)
+///
+/// `integrated` is the only status that means landed. Everything else —
+/// `integrating`, `requires_work`, `workspace_ready`,
+/// `workspace_requires_recovery`, and an ABSENT receipt — means the commits are
+/// still sitting in a worktree.
+///
+/// Measured 2026-09-23 on this box: of 16 receipts, 6 are `integrated`. Ten
+/// fan-out workers had not landed, while their cards read `done`.
+pub fn integration_landed(receipt: &serde_json::Value) -> bool {
+    receipt["status"] == "integrated"
+}
+
+/// What a terminal fan-out card should say about its own delivery, or `None`
+/// when there is nothing to say (AMUX-4956).
+///
+/// DERIVED, NEVER STAMPED. A marker written at the `done` transition goes stale
+/// the moment integration later succeeds, turning a true warning into a false
+/// one — the card that asked for this named that hazard first. Deriving from
+/// the receipt means the note disappears by itself when the work lands, with no
+/// resolution path to get wrong.
+///
+/// NOT A REFUSAL, also deliberately. Integration can be impossible for reasons
+/// outside the worker's control (AMUX-4921 was live proof: a workspace whose
+/// creation base was empty could never integrate). A gate with no truthful exit
+/// is the ethos rule 3 failure this board keeps repairing, so this reports and
+/// does not block.
+pub fn not_landed_note(receipt: &serde_json::Value) -> Option<serde_json::Value> {
+    if integration_landed(receipt) {
+        return None;
+    }
+    let status = receipt["status"].as_str().unwrap_or("absent");
+    Some(serde_json::json!({
+        "landed": false,
+        "integration_status": status,
+        "detail": receipt["detail"].as_str().unwrap_or(""),
+        "why": "this card is terminal but its commits are not on origin/main.                 `done` means implemented, not delivered.",
+    }))
+}
+
 /// Stable output identity for verification, independent of retries and receipt
 /// timestamps. Failed or in-flight integration never replaces a successful head.
 pub(crate) fn integrated_head(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<Option<String>> {
@@ -1315,5 +1355,53 @@ mod tests {
             .unwrap_err()
             .contains("index is empty"));
         assert!(Path::new(&w.path).join("app.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod not_landed_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// AMUX-4956. `done` means implemented; delivered is a different claim.
+    #[test]
+    fn only_an_integrated_receipt_counts_as_landed() {
+        assert!(integration_landed(&json!({"status": "integrated"})));
+        assert!(not_landed_note(&json!({"status": "integrated"})).is_none());
+
+        // Every other real status, taken from what this box actually holds:
+        // 6 integrated, 8 requires_work, 1 workspace_ready, 1 recovery.
+        for status in ["requires_work", "workspace_ready", "workspace_requires_recovery", "integrating"] {
+            let receipt = json!({"status": status, "detail": "why it stopped"});
+            assert!(!integration_landed(&receipt), "{status} is not landed");
+            let note = not_landed_note(&receipt).expect("a note");
+            assert_eq!(note["landed"], json!(false));
+            assert_eq!(note["integration_status"], json!(status));
+            assert_eq!(note["detail"], json!("why it stopped"), "the receipt's reason must travel");
+        }
+    }
+
+    /// An ABSENT receipt is the measured specimen: the worker never integrated
+    /// at all. It must read as "absent", not as an empty string that looks like
+    /// a status nobody set.
+    #[test]
+    fn an_absent_receipt_says_absent_rather_than_nothing() {
+        let note = not_landed_note(&serde_json::Value::Null).expect("a note");
+        assert_eq!(note["integration_status"], json!("absent"));
+        assert_eq!(note["landed"], json!(false));
+    }
+
+    /// The note is DERIVED, so a later successful integration removes it with
+    /// no resolution path to get wrong. This is the staleness hazard the card
+    /// warned about, pinned.
+    #[test]
+    fn the_note_disappears_by_itself_once_integration_succeeds() {
+        let before = json!({"status": "requires_work", "detail": "merge conflict"});
+        assert!(not_landed_note(&before).is_some());
+        let after = json!({"status": "integrated", "head": "abc123"});
+        assert!(
+            not_landed_note(&after).is_none(),
+            "a derived note must vanish when the work lands; a stamped one would not"
+        );
     }
 }

@@ -2405,6 +2405,39 @@ fn designate_owner_reach(obj: &mut serde_json::Map<String, Value>, row: &IssueRo
     );
 }
 
+/// A card is only claiming DELIVERY once it is terminal (AMUX-4956).
+///
+/// Separate and pure so the boundary is pinned: a card in `doing` whose commits
+/// are not yet on origin/main is a worker mid-flight, not a false claim, and
+/// marking it would be the crying-wolf half of this problem.
+fn claims_delivery(status: &str) -> bool {
+    matches!(status, "done" | "verified")
+}
+
+/// What a terminal card should say about its own delivery, or `None`
+/// (AMUX-4956).
+///
+/// Derived on read, never stamped: the note vanishes by itself when the work
+/// lands. Only a fan-out worker has a workspace record, so its ABSENCE means
+/// this is an ordinary lane and there is nothing to say — which is what stops
+/// an absent integration receipt being read as "an ordinary card failed to
+/// integrate".
+///
+/// Single-card GET only, deliberately. This costs two file reads, and the list
+/// path renders 8131 terminal cards; paying it per row there would trade a
+/// visibility fix for a latency one, on the very endpoint AMUX-4955 is about.
+fn fanout_delivery_note(session: Option<&str>, status: &str) -> Option<Value> {
+    if !claims_delivery(status) {
+        return None;
+    }
+    let name = session?;
+    let home = crate::config::amux_home();
+    crate::fanout_workspace::load(&home, name)?;
+    crate::fanout_workspace::not_landed_note(&crate::fanout_workspace::integration_status(
+        &home, name,
+    ))
+}
+
 fn detail_body(row: &IssueRow) -> Value {
     let mut v = row.snapshot();
     // HERE, not in `list_body`: this is the function `get_item` calls for the
@@ -6007,6 +6040,32 @@ pub async fn get_item(
             body["asset_links"] = json!(asset_links);
             body["gate_requirements"] = json!(gate_requirements);
             body["verification"] = verification;
+            // AMUX-4956: `done` means implemented, not delivered. Measured
+            // 2026-09-20: three fan-out deliverables, ONE on origin/main, board
+            // reported three of three done.
+            if let Some(note) = fanout_delivery_note(row.session.as_deref(), &row.status) {
+                body["integration"] = note;
+            }
+            // ...and an epic does not get to read complete while a child's
+            // commits are still in a worktree. This is the field that stops
+            // three-of-three-done being reported over one-of-three-landed.
+            let children_not_landed: Vec<Value> = children
+                .iter()
+                .filter_map(|child| {
+                    let note = fanout_delivery_note(
+                        child["session"].as_str(),
+                        child["status"].as_str().unwrap_or(""),
+                    )?;
+                    Some(json!({
+                        "card": child["id"],
+                        "session": child["session"],
+                        "integration_status": note["integration_status"],
+                    }))
+                })
+                .collect();
+            if !children_not_landed.is_empty() {
+                body["children_not_landed"] = json!(children_not_landed);
+            }
             // RR-0052 Invariant 1: every holding of this card, oldest first.
             if let Some(n) = attempts.iter().rev().find(|a| a.ended_at.is_none()).map(|a| a.attempt) {
                 if let Some(lease) = body.get_mut("lease") {
@@ -17555,5 +17614,24 @@ mod lease_exit_tests {
         assert!(live["ask_the_holder"].as_str().unwrap().contains("amux send amux --stdin"));
         assert!(live.get("holder_is_gone").is_none());
         assert!(live["override_on_the_record"].as_str().unwrap().contains("--force"));
+    }
+}
+
+#[cfg(test)]
+mod delivery_note_tests {
+    use super::claims_delivery;
+
+    /// AMUX-4956. Only a card CLAIMING delivery can make a false claim.
+    #[test]
+    fn a_card_still_being_worked_is_not_claiming_delivery() {
+        // These claim it, so an unlanded worktree under them is a false claim.
+        assert!(claims_delivery("done"));
+        assert!(claims_delivery("verified"));
+        // These do not. Marking a worker mid-flight as "not landed" would be
+        // the crying-wolf half of this problem: of course it has not landed,
+        // it is still going.
+        for status in ["todo", "doing", "backlog", "review", "needsyou", "discarded"] {
+            assert!(!claims_delivery(status), "{status} is not a delivery claim");
+        }
     }
 }
