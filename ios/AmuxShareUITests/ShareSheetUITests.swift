@@ -183,6 +183,32 @@ final class ShareSheetUITests: XCTestCase {
             ext.cells.count, 0,
             "'Send to' rendered with no rows, so the list request came back empty")
 
+        // ACTIVE ONLY IS THE DEFAULT (Ethan, 2026-09-23).
+        //
+        // ASSERTED ON THE HEADER COUNT, NOT ON THE ROWS. The first version
+        // counted `worker-*` buttons and got 6 -> 6: a SwiftUI Form realizes
+        // only the rows on screen, so that number is a VIEWPORT count and
+        // cannot see 148 hidden workers. The header is the data-level answer
+        // and is also the thing a human reads.
+        let activeOnly = ext.switches["activeOnly"]
+        XCTAssertTrue(activeOnly.waitForExistence(timeout: 10), "no active-only toggle")
+        XCTAssertEqual(activeOnly.value as? String, "1", "active-only must default ON")
+
+        let header = ext.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS[c] 'running'")).firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 10), "no population count in the header")
+        let whileActive = header.label
+        XCTAssertTrue(whileActive.contains("hidden"),
+                      "with active-only ON the header must say what it is hiding: '\(whileActive)'")
+
+        activeOnly.tap()
+        let whileAll = ext.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS[c] 'workers'")).firstMatch
+        XCTAssertTrue(whileAll.waitForExistence(timeout: 10), "header did not change with the toggle")
+        XCTAssertNotEqual(whileActive, whileAll.label,
+                          "the toggle did not change the population on screen")
+        activeOnly.tap()   // back to the default for the rest of the test
+
         // SEARCH, then SELECT. Those are the two things this screen is for and
         // both are addressable by identifier.
         let search = ext.searchFields.firstMatch

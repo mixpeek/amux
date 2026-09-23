@@ -14,6 +14,10 @@ struct ShareView: View {
     @State private var loading = true
     @State private var filter = ""
     @State private var sort: SortOrder = .activity
+    /// ACTIVE ONLY, BY DEFAULT (Ethan, 2026-09-23). 165 sessions exist and 17
+    /// are lifecycle-active; the other 148 are paused or archived and cannot
+    /// take a share. Offering them is offering a mistake.
+    @State private var activeOnly = true
 
     /// ACTIVITY IS THE DEFAULT because the worker you want is almost always the
     /// one you were just looking at. Name is there for the other case: you know
@@ -30,7 +34,12 @@ struct ShareView: View {
     /// directory, so matching only names makes the field useless exactly when
     /// the list is long enough to need it.
     private var shown: [AmuxClient.Worker] {
-        let matched = filter.isEmpty ? workers : workers.filter {
+        // SEARCHING OVERRIDES THE FILTER. Typing a name you know and being told
+        // it does not exist is worse than a longer list: the one case where you
+        // are sure which worker you want is the one where hiding it is most
+        // annoying. The header says which population is on screen.
+        let pool = (activeOnly && filter.isEmpty) ? workers.filter(\.running) : workers
+        let matched = filter.isEmpty ? pool : pool.filter {
             $0.name.localizedCaseInsensitiveContains(filter)
                 || $0.task.localizedCaseInsensitiveContains(filter)
                 || $0.workspace.localizedCaseInsensitiveContains(filter)
@@ -96,6 +105,8 @@ struct ShareView: View {
                             }
                             .pickerStyle(.segmented)
                             .accessibilityIdentifier("sortOrder")
+                            Toggle("Active workers only", isOn: $activeOnly)
+                                .accessibilityIdentifier("activeOnly")
                         }
                         Section {
                             ForEach(shown) { w in
@@ -184,10 +195,18 @@ struct ShareView: View {
 
     /// Says which population the list is showing. Without it a filter that
     /// matches nothing looks identical to a fleet with no workers.
+    /// Says which population is on screen. A filter that matches nothing must
+    /// not look like a fleet with no workers, and "active only" must not look
+    /// like the whole fleet went away.
     private var countLabel: String {
-        let live = shown.filter(\.running).count
-        if !filter.isEmpty { return "\(shown.count) of \(workers.count) · \(live) running" }
-        return "\(workers.count) workers · \(live) running"
+        let running = workers.filter(\.running).count
+        if !filter.isEmpty {
+            return "\(shown.count) of \(workers.count), all workers"
+        }
+        if activeOnly {
+            return "\(running) running · \(workers.count - running) hidden"
+        }
+        return "\(workers.count) workers · \(running) running"
     }
 
     private var summary: String {
