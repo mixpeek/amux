@@ -466,7 +466,7 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // reports invisible to auto-pickup's session-keyed predicate, both
     // halves reporting success for 11 days).
     out.extend(autofix_dispatchable_check(state));
-    out.extend(todo_reachable_check(state));
+    out.extend(todo_reachable_check(state).await);
     out.extend(repeat_offer_check(state));
     out.extend(archived_terminal_check(state));
     out.extend(card_type_vocabulary_check(state));
@@ -2322,27 +2322,61 @@ fn repeat_offer_check(state: &AppState) -> Vec<InvariantResult> {
     checks::repeat_offers_are_visible(&pairs, total, REPEAT_OFFER_THRESHOLD)
 }
 
-fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
+async fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "board.todo_is_reachable_by_dispatch";
-    let Ok(conn) = state.store.read() else {
-        return vec![InvariantResult::unknown(ID, "store unreadable")];
-    };
-    let rows: Result<Vec<(String, i64)>, _> = conn
-        .prepare(
-            "SELECT COALESCE(session,''), COUNT(*) FROM issues \
-             WHERE deleted IS NULL AND COALESCE(archived,0)=0 AND status='todo' \
-             GROUP BY 1",
-        )
-        .and_then(|mut st| {
-            st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map(|it| it.flatten().collect())
-        });
-    let Ok(per_lane) = rows else {
-        return vec![InvariantResult::unknown(ID, "query failed")];
+    // Scoped so the read guard is dropped before the awaits below.
+    let per_lane = {
+        let Ok(conn) = state.store.read() else {
+            return vec![InvariantResult::unknown(ID, "store unreadable")];
+        };
+        let rows: Result<Vec<(String, i64)>, _> = conn
+            .prepare(
+                "SELECT COALESCE(session,''), COUNT(*) FROM issues \
+                 WHERE deleted IS NULL AND COALESCE(archived,0)=0 AND status='todo' \
+                 GROUP BY 1",
+            )
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                    .map(|it| it.flatten().collect())
+            });
+        let Ok(per_lane) = rows else {
+            return vec![InvariantResult::unknown(ID, "query failed")];
+        };
+        per_lane
     };
     let total: i64 = per_lane.iter().map(|(_, c)| *c).sum();
-    let stranded =
-        stranded_lanes(per_lane, &|l| crate::api::session_verbs::session_is_isolated(l));
+    // DISPATCH IS NOT THE ONLY WAY A CARD GETS WORKED (AMUX-4934).
+    //
+    // board_drive genuinely skips isolated lanes, so the original predicate is
+    // right about PUSH and silent about PULL. A running isolated lane serves
+    // its own board: its `todo` card is the item it picks up next, not a card
+    // nobody will ever reach. Measured 2026-09-23, the two lanes this was
+    // failing on had moved their OWN cards 58 and 23 times, 22 of those to
+    // `done`, with nobody else touching them. The check had been failing for
+    // 19065 evaluations over 15 days against lanes that were working, and its
+    // prescribed remedy — demote the card to `backlog` — would have demoted
+    // the queued next item of an ACTIVE lane.
+    //
+    // `is_running` is the same probe `registered_lanes_running_check`, the
+    // sessions list and `amux start-all` already trust, kept in that spirit so
+    // this cannot disagree with the rest of the system about "running".
+    //
+    // Resolved ONLY for isolated lanes that hold todo cards — a handful, never
+    // the fleet — so the fleet-wide tmux probe stays off this check's path.
+    let mut pulling: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (lane, _) in per_lane.iter() {
+        if !lane.is_empty()
+            && crate::api::session_verbs::session_is_isolated(lane)
+            && crate::api::session_verbs::is_running(lane).await
+        {
+            pulling.insert(lane.clone());
+        }
+    }
+    let stranded = stranded_lanes(
+        per_lane,
+        &|l| crate::api::session_verbs::session_is_isolated(l),
+        &|l| pulling.contains(l),
+    );
     checks::todo_is_reachable_by_dispatch(&stranded, total)
 }
 
@@ -2360,10 +2394,11 @@ fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
 fn stranded_lanes(
     per_lane: Vec<(String, i64)>,
     is_isolated: &dyn Fn(&str) -> bool,
+    is_pulling: &dyn Fn(&str) -> bool,
 ) -> Vec<(String, i64)> {
     let mut stranded: Vec<(String, i64)> = per_lane
         .into_iter()
-        .filter(|(lane, _)| !lane.is_empty() && is_isolated(lane))
+        .filter(|(lane, _)| !lane.is_empty() && is_isolated(lane) && !is_pulling(lane))
         .collect();
     stranded.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     stranded
@@ -2392,7 +2427,8 @@ mod stranded_lanes_tests {
         // fake rather than because of the `!lane.is_empty()` guard, and deleting
         // that guard would leave the suite green. Measured — it did, until this
         // line changed.
-        let out = stranded_lanes(lanes(), &|l| l.is_empty() || l == "amux" || l == "byo-ray");
+        let out =
+            stranded_lanes(lanes(), &|l| l.is_empty() || l == "amux" || l == "byo-ray", &|_| false);
         assert_eq!(
             out,
             vec![("amux".to_string(), 123), ("byo-ray".to_string(), 40)],
@@ -2409,14 +2445,44 @@ mod stranded_lanes_tests {
     /// every lane with a false stranding.
     #[test]
     fn a_fleet_with_no_isolated_lane_strands_nothing() {
-        assert!(stranded_lanes(lanes(), &|_| false).is_empty());
+        assert!(stranded_lanes(lanes(), &|_| false, &|_| false).is_empty());
         // ...and the empty session is still excluded even when EVERYTHING is
         // isolated, which is the only condition under which the guard is load
         // bearing.
-        let all = stranded_lanes(lanes(), &|_| true);
+        let all = stranded_lanes(lanes(), &|_| true, &|_| false);
         assert!(
             !all.iter().any(|(l, _)| l.is_empty()),
             "the empty session is AF-137's card and must never appear here: {all:?}"
+        );
+    }
+
+    /// AMUX-4934. An isolated lane that is RUNNING serves its own board, so its
+    /// todo card is the item it picks up next rather than one nobody reaches.
+    ///
+    /// Measured 2026-09-23: this check had failed 19065 times over 15 days on
+    /// two lanes that had moved their own cards 58 and 23 times, 22 of them to
+    /// `done`, with no other actor touching them. Its prescribed remedy would
+    /// have demoted the queued next item of an ACTIVE lane.
+    #[test]
+    fn a_running_isolated_lane_pulls_its_own_work_and_is_not_stranded() {
+        let isolated = |l: &str| l == "amux" || l == "byo-ray";
+        // `amux` is isolated AND running: it pulls, so it is not stranded.
+        let out = stranded_lanes(lanes(), &isolated, &|l| l == "amux");
+        assert_eq!(
+            out,
+            vec![("byo-ray".to_string(), 40)],
+            "only the isolated lane that is NOT running is stranded"
+        );
+
+        // The CONTROL, and the half that must not rot: an isolated lane nobody
+        // is running still strands. Without this, excluding every isolated lane
+        // would pass, and the 2026-09-06 case (123 of 209 live todo cards
+        // parked on one lane) would stop being reported at all.
+        let none_running = stranded_lanes(lanes(), &isolated, &|_| false);
+        assert_eq!(
+            none_running,
+            vec![("amux".to_string(), 123), ("byo-ray".to_string(), 40)],
+            "a lane that is isolated and not running is still stranded"
         );
     }
 }

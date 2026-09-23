@@ -2480,6 +2480,23 @@ pub fn autofix_cards_are_dispatchable(open_unowned: i64, examples: &[String]) ->
 /// It derives "isolated" from `session_is_isolated`, the SAME predicate
 /// `board_drive` filters on, rather than restating a list — so a lane that
 /// becomes isolated cannot make this check quietly wrong.
+///
+/// ISOLATION ALONE WAS THE WRONG PREDICATE (AMUX-4934). board_drive skips
+/// isolated lanes, which makes the original claim true about PUSH and silent
+/// about PULL: a running isolated lane serves its own board, so its `todo`
+/// card is the item it picks up next. The check could not tell the 2026-09-06
+/// case — 123 cards parked on a lane that was not working them — from one card
+/// queued on a lane that had completed seventeen.
+///
+/// Measured 2026-09-23: it had been failing for 19065 evaluations across 15
+/// days on two lanes that had moved their OWN cards 58 and 23 times, 22 of
+/// those to `done`, with no other actor in their change log. One was ACTIVE at
+/// the time. Following the remedy in its own message would have demoted the
+/// queued next item of a lane that was working. That is ethos rule 3: the
+/// failing state had no truthful move, because the lanes were healthy.
+///
+/// So the lane must ALSO not be running to count as stranded. The 2026-09-06
+/// defect is still reported: a lane nobody is running cannot pull either.
 pub fn todo_is_reachable_by_dispatch(
     stranded: &[(String, i64)],
     total_live_todo: i64,
@@ -2497,10 +2514,11 @@ pub fn todo_is_reachable_by_dispatch(
         stranded.iter().map(|(lane, c)| format!("{lane} ({c})")).collect();
     vec![InvariantResult::fail(
         ID,
-        "every live todo card belongs to a lane board_drive will actually dispatch to"
+        "every live todo card is reachable: dispatched by board_drive, or pulled by a \
+         running isolated lane that serves its own board"
             .to_string(),
         format!(
-            "{n} of {total_live_todo} live todo card(s) ({pct}%) belong to lane(s)              board_drive SKIPS, so no tick will ever offer them to anyone: {}.              `todo` is the dispatch queue — a card here claims to be next. Either              reassign them to a lane that is dispatched, or move them to `backlog`,              which is unbounded and makes no such claim. Do NOT bulk-assign them              into one queue (AF-137's remedy, same reason).",
+            "{n} of {total_live_todo} live todo card(s) ({pct}%) belong to isolated              lane(s) that are NOT RUNNING, so board_drive will not offer them and the              lane is not there to pull them either: {}.              `todo` is the dispatch queue — a card here claims to be next. Either              reassign them to a lane that is dispatched, or move them to `backlog`,              which is unbounded and makes no such claim. Do NOT bulk-assign them              into one queue (AF-137's remedy, same reason).",
             who.join(", "),
         ),
     )
