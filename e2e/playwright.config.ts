@@ -205,7 +205,24 @@ export default defineConfig({
   },
   projects: TARGETS.map((t) => ({
     name: t.name,
-    use: { ...t.use, baseURL: `https://localhost:${t.port}` },
+    use: {
+      ...t.use,
+      baseURL: `https://localhost:${t.port}`,
+      // WALKTHROUGH OFF BY DEFAULT — opt-OUT, like serviceWorkers above and for
+      // the same reason (AMUX-4986/4987). `_wtMaybeStart` opens it 1500ms after
+      // load when `sessions.length === 0`, which is the NORMAL state of every CI
+      // project's isolated server, and `#wt-tooltip` then eats the click until
+      // the budget is gone. 38 of 75 specs do not set this key themselves.
+      // A spec that TESTS the walkthrough clears the key in its own
+      // addInitScript.
+      storageState: {
+        cookies: [],
+        origins: [{
+          origin: `https://localhost:${t.port}`,
+          localStorage: [{ name: 'amux_walkthrough_done', value: '1' }],
+        }],
+      },
+    },
     // AMUX-4983. ios-safari alone gets a larger budget, because the thing it
     // spends it on is not the test.
     //

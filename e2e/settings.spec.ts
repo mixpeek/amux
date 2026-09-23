@@ -922,10 +922,30 @@ test('settings_team_section', async ({ page, request }, testInfo) => {
   const token = await appToken(page);
   await openSettings(page);
 
-  // Panel-open ran loadTeamSection: lazily-created org name + empty members.
+  // Panel-open ran loadTeamSection: lazily-created org name + the members list.
   const nameInput = page.locator('#settings-org-name');
   await expect(nameInput).toHaveValue('My Workspace');
-  await expect(page.locator('#settings-members-list')).toContainText('No members yet');
+
+  // MEMBERS ARE ASSERTED AGAINST WHAT THE SERVER HAS, not against a pristine
+  // one. Every project shares ONE server across the specs that run on it, and
+  // the multiplayer specs add members to this same org, so "No members yet"
+  // only holds when this spec happens to run before them. It did, until the
+  // first-run walkthrough stopped opening in CI and the other specs got ~1.5s
+  // faster, which reordered the interleaving and put "Alpha User" in this list
+  // (AMUX-4987). The assertion was pinned to a run order nothing guaranteed.
+  //
+  // The property still worth holding is that the list RENDERS what the server
+  // reports, in both of its two states, so both are checked here.
+  const memberRes = await request.get('/api/org/members', { headers: authHeaders(token) });
+  const memberRows = await memberRes.json();
+  const members = Array.isArray(memberRows) ? memberRows : [];
+  const membersList = page.locator('#settings-members-list');
+  if (members.length === 0) {
+    await expect(membersList).toContainText('No members yet');
+  } else {
+    await expect(membersList).not.toContainText('No members yet');
+    await expect(membersList).toContainText(String(members[0].name || members[0].email));
+  }
 
   // Rename the workspace through the UI (change commits on blur).
   await nameInput.fill('E2E Workspace');
