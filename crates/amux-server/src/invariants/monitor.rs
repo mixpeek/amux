@@ -2416,18 +2416,51 @@ async fn served_commit_check() -> Vec<InvariantResult> {
         return checks::served_commit_is_current(None, &why, checks::deploy_lag_threshold_s());
     };
     let behind: i64 = behind.parse().unwrap_or(0);
-    // Age of the OLDEST unserved commit: git's own record, so a server restart
-    // (which a deploy causes) cannot reset it.
-    let oldest_unserved_age_s = if behind > 0 {
-        let stamps = git(vec!["log".into(), "--format=%ct".into(), range]).await.unwrap_or_default();
-        stamps
-            .lines()
-            .last()
-            .and_then(|t| t.trim().parse::<i64>().ok())
-            .map(|t| chrono::Utc::now().timestamp() - t)
-            .unwrap_or(0)
+    // How long origin/main has been AHEAD of served: git's own record, so a
+    // server restart (which a deploy causes) cannot reset it.
+    //
+    // AMUX-4977: this used to take the COMMITTER TIMESTAMP of the oldest
+    // unserved commit, which measures when the work was WRITTEN, not when it
+    // became the builder's job. A push held back for an hour lands as
+    // hour-old commits and trips the threshold instantly, reporting a stall
+    // that never happened.
+    //
+    // The reflog of origin/main records ARRIVAL, and is on disk, so it keeps
+    // the restart-immunity the old choice was made for. Walking newest to
+    // oldest, the entry immediately NEWER than the one matching `served` is
+    // when origin/main first moved past it, which is exactly when this
+    // divergence began.
+    let (oldest_unserved_age_s, age_source) = if behind > 0 {
+        let reflog = git(vec![
+            "log".into(),
+            "-g".into(),
+            "--format=%H %gd".into(),
+            "--date=unix".into(),
+            "origin/main".into(),
+        ])
+        .await
+        .unwrap_or_default();
+        let began_at = checks::divergence_began_at(&reflog, served);
+        match began_at {
+            Some(t) => (chrono::Utc::now().timestamp() - t, "origin_reflog_arrival"),
+            None => {
+                // No reflog entry for the served commit: a fresh clone, a
+                // pruned reflog, or a served build that never came from
+                // origin/main. Fall back to committer time, which is the old
+                // behaviour and can over-report, and SAY SO in the evidence.
+                let stamps =
+                    git(vec!["log".into(), "--format=%ct".into(), range]).await.unwrap_or_default();
+                let age = stamps
+                    .lines()
+                    .last()
+                    .and_then(|t| t.trim().parse::<i64>().ok())
+                    .map(|t| chrono::Utc::now().timestamp() - t)
+                    .unwrap_or(0);
+                (age, "commit_time_fallback")
+            }
+        }
     } else {
-        0
+        (0, "not_behind")
     };
     checks::served_commit_is_current(
         Some(&checks::DeployLag {
@@ -2435,6 +2468,7 @@ async fn served_commit_check() -> Vec<InvariantResult> {
             origin_head,
             behind,
             oldest_unserved_age_s,
+            age_source: age_source.to_string(),
         }),
         "",
         checks::deploy_lag_threshold_s(),

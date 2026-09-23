@@ -714,11 +714,65 @@ pub struct DeployLag {
     pub served: String,
     pub origin_head: String,
     pub behind: i64,
-    /// Age of the OLDEST unserved commit. Derived from git rather than from a
-    /// process-local timer, so it survives a server restart — and a restart is
-    /// exactly what a deploy causes, which would reset a timer at the worst
-    /// possible moment.
+    /// How long origin/main has been AHEAD of the served commit. Derived from
+    /// git rather than from a process-local timer, so it survives a server
+    /// restart — and a restart is exactly what a deploy causes, which would
+    /// reset a timer at the worst possible moment.
+    ///
+    /// AMUX-4977: this used to be the COMMITTER TIMESTAMP of the oldest
+    /// unserved commit, which is a different quantity and produced a false
+    /// outage. A batch that reaches origin/main later than it was authored — a
+    /// blocked push, a merged long-lived branch, a rebase preserving committer
+    /// dates, an offline lane pushing a backlog — arrives already "aged" past
+    /// the threshold and reports a deploy stall on landing. Measured
+    /// 2026-09-23: origin/main moved at 07:52:20, the builder began building
+    /// 15s later, and this check failed at 07:52:56 against a 1800s threshold,
+    /// because the oldest unserved commit had been written 70 minutes earlier
+    /// while its push was blocked. There was no stall.
+    ///
+    /// It is now dated from the reflog of origin/main, which records ARRIVAL
+    /// and is equally on-disk, so the restart-immunity above is kept.
     pub oldest_unserved_age_s: i64,
+    /// Which clock produced `oldest_unserved_age_s`. Published in the evidence
+    /// so a fallback to committer time is visible rather than silent — the
+    /// fallback reintroduces the bug above, and a reader must be able to see
+    /// that it happened.
+    pub age_source: String,
+}
+
+/// When did origin/main first move PAST `served`?
+///
+/// Takes `git log -g --format='%H %gd' --date=unix origin/main` output
+/// (newest first) and returns the reflog timestamp of the entry immediately
+/// NEWER than the one matching `served`. That is the moment the current
+/// divergence began, which is the quantity `deploy.served_commit_is_current`
+/// is named for.
+///
+/// Pure so the walk can be tested: the bug this replaces (AMUX-4977) was in
+/// the arithmetic, not in the shelling out, and it was invisible because it
+/// lived inside an async git call.
+///
+/// None means the served commit is not in the window — a fresh clone, a pruned
+/// reflog, or a build that never came from origin/main. The caller must fall
+/// back and SAY that it did.
+pub fn divergence_began_at(reflog: &str, served: &str) -> Option<i64> {
+    if served.is_empty() {
+        return None;
+    }
+    let ts_of = |gd: &str| -> Option<i64> {
+        gd.rsplit_once('{')?.1.trim_end_matches('}').parse::<i64>().ok()
+    };
+    let mut newer_ts: Option<i64> = None;
+    // Bounded: this runs on every tick and a reflog can be long.
+    for line in reflog.lines().take(200) {
+        let mut it = line.split_whitespace();
+        let (Some(sha), Some(gd)) = (it.next(), it.next()) else { continue };
+        if sha.starts_with(served) || served.starts_with(sha) {
+            return newer_ts;
+        }
+        newer_ts = ts_of(gd);
+    }
+    None
 }
 
 /// Default patience before a lag is a stall. A release build on this hardware
@@ -763,7 +817,7 @@ pub fn served_commit_is_current(
     if lag.behind <= 0 {
         return vec![InvariantResult::pass(ID).evidence(json!({
             "served": lag.served, "origin_head": lag.origin_head,
-            "behind": 0, "measured": true,
+            "behind": 0, "measured": true, "age_source": lag.age_source,
         }))];
     }
     let evidence = json!({
@@ -773,6 +827,7 @@ pub fn served_commit_is_current(
         "oldest_unserved_age_s": lag.oldest_unserved_age_s,
         "threshold_s": threshold_s,
         "measured": true,
+        "age_source": lag.age_source,
     });
     if lag.oldest_unserved_age_s <= threshold_s {
         // Behind, but not yet longer than a build plausibly takes.
@@ -1346,6 +1401,66 @@ pub enum LockHolder {
     Held(String),
     Unheld,
     Unmeasured(String),
+}
+
+#[cfg(test)]
+mod divergence_began_at_tests {
+    use super::divergence_began_at;
+
+    /// The REAL reflog from 2026-09-23, verbatim, and the case that produced
+    /// the false outage. origin/main moved to 30dd20a2 at 1790164340
+    /// (07:52:20); the builder started 15s later. The old code dated the lag
+    /// from the oldest unserved commit's committer timestamp, 70 minutes
+    /// earlier, and failed a 1800s threshold 36 seconds in.
+    const REAL: &str = "\
+9ec06bac5da993d137eca4da6094842d7de10d66 origin/main@{1790168914}
+30dd20a2015bdc3d6f80486aeb18252007c8f351 origin/main@{1790164340}
+841862a3d055d86063a2fa713a759e5ae99bc257 origin/main@{1790159562}
+45e6dd64800d1a7e009ba06688a6cf8c68474f56 origin/main@{1790157759}";
+
+    #[test]
+    fn the_lag_is_dated_from_when_origin_main_moved_past_the_served_commit() {
+        // Serving 841862a3: the divergence began when 30dd20a2 landed.
+        assert_eq!(divergence_began_at(REAL, "841862a3d055d86063a2fa713a759e5ae99bc257"), Some(1790164340));
+    }
+
+    #[test]
+    fn a_short_sha_matches_the_full_one_either_way_round() {
+        // /health reports 12 chars; the reflog carries 40.
+        assert_eq!(divergence_began_at(REAL, "841862a3d055"), Some(1790164340));
+    }
+
+    #[test]
+    fn serving_the_current_head_has_no_divergence_to_date() {
+        // Newest entry, so there is no NEWER one: nothing has landed since.
+        assert_eq!(divergence_began_at(REAL, "9ec06bac5da993d137eca4da6094842d7de10d66"), None);
+    }
+
+    #[test]
+    fn a_served_commit_absent_from_the_reflog_is_none_so_the_caller_can_say_so() {
+        // Fresh clone, pruned reflog, or a build not from origin/main. The
+        // caller must fall back AND publish age_source, or the old bug returns
+        // silently.
+        assert_eq!(divergence_began_at(REAL, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"), None);
+        assert_eq!(divergence_began_at(REAL, ""), None);
+        assert_eq!(divergence_began_at("", "841862a3d055"), None);
+    }
+
+    #[test]
+    fn a_malformed_reflog_line_is_skipped_rather_than_aborting_the_walk() {
+        let messy = "not-a-reflog-line\n\
+30dd20a2015bdc3d6f80486aeb18252007c8f351 origin/main@{1790164340}\n\
+841862a3d055d86063a2fa713a759e5ae99bc257 origin/main@{1790159562}";
+        assert_eq!(divergence_began_at(messy, "841862a3d055"), Some(1790164340));
+    }
+
+    /// An older commit still dates from ARRIVAL, which is the whole point: a
+    /// wedged builder must still be caught. Serving 45e6dd64 while three
+    /// pushes have landed since dates the stall from the FIRST of them.
+    #[test]
+    fn a_genuinely_wedged_deploy_dates_from_the_first_unserved_arrival() {
+        assert_eq!(divergence_began_at(REAL, "45e6dd64800d"), Some(1790159562));
+    }
 }
 
 #[cfg(test)]
@@ -8911,8 +9026,7 @@ mod served_commit_tests {
             served: "2c375773aaaaaaaa".into(),
             origin_head: "888eaa71bbbbbbbb".into(),
             behind,
-            oldest_unserved_age_s: age,
-        }
+            oldest_unserved_age_s: age, age_source: "origin_reflog_arrival".into() }
     }
 
     /// THE AMUX-4947 PAIR, which is the whole reason this check exists.
