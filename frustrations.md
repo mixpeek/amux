@@ -4041,3 +4041,25 @@ CARD: AAB-11
 SYMPTOM: Opening a task's Criteria and evidence in Projects closed it again within 2 seconds, because `_projectRender` replaced `#project-cards` innerHTML on every fetch. Project work also had three competing entry points (Projects, global Orchestrations with its own launch, Board Launch priorities), and cards carried raw JSON and exception text of tens of kilobytes.
 COST: Evidence could not be read while a project was running, focus and drafts were at risk on every tick, and users had to understand orchestrator/fan-out topology to start work the project harness already schedules with disposable executors.
 FIX: Native AAB-11 source renders the board with a keyed, signature-checked patch that leaves unchanged nodes alone, adds one task inspector whose open state, scroll, focus and selection persist per project, aborts and ignores stale cross-project reads, and keeps unsaved settings until Save or Cancel. The Orchestrations tab and Board launch form are removed as creation paths (history and APIs kept; Board labelled Legacy; retired tab ids cannot be recreated by saved tab state). Refresh failures log `project_refresh_failed` with `measured:false` and stop polling after 3 consecutive failures until the visible Retry is used. Parent browser validation and screenshots pending; no retirement claimed.
+
+## Long referenced goal specs silently lost their tail and collapsed into one executor (AAB-10)
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-22
+SESSION: codex-amux-project-lifecycle
+CARD: AAB-10
+SYMPTOM: The single-minimal-image request referenced a 30,111-character goal spec with twenty indexed outcomes, but project intake exposed only a 16,000-character preview to decomposition. T12 through T20 disappeared, and a model response that put the visible scope into one task was accepted, so the project produced one executor instead of accountable parallel outcomes.
+COST: A project presented incomplete work as a complete decomposition; nine named outcomes had no card, owner, worker or terminal gate, and the single-image case had to be reconstructed manually.
+FIX: 8eefc9f0 indexes every Tn heading from the full referenced file outside the token-bounded preview, requires every marker exactly once, rejects more than one indexed outcome on a task, records the source file and covered section on each task, and keeps model context conservative. A 20-section, greater-than-16k regression proves T20 cannot disappear or duplicate.
+
+## Runtime prose and task verification could publish before human review (AAB-10)
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-22
+SESSION: codex-amux-project-lifecycle
+CARD: AAB-10
+SYMPTOM: The single-image verifier searched Markdown for phrases such as object and document counts, so historical prose could satisfy an end-to-end claim. Separately, each task's verification path merged its head to main before whole-project runtime and human acceptance, making review approval informational rather than authoritative.
+COST: Amux could label a Docker lifecycle verified without launching the candidate image, and could publish worker commits before a person reviewed the exact combined result.
+FIX: 8eefc9f0 requires runtime claims to use a fresh execution receipt bound to invocation, candidate SHA, timestamps, subject and named machine-evidence stages; historical receipts are refused. Verified worker heads now compose into one unpublished candidate, acceptance runs there, human approval fingerprints it, and closeout publishes only that exact candidate before expiring workers and deleting worktrees. Focused tests cover a real verifier subprocess, two-worker composition, unchanged main before approval and publication after approval.
