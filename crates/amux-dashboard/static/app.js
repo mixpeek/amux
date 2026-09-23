@@ -577,6 +577,7 @@ let sessions = [];
 // old task attribution back on screen.
 let _sessionsSnapshotEpoch = 0;
 let pausedExpanded = false;
+let reviewExpanded = false;
 let expiredExpanded = false;
 let _expiredWorkerInventory = new Map();
 let _expiredWorkerInventoryAt = 0;
@@ -4896,6 +4897,7 @@ function _waitingLabel(s) {
   const wr = s.waiting_reason || '';
   if (wr === 'permission_prompt') return 'permission prompt';
   if (wr === 'rate_limit') return 'rate limited';
+  if (wr === 'project_execution') return s.project_waiting_label || s.waiting_label || 'project blocked';
   // Unsubmitted text is sitting in the composer with no live turn or agents
   // (AMUX-2904) — a message queued behind phantom background tasks, or an
   // Enter that never landed. Named distinctly from a generic "needs input"
@@ -4906,6 +4908,9 @@ function _waitingLabel(s) {
 }
 // Tooltip for a waiting badge: the stuck composer text, when that is the reason.
 function _waitingTitle(s) {
+  if (s.waiting_reason === 'project_execution' && (s.project_waiting_reason || s.state_detail)) {
+    return ' title="' + esc(s.project_waiting_reason || s.state_detail) + '"';
+  }
   return s.composer_stuck_since && s.composer_preview
     ? ' title="In composer: ' + esc(s.composer_preview) + '"' : '';
 }
@@ -5149,14 +5154,19 @@ async function _openStatusDetail(name) {
 }
 
 const _workerLifecyclePending = new Map();
+function _workerLifecycleInactive(s) {
+  return !!(s && (s.archived || ['paused','review','archived','expired'].includes(s.lifecycle)));
+}
 function _workerExecutionBadge(s, runtimeBoard) {
   const pending = _workerLifecyclePending.get(s.name);
   if (pending) return '<span class="status-badge idle">' + pending + '…</span>';
+  if (s.lifecycle === 'review') return '<span class="status-badge review" title="Completed executor retained for human artifact review">review</span>';
   if (s.lifecycle === 'paused') return s.running
     ? '<span class="status-badge blocked" title="Pause has not finished stopping this worker. Retry Pause.">pause incomplete</span>'
     : '<span class="status-badge paused">paused</span>';
   let badge = '';
   if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
+  else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
   else if (!s.running) badge = '<span class="status-badge idle">stopped</span>';
   else if (s.status === 'error') badge = '<button type="button" class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">error ▾</button>';
   else if (s.status === 'active')  badge = runtimeBoard.syncing
@@ -5165,7 +5175,6 @@ function _workerExecutionBadge(s, runtimeBoard) {
       + (runtimeBoard.cardless ? _runtimeBoardCardlessBadge() : '');
   else if (s.status === 'unattributed') badge = _runtimeBoardSplitBadge(s);
   else if (s.status === 'blocked') badge = '<button type="button" class="status-badge blocked" title="Agent is waiting on a permission decision. Click for details." onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">blocked ▾</button>';
-  else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
   else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
   else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
   else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
@@ -5378,7 +5387,7 @@ function _cardDoingItem(name) {
 // board has not loaded, or the last claim no longer matches a Doing card.
 // An observed stale claim is a navigation aid, never promoted to a live claim.
 function _workerHasLiveActivity(s) {
-  if (!s?.running || s.archived || ['paused','archived','expired'].includes(s.lifecycle)) return false;
+  if (!s?.running || s.archived || ['paused','review','archived','expired'].includes(s.lifecycle)) return false;
   const truth = s.runtime_board || {};
   return truth.measured === true ? truth.runtime_status === 'active' : s.status === 'active';
 }
@@ -5537,7 +5546,7 @@ function _nudgeWorkersOnBoardChange() {
   } catch (e) { /* a render hiccup must not break the ingest that called us */ }
 }
 function _grpMembers(g) {
-  const all = (sessions || []).filter(s => !s.archived && s.lifecycle !== 'paused');
+  const all = (sessions || []).filter(s => !s.archived && !_workerLifecycleInactive(s));
   return all.filter(s => (s.tags || []).includes(g));
 }
 function _grpSummary(g) {
@@ -5653,7 +5662,7 @@ function _workerActionDefinitions(s) {
       run: "newConversation('" + name + "'," + (s.running ? 'true' : 'false') + ")" },
     { key: 'share', icon: '&#x1F517;', label: 'Share link',
       run: "closeAllMenus();shareSession('" + name + "')" },
-    s.lifecycle === 'paused' && !s.running
+    (s.lifecycle === 'paused' || s.lifecycle === 'review') && !s.running
       ? { key: 'resume', icon: '&#x25B6;', label: pending ? pending + '…' : 'Resume', disabled: !!pending, run: "resumeWorker('" + name + "')" }
       : { key: 'pause', icon: '&#x23F8;', label: pending ? pending + '…' : 'Pause', disabled: !!pending, run: "pauseWorker('" + name + "')" },
     { key: 'archive', icon: '&#x1F4E6;', label: 'Archive',
@@ -5766,7 +5775,7 @@ function render() {
   renderActiveFilters();
   // Build tag filter bar
   const tagEl = document.getElementById('tag-filters');
-  const allTags = [...new Set(sessions.filter(s => !s.archived && s.lifecycle !== 'paused').flatMap(s => s.tags || []))].sort();
+  const allTags = [...new Set(sessions.filter(s => !s.archived && !_workerLifecycleInactive(s)).flatMap(s => s.tags || []))].sort();
   if (activeTag && !allTags.includes(activeTag)) activeTag = null;
   // Pills FILTER the worker list. Nothing more.
   //
@@ -5801,7 +5810,7 @@ function render() {
     return;
   }
   const staleWorkerPrefix = (_sessionLoadError && _cachedWorkersVisible) ? _staleWorkerListBanner() : '';
-  const _nonArchivedCount = sessions.filter(s => !s.archived && s.lifecycle !== 'paused').length;
+  const _nonArchivedCount = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s)).length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
       el.innerHTML = ''; // Actionable detail is in the Sync error badge modal.
@@ -5826,9 +5835,10 @@ function render() {
         : '<div class="empty"><span class="loading-spinner"></span>Connecting to server…<br>' +
           '<a href="/api/_clear_sw" style="color:var(--dim);font-size:0.75rem;margin-top:8px;display:inline-block;">Stuck? Clear cache</a></div>';
     } else {
-      el.innerHTML = '<div class="empty">' + (sessions.some(s => s.lifecycle === 'paused') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
+      el.innerHTML = '<div class="empty">' + (sessions.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review') ? 'No active workers. Resume a paused worker to continue.' : 'No workers yet.<br>Tap <strong>+</strong> to create one.') +
         (!online ? '<br><span style="color:var(--yellow)">You\'re offline — workers created now will sync when connected.</span>' : '') + '</div>';
     }
+    _renderReviewSection();
     _renderPausedSection();
     _renderExpiredSection();
     _renderArchivedSection();
@@ -5854,7 +5864,7 @@ function render() {
   }).join('');
 
   // Filter by tag (exclude archived from main view)
-  let list = (activeTag ? sessions.filter(s => (s.tags || []).includes(activeTag)) : sessions).filter(s => !s.archived && s.lifecycle !== 'paused');
+  let list = (activeTag ? sessions.filter(s => (s.tags || []).includes(activeTag)) : sessions).filter(s => !s.archived && !_workerLifecycleInactive(s));
   // Filter by search query
   const q = searchQuery.toLowerCase().trim();
   let filtered = q ? list.filter(s =>
@@ -5870,6 +5880,7 @@ function render() {
   if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
   if ((q || activeTag || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching workers.</div>';
+    _renderReviewSection();
     _renderPausedSection();
     _renderExpiredSection();
     _renderArchivedSection();
@@ -6037,6 +6048,7 @@ function render() {
     el.innerHTML = draftCards + frozenList.map(_renderSessionCard).join('');
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
+    _renderReviewSection();
     _renderPausedSection();
     _renderExpiredSection();
     _renderArchivedSection();
@@ -6053,6 +6065,7 @@ function render() {
     _checkWorkerStatusOrder();
     for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
     _restoreCardFocus(focusedId, savedInputs);
+    _renderReviewSection();
     _renderPausedSection();
     _renderExpiredSection();
     _renderArchivedSection();
@@ -6132,6 +6145,7 @@ function render() {
   }
   _restoreCardFocus(focusedId, savedInputs);
 
+  _renderReviewSection();
   _renderPausedSection();
   _renderExpiredSection();
   _renderArchivedSection();
@@ -7437,6 +7451,60 @@ function _applyEmbedView() {
   }
 })();
 
+function toggleReviewHeld() {
+  reviewExpanded = !reviewExpanded;
+  _renderReviewSection();
+}
+
+function _renderReviewSection() {
+  const el = document.getElementById('review-section');
+  if (!el) return;
+  const allReview = sessions.filter(s => s.lifecycle === 'review' && !s.archived);
+  if (!allReview.length) { el.innerHTML = ''; return; }
+  const q = searchQuery.toLowerCase().trim();
+  const review = q ? allReview.filter(s =>
+    s.name.toLowerCase().includes(q) ||
+    (s.dir || '').toLowerCase().includes(q) ||
+    (s.desc || '').toLowerCase().includes(q) ||
+    (s.task_name || '').toLowerCase().includes(q) ||
+    (s.tags || []).some(t => t.toLowerCase().includes(q))
+  ) : allReview;
+  const label = q && review.length !== allReview.length
+    ? `${review.length} of ${allReview.length} retained for review`
+    : `${allReview.length} retained for review`;
+  const chevron = `<span class="review-chevron${reviewExpanded ? ' open' : ''}">&#x25B6;</span>`;
+  let html = `<div class="review-footer" onclick="toggleReviewHeld()">${chevron} ${label}</div>`;
+  if (reviewExpanded) {
+    html += '<div class="review-body">';
+    (q ? review : allReview).forEach(s => {
+      const ago = s.last_activity ? timeAgo(s.last_activity) : '';
+      const rawDir = s.worktree_active ? '~/.amux/worktrees/' + s.name : (s.dir || '');
+      const dir = rawDir.replace(/^\/Users\/[^/]+/, '~');
+      const model = s.active_model || sessionConfiguredModel(s) || '';
+      const body = esc(s.task_name || s.preview || s.desc || '');
+      const meta = [];
+      if (dir) meta.push(`<code title="${esc(rawDir)}">${esc(dir)}</code>`);
+      if (ago) meta.push(`active ${ago}`);
+      (s.tags || []).forEach(t => meta.push(`<span class="review-card-tag">#${esc(t)}</span>`));
+      html += `<div class="review-card" data-session="${esc(s.name)}">
+        <div class="review-card-top">
+          <span class="review-card-name" onclick="openPeek('${esc(s.name)}')">${esc(s.name)}</span>
+          ${model ? `<span class="review-card-chip model">${esc(model)}</span>` : ''}
+          <span class="review-card-spacer"></span>
+          <div class="review-card-actions">
+            <button class="review-open-btn" onclick="openPeek('${esc(s.name)}')">Open evidence</button>
+            <button class="review-archive-btn" onclick="archiveSession('${esc(s.name)}')">Archive</button>
+          </div>
+        </div>
+        ${meta.length ? `<div class="review-card-meta">${meta.join('<span style="opacity:0.4;">&middot;</span>')}</div>` : ''}
+        ${body ? `<div class="review-card-preview">${body}</div>` : ''}
+      </div>`;
+    });
+    html += '</div>';
+  }
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
 function togglePaused() {
   pausedExpanded = !pausedExpanded;
   _renderPausedSection();
@@ -7695,7 +7763,7 @@ function toggleActiveDropdown() {
     activeDropdownOpen = false;
     return;
   }
-  const running = sessions.filter(s => s.running && s.lifecycle !== 'paused');
+  const running = sessions.filter(s => s.running && !_workerLifecycleInactive(s));
   if (!running.length) {
     dd.innerHTML = '<div class="active-dropdown-empty">No active workers</div>';
   } else {
@@ -7727,7 +7795,7 @@ function closeActiveDropdown(e) {
   activeDropdownOpen = false;
 }
 function updateActiveCount() {
-  const count = sessions.filter(s => s.running && s.lifecycle !== 'paused').length;
+  const count = sessions.filter(s => s.running && !_workerLifecycleInactive(s)).length;
   const el = document.getElementById('active-count');
   const btn = document.getElementById('active-btn');
   if (el) el.textContent = count;
@@ -8752,6 +8820,7 @@ async function _changeWorkerPaused(session, paused) {
   _workerLifecyclePending.set(session, label.toLowerCase());
   const done = _cardBusy(session, label);
   updatePeekStatus();
+  _renderReviewSection();
   _renderPausedSection();
   _renderExpiredSection();
   try {
@@ -9428,7 +9497,7 @@ function _renderGroupsTab() {
   if (activeView !== 'groups') return;
   const el = document.getElementById('groups-container');
   if (!el) return;
-  const all = (sessions || []).filter(s => !s.archived && s.lifecycle !== 'paused');
+  const all = (sessions || []).filter(s => !s.archived && !_workerLifecycleInactive(s));
   const groups = [...new Set(all.flatMap(s => s.tags || []))].sort();
   const grouped = new Set(all.filter(s => (s.tags || []).length).map(s => s.name));
   const activeN = all.filter(s => s.status === 'active').length;
@@ -11824,7 +11893,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1027';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1034';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -19760,7 +19829,7 @@ const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: '
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
 const _STATUS_LABELS = { starting: 'Starting', error: 'Error', working: 'Working', blocked: 'Blocked', waiting: 'Waiting', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped' };
 function renderFilterOptions() {
-  const live = sessions.filter(s => !s.archived && s.lifecycle !== 'paused');
+  const live = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s));
   // Status chips — fixed order, only states that exist (or are selected)
   const sEl = document.getElementById('filter-statuses');
   if (sEl) {
@@ -20820,8 +20889,7 @@ async function openFilePreview(path, options = {}) {
     // rationale: see what is around it.
     _subEl.title = 'Open this folder in the file browser';
     _subEl.classList.add('clickable');
-    _subEl.onclick = () => openExplore(_dir,
-      (typeof peekSession !== 'undefined' && peekSession) ? peekSession : null);
+    _subEl.onclick = () => _openPathInFiles(_dir);
   }
   if (options.readOnly && _subEl) { _subEl.onclick=null;_subEl.classList.remove('clickable');_subEl.title='Retained verified asset'; }
   document.getElementById('file-body').className = 'file-overlay-body';
@@ -22672,7 +22740,7 @@ async function _connLoadFleet() {
   try {
     const arr = await (await fetch('/api/sessions')).json();
     const list = Array.isArray(arr) ? arr : [];
-    const workers = list.filter(s => !s.archived && s.lifecycle !== 'paused').map(s => s.name).filter(Boolean).sort();
+    const workers = list.filter(s => !s.archived && !_workerLifecycleInactive(s)).map(s => s.name).filter(Boolean).sort();
     const gs = new Set();
     list.forEach(s => (s.groups || []).forEach(g => g && gs.add(g)));
     _connFleet = { workers, groups: [...gs].sort() };
@@ -25185,7 +25253,7 @@ function toggleFreeze() {
     // pinned workers back below active workers in group view on the same tap.
     const rendered = [...document.querySelectorAll('#cards .card[data-session]')]
       .map(card => card.dataset.session);
-    const remaining = sessions.filter(s => !s.archived && s.lifecycle !== 'paused' && !rendered.includes(s.name))
+    const remaining = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s) && !rendered.includes(s.name))
       .sort(_sortFnFor(sortMode)).map(s => s.name);
     cardOrder = [...new Set([...rendered, ...remaining])];
     fetch(API + '/api/client-debug', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
@@ -32800,10 +32868,10 @@ function _orchBuild(allCards, allSess) {
     group.updated = Math.max(0,...owned.map(c => c.updated || 0));
     const members = [...names].map(n => sessMap[n]).filter(Boolean);
     if (!group._workerOnly && own && !names.has(group.session)) members.push(own);
-    const inactive = s => s.archived || ['paused','archived','expired'].includes(s.lifecycle);
+    const inactive = s => s.archived || ['paused','review','archived','expired'].includes(s.lifecycle);
     if (members.length && members.every(s => s.archived || s.lifecycle === 'archived')) group._orchGroup = 'archived';
     else if (members.length && members.every(s => s.lifecycle === 'expired')) group._orchGroup = 'expired';
-    else if (members.length && members.every(inactive) && members.some(s => s.lifecycle === 'paused')) group._orchGroup = 'paused';
+    else if (members.length && members.every(inactive) && members.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review')) group._orchGroup = 'paused';
     else group._orchGroup = 'active';
   });
   _orchData = {orchEpics,sessMap,byWorker,source:allCards};
@@ -32873,7 +32941,7 @@ function _orchRender(data) {
     const key = 'tasks:'+group.id+':'+name;
     const expanded = _orchExpanded.has(key);
     const lifecycle = worker?.lifecycle || 'unknown';
-    const status = ['paused','archived','expired'].includes(lifecycle) ? lifecycle : worker?.status || (worker?.running === false ? 'stopped' : worker?.running ? 'running' : worker ? 'status pending' : 'worker unavailable');
+    const status = ['paused','review','archived','expired'].includes(lifecycle) ? lifecycle : worker?.status || (worker?.running === false ? 'stopped' : worker?.running ? 'running' : worker ? 'status pending' : 'worker unavailable');
     let html = '<div class="orch-worker'+(active?' working-now':'')+'" data-orch-worker="'+esc(name)+'">';
     html += '<div class="orch-worker-heading"><span class="orch-worker-role">'+role+'</span><button type="button" class="orch-worker-name" onclick="openPeek(\''+escJs(name)+'\')">'+esc(name)+'</button><span class="orch-worker-status">'+esc(status)+'</span>'+_fanoutStartBtn(name,worker?.running)+'</div>';
     html += '<div class="orch-worker-meta"><span class="orch-role-profile">'+esc(_orchModelLabel(worker))+'</span><span>'+progress(tasks)+'</span>';
@@ -38784,7 +38852,7 @@ function _trendsFocusTheme(k) {
 function _costFillGroups(sel) {
   const el = document.getElementById('cost-group');
   if (!el) return;
-  const tags = [...new Set((sessions || []).filter(s => !s.archived && s.lifecycle !== 'paused').flatMap(s => s.tags || []))].sort();
+  const tags = [...new Set((sessions || []).filter(s => !s.archived && !_workerLifecycleInactive(s)).flatMap(s => s.tags || []))].sort();
   const cur = sel !== undefined ? sel : el.value;
   el.innerHTML = '<option value="">All workers</option>'
     + tags.map(t => '<option value="' + escJs(t) + '"' + (t === cur ? ' selected' : '') + '>' + esc(t) + '</option>').join('');
@@ -44978,6 +45046,38 @@ function _projectClearRefreshError() {
   const err=document.getElementById('project-error');if(err) err.textContent='';
   const retry=document.getElementById('project-error-retry');if(retry) retry.hidden=true;
 }
+function _openPathInFiles(path) {
+  if(!path) return;
+  try { closeFilePreview(); } catch(e) {}
+  switchView('files');
+  setTimeout(()=>loadFiles(path),0);
+}
+function _projectDisplayPath(path) {
+  return String(path||'').replace(/^\/Users\/[^/]+/,'~');
+}
+function _projectOpenCheckoutPath(path,event) {
+  if(event){event.preventDefault();event.stopPropagation();}
+  if(!path) return;
+  _openPathInFiles(path);
+}
+function _projectCheckoutPathButton(path,label) {
+  if(!path) return '<span>No checkout recorded</span>';
+  const text=label || _projectDisplayPath(path);
+  return `<button type="button" class="project-path-link" title="Open checkout in Files" onclick="_projectOpenCheckoutPath('${escJs(path)}',event)">${esc(text)}</button>`;
+}
+function _projectPrimaryWorkspace(data) {
+  const workers=_projectWorkers(data);
+  const score=w=>{
+    const tasks=w.tasks||[];
+    if(tasks.some(t=>['working','waiting','verifying'].includes(t.phase))) return 0;
+    if(tasks.some(t=>['ready','intake'].includes(t.phase))) return 1;
+    if(tasks.some(t=>t.phase==='verified')) return 2;
+    return 3;
+  };
+  return workers
+    .filter(w=>w?.workspace?.path)
+    .sort((a,b)=>score(a)-score(b) || String(a.name||'').localeCompare(String(b.name||'')))[0]?.workspace || null;
+}
 function _projectInventoryState(project) {
   const policy=project?.policy || {}, summary=project?.summary || {};
   if(policy.paused) return {label:'Paused',cls:'paused'};
@@ -44999,9 +45099,12 @@ function _projectRenderInventory(projects) {
     if(p.newProject) {
       return `<button class="project-list-card ${!_projectsName?'selected':''}" onclick="_projectChoose('')"><strong>+ New project</strong><span>Define an outcome, repository, gates and review evidence.</span></button>`;
     }
-    const st=_projectInventoryState(p),policy=p.policy||{},repo=(policy.repository||'').replace(/^\/Users\/[^/]+/,'~');
+    const st=_projectInventoryState(p),policy=p.policy||{},summary=p.summary||{},workspace=summary.workspace||{};
+    const checkoutPath=workspace.path || policy.repository || '';
     const executor=[policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ');
-    return `<button class="project-list-card ${p.name===_projectsName?'selected':''}" onclick="_projectChoose('${escJs(p.name)}')"><span class="project-list-row"><strong>${esc(p.name)}</strong><em class="project-pill ${esc(st.cls)}">${esc(st.label)}</em></span><span>${esc(repo || 'No repository configured')}</span><span>${esc((policy.worktree===false?'Shared checkout':'Dedicated worktrees')+(executor?' · '+executor:''))}</span></button>`;
+    const choose=`_projectChoose('${escJs(p.name)}')`;
+    const mode=(policy.worktree===false?'Shared checkout':'Dedicated worktrees')+(workspace.worker?' · '+workspace.worker:'')+(executor?' · '+executor:'');
+    return `<div class="project-list-card ${p.name===_projectsName?'selected':''}" role="button" tabindex="0" onclick="${choose}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${choose}}"><span class="project-list-row"><strong>${esc(p.name)}</strong><em class="project-pill ${esc(st.cls)}">${esc(st.label)}</em></span><span class="project-card-path">${checkoutPath?_projectCheckoutPathButton(checkoutPath):'<span>No repository configured</span>'}</span><span>${esc(mode)}</span></div>`;
   }).join('');
 }
 const _projectTabs=[['overview','Overview'],['tasks','Tasks'],['workers','Workers'],['evidence','Evidence'],['dependencies','Dependencies'],['settings','Settings']];
@@ -45064,6 +45167,72 @@ function _projectAssets(data) {
   });
   return assets;
 }
+function _projectTaskDisplay(card) {
+  const plan=card?.execution_plan || {}, e=plan.execution || {};
+  const phase=card?.phase || card?.status || 'unknown';
+  if(plan.waiting_label || plan.waiting_reason) return {label:plan.waiting_label || 'Waiting', cls:'waiting', detail:plan.waiting_reason || ''};
+  if(e.stage==='repair') return {label:plan.action==='claim'?'Repair queued':'Repairing', cls:'waiting', detail:e.waiting || e.last_failure || ''};
+  if(plan.action==='grant_repair') return {label:'Repair grant queued', cls:'waiting', detail:e.waiting || ''};
+  if(e.stage==='reported' || e.stage==='verifying' || phase==='verifying') return {label:'Verifying', cls:'verifying', detail:e.waiting || ''};
+  if(e.stage==='reserved') return {label:'Queued to worker', cls:'working', detail:''};
+  if(e.stage==='working') return {label:'Working now', cls:'working', detail:''};
+  if(phase==='verified') return {label:'Verified', cls:'verified', detail:''};
+  if(phase==='closed') return {label:'Closed', cls:'closed', detail:''};
+  if(card?.retry_available===true) return {label:'Needs repair', cls:'waiting', detail:e.waiting || e.last_failure || ''};
+  if(card?.verification_retry_available===true) return {label:'Verification failed', cls:'waiting', detail:e.waiting || e.last_failure || ''};
+  return {label:phase, cls:phase, detail:(card?.status && card.status!==phase)?'board '+card.status:''};
+}
+
+function _projectOutcomeVerdict(data) {
+  const acc=data?.acceptance && typeof data.acceptance==='object' ? data.acceptance : {};
+  const state=String(acc.state||'').toLowerCase();
+  const criteria=Array.isArray(acc.criteria)?acc.criteria:[];
+  const automated=criteria.filter(c=>c?.verifier?.type!=='human');
+  const human=criteria.filter(c=>c?.verifier?.type==='human');
+  const resultState=c=>String(c?.result?.state||'pending').toLowerCase();
+  const passed=automated.filter(c=>resultState(c)==='passed').length;
+  const failed=automated.filter(c=>['failed','operational_failure','rejected'].includes(resultState(c))).length;
+  const pending=automated.length-passed-failed;
+  const cards=Array.isArray(data?.cards)?data.cards:[];
+  const active=cards.filter(c=>!['verified','closed'].includes(c.phase)).length;
+  let tone='pending',title='Outcome not proven yet',summary='This project has not produced a complete, independently checked result.';
+  if(state==='accepted') {
+    tone='passed';title='Outcome verified and approved';
+    summary='Every configured automated check passed, and a person approved the retained evidence for this exact result.';
+  } else if(state==='awaiting_human') {
+    tone='review';title='Automated checks passed — review the outcome';
+    summary='The work is held for you. Open the produced evidence and approve only if it demonstrates the requested outcome in plain terms.';
+  } else if(['failed','operational_failure','rejected'].includes(state) || failed>0) {
+    tone='failed';title='Outcome not verified';
+    summary=failed>0 ? failed+' automated check'+(failed===1?' has':'s have')+' failed. The project must repair and rerun them before approval.' : 'The outcome was rejected or its verification did not complete successfully.';
+  } else if(criteria.length && (active>0 || pending>0 || state)) {
+    tone='running';title='Verification still in progress';
+    summary='Do not treat completed tasks or worker reports as proof. The project is verified only after every configured check passes and the retained evidence is reviewed.';
+  } else if(cards.length && active===0) {
+    tone='pending';title='Tasks finished, outcome not independently verified';
+    summary='Task completion alone does not prove the requested outcome. Configure and run whole-project acceptance before approving it.';
+  }
+  return {tone,title,summary,criteria,automated,human,passed,failed,pending,state};
+}
+
+function _projectOutcomeCard(data) {
+  const v=_projectOutcomeVerdict(data);
+  const stateLabel={passed:'Passed',review:'Needs your review',failed:'Failed',running:'In progress',pending:'Not proven'}[v.tone]||'Not proven';
+  const rows=v.criteria.map(c=>{
+    const state=String(c?.result?.state||'pending').toLowerCase();
+    const cls=state==='passed'||state==='approved'?'passed':['failed','operational_failure','rejected'].includes(state)?'failed':'pending';
+    const runtime=c?.verifier?.type==='execution';
+    const subject=c?.result?.receipt?.subject?.id;
+    const stages=Array.isArray(c?.result?.receipt?.stages)?c.result.receipt.stages.filter(s=>s?.state==='passed').length:0;
+    const label=cls==='passed'?(runtime?'Fresh execution verified'+(stages?' · '+stages+' stages':''):'Passed'):cls==='failed'?'Failed':c?.verifier?.type==='human'?'Needs human review':runtime?'Waiting for fresh execution':'Pending';
+    return '<li class="'+cls+'"><span aria-hidden="true"></span><div><strong>'+esc(c.requirement||c.id||'Acceptance check')+'</strong><small>'+esc(label)+(subject?' · '+esc(subject):'')+'</small></div></li>';
+  }).join('');
+  const assets=Array.isArray(data?.acceptance?.review_assets)?data.acceptance.review_assets:[];
+  const review=assets.length?'<button class="btn" onclick="_projectSetTab(\'evidence\')">Review '+assets.length+' retained artifact'+(assets.length===1?'':'s')+'</button>':'';
+  const checklist=rows?'<ol class="project-outcome-checklist" aria-label="Outcome verification checks">'+rows+'</ol>':'<p class="project-outcome-warning">No whole-project acceptance checks are configured. Worker claims and task statuses cannot prove the outcome.</p>';
+  return '<section class="project-outcome project-outcome-'+v.tone+'" aria-label="Project outcome verdict"><div class="project-outcome-heading"><div><span class="project-eyebrow">Human-verifiable outcome</span><h3>'+esc(v.title)+'</h3></div><strong class="project-outcome-badge">'+esc(stateLabel)+'</strong></div><p>'+esc(v.summary)+'</p>'+checklist+(review?'<div class="project-outcome-actions">'+review+'</div>':'')+'</section>';
+}
+
 function _projectRenderOverview(data) {
   const el=document.getElementById('project-overview'); if(!el) return;
   const acc=data.acceptance||{}, policy=data.project.policy||{}, cards=data.cards||[], assets=_projectAssets(data);
@@ -45078,13 +45247,23 @@ function _projectRenderOverview(data) {
     const label=phase==='verified' ? (verifiedCount ? verifiedCount+' verified' : 'pending') : current ? 'active' : done ? 'done' : 'pending';
     return `<div class="project-timeline-step ${done?'done':''}"><span></span><strong>${esc(phase[0].toUpperCase()+phase.slice(1))}</strong><small>${esc(label)}</small></div>`;
   }).join('');
-  const recent=cards.slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<tr><td>${esc(c.id)}</td><td>${esc(_projectClip(c.title,54))}</td><td><span class="project-status-chip ${esc(c.phase)}">${esc(c.phase)}</span></td><td>${esc(_projectShortDate(_projectCardUpdated(c)))}</td></tr>`).join('');
-  const runs=cards.filter(c=>c.execution_plan?.execution?.stage || c.execution_plan?.execution?.report).slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>`<li><span class="project-run-dot ${c.phase==='verified'?'ok':''}"></span><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.execution?.stage || c.phase,40))}</span><small>${esc(_projectShortDate(_projectCardUpdated(c)))}</small></li>`).join('');
+  const taskRows=cards.slice().sort((a,b)=>{
+    const phaseOrder={working:0,waiting:1,verifying:2,ready:3,intake:4,backlog:5,verified:6,closed:7};
+    const ar=phaseOrder[a.phase] ?? 50, br=phaseOrder[b.phase] ?? 50;
+    return ar===br ? _projectCardUpdated(b)-_projectCardUpdated(a) : ar-br;
+  }).map(c=>{
+    const st=_projectTaskDisplay(c);
+    return `<tr><td>${esc(c.id)}</td><td>${esc(_projectClip(c.title,54))}</td><td><span class="project-status-chip ${esc(st.cls)}" title="${esc(st.detail || st.label)}">${esc(st.label)}</span>${st.detail?` <small class="project-muted">${esc(_projectClip(st.detail,90))}</small>`:''}</td><td>${esc(_projectShortDate(_projectCardUpdated(c)))}</td></tr>`;
+  }).join('');
+  const runs=cards.filter(c=>c.execution_plan?.execution?.stage || c.execution_plan?.execution?.report).slice().sort((a,b)=>_projectCardUpdated(b)-_projectCardUpdated(a)).slice(0,5).map(c=>{const st=_projectTaskDisplay(c);return `<li><span class="project-run-dot ${c.phase==='verified'?'ok':''}"></span><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(c.id)}'),0)">${esc(c.id)}</button><span>${esc(_projectClip(st.label,40))}</span><small>${esc(_projectShortDate(_projectCardUpdated(c)))}</small></li>`}).join('');
   const deps=cards.filter(c=>(c.depends_on||[]).length || c.execution_plan?.waiting_label || c.execution_plan?.waiting_reason).slice(0,4).map(c=>`<li><button class="project-link" onclick="_projectSetTab('dependencies')">${esc(c.id)}</button><span>${esc(_projectClip(c.execution_plan?.waiting_label || ((c.depends_on||[]).length+' explicit dependencies'),80))}</span></li>`).join('');
   const evidenceSummary=['md','json','txt','png','webm'].map(ext=>[ext,assets.filter(a=>(a.asset?.source?.path||a.asset?.path||'').endsWith('.'+ext)).length]).filter(x=>x[1]).map(([ext,n])=>`<li><span>${esc(ext.toUpperCase())} artifacts</span><strong>${n}</strong></li>`).join('') || '<li><span>No retained artifacts yet</span><strong>0</strong></li>';
-  const repo=(policy.repository||'').replace(/^\/Users\/[^/]+/,'~');
-  const context=`<dl class="project-context"><dt>Repository</dt><dd>${esc(repo||'Not configured')}</dd><dt>Checkout</dt><dd>${policy.worktree===false?'Shared checkout':'Dedicated worktrees'}</dd><dt>Planner</dt><dd>${esc([policy.coordinator?.provider,policy.coordinator?.model,policy.coordinator?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Executor</dt><dd>${esc([policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Gate</dt><dd>${esc(policy.verify_command||'Not configured')}</dd></dl>`;
-  const html=`<section class="project-overview-card wide"><h3>Project timeline</h3><div class="project-timeline">${timeline}</div></section><section class="project-overview-card"><h3>Project context</h3>${context}</section><section class="project-overview-card wide"><div class="project-card-heading"><h3>Tasks</h3><button class="project-link" onclick="_projectSetTab('tasks')">View kanban →</button></div><table class="project-task-table"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Updated</th></tr></thead><tbody>${recent||'<tr><td colspan="4">No tasks yet</td></tr>'}</tbody></table></section><section class="project-overview-card"><div class="project-card-heading"><h3>Recent runs</h3><button class="project-link" onclick="_projectSetTab('tasks')">View all →</button></div><ul class="project-run-list">${runs||'<li><span>No runs yet</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Dependencies</h3><button class="project-link" onclick="_projectSetTab('dependencies')">View all →</button></div><ul class="project-run-list">${deps||'<li><span>No active dependency holds</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Evidence summary</h3><button class="project-link" onclick="_projectSetTab('evidence')">View all →</button></div><ul class="project-evidence-summary">${evidenceSummary}</ul></section><section class="project-overview-card"><h3>Review note</h3><p>${esc(acc.reason ? acc.reason.replaceAll('_',' ') : (acc.state ? 'Acceptance state: '+acc.state : 'Whole-project acceptance has not run yet.'))}</p></section>`;
+  const primaryWorkspace=_projectPrimaryWorkspace(data);
+  const repo=policy.repository||'';
+  const checkoutPath=primaryWorkspace?.path || repo;
+  const checkoutLabel=primaryWorkspace?.path ? _projectDisplayPath(primaryWorkspace.path) : (policy.worktree===false?'Shared checkout':'Dedicated worktrees');
+  const context=`<dl class="project-context"><dt>Repository</dt><dd>${repo?_projectCheckoutPathButton(repo,_projectDisplayPath(repo)):'Not configured'}</dd><dt>Checkout</dt><dd>${checkoutPath?_projectCheckoutPathButton(checkoutPath,checkoutLabel):esc(policy.worktree===false?'Shared checkout':'Dedicated worktrees')}</dd><dt>Planner</dt><dd>${esc([policy.coordinator?.provider,policy.coordinator?.model,policy.coordinator?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Executor</dt><dd>${esc([policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Gate</dt><dd>${esc(policy.verify_command||'Not configured')}</dd></dl>`;
+  const html=_projectOutcomeCard(data)+`<section class="project-overview-card wide"><h3>Project timeline</h3><div class="project-timeline">${timeline}</div></section><section class="project-overview-card"><h3>Project context</h3>${context}</section><section class="project-overview-card wide"><div class="project-card-heading"><h3>Tasks</h3><button class="project-link" onclick="_projectSetTab('tasks')">View kanban →</button></div><table class="project-task-table"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Updated</th></tr></thead><tbody>${taskRows||'<tr><td colspan="4">No tasks yet</td></tr>'}</tbody></table></section><section class="project-overview-card"><div class="project-card-heading"><h3>Recent runs</h3><button class="project-link" onclick="_projectSetTab('tasks')">View all →</button></div><ul class="project-run-list">${runs||'<li><span>No runs yet</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Dependencies</h3><button class="project-link" onclick="_projectSetTab('dependencies')">View all →</button></div><ul class="project-run-list">${deps||'<li><span>No active dependency holds</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Evidence summary</h3><button class="project-link" onclick="_projectSetTab('evidence')">View all →</button></div><ul class="project-evidence-summary">${evidenceSummary}</ul></section><section class="project-overview-card"><h3>Review note</h3><p>${esc(acc.reason ? acc.reason.replaceAll('_',' ') : (acc.state ? 'Acceptance state: '+acc.state : 'Whole-project acceptance has not run yet.'))}</p></section>`;
   if(el.dataset.sig!==html){el.dataset.sig=html;el.innerHTML=html;}
 }
 function _projectRenderEvidencePanel(data) {
@@ -45112,7 +45291,8 @@ function _projectWorkers(data) {
     if(!name) return;
     if(!by.has(name)) by.set(name,{name,lifecycle:'missing',task_count:0,verified_tasks:0,active_tasks:0,retained_assets:0,tasks:[]});
     const w=by.get(name);
-    const task={id:card.id,title:card.title,status:card.status,phase:card.phase,stage:e.stage,updated:_projectCardUpdated(card),retained_assets:(e.retained_assets||[]).length,waiting_label:card.execution_plan?.waiting_label,waiting_reason:card.execution_plan?.waiting_reason};
+    const display=_projectTaskDisplay(card);
+    const task={id:card.id,title:card.title,status:card.status,phase:card.phase,stage:e.stage,display_label:display.label,display_class:display.cls,updated:_projectCardUpdated(card),retained_assets:(e.retained_assets||[]).length,waiting_label:card.execution_plan?.waiting_label,waiting_reason:card.execution_plan?.waiting_reason};
     w.tasks.push(task);w.task_count++;if(card.phase==='verified')w.verified_tasks++;else w.active_tasks++;w.retained_assets+=task.retained_assets;
   });
   return [...by.values()];
@@ -45125,7 +45305,7 @@ function _projectWorkerRuntime(worker) {
   if(reg) lifecycle=reg.lifecycle || (reg.archived?'archived':reg.paused?'paused':'active');
   else if(inv && (!lifecycle || lifecycle==='missing')) lifecycle='expired';
   const running=!!reg && reg.running!==false && reg.status!=='stopped';
-  const label=lifecycle==='active'?(running?'Active · running':'Active · stopped'):lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
+  const label=lifecycle==='active'?(running?'Active · running':'Active · stopped'):lifecycle==='review'?'Retained for review':lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
   return {reg,inv,lifecycle,running,label};
 }
 async function _projectResumeWorker(name) {
@@ -45154,16 +45334,19 @@ function _projectWorkerAction(worker,runtime) {
 function _projectRenderWorkersPanel(data) {
   const el=document.getElementById('project-workers-panel'); if(!el) return;
   const workers=_projectWorkers(data).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+  const closeout=_projectCloseoutBanner(data,false);
   const rows=workers.map(worker=>{
     const runtime=_projectWorkerRuntime(worker);
     const env=worker.env||{},workspace=worker.workspace||{},integration=worker.integration&&typeof worker.integration==='object'?worker.integration:null;
     const model=[env.provider,env.model,env.effort].filter(Boolean).join(' · ');
     const checkout=workspace.path || env.dir || '';
-    const tasks=(worker.tasks||[]).slice().sort((a,b)=>Number(b.updated||0)-Number(a.updated||0)).map(t=>`<li><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(t.id)}'),0)">${esc(t.id)}</button><span>${esc(_projectClip(t.title||'',72))}</span><small>${esc(t.phase||t.status||'')}${t.stage?' · '+esc(t.stage):''}</small></li>`).join('');
-    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+esc(checkout||'Not recorded')+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||'Not recorded')+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
+    const tasks=(worker.tasks||[]).slice().sort((a,b)=>Number(b.updated||0)-Number(a.updated||0)).map(t=>`<li><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(t.id)}'),0)">${esc(t.id)}</button><span>${esc(_projectClip(t.title||'',72))}</span><small>${esc(t.display_label||t.phase||t.status||'')}${t.stage?' · '+esc(t.stage):''}</small></li>`).join('');
+    const checkoutHtml=checkout?_projectCheckoutPathButton(checkout):'Not recorded';
+    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+checkoutHtml+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||'Not recorded')+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
     return '<article class="project-overview-card project-worker-card"><div class="project-card-heading"><h3>'+esc(worker.name||'worker')+'</h3>'+_projectWorkerAction(worker,runtime)+'</div>'+facts+'<div class="project-card-heading"><h3>Tasks</h3><span class="project-muted">'+esc(String(worker.retained_assets||0))+' retained assets</span></div><ul class="project-run-list">'+(tasks||'<li><span>No project tasks recorded for this worker</span></li>')+'</ul></article>';
   }).join('') || '<p class="project-empty" role="status">No workers have been assigned to this project yet. Workers appear here after project tasks are claimed, and remain listed after pause, archive or expiration.</p>';
-  if(el.dataset.sig!==rows){el.dataset.sig=rows;el.innerHTML=rows;}
+  const html=closeout+rows;
+  if(el.dataset.sig!==html){el.dataset.sig=html;el.innerHTML=html;}
 }
 
 async function _projectsLoad() {
@@ -45176,7 +45359,7 @@ async function _projectsLoad() {
   const current=()=>token===_projectsToken && activeView==='projects';
   const root=document.getElementById('projects-view');
   if(!document.getElementById('project-selector')) {
-    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into tasks, verified assets, integrated commits and a human review gate.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
+    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into accountable tasks, a verified candidate, human review and one approved publish.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
     _projectsName=_projectStorage('selected');
   }
   try {
@@ -45235,7 +45418,7 @@ function _projectEffortOptions(value) {
   return ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(v=>'<option value="'+esc(v)+'" '+(v===(value||'')?'selected':'')+'>'+(v?esc(v):'Provider default')+'</option>').join('');
 }
 function _projectConfig(project) {
-  const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'claude',model:'haiku'},executor:{provider:'claude',model:'sonnet'},verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'codex',model:'gpt-5.5',effort:'low'},executor:{provider:'codex',model:'gpt-5.5',effort:'low'},verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
   const worktree=p.worktree!==false;
   const coordinatorEffort=p.coordinator.effort || (p.coordinator.provider==='codex'?'low':'');
   const executorEffort=p.executor.effort || (p.executor.provider==='codex'?'low':'');
@@ -45255,7 +45438,7 @@ function _projectConfig(project) {
     '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
     '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div>'+
-    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;Happy and unhappy paths pass&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;command&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;},&quot;evidence&quot;:[&quot;artifacts/e2e-report.md&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label><p class="project-muted">This contract runs independently on integrated <code>origin/main</code>. Leave blank only when whole-project acceptance is intentionally not configured.</p>'+
+    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label><p class="project-muted">This contract runs independently on the composed, unpublished project candidate. Runtime and end-to-end claims require a fresh execution receipt; reports and copied historical results cannot satisfy them. Human approval publishes that exact candidate to <code>origin/main</code>.</p>'+
     '<p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
 }
 
@@ -45427,9 +45610,13 @@ function _projectRender(data) {
     columns.forEach(col=>{
       const holder=board.querySelector(':scope > [data-key="'+col.phase+'"] .project-column-cards');
       _projectPatch(holder,col.rows.map(c=>{
-        const plan=c.execution_plan,e=plan.execution,working=col.phase==='working' && ['reserved','working'].includes(e.stage) && !plan.waiting_reason;
-        const sig=JSON.stringify([c.id,c.title,c.phase,c.next_action,plan.waiting_label,!!plan.waiting_reason,working,(e.retained_assets||[]).length,c.verification_retry_available===true,c.retry_available===true]);
-        return {key:c.id,sig,html:'<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><button type="button" class="project-card-select" data-focus="card:'+esc(c.id)+'" aria-pressed="false" onclick="_projectSelectTask(\''+escJs(c.id)+'\')"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><strong>'+esc(c.title)+'</strong></button>'+(plan.waiting_reason?'<p class="project-wait">'+esc(_projectClip(plan.waiting_label || 'Execution held',120))+'</p>':'')+'<p>'+esc(_projectClip(c.next_action || '',160))+'</p>'+((e.retained_assets||[]).length?'<p class="project-muted">'+(e.retained_assets||[]).length+' retained asset'+((e.retained_assets||[]).length===1?'':'s')+'</p>':'')+'</article>'};
+        const plan=c.execution_plan,e=plan.execution,display=_projectTaskDisplay(c),working=display.cls==='working' && !plan.waiting_reason;
+        const retryAction=c.retry_available===true
+          ? '<button type="button" class="btn project-card-action" onclick="_projectRetry(\''+escJs(c.id)+'\')">Repair now</button>'
+          : (c.verification_retry_available===true ? '<button type="button" class="btn project-card-action" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button>' : '');
+        const sig=JSON.stringify([c.id,c.title,c.phase,c.next_action,display.label,display.detail,working,(e.retained_assets||[]).length,c.verification_retry_available===true,c.retry_available===true]);
+        const stateLine=display.label?'<p class="project-wait">'+esc(_projectClip(display.label,120))+(display.detail?' <span class="project-muted">'+esc(_projectClip(display.detail,120))+'</span>':'')+'</p>':'';
+        return {key:c.id,sig,html:'<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><button type="button" class="project-card-select" data-focus="card:'+esc(c.id)+'" aria-pressed="false" onclick="_projectSelectTask(\''+escJs(c.id)+'\')"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><strong>'+esc(c.title)+'</strong></button>'+stateLine+'<p>'+esc(_projectClip(c.next_action || '',160))+'</p>'+retryAction+((e.retained_assets||[]).length?'<p class="project-muted">'+(e.retained_assets||[]).length+' retained asset'+((e.retained_assets||[]).length===1?'':'s')+'</p>':'')+'</article>'};
       }));
     });
     board.dataset.sig='cards';
@@ -45447,9 +45634,11 @@ function _projectAcceptanceHtml(acc) {
     const state=result.state||'pending';
     const evidence=Array.isArray(result.evidence)?result.evidence:[];
     const links=evidence.map((a,i)=>a?.path?'<button class="btn" onclick="_projectAcceptanceAsset(\''+escJs(c.id)+'\','+i+')">'+esc(a.source?.path||a.path.split('/').pop())+'</button>':'').join(' ');
+    const receipt=result.receipt&&typeof result.receipt==='object'?result.receipt:null;
+    const receiptSummary=receipt?'<div class="project-receipt-summary"><strong>Fresh execution proof</strong> · '+esc(receipt.subject?.kind||'subject')+' '+esc(receipt.subject?.id||'unknown')+' · '+(Array.isArray(receipt.stages)?receipt.stages.filter(s=>s?.state==='passed').length:0)+' passed stage(s) · run '+esc(receipt.run_id||'unknown')+'</div>':'';
     const review=c.verifier?.type==='human' && acc.state==='awaiting_human' && !result.approval
       ? '<button class="btn primary" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'approve\')">Approve</button> <button class="btn" onclick="_projectAcceptanceDecision(\''+escJs(c.id)+'\',\'reject\')">Reject</button>' : '';
-    return '<li><strong>'+esc(c.requirement)+'</strong> · '+esc(state)+(links?'<div>'+links+'</div>':'')+(result.output?'<details><summary>Verifier output</summary><pre>'+esc(_projectClip(result.output,4000))+'</pre></details>':'')+review+'</li>';
+    return '<li><strong>'+esc(c.requirement)+'</strong> · '+esc(state)+receiptSummary+(result.receipt_error?'<p class="project-wait">Execution proof rejected: '+esc(result.receipt_error)+'</p>':'')+(links?'<div>'+links+'</div>':'')+(result.output?'<details><summary>Verifier output</summary><pre>'+esc(_projectClip(result.output,4000))+'</pre></details>':'')+review+'</li>';
   }).join('');
   const produced=Array.isArray(acc.review_assets)?acc.review_assets:[];
   const artifacts=produced.map((x,i)=>x?.asset?.source?.path?'<button class="btn project-report-asset" onclick="_projectAcceptanceRetainedAsset('+i+')">'+esc(x.task+' · '+x.asset.source.path)+'</button>':'').join(' ');
@@ -45457,11 +45646,55 @@ function _projectAcceptanceHtml(acc) {
   const hold=acc.state==='awaiting_human'?'<p class="project-wait">Completed executors are stopped. Their worker records, terminals and worktrees remain available until this review is approved.</p>':'';
   const retirement=acc.executor_retirement;
   const retirementNotice=retirement && retirement.allowed===false && retirement.state==='review_not_configured'?'<p class="project-wait">Executor expiration is held: '+esc(retirement.reason)+'.</p>':'';
-  return '<div>Project acceptance: <strong>'+esc(acc.state)+'</strong>'+(acc.main?' · integrated '+_projectSha(acc.main):'')+'</div>'+hold+retirementNotice+(acc.reason?'<p class="project-muted">'+esc(acc.reason.replaceAll('_',' '))+'</p>':'')+(artifacts?'<div class="project-review-assets"><strong>Produced artifacts to review</strong><div>'+artifacts+'</div></div>':'')+(rows?'<details open><summary>Whole-project criteria ('+criteria.length+')</summary><ol class="project-criteria">'+rows+'</ol></details>':'')+rerun;
+  const closeout=acc.state==='accepted'?_projectCloseoutBanner(_projectsData,true):'';
+  return '<div>Project acceptance: <strong>'+esc(acc.state)+'</strong>'+(acc.candidate?' · candidate '+_projectSha(acc.candidate):'')+(acc.main?' · based on main '+_projectSha(acc.main):'')+'</div>'+hold+retirementNotice+(acc.reason?'<p class="project-muted">'+esc(acc.reason.replaceAll('_',' '))+'</p>':'')+(artifacts?'<div class="project-review-assets"><strong>Produced artifacts to review</strong><div>'+artifacts+'</div></div>':'')+(rows?'<details open><summary>Whole-project criteria ('+criteria.length+')</summary><ol class="project-criteria">'+rows+'</ol></details>':'')+rerun+closeout;
+}
+function _projectCloseoutBanner(data,compact=false) {
+  if(data?.acceptance?.state!=='accepted') return '';
+  const workers=_projectWorkers(data);
+  const retained=workers.filter(w=>!['expired','missing'].includes(w.lifecycle||'')).length;
+  const expired=workers.filter(w=>(w.lifecycle||'')==='expired').length;
+  const label=retained>0?'Publish approved candidate and expire workers':'Recheck project closeout';
+  const note=retained>0
+    ? retained+' retained worker'+(retained===1?'':'s')+' can be finalized. Expired worker records stay in this project for retrospective review.'
+    : (expired>0 ? expired+' worker'+(expired===1?' is':'s are')+' already expired and remain reviewable here.' : 'No retained project workers need closeout.');
+  return '<div class="project-closeout '+(compact?'compact':'')+'"><div><strong>Finalize project</strong><p>'+esc(note)+'</p></div><button class="btn primary" id="project-closeout" onclick="_projectCloseout()">'+esc(label)+'</button></div>';
 }
 async function _projectAcceptanceDecision(criterion,decision) {
   const acc=_projectsData?.acceptance;if(!acc?.fingerprint)return;
-  try {await _projectRequest('/'+encodeURIComponent(_projectsName)+'/acceptance/approve','POST',{criterion,fingerprint:acc.fingerprint,decision,note:''});await _projectsLoad();}catch(e){_projectError(e);}
+  try {
+    const approved=decision==='approve';
+    await _projectRequest('/'+encodeURIComponent(_projectsName)+'/acceptance/approve','POST',{criterion,fingerprint:acc.fingerprint,decision,note:''});
+    if(approved) {
+      const receipt=document.getElementById('project-receipt');if(receipt) receipt.textContent='Accepted — finalizing verified worktrees…';
+      try {
+        const result=await _projectRequest('/'+encodeURIComponent(_projectsName)+'/closeout','POST');
+        const msg='Accepted. Closeout: '+Number(result.expired||0)+' expired, '+Number(result.integration_started||0)+' integration run'+(Number(result.integration_started||0)===1?'':'s')+' started, '+Number(result.review_held||0)+' held for review, '+Number(result.errors||0)+' error'+(Number(result.errors||0)===1?'':'s')+'.';
+        if(receipt) receipt.textContent=msg;
+      } catch(closeoutError) {
+        if(receipt) receipt.textContent='Accepted. Closeout needs attention: '+(closeoutError?.message || String(closeoutError));
+      }
+    }
+    await _projectsLoad();
+  }catch(e){_projectError(e);}
+}
+let _projectCloseoutBusy=false;
+async function _projectCloseout() {
+  if(!_projectsName || _projectCloseoutBusy) return;
+  _projectCloseoutBusy=true;
+  const btn=document.getElementById('project-closeout');
+  if(btn){btn.disabled=true;btn.textContent='Finalizing…';}
+  try {
+    const result=await _projectRequest('/'+encodeURIComponent(_projectsName)+'/closeout','POST');
+    const msg='Closeout: '+Number(result.expired||0)+' expired, '+Number(result.integration_started||0)+' integration run'+(Number(result.integration_started||0)===1?'':'s')+' started, '+Number(result.review_held||0)+' held for review, '+Number(result.errors||0)+' error'+(Number(result.errors||0)===1?'':'s')+'.';
+    const receipt=document.getElementById('project-receipt');if(receipt) receipt.textContent=msg;
+    await _projectsLoad();
+  } catch(e) {
+    _projectError(e);
+  } finally {
+    _projectCloseoutBusy=false;
+    const fresh=document.getElementById('project-closeout');if(fresh){fresh.disabled=false;}
+  }
 }
 async function _projectAcceptanceRerun() {
   const acc=_projectsData?.acceptance;if(!acc?.fingerprint)return;
@@ -45474,7 +45707,7 @@ function _projectAcceptanceAsset(criterion,index) {
 }
 function _projectOpenArtifactPath(path) {
   if(!path) return;
-  openFilePreview(path,{readOnly:true});
+  openFilePreview(path);
 }
 function _projectAcceptanceRetainedAsset(index) {
   const a=_projectsData?.acceptance?.review_assets?.[index]?.asset;
@@ -45537,7 +45770,7 @@ function _projectInspectorRender(data) {
   if(box.dataset.sig===sig) return;
   const scroll=box.dataset.task===c.id?box.scrollTop:0;
   const active=document.activeElement,focusKey=box.contains(active)?active.dataset?.focus:null;
-  const ev=_projectEvidence(c),report=e.report||ev?.report||null,merged=ev?.merged;
+  const ev=_projectEvidence(c),report=e.report||ev?.report||null,candidate=ev?.candidate||ev?.merged;
   const criteria=_projectCriteria(c),checks=Array.isArray(report?.checks)?report.checks:[];
   const key=part=>name+':'+c.id+':'+part;
   const rows=criteria.map(cr=>{
@@ -45549,7 +45782,7 @@ function _projectInspectorRender(data) {
   const lastFailure=e.last_failure?'<p class="project-muted">Last recorded failure (historical, may predate the current attempt): '+esc(_projectClip(typeof e.last_failure==='string'?e.last_failure:(e.last_failure.message||JSON.stringify(e.last_failure)),400))+'</p>':'';
   const historical=ev?(ev.text!==undefined
       ? '<pre>'+esc(_projectClip(ev.text,4000))+'</pre>'
-      : '<p>Integrated commit: '+_projectSha(typeof merged==='string'?merged:merged?.head||merged?.sha||merged?.commit)+'</p><p>Gate at integration: '+(ev.gate?'<code>'+esc(ev.gate)+'</code>':'<span class="project-muted">not recorded</span>')+'</p>')
+      : '<p>Verified task candidate: '+_projectSha(typeof candidate==='string'?candidate:candidate?.head||candidate?.sha||candidate?.commit)+'</p><p>Publication: '+esc(ev.integration||'historical')+'</p><p>Task gate: '+(ev.gate?'<code>'+esc(ev.gate)+'</code>':'<span class="project-muted">not recorded</span>')+'</p>')
     :'<p class="project-muted">No verification evidence yet.</p>';
   const assets=_projectAssetLinks(c);
   const diag=plan.waiting_reason?_projectSection(key('diagnostics'),'Full diagnostics ('+String(plan.waiting_reason).length.toLocaleString()+' characters)',false,'<p class="project-muted">Cause (end of diagnostic): '+esc(_projectCause(plan.waiting_reason))+'</p><pre class="project-diagnostic" tabindex="0">'+esc(plan.waiting_reason)+'</pre>'):'';
@@ -45558,9 +45791,10 @@ function _projectInspectorRender(data) {
   const action=((live||reviewHeld)?'<button class="btn" data-focus="insp:peek" onclick="openPeek(\''+escJs(worker)+'\')">'+(reviewHeld?'Review executor terminal':'Executor terminal')+'</button>':(retired?'<p class="project-muted">The executor has retired. Retained evidence and assets stay above.</p>':''))+
     ((c.verification_retry_available===true)?'<button class="btn" data-focus="insp:verify" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button><p>Verify the retained report again; no model execution.</p>':'')+
     ((c.retry_available===true)?'<button class="btn" data-focus="insp:retry" onclick="_projectRetry(\''+escJs(c.id)+'\')">Authorize one retry</button><p>Worker repair: authorizes one additional model attempt.</p>':'');
-  const html='<h3 tabindex="-1">'+esc(c.id)+' · '+esc(c.title)+'</h3><p class="project-muted">Phase: '+esc(c.phase)+(plan.waiting_label?' · '+esc(_projectClip(plan.waiting_label,120)):'')+'</p>'+currentIssue+
+  const display=_projectTaskDisplay(c);
+  const html='<h3 tabindex="-1">'+esc(c.id)+' · '+esc(c.title)+'</h3><p class="project-muted">State: '+esc(display.label)+(display.detail?' · '+esc(_projectClip(display.detail,120)):'')+'</p>'+currentIssue+
     '<p>'+esc(_projectClip(c.next_action||'',600))+'</p>'+
-    _projectSection(key('criteria'),'Criteria and evidence',true,'<ol class="project-criteria">'+(rows||'<li class="project-muted">No acceptance criteria recorded.</li>')+'</ol><p class="project-muted">Whole-project acceptance is shown above and runs independently on integrated main.</p>')+
+    _projectSection(key('criteria'),'Criteria and evidence',true,'<ol class="project-criteria">'+(rows||'<li class="project-muted">No acceptance criteria recorded.</li>')+'</ol><p class="project-muted">Whole-project acceptance is shown above and runs independently on the assembled, unpublished candidate.</p>')+
     _projectSection(key('attempt'),'Current attempt',true,'<dl class="project-facts"><dt>Stage</dt><dd>'+esc(e.stage||'')+'</dd><dt>Attempt / generation</dt><dd>'+esc(String(e.attempt ?? ''))+' / '+esc(String(e.generation ?? ''))+'</dd><dt>Executor setting</dt><dd>'+esc(data.project.policy.executor.provider)+' · '+esc(data.project.policy.executor.model)+(data.project.policy.executor.effort?' · '+esc(data.project.policy.executor.effort):'')+'</dd><dt>Checkout mode</dt><dd>'+esc(checkoutMode)+'</dd><dt>Worker</dt><dd>'+workerLine+'</dd><dt>Reported candidate</dt><dd>'+_projectSha(report?.head)+'</dd></dl>'+(report?.summary?'<p class="project-report">'+esc(_projectClip(report.summary,1500))+'</p>':''))+
     _projectSection(key('history'),'Task verification history',true,'<p class="project-muted">Historical, per task. Not project acceptance.</p>'+lastFailure+historical)+
     _projectSection(key('assets'),'Retained assets',true,assets||'<p class="project-muted">No retained assets.</p>')+

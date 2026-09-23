@@ -1338,6 +1338,7 @@ fn restore_retired_legacy_for_resume(name: &str) -> anyhow::Result<bool> {
     std::fs::rename(&retired, &active)?;
     let mut cfg = fleet::EnvFile::load(&active);
     cfg.remove("CC_ARCHIVED");
+    cfg.remove("CC_REVIEW_HELD");
     cfg.set("CC_PAUSED", "1");
     cfg.write(&active)?;
     crate::api::sessions_legacy::invalidate_sessions_cache();
@@ -1414,10 +1415,11 @@ async fn change_pause(
         return not_found(&key);
     }
     let cfg = fleet::parse_env(&name);
+    let review_held = cfg.get("CC_REVIEW_HELD") == Some("1");
     let current = row.as_ref().map(|r| r.lifecycle).unwrap_or_else(|| {
         if cfg.get("CC_ARCHIVED") == Some("1") {
             WorkerLifecycle::Archived
-        } else if cfg.get("CC_PAUSED") == Some("1") {
+        } else if cfg.get("CC_PAUSED") == Some("1") || review_held {
             WorkerLifecycle::Paused
         } else {
             WorkerLifecycle::Active
@@ -1437,7 +1439,7 @@ async fn change_pause(
         WorkerLifecycle::Active
     };
     // A repeated Resume is a no-op, not a request to restart a manually stopped worker.
-    if !paused && current == target && cfg.get("CC_PAUSED") != Some("1") {
+    if !paused && current == target && cfg.get("CC_PAUSED") != Some("1") && !review_held {
         return (
             StatusCode::OK,
             Json(json!({"applied":false,"lifecycle":"active","name":name})),
@@ -1458,6 +1460,10 @@ async fn change_pause(
         }
     }
     let outcome: anyhow::Result<Value> = async {
+        if !paused && review_held {
+            fleet::set_review_hold_at(&fleet::env_path(&name), false)
+                .map_err(anyhow::Error::msg)?;
+        }
         fleet::set_legacy_paused(&name, paused)?;
         if let (Some(row), Some(protocol)) = (&row, crate::opencode::process_protocol()) {
             let worker = WorkerId::parse(&row.id)?;
@@ -2923,6 +2929,40 @@ mod tests {
             env.get("CC_ARCHIVED"),
             Some("1"),
             "resume must not leave archived outranking paused"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_held_legacy_resume_clears_hold_before_starting() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let env = home.path().join("sessions/review-probe.env");
+        std::fs::write(
+            &env,
+            "CC_REVIEW_HELD=1
+CC_BACKEND=herdr
+CC_DIR=/tmp
+",
+        )
+        .unwrap();
+        let (app, _dir) = app();
+
+        let (st, _, body) = send(&app, "POST", "/api/workers/review-probe/resume", None).await;
+        assert_eq!(st, StatusCode::BAD_GATEWAY, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("herdr-backed session start"),
+            "resume must reach start_session after clearing the review hold: {body}"
+        );
+        let env = crate::api::session_verbs::parse_env("review-probe");
+        assert_ne!(env.get("CC_REVIEW_HELD"), Some("1"));
+        assert_eq!(
+            env.get("CC_PAUSED"),
+            Some("1"),
+            "failed review resume stays visible and retryable as paused"
         );
     }
 

@@ -12,7 +12,7 @@ use crate::{
 };
 use rusqlite::params;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 
 fn permit(state: &AppState, project: &str, id: &str, expected: &Execution) -> Result<(), String> {
@@ -132,25 +132,39 @@ pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
         .filter_map(|criterion| criterion.strip_prefix("contract:").map(str::to_string))
         .filter_map(|id| {
             let criterion = p.policy.acceptance.as_ref()?.criterion(&id)?;
-            let command = match &criterion.verifier {
-                amux_core::project::ContractVerifier::Command { command, .. } => command.clone(),
+            let (command, proof) = match &criterion.verifier {
+                amux_core::project::ContractVerifier::Command { command, .. } => {
+                    (command.clone(), Value::Null)
+                }
+                amux_core::project::ContractVerifier::Execution {
+                    command,
+                    receipt,
+                    required_stages,
+                    ..
+                } => (
+                    command.clone(),
+                    json!({"type":"fresh_execution_receipt","receipt":receipt,"required_stages":required_stages}),
+                ),
                 amux_core::project::ContractVerifier::Human { .. } => return None,
             };
             Some(json!({
                 "id": &criterion.id,
                 "requirement": &criterion.requirement,
                 "command": command,
+                "proof": proof,
                 "evidence_required": &criterion.evidence,
             }))
         })
         .collect::<Vec<_>>();
     format!(
         r#"{output_protocol}
-{checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then produce a durable receipt before stopping: write the exact report body to `.amux/project-report.json` in this worktree, then optionally POST the same body to /api/projects/{}/tasks/{}/report with X-Amux-Session set to your worker name. Receipt body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. Report checks must be executable candidate-relative checks: static commands, no `$()`, no backticks, no `.amux` receipt files, and no absolute checkout paths. If a check needs dynamic logic, commit a script and report a static command that calls that script, for example `python3 scripts/verify.py`. report.assets is required for new completed project tasks, and every `contract_requirements[].evidence_required` path below must be included as an asset when that contract criterion is referenced. Markdown/JSON/text reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after writing the receipt/report. If blocked, POST /api/projects/{}/tasks/{}/wait with generation, input_hash, reason and category (operational, spend, customer_outbound). Never assert success without artifacts.
+{checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. Commit your changes, then produce a durable receipt before stopping: write the exact report body to `.amux/project-report.json` in this worktree, then optionally POST the same body to `$AMUX_URL/api/projects/{}/tasks/{}/report` with X-Amux-Session set to your worker name. Receipt body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. Report checks must be executable candidate-relative checks: static commands, no `$()`, no backticks, no `.amux` receipt files, and no absolute checkout paths. If a check needs dynamic logic, commit a script and report a static command that calls that script, for example `python3 scripts/verify.py`. report.assets is required for new completed project tasks, and every `contract_requirements[].evidence_required` path below must be included as an asset when that contract criterion is referenced. Markdown/JSON/text reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after writing the receipt/report. If blocked, write `.amux/project-wait.json` before stopping with {{"generation":{},"input_hash":"{}","reason":"concrete blocker","category":"operational|spend|customer_outbound"}}, then optionally POST the same body to `$AMUX_URL/api/projects/{}/tasks/{}/wait`. Never assert success without artifacts.
 Task packet:
 {}"#,
         p.name,
         row.id,
+        e.generation,
+        e.input_hash,
         e.generation,
         e.input_hash,
         p.name,
@@ -304,46 +318,6 @@ async fn sync_shared_checkout(repo: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn integrate_shared_checkout(w: &workspace::Workspace, head: &str) -> Result<String, String> {
-    if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != head {
-        return Err("shared checkout changed after verification".into());
-    }
-    if !workspace::project_clean_status(&w.path).await?.is_empty() {
-        return Err("shared checkout has uncommitted changes".into());
-    }
-    let main = match workspace::git(&w.repo, &["fetch", "origin", "main"]).await {
-        Ok(_) => Some(workspace::git(&w.repo, &["rev-parse", "origin/main"]).await?),
-        Err(error) => {
-            if w.branch == "main" {
-                tracing::warn!(branch=%w.branch,%error,verdict="project_shared_checkout_local_main",
-                    "origin/main unavailable; treating the named local main checkout as the integrated target");
-                return Ok(head.to_string());
-            }
-            return Err(format!("shared-checkout project cannot confirm origin/main from branch {}; either use the main checkout or enable dedicated worktrees: {error}", w.branch));
-        }
-    };
-    if let Some(main) = main.as_deref() {
-        if workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, main])
-            .await
-            .is_ok()
-        {
-            return Ok(main.to_string());
-        }
-    }
-    if w.branch != "main" {
-        return Err("shared-checkout project report is not contained in origin/main; use the main checkout or enable dedicated worktrees for branch integration".into());
-    }
-    workspace::git(&w.repo, &["push", "origin", "HEAD:refs/heads/main"]).await?;
-    workspace::git(&w.repo, &["fetch", "origin", "main"]).await?;
-    let main = workspace::git(&w.repo, &["rev-parse", "origin/main"]).await?;
-    workspace::git(&w.repo, &["merge-base", "--is-ancestor", head, &main])
-        .await
-        .map_err(|_| {
-            "shared-checkout head is not contained in origin/main after push".to_string()
-        })?;
-    Ok(main)
-}
-
 async fn verify(
     state: &AppState,
     p: &store::Project,
@@ -406,11 +380,12 @@ async fn verify(
     let retained = super::assets::retain(&home, std::path::Path::new(&w.path), report)
         .await
         .map_err(|e| e.to_string())?;
-    let merged = if p.policy.worktree {
-        workspace::integrate_checks(&w, &commands, timeout, &verification_permit).await?
-    } else {
-        integrate_shared_checkout(&w, &report.head).await?
-    };
+    // Task verification proves one immutable worker head. It must not publish that head: whole-
+    // project acceptance still has to assemble all verified heads, run its independent contract,
+    // and wait for the human criterion. Publishing here made "Verified" indistinguishable from
+    // "approved and delivered" and let a prose-only task land before its claimed runtime outcome
+    // had been reviewed.
+    let candidate = report.head.clone();
     verification_permit()?;
     if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
         || !workspace::project_clean_status(&w.path).await?.is_empty()
@@ -420,7 +395,7 @@ async fn verify(
     workspace::write_integration_status(
         &home,
         &e.worker,
-        &json!({"status":"integrated","head":report.head,"merged":merged,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
+        &json!({"status":"verified_pending_review","head":report.head,"candidate":candidate,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
     );
     let expected_policy = p.policy.clone();
     let (id, expected, project) = (id.to_string(), e.clone(), p.name.clone());
@@ -433,7 +408,7 @@ async fn verify(
         super::assets::register(c,&id,&retained)?;
         current.retained_assets=retained;
         current.stage="verified".into();current.waiting=None;current.verification_retry_pending=false;
-        c.execute("UPDATE issues SET status='verified',evidence=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",params![id,json!({"report":current.report,"merged":merged,"gate":policy.policy.verify_command}).to_string()])?;
+        c.execute("UPDATE issues SET status='verified',evidence=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",params![id,json!({"report":current.report,"candidate":candidate,"integration":"pending_project_acceptance","gate":policy.policy.verify_command}).to_string()])?;
         planner::save_execution(c,&row,&current,"project.verified").map_err(store::sql_error)
     }).await.map_err(|e|e.to_string())?;
     Ok(())
@@ -445,6 +420,7 @@ struct TurnObservation {
     idle: bool,
     ended_at: Option<f64>,
     report: serde_json::Value,
+    waiting_reason: Option<String>,
 }
 
 fn turn_observation(
@@ -461,6 +437,11 @@ fn turn_observation(
         .get(worker)
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+    let waiting_reason = signals
+        .panes
+        .get(worker)
+        .filter(|raw| crate::api::session_verbs::codex_conversation_open_elsewhere(raw))
+        .map(|_| "session_open_elsewhere: Codex reports this conversation is open in another app; close the other owner and press Retry/continue before this executor can receive project work".to_string());
     let ended_at = if explain["decided_by"] == "report" && report["state"] == "idle" {
         report["ts"].as_f64()
     } else if let Some(turn) = signals
@@ -482,6 +463,7 @@ fn turn_observation(
         idle,
         ended_at,
         report,
+        waiting_reason,
     }
 }
 
@@ -490,6 +472,14 @@ struct ProjectReportFile {
     generation: i64,
     input_hash: String,
     report: planner::Report,
+    #[serde(default)]
+    mtime_s: f64,
+}
+
+fn report_file_matches_execution(file: &ProjectReportFile, execution: &Execution) -> bool {
+    let _same_attempt =
+        file.generation == execution.generation || file.mtime_s >= execution.observed_at as f64;
+    file.input_hash == execution.input_hash
 }
 
 fn read_project_report_file(worker: &str) -> Result<Option<ProjectReportFile>, String> {
@@ -502,9 +492,56 @@ fn read_project_report_file(worker: &str) -> Result<Option<ProjectReportFile>, S
     }
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map(Some)
-        .map_err(|e| format!("invalid {}: {e}", path.display()))
+    let mut file: ProjectReportFile =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid {}: {e}", path.display()))?;
+    file.mtime_s = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    Ok(Some(file))
+}
+
+#[derive(Clone, Deserialize)]
+struct ProjectWaitFile {
+    generation: i64,
+    input_hash: String,
+    reason: String,
+    category: String,
+    #[serde(default)]
+    mtime_s: f64,
+}
+
+fn valid_wait_category(category: &str) -> bool {
+    matches!(category, "operational" | "spend" | "customer_outbound")
+}
+
+fn wait_file_matches_execution(file: &ProjectWaitFile, execution: &Execution) -> bool {
+    let _same_attempt =
+        file.generation == execution.generation || file.mtime_s >= execution.observed_at as f64;
+    file.input_hash == execution.input_hash
+}
+
+fn read_project_wait_file(worker: &str) -> Result<Option<ProjectWaitFile>, String> {
+    let Some(w) = workspace::load(&crate::config::amux_home(), worker) else {
+        return Ok(None);
+    };
+    let path = std::path::Path::new(&w.path).join(".amux/project-wait.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let mut file: ProjectWaitFile =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid {}: {e}", path.display()))?;
+    file.mtime_s = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    Ok(Some(file))
 }
 
 async fn ingest_matching_report_file(
@@ -553,7 +590,7 @@ async fn ingest_matching_report_file(
                     events: vec![],
                 });
             }
-            if file.generation != current.generation || file.input_hash != current.input_hash {
+            if !report_file_matches_execution(&file, &current) {
                 return Ok(WriteOutcome {
                     applied: false,
                     events: vec![],
@@ -570,6 +607,73 @@ async fn ingest_matching_report_file(
                 &file.report,
             )
             .map_err(store::sql_error)
+        })
+        .await?;
+    Ok(out.applied)
+}
+
+async fn ingest_matching_wait_file(
+    state: &AppState,
+    project: &str,
+    id: &str,
+    expected: &Execution,
+    file: ProjectWaitFile,
+) -> anyhow::Result<bool> {
+    if file.reason.trim().is_empty() || !valid_wait_category(&file.category) {
+        anyhow::bail!("project wait receipt needs concrete reason and category operational, spend or customer_outbound");
+    }
+    let (project, id, expected) = (project.to_string(), id.to_string(), expected.clone());
+    let out = state
+        .store
+        .write_async(move |c| {
+            let row = bs::get_issue(c, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let mut current = planner::execution(c, &id).map_err(store::sql_error)?;
+            let p = store::get(c, &project)
+                .map_err(store::sql_error)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            if current.generation != expected.generation
+                || current.stage != "working"
+                || current.report.is_some()
+                || current.worker != expected.worker
+                || current.delivery_id != expected.delivery_id
+                || current.attempt != expected.attempt
+                || current.observed_at != expected.observed_at
+                || current.input_hash != expected.input_hash
+                || planner::input_hash(&row) != expected.input_hash
+                || current.suspended
+                || current.waiting.is_some()
+                || current.wait_category.is_some()
+                || row.project_group.as_deref() != Some(project.as_str())
+                || row.status != "doing"
+                || row.archived != 0
+                || !p.policy.enabled
+                || p.policy.paused
+                || !super::outputs::ready(c, &row).map_err(store::sql_error)?
+                || super::outputs::authorization_hold(c, &row).map_err(store::sql_error)?
+                || c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1 AND delivering_since IS NOT NULL)",
+                    [&current.worker],
+                    |r| r.get::<_, bool>(0),
+                )?
+            {
+                return Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
+            }
+            if !wait_file_matches_execution(&file, &current) {
+                return Ok(WriteOutcome {
+                    applied: false,
+                    events: vec![],
+                });
+            }
+            tracing::info!(task=%id,worker=%current.worker,generation=current.generation,category=%file.category,measured=true,n_considered=1,verdict="project_wait_file_ingested","durable worker wait receipt accepted without network callback");
+            current.stage = "waiting".into();
+            current.wait_category = Some(file.category.clone());
+            current.waiting = Some(format!("{}: {}", file.category, file.reason.trim()));
+            current.observed_at = chrono::Utc::now().timestamp();
+            planner::save_execution(c, &row, &current, "project.waiting")
+                .map_err(store::sql_error)
         })
         .await?;
     Ok(out.applied)
@@ -597,9 +701,16 @@ where
     };
     let report_file = read_project_report_file(&expected.worker);
     if let Ok(Some(file)) = report_file.as_ref() {
-        if file.generation == expected.generation
-            && file.input_hash == expected.input_hash
+        if report_file_matches_execution(file, expected)
             && ingest_matching_report_file(state, project, id, expected, file.clone()).await?
+        {
+            return Ok(());
+        }
+    }
+    let wait_file = read_project_wait_file(&expected.worker);
+    if let Ok(Some(file)) = wait_file.as_ref() {
+        if wait_file_matches_execution(file, expected)
+            && ingest_matching_wait_file(state, project, id, expected, file.clone()).await?
         {
             return Ok(());
         }
@@ -614,6 +725,10 @@ where
         && receipt.as_ref().is_some_and(|r| {
             interrupted || observation.ended_at.is_some_and(|ts| ts >= r.submitted_at)
         });
+    if let Some(waiting) = observation.waiting_reason.clone() {
+        transition(state, id, expected, "waiting", Some(waiting)).await?;
+        return Ok(());
+    }
     if observation.running && !ended {
         if receipt.is_some()
             && observation.idle
@@ -646,12 +761,12 @@ where
             return Ok(WriteOutcome{applied:false,events:vec![]});
         }
         match report_file {
-            Ok(Some(file)) if file.generation == current.generation && file.input_hash == current.input_hash => {
+            Ok(Some(file)) if report_file_matches_execution(&file, &current) => {
                 tracing::info!(task=%id,worker=%current.worker,generation=current.generation,measured=true,n_considered=1,verdict="project_report_file_ingested","worker receipt file substituted for missing HTTP report");
                 return planner::record_report(c,&project,&id,&current.worker,current.generation,&current.input_hash,&file.report).map_err(store::sql_error);
             }
             Ok(Some(_)) => {
-                tracing::warn!(task=%id,worker=%current.worker,generation=current.generation,measured=true,n_considered=1,verdict="project_report_file_stale","worker report file did not match current generation/input hash");
+                tracing::warn!(task=%id,worker=%current.worker,generation=current.generation,measured=true,n_considered=1,verdict="project_report_file_stale","worker report file did not match the current task input hash");
             }
             Err(error) => {
                 tracing::warn!(task=%id,worker=%current.worker,%error,measured=true,n_considered=1,verdict="project_report_file_invalid","worker report file could not be ingested");
@@ -668,13 +783,19 @@ where
 }
 
 fn repair_after_failure(e: &Execution, max_attempts: u32, action: &str, error: &str) -> bool {
+    if e.attempt >= e.attempt_limit(max_attempts) {
+        return false;
+    }
+    if action == "verify" {
+        // A user-authorized checks-only retry never authorizes another paid model turn. The
+        // retained candidate stays in review if those checks fail again.
+        return !e.verification_retry_pending;
+    }
     !e.verification_retry_pending
-        && e.attempt < e.attempt_limit(max_attempts)
-        && (action == "verify"
-            || (action == "observe"
-                && (error.contains("report")
-                    || error.contains("criterion")
-                    || error.contains("check")))
+        && ((action == "observe"
+            && (error.contains("report")
+                || error.contains("criterion")
+                || error.contains("check")))
             || matches!(
                 error,
                 "executor_stopped_before_result" | "executor_returned_without_result"
@@ -686,6 +807,13 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         let c = state.store.read()?;
         store::get(&c, name)?.ok_or_else(|| anyhow::anyhow!("project missing"))?
     };
+    state
+        .store
+        .write_async({
+            let name = name.to_string();
+            move |c| planner::reconcile_issue_statuses(c, &name).map_err(store::sql_error)
+        })
+        .await?;
     let plans = {
         let c = state.store.read()?;
         planner::plan(&c, &p)?
@@ -721,6 +849,29 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                     .await?;
                 Ok(())
             }
+            "grant_repair" => {
+                let project = name.to_string();
+                let task = id.clone();
+                state
+                    .store
+                    .write_async(move |c| {
+                        let row =
+                            bs::get_issue(c, &task)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                        let current = planner::execution(c, &task).map_err(store::sql_error)?;
+                        let request = super::task_retry::Request {
+                            idempotency_key: planner::auto_repair_idempotency_key(
+                                &project, &task, &current,
+                            ),
+                            expect_generation: current.generation,
+                            expect_revision: row.rev,
+                            input_hash: current.input_hash.clone(),
+                        };
+                        super::task_retry::grant(c, &project, &task, &request)
+                            .map_err(store::sql_error)
+                    })
+                    .await?;
+                Ok(())
+            }
             "deliver" => {
                 let row = {
                     let c = state.store.read()?;
@@ -747,8 +898,11 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                 }
             }
             "verify" => {
-                if fleet.active_child_work(&e.worker)
-                    || (fleet.is_running(&e.worker).await && !fleet.at_boundary(&e.worker).await)
+                let terminal_report = e.stage == "reported" && e.report.is_some();
+                if !terminal_report
+                    && (fleet.active_child_work(&e.worker)
+                        || (fleet.is_running(&e.worker).await
+                            && !fleet.at_boundary(&e.worker).await))
                 {
                     continue;
                 }
@@ -935,6 +1089,7 @@ mod observation_tests {
             idle: true,
             ended_at: Some(ts),
             report: json!({"state":"idle","source":"stop-hook","ts":ts}),
+            waiting_reason: None,
         }
     }
     #[test]
@@ -988,6 +1143,7 @@ mod observation_tests {
                     idle: false,
                     ended_at: None,
                     report: serde_json::Value::Null,
+                    waiting_reason: None,
                 })
             })
             .await
@@ -1001,6 +1157,72 @@ mod observation_tests {
         let current = planner::execution(&state.store.read().unwrap(), "A").unwrap();
         assert_eq!(current.stage, "reported");
         assert!(current.report.is_some());
+    }
+    #[test]
+    fn project_observation_ingests_matching_wait_file_without_network_callback() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let home_path = home.path().to_path_buf();
+        let (_dir, db, _) = super::super::outputs::tests::fixture();
+        db.write(move |c| {
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = planner::execution(c, "A").unwrap();
+            e.stage = "working".into();
+            e.waiting = None;
+            e.attempt = 1;
+            e.observed_at = 1;
+            planner::register_test_workspace(&e.worker, "/repo");
+            let worktree = home_path.join("worktrees").join(&e.worker);
+            std::fs::create_dir_all(worktree.join(".amux")).unwrap();
+            let wait = json!({
+                "generation": e.generation,
+                "input_hash": e.input_hash,
+                "category": "operational",
+                "reason": "Docker daemon socket is unavailable in this executor sandbox"
+            });
+            std::fs::write(
+                worktree.join(".amux/project-wait.json"),
+                serde_json::to_vec_pretty(&wait).unwrap(),
+            )
+            .unwrap();
+            planner::save_execution(c, &row, &e, "project.execution").map_err(store::sql_error)
+        })
+        .unwrap();
+        let state = AppState {
+            store: Arc::new(db),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let e = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let probes = std::sync::atomic::AtomicUsize::new(0);
+            observe_with(&state, "sample", "A", &e, || async {
+                probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(TurnObservation {
+                    running: true,
+                    idle: false,
+                    ended_at: None,
+                    report: serde_json::Value::Null,
+                    waiting_reason: None,
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                probes.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "a current durable wait receipt is authoritative without network callback"
+            );
+        });
+        let current = planner::execution(&state.store.read().unwrap(), "A").unwrap();
+        assert_eq!(current.stage, "waiting");
+        assert_eq!(current.wait_category.as_deref(), Some("operational"));
+        assert_eq!(
+            current.waiting.as_deref(),
+            Some("operational: Docker daemon socket is unavailable in this executor sandbox")
+        );
     }
     #[test]
     fn invalid_project_report_file_enters_repair_instead_of_reingest_loop() {
@@ -1326,6 +1548,8 @@ mod observation_tests {
     #[test]
     fn project_observation_current_ended_and_interrupted_turns_recover_boundedly() {
         for outcome in ["sent", "interrupted: server restart"] {
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::api::settings::test_env::set_home(home.path());
             let (_dir, db, _) = super::super::outputs::tests::fixture();
             db.write(move|c| {
                 let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="working".into();e.waiting=None;e.attempt=1;e.observed_at=1;
@@ -1458,6 +1682,20 @@ mod command_tests {
                     command: "true".into(),
                 }],
             });
+            e.verification_retries
+                .push(super::super::task_retry::VerificationGrant {
+                    request: super::super::task_retry::VerificationRequest {
+                        action: super::super::task_retry::VerificationAction::Verify,
+                        request: super::super::task_retry::Request {
+                            idempotency_key: "checks-only".into(),
+                            expect_generation: e.generation,
+                            expect_revision: row.rev,
+                            input_hash: e.input_hash.clone(),
+                        },
+                        report: e.report.clone().unwrap(),
+                    },
+                    previous_result: Value::Null,
+                });
             planner::save_execution(c, &row, &e, "project.verification_retry_granted")
                 .map_err(store::sql_error)
         })
@@ -1751,7 +1989,7 @@ mod command_tests {
     }
 
     #[test]
-    fn project_lifecycle_integrates_worktree_artifact_to_main_and_accepts_review() {
+    fn project_lifecycle_reviews_composed_candidate_before_publishing_to_main() {
         use super::*;
         use crate::api::{
             mdai::{ModelClient, ModelCompletion},
@@ -1831,7 +2069,7 @@ mod command_tests {
                 "verify_command": gate_for_policy,
                 "verification_timeout_secs": 60,
                 "acceptance": {"criteria": [
-                    {"id": "artifact", "requirement": "The integrated main branch contains the lifecycle report artifact.", "verifier": {"type": "command", "id": "artifact-check", "command": gate_for_policy, "timeout_secs": 60}, "evidence": ["docs/lifecycle-report.md"]},
+                    {"id": "artifact", "requirement": "The composed project candidate contains the lifecycle report artifact.", "verifier": {"type": "command", "id": "artifact-check", "command": gate_for_policy, "timeout_secs": 60}, "evidence": ["docs/lifecycle-report.md"]},
                     {"id": "owner", "requirement": "A human can inspect the retained report before executor retirement.", "verifier": {"type": "human", "id": "owner-review", "instructions": "Review docs/lifecycle-report.md and confirm the produced artifact is linkable and complete."}, "evidence": ["docs/lifecycle-report.md"]}
                 ]}
             }))
@@ -1976,15 +2214,15 @@ mod command_tests {
         rt.block_on(verify(&state, &project, &task_id, &execution))
             .unwrap();
         rt.block_on(drive_project(&state, "lifecycle-e2e")).unwrap();
-        let main = git(&repo, &["rev-parse", "origin/main"]);
-        assert!(git(
-            &repo,
-            &["merge-base", "--is-ancestor", &head, "origin/main"]
-        )
-        .is_empty());
-        assert_eq!(
-            git(&repo, &["show", "origin/main:docs/lifecycle-report.md"]),
-            body.trim()
+        let base_main = git(&repo, &["rev-parse", "origin/main"]);
+        let not_published = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["merge-base", "--is-ancestor", &head, "origin/main"])
+            .status()
+            .unwrap();
+        assert!(
+            !not_published.success(),
+            "task verification must not publish before review"
         );
 
         let project = store::get(&state.store.read().unwrap(), "lifecycle-e2e")
@@ -1996,7 +2234,13 @@ mod command_tests {
             crate::project_execution::acceptance::status(&state.store.read().unwrap(), &project)
                 .unwrap();
         assert_eq!(status["state"], "awaiting_human");
-        assert_eq!(status["main"], main);
+        assert_eq!(status["main"], base_main);
+        let reviewed_candidate = status["candidate"].as_str().unwrap();
+        assert!(git(
+            &repo,
+            &["merge-base", "--is-ancestor", &head, reviewed_candidate]
+        )
+        .is_empty());
         assert!(status["review_assets"]
             .as_array()
             .unwrap()
@@ -2030,6 +2274,21 @@ mod command_tests {
             crate::project_execution::acceptance::status(&state.store.read().unwrap(), &project)
                 .unwrap();
         assert_eq!(accepted["state"], "accepted");
+        let published = rt
+            .block_on(
+                crate::project_execution::acceptance::publish_accepted_candidate(&state, &project),
+            )
+            .unwrap();
+        assert!(git(
+            &repo,
+            &["merge-base", "--is-ancestor", &head, "origin/main"]
+        )
+        .is_empty());
+        assert_eq!(published, git(&repo, &["rev-parse", "origin/main"]));
+        assert_eq!(
+            git(&repo, &["show", "origin/main:docs/lifecycle-report.md"]),
+            body.trim()
+        );
         let row = crate::db::board_store::get_issue(&state.store.read().unwrap(), &task_id)
             .unwrap()
             .unwrap();
@@ -2041,6 +2300,10 @@ mod command_tests {
         assert_eq!(
             crate::fanout_workspace::integration_status(home.path(), &execution.worker)["mode"],
             "worktree"
+        );
+        assert_eq!(
+            crate::fanout_workspace::integration_status(home.path(), &execution.worker)["status"],
+            "verified_pending_review"
         );
     }
 

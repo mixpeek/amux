@@ -147,6 +147,45 @@ pub fn save(
     })
 }
 
+fn phase_workspace_priority(phase: Phase) -> u8 {
+    match phase {
+        Phase::Working | Phase::Waiting | Phase::Verifying => 0,
+        Phase::Ready | Phase::Intake => 1,
+        Phase::Verified => 2,
+        Phase::Closed | Phase::Unrecognized => 3,
+    }
+}
+
+fn project_summary_workspace(
+    project: &Project,
+    plans: &[super::planner::CardPlan],
+) -> Option<Value> {
+    if !project.policy.worktree {
+        return None;
+    }
+    let home = crate::config::amux_home();
+    let mut candidates: Vec<(u8, String)> = plans
+        .iter()
+        .filter_map(|plan| {
+            let worker = plan.execution.worker.trim();
+            (!worker.is_empty()).then(|| (phase_workspace_priority(plan.phase), worker.to_string()))
+        })
+        .collect();
+    candidates.sort();
+    candidates.dedup_by(|left, right| left.1 == right.1);
+    candidates.into_iter().find_map(|(_, worker)| {
+        crate::fanout_workspace::load(&home, &worker).map(|workspace| {
+            json!({
+                "worker": worker,
+                "repo": workspace.repo,
+                "path": workspace.path,
+                "branch": workspace.branch,
+                "base": workspace.base,
+            })
+        })
+    })
+}
+
 pub fn summary(conn: &Connection, project: &Project) -> anyhow::Result<Value> {
     let rows = bs::project_issues(conn, &project.name)?;
     let plans = super::planner::plan(conn, project)?;
@@ -178,9 +217,71 @@ pub fn summary(conn: &Connection, project: &Project) -> anyhow::Result<Value> {
         "retirement_state": retirement.get("state").and_then(Value::as_str).unwrap_or("unknown"),
         "retirement_reason": retirement.get("reason").and_then(Value::as_str),
         "worktree": project.policy.worktree,
+        "workspace": project_summary_workspace(project, &plans),
         "measured": true,
         "n_considered": rows.len(),
     }))
+}
+
+fn shell_words(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => cur.push(ch),
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch.is_whitespace() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            None if ch == '\\' => {
+                if let Some(next) = chars.next() {
+                    cur.push(next);
+                }
+            }
+            None => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn codex_model_from_flags(raw: Option<&String>) -> Option<String> {
+    let words = shell_words(raw?);
+    for (idx, word) in words.iter().enumerate() {
+        if word == "--model" || word == "-m" {
+            return words.get(idx + 1).cloned();
+        }
+        if let Some(value) = word.strip_prefix("--model=") {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn codex_effort_from_flags(raw: Option<&String>) -> Option<String> {
+    let words = shell_words(raw?);
+    for (idx, word) in words.iter().enumerate() {
+        let value = if word == "-c" || word == "--config" {
+            words.get(idx + 1).map(String::as_str)
+        } else {
+            word.strip_prefix("-c=")
+                .or_else(|| word.strip_prefix("--config="))
+        };
+        let Some(value) = value else { continue };
+        for key in ["model_reasoning_effort", "reasoning_effort"] {
+            if let Some(effort) = value.strip_prefix(&format!("{key}=")) {
+                return Some(effort.trim_matches('"').trim_matches('\'').to_string());
+            }
+        }
+    }
+    None
 }
 
 fn project_worker_lifecycle(
@@ -206,16 +307,28 @@ fn project_worker_lifecycle(
         "archived"
     } else if env.get("CC_PAUSED").is_some_and(|v| v == "1") {
         "paused"
+    } else if env.get("CC_REVIEW_HELD").is_some_and(|v| v == "1") {
+        "review"
     } else {
         "active"
     };
+    let model = env
+        .get("CC_MODEL")
+        .or_else(|| env.get("CODEX_MODEL"))
+        .cloned()
+        .or_else(|| codex_model_from_flags(env.get("CC_FLAGS")));
+    let effort = env
+        .get("CC_REASONING_EFFORT")
+        .or_else(|| env.get("CC_EFFORT"))
+        .cloned()
+        .or_else(|| codex_effort_from_flags(env.get("CC_FLAGS")));
     (
         lifecycle.into(),
         Some(json!({
             "path": source.to_string_lossy(),
             "provider": env.get("CC_PROVIDER"),
-            "model": env.get("CC_MODEL"),
-            "effort": env.get("CC_REASONING_EFFORT").or_else(|| env.get("CC_EFFORT")),
+            "model": model,
+            "effort": effort,
             "dir": env.get("CC_DIR"),
             "project": env.get("CC_PROJECT"),
             "worktree": env.get("CC_WORKTREE"),
@@ -278,15 +391,8 @@ fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) ->
                 .sum();
             let blocked_reason = tasks
                 .iter()
-                .find_map(|t| {
-                    [
-                        t.get("waiting_reason").and_then(Value::as_str),
-                        t.get("execution_waiting").and_then(Value::as_str),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .find(|reason| reason.starts_with("refusing to spawn a worker:"))
-                })
+                .filter_map(|t| t.get("waiting_reason").and_then(Value::as_str))
+                .find(|reason| reason.starts_with("refusing to spawn a worker:"))
                 .map(str::to_string);
             json!({
                 "name": worker,
@@ -515,17 +621,17 @@ mod tests {
         let store = Store::open(&dir.path().join("db")).unwrap();
         store.write(|c| {
             let mut p = policy();
-            p.acceptance = Some(serde_json::from_value(json!({"criteria":[{"id":"e2e","requirement":"e2e passes","verifier":{"type":"command","id":"e2e-command","command":"./e2e.sh"}}]})).unwrap());
+            p.acceptance = Some(serde_json::from_value(json!({"criteria":[{"id":"format","requirement":"artifact format passes","verifier":{"type":"command","id":"format-command","command":"./format-check.sh"}}]})).unwrap());
             save(c, "example", 0, &p, "test").map_err(sql_error)?;
             assert_eq!(get(c, "example").unwrap().unwrap().policy.acceptance.unwrap().revision, 1);
             p.acceptance = None;
             save(c, "example", 1, &p, "test").map_err(sql_error)?;
-            p.acceptance = Some(serde_json::from_value(json!({"criteria":[{"id":"e2e","requirement":"e2e passes","verifier":{"type":"command","id":"e2e-command","command":"./e2e.sh"}}]})).unwrap());
+            p.acceptance = Some(serde_json::from_value(json!({"criteria":[{"id":"format","requirement":"artifact format passes","verifier":{"type":"command","id":"format-command","command":"./format-check.sh"}}]})).unwrap());
             save(c, "example", 2, &p, "test").map_err(sql_error)?;
             let restored = get(c, "example").unwrap().unwrap();
             assert_eq!(restored.policy.acceptance.as_ref().unwrap().revision, 2);
             let mut changed = restored.policy.clone();
-            changed.acceptance.as_mut().unwrap().criteria[0].requirement = "e2e and chaos pass".into();
+            changed.acceptance.as_mut().unwrap().criteria[0].requirement = "artifact format and metadata pass".into();
             save(c, "example", restored.revision, &changed, "test").map_err(sql_error)?;
             assert_eq!(get(c, "example").unwrap().unwrap().policy.acceptance.unwrap().revision, 3);
             Ok(WriteOutcome { applied: true, events: vec![] })
@@ -647,6 +753,49 @@ CC_DIR=/tmp/project-worker
         assert_eq!(worker["workspace"]["branch"], "amux/fanout/project-worker");
         assert_eq!(worker["integration"]["status"], "integrated");
         assert_eq!(worker["tasks"][0]["id"], "A-1");
+    }
+
+    #[test]
+    fn project_worker_env_projects_codex_model_and_effort_from_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(
+            dir.path().join("sessions/project-worker.env"),
+            "CC_PROVIDER=codex
+CC_FLAGS=\"--model gpt-5.5 -c model_reasoning_effort=low\"
+CC_PROJECT=example
+CC_WORKTREE=1
+CC_EPHEMERAL=1
+CC_DIR=/tmp/project-worker
+",
+        )
+        .unwrap();
+        let (lifecycle, env) = project_worker_lifecycle(dir.path(), "project-worker");
+        let env = env.expect("env projection");
+        assert_eq!(lifecycle, "active");
+        assert_eq!(env["provider"], "codex");
+        assert_eq!(env["model"], "gpt-5.5");
+        assert_eq!(env["effort"], "low");
+    }
+
+    #[test]
+    fn project_worker_env_projects_review_hold_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(
+            dir.path().join("sessions/project-worker.env"),
+            "CC_PROVIDER=codex
+CC_PROJECT=example
+CC_REVIEW_HELD=1
+CC_DIR=/tmp/project-worker
+",
+        )
+        .unwrap();
+        let (lifecycle, env) = project_worker_lifecycle(dir.path(), "project-worker");
+        assert_eq!(lifecycle, "review");
+        assert_eq!(env.unwrap()["project"], "example");
     }
 
     #[test]

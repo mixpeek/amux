@@ -25,8 +25,8 @@ test.beforeEach(async ({page})=>{
   await page.route('**/api/board/orchestrations',r=>world.inventory==='fail'?r.fulfill({status:500,json:{error:'down'}}):r.fulfill({json:{measured:true,workers:world.expired.map(name=>({name,lifecycle:'expired'}))}}));
   allowUnusedRoute(page,'**/api/sessions');allowUnusedRoute(page,'**/api/board/orchestrations'); // read only when a worker is inspected
 });
-const open=async(page:any)=>{await page.goto('/');await page.locator('#tab-projects').click();await page.locator('#project-cards .project-card-select').first().waitFor();};
-const pick=async(page:any,id:string)=>{await page.locator('[data-task="'+id+'"] .project-card-select').click();};
+const open=async(page:any)=>{await page.goto('/');await page.locator('#tab-projects').click();await page.locator('#project-progress').waitFor();};
+const pick=async(page:any,id:string)=>{await page.locator('.project-tabs [data-project-tab="tasks"]').click();const card=page.locator('[data-task="'+id+'"] .project-card-select');await card.waitFor();await card.click();};
 const refreshed=async(page:any)=>{const t=await page.evaluate('_projectsToken') as number;await page.waitForFunction('_projectsToken>='+(t+2));};
 
 test('closed tasks are counted separately and never as verified',async ({page})=>{
@@ -41,7 +41,7 @@ test('whole-project acceptance is reviewable and human approval is bound to its 
   world.cards=[{id:'T-1',title:'verified output',phase:'verified',stage:'verified'}];
   const retained={source:{path:'demo.webm',sha256:'c'.repeat(64)},path:'/private/artifacts/project-reports/'+ 'c'.repeat(64)+'.webm'};
   world.acceptance={state:'awaiting_human',fingerprint:'f'.repeat(64),main:'a'.repeat(40),review_assets:[{task:'T-1',title:'verified output',worker:'px-a',asset:retained}],criteria:[
-    {id:'e2e',requirement:'Happy and unhappy paths pass',verifier:{type:'command',id:'e2e-suite'},result:{state:'passed',output:'14 scenarios passed',evidence:[]}},
+    {id:'e2e',requirement:'Happy and unhappy paths pass',verifier:{type:'execution',id:'e2e-suite'},result:{state:'passed',output:'14 scenarios passed',evidence:[],receipt:{run_id:'current-run',subject:{kind:'docker_image',id:'sha256:current'},stages:[{id:'build',state:'passed'},{id:'lifecycle',state:'passed'}]}}},
     {id:'owner',requirement:'Owner can inspect the demo',verifier:{type:'human',id:'owner-review'},result:{state:'pending_human',evidence:[]}},
   ]};
   await open(page);
@@ -51,6 +51,10 @@ test('whole-project acceptance is reviewable and human approval is bound to its 
   await expect(acceptance).toContainText('Produced artifacts to review');
   await expect(acceptance.getByRole('button',{name:'T-1 · demo.webm'})).toBeVisible();
   await expect(acceptance).toContainText('14 scenarios passed');
+  await expect(page.locator('.project-outcome')).toContainText('Fresh execution verified · 2 stages');
+  await expect(page.locator('.project-outcome')).toContainText('sha256:current');
+  await expect(acceptance).toContainText('Fresh execution proof');
+  await expect(acceptance).toContainText('current-run');
   await acceptance.getByRole('button',{name:'Approve'}).click();
   await expect.poll(()=>world.approval).toEqual({criterion:'owner',fingerprint:'f'.repeat(64),decision:'approve',note:''});
 });

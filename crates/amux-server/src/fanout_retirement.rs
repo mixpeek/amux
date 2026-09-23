@@ -341,11 +341,13 @@ async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), Stri
 }
 
 fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), String> {
-    let receipt = Path::new(&w.path).join(".amux/project-report.json");
-    match std::fs::remove_file(&receipt) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
+    for name in ["project-report.json", "project-wait.json"] {
+        let receipt = Path::new(&w.path).join(".amux").join(name);
+        match std::fs::remove_file(&receipt) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
     }
     let _ = std::fs::remove_dir(Path::new(&w.path).join(".amux"));
     Ok(())
@@ -606,7 +608,7 @@ mod tests {
             })).unwrap();
             store::save(c,"review-project",0,&policy,"test").map_err(store::sql_error)?;
             let p=store::get(c,"review-project").map_err(store::sql_error)?.unwrap();
-            acceptance::observe(c,&p,&head).map_err(store::sql_error)?;
+            acceptance::observe(c,&p,&head,&head,&[]).map_err(store::sql_error)?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         let fleet = TestFleet::default();

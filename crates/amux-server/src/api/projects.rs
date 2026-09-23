@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -16,33 +16,25 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list))
         .route("/{name}", get(detail).put(configure))
-        .route("/{name}/commands", axum::routing::post(command))
+        .route("/{name}/commands", post(command))
+        .route("/{name}/closeout", post(closeout))
         .route(
             "/{name}/legacy-receipts/{id}/cancel",
-            axum::routing::post(cancel_legacy_receipt),
+            post(cancel_legacy_receipt),
         )
-        .route(
-            "/{name}/commands/{id}/retry",
-            axum::routing::post(retry_intake),
-        )
-        .route("/{name}/tasks/{id}/report", axum::routing::post(report))
-        .route("/{name}/tasks/{id}/wait", axum::routing::post(wait))
+        .route("/{name}/commands/{id}/retry", post(retry_intake))
+        .route("/{name}/tasks/{id}/report", post(report))
+        .route("/{name}/tasks/{id}/wait", post(wait))
         .route(
             "/{name}/tasks/{id}/required-outputs",
-            axum::routing::post(required_outputs),
+            post(required_outputs),
         )
-        .route("/{name}/tasks/{id}/retry", axum::routing::post(retry))
-        .route(
-            "/{name}/acceptance/approve",
-            axum::routing::post(approve_acceptance),
-        )
-        .route(
-            "/{name}/acceptance/rerun",
-            axum::routing::post(rerun_acceptance),
-        )
-        .route("/{name}/migration/preview", axum::routing::post(preview))
-        .route("/{name}/migration/apply", axum::routing::post(migrate))
-        .route("/{name}/migration/rollback", axum::routing::post(rollback))
+        .route("/{name}/tasks/{id}/retry", post(retry))
+        .route("/{name}/acceptance/approve", post(approve_acceptance))
+        .route("/{name}/acceptance/rerun", post(rerun_acceptance))
+        .route("/{name}/migration/preview", post(preview))
+        .route("/{name}/migration/apply", post(migrate))
+        .route("/{name}/migration/rollback", post(rollback))
 }
 
 async fn approve_acceptance(
@@ -303,6 +295,146 @@ async fn configure(
         ),
     }
 }
+
+fn project_executor_workers(
+    conn: &rusqlite::Connection,
+    name: &str,
+) -> anyhow::Result<Vec<String>> {
+    let project = store::get(conn, name)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
+    let plans = crate::project_execution::planner::plan(conn, &project)?;
+    let mut workers = std::collections::BTreeSet::new();
+    for plan in plans {
+        let worker = plan.execution.worker.trim();
+        if !worker.is_empty() {
+            workers.insert(worker.to_string());
+        }
+    }
+    Ok(workers.into_iter().collect())
+}
+
+async fn closeout(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !operator(&headers) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "project closeout requires operator scope",
+        );
+    }
+    let project = name.clone();
+    let (project_policy, workers) = match state
+        .store
+        .read_async(move |c| {
+            let project = store::get(c, &project)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
+            let acceptance = crate::project_execution::acceptance::status(c, &project)?;
+            if acceptance.get("state").and_then(|v| v.as_str()) != Some("accepted") {
+                anyhow::bail!("project closeout requires accepted whole-project acceptance");
+            }
+            let plans = crate::project_execution::planner::plan(c, &project)?;
+            if plans.iter().any(|plan| !matches!(plan.phase, amux_core::project::Phase::Verified | amux_core::project::Phase::Closed)) {
+                anyhow::bail!("project closeout requires terminal project tasks");
+            }
+            Ok((project.clone(), project_executor_workers(c, &project.name)?))
+        })
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            return error(
+                if e.to_string() == "project not found" {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::CONFLICT
+                },
+                "project closeout requires accepted whole-project acceptance and terminal project tasks",
+            )
+        }
+    };
+    let published = match crate::project_execution::acceptance::publish_accepted_candidate(
+        &state,
+        &project_policy,
+    )
+    .await
+    {
+        Ok(published) => published,
+        Err(publish_error) => {
+            tracing::warn!(project=%name,error=%publish_error,measured=true,n_considered=1,verdict="project_closeout_publish_refused","accepted candidate was not published; workers and worktrees were preserved");
+            return error(StatusCode::CONFLICT, publish_error);
+        }
+    };
+    let home = crate::config::amux_home();
+    let fleet = crate::runtime_jobs::board_drive::LiveFleet::snapshot(state.clone()).await;
+    let mut results = Vec::new();
+    let mut started_integration = 0usize;
+    let mut expired = 0usize;
+    let mut review_held = 0usize;
+    let mut deferred = 0usize;
+    let mut errors = 0usize;
+    for worker in workers {
+        let before = crate::fanout_workspace::integration_status(&home, &worker);
+        let worker_head = before["head"].as_str().unwrap_or_default().to_string();
+        let published_contains_worker = !worker_head.is_empty()
+            && crate::fanout_workspace::git(
+                &project_policy.policy.repository,
+                &["merge-base", "--is-ancestor", &worker_head, &published],
+            )
+            .await
+            .is_ok();
+        if !published_contains_worker {
+            errors += 1;
+            results.push(json!({"worker":worker,"state":"error","error":"published project candidate does not contain the verified worker head","integration_started":false,"before":before}));
+            continue;
+        }
+        crate::fanout_workspace::write_integration_status(
+            &home,
+            &worker,
+            &json!({"status":"integrated","head":worker_head,"merged":published,"mode":before["mode"],"branch":before["branch"],"project":name,"approved_candidate":true}),
+        );
+        started_integration += 1;
+        let queued = true;
+        let outcome = crate::fanout_retirement::retire(&state, &fleet, &home, &worker).await;
+        let after = crate::fanout_workspace::integration_status(&home, &worker);
+        match outcome {
+            Ok(crate::fanout_retirement::Outcome::Expired) => {
+                expired += 1;
+                results.push(json!({"worker":worker,"state":"expired","integration_started":queued,"before":before,"after":after}));
+            }
+            Ok(crate::fanout_retirement::Outcome::ReviewHeld) => {
+                review_held += 1;
+                results.push(json!({"worker":worker,"state":"review_held","integration_started":queued,"before":before,"after":after}));
+            }
+            Ok(crate::fanout_retirement::Outcome::NeedsIntegration) => {
+                deferred += 1;
+                results.push(json!({"worker":worker,"state":"needs_integration","integration_started":queued,"before":before,"after":after}));
+            }
+            Ok(crate::fanout_retirement::Outcome::Deferred) => {
+                deferred += 1;
+                results.push(json!({"worker":worker,"state":"deferred","integration_started":queued,"before":before,"after":after}));
+            }
+            Err(error) => {
+                errors += 1;
+                results.push(json!({"worker":worker,"state":"error","error":error,"integration_started":queued,"before":before,"after":after}));
+            }
+        }
+    }
+    crate::api::sessions_legacy::invalidate_sessions_cache();
+    tracing::info!(project=%name,published,measured=true,n_considered=results.len(),expired,review_held,deferred,errors,started_integration,verdict="project_closeout_requested","operator published the accepted candidate and requested worker retirement closeout");
+    Json(json!({
+        "project": name,
+        "published": published,
+        "applied": expired > 0 || review_held > 0 || started_integration > 0,
+        "expired": expired,
+        "review_held": review_held,
+        "deferred": deferred,
+        "errors": errors,
+        "integration_started": started_integration,
+        "workers": results,
+    }))
+    .into_response()
+}
+
 async fn retry_intake(
     State(state): State<AppState>,
     Path((name, id)): Path<(String, i64)>,

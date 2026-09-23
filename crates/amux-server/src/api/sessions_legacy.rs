@@ -3976,7 +3976,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             env.get("CC_ARCHIVED").map(|v| v == "1").unwrap_or(false) || blocked.contains(&name);
         let paused = env.get("CC_PAUSED").map(|v| v == "1").unwrap_or(false);
         // One label rule with the peer-interaction gate (AMUX-4566).
-        let lifecycle = crate::api::session_verbs::lifecycle_label(archived, paused);
+        let lifecycle =
+            crate::api::session_verbs::lifecycle_label_with_review(archived, paused, review_held);
         let flags = env.get("CC_FLAGS").cloned().unwrap_or_default();
         let backend = env
             .get("CC_BACKEND")
@@ -4420,6 +4421,8 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         let mut doing_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut blocked_doing_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut epic_doing_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut project_groups: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for row in stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -4430,6 +4433,11 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         })? {
             let (sess, id, title, updated) = row?;
             let issue = crate::db::board_store::get_issue(conn, &id)?;
+            if let Some(project) = issue.as_ref().and_then(|row| row.project_group.as_deref()) {
+                if !project.trim().is_empty() {
+                    project_groups.insert(project.to_string());
+                }
+            }
             // Decomposition keeps the parent epic Doing while its children run.
             // Like board-drive's WIP/resume selection, runtime attribution must
             // treat that container as context, not a competing execution claim.
@@ -4447,6 +4455,52 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             *doing_counts.entry(sess.clone()).or_default() += 1;
             doing_by_id.insert(id.clone(), (sess.clone(), title.clone(), updated));
             doing.insert(sess, (id, title, updated));
+        }
+
+        let mut project_waiting: BTreeMap<String, (String, String, String, String)> =
+            BTreeMap::new();
+        for project_name in project_groups {
+            let Some(project) = crate::project_execution::store::get(conn, &project_name)
+                .map_err(crate::project_execution::store::sql_error)?
+            else {
+                continue;
+            };
+            let rows = crate::db::board_store::project_issues(conn, &project_name)?;
+            let titles: BTreeMap<String, String> = rows
+                .iter()
+                .map(|row| (row.id.clone(), row.title.clone()))
+                .collect();
+            let plans = crate::project_execution::planner::plan(conn, &project)
+                .map_err(crate::project_execution::store::sql_error)?;
+            for plan in plans {
+                let worker = plan.execution.worker.trim();
+                let Some(reason) = plan
+                    .waiting_reason
+                    .as_deref()
+                    .filter(|r| !r.trim().is_empty())
+                else {
+                    continue;
+                };
+                if worker.is_empty() {
+                    continue;
+                }
+                let label = plan
+                    .waiting_label
+                    .clone()
+                    .unwrap_or_else(|| "Project execution held".to_string());
+                project_waiting.insert(
+                    worker.to_string(),
+                    (
+                        plan.id.clone(),
+                        titles
+                            .get(&plan.id)
+                            .cloned()
+                            .unwrap_or_else(|| plan.id.clone()),
+                        label,
+                        reason.to_string(),
+                    ),
+                );
+            }
         }
 
         // Exact runtime attribution is a causal fact, not "whichever doing
@@ -4677,6 +4731,19 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             v["task_override_updated"] = json!(summary_ts);
             v["status"] = json!(truth.status);
             v["task_board_id"] = json!(truth.card_id);
+            if let Some((card_id, title, label, reason)) = project_waiting.get(&name) {
+                v["project_waiting_label"] = json!(label);
+                v["project_waiting_reason"] = json!(reason);
+                v["state_detail"] = json!(reason);
+                if !running && v["lifecycle"].as_str() == Some("active") {
+                    v["status"] = json!("waiting");
+                    v["waiting_reason"] = json!("project_execution");
+                    v["waiting_label"] = json!(label);
+                    v["task_name"] = json!(title);
+                    v["task_source"] = json!("project");
+                    v["task_board_id"] = json!(card_id);
+                }
+            }
             v["last_human_ts"] = json!(last_human_ts.get(&name).copied().unwrap_or(0));
             // AMUX-4879. Beside `status`, so `idle` is never read bare. 0 means
             // "this lane has never moved a card", which is a real answer and is

@@ -525,6 +525,28 @@ async fn async_main() {
     // whose absence is why the outage went unnoticed for hours.
     drop(runtime_jobs::board_drive::spawn(state.clone()));
 
+    // Project lifecycle driver. Projects have their own contract, retained
+    // evidence, verifier and main-integration gates; tying this to the legacy
+    // board sweeper meant a preview server could either stay reachable with
+    // board-drive disabled, or verify project work, but not both. Keep the
+    // modern project harness accountable on its own cadence.
+    {
+        let state = state.clone();
+        let secs = cfg
+            .env
+            .get("AMUX_PROJECT_EXECUTION_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(10);
+        drop(runtime_jobs::spawn_periodic(
+            jobs::ids::PROJECT_EXECUTION,
+            secs,
+            move || {
+                let state = state.clone();
+                async move { crate::project_execution::driver::tick(&state).await }
+            },
+        ));
+    }
+
     // Automatic accountability (AMUX-2990, Ethan: "the accountability shit needs
     // to be automatic"). Sweeps for lanes with human messages but no board card
     // and steers each to open one — server-side, so it reaches any group. One

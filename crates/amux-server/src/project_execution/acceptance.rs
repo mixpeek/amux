@@ -1,16 +1,17 @@
 //! Independent project acceptance.
 //!
-//! The operator's contract (`ExecutionPolicy::acceptance`) is judged on the CURRENT integrated main
-//! commit, never on a rollup of task states. All tasks Verified plus a failing contract is not
+//! The operator's contract (`ExecutionPolicy::acceptance`) is judged on one immutable project
+//! candidate assembled from the CURRENT remote main plus every verified task head. The candidate
+//! is not published until human approval. All tasks Verified plus a failing contract is not
 //! Accepted. Receipts are append-only `session_events` (session `project:<name>`):
 //!
-//! * `project.acceptance_observed`  the integrated main SHA the harness last saw
+//! * `project.acceptance_observed`  the base main, task heads and assembled candidate last seen
 //! * `project.acceptance`           one immutable evaluation: per-criterion command, result, evidence
 //! * `project.acceptance_approval`  operator approval or rejection of one human criterion
 //! * `project.acceptance_rerun`     operator request to run the same inputs again
 //!
 //! Current state is DERIVED from those receipts and the current inputs. A fingerprint over the
-//! contract revision, the project intent and the main SHA identifies one evaluation, so unchanged
+//! contract revision, the project intent and candidate SHA identifies one evaluation, so unchanged
 //! inputs never run a check twice, and any relevant change makes the old success stale while keeping
 //! it inspectable. No model is called anywhere in this module.
 use super::{planner, store};
@@ -257,7 +258,98 @@ fn observed_main(conn: &Connection, project: &str) -> anyhow::Result<Option<Valu
         .map(|(_, v)| v))
 }
 
-/// The fingerprint of the inputs as they stand now, when the integrated main SHA is known.
+fn verified_heads(conn: &Connection, project: &str) -> anyhow::Result<Vec<(String, String)>> {
+    let mut heads = Vec::new();
+    for row in bs::project_issues(conn, project)? {
+        if row.item_type == "epic"
+            || phase(&row.status, bs::has_execution_details(&row)) == Phase::Closed
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            phase(&row.status, bs::has_execution_details(&row)) == Phase::Verified,
+            "project task {} is not verified",
+            row.id
+        );
+        let execution = planner::execution(conn, &row.id)?;
+        let head = execution
+            .report
+            .as_ref()
+            .map(|report| report.head.trim())
+            .filter(|head| !head.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("verified task {} has no candidate head", row.id))?;
+        heads.push((row.id, head.to_string()));
+    }
+    heads.sort();
+    anyhow::ensure!(!heads.is_empty(), "project has no verified candidate heads");
+    Ok(heads)
+}
+
+async fn assemble_candidate(
+    p: &store::Project,
+    base_main: &str,
+    heads: &[(String, String)],
+) -> anyhow::Result<String> {
+    let repo = &p.policy.repository;
+    let temp = tempfile::Builder::new()
+        .prefix("amux-project-candidate-")
+        .tempdir()?;
+    let candidate = temp.path().join("candidate").to_string_lossy().into_owned();
+    workspace::git(
+        repo,
+        &["worktree", "add", "--detach", &candidate, base_main],
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    let outcome = async {
+        for (task, head) in heads {
+            workspace::git(repo, &["cat-file", "-e", &format!("{head}^{{commit}}")])
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("task {task} candidate {head} is unavailable: {error}")
+                })?;
+            if workspace::git(&candidate, &["merge-base", "--is-ancestor", head, "HEAD"])
+                .await
+                .is_ok()
+            {
+                continue;
+            }
+            workspace::git(&candidate, &["merge", "--no-ff", "--no-edit", head])
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "task {task} cannot be composed into the project candidate: {error}"
+                    )
+                })?;
+        }
+        let head = workspace::git(&candidate, &["rev-parse", "HEAD"])
+            .await
+            .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            workspace::project_clean_status(&candidate)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .is_empty(),
+            "project candidate assembly left a dirty checkout"
+        );
+        workspace::git(
+            repo,
+            &[
+                "update-ref",
+                &format!("refs/amux/projects/{}/candidate", sha(&p.name)),
+                &head,
+            ],
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+        Ok::<_, anyhow::Error>(head)
+    }
+    .await;
+    let _ = workspace::git(repo, &["worktree", "remove", "--force", &candidate]).await;
+    outcome
+}
+
+/// The fingerprint of the inputs as they stand now, when the assembled candidate SHA is known.
 pub fn current_fingerprint(
     conn: &Connection,
     p: &store::Project,
@@ -265,15 +357,18 @@ pub fn current_fingerprint(
     let Some(contract) = &p.policy.acceptance else {
         return Ok(None);
     };
-    let Some(main) =
-        observed_main(conn, &p.name)?.and_then(|o| o["main"].as_str().map(String::from))
-    else {
+    let Some(candidate) = observed_main(conn, &p.name)?.and_then(|o| {
+        o["candidate"]
+            .as_str()
+            .or_else(|| o["main"].as_str())
+            .map(String::from)
+    }) else {
         return Ok(None);
     };
     Ok(Some(fingerprint(
         &p.name,
         contract,
-        &main,
+        &candidate,
         &intent_revision(conn, &p.name)?,
     )))
 }
@@ -295,6 +390,7 @@ fn criteria_view(
             }
             let verifier = match &c.verifier {
                 ContractVerifier::Command { id, command, timeout_secs } => json!({"type":"command","id":id,"command":command,"timeout_secs":timeout_secs}),
+                ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages } => json!({"type":"execution","id":id,"command":command,"timeout_secs":timeout_secs,"receipt":receipt,"required_stages":required_stages}),
                 ContractVerifier::Human { id, instructions } => json!({"type":"human","id":id,"instructions":instructions}),
             };
             json!({"id":c.id,"requirement":c.requirement,"verifier":verifier,"evidence_required":c.evidence,"result":outcome})
@@ -313,15 +409,28 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
     };
     let intent = intent_revision(conn, &p.name)?;
     let is_settled = settled(conn, &p.name)?;
-    let main = observed_main(conn, &p.name)?.and_then(|o| o["main"].as_str().map(String::from));
-    let mut view = json!({"measured":true,"n_considered":contract.criteria.len(),"contract_revision":contract.revision,"intent":intent,"main":main,
+    let observed = observed_main(conn, &p.name)?;
+    let candidate = observed.as_ref().and_then(|o| {
+        o["candidate"]
+            .as_str()
+            .or_else(|| o["main"].as_str())
+            .map(String::from)
+    });
+    let base_main = observed
+        .as_ref()
+        .and_then(|o| o["base_main"].as_str().map(String::from));
+    let heads = observed
+        .as_ref()
+        .and_then(|o| o["heads"].as_array().cloned())
+        .unwrap_or_default();
+    let mut view = json!({"measured":true,"n_considered":contract.criteria.len(),"contract_revision":contract.revision,"intent":intent,"main":base_main,"candidate":candidate,"task_heads":heads,
         "review_assets":review_assets(conn,&p.name,None)?,
         "criteria":criteria_view(contract, None, &HashMap::new())});
     let pending = |view: &mut Value, reason: &str| {
         view["state"] = json!("pending");
         view["reason"] = json!(reason);
     };
-    let Some(main) = main else {
+    let Some(candidate) = candidate else {
         pending(
             &mut view,
             if is_settled {
@@ -332,7 +441,7 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         );
         return Ok(view);
     };
-    let fp = fingerprint(&p.name, contract, &main, &intent);
+    let fp = fingerprint(&p.name, contract, &candidate, &intent);
     view["fingerprint"] = json!(fp);
     let rerun = events(conn, &p.name, "project.acceptance_rerun", Some(&fp))?
         .last()
@@ -375,7 +484,7 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
     }
     view["criteria"] = json!(criteria_view(contract, Some(result), &approvals));
     view["review_assets"] = json!(review_assets(conn, &p.name, Some(result))?);
-    view["evaluated_main"] = result["main"].clone();
+    view["evaluated_candidate"] = result["main"].clone();
     view["finished"] = result["finished"].clone();
     let humans: Vec<&str> = contract
         .criteria
@@ -429,8 +538,15 @@ fn runnable(conn: &Connection, project: &str, fp: &str) -> anyhow::Result<bool> 
     Ok(live.len() < MAX_OPERATIONAL_ATTEMPTS)
 }
 
-/// Record the integrated main SHA the harness observed. Idempotent for an unchanged SHA.
-pub fn observe(conn: &Connection, p: &store::Project, main: &str) -> anyhow::Result<WriteOutcome> {
+/// Record the exact unpublished candidate assembled from a base main plus verified task heads.
+/// Idempotent while all three identities are unchanged.
+pub fn observe(
+    conn: &Connection,
+    p: &store::Project,
+    base_main: &str,
+    candidate: &str,
+    heads: &[(String, String)],
+) -> anyhow::Result<WriteOutcome> {
     let Some(contract) = &p.policy.acceptance else {
         return Ok(WriteOutcome {
             applied: false,
@@ -439,7 +555,9 @@ pub fn observe(conn: &Connection, p: &store::Project, main: &str) -> anyhow::Res
     };
     let intent = intent_revision(conn, &p.name)?;
     if let Some(last) = observed_main(conn, &p.name)? {
-        if last["main"] == main
+        if last["candidate"] == candidate
+            && last["base_main"] == base_main
+            && last["heads"] == json!(heads)
             && last["intent"] == json!(intent)
             && last["contract_revision"] == json!(contract.revision)
         {
@@ -453,10 +571,10 @@ pub fn observe(conn: &Connection, p: &store::Project, main: &str) -> anyhow::Res
         conn,
         &p.name,
         "project.acceptance_observed",
-        &json!({"main":main,"intent":intent,"contract_revision":contract.revision}),
+        &json!({"main":candidate,"candidate":candidate,"base_main":base_main,"heads":heads,"intent":intent,"contract_revision":contract.revision}),
         "harness",
     )?;
-    tracing::info!(project = %p.name, main, measured = true, n_considered = 1, verdict = "project.acceptance_observed", "integrated main observed for acceptance");
+    tracing::info!(project = %p.name, base_main, candidate, task_heads=heads.len(), measured = true, n_considered = heads.len(), verdict = "project.acceptance_observed", "unpublished project candidate assembled for acceptance");
     Ok(changed(&p.name, "observed"))
 }
 
@@ -503,7 +621,7 @@ pub fn record(
 #[serde(deny_unknown_fields)]
 pub struct Approval {
     pub criterion: String,
-    /// The fingerprint the operator reviewed. It binds the decision to the exact contract, intent and main SHA.
+    /// The fingerprint the operator reviewed. It binds the decision to the exact contract, intent and candidate SHA.
     pub fingerprint: String,
     pub decision: String,
     #[serde(default)]
@@ -641,8 +759,10 @@ pub fn contract_binding(
         let criterion = contract
             .criterion(id)
             .ok_or_else(|| anyhow::anyhow!("contract:{id} is not an approved criterion"))?;
-        let ContractVerifier::Command { command, .. } = &criterion.verifier else {
-            anyhow::bail!("contract:{id} is a human criterion; it is approved at project acceptance, never by a task report");
+        let command = match &criterion.verifier {
+            ContractVerifier::Command { command, .. }
+            | ContractVerifier::Execution { command, .. } => command,
+            ContractVerifier::Human { .. } => anyhow::bail!("contract:{id} is a human criterion; it is approved at project acceptance, never by a task report"),
         };
         let checks: Vec<_> = report
             .checks
@@ -703,7 +823,14 @@ pub fn catalogue(contract: &AcceptanceContract) -> String {
             } else {
                 format!("; required evidence assets: {}", c.evidence.join(", "))
             };
-            format!("contract:{} = {}{}", c.id, c.requirement, evidence)
+            let proof = match &c.verifier {
+                ContractVerifier::Execution { receipt, required_stages, .. } => format!(
+                    "; runtime proof: a fresh candidate-bound receipt at {receipt} with passed stages {}",
+                    required_stages.join(", ")
+                ),
+                _ => String::new(),
+            };
+            format!("contract:{} = {}{}{}", c.id, c.requirement, proof, evidence)
         })
         .collect();
     if lines.is_empty() {
@@ -717,26 +844,121 @@ async fn retain_evidence(
     candidate: &str,
     main: &str,
     paths: &[String],
+    generated_receipt: Option<&str>,
 ) -> anyhow::Result<Vec<Value>> {
     if paths.is_empty() {
         return Ok(vec![]);
     }
     let mut assets = Vec::new();
-    for path in paths {
+    for path in paths
+        .iter()
+        .filter(|path| generated_receipt != Some(path.as_str()))
+    {
         let bytes = std::fs::read(std::path::Path::new(candidate).join(path))?;
         assets.push(super::assets::Asset {
             path: path.clone(),
             sha256: hex::encode(Sha256::digest(&bytes)),
         });
     }
-    let report = planner::Report {
-        assets,
-        head: main.into(),
-        checks: vec![],
-        summary: String::new(),
+    let mut retained = if assets.is_empty() {
+        vec![]
+    } else {
+        let report = planner::Report {
+            assets,
+            head: main.into(),
+            checks: vec![],
+            summary: String::new(),
+        };
+        super::assets::retain(home, std::path::Path::new(candidate), &report).await?
     };
-    let retained = super::assets::retain(home, std::path::Path::new(candidate), &report).await?;
+    if let Some(path) = generated_receipt {
+        retained.push(
+            super::assets::retain_generated_json(home, std::path::Path::new(candidate), main, path)
+                .await?,
+        );
+    }
     Ok(retained.iter().map(|r| json!(r)).collect())
+}
+
+fn validate_execution_receipt(
+    path: &std::path::Path,
+    run_id: &str,
+    main: &str,
+    invocation_started: f64,
+    invocation_finished: f64,
+    required_stages: &[String],
+) -> anyhow::Result<Value> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("fresh execution receipt was not produced: {e}"))?;
+    let receipt: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("execution receipt is not valid JSON: {e}"))?;
+    anyhow::ensure!(
+        receipt["schema"] == "amux.execution_receipt.v1",
+        "execution receipt schema must be amux.execution_receipt.v1"
+    );
+    anyhow::ensure!(
+        receipt["run_id"] == run_id,
+        "execution receipt belongs to a different invocation"
+    );
+    anyhow::ensure!(
+        receipt["candidate_sha"] == main,
+        "execution receipt belongs to a different candidate commit"
+    );
+    anyhow::ensure!(
+        receipt["state"] == "passed",
+        "execution receipt state is not passed"
+    );
+    let began = receipt["started_at"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("execution receipt started_at must be a Unix timestamp"))?;
+    let finished = receipt["finished_at"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("execution receipt finished_at must be a Unix timestamp"))?;
+    anyhow::ensure!(
+        began >= invocation_started - 1.0
+            && began <= finished
+            && finished <= invocation_finished + 1.0,
+        "execution receipt timestamps are outside this verifier invocation"
+    );
+    let subject = receipt["subject"]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("execution receipt needs a subject object"))?;
+    anyhow::ensure!(
+        subject
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty())
+            && subject
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty()),
+        "execution receipt subject needs non-empty kind and id"
+    );
+    let stages = receipt["stages"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("execution receipt needs a stages array"))?;
+    for required in required_stages {
+        let matching: Vec<_> = stages
+            .iter()
+            .filter(|stage| stage["id"] == required.as_str())
+            .collect();
+        anyhow::ensure!(
+            matching.len() == 1,
+            "required execution stage {required} must occur exactly once"
+        );
+        let stage = matching[0];
+        anyhow::ensure!(
+            stage["state"] == "passed",
+            "required execution stage {required} did not pass"
+        );
+        anyhow::ensure!(
+            stage["evidence"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "required execution stage {required} has no machine-readable evidence"
+        );
+    }
+    Ok(receipt)
 }
 
 /// Run the approved command criteria in a throwaway checkout of `main`. Returns None if the run was
@@ -782,14 +1004,18 @@ async fn run(
     let outcome = async {
         let mut results = Vec::new();
         for c in &contract.criteria {
-            let ContractVerifier::Command { id, command, timeout_secs } = &c.verifier else {
-                match retain_evidence(&home, &candidate, main, &c.evidence).await {
-                    Ok(evidence) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"pending_human","evidence":evidence})),
-                    Err(error) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"failed","evidence_error":error.to_string()})),
+            let (id, command, timeout_secs, execution) = match &c.verifier {
+                ContractVerifier::Command { id, command, timeout_secs } => (id, command, timeout_secs, None),
+                ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages } => (id, command, timeout_secs, Some((receipt, required_stages))),
+                ContractVerifier::Human { .. } => {
+                    match retain_evidence(&home, &candidate, main, &c.evidence, None).await {
+                        Ok(evidence) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"pending_human","evidence":evidence})),
+                        Err(error) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"failed","evidence_error":error.to_string()})),
+                    }
+                    continue;
                 }
-                continue;
             };
-            let base = json!({"criterion":c.id,"verifier":id,"type":"command","command":command});
+            let base = json!({"criterion":c.id,"verifier":id,"type":if execution.is_some(){"execution"}else{"command"},"command":command});
             let with = |state: &str, extra: Value| {
                 let mut r = base.clone();
                 r["state"] = json!(state);
@@ -802,9 +1028,26 @@ async fn run(
                 results.push(with("operational", json!({"output": tail(&e, 4000)})));
                 continue;
             }
+            if let Some((receipt, _)) = execution {
+                if std::path::Path::new(&candidate).join(receipt).exists() {
+                    tracing::warn!(project=%p.name, criterion=%c.id, receipt, measured=true, n_considered=1, verdict="project.execution_receipt_preexisting", "execution verifier refused a receipt already present before this invocation");
+                    results.push(with("failed", json!({"receipt_error":"execution receipt already existed before this invocation; historical proof cannot satisfy a runtime gate"})));
+                    continue;
+                }
+            }
             let timeout = Duration::from_secs(timeout_secs.unwrap_or(p.policy.verification_timeout_secs));
             let mut cmd = tokio::process::Command::new("sh");
-            cmd.args(["-c", command]).current_dir(&candidate).env("AMUX_SESSION", format!("acceptance-{}", p.name));
+            let run_id = format!("{}-{}-{}", p.name, std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+            cmd.args(["-c", command])
+                .current_dir(&candidate)
+                .env("AMUX_SESSION", format!("acceptance-{}", p.name))
+                .env("AMUX_ACCEPTANCE_RUN_ID", &run_id)
+                .env("AMUX_ACCEPTANCE_MAIN", main)
+                .env("AMUX_ACCEPTANCE_STARTED_AT", format!("{started:.6}"))
+                .env("AMUX_ACCEPTANCE_CANDIDATE", &candidate);
+            if let Some((receipt, _)) = execution {
+                cmd.env("AMUX_ACCEPTANCE_RECEIPT", receipt);
+            }
             let began = Instant::now();
             let ran = workspace::checked_command(cmd, &permit, timeout).await;
             let elapsed_ms = began.elapsed().as_millis() as u64;
@@ -817,9 +1060,33 @@ async fn run(
                     } else if !status.success() {
                         results.push(with("failed", json!({"exit":status.code(),"output":tail(&output,4000),"elapsed_ms":elapsed_ms})));
                     } else {
-                        match retain_evidence(&home, &candidate, main, &c.evidence).await {
-                            Ok(evidence) => results.push(with("passed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence}))),
-                            Err(e) => results.push(with("failed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence_error":e.to_string()}))),
+                        let finished = crate::config::now_f64();
+                        let receipt = execution.map(|(path, stages)| {
+                            validate_execution_receipt(
+                                &std::path::Path::new(&candidate).join(path),
+                                &run_id,
+                                main,
+                                started,
+                                finished,
+                                stages,
+                            )
+                        });
+                        let retained = retain_evidence(
+                            &home,
+                            &candidate,
+                            main,
+                            &c.evidence,
+                            execution.map(|(path, _)| path.as_str()),
+                        )
+                        .await;
+                        match (receipt, retained) {
+                            (Some(Err(error)), evidence) => {
+                                tracing::warn!(project=%p.name, criterion=%c.id, %error, measured=true, n_considered=1, verdict="project.execution_receipt_rejected", "runtime acceptance proof rejected");
+                                results.push(with("failed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"receipt_error":error.to_string(),"evidence":evidence.unwrap_or_default()})));
+                            }
+                            (Some(Ok(receipt)), Ok(evidence)) => results.push(with("passed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence,"receipt":receipt}))),
+                            (None, Ok(evidence)) => results.push(with("passed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence}))),
+                            (_, Err(e)) => results.push(with("failed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence_error":e.to_string()}))),
                         }
                     }
                 }
@@ -855,8 +1122,8 @@ fn observed_at() -> &'static Mutex<HashMap<String, Instant>> {
 }
 
 /// Called from the project driver's existing tick. Cheap unless the project is settled and the
-/// current inputs have not been evaluated: then it observes main at most every 30 seconds, runs the
-/// approved commands once per fingerprint, and records one immutable receipt.
+/// current inputs have not been evaluated: then it composes a candidate at most every 30 seconds,
+/// runs the approved commands once per fingerprint, and records one immutable receipt.
 pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result<()> {
     let Some(contract) = p.policy.acceptance.clone() else {
         return Ok(());
@@ -865,11 +1132,12 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
         return Ok(());
     }
     let name = p.name.clone();
-    let (settled, intent, seen) = {
+    let (settled, intent, heads, seen) = {
         let c = state.store.read()?;
         (
             settled(&c, &name)?,
             intent_revision(&c, &name)?,
+            verified_heads(&c, &name)?,
             observed_main(&c, &name)?,
         )
     };
@@ -877,7 +1145,9 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
         return Ok(());
     }
     let stale = seen.as_ref().is_none_or(|o| {
-        o["intent"] != json!(intent) || o["contract_revision"] != json!(contract.revision)
+        o["intent"] != json!(intent)
+            || o["contract_revision"] != json!(contract.revision)
+            || o["heads"] != json!(heads)
     });
     let due = observed_at()
         .lock()
@@ -896,36 +1166,58 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
         }
         .await;
         match observed {
-            Ok(main) => {
-                let (project, main_sha) = (p.clone(), main);
-                state
-                    .store
-                    .write_async(move |c| observe(c, &project, &main_sha).map_err(store::sql_error))
-                    .await?;
+            Ok(base_main) => {
+                let unchanged = seen.as_ref().is_some_and(|o| {
+                    o["base_main"] == json!(base_main)
+                        && o["heads"] == json!(heads)
+                        && o["intent"] == json!(intent)
+                        && o["contract_revision"] == json!(contract.revision)
+                });
+                if !unchanged {
+                    let candidate = assemble_candidate(p, &base_main, &heads).await?;
+                    let (project, base, composed, task_heads) =
+                        (p.clone(), base_main, candidate, heads.clone());
+                    state
+                        .store
+                        .write_async(move |c| {
+                            observe(c, &project, &base, &composed, &task_heads)
+                                .map_err(store::sql_error)
+                        })
+                        .await?;
+                }
             }
             Err(error) => {
-                tracing::warn!(project = %name, %error, measured = false, n_considered = 0, verdict = "project.acceptance_observe_failed", "integrated main could not be read; acceptance stays pending");
+                tracing::warn!(project = %name, %error, measured = false, n_considered = 0, verdict = "project.acceptance_observe_failed", "base main could not be read; candidate assembly and acceptance stay pending");
                 return Ok(());
             }
         }
     }
-    let (fp, main, runnable) = {
+    let (fp, candidate, base_main, runnable) = {
         let c = state.store.read()?;
         let Some(fp) = current_fingerprint(&c, p)? else {
             return Ok(());
         };
-        let main = observed_main(&c, &name)?
-            .and_then(|o| o["main"].as_str().map(String::from))
-            .unwrap_or_default();
+        let observed = observed_main(&c, &name)?.unwrap_or(Value::Null);
+        let candidate = observed["candidate"]
+            .as_str()
+            .or_else(|| observed["main"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        let base_main = observed["base_main"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let runnable = runnable(&c, &name, &fp)?;
-        (fp, main, runnable)
+        (fp, candidate, base_main, runnable)
     };
     if !runnable {
         return Ok(());
     }
-    let Some(result) = run(state, p, &contract, &main, &intent, &fp).await? else {
+    let Some(mut result) = run(state, p, &contract, &candidate, &intent, &fp).await? else {
         return Ok(());
     };
+    result["candidate"] = json!(candidate);
+    result["base_main"] = json!(base_main);
     // Commands can be long-running. Refresh the remote ref after them so an evaluation can never
     // be accepted for a commit that stopped being current while checks were running.
     workspace::git(&p.policy.repository, &["fetch", "origin", "main"])
@@ -934,14 +1226,8 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
     let after = workspace::git(&p.policy.repository, &["rev-parse", "origin/main"])
         .await
         .map_err(anyhow::Error::msg)?;
-    if after != main {
-        let project = p.clone();
-        let recorded_after = after.clone();
-        state
-            .store
-            .write_async(move |c| observe(c, &project, &recorded_after).map_err(store::sql_error))
-            .await?;
-        tracing::info!(project=%name, before=%main, after=%after, measured=true, n_considered=1, verdict="project.acceptance_main_advanced", "acceptance result discarded because integrated main advanced during evaluation");
+    if after != base_main {
+        tracing::info!(project=%name, before=%base_main, after=%after, measured=true, n_considered=1, verdict="project.acceptance_main_advanced", "acceptance result discarded because main advanced during evaluation; the next tick will rebuild the candidate");
         return Ok(());
     }
     let (project, contract_w, intent_w) = (name.clone(), contract.clone(), intent.clone());
@@ -954,9 +1240,309 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
     Ok(())
 }
 
+/// Publish exactly the candidate a human accepted. A changed main ref never receives a blind
+/// merge: the project must be re-composed and re-reviewed against the new base instead.
+pub(crate) async fn publish_accepted_candidate(
+    state: &AppState,
+    p: &store::Project,
+) -> anyhow::Result<String> {
+    let view = {
+        let conn = state.store.read()?;
+        status(&conn, p)?
+    };
+    anyhow::ensure!(
+        view["state"] == "accepted",
+        "project acceptance is not approved"
+    );
+    let candidate = view["candidate"]
+        .as_str()
+        .or_else(|| view["evaluated_candidate"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("accepted project has no candidate commit"))?;
+    let base_main = view["main"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("accepted project has no base main commit"))?;
+    workspace::git(&p.policy.repository, &["fetch", "origin", "main"])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let current = workspace::git(&p.policy.repository, &["rev-parse", "origin/main"])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    if workspace::git(
+        &p.policy.repository,
+        &["merge-base", "--is-ancestor", candidate, &current],
+    )
+    .await
+    .is_ok()
+    {
+        return Ok(current);
+    }
+    anyhow::ensure!(
+        current == base_main,
+        "main advanced after review; rebuild and review the project candidate again"
+    );
+    workspace::git(
+        &p.policy.repository,
+        &["push", "origin", &format!("{candidate}:refs/heads/main")],
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    workspace::git(&p.policy.repository, &["fetch", "origin", "main"])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let published = workspace::git(&p.policy.repository, &["rev-parse", "origin/main"])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    workspace::git(
+        &p.policy.repository,
+        &["merge-base", "--is-ancestor", candidate, &published],
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    tracing::info!(project=%p.name, candidate, published, measured=true, n_considered=1, verdict="project.accepted_candidate_published", "human-approved project candidate published to main");
+    Ok(published)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_receipt_is_fresh_candidate_bound_and_stage_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipt.json");
+        let base = json!({
+            "schema":"amux.execution_receipt.v1",
+            "run_id":"run-current",
+            "candidate_sha":"main-current",
+            "state":"passed",
+            "started_at":100.0,
+            "finished_at":110.0,
+            "subject":{"kind":"docker_image","id":"sha256:current"},
+            "stages":[
+                {"id":"image-build","state":"passed","evidence":[{"digest":"sha256:current"}]},
+                {"id":"api-lifecycle","state":"passed","evidence":[{"objects":100}]},
+                {"id":"network-isolation","state":"passed","evidence":[{"network":"none"}]}
+            ]
+        });
+        std::fs::write(&path, serde_json::to_vec(&base).unwrap()).unwrap();
+        let required = vec![
+            "image-build".into(),
+            "api-lifecycle".into(),
+            "network-isolation".into(),
+        ];
+        assert!(validate_execution_receipt(
+            &path,
+            "run-current",
+            "main-current",
+            99.0,
+            111.0,
+            &required
+        )
+        .is_ok());
+
+        let rejected = |receipt: Value, expected: &str| {
+            std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+            let error = validate_execution_receipt(
+                &path,
+                "run-current",
+                "main-current",
+                99.0,
+                111.0,
+                &required,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(expected), "{error}");
+        };
+        let mut historical = base.clone();
+        historical["run_id"] = json!("old-run");
+        rejected(historical, "different invocation");
+        let mut wrong_candidate = base.clone();
+        wrong_candidate["candidate_sha"] = json!("main-old");
+        rejected(wrong_candidate, "different candidate");
+        let mut failed_stage = base.clone();
+        failed_stage["stages"][1]["state"] = json!("failed");
+        rejected(failed_stage, "api-lifecycle did not pass");
+        let mut prose_only = base;
+        prose_only["stages"][1]["evidence"] = json!([]);
+        rejected(prose_only, "no machine-readable evidence");
+    }
+
+    #[tokio::test]
+    async fn project_candidate_composes_every_verified_worker_head_without_touching_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Candidate Test"]);
+        git(&["config", "user.email", "candidate@example.invalid"]);
+        git(&["config", "core.hooksPath", "/dev/null"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "base"]);
+        git(&["branch", "-M", "main"]);
+        let base = git(&["rev-parse", "HEAD"]);
+
+        git(&["checkout", "-q", "-b", "worker-a"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-m", "worker a"]);
+        let a = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["checkout", "-q", "-b", "worker-b"]);
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        git(&["add", "b.txt"]);
+        git(&["commit", "-m", "worker b"]);
+        let b = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+
+        let project = store::Project {
+            name: "compose-two".into(),
+            revision: 1,
+            policy: serde_json::from_value(json!({
+                "repository": repo,
+                "coordinator":{"provider":"codex","model":"gpt-5.5","effort":"low"},
+                "executor":{"provider":"codex","model":"gpt-5.5","effort":"low"},
+                "verify_command":"true"
+            }))
+            .unwrap(),
+        };
+        let candidate = assemble_candidate(
+            &project,
+            &base,
+            &[("T-1".into(), a.clone()), ("T-2".into(), b.clone())],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            git(&["rev-parse", "main"]),
+            base,
+            "assembly cannot move main"
+        );
+        for head in [&a, &b] {
+            assert!(git(&["merge-base", "--is-ancestor", head, &candidate]).is_empty());
+        }
+        assert_eq!(git(&["show", &format!("{candidate}:a.txt")]), "a");
+        assert_eq!(git(&["show", &format!("{candidate}:b.txt")]), "b");
+    }
+
+    #[tokio::test]
+    async fn execution_verifier_runs_fresh_and_retains_candidate_bound_proof() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(repo.join("scripts")).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Acceptance Test"]);
+        git(&["config", "user.email", "acceptance@example.invalid"]);
+        git(&["config", "core.hooksPath", "/dev/null"]);
+        std::fs::write(
+            repo.join("scripts/prove.py"),
+            r#"import json, os, pathlib, time
+path = pathlib.Path(os.environ["AMUX_ACCEPTANCE_RECEIPT"])
+path.parent.mkdir(parents=True, exist_ok=True)
+now = time.time()
+path.write_text(json.dumps({
+  "schema": "amux.execution_receipt.v1",
+  "run_id": os.environ["AMUX_ACCEPTANCE_RUN_ID"],
+  "candidate_sha": os.environ["AMUX_ACCEPTANCE_MAIN"],
+  "state": "passed",
+  "started_at": now,
+  "finished_at": now,
+  "subject": {"kind": "docker_image", "id": "sha256:fresh"},
+  "stages": [{"id": "api-lifecycle", "state": "passed", "evidence": [{"objects": 100}]}]
+}))
+"#,
+        )
+        .unwrap();
+        std::fs::write(repo.join("README.md"), "# fixture\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "fixture"]);
+        git(&["branch", "-M", "main"]);
+        let main = git(&["rev-parse", "HEAD"]);
+
+        let contract = contract(json!({"criteria":[{
+            "id":"lifecycle",
+            "requirement":"Full lifecycle passes in a running image",
+            "verifier":{"type":"execution","id":"fresh-run","command":"python3 scripts/prove.py","receipt":"artifacts/execution.json","required_stages":["api-lifecycle"]},
+            "evidence":["artifacts/execution.json"]
+        }]}));
+        let store = crate::db::Store::open(&home.path().join("amux.db")).unwrap();
+        let repository = repo.to_string_lossy().into_owned();
+        let contract_for_policy = contract.clone();
+        store
+            .write(move |c| {
+                let mut policy: amux_core::project::ExecutionPolicy = serde_json::from_value(json!({
+                    "repository": repository,
+                    "coordinator":{"provider":"codex","model":"gpt-5.5","effort":"low"},
+                    "executor":{"provider":"codex","model":"gpt-5.5","effort":"low"},
+                    "verify_command":"true",
+                    "enabled":true
+                }))
+                .unwrap();
+                policy.acceptance = Some(contract_for_policy);
+                store::save(c, "receipt-project", 0, &policy, "test").map_err(store::sql_error)?;
+                c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES('T-1','runtime outcome','verified','code','receipt-project',1,1,'retain proof','[\"contract:lifecycle\"]')", [])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let project = store::get(&state.store.read().unwrap(), "receipt-project")
+            .unwrap()
+            .unwrap();
+        let contract = project.policy.acceptance.clone().unwrap();
+        let intent = intent_revision(&state.store.read().unwrap(), "receipt-project").unwrap();
+        let result = run(&state, &project, &contract, &main, &intent, "fingerprint")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["state"], "accepted", "{result:#}");
+        assert_eq!(result["results"][0]["receipt"]["candidate_sha"], main);
+        assert_eq!(
+            result["results"][0]["receipt"]["subject"]["id"],
+            "sha256:fresh"
+        );
+        let retained = result["results"][0]["evidence"][0]["path"]
+            .as_str()
+            .unwrap();
+        assert!(std::path::Path::new(retained).is_file(), "{retained}");
+    }
 
     fn contract(v: Value) -> AcceptanceContract {
         serde_json::from_value(v).unwrap()
@@ -1148,8 +1734,8 @@ mod tests {
             assert_eq!((s["state"].as_str(), s["reason"].as_str()), (Some("pending"), Some("waiting_for_main_observation")));
             assert!(settled(c, "p").unwrap());
             // Observe main; still pending (not yet evaluated), and idempotent for the same SHA.
-            assert!(observe(c, &p, "main1").unwrap().applied);
-            assert!(!observe(c, &p, "main1").unwrap().applied);
+            assert!(observe(c, &p, "base1", "main1", &[]).unwrap().applied);
+            assert!(!observe(c, &p, "base1", "main1", &[]).unwrap().applied);
             let s = status(c, &p).unwrap();
             assert_eq!(s["reason"], "not_yet_evaluated");
             let fp = s["fingerprint"].as_str().unwrap().to_string();
@@ -1190,8 +1776,8 @@ mod tests {
             assert_eq!(s["previous"]["state"], "awaiting_human");
             assert!(s["fingerprint"] != json!(fp));
             c.execute("UPDATE issues SET status='verified' WHERE id='T-2'", []).unwrap();
-            // A new integrated commit is a new fingerprint too.
-            observe(c, &p, "main2").unwrap();
+            // A new composed candidate is a new fingerprint too.
+            observe(c, &p, "base2", "main2", &[]).unwrap();
             assert_ne!(status(c, &p).unwrap()["fingerprint"], json!(fp));
             // A stale result computed for old intent is discarded by compare-and-write.
             let stale = result(&fp, "accepted", &contract, "main1", &intent, json!([]));
@@ -1210,7 +1796,7 @@ mod tests {
             let p = project(c, Some(two()));
             let contract = p.policy.acceptance.clone().unwrap();
             verified(c, "T-1");
-            observe(c, &p, "main1").unwrap();
+            observe(c, &p, "base1", "main1", &[]).unwrap();
             let s = status(c, &p).unwrap();
             let fp = s["fingerprint"].as_str().unwrap().to_string();
             let intent = intent_revision(c, "p").unwrap();
@@ -1254,7 +1840,7 @@ mod tests {
             let p = project(c, Some(two()));
             let contract = p.policy.acceptance.clone().unwrap();
             verified(c, "T-1");
-            observe(c, &p, "main1").unwrap();
+            observe(c, &p, "base1", "main1", &[]).unwrap();
             let fp = status(c, &p).unwrap()["fingerprint"]
                 .as_str()
                 .unwrap()
@@ -1327,7 +1913,7 @@ mod tests {
             let p = project(c, Some(two()));
             let contract = p.policy.acceptance.clone().unwrap();
             verified(c, "T-1");
-            observe(c, &p, "main1").unwrap();
+            observe(c, &p, "base1", "main1", &[]).unwrap();
             let fp = status(c, &p).unwrap()["fingerprint"]
                 .as_str()
                 .unwrap()

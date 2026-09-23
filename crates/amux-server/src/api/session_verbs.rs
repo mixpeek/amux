@@ -8060,6 +8060,28 @@ pub fn is_collapsed_paste(pending: &str) -> bool {
     re.is_match(pending)
 }
 
+fn send_tail_squashed(text: &str) -> String {
+    text.trim()
+        .chars()
+        .rev()
+        .take(16)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>()
+        .split_whitespace()
+        .collect()
+}
+
+fn project_execution_composer_owns_text(raw: &str, text: &str) -> bool {
+    let state = composer_state(raw);
+    let Some(pending) = state.typed() else {
+        return false;
+    };
+    let tail = send_tail_squashed(text);
+    !tail.is_empty() && pending.contains(&tail)
+}
+
 /// Codex's model/path line is footer chrome, not a continuation of the input.
 ///
 /// The current TUI draws no box rule between its composer and this footer, so
@@ -8083,13 +8105,28 @@ fn codex_model_footer_chrome(raw: &str, stripped: &str) -> bool {
 
     let (plain, dim) = dim_mask(raw);
     let plain_squashed: String = plain.split_whitespace().collect();
-    let expected_plain: String = format!("{identity}{location}").split_whitespace().collect();
     let dim_squashed: String = dim.split_whitespace().collect();
-    let expected_dim: String = std::iter::once("\u{b7}")
+
+    // Older Codex builds dimmed the optional task/branch segment after the
+    // second middle dot, so the plain text was only `model + path` and the dim
+    // stream was `· · task`. Current builds colour the task segment normally and
+    // dim only the separators. Both are footer chrome beside an empty Codex
+    // prompt; neither is a human draft continuation.
+    let old_plain: String = format!("{identity}{location}").split_whitespace().collect();
+    let old_dim: String = std::iter::once("\u{b7}")
         .chain(parts.iter().skip(2).flat_map(|part| ["\u{b7}", *part]))
         .flat_map(str::split_whitespace)
         .collect();
-    dim_squashed == expected_dim && plain_squashed == expected_plain
+    let all_plain: String = parts
+        .iter()
+        .flat_map(|part| part.split_whitespace())
+        .collect();
+    let separator_dim: String = std::iter::repeat_n("\u{b7}", parts.len().saturating_sub(1))
+        .flat_map(str::split_whitespace)
+        .collect();
+
+    (dim_squashed == old_dim && plain_squashed == old_plain)
+        || (dim_squashed == separator_dim && plain_squashed == all_plain)
 }
 
 /// A broad diagnostic only: a path-bearing middle-dot row near the composer
@@ -8106,6 +8143,13 @@ fn possible_codex_footer_chrome(raw: &str) -> bool {
             .skip(1)
             .any(|part| *part == "~" || part.starts_with("~/") || part.starts_with('/'))
         && !codex_model_footer_chrome(raw, &stripped)
+}
+
+pub(crate) fn codex_conversation_open_elsewhere(raw: &str) -> bool {
+    let clean = strip_ansi(raw);
+    clean.contains("This conversation is open in another app")
+        && clean.contains("Close it there and press R to continue here")
+        && clean.to_lowercase().contains("r retry")
 }
 
 /// A row of Muse Code's `/` command popup (`/clear   Clear terminal and start a fresh
@@ -8432,6 +8476,10 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
         (
             "not submitted",
             "the text is sitting in the lane's composer, NOT delivered — retry at the next              turn boundary",
+        ),
+        (
+            "session is open in another app",
+            "Codex is showing its retry screen; close the other owner or press retry in the pane, and the durable message remains queued",
         ),
         ("session is in resume picker", "choose a conversation in the pane, or send the Escape key"),
         (
@@ -8912,22 +8960,13 @@ async fn verify_submitted(
     retry_keys: bool,
 ) -> (Submission, bool) {
     let mut retried = false;
-    let tail: String = text
-        .trim()
-        .chars()
-        .rev()
-        .take(16)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    if tail.is_empty() {
-        return (Submission::Confirmed, retried);
-    }
     // Compare space-insensitively: the input box hard-wraps long messages at
     // the pane width, splitting the tail across visual lines at arbitrary
     // points.
-    let tail_sq: String = tail.split_whitespace().collect();
+    let tail_sq = send_tail_squashed(text);
+    if tail_sq.is_empty() {
+        return (Submission::Confirmed, retried);
+    }
     let mut cleared_once = false;
     let mut stuck_looks = 0;
     let mut no_ui_looks = 0;
@@ -9645,6 +9684,66 @@ fn project_send_hold(state: &AppState, name: &str, delivery: Option<&str>) -> Op
         .map(|r| format!("{r}; durable owner input remains queued"))
 }
 
+fn is_project_execution_delivery(state: &AppState, name: &str, delivery: Option<&str>) -> bool {
+    let Some(id) = delivery else {
+        return false;
+    };
+    state.store.read().ok().is_some_and(|c| {
+        c.query_row(
+            "SELECT guard='project-execution' FROM steering_queue WHERE id=?1 AND session=?2",
+            rusqlite::params![id, name],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    })
+}
+
+async fn submit_project_execution_draft_if_owned(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    delivery: Option<&str>,
+    raw_hint: &str,
+) -> Option<(bool, String)> {
+    let id = delivery?;
+    if !is_project_execution_delivery(state, name, delivery)
+        || !project_execution_composer_owns_text(raw_hint, text)
+    {
+        return None;
+    }
+    let send_lock = session_send_lock(name);
+    let _guard = send_lock.lock().await;
+    let raw = tmux_capture(name, 25).await;
+    if !project_execution_composer_owns_text(&raw, text) {
+        return None;
+    }
+    if let Some(reason) = project_send_hold(state, name, delivery) {
+        return Some((false, reason));
+    }
+    tracing::warn!(
+        session = %name,
+        delivery_id = %id,
+        measured = true,
+        n_considered = 1,
+        verdict = "project_execution_draft_rescue",
+        "project execution delivery owns the unsubmitted composer text; submitting it instead of preserving a false human draft"
+    );
+    emit_event(
+        state,
+        name,
+        "project.delivery_started",
+        Some(json!({"delivery_id":id,"rescued_existing_draft":true})),
+        None,
+        "steering",
+    )
+    .await;
+    let sent_at = now_f64();
+    send_key(name, "Enter").await;
+    let generating = detect_claude_status(&raw) == "active";
+    let (submission, retried) = verify_submitted(name, text, sent_at, !generating).await;
+    Some(send_outcome(submission, generating, retried))
+}
+
 async fn send_text_inner(
     state: &AppState,
     name: &str,
@@ -9723,7 +9822,7 @@ async fn send_text_inner_bound(
         return herdr_send(name, text).await;
     }
     let boot_meta = load_meta(name);
-    let boot_pending = boot_meta
+    let mut boot_pending = boot_meta
         .get("boot_readiness_pending")
         .and_then(Value::as_bool)
         .unwrap_or(false);
@@ -9735,6 +9834,43 @@ async fn send_text_inner_bound(
         .and_then(Value::as_bool)
         == Some(true)
         || session_op_lock(name).try_lock().is_err();
+    let project_execution_delivery =
+        from_steering && is_project_execution_delivery(state, name, delivery);
+    if project_execution_delivery
+        && !starting
+        && !out_st.is_empty()
+        && codex_conversation_open_elsewhere(&out_st)
+    {
+        let now = now_i64();
+        let last_retry = meta_i64(&boot_meta, "codex_open_elsewhere_retry_at");
+        if last_retry > 0 && now - last_retry < 300 {
+            return (
+                false,
+                "session is open in another app; Codex retry screen is still present, durable message remains queued".into(),
+            );
+        }
+        update_meta(name, &[("codex_open_elsewhere_retry_at", json!(now))]);
+        tracing::warn!(
+            session = %name,
+            measured = true,
+            n_considered = 1,
+            verdict = "codex_conversation_open_elsewhere_retry",
+            "project execution worker is at Codex's open-elsewhere retry screen; making one bounded retry attempt before classifying the lane"
+        );
+        send_key(name, "R").await;
+        sleep_ms(1000).await;
+        out_st = tmux_capture(name, 15).await;
+        if codex_conversation_open_elsewhere(&out_st) {
+            return (
+                false,
+                "session is open in another app; Codex retry screen did not clear, durable message remains queued".into(),
+            );
+        }
+        if boot_pending {
+            update_meta(name, &[("boot_readiness_pending", json!(false))]);
+            boot_pending = false;
+        }
+    }
     let boot_in_flight = boot_delivery_held(
         &out_st,
         &meta_str(&boot_meta, "boot_previous_frame"),
@@ -9744,18 +9880,33 @@ async fn send_text_inner_bound(
         legacy_boot,
     );
     if boot_in_flight {
-        if from_steering {
+        let visible_ui = !out_st.is_empty() && agent_ui_visible(&strip_ansi(&out_st));
+        if from_steering && boot_pending && visible_ui && !starting && !legacy_boot {
+            tracing::warn!(
+                session = %name,
+                measured = true,
+                n_considered = 1,
+                verdict = "boot_pending_cleared_for_visible_provider_ui",
+                "boot readiness was still pending, but the provider UI is visible; falling through to normal picker/draft delivery gates instead of masking the live state"
+            );
+            update_meta(name, &[("boot_readiness_pending", json!(false))]);
+        } else if from_steering {
             return (
                 false,
                 "boot readiness not freshly observed; durable message remains queued".into(),
             );
+        } else {
+            return queue_boot_prompt(state, name, text, origin).await;
         }
-        return queue_boot_prompt(state, name, text, origin).await;
-    }
-    if boot_pending {
+    } else if boot_pending {
         update_meta(name, &[("boot_readiness_pending", json!(false))]);
     }
     if from_steering && composer_state(&out_st).typed().is_some() {
+        if let Some(rescued) =
+            submit_project_execution_draft_if_owned(state, name, text, delivery, &out_st).await
+        {
+            return rescued;
+        }
         tracing::warn!(
             session = name,
             measured = true,
@@ -10243,15 +10394,20 @@ async fn send_text_inner_bound(
             );
         }
     }
-    if from_steering
-        && composer_state(&tmux_capture(name, 15).await)
-            .typed()
-            .is_some()
-    {
-        return (
-            false,
-            "composer draft appeared before paste; retained without modification".into(),
-        );
+    if from_steering {
+        let draft_frame = tmux_capture(name, 15).await;
+        if composer_state(&draft_frame).typed().is_some() {
+            if let Some(rescued) =
+                submit_project_execution_draft_if_owned(state, name, &text, delivery, &draft_frame)
+                    .await
+            {
+                return rescued;
+            }
+            return (
+                false,
+                "composer draft appeared before paste; retained without modification".into(),
+            );
+        }
     }
     send_key(name, "C-u").await;
     sleep_ms(40).await;
@@ -16913,8 +17069,26 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         let age = now_f64() - queued_at;
         let decision = steer_delivery_for(state, &session, age).await;
         let mid_turn = match decision {
+            SteerDelivery::Hold if guard == "project-execution" && age >= steer_max_age_s() => {
+                tracing::warn!(
+                    session = %session,
+                    delivery_id = %id,
+                    age_s = age as i64,
+                    max_age_s = steer_max_age_s() as i64,
+                    measured = true,
+                    n_considered = 1,
+                    verdict = "project_execution_overdue_background_delivery",
+                    "overdue project execution packet is delivering through the provider queue despite background activity; project boards must keep draining"
+                );
+                true
+            }
             SteerDelivery::Hold => {
-                skip(&session, &id, "not-at-turn-boundary (within max age)");
+                let reason = if age >= steer_max_age_s() {
+                    "not-at-turn-boundary (background work hard hold)"
+                } else {
+                    "not-at-turn-boundary (within max age)"
+                };
+                skip(&session, &id, reason);
                 // A younger row cannot be older than this one, so no row on
                 // this lane can be overdue either: stop walking it.
                 delivered_lanes.insert(session.clone());
@@ -20758,27 +20932,34 @@ pub(crate) fn request_target_refusal(
         .map(|why| ("peer_interaction_refused", why))
 }
 
-/// The lifecycle label for a tmux lane: archived beats paused beats active.
-/// ONE function, called by `/api/sessions` (sessions_legacy) and by the peer
-/// interaction gate below, so the gate can never disagree with the dashboard
-/// about who is active (AMUX-4566).
-pub(crate) fn lifecycle_label(archived: bool, paused: bool) -> &'static str {
+/// The lifecycle label for a tmux lane: archived beats paused beats review-held
+/// beats active. ONE function, called by `/api/sessions` (sessions_legacy) and
+/// by the peer interaction gate below, so the gate can never disagree with the
+/// dashboard about who is active (AMUX-4566).
+pub(crate) fn lifecycle_label_with_review(
+    archived: bool,
+    paused: bool,
+    review_held: bool,
+) -> &'static str {
     if archived {
         "archived"
     } else if paused {
         "paused"
+    } else if review_held {
+        "review"
     } else {
         "active"
     }
 }
 
 /// A lane's lifecycle from its env file, parsed exactly as `/api/sessions`
-/// parses it (`CC_ARCHIVED=1`, `CC_PAUSED=1`).
+/// parses it (`CC_ARCHIVED=1`, `CC_PAUSED=1`, `CC_REVIEW_HELD=1`).
 pub(crate) fn lane_lifecycle(name: &str) -> &'static str {
     let env = parse_env(name);
-    lifecycle_label(
+    lifecycle_label_with_review(
         env.get("CC_ARCHIVED") == Some("1"),
         env.get("CC_PAUSED") == Some("1"),
+        env.get("CC_REVIEW_HELD") == Some("1"),
     )
 }
 
@@ -36941,12 +37122,22 @@ mod steer_boundary_tests {
             );
         }
         assert_eq!(
-            lifecycle_label(true, true),
+            lifecycle_label_with_review(true, true, false),
             "archived",
             "archived outranks paused, as /api/sessions reports"
         );
-        assert_eq!(lifecycle_label(false, true), "paused");
-        assert_eq!(lifecycle_label(false, false), "active");
+        assert_eq!(lifecycle_label_with_review(false, true, false), "paused");
+        assert_eq!(lifecycle_label_with_review(false, false, false), "active");
+        assert_eq!(
+            lifecycle_label_with_review(false, false, true),
+            "review",
+            "review-held lanes are retained for evidence, not active work"
+        );
+        assert_eq!(
+            lifecycle_label_with_review(false, true, true),
+            "paused",
+            "manual pause outranks review hold for resume/archive UI"
+        );
     }
 
     /// AMUX-4566 through the shared resolver, with real env files: the paused
@@ -38143,6 +38334,23 @@ mod submission_gate_tests {
              \u{23f5}\u{23f5} bypass permissions on \u{b7} esc to interrupt\n"
         )
     }
+
+    #[test]
+    fn project_execution_draft_match_requires_visible_project_packet_tail() {
+        let packet = "For an unavailable concrete same-project output, POST /api/projects/single-image-gs7/tasks/PIG-4/required-outputs with the exact artifact path and verification note.";
+        assert!(project_execution_composer_owns_text(
+            &frame_stuck_idle(packet),
+            packet
+        ));
+        assert!(!project_execution_composer_owns_text(
+            &frame_stuck_idle("human typed unrelated draft"),
+            packet
+        ));
+        assert!(!project_execution_composer_owns_text(
+            &frame_stuck_idle("[Pasted text #1 +12 lines]"),
+            packet
+        ));
+    }
     /// A successful submit: composer drawn and empty.
     fn frame_cleared() -> String {
         "\u{2500}\u{2500}\u{2500}\u{2500} amux-rust \u{2500}\u{2500}\n\u{276f} \n\u{2500}\u{2500}\u{2500}\u{2500}\n\u{23f5}\u{23f5} bypass permissions on\n".into()
@@ -38697,6 +38905,18 @@ mod composer_state_tests {
     /// a different worktree must not require another model-name allowlist.
     const LIVE_CODEX_ASTRA_IDLE_WITH_BRANCH: &str = "\u{1b}[1m\u{203a}\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  \u{1b}[38;2;246;226;183mgpt-6-astra xhigh\u{1b}[2m\u{1b}[39m \u{b7} \u{1b}[0m\u{1b}[38;2;171;223;167m~/Dev/mixpeek/operations\u{1b}[2m\u{1b}[39m \u{b7} Main [default]\u{1b}[0m\n";
 
+    /// Current Codex footer captured from PIG-3 on 2026-09-22. The task label
+    /// after the second middle dot is coloured normally rather than dimmed, so
+    /// footer recognition must accept separator-only dim evidence.
+    const LIVE_CODEX_IDLE_WITH_PLAIN_TASK_LABEL: &str = "\u{1b}[1m\u{203a}\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  \u{1b}[38;2;246;226;183mgpt-5.5 low\u{1b}[2m\u{1b}[39m \u{b7} \u{1b}[0m\u{1b}[38;2;171;223;167m~/Dev/mixpeek/.worktrees/px-single-image-gs7-7f7ede4def\u{1b}[2m\u{1b}[39m \u{b7} \u{1b}[0m\u{1b}[38;2;156;222;211mDeclare unavailable output\u{1b}[39m\n";
+
+    const LIVE_CODEX_OPEN_ELSEWHERE_RETRY: &str = "\
+  \u{1f512}  \u{1b}[1mThis conversation is open in another app\u{1b}[0m  \u{1b}[1m\u{1b}[38;5;6mR\u{1b}[0m to Retry
+      \u{1b}[2mClose it there and press R to continue here.\u{1b}[0m
+
+  \u{1b}[2m \u{1b}[0mr\u{1b}[2m retry   \u{1b}[0mesc/ctrl+c/q\u{1b}[2m exit   \u{1b}[0mctrl+t\u{1b}[2m transcript\u{1b}[0m
+";
+
     /// `backend`, captured 2026-08-09 while it was being reported as "holding
     /// unsubmitted text for hours". The composer is EMPTY; `continue with the
     /// queue` is Claude Code's dim suggestion. Three people pressed Enter,
@@ -39032,6 +39252,7 @@ mod composer_state_tests {
             LIVE_CODEX_IDLE,
             LIVE_CODEX_IDLE_WITH_BRANCH,
             LIVE_CODEX_ASTRA_IDLE_WITH_BRANCH,
+            LIVE_CODEX_IDLE_WITH_PLAIN_TASK_LABEL,
         ] {
             assert_eq!(
                 composer_state(frame),
@@ -39069,6 +39290,17 @@ mod composer_state_tests {
             .typed()
             .unwrap()
             .starts_with("myactualdraft"));
+    }
+
+    #[test]
+    fn a_codex_open_elsewhere_retry_screen_is_not_boot_readiness() {
+        assert!(codex_conversation_open_elsewhere(
+            LIVE_CODEX_OPEN_ELSEWHERE_RETRY
+        ));
+        assert_eq!(
+            composer_state(LIVE_CODEX_OPEN_ELSEWHERE_RETRY),
+            ComposerState::NotVisible
+        );
     }
 
     #[test]

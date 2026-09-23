@@ -211,34 +211,111 @@ pub struct CardPlan {
     pub execution: Execution,
 }
 
+fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
+    e.wait_category.is_none()
+        && (matches!(
+            reason,
+            "executor_returned_without_result" | "executor_stopped_before_result"
+        ) || (e.report.is_some()
+            && e.verification_retries.is_empty()
+            && e.waiting.as_deref() == Some(reason)))
+}
+
+const AUTO_REPAIR_GRANT_PREFIX: &str = "auto-repair:";
+const AUTO_REPAIR_GRANT_LIMIT: usize = 1;
+
+fn auto_repairable_wait(e: &Execution, max_attempts: u32) -> bool {
+    e.stage == "waiting"
+        && !e.suspended
+        && e.attempt < e.attempt_limit(max_attempts)
+        && e.waiting
+            .as_deref()
+            .is_some_and(|reason| repairable_wait_reason(reason, e))
+}
+
+fn auto_repair_grants(e: &Execution) -> usize {
+    e.retry_grants
+        .iter()
+        .filter(|g| {
+            g.request
+                .idempotency_key
+                .starts_with(AUTO_REPAIR_GRANT_PREFIX)
+        })
+        .count()
+}
+
+fn auto_repair_grantable_wait(e: &Execution, max_attempts: u32) -> bool {
+    e.stage == "waiting"
+        && !e.suspended
+        && e.attempt >= e.attempt_limit(max_attempts)
+        && auto_repair_grants(e) < AUTO_REPAIR_GRANT_LIMIT
+        && e.waiting
+            .as_deref()
+            .is_some_and(|reason| repairable_wait_reason(reason, e))
+}
+
+pub(crate) fn auto_repair_idempotency_key(project: &str, task: &str, e: &Execution) -> String {
+    format!(
+        "{AUTO_REPAIR_GRANT_PREFIX}{project}:{task}:{}",
+        e.generation
+    )
+}
+
 /// Short presentation is harness-owned; arbitrary command output stays in details.
 fn waiting_label(reason: &str, e: &Execution) -> String {
     match reason {
-        "project_disabled" => "Project disabled",
-        "project_paused" => "Project paused",
-        "attempts_exhausted" => "Attempt limit reached",
-        "authorization_required" => "Authorization required",
-        "requirements_changed" => "Requirements changed",
-        "intake_required" => "Intake required",
-        "executor_capacity" => "Waiting for executor capacity",
-        "token_budget_reached" => "Token budget reached",
-        "cost_budget_reached" => "Cost budget reached",
-        "budget_usage_unmeasured" => "Token usage unmeasured",
-        "budget_cost_unmeasured" => "Cost unmeasured",
-        _ if reason.starts_with("refusing to spawn a worker:") => "Spawn blocked",
-        _ if reason.starts_with("required_output:") => "Required output",
-        _ if reason == "executor_returned_without_result" => "Executor returned without result",
-        _ if reason == "executor_stopped_before_result" => "Executor stopped before result",
-        _ if reason.starts_with("invalid_dependency:") => "Invalid dependency",
+        "project_disabled" => "Project disabled".into(),
+        "project_paused" => "Project paused".into(),
+        "attempts_exhausted" => "Attempt limit reached".into(),
+        "authorization_required" => "Authorization required".into(),
+        "requirements_changed" => "Requirements changed".into(),
+        "intake_required" => "Intake required".into(),
+        "executor_capacity" => "Waiting for executor capacity".into(),
+        "token_budget_reached" => "Token budget reached".into(),
+        "cost_budget_reached" => "Cost budget reached".into(),
+        "budget_usage_unmeasured" => "Token usage unmeasured".into(),
+        "budget_cost_unmeasured" => "Cost unmeasured".into(),
+        _ if reason.starts_with("operational:") => "Operational blocker".into(),
+        _ if reason.starts_with("spend:") => "Spend approval needed".into(),
+        _ if reason.starts_with("customer_outbound:") => "Customer outreach approval needed".into(),
+        _ if reason.starts_with("refusing to spawn a worker:") => "Spawn blocked".into(),
+        _ if reason.starts_with("session_open_elsewhere:") => "Open in another app".into(),
+        _ if reason.starts_with("required_output:") => {
+            let dep = reason.trim_start_matches("required_output:").trim();
+            if dep.is_empty() {
+                "Waiting on project output".into()
+            } else {
+                format!("Waiting on {dep}")
+            }
+        }
+        "required_output_unavailable" => "Required output held".into(),
+        "executor_returned_without_result" => {
+            if e.stage == "repair" {
+                "Repairing missing report".into()
+            } else {
+                "Missing report after attempt".into()
+            }
+        }
+        "executor_stopped_before_result" => {
+            if e.stage == "repair" {
+                "Repairing stopped executor".into()
+            } else {
+                "Executor stopped before report".into()
+            }
+        }
+        _ if reason.starts_with("invalid_dependency:") => "Invalid dependency".into(),
         _ if e.report.is_some()
             && e.waiting.as_deref() == Some(reason)
             && e.wait_category.is_none() =>
         {
-            "Verification failed"
+            if e.stage == "repair" {
+                "Repairing failed verification".into()
+            } else {
+                "Verification failed".into()
+            }
         }
-        _ => "Execution held",
+        _ => "Execution held".into(),
     }
-    .into()
 }
 
 pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<CardPlan>> {
@@ -292,8 +369,18 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
         } else if project.policy.paused {
             Some("project_paused".into())
         } else if spawn_refused {
-            state.waiting.clone()
-        } else if stale_requirements {
+            if crate::backend::tmux_health::spawn_allowed_here().is_err() {
+                state.waiting.clone()
+            } else if let Some(reason) = &budget_wait {
+                Some(reason.clone())
+            } else if available == 0 {
+                Some("executor_capacity".into())
+            } else {
+                available -= 1;
+                action = "claim";
+                None
+            }
+        } else if stale_requirements || auto_repairable_wait(&state, project.policy.max_attempts) {
             if let Some(reason) = &budget_wait {
                 Some(reason.clone())
             } else if available == 0 {
@@ -301,6 +388,13 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             } else {
                 available -= 1;
                 action = "claim";
+                None
+            }
+        } else if auto_repair_grantable_wait(&state, project.policy.max_attempts) {
+            if let Some(reason) = &budget_wait {
+                Some(reason.clone())
+            } else {
+                action = "grant_repair";
                 None
             }
         } else if state.waiting.is_some() && state.stage != "repair" && !output_continuation {
@@ -378,6 +472,59 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
     Ok(result)
 }
 
+pub(crate) fn issue_status_for_stage(stage: &str) -> Option<&'static str> {
+    match stage {
+        "reserved" | "working" => Some("doing"),
+        "reported" | "verifying" => Some("review"),
+        "verified" => Some("verified"),
+        "waiting" | "repair" => Some("blocked"),
+        _ => None,
+    }
+}
+
+pub(crate) fn issue_status_for_execution(state: &Execution) -> Option<&'static str> {
+    if matches!(state.stage.as_str(), "waiting" | "repair") && state.report.is_some() {
+        return Some("review");
+    }
+    issue_status_for_stage(state.stage.as_str())
+}
+
+pub(crate) fn reconcile_issue_statuses(
+    conn: &Connection,
+    project: &str,
+) -> anyhow::Result<WriteOutcome> {
+    let rows = bs::project_issues(conn, project)?;
+    let mut changed = 0usize;
+    for row in rows {
+        let state = execution(conn, &row.id)?;
+        let Some(status) = issue_status_for_execution(&state) else {
+            continue;
+        };
+        if row.status == status {
+            continue;
+        }
+        let updated = conn.execute(
+            "UPDATE issues SET status=?2,updated=?3,rev=rev+1,version=version+1 WHERE id=?1 AND project_group=?4 AND status<>?2",
+            params![row.id, status, chrono::Utc::now().timestamp(), project],
+        )?;
+        changed += updated;
+        tracing::info!(project,task=%row.id,from=%row.status,to=%status,stage=%state.stage,measured=true,n_considered=1,verdict="project_issue_status_reconciled","execution stage repaired stale board status");
+    }
+    Ok(WriteOutcome {
+        applied: changed > 0,
+        events: if changed > 0 {
+            vec![PendingEvent {
+                entity_type: EntityType::Other("project".into()),
+                entity_id: project.into(),
+                mutation: MutationKind::Updated,
+                payload: None,
+            }]
+        } else {
+            vec![]
+        },
+    })
+}
+
 pub fn save_execution(
     conn: &Connection,
     row: &bs::IssueRow,
@@ -392,12 +539,7 @@ pub fn save_execution(
             chrono::Utc::now().timestamp()
         ],
     )?;
-    let terminal_attempt_status = match state.stage.as_str() {
-        "reported" => Some("review"),
-        "verified" => Some("verified"),
-        "waiting" | "repair" => Some("blocked"),
-        _ => None,
-    };
+    let terminal_attempt_status = issue_status_for_execution(state);
     if event == "project.claimed" {
         crate::db::attempts::record_lease_change(
             conn,
@@ -411,21 +553,28 @@ pub fn save_execution(
             chrono::Utc::now().timestamp(),
         )?;
     } else if let Some(status) = terminal_attempt_status {
-        crate::db::attempts::record_lease_change(
-            conn,
-            &row.id,
-            row.lease_owner.as_deref(),
-            None,
-            state.generation,
-            status,
-            "project-driver",
-            state.waiting.as_deref(),
-            chrono::Utc::now().timestamp(),
-        )?;
-        conn.execute(
-            "UPDATE issues SET lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",
-            [&row.id],
-        )?;
+        if status == "doing" {
+            conn.execute(
+                "UPDATE issues SET status=?2 WHERE id=?1",
+                params![row.id, status],
+            )?;
+        } else {
+            crate::db::attempts::record_lease_change(
+                conn,
+                &row.id,
+                row.lease_owner.as_deref(),
+                None,
+                state.generation,
+                status,
+                "project-driver",
+                state.waiting.as_deref(),
+                chrono::Utc::now().timestamp(),
+            )?;
+            conn.execute(
+                "UPDATE issues SET status=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",
+                params![row.id, status],
+            )?;
+        }
     }
     // Session/terminal projections use this existing causal identity. The project
     // transition alone is not consumed by them and would show active-without-card.
@@ -758,6 +907,38 @@ mod tests {
     }
 
     #[test]
+    fn project_execution_stage_projects_back_to_board_status() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            claim(c, "sample", "A").map_err(store::sql_error)?;
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = execution(c, "A").unwrap();
+            e.stage = "waiting".into();
+            e.waiting = Some("executor_returned_without_result".into());
+            save_execution(c, &row, &e, "project.execution").map_err(store::sql_error)?;
+            assert_eq!(bs::get_issue(c, "A")?.unwrap().status, "blocked");
+
+            c.execute("UPDATE issues SET status='doing' WHERE id='A'", [])?;
+            assert!(
+                reconcile_issue_statuses(c, "sample")
+                    .map_err(store::sql_error)?
+                    .applied
+            );
+            assert_eq!(bs::get_issue(c, "A")?.unwrap().status, "blocked");
+            assert!(
+                !reconcile_issue_statuses(c, "sample")
+                    .map_err(store::sql_error)?
+                    .applied
+            );
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn project_failure_label_never_uses_a_passing_stdout_prefix() {
         let failure = "tree-revert: OK\nrepository guard: refused invalid source";
         let e = Execution {
@@ -777,7 +958,7 @@ mod tests {
             waiting_label("untrusted: PASS", &Execution::default()),
             "Execution held"
         );
-        assert_eq!(waiting_label("required_output:B", &e), "Required output");
+        assert_eq!(waiting_label("required_output:B", &e), "Waiting on B");
         for (reason, label) in [
             ("token_budget_reached", "Token budget reached"),
             ("cost_budget_reached", "Cost budget reached"),
@@ -794,6 +975,79 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn retryable_waiting_verification_failure_is_reclaimed_automatically() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            claim(c, "sample", "A").map_err(store::sql_error)?;
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = execution(c, "A").unwrap();
+            e.stage = "waiting".into();
+            e.waiting = Some("reported head is stale".into());
+            e.report = Some(Report {
+                head: "a".repeat(40),
+                summary: "candidate".into(),
+                assets: vec![fixture_asset()],
+                checks: vec![Check {
+                    criterion: "Output passes its test".into(),
+                    command: "./verify.sh".into(),
+                }],
+            });
+            c.execute("UPDATE issues SET status='review' WHERE id='A'", [])?;
+            save_execution(c, &row, &e, "project.execution").map_err(store::sql_error)?;
+            let project = store::get(c, "sample").map_err(store::sql_error)?.unwrap();
+            let plans = plan(c, &project).map_err(store::sql_error)?;
+            let a = plans.iter().find(|p| p.id == "A").unwrap();
+            assert_eq!(a.action, "claim");
+            assert!(a.waiting_reason.is_none());
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn retryable_waiting_failure_at_attempt_limit_gets_one_auto_repair_grant() {
+        let (_dir, db) = fixture();
+        db.write(|c| {
+            claim(c, "sample", "A").map_err(store::sql_error)?;
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let project = store::get(c, "sample").map_err(store::sql_error)?.unwrap();
+            let mut e = execution(c, "A").unwrap();
+            e.attempt = e.attempt_limit(project.policy.max_attempts);
+            e.stage = "waiting".into();
+            e.waiting = Some("executor_returned_without_result".into());
+            save_execution(c, &row, &e, "project.execution").map_err(store::sql_error)?;
+            let plans = plan(c, &project).map_err(store::sql_error)?;
+            let a = plans.iter().find(|p| p.id == "A").unwrap();
+            assert_eq!(a.action, "grant_repair");
+            assert!(a.waiting_reason.is_none());
+
+            let mut granted = execution(c, "A").unwrap();
+            granted.retry_grants.push(super::super::task_retry::Grant {
+                request: super::super::task_retry::Request {
+                    idempotency_key: auto_repair_idempotency_key("sample", "A", &granted),
+                    expect_generation: granted.generation,
+                    expect_revision: row.rev,
+                    input_hash: granted.input_hash.clone(),
+                },
+                allowed_through: granted.attempt + 1,
+                previous_result: json!({}),
+            });
+            save_execution(c, &row, &granted, "project.execution").map_err(store::sql_error)?;
+            let plans = plan(c, &project).map_err(store::sql_error)?;
+            let a = plans.iter().find(|p| p.id == "A").unwrap();
+            assert_eq!(a.action, "claim");
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    }
+
     #[test]
     fn project_claims_are_atomic_bounded_and_excluded_from_both_legacy_planners() {
         let (_dir, db) = fixture();
@@ -1036,6 +1290,57 @@ mod tests {
         })
         .unwrap();
     }
+    #[test]
+    fn spawn_refusal_wait_retries_when_spawn_override_is_enabled() {
+        let (dir, db) = fixture();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let env_guard = crate::backend::tmux_health::SPAWN_OVERRIDE;
+        let prior = std::env::var(env_guard).ok();
+        db.write(|c| {
+            let row = bs::get_issue(c, "A")?.unwrap();
+            let mut e = execution(c, "A").unwrap();
+            e.stage = "waiting".into();
+            e.waiting =
+                Some("refusing to spawn a worker: test home requires explicit allowance".into());
+            save_execution(c, &row, &e, "project.waiting").map_err(store::sql_error)?;
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+        std::env::remove_var(env_guard);
+        db.write(|c| {
+            let p = store::get(c, "sample").unwrap().unwrap();
+            let plans = plan(c, &p).unwrap();
+            let a = plans.iter().find(|p| p.id == "A").unwrap();
+            assert_eq!(a.action, "wait");
+            assert_eq!(a.waiting_label.as_deref(), Some("Spawn blocked"));
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+        std::env::set_var(env_guard, "1");
+        db.write(|c| {
+            let p = store::get(c, "sample").unwrap().unwrap();
+            let plans = plan(c, &p).unwrap();
+            let a = plans.iter().find(|p| p.id == "A").unwrap();
+            assert_eq!(a.action, "claim");
+            assert!(a.waiting_reason.is_none());
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![],
+            })
+        })
+        .unwrap();
+        match prior {
+            Some(v) => std::env::set_var(env_guard, v),
+            None => std::env::remove_var(env_guard),
+        }
+    }
+
     #[test]
     fn project_read_model_explains_pause_capacity_and_never_spins_after_failure() {
         let (_dir, db) = fixture();

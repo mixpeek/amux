@@ -86,7 +86,6 @@ pub fn declare(
             "an output declaration is already pending"
         );
     }
-    anyhow::ensure!(row.status == "doing", "task no longer active");
     anyhow::ensure!(
         e.generation == request.generation && e.input_hash == request.input_hash,
         "stale output declaration"
@@ -109,6 +108,10 @@ pub fn declare(
             && e.waiting
                 .as_deref()
                 .is_some_and(|w| w.starts_with("operational: ")));
+    anyhow::ensure!(
+        row.status == "doing" || (row.status == "blocked" && e.stage == "waiting" && operational),
+        "task no longer active"
+    );
     if e.stage == "waiting" {
         anyhow::ensure!(
             operational && request.replaces_wait == e.waiting,

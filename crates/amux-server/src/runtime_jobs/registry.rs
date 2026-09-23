@@ -94,6 +94,7 @@ pub mod ids {
     pub const SCHEDULER: &str = "scheduler";
     pub const HOST_METRICS: &str = "host-metrics";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
+    pub const PROJECT_EXECUTION: &str = "project-execution";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
     pub const BOOTSTRAP: &str = "session-bootstrap";
@@ -140,6 +141,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::INVARIANTS,
     ids::SCHEDULER,
     ids::ORCH_RUNTIME,
+    ids::PROJECT_EXECUTION,
     ids::EVENT_PROCESSORS,
     ids::SCAN,
     ids::BOOTSTRAP,
@@ -265,6 +267,18 @@ pub const CATALOG: &[Doc] = &[
         }],
         pref: None,
         detail: Some("/api/debug/board-drive"),
+    },
+    Doc {
+        id: ids::PROJECT_EXECUTION,
+        name: "Project execution",
+        purpose: "Drives project-scoped tasks through claim, delivery, verification, retained evidence, main integration, and acceptance without depending on the legacy board-drive lane sweeper.",
+        env: &[EnvControl {
+            var: "AMUX_PROJECT_EXECUTION_SECS",
+            effect: "tick seconds; 0 disables project lifecycle driving",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/projects"),
     },
     Doc {
         id: ids::CDC_POLLER,

@@ -34,7 +34,7 @@ pub fn eligible(
         "requirements changed"
     );
     anyhow::ensure!(
-        matches!(row.status.as_str(), "doing" | "review")
+        matches!(row.status.as_str(), "doing" | "review" | "blocked")
             && row.archived == 0
             && e.stage == "waiting"
             && e.waiting.is_some(),
@@ -367,9 +367,7 @@ mod tests {
                     }
                     "working" | "reported" | "verified" | "repair" => e.stage = variant.into(),
                     "no-report" => e.report = None,
-                    "no-review" => {
-                        c.execute("UPDATE issues SET status='doing' WHERE id='A'", [])?;
-                    }
+                    "no-review" => {}
                     "suspended" => e.suspended = true,
                     "requirements" => {
                         c.execute("UPDATE issues SET title='changed' WHERE id='A'", [])?;
@@ -381,6 +379,11 @@ mod tests {
                     _ => e.wait_category = Some(variant.into()),
                 }
                 planner::save_execution(c, &row, &e, "project.execution").unwrap();
+                if variant == "no-review" {
+                    // Deliberately corrupt the projection after the canonical execution write;
+                    // save_execution normally keeps the board status synchronized.
+                    c.execute("UPDATE issues SET status='doing' WHERE id='A'", [])?;
+                }
                 let row = bs::get_issue(c, "A")?.unwrap();
                 let report = e.report.clone().unwrap_or(planner::Report {
                     head: "a".repeat(40),

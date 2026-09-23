@@ -136,6 +136,59 @@ pub async fn retain(
     );
     Ok(retained)
 }
+
+/// Retain one JSON receipt produced by an already-validated acceptance invocation. It cannot be
+/// committed without changing the candidate SHA it proves, so this is intentionally narrower than
+/// `retain`: only the caller-named JSON path is accepted, its bytes are parsed and hash-addressed,
+/// and ordinary report JSON continues to require a committed candidate blob.
+pub async fn retain_generated_json(
+    home: &Path,
+    root: &Path,
+    head: &str,
+    path: &str,
+) -> anyhow::Result<Retained> {
+    let root = root.canonicalize()?;
+    let file = root.join(path).canonicalize()?;
+    anyhow::ensure!(
+        file.starts_with(&root) && file.is_file(),
+        "asset escaped candidate"
+    );
+    let bytes = std::fs::read(&file)?;
+    anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "asset size limit");
+    let _: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let asset = Asset {
+        path: path.into(),
+        sha256: hex::encode(Sha256::digest(&bytes)),
+    };
+    anyhow::ensure!(
+        extension(&asset)? == "json",
+        "generated receipt must be JSON"
+    );
+    let target = home.join("artifacts/project-reports");
+    std::fs::create_dir_all(&target)?;
+    let target = target.canonicalize()?;
+    anyhow::ensure!(
+        target.starts_with(home.canonicalize()?),
+        "asset store escaped private home"
+    );
+    let destination = target.join(format!("{}.json", asset.sha256));
+    let temp = target.join(format!(".{}", ulid::Ulid::new()));
+    std::fs::write(&temp, &bytes)?;
+    std::fs::rename(&temp, &destination)?;
+    let retained = Retained {
+        source: asset,
+        head: head.into(),
+        path: destination.to_string_lossy().into(),
+    };
+    check(std::slice::from_ref(&retained))?;
+    tracing::info!(
+        measured = true,
+        n_considered = 1,
+        verdict = "project.generated_receipt_retained",
+        "fresh generated JSON receipt retained and hash checked"
+    );
+    Ok(retained)
+}
 pub fn check(assets: &[Retained]) -> anyhow::Result<()> {
     for a in assets {
         extension(&a.source)?;
@@ -295,5 +348,31 @@ mod tests {
             report.assets[0].path = "escape.png".into();
             assert!(retain(home.path(), repo.path(), &report).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn generated_json_retention_is_explicit_and_does_not_relax_reports() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("receipt.json"), br#"{"state":"passed"}"#).unwrap();
+        let retained =
+            retain_generated_json(home.path(), repo.path(), &"a".repeat(40), "receipt.json")
+                .await
+                .unwrap();
+        assert_eq!(retained.source.path, "receipt.json");
+        assert!(std::path::Path::new(&retained.path).is_file());
+        let report = super::super::planner::Report {
+            head: "a".repeat(40),
+            checks: vec![],
+            summary: String::new(),
+            assets: vec![retained.source],
+        };
+        assert!(retain(home.path(), repo.path(), &report).await.is_err());
+        std::fs::write(repo.path().join("bad.json"), b"not-json").unwrap();
+        assert!(
+            retain_generated_json(home.path(), repo.path(), &"a".repeat(40), "bad.json")
+                .await
+                .is_err()
+        );
     }
 }

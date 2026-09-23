@@ -68,12 +68,25 @@ pub struct ContractCriterion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContractVerifier {
-    /// A repository command run on the integrated commit. Exit 0 passes.
+    /// A repository command run on the composed project candidate. Exit 0 passes. This is for static
+    /// properties (tests, compilation, file structure), not claims about a running system.
     Command {
         id: String,
         command: String,
         #[serde(default)]
         timeout_secs: Option<u64>,
+    },
+    /// A command that must produce a fresh, machine-readable execution receipt. The harness binds
+    /// that receipt to this invocation and exact candidate before any human review can open.
+    Execution {
+        id: String,
+        command: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+        /// Candidate-relative JSON path created by this invocation. It must not exist in Git.
+        receipt: String,
+        /// Every named lifecycle stage must occur exactly once with state `passed` and evidence.
+        required_stages: Vec<String>,
     },
     /// Explicit human review. Only the operator can approve it, bound to the exact revision.
     Human { id: String, instructions: String },
@@ -81,7 +94,7 @@ pub enum ContractVerifier {
 impl ContractVerifier {
     pub fn id(&self) -> &str {
         match self {
-            Self::Command { id, .. } | Self::Human { id, .. } => id,
+            Self::Command { id, .. } | Self::Execution { id, .. } | Self::Human { id, .. } => id,
         }
     }
     pub fn is_human(&self) -> bool {
@@ -146,6 +159,11 @@ impl AcceptanceContract {
                     command,
                     timeout_secs,
                     ..
+                }
+                | ContractVerifier::Execution {
+                    command,
+                    timeout_secs,
+                    ..
                 } => {
                     if command.trim().is_empty() || command.len() > 4000 {
                         return Err(format!("{}: command must be 1..4000 characters", c.id));
@@ -168,6 +186,51 @@ impl AcceptanceContract {
                     }
                 }
             }
+            match &c.verifier {
+                ContractVerifier::Command { command, .. }
+                    if runtime_claim(&c.requirement, command) =>
+                {
+                    return Err(format!(
+                        "{}: a runtime/end-to-end claim must use an execution verifier with a fresh receipt",
+                        c.id
+                    ));
+                }
+                ContractVerifier::Execution {
+                    receipt,
+                    required_stages,
+                    ..
+                } => {
+                    if !valid_evidence_path(receipt) || !receipt.ends_with(".json") {
+                        return Err(format!(
+                            "{}: execution receipt must be a relative .json evidence path",
+                            c.id
+                        ));
+                    }
+                    if !c.evidence.iter().any(|path| path == receipt) {
+                        return Err(format!(
+                            "{}: execution receipt must also be retained in evidence",
+                            c.id
+                        ));
+                    }
+                    if required_stages.is_empty() || required_stages.len() > 32 {
+                        return Err(format!(
+                            "{}: execution verifier needs 1..32 required stages",
+                            c.id
+                        ));
+                    }
+                    let mut stages = std::collections::HashSet::new();
+                    if required_stages
+                        .iter()
+                        .any(|stage| !valid_contract_id(stage) || !stages.insert(stage.as_str()))
+                    {
+                        return Err(format!(
+                            "{}: execution stages must have unique [a-z0-9][a-z0-9_-] identities",
+                            c.id
+                        ));
+                    }
+                }
+                _ => {}
+            }
             if c.evidence.len() > 8 || c.evidence.iter().any(|e| !valid_evidence_path(e)) {
                 return Err(format!(
                     "{}: evidence must be at most 8 relative md/json/txt/png/webm paths",
@@ -180,6 +243,32 @@ impl AcceptanceContract {
     pub fn criterion(&self, id: &str) -> Option<&ContractCriterion> {
         self.criteria.iter().find(|c| c.id == id)
     }
+}
+
+/// Runtime claims need provenance that an exit code or prose artifact cannot provide. This bounded
+/// classifier is deliberately conservative: projects can always choose `execution` explicitly,
+/// while these unmistakable phrases may never be represented by a static command.
+fn runtime_claim(requirement: &str, command: &str) -> bool {
+    let text = format!("{}\n{}", requirement, command).to_ascii_lowercase();
+    [
+        "end-to-end",
+        "end to end",
+        "e2e",
+        "running image",
+        "runtime lifecycle",
+        "full lifecycle",
+        "browser flow",
+        "chaos test",
+        "docker run",
+        "build docker image",
+        "build the docker image",
+        "standalone docker image",
+        "playwright",
+        "no external calls",
+        "network isolation",
+    ]
+    .iter()
+    .any(|term| text.contains(term))
 }
 
 pub const MAX_VERIFICATION_TIMEOUT_SECS: u64 = 3600;
@@ -336,6 +425,27 @@ mod tests {
             serde_json::json!({"criteria":[],"extra":1})
         )
         .is_err());
+        let static_runtime_claim = good(serde_json::json!({"criteria":[{
+            "id":"lifecycle","requirement":"Full lifecycle passes in a running image with no external calls",
+            "verifier":{"type":"command","id":"grep-report","command":"grep -q passed report.md"},
+            "evidence":["report.md"]
+        }]}));
+        assert!(
+            static_runtime_claim
+                .validate()
+                .unwrap_err()
+                .contains("fresh receipt"),
+            "runtime prose may not be accepted by a static string check"
+        );
+        let runtime = good(serde_json::json!({"criteria":[{
+            "id":"lifecycle","requirement":"Full lifecycle passes in a running image with no external calls",
+            "verifier":{"type":"execution","id":"run-lifecycle","command":"./scripts/run-lifecycle.sh","receipt":"artifacts/execution.json","required_stages":["image-build","api-lifecycle","network-isolation"]},
+            "evidence":["artifacts/execution.json","artifacts/report.md"]
+        }]}));
+        assert_eq!(runtime.validate(), Ok(()));
+        let mut missing_receipt = runtime.clone();
+        missing_receipt.criteria[0].evidence.remove(0);
+        assert!(missing_receipt.validate().unwrap_err().contains("retained"));
         // A legacy policy without a contract still parses and reads as unconfigured.
         assert!(policy().acceptance.is_none());
     }

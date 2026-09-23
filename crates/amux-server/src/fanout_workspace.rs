@@ -23,7 +23,11 @@ pub(crate) fn status_without_harness_receipts(raw: &str) -> String {
     raw.lines()
         .filter(|line| {
             let path = line.get(3..).unwrap_or(line).trim();
-            path != ".amux/project-report.json" && !path.ends_with(" -> .amux/project-report.json")
+            !matches!(
+                path,
+                ".amux/project-report.json" | ".amux/project-wait.json"
+            ) && !path.ends_with(" -> .amux/project-report.json")
+                && !path.ends_with(" -> .amux/project-wait.json")
         })
         .collect::<Vec<_>>()
         .join("\n")

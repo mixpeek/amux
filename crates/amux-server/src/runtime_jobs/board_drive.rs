@@ -8817,39 +8817,6 @@ async fn release_claim_after_dispatch_failure(
     }
 }
 
-/// One legacy sweep stays in flight; its I/O cannot stretch project cadence.
-/// Both futures remain owned by the periodic job, so cancellation drops them
-/// together. Project tick already bounds per-project runners; no new task is spawned here.
-async fn with_project_ticks<L, P, F>(
-    legacy: L,
-    mut project: F,
-    cadence: std::time::Duration,
-) -> L::Output
-where
-    L: std::future::Future,
-    P: std::future::Future<Output = ()>,
-    F: FnMut() -> P,
-{
-    project().await;
-    let mut legacy = std::pin::pin!(legacy);
-    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut announced = false;
-    loop {
-        tokio::select! {
-            biased;
-            result = &mut legacy => return result,
-            _ = ticks.tick() => {
-                if !announced {
-                    tracing::info!(measured=true,n_considered=1,verdict="project_tick_during_legacy_wait","legacy sweep still in flight; project progress retains configured cadence");
-                    announced=true;
-                }
-                project().await;
-            }
-        }
-    }
-}
-
 /// Background driver.
 pub fn spawn(state: AppState) -> super::PeriodicTask {
     // ONE SPELLING OF THE KNOB (AF-437). `spawn_periodic` derives this job's
@@ -8864,50 +8831,42 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
     super::spawn_periodic(JOB, secs, move || {
         let state = state.clone();
         async move {
-            with_project_ticks(
-                async {
-                    // Terminal callbacks are a durable board outbox. Drain it on every
-                    // board tick so a restart or a transition produced outside the
-                    // HTTP PATCH handler cannot strand a completed peer request.
-                    let callbacks =
-                        crate::api::board::dispatch_pending_callbacks(&state, None).await;
-                    if callbacks.attempted > 0 {
-                        tracing::info!(
-                            attempted = callbacks.attempted,
-                            queued = callbacks.queued,
-                            refused = callbacks.refused,
-                            suppressed = callbacks.suppressed,
-                            "[board-drive] terminal task callbacks"
-                        );
-                    }
-                    let fleet = LiveFleet {
-                        state: state.clone(),
-                        signals: crate::api::session_verbs::boundary_signals(&state, None).await,
-                    };
-                    let r = drive_tick(&state, &fleet).await;
-                    if r.assigned > 0
-                        || r.nudged > 0
-                        || r.promoted > 0
-                        || r.promoted_due > 0
-                        || r.normalized_blocked_doing > 0
-                    {
-                        tracing::info!(
-                            assigned = r.assigned,
-                            nudged = r.nudged,
-                            promoted = r.promoted,
-                            promoted_due = r.promoted_due,
-                            normalized_blocked_doing = r.normalized_blocked_doing,
-                            revisit_due_total = r.revisit_due_total,
-                            held_on_trigger = r.held_on_trigger,
-                            lanes = r.lanes.len(),
-                            "[board-drive] tick"
-                        );
-                    }
-                },
-                || crate::project_execution::driver::tick(&state),
-                std::time::Duration::from_secs(secs.max(1)),
-            )
-            .await;
+            // Terminal callbacks are a durable board outbox. Drain it on every
+            // board tick so a restart or a transition produced outside the
+            // HTTP PATCH handler cannot strand a completed peer request.
+            let callbacks = crate::api::board::dispatch_pending_callbacks(&state, None).await;
+            if callbacks.attempted > 0 {
+                tracing::info!(
+                    attempted = callbacks.attempted,
+                    queued = callbacks.queued,
+                    refused = callbacks.refused,
+                    suppressed = callbacks.suppressed,
+                    "[board-drive] terminal task callbacks"
+                );
+            }
+            let fleet = LiveFleet {
+                state: state.clone(),
+                signals: crate::api::session_verbs::boundary_signals(&state, None).await,
+            };
+            let r = drive_tick(&state, &fleet).await;
+            if r.assigned > 0
+                || r.nudged > 0
+                || r.promoted > 0
+                || r.promoted_due > 0
+                || r.normalized_blocked_doing > 0
+            {
+                tracing::info!(
+                    assigned = r.assigned,
+                    nudged = r.nudged,
+                    promoted = r.promoted,
+                    promoted_due = r.promoted_due,
+                    normalized_blocked_doing = r.normalized_blocked_doing,
+                    revisit_due_total = r.revisit_due_total,
+                    held_on_trigger = r.held_on_trigger,
+                    lanes = r.lanes.len(),
+                    "[board-drive] tick"
+                );
+            }
         }
     })
 }
@@ -17324,169 +17283,5 @@ mod af579_decline_exit_tests {
             body.contains("decline_exit(session)"),
             "pickup_prompt must call decline_exit, or the exit reaches no lane"
         );
-    }
-}
-
-#[cfg(test)]
-mod project_cadence_tests {
-    use super::with_project_ticks;
-    use crate::project_execution::{planner, store};
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
-    use std::time::Duration;
-
-    #[test]
-    fn slow_failing_legacy_sweep_preserves_project_report_progress_and_pause() {
-        let dir = tempfile::tempdir().unwrap();
-        let _home = crate::api::settings::test_env::set_home(dir.path());
-        let db = Arc::new(crate::db::Store::open(&dir.path().join("db")).unwrap());
-        db.write(|c| {
-            let policy=serde_json::from_value(serde_json::json!({"repository":"/fixture","enabled":true,"coordinator":{"provider":"claude","model":"fixture"},"executor":{"provider":"claude","model":"fixture"},"verify_command":"true"})).unwrap();
-            store::save(c,"cadence",0,&policy,"test").map_err(store::sql_error)?;
-            for id in ["A","B"] {c.execute("INSERT INTO issues(id,title,status,type,project_group,next_action,acceptance_criteria,created,updated) VALUES(?1,'Output','backlog','doc','cadence','Write report','[\"Report exists\"]',1,1)",[id])?;}
-            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
-        }).unwrap();
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let ticks = Arc::new(AtomicUsize::new(0));
-            let starts = Arc::new(AtomicUsize::new(0));
-            let finished = Arc::new(tokio::sync::Notify::new());
-            let legacy = {
-                let finished = finished.clone();
-                let starts = starts.clone();
-                async move {
-                    starts.fetch_add(1, Ordering::SeqCst);
-                    finished.notified().await;
-                    Err::<(), _>("legacy start failed")
-                }
-            };
-            let result = tokio::time::timeout(
-                Duration::from_secs(2),
-                with_project_ticks(
-                    legacy,
-                    || {
-                        let db = db.clone();
-                        let ticks = ticks.clone();
-                        let finished = finished.clone();
-                        async move {
-                            let n = ticks.fetch_add(1, Ordering::SeqCst);
-                            db.write(move |c| {
-                                if n == 0 {
-                                    assert!(planner::claim(c, "cadence", "A").unwrap().applied);
-                                } else if n == 1 {
-                                    let e = planner::execution(c, "A").unwrap();
-                                    planner::register_test_workspace(&e.worker, "/fixture");
-                                    let report = planner::Report {
-                                        head: "a".repeat(40),
-                                        summary: "nonbillable fixture report".into(),
-                                        assets: vec![crate::project_execution::assets::Asset {
-                                            path: "report.md".into(),
-                                            sha256: "0".repeat(64),
-                                        }],
-                                        checks: vec![planner::Check {
-                                            criterion: "Report exists".into(),
-                                            command: "test -f report".into(),
-                                        }],
-                                    };
-                                    assert!(
-                                        planner::record_report(
-                                            c,
-                                            "cadence",
-                                            "A",
-                                            &e.worker,
-                                            e.generation,
-                                            &e.input_hash,
-                                            &report
-                                        )
-                                        .unwrap()
-                                        .applied
-                                    );
-                                } else {
-                                    assert_eq!(
-                                        planner::execution(c, "A").unwrap().stage,
-                                        "reported"
-                                    );
-                                    let mut p = store::get(c, "cadence").unwrap().unwrap();
-                                    p.policy.paused = true;
-                                    store::save(c, "cadence", p.revision, &p.policy, "test")
-                                        .map_err(store::sql_error)?;
-                                    assert!(!planner::claim(c, "cadence", "B").unwrap().applied);
-                                    let p = store::get(c, "cadence").unwrap().unwrap();
-                                    assert!(planner::plan(c, &p)
-                                        .unwrap()
-                                        .iter()
-                                        .all(|p| p.waiting_reason.as_deref()
-                                            == Some("project_paused")));
-                                    finished.notify_one();
-                                }
-                                Ok(crate::db::WriteOutcome {
-                                    applied: true,
-                                    events: vec![],
-                                })
-                            })
-                            .unwrap();
-                        }
-                    },
-                    Duration::from_millis(10),
-                ),
-            )
-            .await
-            .expect("project progress must not wait for legacy completion");
-            assert_eq!(result, Err("legacy start failed"));
-            assert_eq!(starts.load(Ordering::SeqCst), 1);
-            assert_eq!(ticks.load(Ordering::SeqCst), 3);
-        });
-    }
-
-    #[tokio::test]
-    async fn project_cadence_cancels_inflight_legacy_and_serial_negative_control_stalls() {
-        struct Dropped(Arc<AtomicUsize>);
-        impl Drop for Dropped {
-            fn drop(&mut self) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-        let dropped = Arc::new(AtomicUsize::new(0));
-        let ticks = Arc::new(AtomicUsize::new(0));
-        let guard = Dropped(dropped.clone());
-        let legacy = async move {
-            let _guard = guard;
-            std::future::pending::<()>().await
-        };
-        assert!(tokio::time::timeout(
-            Duration::from_millis(65),
-            with_project_ticks(
-                legacy,
-                || {
-                    let ticks = ticks.clone();
-                    async move {
-                        ticks.fetch_add(1, Ordering::SeqCst);
-                    }
-                },
-                Duration::from_millis(10)
-            )
-        )
-        .await
-        .is_err());
-        assert_eq!(
-            dropped.load(Ordering::SeqCst),
-            1,
-            "cancel drops the owned legacy operation; no detached sweep"
-        );
-        assert!(ticks.load(Ordering::SeqCst) > 1);
-        let before = ticks.load(Ordering::SeqCst);
-        tokio::task::yield_now().await;
-        assert_eq!(ticks.load(Ordering::SeqCst), before);
-        let serial = AtomicUsize::new(0);
-        // Former scheduler: once per completed legacy sweep. Pending I/O starves tick two.
-        assert!(tokio::time::timeout(Duration::from_millis(35), async {
-            serial.fetch_add(1, Ordering::SeqCst);
-            std::future::pending::<()>().await;
-            serial.fetch_add(1, Ordering::SeqCst);
-        })
-        .await
-        .is_err());
-        assert_eq!(serial.load(Ordering::SeqCst), 1);
     }
 }
