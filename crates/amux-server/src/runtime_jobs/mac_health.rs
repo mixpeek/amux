@@ -425,7 +425,33 @@ fn swap_used_pct() -> Option<f64> {
         .iter()
         .find_map(|bin| std::process::Command::new(bin).args(["-n", "vm.swapusage"]).output().ok())
         .filter(|o| o.status.success())?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    parse_swap_pct(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse `sysctl -n vm.swapusage` into a used-percentage.
+///
+/// Split out from `swap_used_pct` so the two causes of None can be told apart
+/// in a test: this one cannot spawn anything, so a None from here is a PARSE
+/// failure and nothing else.
+///
+/// NO SWAP CONFIGURED IS A MEASUREMENT, NOT A FAILURE. macOS allocates swap
+/// lazily, so a host that has never needed it reports
+/// `total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)`. sysctl ran, both
+/// numbers parsed, and the truthful answer is 0% in use. This used to return
+/// None on `total <= 0.0` — correct arithmetic, wrong semantics, because it
+/// collapsed a HEALTHY host into the same value as the launchd-PATH bug above,
+/// where sysctl never spawns at all. The caller logs `swap_measured=false` and
+/// `swap_pct=-1` for both, so blind and idle were indistinguishable in exactly
+/// the field that exists to tell them apart.
+///
+/// Measured 2026-09-23: this host reports total = 0.00M, and
+/// `swap_and_consumers_report_absence_rather_than_a_false_zero` failed on
+/// origin/main for that reason — the prescribed pre-push suite was red for
+/// every lane, on a healthy machine.
+///
+/// None is now reserved for "could not read it", which is what that test
+/// asserts against.
+fn parse_swap_pct(text: &str) -> Option<f64> {
     // "total = 32768.00M  used = 31284.00M  free = 1484.00M  (encrypted)"
     let grab = |key: &str| -> Option<f64> {
         let at = text.find(key)?;
@@ -437,7 +463,9 @@ fn swap_used_pct() -> Option<f64> {
             .ok()
     };
     let (total, used) = (grab("total")?, grab("used")?);
-    if total <= 0.0 { return None; }
+    if total <= 0.0 {
+        return Some(0.0);
+    }
     Some(used / total * 100.0)
 }
 
@@ -946,6 +974,35 @@ mod tests {
             assert!((0.0..=100.0).contains(&p), "swap pct out of range: {p}");
         }
         // The memory snapshot has its own native and malformed-output controls.
+    }
+
+    /// The two causes of None, pinned apart. Without these, the fix to
+    /// `total <= 0.0` is invisible and a later "simplification" back to None
+    /// reads as harmless.
+    #[test]
+    fn a_host_with_no_swap_file_reports_zero_percent_not_unmeasurable() {
+        // What this machine actually prints, verbatim.
+        let real = "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)";
+        assert_eq!(parse_swap_pct(real), Some(0.0), "no swap configured is 0% in use, not blind");
+    }
+
+    #[test]
+    fn a_host_with_swap_in_use_still_reports_the_percentage() {
+        // The control. A fix that returned Some(0.0) unconditionally would pass
+        // the test above and silently disable the reaping arm on a host at 95%.
+        let hot = "total = 1024.00M  used = 512.00M  free = 512.00M  (encrypted)";
+        assert_eq!(parse_swap_pct(hot), Some(50.0));
+        let full = "total = 32768.00M  used = 31284.00M  free = 1484.00M  (encrypted)";
+        assert!(parse_swap_pct(full).is_some_and(|p| p > 95.0));
+    }
+
+    #[test]
+    fn output_that_cannot_be_parsed_is_still_none() {
+        // None must keep meaning "could not read it" — that is what the
+        // launchd-PATH assertion below relies on.
+        assert_eq!(parse_swap_pct(""), None);
+        assert_eq!(parse_swap_pct("sysctl: unknown oid 'vm.swapusage'"), None);
+        assert_eq!(parse_swap_pct("total = M  used = M"), None);
     }
 
     #[test]
