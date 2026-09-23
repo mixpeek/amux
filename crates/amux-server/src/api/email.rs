@@ -1059,6 +1059,8 @@ pub async fn approve(
     let session = doc.get("session").and_then(Value::as_str).unwrap_or("").to_string();
     let endpoint = doc.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
     let p = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    // AMUX-4974: see `resolved_envelope`. `p` reads the FROZEN PAYLOAD, and a
+    // reply's payload has no recipient or subject.
     let include_sig = payload.get("signature") != Some(&Value::Bool(false));
     let attachments = match parse_attachments(&payload) {
         Ok(a) => a,
@@ -1113,8 +1115,10 @@ pub async fn approve(
                     // a claim rather than a finding.
                     "approved_by": approver,
                     "approver_verified": false,
-                    "from": p("from"), "to": p("to"),
-                    "subject": p("subject"),
+                    "from": p("from"),
+                    "to": resolved_envelope(&res, "to", &p("to")),
+                    "cc": resolved_envelope(&res, "cc", &p("cc")),
+                    "subject": resolved_envelope(&res, "subject", &p("subject")),
                     "body_chars": p("body").chars().count(),
                     "body_preview": p("body").chars().take(240).collect::<String>(),
                     "id": res.get("id").cloned().unwrap_or(Value::Null),
@@ -1551,6 +1555,44 @@ pub async fn send_log(
 // Tests — mocked transport + temp homes only. No network, no live token
 // files, no credential values.
 // ---------------------------------------------------------------------------
+
+
+/// Pick an envelope field for the send-audit row: the value the send actually
+/// RESOLVED, else the frozen payload's, else null.
+///
+/// AMUX-4974. The approve path logged `to` and `subject` straight from the
+/// frozen approval payload. That is correct for `send`, whose payload carries
+/// both, and empty for `reply`, whose payload deliberately does not: a reply's
+/// recipient and subject are resolved by `reply_send` from the anchor message
+/// at send time. This is the same gap GT-58 closed for the DIRECT reply path,
+/// reappearing on the approved one, which is why that fix measured clean while
+/// the ledger still had holes.
+///
+/// Measured on the live ledger before this: 5 of 16 `endpoint=reply` rows had
+/// `to: ""` and `subject: ""`, newest 2026-09-18, against 0 of 147 sends. Every
+/// one of the five was an APPROVED reply, so the rows missing a recipient were
+/// exactly the ones a human had been asked to authorise.
+///
+/// Returns null rather than "" when neither source has it, because an empty
+/// string is a legitimate value for a header and reads as "we recorded no
+/// recipient" rather than "there was none".
+pub(crate) fn resolved_envelope(res: &Value, key: &str, from_payload: &str) -> Value {
+    if let Some(v) = res.get(key) {
+        let usable = match v {
+            Value::Null => false,
+            Value::String(s) => !s.trim().is_empty(),
+            _ => true,
+        };
+        if usable {
+            return v.clone();
+        }
+    }
+    if from_payload.trim().is_empty() {
+        Value::Null
+    } else {
+        Value::String(from_payload.to_string())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2866,5 +2908,58 @@ mod rate_limit_status_tests {
         let body = axum::body::to_bytes(r.into_body(), 8192).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["needs_auth"], true, "re-consent, not a retry");
+    }
+}
+
+#[cfg(test)]
+mod resolved_envelope_tests {
+    use super::resolved_envelope;
+    use serde_json::{json, Value};
+
+    /// The REPLY shape, which is the bug. The frozen payload has no recipient
+    /// or subject; reply_send resolved them and returned them on `res`.
+    #[test]
+    fn an_approved_reply_takes_the_recipient_the_send_resolved() {
+        let res = json!({"to": "ilrick@example.com", "subject": "Re: demo", "id": "abc"});
+        assert_eq!(resolved_envelope(&res, "to", ""), json!("ilrick@example.com"));
+        assert_eq!(resolved_envelope(&res, "subject", ""), json!("Re: demo"));
+    }
+
+    /// The SEND shape, and the control for the above: `res` carries no
+    /// envelope, the payload does, and the payload must still be used. A fix
+    /// that only ever read `res` would pass the reply test and silently blank
+    /// every approved SEND row instead — the same defect, moved.
+    #[test]
+    fn an_approved_send_still_falls_back_to_the_frozen_payload() {
+        let res = json!({"id": "abc", "thread_id": "t"});
+        assert_eq!(resolved_envelope(&res, "to", "a@b.com"), json!("a@b.com"));
+        assert_eq!(resolved_envelope(&res, "subject", "Hello"), json!("Hello"));
+    }
+
+    /// An EMPTY string on `res` is not an answer. Treating it as one is how the
+    /// original bug read: `unwrap_or("")` made "absent" and "recorded as empty"
+    /// the same value.
+    #[test]
+    fn an_empty_resolved_value_falls_through_instead_of_winning() {
+        let res = json!({"to": "", "subject": "   "});
+        assert_eq!(resolved_envelope(&res, "to", "a@b.com"), json!("a@b.com"));
+        assert_eq!(resolved_envelope(&res, "subject", "Hello"), json!("Hello"));
+    }
+
+    /// Neither source has it: null, NOT "". An empty string is a legitimate
+    /// header value, so it reads as "there was no recipient" rather than "we
+    /// failed to record one", which is the distinction this whole card is about.
+    #[test]
+    fn nothing_anywhere_records_null_rather_than_an_empty_string() {
+        let res = json!({"id": "abc"});
+        assert_eq!(resolved_envelope(&res, "to", ""), Value::Null);
+        assert_eq!(resolved_envelope(&res, "cc", "  "), Value::Null);
+    }
+
+    /// A null on `res` must not beat a real payload value.
+    #[test]
+    fn an_explicit_null_on_the_result_does_not_beat_the_payload() {
+        let res = json!({"cc": Value::Null});
+        assert_eq!(resolved_envelope(&res, "cc", "c@d.com"), json!("c@d.com"));
     }
 }
