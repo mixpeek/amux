@@ -1538,7 +1538,11 @@ except Exception:
     sys.exit(1)
 tgt = os.environ["TGT"]
 if d.get("error") or d.get("ok") is False:
-    print(f"send to {tgt} FAILED: {d.get('error') or d.get('message')}")
+    # stderr, like every other failure the CLI reports. On stdout it was one
+    # `| tail -1` away from invisible, and callers that capture a send's output
+    # read the refusal as a value.
+    print(f"send to {tgt} FAILED: {d.get('error') or d.get('message') or 'no reason given'}",
+          file=sys.stderr)
     sys.exit(2)
 print(f"sent to {tgt} (origin-stamped): {d.get('message', 'ok')}")
 PYEOF
@@ -1588,13 +1592,29 @@ try:
 except Exception:
     sys.exit(1)
 tgt = os.environ["TGT"]
+attempt = os.environ["_R"]
+waited = os.environ["_R_WAITED"]
 if d.get("error") or d.get("ok") is False:
+    # A REFUSAL HAS TO SPEAK. This arm used to `sys.exit(2)` in silence, and
+    # the shell turns that into a bare `return 1`. So a send whose transport
+    # failed twice and was then REFUSED by the server printed nothing at all:
+    # no "sent", no "FAILED", no "UNCONFIRMED", and no cmd_history row to find
+    # afterwards. Measured on lat-probe 2026-09-23 — the operator's whole
+    # evidence was a missing line (AMUX-5028).
+    #
+    # It names the retry, because by the time this arm runs TWO things have
+    # gone wrong and only one of them is the refusal.
+    print(
+        f"send to {tgt} FAILED on retry {attempt} after {waited}s "
+        f"(earlier attempts never reached the server): "
+        f"{d.get('error') or d.get('message') or 'no reason given'}",
+        file=sys.stderr,
+    )
     sys.exit(2)
 # Both operands are REQUIRED, not defaulted: a missing one must crash here
 # rather than print an empty field that reads as a measured zero. That default
-# is the whole bug this line is fixing.
-attempt = os.environ["_R"]
-waited = os.environ["_R_WAITED"]
+# is the whole bug this line is fixing, and the refusal arm above reads the
+# same two names for the same reason.
 print(
     f"sent to {tgt} (origin-stamped, retry {attempt} after {waited}s — "
     f"the server was unreachable on the first try, so this was evaluated by "
