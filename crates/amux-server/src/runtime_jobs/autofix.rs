@@ -5072,7 +5072,7 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
             // now the fact, written by the statement that actually performs the
             // reopen, so the two components cannot disagree again.
             signature: format!(
-                "invariant|{id}|ROLLUP|{}{}",
+                "invariant|{id}|{ROLLUP_ENTITY}|{}{}",
                 first_seen as i64,
                 episode_sig(episode)
             ),
@@ -8092,6 +8092,14 @@ async fn autofix_tick_with_inputs(
 /// its own row, and only a genuine miss falls through. The signature spelling
 /// is deliberately NOT changed — it is a live dedupe key, and moving it re-files
 /// every open invariant card (measured the hard way, AMUX-3633).
+/// The entity slot a ROLLUP invariant card carries.
+///
+/// A DISPLAY TOKEN, NOT A STORAGE KEY, and that is exactly the distinction
+/// AMUX-3664 recorded for "fleet" one bug earlier. It is shared between the
+/// signature that mints it and the linker that has to recognise it, so the two
+/// cannot drift apart silently the way the last pair did.
+pub(crate) const ROLLUP_ENTITY: &str = "ROLLUP";
+
 fn link_incident_to_card(
     conn: &Connection,
     card: &str,
@@ -8107,6 +8115,26 @@ fn link_incident_to_card(
         conn.execute(
             "UPDATE _amux_invariant_incident SET board_issue=?1 \
              WHERE invariant_id=?2 AND entity_key=''",
+            rusqlite::params![card, invariant],
+        )?
+    } else if n == 0 && entity == ROLLUP_ENTITY {
+        // A ROLLUP CARD COVERS EVERY ENTITY OF ITS INVARIANT (AMUX-4920), so
+        // it claims the rows that have no card of their own. The exact match
+        // above can never hit for one: `ROLLUP` names a grouping, and no
+        // incident row is ever keyed to it. Same class as the `fleet` miss
+        // directly above, found the same way, by a resolved incident with no
+        // card to tell.
+        //
+        // Measured 2026-09-22: session.registered_lane_is_running carried 100
+        // incident rows with 88 unlinked, while its rollup card sat open over a
+        // fault that had already cleared. Zero rows on disk key to "ROLLUP".
+        //
+        // `board_issue=''` is the whole guard: an entity-specific card that
+        // already linked its own row KEEPS it, so the rollup can never steal a
+        // narrower card's incident. Exact match still wins, as above.
+        conn.execute(
+            "UPDATE _amux_invariant_incident SET board_issue=?1 \
+             WHERE invariant_id=?2 AND board_issue=''",
             rusqlite::params![card, invariant],
         )?
     } else {
@@ -10390,6 +10418,71 @@ mod tests {
             card_of("hooks.shared_guard", ""),
             "AMUX-1",
             "must not be overwritten"
+        );
+    }
+
+    /// AMUX-4920. A ROLLUP card could never link, so it could never be told.
+    ///
+    /// `detect_invariants` mints the rollup signature as
+    /// `invariant|{id}|ROLLUP|...`, and no incident row is ever keyed to
+    /// "ROLLUP" — it names a grouping. The exact-match UPDATE therefore hit
+    /// zero rows and left `board_issue` empty, which is the same class of miss
+    /// AMUX-3664 recorded for "fleet" one bug earlier: a display token leaking
+    /// into a storage key.
+    ///
+    /// Measured 2026-09-22: `session.registered_lane_is_running` carried 100
+    /// incident rows with 88 unlinked, while its rollup card sat open over a
+    /// fault that had already cleared.
+    ///
+    /// The CONTROL is the half that makes the fallback safe: a row that already
+    /// belongs to an entity-specific card must keep it. A blanket UPDATE would
+    /// smear the rollup across rows a narrower card owns.
+    #[test]
+    fn a_rollup_card_claims_unlinked_rows_and_leaves_an_entity_card_its_own() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_invariant_incident (invariant_id TEXT, entity_key TEXT, \
+             board_issue TEXT);
+             INSERT INTO _amux_invariant_incident VALUES ('session.lane_running','lane-a','');
+             INSERT INTO _amux_invariant_incident VALUES ('session.lane_running','lane-b','');
+             INSERT INTO _amux_invariant_incident VALUES ('session.lane_running','lane-c','');
+             INSERT INTO _amux_invariant_incident VALUES ('other.check','lane-a','');",
+        )
+        .unwrap();
+        let link = |c: &str, i: &str, e: &str| link_incident_to_card(&conn, c, i, e).unwrap();
+        let card_of = |i: &str, e: &str| -> String {
+            conn.query_row(
+                "SELECT COALESCE(board_issue,'') FROM _amux_invariant_incident \
+                 WHERE invariant_id=?1 AND entity_key=?2",
+                rusqlite::params![i, e],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // An entity-specific card claims its own row FIRST.
+        assert_eq!(link("AMUX-ENT", "session.lane_running", "lane-b"), 1);
+
+        // TREATMENT: the rollup claims what is left. Zero before the fix.
+        assert_eq!(
+            link("AMUX-ROLL", "session.lane_running", ROLLUP_ENTITY),
+            2,
+            "a rollup card must claim the rows that have no card of their own"
+        );
+        assert_eq!(card_of("session.lane_running", "lane-a"), "AMUX-ROLL");
+        assert_eq!(card_of("session.lane_running", "lane-c"), "AMUX-ROLL");
+
+        // CONTROL 1: the entity card keeps its exact match.
+        assert_eq!(
+            card_of("session.lane_running", "lane-b"),
+            "AMUX-ENT",
+            "the rollup must not steal a row a narrower card already owns"
+        );
+        // CONTROL 2: a different invariant is untouched.
+        assert_eq!(
+            card_of("other.check", "lane-a"),
+            "",
+            "the fallback is scoped to its own invariant"
         );
     }
 
