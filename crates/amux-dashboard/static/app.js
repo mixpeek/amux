@@ -1321,7 +1321,7 @@ function showConnHistory() {
       const age = Math.floor((Date.now() - q.timestamp) / 60000);
       const timeStr = age < 1 ? 'just now' : age + 'm ago';
       const uncertain = _outboxUncertainMessage(q);
-      const blocked = q.state === 'blocked' && !uncertain;
+      const blocked = (q.state === 'blocked' || _projectReviewAction(q.url)) && !uncertain;
       const ico = blocked ? '🔴' : uncertain ? '🟡' : '⏳';
       const status = blocked ? 'failed' : uncertain ? 'checking' : 'queued';
       const dismissId = 'conn-dismiss-' + esc(q.id);
@@ -3105,7 +3105,7 @@ async function _runSyncBanner(quiet = false) {
     // was never re-read and never timed out. Ethan's point about that change
     // still holds ("this shouldn't be appearing when I send, too invasive"),
     // so they are left out of the decision to SHOW the checklist instead.
-    return !blockedResources.has(q.url) && !_outboxActive.has(q.id);
+    return !blockedResources.has(q.url) && !_outboxActive.has(q.id) && !_projectReviewAction(q.url);
   });
   let skipped = 0;
   const uploads = await _upqList();
@@ -3329,7 +3329,7 @@ async function _dismissQueuedOp(id) {
   let removed = false;
   await _mutateQueue(current => {
     // A different tab may have retried this operation since the row rendered.
-    const at = current.findIndex(q => q.id === id && q.state === 'blocked');
+    const at = current.findIndex(q => q.id === id && (q.state === 'blocked' || _projectReviewAction(q.url)));
     if (at >= 0) { current.splice(at, 1); removed = true; }
   });
   if (!removed) {
@@ -3698,7 +3698,8 @@ const _origFetch = window.fetch.bind(window);
 // deploy has its fetch fail, get queued, and report success. Ethan saw the two
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
-const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org)/;
+const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
+const _projectReviewAction = url => /\/api\/projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun))$/.test(url || '');
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -5273,7 +5274,7 @@ function sessionProvider(s) {
 }
 
 function providerDefaultModel(provider) {
-  if (provider === 'codex') return 'gpt-5.5';
+  if (provider === 'codex') return 'gpt-6-luna';
   if (provider === 'gemini') return 'auto';
   if (provider === 'ollama') return 'qwen3.8:27b';
   if (provider === 'muse') return 'muse-spark-1.3-contributor';
@@ -11893,7 +11894,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1034';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1045';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -18111,10 +18112,16 @@ function _msgDeliveryChip(e) {
     label = 'fallback'; color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
     title = 'Delivered by raw keystroke injection — NOT origin-stamped, not acknowledged, arrival unverified';
   } else if (rec === 'queued' || (!rec && _msgQueued(e))) {
-    label = 'queued' + waitTxt; color = '#d29922'; bg = 'rgba(210,153,34,0.16)';
-    title = wait > 1500
-      ? 'Parked on the steering queue and delivered at a later turn boundary, after ' + _fmtDur(wait)
-      : 'Parked on the steering queue, delivered at the next turn boundary';
+    const delivered = Number(e.delivered_at) > 0;
+    label = delivered ? 'delivered from queue' + waitTxt : 'queued';
+    color = '#d29922'; bg = 'rgba(210,153,34,0.16)';
+    title = delivered
+      ? (wait > 1500 ? 'Delivered at a later turn boundary after ' + _fmtDur(wait) : 'Delivered at the next turn boundary')
+      : 'Waiting in the steering queue; delivery has not been confirmed';
+  } else if (rec === 'voided' || rec === 'uncertain') {
+    label = rec === 'voided' ? 'not delivered' : 'delivery unknown';
+    color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
+    title = rec === 'voided' ? 'The queued message was cancelled before delivery' : 'Delivery was interrupted; the message may or may not have reached the worker';
   } else if (rec === 'direct') {
     label = 'direct'; color = '#3fb950'; bg = 'rgba(63,185,80,0.14)';
     title = 'Handed to a live session at the moment it was sent';
@@ -18883,11 +18890,17 @@ const _PEEK_MSG_PAGE = 60;    // fallback page size only; the reader's choice li
 // swap to server-scoped rows, or a message you just sent vanishes until the
 // next poll — the "sent from phone, missing on desktop" class of bug.
 function _mergeUnechoed(serverRows, session) {
-  const seen = new Set(serverRows.map(r => (r.text || '') + '|' + (r.session || '')));
+  // Project steering adds a display timestamp before the server records the
+  // message. The optimistic local row keeps the original text; exact-text
+  // comparison rendered one human send twice, once falsely labeled "direct?".
+  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '').trim();
+  const echoed = local => serverRows.some(row =>
+    (row.session || '') === (local.session || '')
+    && canonical(row.text) === canonical(local.text)
+    && Math.abs(Number(row.time || row.ts || 0) - Number(local.time || local.ts || 0)) < 60000);
   const local = _cmdHistory.filter(e => typeof e !== 'string' && !e.id
     && (!session || (e.session || '') === session)
-    && ((e.msg_id && offlineQueue.some(q => _outboxMessageId(q) === e.msg_id))
-      || !seen.has((e.text || '') + '|' + (e.session || ''))));
+    && !echoed(e));
   return serverRows.concat(local).sort((a, b) => (a.time || a.ts || 0) - (b.time || b.ts || 0));
 }
 
@@ -20641,7 +20654,7 @@ function _fileBindAnchors(container) {
     const a = e.target.closest('a');
     if (!a) return;
     const href = a.getAttribute('href');
-    if (href && href.startsWith('#')) {
+    if (href && href.length > 1 && href.startsWith('#')) {
       e.preventDefault();
       const id = href.slice(1);
       const target = container.querySelector('#' + CSS.escape(id))
@@ -45014,8 +45027,9 @@ function _projectStorage(key, value) {
 }
 function _projectError(error) { const el=document.getElementById('project-error'); if(el) el.textContent=String(error.message || error); console.warn('project_operation_failed',error); }
 async function _projectRequest(path, method='GET', body, signal) {
-  const timeout=AbortSignal.timeout(20000);
+  const timeout=AbortSignal.timeout(method==='POST' && path.endsWith('/closeout')?960000:20000);
   const r=await fetch(API+'/api/projects'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:signal?AbortSignal.any([signal,timeout]):timeout});
+  if(_isLocallyQueued(r)) throw new Error('Project action was only queued on this device; retry when connected.');
   const result=await r.json(); if(!r.ok) {const error=new Error(result.error || ('Request failed: '+r.status));error.status=r.status;throw error;} return result;
 }
 function _projectDraft() { _projectStorage('draft_'+_projectsName, document.getElementById('project-command').value); }
@@ -45063,7 +45077,7 @@ function _projectOpenCheckoutPath(path,event) {
 function _projectCheckoutPathButton(path,label) {
   if(!path) return '<span>No checkout recorded</span>';
   const text=label || _projectDisplayPath(path);
-  return `<button type="button" class="project-path-link" title="Open checkout in Files" onclick="_projectOpenCheckoutPath('${escJs(path)}',event)">${esc(text)}</button>`;
+  return `<button type="button" class="project-path-link" title="Open in Files" onclick="_projectOpenCheckoutPath('${escJs(path)}',event)">${esc(text)}</button>`;
 }
 function _projectPrimaryWorkspace(data) {
   const workers=_projectWorkers(data);
@@ -45075,7 +45089,7 @@ function _projectPrimaryWorkspace(data) {
     return 3;
   };
   return workers
-    .filter(w=>w?.workspace?.path)
+    .filter(w=>w?.workspace?.path && w.workspace_available===true)
     .sort((a,b)=>score(a)-score(b) || String(a.name||'').localeCompare(String(b.name||'')))[0]?.workspace || null;
 }
 function _projectInventoryState(project) {
@@ -45084,9 +45098,11 @@ function _projectInventoryState(project) {
   if(policy.enabled===false) return {label:'Disabled',cls:'disabled'};
   if(summary.acceptance_state==='awaiting_human' || summary.retirement_state==='awaiting_human') return {label:'Needs review',cls:'review'};
   if(summary.acceptance_state==='accepted') return {label:'Accepted',cls:'done'};
+  if(['failed','operational_failure','rejected'].includes(summary.acceptance_state)) return {label:'Verification failed',cls:'review'};
   if(summary.acceptance_state==='not_configured' && Number(summary.active_tasks||0)===0 && Number(summary.task_count||0)>0) return {label:'Review setup',cls:'review'};
+  if(Number(summary.active_tasks||0)>0 && Number(summary.waiting_tasks||0)===Number(summary.active_tasks||0) && Number(summary.running_executions||0)===0) return {label:'Execution held',cls:'review'};
   if(Number(summary.running_executions||0)>0 || Number(summary.active_tasks||0)>0) return {label:'Driving',cls:'active'};
-  if(Number(summary.task_count||0)>0) return {label:'Tasks verified',cls:'done'};
+  if(Number(summary.task_count||0)>0) return {label:'Verifying outcome',cls:'active'};
   return {label:'Ready',cls:'ready'};
 }
 function _projectRenderInventory(projects) {
@@ -45100,10 +45116,10 @@ function _projectRenderInventory(projects) {
       return `<button class="project-list-card ${!_projectsName?'selected':''}" onclick="_projectChoose('')"><strong>+ New project</strong><span>Define an outcome, repository, gates and review evidence.</span></button>`;
     }
     const st=_projectInventoryState(p),policy=p.policy||{},summary=p.summary||{},workspace=summary.workspace||{};
-    const checkoutPath=workspace.path || policy.repository || '';
+    const checkoutPath=(workspace.available===true ? workspace.path : '') || policy.repository || '';
     const executor=[policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ');
     const choose=`_projectChoose('${escJs(p.name)}')`;
-    const mode=(policy.worktree===false?'Shared checkout':'Dedicated worktrees')+(workspace.worker?' · '+workspace.worker:'')+(executor?' · '+executor:'');
+    const mode=(summary.acceptance_state==='accepted' && workspace.available===false?'Published to main · worktree removed':policy.worktree===false?'Shared checkout':'Dedicated worktrees')+(workspace.worker?' · '+workspace.worker:'')+(executor?' · '+executor:'');
     return `<div class="project-list-card ${p.name===_projectsName?'selected':''}" role="button" tabindex="0" onclick="${choose}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${choose}}"><span class="project-list-row"><strong>${esc(p.name)}</strong><em class="project-pill ${esc(st.cls)}">${esc(st.label)}</em></span><span class="project-card-path">${checkoutPath?_projectCheckoutPathButton(checkoutPath):'<span>No repository configured</span>'}</span><span>${esc(mode)}</span></div>`;
   }).join('');
 }
@@ -45131,7 +45147,7 @@ function _projectApplyTab() {
 function _projectDetailTemplate(project) {
   return _projectTabsHtml()+
     '<section id="project-panel-overview" class="project-tab-panel" data-project-panel="overview">'+
-      '<section class="project-command-center"><div class="project-status"><div><span class="project-eyebrow">Current state</span><strong id="project-state"></strong></div><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div class="project-metrics" aria-label="Project health"><div><strong id="project-metric-outcomes">—</strong><span>Outcomes verified</span></div><div><strong id="project-metric-tasks">—</strong><span>Tasks active</span></div><div><strong id="project-metric-workers">—</strong><span>Workers assigned</span></div><div><strong id="project-metric-usage">—</strong><span>Observed usage</span></div></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><label class="project-composer-label" for="project-command">Add or refine the desired outcome</label><textarea id="project-command" rows="3" placeholder="Describe the result and how a human can verify the produced artifact" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div></section>'+
+      '<section class="project-command-center"><div class="project-status"><div><span class="project-eyebrow">Current state</span><strong id="project-state"></strong></div><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div class="project-metrics" aria-label="Project health"><div><strong id="project-metric-outcomes">—</strong><span id="project-metric-outcomes-label">Outcomes verified</span></div><div><strong id="project-metric-tasks">—</strong><span>Tasks active</span></div><div><strong id="project-metric-workers">—</strong><span>Workers assigned</span></div><div><strong id="project-metric-usage">—</strong><span>Observed usage</span></div></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><label class="project-composer-label" for="project-command">Add or refine the desired outcome</label><textarea id="project-command" rows="3" placeholder="Describe the result and how a human can verify the produced artifact" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div><div id="project-commands"></div></section>'+
       '<div id="project-overview" class="project-overview-grid"></div>'+
     '</section>'+
     '<section id="project-panel-tasks" class="project-tab-panel" data-project-panel="tasks" hidden><div class="project-workspace"><div id="project-cards" class="project-columns" aria-label="Project tasks"></div><aside id="project-inspector" class="project-inspector" tabindex="-1" aria-label="Task inspector"></aside></div></section>'+
@@ -45195,6 +45211,9 @@ function _projectOutcomeVerdict(data) {
   const pending=automated.length-passed-failed;
   const cards=Array.isArray(data?.cards)?data.cards:[];
   const active=cards.filter(c=>!['verified','closed'].includes(c.phase)).length;
+  const held=cards.filter(c=>c.phase==='waiting');
+  const budget=Number(data?.project?.policy?.token_budget||0);
+  const spent=Number(data?.usage?.tokens||0);
   let tone='pending',title='Outcome not proven yet',summary='This project has not produced a complete, independently checked result.';
   if(state==='accepted') {
     tone='passed';title='Outcome verified and approved';
@@ -45205,9 +45224,13 @@ function _projectOutcomeVerdict(data) {
   } else if(['failed','operational_failure','rejected'].includes(state) || failed>0) {
     tone='failed';title='Outcome not verified';
     summary=failed>0 ? failed+' automated check'+(failed===1?' has':'s have')+' failed. The project must repair and rerun them before approval.' : 'The outcome was rejected or its verification did not complete successfully.';
+  } else if(!acc.candidate && held.length) {
+    tone='failed';title='Work is held before verification';
+    const reason=held[0]?.execution_plan?.waiting_label||'A task is waiting';
+    summary=reason+'. No candidate has been accepted for whole-project verification.'+(budget && spent>=budget?' The observed token budget is also exhausted; Amux will use token-free recovery where possible and will not start another paid worker turn.':'');
   } else if(criteria.length && (active>0 || pending>0 || state)) {
-    tone='running';title='Verification still in progress';
-    summary='Do not treat completed tasks or worker reports as proof. The project is verified only after every configured check passes and the retained evidence is reviewed.';
+    tone='running';title=acc.candidate?'Verification still in progress':'Work in progress; verification has not started';
+    summary=acc.candidate?'The project is verified only after every configured check passes and the retained evidence is reviewed.':'No whole-project candidate exists yet. Task work and reports are not lifecycle proof.';
   } else if(cards.length && active===0) {
     tone='pending';title='Tasks finished, outcome not independently verified';
     summary='Task completion alone does not prove the requested outcome. Configure and run whole-project acceptance before approving it.';
@@ -45224,7 +45247,9 @@ function _projectOutcomeCard(data) {
     const runtime=c?.verifier?.type==='execution';
     const subject=c?.result?.receipt?.subject?.id;
     const stages=Array.isArray(c?.result?.receipt?.stages)?c.result.receipt.stages.filter(s=>s?.state==='passed').length:0;
-    const label=cls==='passed'?(runtime?'Fresh execution verified'+(stages?' · '+stages+' stages':''):'Passed'):cls==='failed'?'Failed':c?.verifier?.type==='human'?'Needs human review':runtime?'Waiting for fresh execution':'Pending';
+    const measurements=Array.isArray(c?.result?.measurements)?c.result.measurements.length:0;
+    const dockerAttested=!!c?.result?.docker_attestation;
+    const label=cls==='passed'?(runtime?'Fresh execution verified · '+measurements+' raw checks'+(stages?' · '+stages+' stages':'')+(dockerAttested?' · Docker image attested':''):'Passed'):cls==='failed'?'Failed':c?.verifier?.type==='human'?'Needs human review':runtime?'Waiting for fresh execution':'Pending';
     return '<li class="'+cls+'"><span aria-hidden="true"></span><div><strong>'+esc(c.requirement||c.id||'Acceptance check')+'</strong><small>'+esc(label)+(subject?' · '+esc(subject):'')+'</small></div></li>';
   }).join('');
   const assets=Array.isArray(data?.acceptance?.review_assets)?data.acceptance.review_assets:[];
@@ -45240,11 +45265,21 @@ function _projectRenderOverview(data) {
   const phaseSet=new Set(cards.map(c=>c.phase));
   const phaseRank={intake:0,ready:1,working:2,waiting:2,verifying:3,verified:4,closed:4};
   const furthest=cards.reduce((max,c)=>Math.max(max, phaseRank[c.phase] ?? -1), -1);
-  const verifiedCount=cards.filter(c=>c.phase==='verified').length;
+  const allTasksComplete=cards.length>0 && cards.every(c=>['verified','closed'].includes(c.phase));
+  const projectAccepted=acc.state==='accepted';
+  const awaitingReview=acc.state==='awaiting_human';
   const timeline=phases.map((phase,index)=>{
-    const current=phaseSet.has(phase) || (phase==='working' && phaseSet.has('waiting'));
-    const done=cards.length>0 && index<=furthest && (index<furthest || phase==='verified' && verifiedCount>0 || current);
-    const label=phase==='verified' ? (verifiedCount ? verifiedCount+' verified' : 'pending') : current ? 'active' : done ? 'done' : 'pending';
+    const current=phase==='verifying' ? !!acc.candidate && !projectAccepted && !awaitingReview
+      : phase==='verified' ? awaitingReview
+      : phaseSet.has(phase) || (phase==='working' && phaseSet.has('waiting'));
+    const done=phase==='verified' ? projectAccepted
+      : phase==='verifying' ? projectAccepted || awaitingReview
+      : phase==='working' ? allTasksComplete || current
+      : cards.length>0 && index<=furthest;
+    const label=phase==='verified' ? (projectAccepted?'approved':awaitingReview?'needs review':'pending')
+      : phase==='verifying' ? (current?'running':done?'done':'pending')
+      : phase==='working' && allTasksComplete ? 'tasks complete'
+      : current ? 'active' : done ? 'done' : 'pending';
     return `<div class="project-timeline-step ${done?'done':''}"><span></span><strong>${esc(phase[0].toUpperCase()+phase.slice(1))}</strong><small>${esc(label)}</small></div>`;
   }).join('');
   const taskRows=cards.slice().sort((a,b)=>{
@@ -45261,8 +45296,8 @@ function _projectRenderOverview(data) {
   const primaryWorkspace=_projectPrimaryWorkspace(data);
   const repo=policy.repository||'';
   const checkoutPath=primaryWorkspace?.path || repo;
-  const checkoutLabel=primaryWorkspace?.path ? _projectDisplayPath(primaryWorkspace.path) : (policy.worktree===false?'Shared checkout':'Dedicated worktrees');
-  const context=`<dl class="project-context"><dt>Repository</dt><dd>${repo?_projectCheckoutPathButton(repo,_projectDisplayPath(repo)):'Not configured'}</dd><dt>Checkout</dt><dd>${checkoutPath?_projectCheckoutPathButton(checkoutPath,checkoutLabel):esc(policy.worktree===false?'Shared checkout':'Dedicated worktrees')}</dd><dt>Planner</dt><dd>${esc([policy.coordinator?.provider,policy.coordinator?.model,policy.coordinator?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Executor</dt><dd>${esc([policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Gate</dt><dd>${esc(policy.verify_command||'Not configured')}</dd></dl>`;
+  const checkoutLabel=primaryWorkspace?.path ? _projectDisplayPath(primaryWorkspace.path) : (projectAccepted && policy.worktree?'Published in main · '+_projectDisplayPath(repo):policy.worktree===false?'Shared checkout':'Dedicated worktrees');
+  const context=`<dl class="project-context"><dt>Repository</dt><dd>${repo?_projectCheckoutPathButton(repo,_projectDisplayPath(repo)):'Not configured'}</dd><dt>Checkout</dt><dd>${checkoutPath?_projectCheckoutPathButton(checkoutPath,checkoutLabel):esc(policy.worktree===false?'Shared checkout':'Dedicated worktrees')}</dd><dt>Planner</dt><dd>${esc([policy.coordinator?.provider,policy.coordinator?.model,policy.coordinator?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Executor</dt><dd>${esc([policy.executor?.provider,policy.executor?.model,policy.executor?.effort].filter(Boolean).join(' · ')||'—')}</dd><dt>Host tools</dt><dd>${policy.executor_full_host_access?'Full access for local tools':'Sandboxed'}</dd><dt>Gate</dt><dd>${esc(policy.verify_command||'Not configured')}</dd></dl>`;
   const html=_projectOutcomeCard(data)+`<section class="project-overview-card wide"><h3>Project timeline</h3><div class="project-timeline">${timeline}</div></section><section class="project-overview-card"><h3>Project context</h3>${context}</section><section class="project-overview-card wide"><div class="project-card-heading"><h3>Tasks</h3><button class="project-link" onclick="_projectSetTab('tasks')">View kanban →</button></div><table class="project-task-table"><thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Updated</th></tr></thead><tbody>${taskRows||'<tr><td colspan="4">No tasks yet</td></tr>'}</tbody></table></section><section class="project-overview-card"><div class="project-card-heading"><h3>Recent runs</h3><button class="project-link" onclick="_projectSetTab('tasks')">View all →</button></div><ul class="project-run-list">${runs||'<li><span>No runs yet</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Dependencies</h3><button class="project-link" onclick="_projectSetTab('dependencies')">View all →</button></div><ul class="project-run-list">${deps||'<li><span>No active dependency holds</span></li>'}</ul></section><section class="project-overview-card"><div class="project-card-heading"><h3>Evidence summary</h3><button class="project-link" onclick="_projectSetTab('evidence')">View all →</button></div><ul class="project-evidence-summary">${evidenceSummary}</ul></section><section class="project-overview-card"><h3>Review note</h3><p>${esc(acc.reason ? acc.reason.replaceAll('_',' ') : (acc.state ? 'Acceptance state: '+acc.state : 'Whole-project acceptance has not run yet.'))}</p></section>`;
   if(el.dataset.sig!==html){el.dataset.sig=html;el.innerHTML=html;}
 }
@@ -45339,9 +45374,9 @@ function _projectRenderWorkersPanel(data) {
     const runtime=_projectWorkerRuntime(worker);
     const env=worker.env||{},workspace=worker.workspace||{},integration=worker.integration&&typeof worker.integration==='object'?worker.integration:null;
     const model=[env.provider,env.model,env.effort].filter(Boolean).join(' · ');
-    const checkout=workspace.path || env.dir || '';
+    const checkout=worker.workspace_available===true ? workspace.path : '';
     const tasks=(worker.tasks||[]).slice().sort((a,b)=>Number(b.updated||0)-Number(a.updated||0)).map(t=>`<li><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(t.id)}'),0)">${esc(t.id)}</button><span>${esc(_projectClip(t.title||'',72))}</span><small>${esc(t.display_label||t.phase||t.status||'')}${t.stage?' · '+esc(t.stage):''}</small></li>`).join('');
-    const checkoutHtml=checkout?_projectCheckoutPathButton(checkout):'Not recorded';
+    const checkoutHtml=checkout?_projectCheckoutPathButton(checkout):integration?.status==='integrated'?'Removed after publish · '+_projectCheckoutPathButton(workspace.repo||env.dir,'Open repository'):'Checkout unavailable';
     const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+checkoutHtml+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||'Not recorded')+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
     return '<article class="project-overview-card project-worker-card"><div class="project-card-heading"><h3>'+esc(worker.name||'worker')+'</h3>'+_projectWorkerAction(worker,runtime)+'</div>'+facts+'<div class="project-card-heading"><h3>Tasks</h3><span class="project-muted">'+esc(String(worker.retained_assets||0))+' retained assets</span></div><ul class="project-run-list">'+(tasks||'<li><span>No project tasks recorded for this worker</span></li>')+'</ul></article>';
   }).join('') || '<p class="project-empty" role="status">No workers have been assigned to this project yet. Workers appear here after project tasks are claimed, and remain listed after pause, archive or expiration.</p>';
@@ -45407,7 +45442,7 @@ async function _projectsLoad() {
   }
 }
 function _projectModelSuggestions(provider) {
-  const models=provider==='codex'?['gpt-6-astra','gpt-5.5']:provider==='claude'?['haiku','sonnet','opus']:[];
+  const models=provider==='codex'?['gpt-6-luna','gpt-6-sol','gpt-6-astra']:provider==='claude'?['haiku','sonnet','opus']:[];
   return models.map(model=>'<option value="'+esc(model)+'"></option>').join('');
 }
 function _projectModelOptions(role,provider) {
@@ -45418,7 +45453,7 @@ function _projectEffortOptions(value) {
   return ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(v=>'<option value="'+esc(v)+'" '+(v===(value||'')?'selected':'')+'>'+(v?esc(v):'Provider default')+'</option>').join('');
 }
 function _projectConfig(project) {
-  const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'codex',model:'gpt-5.5',effort:'low'},executor:{provider:'codex',model:'gpt-5.5',effort:'low'},verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor_full_host_access:false,verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
   const worktree=p.worktree!==false;
   const coordinatorEffort=p.coordinator.effort || (p.coordinator.provider==='codex'?'low':'');
   const executorEffort=p.executor.effort || (p.executor.provider==='codex'?'low':'');
@@ -45432,19 +45467,20 @@ function _projectConfig(project) {
     '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
     '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
     '<label>Executor effort<select id="project-executor-effort">'+_projectEffortOptions(executorEffort)+'</select></label>'+
+    '<label>Codex executor host tools<select id="project-executor-host-access"><option value="0" '+(!p.executor_full_host_access?'selected':'')+'>Sandboxed (default)</option><option value="1" '+(p.executor_full_host_access?'selected':'')+'>Full host access (for local Docker)</option></select></label>'+
     '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
     '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+
     '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
     '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
     '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div>'+
-    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label><p class="project-muted">This contract runs independently on the composed, unpublished project candidate. Runtime and end-to-end claims require a fresh execution receipt; reports and copied historical results cannot satisfy them. Human approval publishes that exact candidate to <code>origin/main</code>.</p>'+
+    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label><p class="project-muted">This contract runs independently on the composed, unpublished project candidate. Runtime and end-to-end claims require a fresh execution receipt, a raw measurement assertion for every stage, and retained evidence. Docker image identity is checked directly with Docker. Human approval publishes that exact candidate to <code>origin/main</code>.</p>'+
     '<p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
 }
 
 // Unsaved settings edits belong to the project they were typed in and survive
 // refresh, project switches and reloads until Save or Cancel.
-const _projectSettingIds=['name','repository','worktree','coordinator-provider','coordinator','coordinator-effort','provider','executor','executor-effort','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
+const _projectSettingIds=['name','repository','worktree','coordinator-provider','coordinator','coordinator-effort','provider','executor','executor-effort','executor-host-access','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
 function _projectCheckoutChanged() {
   const checkout=document.getElementById('project-worktree'), capacity=document.getElementById('project-capacity');
   if(checkout?.value==='0' && capacity) capacity.value='1';
@@ -45478,7 +45514,7 @@ async function _projectSave() {
   const executor={provider:value('provider'),model:value('executor')};
   if(value('coordinator-effort')) coordinator.effort=value('coordinator-effort');
   if(value('executor-effort')) executor.effort=value('executor-effort');
-  const policy={repository:value('repository'),worktree,coordinator,executor,verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
+  const policy={repository:value('repository'),worktree,coordinator,executor,executor_full_host_access:value('executor-host-access')==='1',verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
   try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectStorage(_projectSettingsKey(),'');_projectChoose(name);} catch(e){_projectError(e);}
 }
 async function _projectPause() {
@@ -45562,7 +45598,9 @@ function _projectPatch(parent, items) {
 function _projectRender(data) {
   const p=data.project,u=data.usage;
   const retirement=data.acceptance?.executor_retirement;
-  document.getElementById('project-state').textContent=p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':p.policy.enabled?'Driving project outcomes':'Disabled';
+  const openCards=data.cards.filter(c=>!['verified','closed'].includes(c.phase));
+  const allHeld=openCards.length>0 && openCards.every(c=>c.phase==='waiting');
+  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':'Driving project outcomes';
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   const setText=(id,text)=>{const el=document.getElementById(id);if(el && el.textContent!==text) el.textContent=text;};
@@ -45572,11 +45610,13 @@ function _projectRender(data) {
   const activeTasks=data.cards.filter(c=>!['verified','closed'].includes(c.phase)).length;
   const assignedWorkers=new Set(_projectWorkers(data).map(w=>w.name).filter(Boolean));
   const pendingCommands=data.commands.filter(c=>c.pending).length;
-  setText('project-metric-outcomes',u.verified_outcomes+' / '+u.requested_outcomes);
+  const hasIntakeOutcomes=Number(u.requested_outcomes)>0;
+  setText('project-metric-outcomes',hasIntakeOutcomes?u.verified_outcomes+' / '+u.requested_outcomes:verifiedTasks+' / '+data.cards.length);
+  setText('project-metric-outcomes-label',hasIntakeOutcomes?'Outcomes verified':'Tasks verified');
   setText('project-metric-tasks',activeTasks+' active');
   setText('project-metric-workers',assignedWorkers.size+' assigned');
   setText('project-metric-usage',u.measured?u.tokens.toLocaleString()+' tokens':'not measured');
-  setText('project-progress',u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · '+verifiedTasks+' of '+data.cards.length+' tasks verified'+(closedTasks?' · '+closedTasks+' closed (not verified)':'')+' · '+pendingCommands+' requests awaiting intake');
+  setText('project-progress',(hasIntakeOutcomes?u.verified_outcomes+' / '+u.requested_outcomes+' structured outcomes verified · ':'')+verifiedTasks+' of '+data.cards.length+' tasks verified'+(closedTasks?' · '+closedTasks+' closed (not verified)':'')+' · '+pendingCommands+' requests awaiting intake');
   const acc=data.acceptance,accEl=document.getElementById('project-acceptance');
   const accHtml=acc && typeof acc.state==='string'
     ? _projectAcceptanceHtml(acc)
@@ -45647,7 +45687,9 @@ function _projectAcceptanceHtml(acc) {
   const retirement=acc.executor_retirement;
   const retirementNotice=retirement && retirement.allowed===false && retirement.state==='review_not_configured'?'<p class="project-wait">Executor expiration is held: '+esc(retirement.reason)+'.</p>':'';
   const closeout=acc.state==='accepted'?_projectCloseoutBanner(_projectsData,true):'';
-  return '<div>Project acceptance: <strong>'+esc(acc.state)+'</strong>'+(acc.candidate?' · candidate '+_projectSha(acc.candidate):'')+(acc.main?' · based on main '+_projectSha(acc.main):'')+'</div>'+hold+retirementNotice+(acc.reason?'<p class="project-muted">'+esc(acc.reason.replaceAll('_',' '))+'</p>':'')+(artifacts?'<div class="project-review-assets"><strong>Produced artifacts to review</strong><div>'+artifacts+'</div></div>':'')+(rows?'<details open><summary>Whole-project criteria ('+criteria.length+')</summary><ol class="project-criteria">'+rows+'</ol></details>':'')+rerun+closeout;
+  const ownerMessages=Array.isArray(acc.pending_owner_messages)?acc.pending_owner_messages:[];
+  const pendingNotes=ownerMessages.length?'<div class="project-review-assets project-owner-notes"><strong>'+ownerMessages.length+' worker message'+(ownerMessages.length===1?' was':'s were')+' queued but not delivered</strong><p>Review these instructions against the evidence. Approval retains them in worker history as undelivered; it does not claim the worker acted on them.</p><ul>'+ownerMessages.map(m=>'<li><strong>'+esc(m.task||m.worker||'Worker')+'</strong>: '+esc(m.text||'')+'</li>').join('')+'</ul></div>':'';
+  return '<div>Project acceptance: <strong>'+esc(acc.state)+'</strong>'+(acc.candidate?' · candidate '+_projectSha(acc.candidate):'')+(acc.main?' · based on main '+_projectSha(acc.main):'')+'</div>'+hold+retirementNotice+(acc.reason?'<p class="project-muted">'+esc(acc.reason.replaceAll('_',' '))+'</p>':'')+(artifacts?'<div class="project-review-assets"><strong>Produced artifacts to review</strong><div>'+artifacts+'</div></div>':'')+pendingNotes+(rows?'<details open><summary>Whole-project criteria ('+criteria.length+')</summary><ol class="project-criteria">'+rows+'</ol></details>':'')+rerun+closeout;
 }
 function _projectCloseoutBanner(data,compact=false) {
   if(data?.acceptance?.state!=='accepted') return '';
@@ -45657,7 +45699,7 @@ function _projectCloseoutBanner(data,compact=false) {
   const label=retained>0?'Publish approved candidate and expire workers':'Recheck project closeout';
   const note=retained>0
     ? retained+' retained worker'+(retained===1?'':'s')+' can be finalized. Expired worker records stay in this project for retrospective review.'
-    : (expired>0 ? expired+' worker'+(expired===1?' is':'s are')+' already expired and remain reviewable here.' : 'No retained project workers need closeout.');
+    : (expired>0 ? expired+' worker'+(expired===1?' is':'s are')+' expired and '+(expired===1?'remains':'remain')+' reviewable here.' : 'No retained project workers need closeout.');
   return '<div class="project-closeout '+(compact?'compact':'')+'"><div><strong>Finalize project</strong><p>'+esc(note)+'</p></div><button class="btn primary" id="project-closeout" onclick="_projectCloseout()">'+esc(label)+'</button></div>';
 }
 async function _projectAcceptanceDecision(criterion,decision) {

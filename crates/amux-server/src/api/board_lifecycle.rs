@@ -248,6 +248,36 @@ fn normalize_for_request(d: &mut Decision, rows: &[Candidate], session: &str) {
     }
 }
 
+// The model may put an explicitly requested build/run action in its description
+// while omitting it from the falsifiable criteria. Carry that concrete action
+// into the producing task's gate before validation, without creating a second
+// board item or spending another interpretation call.
+fn preserve_project_runtime_gates(d: &mut Decision, basis: &str) {
+    if d.kind != "tasks" {
+        return;
+    }
+    let source = basis.to_ascii_lowercase();
+    if !(source.contains("docker") && source.contains("image")) {
+        return;
+    }
+    let plan_criteria = d
+        .tasks
+        .iter()
+        .flat_map(|task| task.acceptance_criteria.iter())
+        .map(|criterion| criterion.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !contains_any(&plan_criteria, &["docker build", "build the image", "image builds"]) {
+        if let Some(task) = d.tasks.iter_mut().find(|task| {
+            let work = format!("{} {} {}", task.title, task.description, task.next_action)
+                .to_ascii_lowercase();
+            work.contains("docker image") && contains_any(&work, &["build", "implement"])
+        }) {
+            task.acceptance_criteria.push("A fresh docker build of the candidate image succeeds; retain the exact image ID, build command, exit status, and build log as reviewable evidence.".into());
+        }
+    }
+}
+
 fn candidates(
     conn: &Connection,
     session: &str,
@@ -711,6 +741,65 @@ fn spec_sections(content: &str) -> Vec<SpecSection> {
         .collect()
 }
 
+/// An operator may deliberately ask for one indexed slice of a larger goal spec.
+/// Only the command can narrow scope; instructions inside the referenced file cannot.
+fn scoped_spec_ids(command: &str) -> BTreeSet<String> {
+    let words: Vec<_> = command
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let mut ids = BTreeSet::new();
+    for (index, word) in words.iter().enumerate() {
+        let upper = word.to_ascii_uppercase();
+        if upper.len() < 2
+            || !upper.starts_with('T')
+            || !upper[1..].bytes().all(|byte| byte.is_ascii_digit())
+        {
+            continue;
+        }
+        let before = index.checked_sub(1).and_then(|i| words.get(i));
+        let after = words.get(index + 1);
+        let scoped = before.is_some_and(|word| {
+            matches!(word.to_ascii_lowercase().as_str(), "only" | "just" | "slice" | "section")
+        }) || after.is_some_and(|word| {
+            matches!(word.to_ascii_lowercase().as_str(), "only" | "slice" | "section")
+        });
+        if scoped {
+            ids.insert(upper);
+        }
+    }
+    ids
+}
+
+fn scoped_spec_excerpt(content: &str, ids: &BTreeSet<String>) -> String {
+    let mut excerpt = String::new();
+    let mut in_section = false;
+    for line in content.lines() {
+        if line.starts_with("## ") {
+            in_section = false;
+        }
+        if let Some(heading) = line.trim().strip_prefix("### ") {
+            let id = heading
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('.')
+                .to_ascii_uppercase();
+            if id.len() > 1
+                && id.starts_with('T')
+                && id[1..].bytes().all(|byte| byte.is_ascii_digit())
+            {
+                in_section = ids.contains(&id);
+            }
+        }
+        if in_section {
+            excerpt.push_str(line);
+            excerpt.push('\n');
+        }
+    }
+    excerpt
+}
+
 fn allowed_context_extension(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
         matches!(
@@ -767,7 +856,16 @@ fn referenced_project_files(
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let sections = spec_sections(&content);
+        let all_sections = spec_sections(&content);
+        let scoped_ids = scoped_spec_ids(text);
+        let sections: Vec<_> = if scoped_ids.is_empty() {
+            all_sections
+        } else {
+            all_sections
+                .into_iter()
+                .filter(|section| scoped_ids.contains(&section.id))
+                .collect()
+        };
         let rel = path
             .strip_prefix(&root_canon)
             .unwrap_or(path.as_path())
@@ -776,7 +874,14 @@ fn referenced_project_files(
         if !seen.insert(rel.clone()) {
             continue;
         }
-        let mut chars = content.chars();
+        // Keep model context and the deterministic coverage ledger on the same scope.
+        // A T7 slice must not spend tokens on, or create tasks for, T1..T6/T8..T20.
+        let scoped_content = if scoped_ids.is_empty() || sections.is_empty() {
+            None
+        } else {
+            Some(scoped_spec_excerpt(&content, &scoped_ids))
+        };
+        let mut chars = scoped_content.as_deref().unwrap_or(&content).chars();
         let snippet: String = chars.by_ref().take(16_000).collect();
         let truncated = chars.next().is_some();
         files.push(ReferencedProjectFile {
@@ -1403,7 +1508,13 @@ pub(crate) async fn capture_inner(
             if v["state"] == "prepared" {
                 return serde_json::from_value::<Prepared>(v["plan"].clone()).ok();
             }
-            if v["state"] != "received" || v.get("error").is_some() {
+            // A project retry can revalidate the retained response after a
+            // harness rule is fixed. Exhausted receipts stay inert until the
+            // operator grants another bounded attempt.
+            if v["state"] != "received"
+                || (v.get("error").is_some()
+                    && !(project.is_some() && attempts < attempt_limit))
+            {
                 return None;
             }
             let raw = v["response"].as_str()?;
@@ -1413,6 +1524,9 @@ pub(crate) async fn capture_inner(
                 serde_json::from_value(v["candidates"].clone()).ok()?;
             normalize_for_request(&mut decision, &candidates, session);
             attach_spec_sources(&mut decision, &referenced_files);
+            if project.is_some() {
+                preserve_project_runtime_gates(&mut decision, &basis);
+            }
             validate_for_request(&decision, &candidates, session, &text, &basis).ok()?;
             Some(Prepared {
                 decision,
@@ -1671,6 +1785,9 @@ pub(crate) async fn capture_inner(
     let mut decision: Decision = serde_json::from_str(object)?;
     normalize_for_request(&mut decision, &rows, session);
     attach_spec_sources(&mut decision, &referenced_files);
+    if project.is_some() {
+        preserve_project_runtime_gates(&mut decision, &basis);
+    }
     validate_for_request(&decision, &rows, session, &text, &basis).map_err(anyhow::Error::msg)?;
     let sess = session.to_string();
     let n = decision.tasks.len();
@@ -2147,8 +2264,9 @@ mod tests {
             "acceptance":{"criteria":[{
                 "id":"docker-build",
                 "requirement":"Build the Docker image",
-                "verifier":{"type":"execution","id":"verify-docker-build","command":"python3 scripts/run_goal_07_single_image.py","receipt":"artifacts/goal-07-single-image/execution-receipt.json","required_stages":["image-build"]},
-                "evidence":["artifacts/goal-07-single-image/execution-receipt.json","research/project-iterations/07-single-minimal-docker-image-e2e.md"]
+                "verifier":{"type":"execution","id":"verify-docker-build","command":"python3 scripts/run_goal_07_single_image.py","receipt":"artifacts/goal-07-single-image/execution-receipt.json","required_stages":["image-build"],
+                    "assertions":[{"stage":"image-build","artifact":"artifacts/goal-07-single-image/raw.json","pointer":"/image_built","operator":"equals","expected":"true"}]},
+                "evidence":["artifacts/goal-07-single-image/execution-receipt.json","artifacts/goal-07-single-image/raw.json","research/project-iterations/07-single-minimal-docker-image-e2e.md"]
             }]}
         }))
         .unwrap();
@@ -2696,6 +2814,92 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
                 .unwrap_err()
                 .contains("duplicate [spec:T20]")
         );
+    }
+    #[test]
+    fn explicit_goal_spec_slice_limits_the_coverage_ledger_and_model_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let spec = temp.path().join("research/goal-specs/07-single-image.md");
+        std::fs::create_dir_all(spec.parent().unwrap()).unwrap();
+        std::fs::write(
+            &spec,
+            "# Two-image goal\n\n### T7. Mixpeek image lifecycle\n- Docker image and docker run prove the full lifecycle e2e with Mongo, Ray, MVS, Redis and a human-verifiable artifact.\n\n### T17. AI for SMBs image\n- A separate image is built in another repository.\n",
+        )
+        .unwrap();
+        let project = crate::project_execution::store::Project {
+            name: "mixpeek-slice".into(),
+            revision: 1,
+            policy: serde_json::from_value(json!({
+                "repository": temp.path().to_string_lossy(),
+                "coordinator": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+                "executor": {"provider": "codex", "model": "gpt-5.5", "effort": "low"},
+                "verify_command": "git diff --check"
+            }))
+            .unwrap(),
+        };
+        let command = format!("Deliver the Mixpeek T7 slice of {}", spec.display());
+        let files = referenced_project_files(Some(&project), &command);
+        assert_eq!(files[0].sections.len(), 1);
+        assert_eq!(files[0].sections[0].id, "T7");
+        assert!(files[0].content.contains("Mixpeek image lifecycle"));
+        assert!(!files[0].content.contains("AI for SMBs"));
+        let basis = request_basis(&command, &files);
+        assert_eq!(required_spec_sections(&basis).len(), 1);
+        let decision = Decision {
+            kind: "tasks".into(),
+            reason: "scoped delivery".into(),
+            confidence: 0.9,
+            tasks: vec![Step {
+                key: "a".into(),
+                title: "Deliver Mixpeek Docker image lifecycle".into(),
+                description: "Build the Docker image with Mongo, Ray, MVS and Redis".into(),
+                item_type: "code".into(),
+                existing_id: None,
+                action: "create".into(),
+                next_action: "docker build then docker run and verify the lifecycle e2e".into(),
+                acceptance_criteria: vec!["[spec:T7] Docker image full lifecycle e2e passes; retain a human-verifiable evidence artifact".into()],
+                needs: vec![],
+                dependency_reason: String::new(),
+            }],
+        };
+        validate_for_request(&decision, &[], "project:mixpeek-slice", &command, &basis).unwrap();
+
+        let full = format!("Deliver the complete goal in {}", spec.display());
+        let full_files = referenced_project_files(Some(&project), &full);
+        assert_eq!(full_files[0].sections.len(), 2);
+        assert!(validate_for_request(
+            &decision,
+            &[],
+            "project:mixpeek-slice",
+            &full,
+            &request_basis(&full, &full_files),
+        )
+        .unwrap_err()
+        .contains("missing [spec:T17]"));
+    }
+
+    #[test]
+    fn project_runtime_gate_promotes_described_docker_build_into_acceptance() {
+        let mut decision = Decision {
+            kind: "tasks".into(),
+            reason: "deliver the scoped lifecycle".into(),
+            confidence: 0.93,
+            tasks: vec![Step {
+                key: "a".into(),
+                title: "Deliver Mixpeek T7 lifecycle slice".into(),
+                description: "Build the candidate Docker image and run its API locally".into(),
+                item_type: "code".into(),
+                existing_id: None,
+                action: "create".into(),
+                next_action: "Retain the actual container lifecycle evidence".into(),
+                acceptance_criteria: vec!["[spec:T7] e2e lifecycle passes".into()],
+                needs: vec![],
+                dependency_reason: String::new(),
+            }],
+        };
+        preserve_project_runtime_gates(&mut decision, "Build and run a Docker image e2e");
+        assert!(decision.tasks[0].acceptance_criteria.iter().any(|criterion| criterion.contains("fresh docker build")));
+        preserve_project_runtime_gates(&mut decision, "Build and run a Docker image e2e");
+        assert_eq!(decision.tasks[0].acceptance_criteria.len(), 2);
     }
     #[test]
     fn receipt_commits_all_outcomes_and_retries_do_not_duplicate() {

@@ -42,12 +42,20 @@ pub(crate) async fn project_clean_status(repo: &str) -> Result<String, String> {
 pub(crate) async fn git(repo: &str, args: &[&str]) -> Result<String, String> {
     let mut argv = vec!["-C", repo];
     argv.extend_from_slice(args);
-    let out = crate::api::session_verbs::run_cmd("git", &argv, Duration::from_secs(120))
+    // Publishing runs the repository's pre-push gate. Keep ordinary reads bounded,
+    // while allowing that gate to finish before deciding whether the push passed.
+    let timeout = if args.first() == Some(&"push") {
+        Duration::from_secs(1800)
+    } else {
+        Duration::from_secs(120)
+    };
+    let out = crate::api::session_verbs::run_cmd("git", &argv, timeout)
         .await
         .ok_or_else(|| {
             format!(
-                "git {} timed out or failed to start",
-                args.first().unwrap_or(&"")
+                "git {} timed out after {}s or failed to start",
+                args.first().unwrap_or(&""),
+                timeout.as_secs()
             )
         })?;
     if !out.status.success() {

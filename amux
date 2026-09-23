@@ -294,8 +294,10 @@ need_tmux() {
 }
 
 ensure_dirs() {
-  mkdir -p "$CC_SESSIONS"
-  [[ -f "$CC_DEFAULTS" ]] || touch "$CC_DEFAULTS"
+  # Read-only verbs (including `board ls` inside a sandboxed Codex worker)
+  # must not require a write to the server's home. The defaults loader already
+  # treats a missing file as empty, and defaults edit/reset create it on demand.
+  [[ -d "$CC_SESSIONS" ]] || mkdir -p "$CC_SESSIONS"
 }
 
 # Resolve session name from partial match or alias

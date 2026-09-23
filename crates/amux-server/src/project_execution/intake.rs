@@ -38,7 +38,9 @@ pub fn receive(
             },
         ));
     }
-    conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,delivery,capture_pending,project_group,client_meta) VALUES(?1,'user',?2,?3,'operator','board',1,?4,?5)",params![text,format!("project:{project}"),chrono::Utc::now().timestamp(),project,json!({"idempotency_key":key}).to_string()])?;
+    // cmd_history.ts is milliseconds everywhere else. A seconds timestamp
+    // makes a new project command look ancient to message retention.
+    conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,delivery,capture_pending,project_group,client_meta) VALUES(?1,'user',?2,?3,'operator','board',1,?4,?5)",params![text,format!("project:{project}"),chrono::Utc::now().timestamp_millis(),project,json!({"idempotency_key":key}).to_string()])?;
     let id = conn.last_insert_rowid();
     Ok((
         id,
@@ -215,6 +217,17 @@ mod tests {
             .unwrap();
         let result = *id.lock().unwrap();
         result
+    }
+    #[test]
+    fn project_command_timestamp_uses_message_ledger_milliseconds() {
+        let (_dir, state) = fixture();
+        let before = chrono::Utc::now().timestamp_millis();
+        let id = receipt(&state, "timestamp-units");
+        let c = state.store.read().unwrap();
+        let ts: i64 = c
+            .query_row("SELECT ts FROM cmd_history WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert!(ts >= before && ts <= chrono::Utc::now().timestamp_millis());
     }
     #[tokio::test]
     async fn project_rejected_provider_response_retains_paid_usage() {

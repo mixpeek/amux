@@ -4168,15 +4168,54 @@ fn validate_effort(value: &Value) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn set_effort_flag(flags: &str, effort: &str) -> Result<String, String> {
-    let base = strip_token_from_flags(flags, "--effort")?;
+fn codex_effort_from_flags(flags: &str) -> String {
+    let Ok(tokens) = split_flags(flags) else {
+        return String::new();
+    };
+    tokens
+        .windows(2)
+        .find(|pair| pair[0] == "-c" && pair[1].starts_with("model_reasoning_effort="))
+        .and_then(|pair| pair[1].strip_prefix("model_reasoning_effort="))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn set_effort_flag(provider: &str, flags: &str, effort: &str) -> Result<String, String> {
+    let tokens = split_flags(flags)?;
+    let mut filtered = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "--effort" {
+            i += if i + 1 < tokens.len() && !tokens[i + 1].starts_with('-') { 2 } else { 1 };
+            continue;
+        }
+        if tokens[i].starts_with("--effort=") {
+            i += 1;
+            continue;
+        }
+        if provider == "codex" && tokens[i] == "-c"
+            && i + 1 < tokens.len()
+            && tokens[i + 1].starts_with("model_reasoning_effort=")
+        {
+            i += 2;
+            continue;
+        }
+        filtered.push(tokens[i].clone());
+        i += 1;
+    }
+    let base = filtered.iter().map(|t| sh_quote(t)).collect::<Vec<_>>().join(" ");
     if effort.is_empty() {
         return Ok(base);
     }
-    Ok(if base.is_empty() {
-        format!("--effort {effort}")
+    let effort_flag = if provider == "codex" {
+        format!("-c model_reasoning_effort={effort}")
     } else {
-        format!("{base} --effort {effort}")
+        format!("--effort {effort}")
+    };
+    Ok(if base.is_empty() {
+        effort_flag
+    } else {
+        format!("{base} {effort_flag}")
     })
 }
 
@@ -4950,6 +4989,7 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
         "ALTER TABLE cmd_history ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
         [],
     );
+    let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN queue_id TEXT", []);
     // Dead-lettered vs delivered must be distinguishable in history
     // (AMUX-3110; migration 0024 carries the same ADDCOL for migrated DBs,
     // this covers a DB bootstrapped through this legacy path).
@@ -5910,11 +5950,9 @@ async fn cmd_hist_record_with_id(
     //
     // A DIRECT send really was delivered when it was recorded, so `now_ms` is
     // true there and stays. A QUEUED one has not been delivered, so the honest
-    // value is NULL — and NULL is what makes the missing deliverer COUNTABLE
-    // rather than invisible. Four comments in this file promise "the deliverer
-    // stamps delivered_at when it lands" and nothing does (`UPDATE cmd_history`
-    // appears twice, both setting card_id). Until that is built, queued rows
-    // accumulate with a NULL delivered_at, and
+    // value is NULL until the durable steering receipt lands. Migration 0086
+    // links the two rows by queue ID and stamps this field only on delivery.
+    // Queued rows left without a receipt remain COUNTABLE:
     //
     //     SELECT COUNT(*) FROM cmd_history WHERE delivery='queued' AND delivered_at IS NULL
     //
@@ -5922,11 +5960,7 @@ async fn cmd_hist_record_with_id(
     // unobservable, because the wrong answer and the right one were the same
     // bytes.
     //
-    // Safe to NULL: no client reads this column. app.js's only `delivered_at`
-    // (line 6661, "Sent <ago>") is fed by the steering-history endpoint, whose
-    // separate `steering_history` table IS stamped at real delivery by the
-    // deliverer — which is also where the timestamp for the eventual backfill
-    // will come from.
+    // The Messages UI reads this column to distinguish waiting from delivered.
     // A STUCK ROW IS NOT A DELIVERY (AMUX-3903). `delivery` says which PATH was
     // taken and `Direct` is true of a stuck send — amux typed straight into the
     // pane — so the mode alone would stamp `delivered_at`, which is the exact
@@ -5991,7 +6025,7 @@ async fn cmd_hist_record_with_id(
             }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             conn.execute(
-                "DELETE FROM cmd_history WHERE session=?1 AND capture_pending=0 AND ts<?3 \
+                "DELETE FROM cmd_history WHERE session=?1 AND project_group IS NULL AND capture_pending=0 AND ts<?3 \
                  AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.id=cmd_history.card_id AND i.deleted IS NULL AND i.archived=0 AND i.status NOT IN ('done','verified','discarded','quarantined','cancelled')) AND id NOT IN \
                  (SELECT id FROM cmd_history WHERE session=?1 ORDER BY ts DESC LIMIT ?2)",
                 rusqlite::params![session, CMD_HIST_KEEP, now_ms-3_600_000],
@@ -6121,6 +6155,47 @@ async fn cmd_hist_record_with_id(
         }
     }
     msg_row_id.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+async fn link_queued_message(state: &AppState, session: &str, row_id: i64, queue_id: &str) {
+    if row_id <= 0 || queue_id.is_empty() {
+        tracing::warn!(session, row_id, queue_id, measured=false, n_considered=1,
+            verdict="queued_message_unlinked", "accepted steering lacks a durable Messages receipt");
+        return;
+    }
+    let id = queue_id.to_string();
+    if let Err(error) = state.store.write_async(move |conn| {
+        let linked = conn.execute("UPDATE cmd_history SET queue_id=?1 WHERE id=?2 AND delivery='queued'",
+            rusqlite::params![id, row_id])?;
+        Ok(crate::db::WriteOutcome { applied: linked > 0, events: if linked > 0 { vec![crate::db::PendingEvent {
+            entity_type: amux_core::revision::EntityType::Message,
+            entity_id: format!("MSG-{row_id}"),
+            mutation: amux_core::revision::MutationKind::Updated,
+            payload: None,
+        }] } else { vec![] } })
+    }).await {
+        tracing::warn!(session, row_id, queue_id, %error, measured=false, n_considered=1,
+            verdict="queued_message_link_failed", "accepted steering is not linked to its Messages row");
+    }
+}
+
+async fn publish_queued_message_receipt(state: &AppState, queue_id: &str) {
+    let queue_id = queue_id.to_string();
+    let _ = state.store.write_async(move |conn| {
+        let row_id: i64 = conn.query_row(
+            "SELECT id FROM cmd_history WHERE queue_id=?1",
+            [&queue_id], |r| r.get(0),
+        ).unwrap_or(0);
+        Ok(crate::db::WriteOutcome {
+            applied: row_id > 0,
+            events: if row_id > 0 { vec![crate::db::PendingEvent {
+                entity_type: amux_core::revision::EntityType::Message,
+                entity_id: format!("MSG-{row_id}"),
+                mutation: amux_core::revision::MutationKind::Updated,
+                payload: None,
+            }] } else { vec![] },
+        })
+    }).await;
 }
 
 /// How long after a prompt a follow-on still reads as a refinement OF it.
@@ -9313,13 +9388,28 @@ pub(crate) async fn send_text(
     defer_if_busy: bool,
     origin: SendOrigin,
 ) -> (bool, String) {
+    let mut queue_id = None;
     send_text_inner(
         state,
         name,
         text,
         SendMode::deferring(defer_if_busy, origin),
+        &mut queue_id,
     )
     .await
+}
+
+async fn send_text_with_queue_id(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    defer_if_busy: bool,
+    origin: SendOrigin,
+) -> ((bool, String), Option<String>) {
+    let mut queue_id = None;
+    let result = send_text_inner(state, name, text,
+        SendMode::deferring(defer_if_busy, origin), &mut queue_id).await;
+    (result, queue_id)
 }
 
 /// WHAT "sent" MEANS, as a pure function of the send's own verdict string.
@@ -9505,7 +9595,8 @@ pub(crate) async fn deliver_automated(
             hook_confirmed_idle: false,
             origin: SendOrigin::Automation,
         };
-        let (ok, msg) = send_text_inner(state, name, text, mode).await;
+        let mut queue_id = None;
+        let (ok, msg) = send_text_inner(state, name, text, mode, &mut queue_id).await;
         if ok {
             return classify(ok, msg);
         }
@@ -9749,8 +9840,9 @@ async fn send_text_inner(
     name: &str,
     text: &str,
     mode: SendMode,
+    queue_id: &mut Option<String>,
 ) -> (bool, String) {
-    send_text_inner_bound(state, name, text, mode, None).await
+    send_text_inner_bound(state, name, text, mode, None, queue_id).await
 }
 
 async fn send_text_inner_bound(
@@ -9759,6 +9851,7 @@ async fn send_text_inner_bound(
     text: &str,
     mode: SendMode,
     delivery: Option<&str>,
+    queue_id: &mut Option<String>,
 ) -> (bool, String) {
     // Serialise per lane. Taken before any pane state is read, because the
     // decisions below (is it generating? is a picker up?) are read-then-act on
@@ -10220,11 +10313,13 @@ async fn send_text_inner_bound(
         // The gate above already refuses Automation into an isolated lane, so
         // this is belt-and-braces there; it matters independently because an
         // empty guard also drops the per-producer dedupe the guard provides.
-        let _ = steer_enqueue(state, name, &text, park_guard(origin), "").await;
-        return (
-            true,
-            "queued (steering) — session at a selector, delivers when it resolves".into(),
-        );
+        return match steer_enqueue(state, name, &text, park_guard(origin), "").await {
+            Ok(id) => {
+                *queue_id = Some(id);
+                (true, "queued (steering) — session at a selector, delivers when it resolves".into())
+            }
+            Err(reason) => (false, block_reason_refused(reason, name)),
+        };
     }
     if waiting && from_steering {
         // A live selector is NOT overridden by the deadline: typing here and
@@ -11864,6 +11959,16 @@ pub(crate) async fn start_session(
             sh_quote(&f.to_string_lossy())
         ));
     }
+    // Profiles often prepend ~/.local/bin again. An isolated server with its
+    // own installed CLI must put that CLI first AFTER profile/scope sourcing;
+    // otherwise its workers silently call the unrelated main-server binary.
+    let local_cli_dir = home().join("bin");
+    if local_cli_dir.join("amux").is_file() {
+        shell_rc.push_str(&format!(
+            "export PATH={}:\"$PATH\"; ",
+            sh_quote(&local_cli_dir.to_string_lossy())
+        ));
+    }
     if provider != "codex"
         && provider != "gemini"
         && provider != "ollama"
@@ -12095,6 +12200,14 @@ pub(crate) async fn start_session(
             ),
             false
         );
+        // The surviving shell skips shell_rc, so give it the same isolated
+        // server CLI priority as a fresh shell after the environment import.
+        if local_cli_dir.join("amux").is_file() {
+            shell_step!(
+                &format!("export PATH={}:\"$PATH\"", sh_quote(&local_cli_dir.to_string_lossy())),
+                false
+            );
+        }
     } else {
         // Fresh tmux session hosting the user's login shell (py:24647).
         //
@@ -14010,7 +14123,7 @@ fn mark_pending_structured_resume(state: &AppState, name: &str, reason: &str) ->
             return false;
         }
         tracing::info!(session=name,measured=true,n_considered=1,model_calls=0,verdict="empty_restart_no_model_turn",
-            "new worker has no request or open work; config restart does not manufacture a paid turn");
+            "worker has no pending request or open work; config restart does not manufacture a paid turn");
         return true;
     }
     pending.insert("pending_structured_resume".into(), json!(now_i64()));
@@ -14032,7 +14145,10 @@ fn mark_pending_structured_resume(state: &AppState, name: &str, reason: &str) ->
 }
 
 fn empty_resume_queue(conn: &rusqlite::Connection, name: &str) -> rusqlite::Result<bool> {
-    conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM cmd_history WHERE session=?1 AND (type='user' OR capture_pending!=0)) AND NOT EXISTS(SELECT 1 FROM issues WHERE session=?1 AND archived=0 AND deleted IS NULL AND status NOT IN ('done','verified','discarded','quarantined','cancelled'))",[name],|r|r.get(0))
+    // A delivered human message is history, not pending work. Treating every
+    // historical `type=user` row as a new request manufactured a paid board
+    // inspection on each model change, even after the worker answered it.
+    conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM cmd_history WHERE session=?1 AND capture_pending!=0) AND NOT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1) AND NOT EXISTS(SELECT 1 FROM issues WHERE session=?1 AND archived=0 AND deleted IS NULL AND status NOT IN ('done','verified','discarded','quarantined','cancelled'))",[name],|r|r.get(0))
 }
 
 // The resume protocol must observe a failed write; save_meta's historical
@@ -17377,6 +17493,7 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
             "steering",
         )
         .await;
+        publish_queued_message_receipt(state, &id).await;
         tracing::info!(session = %session, id = %id, detail = %msg, mode = if mid_turn { "overdue-mid-turn" } else { "at-boundary" }, "steering delivered");
     }
     // A lane whose oldest row keeps refusing must become VISIBLE. Four hours of
@@ -17785,7 +17902,8 @@ async fn send_claimed_steering(
     } else {
         mode
     };
-    let result = send_text_inner_bound(state, session, text, mode, Some(id)).await;
+    let mut queue_id = None;
+    let result = send_text_inner_bound(state, session, text, mode, Some(id), &mut queue_id).await;
     if !result.0 {
         unclaim_steering_row(&state.store, id).await;
     }
@@ -20410,7 +20528,7 @@ pub(crate) async fn steer_mutate(
             // `type='user'` rows over 7 days unreadable — blank is the CORRECT
             // value for a queued message and a hole for a direct one, and one
             // label made it mean both.
-            cmd_hist_record_full(
+            let row_id = cmd_hist_record_with_id(
                 state,
                 name,
                 &text,
@@ -20420,6 +20538,7 @@ pub(crate) async fn steer_mutate(
                 DeliveryMeta::queued(now_i64() * 1000),
             )
             .await;
+            link_queued_message(state, name, row_id, &msg_id).await;
             // Autotask/labelling: Python's model-call feature — gap named in
             // the module doc.
         }
@@ -21905,7 +22024,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         {
             Ok(result) => {
                 if result.disposition == StableEnqueueDisposition::New {
-                    cmd_hist_record_with_id(
+                    let row_id = cmd_hist_record_with_id(
                         state,
                         name,
                         &orig_text,
@@ -21915,6 +22034,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                         DeliveryMeta::queued(now_i64() * 1000),
                     )
                     .await;
+                    link_queued_message(state, name, row_id, &result.id).await;
                 }
                 send_dedup_accept(state, name, &msg_id, &result.id).await;
                 tracing::info!(
@@ -22002,7 +22122,9 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             }
         }
     } else {
-        send_text(state, name, &text, defer_busy, send_origin).await
+        let (result, parked_id) = send_text_with_queue_id(state, name, &text, defer_busy, send_origin).await;
+        queue_id = parked_id;
+        result
     };
     let no_effect = ok && msg == "no suggestion found";
     if no_effect {
@@ -22072,10 +22194,8 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
         } else {
             Delivery::Direct
         };
-        // A queued message's wait starts now. `delivered_at` stays NULL until
-        // something stamps it, and nothing does yet (AMUX-3541) — which is the
-        // point: a NULL that persists is countable, where the old unconditional
-        // copy of `ts` was not.
+        // A queued message's wait starts now. The linked steering receipt
+        // stamps delivered_at when the delivery actually completes.
         let q_at = if deliv == Delivery::Queued {
             Some(now_i64() * 1000)
         } else {
@@ -22104,14 +22224,20 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                 client_meta: client_meta_raw.as_deref(),
                 ..meta
             };
-            cmd_hist_record_full(state, name, &orig_text, "user", author, skip_board, meta).await;
+            let row_id = cmd_hist_record_with_id(state, name, &orig_text, "user", author, skip_board, meta).await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
         } else if !origin.is_empty() && origin != name {
             // skip_board, not `false` (AMUX-4555). This is the DELIVERED peer
             // branch and the one the 37 reported cards came through.
-            cmd_hist_record_full(
+            let row_id = cmd_hist_record_with_id(
                 state, name, &orig_text, "session", &origin, skip_board, meta,
             )
             .await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
         }
     } else {
         // A FAILED DELIVERY IS A DELIVERY EVENT (AMUX-3903).
@@ -25695,6 +25821,10 @@ async fn apply_live_config_change(
         }
         SwapMode::Restart => {
             let restarted = restart_with_structured_resume(state, name, provider, reason).await;
+            if !restarted {
+                tracing::warn!(session=name, provider, reason, measured=true, n_considered=1,
+                    verdict="config_restart_failed", "config was saved but the worker did not restart");
+            }
             SwapReport {
                 mode,
                 applied: restarted,
@@ -25926,11 +26056,15 @@ async fn config_patch_with_liveness(
                 );
             }
         };
-        let old_effort = flag_value(cfg.get_or("CC_FLAGS", ""), "--effort");
         // Resolved BEFORE the write, because where the model goes depends on
         // it. This branch never changes CC_PROVIDER, so reading it here is the
         // same answer the post-write read used to give.
         let current_provider = provider_of(&cfg);
+        let old_effort = if current_provider == "codex" {
+            codex_effort_from_flags(cfg.get_or("CC_FLAGS", ""))
+        } else {
+            flag_value(cfg.get_or("CC_FLAGS", ""), "--effort")
+        };
         // Give an EXISTING session an ollama model. Pre-fix this always built
         // `--model X` into CC_FLAGS, which the ollama launch arm ignores, so
         // the PATCH reported success and the worker relaunched on the same
@@ -25948,7 +26082,7 @@ async fn config_patch_with_liveness(
                 Ok(v) => v,
                 Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
             };
-            flags = match set_effort_flag(&flags, &effort_val) {
+            flags = match set_effort_flag(&current_provider, &flags, &effort_val) {
                 Ok(v) => v,
                 Err(e) => {
                     return jresp(
@@ -26025,7 +26159,10 @@ async fn config_patch_with_liveness(
         // A RESTART that actually happened is the expensive path (AMUX-3801).
         // `applied` alone is not the test: an EnvOnly or hot swap also applies
         // and costs milliseconds — only Restart tears down and relaunches.
-        return if matches!(rep.mode, SwapMode::Restart) && rep.applied {
+        return if matches!(rep.mode, SwapMode::Restart) && !rep.applied {
+            out["ok"] = json!(false);
+            jresp(StatusCode::SERVICE_UNAVAILABLE, out)
+        } else if matches!(rep.mode, SwapMode::Restart) && rep.applied {
             j200_slow_ok(out, "worker-restart")
         } else {
             j200(out)
@@ -26038,7 +26175,8 @@ async fn config_patch_with_liveness(
             Ok(v) => v,
             Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
         };
-        let flags = match set_effort_flag(cfg.get_or("CC_FLAGS", ""), &effort_val) {
+        let current_provider = provider_of(&cfg);
+        let flags = match set_effort_flag(&current_provider, cfg.get_or("CC_FLAGS", ""), &effort_val) {
             Ok(v) => v,
             Err(e) => {
                 return jresp(
@@ -26048,7 +26186,6 @@ async fn config_patch_with_liveness(
             }
         };
         cfg.set("CC_FLAGS", &flags);
-        let current_provider = provider_of(&cfg);
         let was_running = running;
         if let Err((status, error)) =
             write_swap_config(state, name, &cfg, was_running, "effort change")
@@ -26124,7 +26261,10 @@ async fn config_patch_with_liveness(
         // A RESTART that actually happened is the expensive path (AMUX-3801).
         // `applied` alone is not the test: an EnvOnly or hot swap also applies
         // and costs milliseconds — only Restart tears down and relaunches.
-        return if matches!(rep.mode, SwapMode::Restart) && rep.applied {
+        return if matches!(rep.mode, SwapMode::Restart) && !rep.applied {
+            out["ok"] = json!(false);
+            jresp(StatusCode::SERVICE_UNAVAILABLE, out)
+        } else if matches!(rep.mode, SwapMode::Restart) && rep.applied {
             j200_slow_ok(out, "worker-restart")
         } else {
             j200(out)
@@ -33056,12 +33196,20 @@ mod tests {
         assert!(strip_model_from_flags("--model 'oops").is_err());
         // effort set/clear.
         assert_eq!(
-            set_effort_flag("--model opus", "high").unwrap(),
+            set_effort_flag("claude", "--model opus", "high").unwrap(),
             "--model opus --effort high"
         );
         assert_eq!(
-            set_effort_flag("--model opus --effort low", "").unwrap(),
+            set_effort_flag("claude", "--model opus --effort low", "").unwrap(),
             "--model opus"
+        );
+        assert_eq!(
+            set_effort_flag("codex", "--model gpt-6-luna --effort high -c foo=bar -c model_reasoning_effort=xhigh", "low").unwrap(),
+            "--model gpt-6-luna -c foo=bar -c model_reasoning_effort=low"
+        );
+        assert_eq!(
+            codex_effort_from_flags("--model gpt-6-luna -c model_reasoning_effort=low"),
+            "low"
         );
         // yolo strip covers --approval-mode yolo.
         assert_eq!(
@@ -42500,8 +42648,33 @@ mod lifecycle_token_tests {
         assert!(!empty_resume_queue(&c, "new-worker").unwrap());
         c.execute("UPDATE issues SET status='done' WHERE id='SEED-1'", [])
             .unwrap();
-        c.execute("INSERT INTO cmd_history(session,text,type,ts,capture_pending) VALUES('new-worker','Please answer this question','user',1,0)",[]).unwrap();
+        c.execute("INSERT INTO cmd_history(session,text,type,ts,capture_pending,delivery,delivered_at) VALUES('new-worker','Previously answered question','user',1,0,'direct',1)",[]).unwrap();
+        assert!(empty_resume_queue(&c, "new-worker").unwrap());
+        c.execute("INSERT INTO steering_queue(id,session,text,queued_at) VALUES('pending','new-worker','Please answer this question',2)",[]).unwrap();
         assert!(!empty_resume_queue(&c, "new-worker").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod steering_message_receipt_tests {
+    #[test]
+    fn queued_message_receipt_survives_delivery_before_or_after_link() {
+        let c = crate::db::migrate::test_memdb();
+        c.execute("INSERT INTO cmd_history(id,text,type,session,ts,delivery,queued_at,queue_id) VALUES(1,'first','user','w',1000,'queued',1000,'q1')",[]).unwrap();
+        c.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) VALUES('q1','w','first',1,3,'sent')",[]).unwrap();
+        let first:(String,Option<i64>,Option<String>)=c.query_row("SELECT delivery,delivered_at,submit_verdict FROM cmd_history WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(first,("queued".into(),Some(3000),Some("confirmed".into())));
+
+        c.execute("INSERT INTO cmd_history(id,text,type,session,ts,delivery,queued_at) VALUES(2,'second','user','w',1000,'queued',1000)",[]).unwrap();
+        c.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) VALUES('q2','w','second',1,4,'sent (submitted on retry)')",[]).unwrap();
+        c.execute("UPDATE cmd_history SET queue_id='q2' WHERE id=2",[]).unwrap();
+        let second:(Option<i64>,Option<String>)=c.query_row("SELECT delivered_at,submit_verdict FROM cmd_history WHERE id=2",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(second,(Some(4000),Some("retried".into())));
+
+        c.execute("INSERT INTO cmd_history(id,text,type,session,ts,delivery,queued_at,queue_id) VALUES(3,'void','user','w',1000,'queued',1000,'q3')",[]).unwrap();
+        c.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) VALUES('q3','w','void',1,5,'void:picker-gone')",[]).unwrap();
+        let third:(String,Option<i64>)=c.query_row("SELECT delivery,delivered_at FROM cmd_history WHERE id=3",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(third,("voided".into(),None));
     }
 }
 

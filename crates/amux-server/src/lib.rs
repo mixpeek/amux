@@ -342,6 +342,18 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    let home = cfg.amux_home.canonicalize().unwrap_or(cfg.amux_home.clone());
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    if home.starts_with(&temp)
+        || ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"]
+            .iter()
+            .any(|root| home.starts_with(root))
+    {
+        tracing::warn!(home=%home.display(),db=%cfg.db_path.display(),measured=true,n_considered=1,
+            verdict="volatile_amux_home","Amux state is under a temporary directory; project history and worker metadata may disappear while the advertised server URL remains configured");
+    }
 
     // WAS THIS RESTART ANNOUNCED? (AF-176)
     //

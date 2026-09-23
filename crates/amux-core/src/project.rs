@@ -22,6 +22,11 @@ pub struct ExecutionPolicy {
     pub worktree: bool,
     pub coordinator: ModelProfile,
     pub executor: ModelProfile,
+    /// Explicitly allow a Codex executor to use local host tools such as a
+    /// Docker socket. Off by default; the candidate container's own network
+    /// isolation remains an independent acceptance requirement.
+    #[serde(default)]
+    pub executor_full_host_access: bool,
     #[serde(default = "one")]
     pub max_executors: usize,
     #[serde(default = "two")]
@@ -87,9 +92,30 @@ pub enum ContractVerifier {
         receipt: String,
         /// Every named lifecycle stage must occur exactly once with state `passed` and evidence.
         required_stages: Vec<String>,
+        /// Harness-checked measurements from raw files produced by this invocation.
+        /// Every required stage needs at least one assertion outside the receipt.
+        #[serde(default)]
+        assertions: Vec<ExecutionAssertion>,
     },
     /// Explicit human review. Only the operator can approve it, bound to the exact revision.
     Human { id: String, instructions: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionAssertion {
+    pub stage: String,
+    pub artifact: String,
+    /// JSON Pointer into the raw artifact (RFC 6901).
+    pub pointer: String,
+    pub operator: ExecutionAssertionOperator,
+    /// A JSON literal, such as 100, true, or "passed".
+    pub expected: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionAssertionOperator {
+    Equals,
+    AtLeast,
 }
 impl ContractVerifier {
     pub fn id(&self) -> &str {
@@ -198,6 +224,7 @@ impl AcceptanceContract {
                 ContractVerifier::Execution {
                     receipt,
                     required_stages,
+                    assertions,
                     ..
                 } => {
                     if !valid_evidence_path(receipt) || !receipt.ends_with(".json") {
@@ -227,6 +254,46 @@ impl AcceptanceContract {
                             "{}: execution stages must have unique [a-z0-9][a-z0-9_-] identities",
                             c.id
                         ));
+                    }
+                    if assertions.is_empty() || assertions.len() > 64 {
+                        return Err(format!(
+                            "{}: execution verifier needs 1..64 harness-checked raw evidence assertions",
+                            c.id
+                        ));
+                    }
+                    for stage in required_stages {
+                        if !assertions.iter().any(|a| &a.stage == stage) {
+                            return Err(format!(
+                                "{}: execution stage {stage} needs a raw evidence assertion",
+                                c.id
+                            ));
+                        }
+                    }
+                    for assertion in assertions {
+                        if !required_stages.contains(&assertion.stage)
+                            || assertion.artifact == *receipt
+                            || !c.evidence.contains(&assertion.artifact)
+                            || !valid_evidence_path(&assertion.artifact)
+                            || !assertion.artifact.ends_with(".json")
+                            || !assertion.pointer.starts_with('/')
+                            || serde_json::from_str::<serde_json::Value>(&assertion.expected)
+                                .is_err()
+                        {
+                            return Err(format!(
+                                "{}: execution assertion for {} needs a required stage, retained raw JSON artifact, JSON pointer, and JSON literal",
+                                c.id, assertion.stage
+                            ));
+                        }
+                        if matches!(assertion.operator, ExecutionAssertionOperator::AtLeast)
+                            && !serde_json::from_str::<serde_json::Value>(&assertion.expected)
+                                .ok()
+                                .is_some_and(|v| v.is_number())
+                        {
+                            return Err(format!(
+                                "{}: at_least assertion for {} needs a numeric expected value",
+                                c.id, assertion.stage
+                            ));
+                        }
                     }
                 }
                 _ => {}
@@ -305,6 +372,9 @@ impl ExecutionPolicy {
                     "effort must be one of none, minimal, low, medium, high, xhigh, max, ultra",
                 );
             }
+        }
+        if self.executor_full_host_access && self.executor.provider != "codex" {
+            return Err("full host access is supported only for Codex executors");
         }
         if !(1..=3).contains(&self.max_executors) {
             return Err("max_executors must be 1..3; one executor is the default");
@@ -439,10 +509,35 @@ mod tests {
         );
         let runtime = good(serde_json::json!({"criteria":[{
             "id":"lifecycle","requirement":"Full lifecycle passes in a running image with no external calls",
-            "verifier":{"type":"execution","id":"run-lifecycle","command":"./scripts/run-lifecycle.sh","receipt":"artifacts/execution.json","required_stages":["image-build","api-lifecycle","network-isolation"]},
-            "evidence":["artifacts/execution.json","artifacts/report.md"]
+            "verifier":{"type":"execution","id":"run-lifecycle","command":"./scripts/run-lifecycle.sh","receipt":"artifacts/execution.json","required_stages":["image-build","api-lifecycle","network-isolation"],
+                "assertions":[
+                    {"stage":"image-build","artifact":"artifacts/raw.json","pointer":"/image/id","operator":"equals","expected":"\"sha256:abc\""},
+                    {"stage":"api-lifecycle","artifact":"artifacts/raw.json","pointer":"/documents","operator":"at_least","expected":"100"},
+                    {"stage":"network-isolation","artifact":"artifacts/raw.json","pointer":"/network/external_calls_allowed","operator":"equals","expected":"false"}
+                ]},
+            "evidence":["artifacts/execution.json","artifacts/raw.json","artifacts/report.md"]
         }]}));
         assert_eq!(runtime.validate(), Ok(()));
+        let mut no_raw_checks = runtime.clone();
+        if let ContractVerifier::Execution { assertions, .. } =
+            &mut no_raw_checks.criteria[0].verifier
+        {
+            assertions.clear();
+        }
+        assert!(no_raw_checks
+            .validate()
+            .unwrap_err()
+            .contains("raw evidence assertions"));
+        let mut missing_stage_check = runtime.clone();
+        if let ContractVerifier::Execution { assertions, .. } =
+            &mut missing_stage_check.criteria[0].verifier
+        {
+            assertions.retain(|a| a.stage != "network-isolation");
+        }
+        assert!(missing_stage_check
+            .validate()
+            .unwrap_err()
+            .contains("network-isolation"));
         let mut missing_receipt = runtime.clone();
         missing_receipt.criteria[0].evidence.remove(0);
         assert!(missing_receipt.validate().unwrap_err().contains("retained"));
@@ -483,7 +578,16 @@ mod tests {
         assert!(p.worktree);
         assert!(!p.enabled);
         assert_eq!(p.token_budget, None);
+        assert!(!p.executor_full_host_access);
         p.validate().unwrap();
+    }
+    #[test]
+    fn host_tools_need_explicit_codex_executor_policy() {
+        let mut p = policy();
+        p.executor_full_host_access = true;
+        p.validate().unwrap();
+        p.executor.provider = "claude".into();
+        assert!(p.validate().is_err());
     }
     #[test]
     fn policy_refuses_unbounded_fanout_and_invalid_budgets() {

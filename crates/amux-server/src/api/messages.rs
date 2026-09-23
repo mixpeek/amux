@@ -569,16 +569,19 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
     #[derive(Default)]
     struct Row {
         msgs: u64,
+        actionable: u64,
         linked: u64,
         latest_ts_ms: i64,
         latest_snippet: String,
+        latest_actionable_ts_ms: i64,
+        latest_actionable_snippet: String,
         created: u64,
         moved: u64,
     }
     let mut rows: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
 
     let mut stmt = conn.prepare(
-        "SELECT session, ts, card_id, substr(text,1,80) \
+        "SELECT session, ts, card_id, text \
          FROM cmd_history \
          WHERE type='user' AND origin='' AND ts >= ?1 \
          ORDER BY ts DESC",
@@ -593,7 +596,8 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
         }
         let ts: i64 = r.get(1)?;
         let card_id: Option<String> = r.get(2)?;
-        let snippet: String = r.get::<_, String>(3)?.replace(['\n', '\r'], " ");
+        let message: String = r.get(3)?;
+        let snippet: String = message.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
         let e = rows.entry(session).or_default();
         e.msgs += 1;
         if card_id.as_deref().map(|c| !c.is_empty()).unwrap_or(false) {
@@ -602,6 +606,21 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
         if ts > e.latest_ts_ms {
             e.latest_ts_ms = ts;
             e.latest_snippet = snippet;
+        }
+        // A delivered answer-only message or explicit [no-board] control does
+        // not owe the worker a task. The board capture path uses this same
+        // predicate; the accountability nudge must not contradict it by
+        // demanding a new card for a prompt the harness intentionally left
+        // cardless.
+        if amux_core::board::title_from_prompt(&message).is_some()
+            && !amux_core::board::is_informational_query(&message)
+            && !amux_core::board::is_conversational_ack(&message)
+        {
+            e.actionable += 1;
+            if ts > e.latest_actionable_ts_ms {
+                e.latest_actionable_ts_ms = ts;
+                e.latest_actionable_snippet = message.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
+            }
         }
     }
 
@@ -641,17 +660,18 @@ pub(crate) fn compute_rollup(conn: &Connection, since_h: u64) -> rusqlite::Resul
         workers.push(json!({
             "worker": session,
             "human_messages": e.msgs,
+            "actionable_messages": e.actionable,
             "messages_linked_to_a_card": e.linked,
             "cards_created_in_window": e.created,
             "cards_moved_in_window": e.moved,
             "latest_message_snippet": e.latest_snippet,
-            "verdict": if accounted { "tracking" } else { "no-board-activity" },
+            "verdict": if accounted { "tracking" } else if e.actionable == 0 { "message-only" } else { "no-board-activity" },
         }));
-        if !accounted {
+        if !accounted && e.actionable > 0 {
             unaccounted.push(Unaccounted {
                 worker: session.clone(),
-                human_messages: e.msgs,
-                latest_snippet: e.latest_snippet.clone(),
+                human_messages: e.actionable,
+                latest_snippet: e.latest_actionable_snippet.clone(),
             });
         }
     }
@@ -1398,6 +1418,7 @@ mod tests {
                 ins_msg("w-gap", "", "user", now_ms - 1000);
                 ins_msg("w-ok", "", "user", now_ms - 1000);
                 ins_msg("w-sched", "Daily thing", "user", now_ms - 1000); // origin set -> not human
+                conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,delivery,delivered_at) VALUES('[11:17 AM] [no-board] Reply with ACK only','user','w-message-only',?1,'','direct',?1)",params![now_ms-1000]).unwrap();
                 // A board card w-ok created just now; w-gap has none.
                 conn.execute(
                     "INSERT INTO issues (id,title,status,session,created,updated) VALUES ('I-OK','t','todo','w-ok',?1,?1)",
@@ -1418,8 +1439,9 @@ mod tests {
 
         let (st, v) = send(&app, "GET", "/api/messages/accountability?since_h=24", None).await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        // Only the two human messages count; the scheduler one is excluded.
-        assert_eq!(v["total_human_messages"], json!(2), "{v}");
+        // The no-board prompt remains a human message, but cannot trigger a
+        // work-card nudge; the scheduler is excluded from human messages.
+        assert_eq!(v["total_human_messages"], json!(3), "{v}");
         let unacc: Vec<&str> = v["unaccounted"]
             .as_array()
             .unwrap()
@@ -1431,6 +1453,7 @@ mod tests {
             vec!["w-gap"],
             "only the worker with no board activity is flagged: {v}"
         );
+        assert_eq!(v["workers"].as_array().unwrap().iter().find(|w|w["worker"]=="w-message-only").unwrap()["verdict"],json!("message-only"));
         // And w-ok reads as tracking, not flagged.
         let ok_row = v["workers"]
             .as_array()

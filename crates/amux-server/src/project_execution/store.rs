@@ -121,11 +121,22 @@ pub fn save(
             );
         }
         let active: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM issues WHERE project_group=?1 AND execution_state IS NOT NULL AND json_extract(execution_state,'$.stage') NOT IN ('verified',''))", [name], |r|r.get(0))?;
+        // A paused project has stopped its executors and marked every retained
+        // execution suspended. It is safe to change the model/effort of the
+        // same provider there; the next dispatch refreshes the worker env from
+        // policy before starting the process. An active lane keeps the original
+        // immutability rule so a live attempt cannot change models mid-turn.
+        let suspended: bool = conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM issues WHERE project_group=?1 AND execution_state IS NOT NULL AND json_extract(execution_state,'$.stage') NOT IN ('verified','') AND COALESCE(json_extract(execution_state,'$.suspended'),0) != 1)", [name], |r|r.get(0))?;
+        let profile_safe = current.policy.executor == policy.executor
+            || (current.policy.paused
+                && policy.paused
+                && suspended
+                && current.policy.executor.provider == policy.executor.provider);
         anyhow::ensure!(!active || (current.policy.repository == policy.repository
             && current.policy.verify_command == policy.verify_command
-            && current.policy.executor == policy.executor
+            && profile_safe
             && current.policy.worktree == policy.worktree),
-            "repository, verification gate, checkout mode and executor profile are fixed while executions retain work; finish or reconcile those executions first");
+            "repository, verification gate and checkout mode are fixed while executions retain work; pause and settle the project before changing executor model or effort");
     }
     conn.execute("INSERT INTO group_config(name,execution_policy,execution_rev,updated) VALUES(?1,?2,?3,?4) ON CONFLICT(name) DO UPDATE SET execution_policy=excluded.execution_policy,execution_rev=excluded.execution_rev,updated=excluded.updated",
         params![name,serde_json::to_string(policy)?,revision+1,chrono::Utc::now().timestamp()])?;
@@ -175,10 +186,12 @@ fn project_summary_workspace(
     candidates.dedup_by(|left, right| left.1 == right.1);
     candidates.into_iter().find_map(|(_, worker)| {
         crate::fanout_workspace::load(&home, &worker).map(|workspace| {
+            let available = std::path::Path::new(&workspace.path).is_dir();
             json!({
                 "worker": worker,
                 "repo": workspace.repo,
                 "path": workspace.path,
+                "available": available,
                 "branch": workspace.branch,
                 "base": workspace.base,
             })
@@ -375,6 +388,9 @@ fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) ->
         .map(|(worker, tasks)| {
             let (lifecycle, env) = project_worker_lifecycle(&home, &worker);
             let workspace = crate::fanout_workspace::load(&home, &worker);
+            let workspace_available = workspace
+                .as_ref()
+                .is_some_and(|w| std::path::Path::new(&w.path).is_dir());
             let integration = crate::fanout_workspace::integration_status(&home, &worker);
             let verified_tasks = tasks
                 .iter()
@@ -406,6 +422,7 @@ fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) ->
                 "retained_assets": retained_assets,
                 "env": env,
                 "workspace": workspace,
+                "workspace_available": workspace_available,
                 "integration": integration,
                 "tasks": tasks,
             })
@@ -616,6 +633,33 @@ mod tests {
         assert_eq!(list(&conn).unwrap().len(), 1);
     }
     #[test]
+    fn active_executor_model_changes_only_at_a_settled_pause_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("db")).unwrap();
+        store.write(|c| {
+            let mut p = policy();
+            p.executor = serde_json::from_value(json!({"provider":"codex","model":"gpt-5.5","effort":"low"})).unwrap();
+            p.enabled = true;
+            save(c, "example", 0, &p, "test").map_err(sql_error)?;
+            c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,execution_state) VALUES('A','Work','blocked','code','example',1,1,?1)",
+                [json!({"stage":"waiting","suspended":false}).to_string()])?;
+            let mut cheaper = p.clone();
+            cheaper.executor.model = "gpt-6-luna".into();
+            assert!(save(c, "example", 1, &cheaper, "test").is_err());
+            p.paused = true;
+            save(c, "example", 1, &p, "test").map_err(sql_error)?;
+            assert!(save(c, "example", 2, &cheaper, "test").is_err());
+            c.execute("UPDATE issues SET execution_state=?1 WHERE id='A'",
+                [json!({"stage":"waiting","suspended":true}).to_string()])?;
+            cheaper.paused = true;
+            save(c, "example", 2, &cheaper, "test").map_err(sql_error)?;
+            assert_eq!(get(c,"example").unwrap().unwrap().policy.executor.model,"gpt-6-luna");
+            cheaper.executor.provider = "claude".into();
+            assert!(save(c, "example", 3, &cheaper, "test").is_err());
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+    #[test]
     fn acceptance_revision_never_reuses_an_old_identity_after_removal() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("db")).unwrap();
@@ -751,6 +795,7 @@ CC_DIR=/tmp/project-worker
         assert_eq!(worker["env"]["model"], "gpt-5.5");
         assert_eq!(worker["env"]["effort"], "low");
         assert_eq!(worker["workspace"]["branch"], "amux/fanout/project-worker");
+        assert_eq!(worker["workspace_available"], false);
         assert_eq!(worker["integration"]["status"], "integrated");
         assert_eq!(worker["tasks"][0]["id"], "A-1");
     }

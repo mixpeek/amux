@@ -1,0 +1,57 @@
+{
+  "criteria": [
+    {
+      "id": "single-image-lifecycle",
+      "requirement": "A fresh network-isolated Docker image completes object ingest, batch processing, document validation, retrieval, clustering, and cleanup end to end",
+      "verifier": {
+        "type": "execution",
+        "id": "run-single-image",
+        "command": "python3 scripts/run_goal_07_single_image.py",
+        "timeout_secs": 3600,
+        "receipt": "artifacts/goal-07-single-image/execution-receipt.json",
+        "required_stages": [
+          "image-build",
+          "service-health",
+          "network-isolation",
+          "object-ingest",
+          "batch-processing",
+          "document-validation",
+          "retrieval",
+          "clustering",
+          "api-cleanup",
+          "container-cleanup"
+        ],
+        "assertions": [
+          {"stage": "image-build", "artifact": "artifacts/goal-07-single-image/docker-observations.json", "pointer": "/image_built", "operator": "equals", "expected": "true"},
+          {"stage": "service-health", "artifact": "artifacts/goal-07-single-image/docker-observations.json", "pointer": "/service_health", "operator": "equals", "expected": "\"healthy\""},
+          {"stage": "network-isolation", "artifact": "artifacts/goal-07-single-image/docker-observations.json", "pointer": "/network_mode", "operator": "equals", "expected": "\"none\""},
+          {"stage": "network-isolation", "artifact": "artifacts/goal-07-single-image/docker-observations.json", "pointer": "/external_dns_exit", "operator": "at_least", "expected": "1"},
+          {"stage": "object-ingest", "artifact": "artifacts/goal-07-single-image/e2e-manifest.json", "pointer": "/lifecycle/objects_uploaded", "operator": "at_least", "expected": "100"},
+          {"stage": "batch-processing", "artifact": "artifacts/goal-07-single-image/e2e-manifest.json", "pointer": "/lifecycle/batch", "operator": "equals", "expected": "\"passed\""},
+          {"stage": "document-validation", "artifact": "artifacts/goal-07-single-image/e2e-manifest.json", "pointer": "/lifecycle/documents_validated", "operator": "at_least", "expected": "100"},
+          {"stage": "retrieval", "artifact": "artifacts/goal-07-single-image/e2e-manifest.json", "pointer": "/lifecycle/retriever/results", "operator": "at_least", "expected": "1"},
+          {"stage": "clustering", "artifact": "artifacts/goal-07-single-image/e2e-manifest.json", "pointer": "/lifecycle/clustering/clusters", "operator": "at_least", "expected": "1"},
+          {"stage": "api-cleanup", "artifact": "artifacts/goal-07-single-image/e2e-manifest.json", "pointer": "/lifecycle/cleanup/organization_deleted", "operator": "equals", "expected": "true"},
+          {"stage": "container-cleanup", "artifact": "artifacts/goal-07-single-image/docker-observations.json", "pointer": "/container_removed", "operator": "equals", "expected": "true"},
+          {"stage": "container-cleanup", "artifact": "artifacts/goal-07-single-image/docker-observations.json", "pointer": "/volume_removed", "operator": "equals", "expected": "true"}
+        ]
+      },
+      "evidence": [
+        "artifacts/goal-07-single-image/execution-receipt.json",
+        "artifacts/goal-07-single-image/e2e-manifest.json",
+        "artifacts/goal-07-single-image/docker-observations.json",
+        "artifacts/goal-07-single-image/execution.txt",
+        "artifacts/goal-07-single-image/report.md"
+      ]
+    },
+    {
+      "id": "human-review",
+      "requirement": "A person confirms the retained image, lifecycle measurements, and report match the requested outcome",
+      "verifier": {
+        "type": "human",
+        "id": "review-single-image",
+        "instructions": "Open the retained receipt, raw manifest, Docker observations, command log, and report. Approve only when the measured result satisfies the goal."
+      }
+    }
+  ]
+}

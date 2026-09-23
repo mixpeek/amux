@@ -1,6 +1,12 @@
 # amux
 
 - Whenever you fix a bug: 1) fix it at the root cause, 2) make it surface in amux logs so a sweep would catch it.
+- Standing harness rule: if normal project or worker progress needs a manual
+  override, restart, retry, board-status edit, or file move, treat that need as
+  an Amux defect. Implement bounded, logged discovery and recovery, then rerun
+  the original lifecycle case. Preserve failed evidence; never bypass budget,
+  customer-outbound, or human artifact-review gates. Host-resolvable operational
+  failures must not become permanent waits or `needs you` dependencies.
 
 Rust workspace (`crates/amux-core`, `amux-server`, `amux-cli`, `amux-dashboard`)
 serving a static SPA on **port 8824**. Use `$AMUX_URL` or `$(amux url)`.

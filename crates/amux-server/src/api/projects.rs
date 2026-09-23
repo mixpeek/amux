@@ -148,7 +148,7 @@ fn project_profile_supported(
     profile: &amux_core::project::ModelProfile,
 ) -> Result<(), &'static str> {
     if profile.provider == "codex" && profile.model == "gpt-5-nano" {
-        return Err("gpt-5-nano is not supported for Codex project workers on ChatGPT accounts; use gpt-5.5 with low effort for the cheapest supported Codex project lifecycle run");
+        return Err("gpt-5-nano is not supported for Codex project workers on ChatGPT accounts; use gpt-6-luna with low effort for the cheapest supported Codex project lifecycle run");
     }
     Ok(())
 }
@@ -286,6 +286,7 @@ async fn configure(
         Err(e) => error(
             if e.to_string().contains("revision conflict")
                 || e.to_string().contains("fixed while executions")
+                || e.to_string().contains("pause and settle the project")
             {
                 StatusCode::CONFLICT
             } else {
@@ -324,7 +325,7 @@ async fn closeout(
         );
     }
     let project = name.clone();
-    let (project_policy, workers) = match state
+    let (project_policy, workers, fingerprint) = match state
         .store
         .read_async(move |c| {
             let project = store::get(c, &project)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
@@ -336,7 +337,8 @@ async fn closeout(
             if plans.iter().any(|plan| !matches!(plan.phase, amux_core::project::Phase::Verified | amux_core::project::Phase::Closed)) {
                 anyhow::bail!("project closeout requires terminal project tasks");
             }
-            Ok((project.clone(), project_executor_workers(c, &project.name)?))
+            Ok((project.clone(), project_executor_workers(c, &project.name)?,
+                acceptance["fingerprint"].as_str().unwrap_or_default().to_string()))
         })
         .await
     {
@@ -373,6 +375,26 @@ async fn closeout(
     let mut deferred = 0usize;
     let mut errors = 0usize;
     for worker in workers {
+        let project_name = name.clone();
+        let worker_name = worker.clone();
+        let reviewed_fingerprint = fingerprint.clone();
+        if let Err(error) = state
+            .store
+            .write_async(move |c| {
+                crate::project_execution::acceptance::settle_approved_owner_messages(
+                    c,
+                    &project_name,
+                    &worker_name,
+                    &reviewed_fingerprint,
+                )
+                .map_err(store::sql_error)
+            })
+            .await
+        {
+            errors += 1;
+            results.push(json!({"worker":worker,"state":"error","error":format!("could not retain reviewed owner messages: {error}")}));
+            continue;
+        }
         let before = crate::fanout_workspace::integration_status(&home, &worker);
         let worker_head = before["head"].as_str().unwrap_or_default().to_string();
         let published_contains_worker = !worker_head.is_empty()

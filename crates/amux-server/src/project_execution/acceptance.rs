@@ -19,7 +19,10 @@ use crate::api::AppState;
 use crate::db::{board_store as bs, PendingEvent, WriteOutcome};
 use crate::fanout_workspace as workspace;
 use amux_core::{
-    project::{phase, AcceptanceContract, ContractVerifier, Phase},
+    project::{
+        phase, AcceptanceContract, ContractVerifier, ExecutionAssertion,
+        ExecutionAssertionOperator, Phase,
+    },
     revision::{EntityType, MutationKind},
 };
 use rusqlite::{params, Connection};
@@ -32,7 +35,7 @@ use std::time::{Duration, Instant};
 
 /// Operational failures (git, timeout, process) retry this many times per fingerprint, then hold
 /// until the operator asks for a rerun. Semantic outcomes never retry on their own.
-const MAX_OPERATIONAL_ATTEMPTS: usize = 2;
+const MAX_OPERATIONAL_ATTEMPTS: usize = 4;
 const OBSERVE_EVERY: Duration = Duration::from_secs(30);
 
 fn stream(project: &str) -> String {
@@ -154,6 +157,22 @@ pub fn retirement_allowed(conn: &Connection, project: &str) -> anyhow::Result<Va
             json!({"allowed":false,"state":"review_not_configured","reason":"configure whole-project acceptance with a human artifact review before executors can expire"}),
         );
     };
+    if let Err(error) = contract.validate() {
+        let key = format!("invalid-contract:{}", p.name);
+        if let Ok(mut seen) = observed_at().lock() {
+            if seen
+                .get(&key)
+                .is_none_or(|at| at.elapsed() >= OBSERVE_EVERY)
+            {
+                tracing::warn!(project=%p.name, %error, measured=true, n_considered=contract.criteria.len(), verdict="project.acceptance_contract_invalid", "project acceptance cannot run");
+                seen.insert(key, Instant::now());
+            }
+        }
+        return Ok(
+            json!({"measured":true,"n_considered":contract.criteria.len(),"state":"invalid_contract","reason":error,
+            "criteria":criteria_view(contract,None,&HashMap::new()),"review_assets":review_assets(conn,&p.name,None)?}),
+        );
+    }
     if !contract.criteria.iter().any(|c| c.verifier.is_human()) {
         return Ok(
             json!({"allowed":false,"state":"review_not_configured","reason":"add a human criterion to the acceptance contract before executors can expire"}),
@@ -256,6 +275,102 @@ fn observed_main(conn: &Connection, project: &str) -> anyhow::Result<Option<Valu
     Ok(events(conn, project, "project.acceptance_observed", None)?
         .pop()
         .map(|(_, v)| v))
+}
+
+/// A published project is an achieved outcome, not a moving evaluation of every future commit
+/// on main. The integration receipts are written only after the approved candidate is pushed and
+/// each verified worker head is contained in it. Both intent and heads must still match today.
+fn published_anchor(
+    conn: &Connection,
+    p: &store::Project,
+    contract: &AcceptanceContract,
+    intent: &str,
+) -> anyhow::Result<Option<(Value, Value)>> {
+    let heads = match verified_heads(conn, &p.name) {
+        Ok(heads) => heads,
+        Err(_) => return Ok(None),
+    };
+    let workers: HashSet<_> = planner::plan(conn, p)?
+        .into_iter()
+        .map(|plan| plan.execution.worker)
+        .filter(|worker| !worker.trim().is_empty())
+        .collect();
+    if workers.is_empty() {
+        return Ok(None);
+    }
+    let observations = events(conn, &p.name, "project.acceptance_observed", None)?;
+    let lost = events(conn, &p.name, "project.publication_lost", None)?;
+    for (result_id, result) in events(conn, &p.name, "project.acceptance", None)?
+        .into_iter()
+        .rev()
+    {
+        let Some(candidate) = result["candidate"]
+            .as_str()
+            .or_else(|| result["main"].as_str())
+        else {
+            continue;
+        };
+        if result["intent"] != intent
+            || result["contract_revision"] != contract.revision
+            || !matches!(
+                result["state"].as_str(),
+                Some("awaiting_human" | "accepted")
+            )
+            || result["publish_gate"]["state"] != "passed"
+            || lost
+                .iter()
+                .any(|(id, e)| *id > result_id && e["candidate"] == candidate)
+            || events(
+                conn,
+                &p.name,
+                "project.acceptance_rerun",
+                result["fingerprint"].as_str(),
+            )?
+            .iter()
+            .any(|(id, _)| *id > result_id)
+        {
+            continue;
+        }
+        let Some((_, observed)) = observations.iter().rev().find(|(_, o)| {
+            o["candidate"] == candidate
+                && o["intent"] == intent
+                && o["contract_revision"] == contract.revision
+                && o["heads"] == json!(heads)
+        }) else {
+            continue;
+        };
+        let approvals = events(
+            conn,
+            &p.name,
+            "project.acceptance_approval",
+            result["fingerprint"].as_str(),
+        )?;
+        if contract
+            .criteria
+            .iter()
+            .filter(|c| c.verifier.is_human())
+            .any(|c| {
+                approvals
+                    .iter()
+                    .rev()
+                    .find(|(_, a)| a["criterion"] == c.id)
+                    .is_none_or(|(id, a)| *id <= result_id || a["decision"] != "approve")
+            })
+        {
+            continue;
+        }
+        let home = crate::config::amux_home();
+        if !workers.iter().all(|worker| {
+            let integration = workspace::integration_status(&home, worker);
+            integration["status"] == "integrated"
+                && integration["approved_candidate"] == true
+                && integration["merged"] == candidate
+        }) {
+            continue;
+        }
+        return Ok(Some((result, observed.clone())));
+    }
+    Ok(None)
 }
 
 fn verified_heads(conn: &Connection, project: &str) -> anyhow::Result<Vec<(String, String)>> {
@@ -390,12 +505,98 @@ fn criteria_view(
             }
             let verifier = match &c.verifier {
                 ContractVerifier::Command { id, command, timeout_secs } => json!({"type":"command","id":id,"command":command,"timeout_secs":timeout_secs}),
-                ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages } => json!({"type":"execution","id":id,"command":command,"timeout_secs":timeout_secs,"receipt":receipt,"required_stages":required_stages}),
+                ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages, assertions } => json!({"type":"execution","id":id,"command":command,"timeout_secs":timeout_secs,"receipt":receipt,"required_stages":required_stages,"assertions":assertions}),
                 ContractVerifier::Human { id, instructions } => json!({"type":"human","id":id,"instructions":instructions}),
             };
             json!({"id":c.id,"requirement":c.requirement,"verifier":verifier,"evidence_required":c.evidence,"result":outcome})
         })
         .collect()
+}
+
+/// Worker steering can arrive while a project executor is stopping. Keep such
+/// input visible at human review rather than letting an invisible queue block
+/// retirement after the project is approved.
+fn pending_owner_messages(conn: &Connection, project: &str) -> anyhow::Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT q.id,q.session,q.precond_card,q.text,q.queued_at FROM steering_queue q \
+         JOIN issues i ON i.id=q.precond_card AND i.session=q.session \
+         WHERE i.project_group=?1 AND COALESCE(i.deleted,0)=0 AND q.guard='project-steering' \
+         ORDER BY q.queued_at,q.id",
+    )?;
+    let rows = stmt.query_map([project], |r| {
+        Ok(json!({"id":r.get::<_,String>(0)?,"worker":r.get::<_,String>(1)?,
+            "task":r.get::<_,String>(2)?,"text":crate::api::session_verbs::redact_secrets(&r.get::<_,String>(3)?),
+            "queued_at":r.get::<_,f64>(4)?,"delivered":false}))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Approval covers only owner messages already queued before the review. They
+/// remain in the worker's history as explicitly undelivered; messages arriving
+/// after approval still block retirement and must be handled separately.
+pub(crate) fn settle_approved_owner_messages(
+    conn: &Connection,
+    project: &str,
+    worker: &str,
+    fingerprint: &str,
+) -> anyhow::Result<WriteOutcome> {
+    let reviewed_at: f64 = conn.query_row(
+        "SELECT COALESCE(MAX(ts),0) FROM session_events WHERE session=?1 AND type='project.acceptance_approval' AND json_extract(data,'$.fingerprint')=?2 AND json_extract(data,'$.decision')='approve'",
+        params![stream(project), fingerprint],
+        |r| r.get(0),
+    )?;
+    if reviewed_at <= 0.0 {
+        return Ok(WriteOutcome {
+            applied: false,
+            events: vec![],
+        });
+    }
+    let mut stmt = conn.prepare(
+        "SELECT q.id,q.precond_card FROM steering_queue q JOIN issues i ON i.id=q.precond_card AND i.session=q.session \
+         WHERE q.session=?1 AND q.guard='project-steering' AND q.delivering_since IS NULL \
+         AND q.queued_at<=?2 AND i.project_group=?3 AND i.status='verified' AND COALESCE(i.deleted,0)=0",
+    )?;
+    let rows = stmt.query_map(params![worker, reviewed_at, project], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let candidates = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut settled = 0;
+    for (id, task) in candidates {
+        let now = crate::config::now_f64();
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) \
+             SELECT id,session,text,queued_at,?3,'void:project-review-approved',guard,sender FROM steering_queue \
+             WHERE id=?1 AND session=?2 AND guard='project-steering' AND delivering_since IS NULL",
+            params![id, worker, now],
+        )?;
+        if inserted == 0 {
+            continue;
+        }
+        conn.execute(
+            "DELETE FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-steering' AND delivering_since IS NULL",
+            params![id, worker],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO session_events(ts,session,type,data,idem,source) VALUES(?1,?2,'message.voided',?3,?4,'steering')",
+            params![now, worker, json!({"id":id,"task":task,"project":project,
+                "fingerprint":fingerprint,"reason":"project-review-approved","delivered":false,
+                "measured":true,"n_considered":1}).to_string(), format!("void:{id}")],
+        )?;
+        settled += 1;
+    }
+    tracing::info!(
+        project,
+        worker,
+        settled,
+        measured = true,
+        n_considered = settled,
+        verdict = "project_review_owner_messages_retained",
+        "reviewed undelivered owner messages retained in worker history before retirement"
+    );
+    Ok(WriteOutcome {
+        applied: settled > 0,
+        events: vec![],
+    })
 }
 
 /// The project's acceptance as one canonical projection, consumed unchanged by every surface.
@@ -409,23 +610,44 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
     };
     let intent = intent_revision(conn, &p.name)?;
     let is_settled = settled(conn, &p.name)?;
-    let observed = observed_main(conn, &p.name)?;
+    let anchor = if is_settled {
+        published_anchor(conn, p, contract, &intent)?
+    } else {
+        None
+    };
+    let observed = if let Some((_, observation)) = &anchor {
+        Some(observation.clone())
+    } else {
+        observed_main(conn, &p.name)?
+    };
     let candidate = observed.as_ref().and_then(|o| {
         o["candidate"]
             .as_str()
             .or_else(|| o["main"].as_str())
             .map(String::from)
     });
-    let base_main = observed
+    let base_main = anchor
         .as_ref()
-        .and_then(|o| o["base_main"].as_str().map(String::from));
+        .and_then(|(result, _)| result["base_main"].as_str().map(String::from))
+        .or_else(|| {
+            observed
+                .as_ref()
+                .and_then(|o| o["base_main"].as_str().map(String::from))
+        });
     let heads = observed
         .as_ref()
         .and_then(|o| o["heads"].as_array().cloned())
         .unwrap_or_default();
     let mut view = json!({"measured":true,"n_considered":contract.criteria.len(),"contract_revision":contract.revision,"intent":intent,"main":base_main,"candidate":candidate,"task_heads":heads,
+        "pending_owner_messages":pending_owner_messages(conn,&p.name)?,
         "review_assets":review_assets(conn,&p.name,None)?,
         "criteria":criteria_view(contract, None, &HashMap::new())});
+    if let Some((result, _)) = &anchor {
+        view["published"] = result["candidate"]
+            .as_str()
+            .or_else(|| result["main"].as_str())
+            .map_or(Value::Null, |sha| json!(sha));
+    }
     let pending = |view: &mut Value, reason: &str| {
         view["state"] = json!("pending");
         view["reason"] = json!(reason);
@@ -452,7 +674,7 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         .collect();
     view["operational_attempts"] = json!(live
         .iter()
-        .filter(|(_, e)| e["state"] == "operational_failure")
+        .filter(|(_, e)| retryable_operational_result(e))
         .count());
     // The last evaluation for OTHER inputs stays inspectable as history; it is never the current answer.
     if let Some((_, previous)) = events(conn, &p.name, "project.acceptance", None)?
@@ -485,7 +707,16 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
     view["criteria"] = json!(criteria_view(contract, Some(result), &approvals));
     view["review_assets"] = json!(review_assets(conn, &p.name, Some(result))?);
     view["evaluated_candidate"] = result["main"].clone();
+    view["publish_gate"] = result["publish_gate"].clone();
     view["finished"] = result["finished"].clone();
+    if matches!(
+        result["state"].as_str(),
+        Some("awaiting_human" | "accepted")
+    ) && result["publish_gate"]["state"] != "passed"
+    {
+        pending(&mut view, "repository_publication_gate_pending");
+        return Ok(view);
+    }
     let humans: Vec<&str> = contract
         .criteria
         .iter()
@@ -515,6 +746,7 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         }
         "accepted" => "accepted",
         "operational_failure" => "operational_failure",
+        "failed" if retryable_operational_result(result) => "operational_failure",
         _ => "failed",
     };
     view["state"] = json!(state);
@@ -529,13 +761,74 @@ fn runnable(conn: &Connection, project: &str, fp: &str) -> anyhow::Result<bool> 
         .into_iter()
         .filter(|(id, _)| *id > rerun)
         .collect();
-    if live
-        .iter()
-        .any(|(_, e)| e["state"] != "operational_failure")
-    {
+    // Older receipts may have passed the outcome checks without running the repository's
+    // publication gate. Re-evaluate them before they can be published; this costs no model turn.
+    if live.last().is_some_and(|(_, e)| {
+        matches!(e["state"].as_str(), Some("awaiting_human" | "accepted"))
+            && e["publish_gate"]["state"] != "passed"
+    }) {
+        return Ok(true);
+    }
+    if live.iter().any(|(_, e)| !retryable_operational_result(e)) {
         return Ok(false);
     }
     Ok(live.len() < MAX_OPERATIONAL_ATTEMPTS)
+}
+
+/// A pre-push gate checks the bytes that would be published. The signature contains both sides
+/// of every changed path and the hook tree, so a later main commit touching unrelated files can
+/// reuse the gate, while a change to the proposed patch or hook forces a fresh run.
+async fn publish_gate_signature(repo: &str, base: &str, candidate: &str) -> anyhow::Result<String> {
+    let raw = workspace::git(repo, &["diff", "--raw", "--no-renames", base, candidate])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let hooks = workspace::git(repo, &["rev-parse", &format!("{candidate}:.githooks")])
+        .await
+        .unwrap_or_else(|_| "no-committed-hooks".into());
+    Ok(sha(&json!([repo, raw, hooks]).to_string()))
+}
+
+async fn ensure_publish_gate(
+    state: &AppState,
+    p: &store::Project,
+    base: &str,
+    candidate: &str,
+) -> anyhow::Result<Value> {
+    let signature = publish_gate_signature(&p.policy.repository, base, candidate).await?;
+    let prior = {
+        let conn = state.store.read()?;
+        events(&conn, &p.name, "project.publish_gate", None)?
+            .into_iter()
+            .rev()
+            .map(|(_, event)| event)
+            .find(|event| event["signature"] == signature && event["state"] == "passed")
+    };
+    if let Some(mut prior) = prior {
+        prior["reused"] = json!(true);
+        return Ok(prior);
+    }
+    // Dry-run executes the real pre-push hook without publishing. A unique throwaway ref avoids
+    // racing main during the lengthy hook; no remote branch is created by --dry-run. The actual
+    // main push below may omit the already-attested hook only for this identical patch signature.
+    let preflight_ref = format!("{candidate}:refs/heads/amux-preflight/{candidate}");
+    workspace::git(
+        &p.policy.repository,
+        &["push", "--dry-run", "origin", &preflight_ref],
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    let receipt = json!({"state":"passed","signature":signature,"candidate":candidate,"base_main":base,"reused":false});
+    let project = p.name.clone();
+    let stored = receipt.clone();
+    state
+        .store
+        .write_async(move |c| {
+            insert(c, &project, "project.publish_gate", &stored, "harness")?;
+            Ok(changed(&project, "publish_gate"))
+        })
+        .await?;
+    tracing::info!(project=%p.name,candidate,signature,measured=true,n_considered=1,verdict="project.publish_gate_passed","repository pre-push gate passed before human review");
+    Ok(receipt)
 }
 
 /// Record the exact unpublished candidate assembled from a base main plus verified task heads.
@@ -778,7 +1071,16 @@ pub fn contract_binding(
             .iter()
             .map(|asset| asset.path.as_str())
             .collect();
-        for evidence in &criterion.evidence {
+        // Execution evidence is produced by the independent, fresh project
+        // acceptance run. Requiring it in the worker's task report forces the
+        // worker to run privileged infrastructure (or submit stale proof).
+        let task_evidence: &[String] =
+            if matches!(criterion.verifier, ContractVerifier::Execution { .. }) {
+                &[]
+            } else {
+                &criterion.evidence
+            };
+        for evidence in task_evidence {
             anyhow::ensure!(
                 assets.contains(evidence.as_str()),
                 "contract:{id} requires reported asset {evidence}"
@@ -824,9 +1126,9 @@ pub fn catalogue(contract: &AcceptanceContract) -> String {
                 format!("; required evidence assets: {}", c.evidence.join(", "))
             };
             let proof = match &c.verifier {
-                ContractVerifier::Execution { receipt, required_stages, .. } => format!(
-                    "; runtime proof: a fresh candidate-bound receipt at {receipt} with passed stages {}",
-                    required_stages.join(", ")
+                ContractVerifier::Execution { receipt, required_stages, assertions, .. } => format!(
+                    "; runtime proof: a fresh candidate-bound receipt at {receipt} with passed stages {} and {} harness-checked raw evidence assertions",
+                    required_stages.join(", "), assertions.len()
                 ),
                 _ => String::new(),
             };
@@ -844,16 +1146,13 @@ async fn retain_evidence(
     candidate: &str,
     main: &str,
     paths: &[String],
-    generated_receipt: Option<&str>,
+    generated_paths: &[String],
 ) -> anyhow::Result<Vec<Value>> {
     if paths.is_empty() {
         return Ok(vec![]);
     }
     let mut assets = Vec::new();
-    for path in paths
-        .iter()
-        .filter(|path| generated_receipt != Some(path.as_str()))
-    {
+    for path in paths.iter().filter(|path| !generated_paths.contains(path)) {
         let bytes = std::fs::read(std::path::Path::new(candidate).join(path))?;
         assets.push(super::assets::Asset {
             path: path.clone(),
@@ -871,13 +1170,45 @@ async fn retain_evidence(
         };
         super::assets::retain(home, std::path::Path::new(candidate), &report).await?
     };
-    if let Some(path) = generated_receipt {
+    for path in generated_paths {
         retained.push(
-            super::assets::retain_generated_json(home, std::path::Path::new(candidate), main, path)
-                .await?,
+            super::assets::retain_generated_execution_artifact(
+                home,
+                std::path::Path::new(candidate),
+                main,
+                path,
+            )
+            .await?,
         );
     }
     Ok(retained.iter().map(|r| json!(r)).collect())
+}
+
+async fn retain_failed_execution_evidence(
+    home: &std::path::Path,
+    candidate: &str,
+    main: &str,
+    paths: &[String],
+) -> (Vec<Value>, Vec<String>) {
+    let mut evidence = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        if !std::path::Path::new(candidate).join(path).exists() {
+            continue;
+        }
+        match super::assets::retain_generated_execution_artifact(
+            home,
+            std::path::Path::new(candidate),
+            main,
+            path,
+        )
+        .await
+        {
+            Ok(asset) => evidence.push(json!(asset)),
+            Err(error) => errors.push(format!("{path}: {error}")),
+        }
+    }
+    (evidence, errors)
 }
 
 fn validate_execution_receipt(
@@ -888,6 +1219,16 @@ fn validate_execution_receipt(
     invocation_finished: f64,
     required_stages: &[String],
 ) -> anyhow::Result<Value> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| anyhow::anyhow!("fresh execution receipt was not produced: {e}"))?;
+    anyhow::ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "execution receipt must be a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= 16 * 1024 * 1024,
+        "execution receipt exceeds 16 MiB"
+    );
     let bytes = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("fresh execution receipt was not produced: {e}"))?;
     let receipt: Value = serde_json::from_slice(&bytes)
@@ -937,6 +1278,27 @@ fn validate_execution_receipt(
     let stages = receipt["stages"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("execution receipt needs a stages array"))?;
+    let mut seen = HashSet::new();
+    for stage in stages {
+        let id = stage["id"]
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("execution stage needs an id"))?;
+        anyhow::ensure!(seen.insert(id), "duplicate execution stage {id}");
+        anyhow::ensure!(
+            stage["state"] == "passed",
+            "execution receipt contains non-passing stage {id}"
+        );
+        anyhow::ensure!(
+            stage["evidence"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| item.as_object().is_some_and(|o| !o.is_empty()))),
+            "execution stage {id} needs structured evidence"
+        );
+    }
     for required in required_stages {
         let matching: Vec<_> = stages
             .iter()
@@ -961,6 +1323,220 @@ fn validate_execution_receipt(
     Ok(receipt)
 }
 
+/// The receipt is a claim by the runner. The harness compares each required stage with a
+/// separate, freshly created raw measurement file and retains that file by content hash.
+fn validate_execution_assertions(
+    candidate: &std::path::Path,
+    assertions: &[ExecutionAssertion],
+) -> anyhow::Result<Vec<Value>> {
+    let mut measurements = Vec::with_capacity(assertions.len());
+    for assertion in assertions {
+        let path = candidate.join(&assertion.artifact);
+        let metadata = std::fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "raw evidence {} must be a regular file",
+            assertion.artifact
+        );
+        anyhow::ensure!(
+            metadata.len() <= 16 * 1024 * 1024,
+            "raw evidence {} exceeds 16 MiB",
+            assertion.artifact
+        );
+        let bytes = std::fs::read(&path)?;
+        let raw: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow::anyhow!("raw evidence {} is not JSON: {e}", assertion.artifact))?;
+        let actual = raw.pointer(&assertion.pointer).ok_or_else(|| {
+            anyhow::anyhow!(
+                "raw evidence {} lacks {} for stage {}",
+                assertion.artifact,
+                assertion.pointer,
+                assertion.stage
+            )
+        })?;
+        let expected: Value = serde_json::from_str(&assertion.expected)?;
+        let passed = match assertion.operator {
+            ExecutionAssertionOperator::Equals => actual == &expected,
+            ExecutionAssertionOperator::AtLeast => actual
+                .as_f64()
+                .zip(expected.as_f64())
+                .is_some_and(|(a, b)| a.is_finite() && b.is_finite() && a >= b),
+        };
+        anyhow::ensure!(
+            passed,
+            "raw evidence assertion failed for stage {} at {}{}: expected {:?} {:?}, observed {}",
+            assertion.stage,
+            assertion.artifact,
+            assertion.pointer,
+            assertion.operator,
+            expected,
+            actual
+        );
+        measurements.push(json!({
+            "stage": assertion.stage,
+            "artifact": assertion.artifact,
+            "sha256": hex::encode(Sha256::digest(&bytes)),
+            "pointer": assertion.pointer,
+            "operator": assertion.operator,
+            "expected": expected,
+            "observed": actual
+        }));
+    }
+    Ok(measurements)
+}
+
+/// Docker is an independent witness for image identity. The candidate's verifier may name an
+/// image, but it cannot satisfy this check by writing a JSON claim about that image.
+async fn attest_docker_image(
+    receipt: &Value,
+    candidate_sha: &str,
+) -> anyhow::Result<Option<Value>> {
+    if receipt["subject"]["kind"] != "docker_image" {
+        return Ok(None);
+    }
+    let context = receipt["environment"]["docker_context"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Docker execution receipt needs a docker_context"))?;
+    let tag = receipt["subject"]["tag"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Docker execution receipt needs an image tag"))?;
+    let observed = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new("docker")
+            .args([
+                "--context",
+                context,
+                "image",
+                "inspect",
+                tag,
+                "--format",
+                "{{json .}}",
+            ])
+            .output(),
+    )
+    .await??;
+    anyhow::ensure!(
+        observed.status.success(),
+        "Docker cannot inspect the claimed image: {}",
+        tail(&String::from_utf8_lossy(&observed.stderr), 1000)
+    );
+    let image: Value = serde_json::from_slice(&observed.stdout)?;
+    validate_docker_image_metadata(receipt, &image, candidate_sha)?;
+    Ok(Some(json!({
+        "source":"docker image inspect",
+        "context":context,
+        "tag":tag,
+        "image_id":image["Id"],
+        "candidate_sha":candidate_sha,
+        "inspect_sha256":hex::encode(Sha256::digest(&observed.stdout))
+    })))
+}
+
+fn validate_docker_image_metadata(
+    receipt: &Value,
+    image: &Value,
+    candidate_sha: &str,
+) -> anyhow::Result<()> {
+    let id = image["Id"].as_str().unwrap_or_default();
+    anyhow::ensure!(
+        id == receipt["subject"]["id"].as_str().unwrap_or_default()
+            && id.starts_with("sha256:")
+            && id.len() == 71
+            && id[7..].bytes().all(|b| b.is_ascii_hexdigit()),
+        "Docker image ID does not match the execution receipt"
+    );
+    anyhow::ensure!(
+        image["Config"]["Labels"]["org.amux.candidate"] == candidate_sha,
+        "Docker image is not labeled with the exact candidate SHA"
+    );
+    Ok(())
+}
+
+/// A verifier can distinguish an infrastructure failure from a failed outcome without claiming
+/// success. The existing fresh-run identity still has to match before the harness retries it.
+fn declared_operational_failure(path: &std::path::Path, run_id: &str, candidate: &str) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(receipt) = serde_json::from_slice::<Value>(&bytes) else {
+        return false;
+    };
+    receipt["schema"] == "amux.execution_receipt.v1"
+        && receipt["state"] == "operational_failure"
+        && receipt["run_id"] == run_id
+        && receipt["candidate_sha"] == candidate
+}
+
+/// Registry metadata resolution can fail before an image or container exists. This is an
+/// infrastructure retry, never a successful acceptance result. Inspect only the fresh verifier's
+/// declared log in its disposable candidate checkout; a worker's report cannot trigger a retry.
+fn transient_docker_metadata_log(log: &str) -> bool {
+    log.contains("$ docker ")
+        && log.contains(" build ")
+        && log.contains("load metadata for ")
+        && [
+            "DeadlineExceeded: context deadline exceeded",
+            "TLS handshake timeout",
+            "i/o timeout",
+        ]
+        .iter()
+        .any(|reason| log.contains(reason))
+}
+
+fn transient_execution_failure(candidate: &str, evidence: &[String]) -> bool {
+    evidence
+        .iter()
+        .filter(|path| path.ends_with("/execution.txt"))
+        .any(|path| {
+            let Ok(log) = std::fs::read_to_string(std::path::Path::new(candidate).join(path))
+            else {
+                return false;
+            };
+            transient_docker_metadata_log(&log)
+        })
+}
+
+/// A failure recorded before this classifier shipped retries after restart if its retained,
+/// harness-generated log proves the same transient failure before any container was started.
+fn retryable_operational_result(result: &Value) -> bool {
+    retryable_operational_result_at(
+        result,
+        &crate::config::amux_home().join("artifacts/project-reports"),
+    )
+}
+
+fn retryable_operational_result_at(result: &Value, root: &std::path::Path) -> bool {
+    if result["state"] == "operational_failure" {
+        return true;
+    }
+    if result["state"] != "failed" {
+        return false;
+    }
+    result["results"].as_array().is_some_and(|results| {
+        results.iter().any(|criterion| {
+            criterion["type"] == "execution"
+                && criterion["state"] == "failed"
+                && criterion["evidence"].as_array().is_some_and(|evidence| {
+                    evidence.iter().any(|asset| {
+                        let Some(source) = asset["source"]["path"].as_str() else {
+                            return false;
+                        };
+                        let Some(path) = asset["path"].as_str() else {
+                            return false;
+                        };
+                        let path = std::path::Path::new(path);
+                        source.ends_with("/execution.txt")
+                            && path.starts_with(root)
+                            && std::fs::read_to_string(path)
+                                .is_ok_and(|log| transient_docker_metadata_log(&log))
+                    })
+                })
+        })
+    })
+}
+
 /// Run the approved command criteria in a throwaway checkout of `main`. Returns None if the run was
 /// cancelled because the inputs changed or the project paused; nothing is recorded then.
 async fn run(
@@ -971,6 +1547,7 @@ async fn run(
     intent: &str,
     fp: &str,
 ) -> anyhow::Result<Option<Value>> {
+    contract.validate().map_err(anyhow::Error::msg)?;
     let permit = || -> Result<(), String> {
         let c = state.store.read().map_err(|e| e.to_string())?;
         let cur = store::get(&c, &p.name)
@@ -1006,9 +1583,9 @@ async fn run(
         for c in &contract.criteria {
             let (id, command, timeout_secs, execution) = match &c.verifier {
                 ContractVerifier::Command { id, command, timeout_secs } => (id, command, timeout_secs, None),
-                ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages } => (id, command, timeout_secs, Some((receipt, required_stages))),
+                ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages, assertions } => (id, command, timeout_secs, Some((receipt, required_stages, assertions))),
                 ContractVerifier::Human { .. } => {
-                    match retain_evidence(&home, &candidate, main, &c.evidence, None).await {
+                    match retain_evidence(&home, &candidate, main, &c.evidence, &[]).await {
                         Ok(evidence) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"pending_human","evidence":evidence})),
                         Err(error) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"failed","evidence_error":error.to_string()})),
                     }
@@ -1028,10 +1605,13 @@ async fn run(
                 results.push(with("operational", json!({"output": tail(&e, 4000)})));
                 continue;
             }
-            if let Some((receipt, _)) = execution {
-                if std::path::Path::new(&candidate).join(receipt).exists() {
-                    tracing::warn!(project=%p.name, criterion=%c.id, receipt, measured=true, n_considered=1, verdict="project.execution_receipt_preexisting", "execution verifier refused a receipt already present before this invocation");
-                    results.push(with("failed", json!({"receipt_error":"execution receipt already existed before this invocation; historical proof cannot satisfy a runtime gate"})));
+            if let Some((receipt, _, _)) = execution {
+                let preexisting = std::iter::once(receipt.as_str())
+                    .chain(c.evidence.iter().map(String::as_str))
+                    .find(|path| std::path::Path::new(&candidate).join(path).exists());
+                if let Some(path) = preexisting {
+                    tracing::warn!(project=%p.name, criterion=%c.id, path, measured=true, n_considered=1, verdict="project.execution_evidence_preexisting", "execution verifier refused historical raw evidence");
+                    results.push(with("failed", json!({"receipt_error":format!("execution evidence {path} already existed before this invocation; historical proof cannot satisfy a runtime gate")})));
                     continue;
                 }
             }
@@ -1044,8 +1624,9 @@ async fn run(
                 .env("AMUX_ACCEPTANCE_RUN_ID", &run_id)
                 .env("AMUX_ACCEPTANCE_MAIN", main)
                 .env("AMUX_ACCEPTANCE_STARTED_AT", format!("{started:.6}"))
-                .env("AMUX_ACCEPTANCE_CANDIDATE", &candidate);
-            if let Some((receipt, _)) = execution {
+                .env("AMUX_ACCEPTANCE_CANDIDATE", &candidate)
+                .env("AMUX_ACCEPTANCE_ASSET_DIR", home.join("artifacts/project-reports"));
+            if let Some((receipt, _, _)) = execution {
                 cmd.env("AMUX_ACCEPTANCE_RECEIPT", receipt);
             }
             let began = Instant::now();
@@ -1058,25 +1639,42 @@ async fn run(
                     if workspace::git(&candidate, &["rev-parse", "HEAD"]).await.map_err(anyhow::Error::msg)? != main {
                         results.push(with("operational", json!({"output":"the verifier moved the candidate checkout","elapsed_ms":elapsed_ms})));
                     } else if !status.success() {
-                        results.push(with("failed", json!({"exit":status.code(),"output":tail(&output,4000),"elapsed_ms":elapsed_ms})));
+                        let operational = execution.is_some_and(|(path, _, _)| {
+                            declared_operational_failure(
+                                &std::path::Path::new(&candidate).join(path),
+                                &run_id,
+                                main,
+                            )
+                        }) || (execution.is_some() && transient_execution_failure(&candidate, &c.evidence));
+                        let (evidence, evidence_errors) = if execution.is_some() {
+                            retain_failed_execution_evidence(&home, &candidate, main, &c.evidence).await
+                        } else { (Vec::new(), Vec::new()) };
+                        tracing::warn!(project=%p.name, criterion=%c.id, exit=?status.code(), operational, retained=evidence.len(), measured=true, n_considered=1, verdict="project.execution_command_failed", "project acceptance verifier failed with retained diagnostics");
+                        results.push(with(if operational { "operational" } else { "failed" }, json!({"exit":status.code(),"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence,"evidence_errors":evidence_errors})));
                     } else {
                         let finished = crate::config::now_f64();
-                        let receipt = execution.map(|(path, stages)| {
-                            validate_execution_receipt(
+                        let receipt = if let Some((path, stages, assertions)) = execution {
+                            Some(async {
+                            let receipt = validate_execution_receipt(
                                 &std::path::Path::new(&candidate).join(path),
                                 &run_id,
                                 main,
                                 started,
                                 finished,
                                 stages,
-                            )
-                        });
+                            )?;
+                            let measurements = validate_execution_assertions(std::path::Path::new(&candidate), assertions)?;
+                            let docker_attestation = attest_docker_image(&receipt, main).await?;
+                            Ok::<_, anyhow::Error>((receipt, measurements, docker_attestation))
+                            }.await)
+                        } else { None };
+                        let generated_paths = if execution.is_some() { c.evidence.clone() } else { Vec::new() };
                         let retained = retain_evidence(
                             &home,
                             &candidate,
                             main,
                             &c.evidence,
-                            execution.map(|(path, _)| path.as_str()),
+                            &generated_paths,
                         )
                         .await;
                         match (receipt, retained) {
@@ -1084,7 +1682,7 @@ async fn run(
                                 tracing::warn!(project=%p.name, criterion=%c.id, %error, measured=true, n_considered=1, verdict="project.execution_receipt_rejected", "runtime acceptance proof rejected");
                                 results.push(with("failed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"receipt_error":error.to_string(),"evidence":evidence.unwrap_or_default()})));
                             }
-                            (Some(Ok(receipt)), Ok(evidence)) => results.push(with("passed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence,"receipt":receipt}))),
+                            (Some(Ok((receipt, measurements, docker_attestation))), Ok(evidence)) => results.push(with("passed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence,"receipt":receipt,"measurements":measurements,"docker_attestation":docker_attestation}))),
                             (None, Ok(evidence)) => results.push(with("passed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence":evidence}))),
                             (_, Err(e)) => results.push(with("failed", json!({"exit":0,"output":tail(&output,4000),"elapsed_ms":elapsed_ms,"evidence_error":e.to_string()}))),
                         }
@@ -1132,18 +1730,71 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
         return Ok(());
     }
     let name = p.name.clone();
-    let (settled, intent, heads, seen) = {
+    let (is_settled, intent, seen, anchor) = {
         let c = state.store.read()?;
+        let intent = intent_revision(&c, &name)?;
         (
             settled(&c, &name)?,
-            intent_revision(&c, &name)?,
-            verified_heads(&c, &name)?,
+            intent.clone(),
             observed_main(&c, &name)?,
+            published_anchor(&c, p, &contract, &intent)?,
         )
     };
-    if !settled {
+    if !is_settled {
         return Ok(());
     }
+    if let Some((result, _)) = anchor {
+        let candidate = result["candidate"].as_str().unwrap_or_default().to_string();
+        let key = format!("published:{name}");
+        let due = observed_at()
+            .lock()
+            .unwrap()
+            .get(&key)
+            .is_none_or(|at| at.elapsed() >= OBSERVE_EVERY);
+        if !due {
+            return Ok(());
+        }
+        observed_at().lock().unwrap().insert(key, Instant::now());
+        let repo = &p.policy.repository;
+        let latest = async {
+            workspace::git(repo, &["fetch", "origin", "main"]).await?;
+            workspace::git(repo, &["rev-parse", "origin/main"]).await
+        }
+        .await;
+        let latest = match latest {
+            Ok(latest) => latest,
+            Err(error) => {
+                tracing::warn!(project=%name,%error,measured=false,n_considered=0,verdict="project.published_main_unavailable","published project remains accepted while main cannot be checked");
+                return Ok(());
+            }
+        };
+        if workspace::git(repo, &["merge-base", "--is-ancestor", &candidate, &latest])
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let project = name.clone();
+        let lost_candidate = candidate.clone();
+        state
+            .store
+            .write_async(move |c| {
+                insert(
+                    c,
+                    &project,
+                    "project.publication_lost",
+                    &json!({"candidate":lost_candidate,"main":latest}),
+                    "harness",
+                )?;
+                Ok(changed(&project, "publication_lost"))
+            })
+            .await?;
+        tracing::warn!(project=%name,candidate,measured=true,n_considered=1,verdict="project.publication_lost","approved candidate is no longer in remote main; acceptance reopens");
+    }
+    let heads = {
+        let c = state.store.read()?;
+        verified_heads(&c, &name)?
+    };
     let stale = seen.as_ref().is_none_or(|o| {
         o["intent"] != json!(intent)
             || o["contract_revision"] != json!(contract.revision)
@@ -1218,6 +1869,18 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
     };
     result["candidate"] = json!(candidate);
     result["base_main"] = json!(base_main);
+    if result["state"] == "awaiting_human" || result["state"] == "accepted" {
+        match ensure_publish_gate(state, p, &base_main, &candidate).await {
+            Ok(gate) => result["publish_gate"] = gate,
+            Err(error) => {
+                result["state"] = json!("operational_failure");
+                result["publish_gate"] = json!({"state":"failed","error":error.to_string()});
+                if let Some(items) = result["results"].as_array_mut() {
+                    items.push(json!({"id":"publish-gate","state":"operational","output":error.to_string()}));
+                }
+            }
+        }
+    }
     // Commands can be long-running. Refresh the remote ref after them so an evaluation can never
     // be accepted for a commit that stopped being current while checks were running.
     workspace::git(&p.policy.repository, &["fetch", "origin", "main"])
@@ -1280,9 +1943,29 @@ pub(crate) async fn publish_accepted_candidate(
         current == base_main,
         "main advanced after review; rebuild and review the project candidate again"
     );
+    let signature = publish_gate_signature(&p.policy.repository, base_main, candidate).await?;
+    anyhow::ensure!(
+        view["publish_gate"]["state"] == "passed" && view["publish_gate"]["signature"] == signature,
+        "accepted candidate is still waiting for its repository publication gate"
+    );
+    workspace::git(&p.policy.repository, &["fetch", "origin", "main"])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let current = workspace::git(&p.policy.repository, &["rev-parse", "origin/main"])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        current == base_main,
+        "main advanced while the publication gate ran; rebuild and review the project candidate again"
+    );
     workspace::git(
         &p.policy.repository,
-        &["push", "origin", &format!("{candidate}:refs/heads/main")],
+        &[
+            "push",
+            "--no-verify",
+            "origin",
+            &format!("{candidate}:refs/heads/main"),
+        ],
     )
     .await
     .map_err(anyhow::Error::msg)?;
@@ -1305,6 +1988,259 @@ pub(crate) async fn publish_accepted_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_fresh_candidate_bound_operational_receipts_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipt.json");
+        std::fs::write(&path, json!({"schema":"amux.execution_receipt.v1","state":"operational_failure","run_id":"run-now","candidate_sha":"candidate-now"}).to_string()).unwrap();
+        assert!(declared_operational_failure(
+            &path,
+            "run-now",
+            "candidate-now"
+        ));
+        assert!(!declared_operational_failure(
+            &path,
+            "run-old",
+            "candidate-now"
+        ));
+        assert!(!declared_operational_failure(
+            &path,
+            "run-now",
+            "candidate-old"
+        ));
+        std::fs::write(&path, json!({"schema":"amux.execution_receipt.v1","state":"failed","run_id":"run-now","candidate_sha":"candidate-now"}).to_string()).unwrap();
+        assert!(!declared_operational_failure(
+            &path,
+            "run-now",
+            "candidate-now"
+        ));
+    }
+
+    #[test]
+    fn transient_docker_metadata_failure_retries_without_claiming_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = "artifacts/goal/execution.txt".to_string();
+        std::fs::create_dir_all(dir.path().join("artifacts/goal")).unwrap();
+        let log = dir.path().join(&path);
+        std::fs::write(&log, "$ docker --context local build --pull=false .\n#7 [internal] load metadata for docker.io/library/python:3.11\n#7 ERROR: DeadlineExceeded: context deadline exceeded\n[exit 1]\n").unwrap();
+        assert!(transient_execution_failure(
+            dir.path().to_str().unwrap(),
+            std::slice::from_ref(&path)
+        ));
+        std::fs::write(&log, "$ docker --context local build --pull=false .\nAssertion failed: API did not create 100 objects\n[exit 1]\n").unwrap();
+        assert!(!transient_execution_failure(
+            dir.path().to_str().unwrap(),
+            &[path]
+        ));
+    }
+
+    #[test]
+    fn retained_pre_classifier_failure_is_retried_but_a_semantic_failure_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("execution.txt");
+        let result = json!({"state":"failed","results":[{"type":"execution","state":"failed","evidence":[{"source":{"path":"artifacts/goal/execution.txt"},"path":log}]}]});
+        std::fs::write(&log, "$ docker build .\n#1 load metadata for docker.io/library/node:20-slim\nERROR: DeadlineExceeded: context deadline exceeded\n").unwrap();
+        assert!(retryable_operational_result_at(&result, dir.path()));
+        std::fs::write(
+            &log,
+            "Mixpeek lifecycle assertion failed: retrieval returned zero documents",
+        )
+        .unwrap();
+        assert!(!retryable_operational_result_at(&result, dir.path()));
+    }
+
+    #[test]
+    fn published_approval_survives_unrelated_main_but_not_changed_project_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        let home_path = dir.path().to_path_buf();
+        db.write(move |c| {
+            let p = project(c, Some(two()));
+            let contract = p.policy.acceptance.clone().unwrap();
+            verified(c, "T-1");
+            let execution = planner::Execution {
+                stage: "verified".into(),
+                worker: "worker".into(),
+                report: Some(report(&[])),
+                ..Default::default()
+            };
+            c.execute("UPDATE issues SET execution_state=?1 WHERE id='T-1'", [serde_json::to_string(&execution).unwrap()])?;
+            let heads = verified_heads(c, "p").unwrap();
+            observe(c, &p, "base", "published", &heads).unwrap();
+            let intent = intent_revision(c, "p").unwrap();
+            let fp = status(c, &p).unwrap()["fingerprint"].as_str().unwrap().to_string();
+            let mut outcome = result(&fp, "awaiting_human", &contract, "published", &intent,
+                json!([{"criterion":"unit","state":"passed"},{"criterion":"owner","state":"pending_human"}]));
+            outcome["base_main"] = json!("base");
+            record(c, "p", &contract, &intent, &outcome).unwrap();
+            insert(c, "p", "project.acceptance_approval", &json!({"fingerprint":fp,"criterion":"owner","decision":"approve"}), "operator")?;
+            workspace::write_integration_status(&home_path, "worker", &json!({"status":"integrated","approved_candidate":true,"merged":"published"}));
+            assert_eq!(status(c, &p).unwrap()["state"], "accepted");
+            observe(c, &p, "later-base", "later-candidate", &heads).unwrap();
+            let anchored = status(c, &p).unwrap();
+            assert_eq!(anchored["state"], "accepted");
+            assert_eq!(anchored["candidate"], "published");
+            assert_eq!(anchored["main"], "base");
+            insert(c, "p", "project.acceptance_approval", &json!({"fingerprint":fp,"criterion":"owner","decision":"reject"}), "operator")?;
+            assert_eq!(status(c, &p).unwrap()["state"], "pending");
+            insert(c, "p", "project.acceptance_approval", &json!({"fingerprint":fp,"criterion":"owner","decision":"approve"}), "operator")?;
+            assert_eq!(status(c, &p).unwrap()["state"], "accepted");
+            c.execute("UPDATE issues SET title='changed requirement' WHERE id='T-1'", [])?;
+            assert_eq!(status(c, &p).unwrap()["state"], "pending");
+            Ok(WriteOutcome { applied:false, events:vec![] })
+        }).unwrap();
+    }
+
+    #[test]
+    fn pre_gate_review_receipts_are_rechecked_before_publication() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE session_events(id INTEGER PRIMARY KEY,ts REAL,session TEXT,type TEXT,data TEXT,source TEXT);").unwrap();
+        insert(
+            &conn,
+            "p",
+            "project.acceptance",
+            &json!({"fingerprint":"fp","state":"awaiting_human"}),
+            "harness",
+        )
+        .unwrap();
+        assert!(runnable(&conn, "p", "fp").unwrap());
+        insert(
+            &conn,
+            "p",
+            "project.acceptance",
+            &json!({"fingerprint":"fp","state":"awaiting_human","publish_gate":{"state":"passed"}}),
+            "harness",
+        )
+        .unwrap();
+        assert!(!runnable(&conn, "p", "fp").unwrap());
+    }
+
+    #[tokio::test]
+    async fn publication_gate_signature_reuses_only_the_same_patch_and_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".githooks")).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Gate Test"]);
+        git(&["config", "user.email", "gate@example.invalid"]);
+        std::fs::write(repo.join(".githooks/pre-push"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("changed.txt"), "same patch\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "change"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        let first_signature = publish_gate_signature(repo.to_str().unwrap(), &base, &first)
+            .await
+            .unwrap();
+        git(&["checkout", "-q", "-b", "later", &base]);
+        std::fs::write(repo.join("unrelated.txt"), "other worker\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "unrelated"]);
+        let later_base = git(&["rev-parse", "HEAD"]);
+        git(&["cherry-pick", &first]);
+        let later_candidate = git(&["rev-parse", "HEAD"]);
+        assert_eq!(
+            first_signature,
+            publish_gate_signature(repo.to_str().unwrap(), &later_base, &later_candidate)
+                .await
+                .unwrap()
+        );
+        std::fs::write(repo.join("changed.txt"), "different patch\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "change payload"]);
+        let changed = git(&["rev-parse", "HEAD"]);
+        assert_ne!(
+            first_signature,
+            publish_gate_signature(repo.to_str().unwrap(), &later_base, &changed)
+                .await
+                .unwrap()
+        );
+        std::fs::write(repo.join(".githooks/pre-push"), "#!/bin/sh\necho updated\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "change hook"]);
+        let changed_hook = git(&["rev-parse", "HEAD"]);
+        assert_ne!(
+            publish_gate_signature(repo.to_str().unwrap(), &later_base, &changed)
+                .await
+                .unwrap(),
+            publish_gate_signature(repo.to_str().unwrap(), &later_base, &changed_hook)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn approved_review_retains_only_preexisting_undelivered_owner_messages() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE issues(id TEXT,session TEXT,project_group TEXT,status TEXT,deleted INTEGER);\
+            CREATE TABLE steering_queue(id TEXT PRIMARY KEY,session TEXT,text TEXT,queued_at REAL,guard TEXT,precond_card TEXT,delivering_since REAL,sender TEXT);\
+            CREATE TABLE steering_history(id TEXT PRIMARY KEY,session TEXT,text TEXT,queued_at REAL,delivered_at REAL,outcome TEXT,guard TEXT,sender TEXT);\
+            CREATE TABLE session_events(ts REAL,session TEXT,type TEXT,data TEXT,idem TEXT,source TEXT);\
+            INSERT INTO issues VALUES('T-1','worker','project','verified',NULL);\
+            INSERT INTO issues VALUES('T-2','other','other-project','verified',0);\
+            INSERT INTO steering_queue VALUES('before','worker','include the image digest',100,'project-steering','T-1',NULL,'operator');\
+            INSERT INTO steering_queue VALUES('after','worker','new work after approval',300,'project-steering','T-1',NULL,'operator');\
+            INSERT INTO steering_queue VALUES('foreign','other','unrelated',100,'project-steering','T-2',NULL,'operator');\
+            INSERT INTO session_events VALUES(200,'project:project','project.acceptance_approval','{\"fingerprint\":\"fp\",\"decision\":\"approve\"}',NULL,'operator');").unwrap();
+        let preview = pending_owner_messages(&conn, "project").unwrap();
+        assert_eq!(preview.len(), 2);
+        assert!(preview.iter().all(|m| m["delivered"] == false));
+        assert!(
+            !settle_approved_owner_messages(&conn, "project", "worker", "wrong")
+                .unwrap()
+                .applied
+        );
+        assert!(
+            settle_approved_owner_messages(&conn, "project", "worker", "fp")
+                .unwrap()
+                .applied
+        );
+        let retained: (String, String) = conn
+            .query_row(
+                "SELECT text,outcome FROM steering_history WHERE id='before'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            retained,
+            (
+                "include the image digest".into(),
+                "void:project-review-approved".into()
+            )
+        );
+        let remaining: Vec<String> = conn
+            .prepare("SELECT id FROM steering_queue ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(remaining, vec!["after", "foreign"]);
+        assert!(
+            !settle_approved_owner_messages(&conn, "project", "worker", "fp")
+                .unwrap()
+                .applied
+        );
+    }
 
     #[test]
     fn execution_receipt_is_fresh_candidate_bound_and_stage_complete() {
@@ -1362,10 +2298,54 @@ mod tests {
         rejected(wrong_candidate, "different candidate");
         let mut failed_stage = base.clone();
         failed_stage["stages"][1]["state"] = json!("failed");
-        rejected(failed_stage, "api-lifecycle did not pass");
+        rejected(failed_stage, "non-passing stage api-lifecycle");
         let mut prose_only = base;
         prose_only["stages"][1]["evidence"] = json!([]);
-        rejected(prose_only, "no machine-readable evidence");
+        rejected(prose_only, "structured evidence");
+    }
+
+    #[test]
+    fn raw_measurement_must_match_contract_even_when_receipt_claims_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("proof.json");
+        std::fs::write(&artifact, br#"{"uploaded":2}"#).unwrap();
+        let assertion = ExecutionAssertion {
+            stage: "object-ingest".into(),
+            artifact: "proof.json".into(),
+            pointer: "/uploaded".into(),
+            operator: ExecutionAssertionOperator::AtLeast,
+            expected: "100".into(),
+        };
+        let error = validate_execution_assertions(dir.path(), std::slice::from_ref(&assertion))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected"), "{error}");
+        std::fs::write(&artifact, br#"{"uploaded":100}"#).unwrap();
+        let passed = validate_execution_assertions(dir.path(), &[assertion]).unwrap();
+        assert_eq!(passed[0]["observed"], 100);
+        assert_eq!(passed[0]["sha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn docker_witness_rejects_a_claimed_image_or_commit_that_daemon_did_not_observe() {
+        let id = format!("sha256:{}", "a".repeat(64));
+        let receipt = json!({"subject":{"id":id}});
+        let observed = json!({"Id":id,"Config":{"Labels":{"org.amux.candidate":"candidate-a"}}});
+        assert!(validate_docker_image_metadata(&receipt, &observed, "candidate-a").is_ok());
+        assert!(
+            validate_docker_image_metadata(&receipt, &observed, "candidate-b")
+                .unwrap_err()
+                .to_string()
+                .contains("candidate SHA")
+        );
+        let other = json!({"Id":format!("sha256:{}", "b".repeat(64)),
+            "Config":{"Labels":{"org.amux.candidate":"candidate-a"}}});
+        assert!(
+            validate_docker_image_metadata(&receipt, &other, "candidate-a")
+                .unwrap_err()
+                .to_string()
+                .contains("image ID")
+        );
     }
 
     #[tokio::test]
@@ -1472,6 +2452,7 @@ mod tests {
 path = pathlib.Path(os.environ["AMUX_ACCEPTANCE_RECEIPT"])
 path.parent.mkdir(parents=True, exist_ok=True)
 now = time.time()
+path.with_name("raw.json").write_text(json.dumps({"objects": 100, "retention_dir": os.environ["AMUX_ACCEPTANCE_ASSET_DIR"]}))
 path.write_text(json.dumps({
   "schema": "amux.execution_receipt.v1",
   "run_id": os.environ["AMUX_ACCEPTANCE_RUN_ID"],
@@ -1479,7 +2460,7 @@ path.write_text(json.dumps({
   "state": "passed",
   "started_at": now,
   "finished_at": now,
-  "subject": {"kind": "docker_image", "id": "sha256:fresh"},
+  "subject": {"kind": "process", "id": "fixture-run"},
   "stages": [{"id": "api-lifecycle", "state": "passed", "evidence": [{"objects": 100}]}]
 }))
 "#,
@@ -1494,8 +2475,9 @@ path.write_text(json.dumps({
         let contract = contract(json!({"criteria":[{
             "id":"lifecycle",
             "requirement":"Full lifecycle passes in a running image",
-            "verifier":{"type":"execution","id":"fresh-run","command":"python3 scripts/prove.py","receipt":"artifacts/execution.json","required_stages":["api-lifecycle"]},
-            "evidence":["artifacts/execution.json"]
+            "verifier":{"type":"execution","id":"fresh-run","command":"python3 scripts/prove.py","receipt":"artifacts/execution.json","required_stages":["api-lifecycle"],
+                "assertions":[{"stage":"api-lifecycle","artifact":"artifacts/raw.json","pointer":"/objects","operator":"at_least","expected":"100"}]},
+            "evidence":["artifacts/execution.json","artifacts/raw.json"]
         }]}));
         let store = crate::db::Store::open(&home.path().join("amux.db")).unwrap();
         let repository = repo.to_string_lossy().into_owned();
@@ -1534,14 +2516,169 @@ path.write_text(json.dumps({
             .unwrap();
         assert_eq!(result["state"], "accepted", "{result:#}");
         assert_eq!(result["results"][0]["receipt"]["candidate_sha"], main);
+        assert_eq!(result["results"][0]["measurements"][0]["observed"], 100);
         assert_eq!(
             result["results"][0]["receipt"]["subject"]["id"],
-            "sha256:fresh"
+            "fixture-run"
         );
         let retained = result["results"][0]["evidence"][0]["path"]
             .as_str()
             .unwrap();
         assert!(std::path::Path::new(retained).is_file(), "{retained}");
+        let raw = result["results"][0]["evidence"][1]["path"]
+            .as_str()
+            .unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(raw).unwrap()).unwrap();
+        assert_eq!(
+            raw["retention_dir"],
+            home.path()
+                .join("artifacts/project-reports")
+                .to_string_lossy()
+                .as_ref()
+        );
+
+        // The same real call path must reject a runner that emits a passing receipt but
+        // produces too few objects in its raw measurement file.
+        let script = repo.join("scripts/prove.py");
+        let original = std::fs::read_to_string(&script).unwrap();
+        std::fs::write(
+            &script,
+            original.replace(
+                "json.dumps({\"objects\": 100,",
+                "json.dumps({\"objects\": 2,",
+            ),
+        )
+        .unwrap();
+        git(&["add", "scripts/prove.py"]);
+        git(&["commit", "-m", "false raw result"]);
+        let false_main = git(&["rev-parse", "HEAD"]);
+        let rejected = run(
+            &state,
+            &project,
+            &contract,
+            &false_main,
+            &intent,
+            "false-result",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(rejected["state"], "failed", "{rejected:#}");
+        assert!(rejected["results"][0]["receipt_error"]
+            .as_str()
+            .unwrap()
+            .contains("raw evidence assertion failed"));
+        assert_eq!(
+            rejected["results"][0]["evidence"].as_array().unwrap().len(),
+            2
+        );
+
+        // A nonzero runner still retains the raw file that explains the failure.
+        let failing = std::fs::read_to_string(&script).unwrap().replace(
+            "path.write_text(json.dumps({",
+            "raise SystemExit(1)\npath.write_text(json.dumps({",
+        );
+        std::fs::write(&script, failing).unwrap();
+        git(&["add", "scripts/prove.py"]);
+        git(&["commit", "-m", "failed execution"]);
+        let failed_main = git(&["rev-parse", "HEAD"]);
+        let failed = run(
+            &state,
+            &project,
+            &contract,
+            &failed_main,
+            &intent,
+            "failed-run",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(failed["state"], "failed", "{failed:#}");
+        assert_eq!(failed["results"][0]["exit"], 1);
+        assert_eq!(
+            failed["results"][0]["evidence"].as_array().unwrap().len(),
+            1
+        );
+    }
+
+    /// Opt-in hardware test: runs the real Mixpeek image lifecycle through this exact harness
+    /// path. It is ignored in CI because it needs a local Docker daemon and can take minutes.
+    #[tokio::test]
+    #[ignore = "set AMUX_REAL_SINGLE_IMAGE_REPO and MIXPEEK_DOCKER_CONTEXT to run the real image lifecycle"]
+    async fn real_single_image_lifecycle_requires_raw_evidence_and_docker_witness() {
+        let repo = std::env::var("AMUX_REAL_SINGLE_IMAGE_REPO").expect("Mixpeek repository path");
+        let main = workspace::git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let contract: AcceptanceContract = serde_json::from_str(include_str!(
+            "../../../../docs/examples/single-image-acceptance.json"
+        ))
+        .unwrap();
+        contract.validate().unwrap();
+        let store = crate::db::Store::open(&home.path().join("amux.db")).unwrap();
+        let policy_contract = contract.clone();
+        store.write(move |c| {
+            let mut policy: amux_core::project::ExecutionPolicy = serde_json::from_value(json!({
+                "repository":repo,
+                "coordinator":{"provider":"codex","model":"gpt-5.5","effort":"low"},
+                "executor":{"provider":"codex","model":"gpt-5.5","effort":"low"},
+                "verify_command":"true",
+                "enabled":true
+            })).unwrap();
+            policy.acceptance = Some(policy_contract);
+            store::save(c, "single-image-real", 0, &policy, "test").map_err(store::sql_error)?;
+            c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES('IMG-1','single image lifecycle','verified','code','single-image-real',1,1,'retain proof','[\"contract:single-image-lifecycle\"]')", [])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let project = store::get(&state.store.read().unwrap(), "single-image-real")
+            .unwrap()
+            .unwrap();
+        let contract = project.policy.acceptance.clone().unwrap();
+        let intent = intent_revision(&state.store.read().unwrap(), "single-image-real").unwrap();
+        let result = run(&state, &project, &contract, &main, &intent, "real-run")
+            .await
+            .unwrap()
+            .unwrap();
+        if let Ok(proof_dir) = std::env::var("AMUX_REAL_PROOF_DIR") {
+            std::fs::create_dir_all(&proof_dir).unwrap();
+            std::fs::write(
+                std::path::Path::new(&proof_dir).join("acceptance-result.json"),
+                serde_json::to_vec_pretty(&result).unwrap(),
+            )
+            .unwrap();
+            for outcome in result["results"].as_array().unwrap() {
+                for asset in outcome["evidence"].as_array().into_iter().flatten() {
+                    if let Some(source) = asset["path"].as_str() {
+                        let name = std::path::Path::new(source).file_name().unwrap();
+                        std::fs::copy(source, std::path::Path::new(&proof_dir).join(name)).unwrap();
+                    }
+                }
+            }
+        }
+        assert_eq!(result["state"], "awaiting_human", "{result:#}");
+        assert_eq!(result["results"][0]["state"], "passed", "{result:#}");
+        assert_eq!(
+            result["results"][0]["measurements"]
+                .as_array()
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            result["results"][0]["docker_attestation"]["candidate_sha"],
+            main
+        );
+        assert_eq!(
+            result["results"][0]["evidence"].as_array().unwrap().len(),
+            5
+        );
     }
 
     fn contract(v: Value) -> AcceptanceContract {
@@ -1675,6 +2812,24 @@ path.write_text(json.dumps({
     }
 
     #[test]
+    fn execution_evidence_is_produced_by_project_acceptance_not_the_worker() {
+        let c = contract(json!({"revision":1,"criteria":[{
+            "id":"image","requirement":"fresh image lifecycle passes",
+            "verifier":{"type":"execution","id":"run-image","command":"python3 scripts/run_image.py","receipt":"artifacts/image/receipt.json","required_stages":["image-build"],"timeout_secs":120},
+            "evidence":["artifacts/image/receipt.json","artifacts/image/log.txt"]
+        }]}));
+        let refs = vec!["contract:image".to_string()];
+        let mut candidate = report(&[("contract:image", "python3 scripts/run_image.py")]);
+        candidate.assets.push(super::super::assets::Asset {
+            path: "artifacts/candidate.md".into(),
+            sha256: "0".repeat(64),
+        });
+        assert!(contract_binding(&refs, &candidate, Some(&c)).is_ok());
+        candidate.checks[0].command = "true".into();
+        assert!(contract_binding(&refs, &candidate, Some(&c)).is_err());
+    }
+
+    #[test]
     fn the_planner_may_reference_only_approved_command_criteria() {
         let c = two();
         assert!(check_plan_refs(&c, &[vec!["contract:unit".into(), "prose".into()]]).is_ok());
@@ -1706,6 +2861,32 @@ path.write_text(json.dumps({
     fn verified(db: &Connection, id: &str) {
         db.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES(?1,?1,'verified','doc','p',1,1,'do it','[\"x\"]')", [id]).unwrap();
     }
+    #[tokio::test]
+    async fn empty_project_waits_without_trying_to_compose_candidate_heads() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("db")).unwrap());
+        db.write(|c| {
+            project(c, Some(two()));
+            Ok(crate::db::WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
+        })
+        .unwrap();
+        let p = {
+            let c = db.read().unwrap();
+            store::get(&c, "p").unwrap().unwrap()
+        };
+        let state = crate::api::AppState {
+            store: db,
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        assert!(!settled(&state.store.read().unwrap(), "p").unwrap());
+        tick(&state, &p).await.unwrap();
+    }
     fn result(
         fp: &str,
         state: &str,
@@ -1714,7 +2895,7 @@ path.write_text(json.dumps({
         intent: &str,
         results: Value,
     ) -> Value {
-        json!({"fingerprint":fp,"contract_revision":contract.revision,"main":main,"intent":intent,"state":state,"finished":1.0,"results":results})
+        json!({"fingerprint":fp,"contract_revision":contract.revision,"main":main,"intent":intent,"state":state,"finished":1.0,"results":results,"publish_gate":{"state":"passed","signature":"test"}})
     }
 
     #[test]
@@ -1935,7 +3116,10 @@ path.write_text(json.dumps({
             let s = status(c, &p).unwrap();
             assert_eq!(
                 (s["state"].as_str(), s["operational_attempts"].as_u64()),
-                (Some("operational_failure"), Some(2))
+                (
+                    Some("operational_failure"),
+                    Some(MAX_OPERATIONAL_ATTEMPTS as u64)
+                )
             );
             request_rerun(c, &p, &fp).unwrap();
             assert!(runnable(c, "p", &fp).unwrap());

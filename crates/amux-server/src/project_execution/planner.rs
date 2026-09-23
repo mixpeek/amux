@@ -216,9 +216,30 @@ fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
         && (matches!(
             reason,
             "executor_returned_without_result" | "executor_stopped_before_result"
-        ) || (e.report.is_some()
+        ) || (prelaunch_failure(reason) && e.report.is_none())
+            || (e.report.is_some()
             && e.verification_retries.is_empty()
             && e.waiting.as_deref() == Some(reason)))
+}
+
+fn prelaunch_failure(reason: &str) -> bool {
+    workspace_name_collision(reason) || reason == "tmux not found or timed out"
+}
+
+fn workspace_name_collision(reason: &str) -> bool {
+    reason.contains("Preparing worktree") && reason.contains("already checked out at")
+}
+
+fn worker_name(project: &str, task: &str) -> String {
+    // Project task IDs are local to an Amux home. Distinct test servers can
+    // point at one repository, so including the durable home avoids claiming
+    // the same Git branch from a second checkout.
+    let identity = format!("{}:{project}:{task}", crate::config::amux_home().display());
+    format!(
+        "px-{}-{}",
+        project.chars().take(24).collect::<String>(),
+        &hex::encode(Sha256::digest(identity.as_bytes()))[..10]
+    )
 }
 
 const AUTO_REPAIR_GRANT_PREFIX: &str = "auto-repair:";
@@ -252,6 +273,29 @@ fn auto_repair_grantable_wait(e: &Execution, max_attempts: u32) -> bool {
         && e.waiting
             .as_deref()
             .is_some_and(|reason| repairable_wait_reason(reason, e))
+}
+
+/// A Docker socket denied only inside the executor can be checked by the
+/// trusted host verifier. This recovery spends no provider tokens and must
+/// never turn an arbitrary operational wait into a retry loop.
+fn host_execution_recoverable(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> bool {
+    if e.stage != "waiting" || e.suspended || e.report.is_some()
+        || e.wait_category.as_deref() != Some("operational") || !project.policy.worktree
+        || !e.waiting.as_deref().is_some_and(|reason| {
+            reason.starts_with("operational:")
+                && reason.contains("Docker")
+                && reason.contains("socket")
+                && reason.contains("sandbox")
+        }) {
+        return false;
+    }
+    row.acceptance_criteria.as_deref()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .is_some_and(|criteria| criteria.iter().any(|criterion| {
+            criterion.strip_prefix("contract:")
+                .and_then(|id| project.policy.acceptance.as_ref()?.criterion(id))
+                .is_some_and(|c| matches!(c.verifier, amux_core::project::ContractVerifier::Execution { .. }))
+        }))
 }
 
 pub(crate) fn auto_repair_idempotency_key(project: &str, task: &str, e: &Execution) -> String {
@@ -397,6 +441,9 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "grant_repair";
                 None
             }
+        } else if host_execution_recoverable(row, &state, project) {
+            action = "recover_host_execution";
+            None
         } else if state.waiting.is_some() && state.stage != "repair" && !output_continuation {
             state.waiting.clone()
         } else if !bs::has_execution_details(row) && row.item_type != "epic" {
@@ -654,12 +701,13 @@ pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<Write
     state.stage = "reserved".into();
     state.suspended = false;
     state.observed_at = chrono::Utc::now().timestamp();
-    if state.worker.is_empty() {
-        state.worker = format!(
-            "px-{}-{}",
-            project.name.chars().take(24).collect::<String>(),
-            &hex::encode(Sha256::digest(id.as_bytes()))[..10]
-        );
+    if state.worker.is_empty()
+        || state
+            .waiting
+            .as_deref()
+            .is_some_and(workspace_name_collision)
+    {
+        state.worker = worker_name(&project.name, id);
     }
     state.delivery_id = format!("project:{}:{}:{}", project.name, id, state.generation);
     state.last_failure = state.waiting.take().or(state.last_failure);
@@ -764,6 +812,7 @@ pub fn record_report(
         &workspace,
         &policy.policy.verify_command,
         report,
+        policy.policy.acceptance.as_ref(),
     ) {
         tracing::warn!(project,task=id,worker,generation,measured=true,n_considered=report.checks.len()+1,verdict="project.report_commands_refused",%error,"report unchanged; correct candidate-relative commands and resubmit this generation");
         anyhow::bail!("report command refused before verification; correct the command and resubmit the same generation: {error}");
@@ -820,6 +869,33 @@ pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn foreign_worktree_branch_collision_is_repairable_with_home_scoped_worker_name() {
+        let reason = "Preparing worktree (checking out 'amux/fanout/px-example')\nfatal: 'amux/fanout/px-example' is already checked out at '/other-home/worktrees/px-example'";
+        let e = super::Execution {
+            stage: "waiting".into(),
+            waiting: Some(reason.into()),
+            attempt: 1,
+            ..Default::default()
+        };
+        assert!(super::repairable_wait_reason(reason, &e));
+        assert!(super::auto_repairable_wait(&e, 2));
+        let current = super::worker_name("example", "PIG-1");
+        assert!(current.starts_with("px-example-"));
+        assert_ne!(current, format!("px-example-{}", &hex::encode(sha2::Sha256::digest(b"PIG-1"))[..10]));
+    }
+    #[test]
+    fn tmux_launch_failure_can_repair_after_attempt_limit() {
+        let reason = "tmux not found or timed out";
+        let e = super::Execution {
+            stage: "waiting".into(),
+            waiting: Some(reason.into()),
+            attempt: 2,
+            ..Default::default()
+        };
+        assert!(super::repairable_wait_reason(reason, &e));
+        assert!(super::auto_repair_grantable_wait(&e, 2));
+    }
     use super::*;
     fn fixture_asset() -> super::super::assets::Asset {
         super::super::assets::Asset {

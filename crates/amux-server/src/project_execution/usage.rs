@@ -196,14 +196,16 @@ pub fn waiting(conn: &Connection, project: &Project) -> anyhow::Result<Option<St
         return Ok(Some("budget_cost_unmeasured".into()));
     }
     // A configured cap cannot silently treat unmeasured finished turns as free.
-    let unmeasured:i64=conn.query_row("SELECT count(*) FROM issues i WHERE i.project_group=?1 AND i.execution_state IS NOT NULL AND json_extract(i.execution_state,'$.stage') IN ('verified','waiting','repair') AND NOT EXISTS(SELECT 1 FROM token_ledger l WHERE l.task=i.id)",params![project.name],|r|r.get(0))?;
+    // Worktree preparation and tmux launch precede provider execution. Neither
+    // can have a provider turn, so their failed attempts need no token row.
+    let unmeasured:i64=conn.query_row("SELECT count(*) FROM issues i WHERE i.project_group=?1 AND i.execution_state IS NOT NULL AND json_extract(i.execution_state,'$.stage') IN ('verified','waiting','repair') AND NOT (json_extract(i.execution_state,'$.stage') IN ('waiting','repair') AND (coalesce(json_extract(i.execution_state,'$.waiting'),'') LIKE 'Preparing worktree%' OR coalesce(json_extract(i.execution_state,'$.waiting'),'')='tmux not found or timed out')) AND NOT EXISTS(SELECT 1 FROM token_ledger l WHERE l.task=i.id)",params![project.name],|r|r.get(0))?;
     let has_attempts: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_attempts')",
         [],
         |r| r.get(0),
     )?;
     let unmeasured_attempts: i64 = if has_attempts {
-        conn.query_row("SELECT count(*) FROM task_attempts a JOIN issues i ON i.id=a.card WHERE i.project_group=?1 AND a.ended_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM token_ledger l WHERE l.task=a.card AND l.session=a.worker AND l.ts>=a.started_at AND l.ts<=a.ended_at)", [project.name.as_str()], |r|r.get(0))?
+        conn.query_row("SELECT count(*) FROM task_attempts a JOIN issues i ON i.id=a.card WHERE i.project_group=?1 AND a.ended_at IS NOT NULL AND NOT (a.ended_by='project-driver' AND (coalesce(a.reason,'') LIKE 'Preparing worktree%' OR coalesce(a.reason,'')='tmux not found or timed out')) AND NOT EXISTS(SELECT 1 FROM token_ledger l WHERE l.task=a.card AND l.session=a.worker AND l.ts>=a.started_at AND l.ts<=a.ended_at)", [project.name.as_str()], |r|r.get(0))?
     } else {
         0
     };
@@ -216,6 +218,30 @@ pub fn waiting(conn: &Connection, project: &Project) -> anyhow::Result<Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prelaunch_worktree_failure_does_not_consume_unmeasured_provider_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            crate::db::attempts::ensure_table(c)?;
+            let policy = serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"codex","model":"gpt-5.5"},"executor":{"provider":"codex","model":"gpt-5.5"},"verify_command":"git diff --check","token_budget":120000})).unwrap();
+            super::super::store::save(c,"preflight",0,&policy,"test").map_err(super::super::store::sql_error)?;
+            let project = super::super::store::get(c,"preflight").unwrap().unwrap();
+            let reason = "Preparing worktree: branch already checked out at /other/home";
+            let state = json!({"stage":"waiting","worker":"worker","waiting":reason});
+            c.execute("INSERT INTO issues(id,title,status,project_group,created,updated,execution_state) VALUES('A','Build image','blocked','preflight',1,1,?1)",[state.to_string()])?;
+            c.execute("INSERT INTO task_attempts(card,attempt,worker,generation,started_at,ended_at,outcome,to_status,ended_by,reason) VALUES('A',1,'worker',1,1,2,'blocked','blocked','project-driver',?1)",[reason])?;
+            assert_eq!(waiting(c,&project).unwrap(),None);
+            c.execute("UPDATE issues SET execution_state=?1 WHERE id='A'",[json!({"stage":"waiting","worker":"worker","waiting":"tmux not found or timed out"}).to_string()])?;
+            c.execute("UPDATE task_attempts SET reason='tmux not found or timed out' WHERE card='A'",[])?;
+            assert_eq!(waiting(c,&project).unwrap(),None);
+            c.execute("UPDATE issues SET execution_state=?1 WHERE id='A'",[json!({"stage":"repair","worker":"worker","waiting":"tmux not found or timed out"}).to_string()])?;
+            assert_eq!(waiting(c,&project).unwrap(),None);
+            c.execute("UPDATE task_attempts SET reason='executor_returned_without_result' WHERE card='A'",[])?;
+            assert_eq!(waiting(c,&project).unwrap().as_deref(),Some("budget_usage_unmeasured"));
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
     #[test]
     fn project_budget_does_not_hide_unmeasured_intake_cost_or_a_later_attempt() {
         let dir = tempfile::tempdir().unwrap();

@@ -4063,3 +4063,14 @@ CARD: AAB-10
 SYMPTOM: The single-image verifier searched Markdown for phrases such as object and document counts, so historical prose could satisfy an end-to-end claim. Separately, each task's verification path merged its head to main before whole-project runtime and human acceptance, making review approval informational rather than authoritative.
 COST: Amux could label a Docker lifecycle verified without launching the candidate image, and could publish worker commits before a person reviewed the exact combined result.
 FIX: 8eefc9f0 requires runtime claims to use a fresh execution receipt bound to invocation, candidate SHA, timestamps, subject and named machine-evidence stages; historical receipts are refused. Verified worker heads now compose into one unpublished candidate, acceptance runs there, human approval fingerprints it, and closeout publishes only that exact candidate before expiring workers and deleting worktrees. Focused tests cover a real verifier subprocess, two-worker composition, unchanged main before approval and publication after approval.
+
+## Isolated project server vanished and scoped T7 intake expanded to all twenty goals
+AREA: project-lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: single-image-gs7
+SYMPTOM: The advertised 18972 server was down while a direct Rust acceptance test was described as harness progress. Its prior home lived under `/private/tmp/amux-astra-20260920`, which disappeared, and the process had no restart supervisor. After restoring a durable server, project request 501 explicitly scoped to the Mixpeek T7 slice still loaded all twenty indexed goal-spec sections, spent two gpt-5.5-low intake attempts, and remained pending with no board tasks or workers. The acceptance tick also warned every cadence about missing candidate heads on an empty project.
+COST: The browser could not show the allegedly running project or its evidence; the direct Docker proof never entered project state. The new live request wasted model calls and stalled before execution, while normal pending state polluted failure logs.
+FIX: Moved the isolated 18972 home to durable workspace storage under a KeepAlive launch agent with the required CLI paths and existing trusted certificates. The branch now narrows indexed spec coverage and model context only when the operator explicitly requests a Tn slice, retains full-spec coverage otherwise, warns when AMUX_HOME is volatile, and skips candidate-head inspection until tasks settle. Live retry, worker execution, and acceptance evidence are still under verification.
