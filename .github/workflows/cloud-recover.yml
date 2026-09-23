@@ -31,6 +31,9 @@ on:
         required: false
         default: 'false'
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   recover:
     runs-on: ubuntu-latest
@@ -48,11 +51,13 @@ jobs:
           # unusable during exactly that outage.
           # Best-effort keyscan, longer patience, and accept-new as the fallback:
           # a slow-but-alive sshd now gets us in instead of failing the job.
-          timeout 45 ssh-keyscan -T 30 -H 34.121.177.76 >> ~/.ssh/known_hosts 2>/dev/null \
+          timeout 45 ssh-keyscan -T 30 -H "$CLOUD_HOST" >> ~/.ssh/known_hosts 2>/dev/null \
             && echo "keyscan ok" || echo "keyscan failed/timed out — continuing with accept-new"
           chmod 644 ~/.ssh/known_hosts 2>/dev/null || true
-          cat >> ~/.ssh/config <<'EOF'
-          Host 34.121.177.76
+          # UNQUOTED heredoc on purpose: $CLOUD_HOST must expand here. Keep
+          # this block free of any other $ or backtick.
+          cat >> ~/.ssh/config <<EOF
+          Host $CLOUD_HOST
             StrictHostKeyChecking accept-new
             ConnectTimeout 30
             ServerAliveInterval 10
@@ -64,7 +69,7 @@ jobs:
         env:
           JLINES: ${{ inputs.journal_lines }}
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 "JLINES='$JLINES' bash -s" <<'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" "JLINES='$JLINES' bash -s" <<'ENDSSH'
             echo "=== disk (the leading hypothesis for a wedged daemon) ==="
             df -h 2>&1 | sed 's/^/  /'
             echo
@@ -105,7 +110,7 @@ jobs:
         env:
           ORGS: ${{ inputs.orgs }}
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 "ORGS='$ORGS' bash -s" <<'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" "ORGS='$ORGS' bash -s" <<'ENDSSH'
             for org in $(echo "$ORGS" | tr ',' ' '); do
               c="amux-user-${org}"
               echo "=== restarting $c ==="
@@ -128,7 +133,7 @@ jobs:
       - name: Recreate watchdog sidecars (pick up the file + capped restart policy)
         if: ${{ inputs.recreate_watchdogs == 'true' }}
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 'bash -s' <<'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" 'bash -s' <<'ENDSSH'
             # A container's bind mounts AND restart policy are fixed at creation.
             # Shipping watchdog.py and changing the template does nothing for
             # sidecars already running with the old empty-directory mount and

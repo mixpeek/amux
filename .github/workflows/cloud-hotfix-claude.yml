@@ -9,6 +9,9 @@ name: Cloud hotfix — repair Claude CLI in running containers
 on:
   workflow_dispatch:
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   hotfix:
     runs-on: ubuntu-latest
@@ -18,12 +21,12 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Repair claude in every running container
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 'bash -s' <<'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" 'bash -s' <<'ENDSSH'
             echo "host arch: $(uname -m)"
             for c in $(docker ps --filter name=amux-user- --format '{{.Names}}'); do
               echo "=== $c ==="

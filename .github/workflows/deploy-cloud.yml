@@ -85,7 +85,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CLOUD_HOST: 34.121.177.76
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
   IMAGE: ghcr.io/mixpeek/amux
 
 jobs:
@@ -247,7 +247,7 @@ jobs:
           # answer, so 13 consecutive failures all looked like the auth problem
           # the comment below documents, and were read as one.
           #
-          # Measured 2026-09-23: CLOUD_HOST 34.121.177.76 refused port 22 and
+          # Measured 2026-09-23: the then-current CLOUD_HOST refused port 22 and
           # cloud.amux.io returned zero bytes through Cloudflare. The key was
           # never the problem, and the one line that would have said so could
           # not run because it sits AFTER this.
@@ -594,7 +594,7 @@ jobs:
           # answer, so 13 consecutive failures all looked like the auth problem
           # the comment below documents, and were read as one.
           #
-          # Measured 2026-09-23: CLOUD_HOST 34.121.177.76 refused port 22 and
+          # Measured 2026-09-23: the then-current CLOUD_HOST refused port 22 and
           # cloud.amux.io returned zero bytes through Cloudflare. The key was
           # never the problem, and the one line that would have said so could
           # not run because it sits AFTER this.

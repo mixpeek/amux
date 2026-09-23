@@ -3,6 +3,9 @@ name: Fix SSH config
 on:
   workflow_dispatch:
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   fix:
     runs-on: ubuntu-latest
@@ -14,12 +17,12 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Fix sshd config
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 'bash -s' << 'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" 'bash -s' << 'ENDSSH'
             # Re-enable PAM (needed for key auth on Ubuntu)
             sed -i 's/^UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
 

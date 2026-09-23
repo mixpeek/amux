@@ -5,6 +5,9 @@ on:
     - cron: '0 * * * *'  # every hour (was every 10 min — $223/month in Actions)
   workflow_dispatch:
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
@@ -37,14 +40,14 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           chmod 644 ~/.ssh/known_hosts
 
       - name: Auto-fix — restart services
         if: steps.health.outputs.status != '302' && steps.health.outputs.status != '200'
         run: |
           echo "🔧 Attempting auto-fix..."
-          ssh -o ConnectTimeout=15 -i ~/.ssh/amux_cloud root@34.121.177.76 'bash -s' << 'ENDSSH'
+          ssh -o ConnectTimeout=15 -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" 'bash -s' << 'ENDSSH'
             set -x
 
             # 1. Check and restart nginx if down

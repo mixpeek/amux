@@ -21,7 +21,7 @@ on:
 # what let one of them rot unnoticed — hence a single env var rather than a
 # second literal.
 env:
-  CLOUD_HOST: 34.121.177.76
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
 
 jobs:
   backup:

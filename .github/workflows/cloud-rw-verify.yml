@@ -11,6 +11,9 @@ name: Cloud read/write verify (every workspace, every surface)
 on:
   workflow_dispatch:
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   rw:
     runs-on: ubuntu-latest
@@ -20,14 +23,14 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Read/write every surface in every workspace
         env:
           TOKEN: rw${{ github.run_id }}
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 "TOKEN='$TOKEN' bash -s" <<'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" "TOKEN='$TOKEN' bash -s" <<'ENDSSH'
             FAIL=0
             ASSERTED=0
             for C in $(docker ps --filter name=amux-user- --format '{{.Names}}' | sort); do

@@ -25,6 +25,9 @@ on:
         required: false
         default: 'stacking-copilot'
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -34,7 +37,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Stage probe against the live pane
@@ -42,7 +45,7 @@ jobs:
           ORG: ${{ inputs.org }}
           SESSION: ${{ inputs.session }}
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 \
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" \
             "ORG='$ORG' SESSION='$SESSION' bash -s" <<'ENDSSH'
             C="amux-user-${ORG}"
             echo "container: $C   session: $SESSION"

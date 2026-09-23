@@ -11,6 +11,9 @@ on:
         description: 'org id (container amux-user-<org>)'
         required: true
 
+env:
+  CLOUD_HOST: ${{ vars.CLOUD_HOST || '34.121.177.76' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -20,14 +23,14 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.CLOUD_SSH_KEY }}" > ~/.ssh/amux_cloud
           chmod 600 ~/.ssh/amux_cloud
-          ssh-keyscan -H 34.121.177.76 >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CLOUD_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Inspect container
         env:
           ORG: ${{ inputs.org }}
         run: |
-          ssh -i ~/.ssh/amux_cloud root@34.121.177.76 "ORG='$ORG' bash -s" <<'ENDSSH'
+          ssh -i ~/.ssh/amux_cloud root@"$CLOUD_HOST" "ORG='$ORG' bash -s" <<'ENDSSH'
             C="amux-user-${ORG}"
             echo "container: $C"
             docker ps --filter "name=$C" --format '  id={{.ID}} status={{.Status}} image={{.Image}}'
