@@ -909,6 +909,13 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // migration landed at 04:1x and the check was red by the next sweep, which
     // is the check doing exactly what it exists for.
     ("board_drive_nudge_state", "last_nudge_at", false),
+    // Seconds, read off the WRITER rather than the column names: all three are
+    // written from now_f64() (as_secs_f64), and next_at is now + a step out of
+    // NUDGE_BUDGET_BACKOFF_S = [3600, 4*3600, 24*3600]. That arithmetic is only
+    // coherent in seconds, so the constants settle the unit the names cannot.
+    ("board_drive_nudge_budget", "first_at", false),
+    ("board_drive_nudge_budget", "last_at", false),
+    ("board_drive_nudge_budget", "next_at", false),
     // ATE-93 overlap coordination stamps every table from board.rs `now_secs()`
     // inside the same transaction as the board log/evidence writes. All seven
     // are therefore seconds; declaring them together keeps callback retries,
