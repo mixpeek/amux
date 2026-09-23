@@ -42,6 +42,130 @@ fn const_str(src: &str, name: &str) -> Option<String> {
     Some(body[..end].to_string())
 }
 
+/// A repo-root file, for gates that must compare the bundle against something
+/// outside the crate.
+fn repo_file(rel: &str) -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
+}
+
+/// Quoted identifiers inside the bracketed list beginning at `at`.
+fn bracket_names(src: &str, at: usize) -> Vec<String> {
+    let mut depth = 0usize;
+    let mut end = src.len();
+    for (i, ch) in src[at..].char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = at + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut rest = &src[at..end];
+    while let Some(q) = rest.find('\'') {
+        let after = &rest[q + 1..];
+        let Some(e) = after.find('\'') else { break };
+        let name = &after[..e];
+        if !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+            && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            out.push(name.to_string());
+        }
+        rest = &after[e + 1..];
+    }
+    out
+}
+
+/// Every app.js function the node suite names, from both places it names them:
+/// the base list every fixture loads, and each `fixture([...])` call.
+fn names_required_by(src: &str) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for pat in ["for (const name of ", "fixture("] {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(pat) {
+            let after = from + i + pat.len();
+            let open = after + src[after..].len() - src[after..].trim_start().len();
+            if src[open..].starts_with('[') {
+                names.extend(bracket_names(src, open));
+            }
+            from = after;
+        }
+    }
+    names
+}
+
+/// Is `name` declared at the TOP LEVEL of the bundle?
+///
+/// All four shapes the suite resolves, because it uses two helpers and the
+/// bundle uses two spellings: `code()` wants a FunctionDeclaration, which
+/// espree also reports for `async function`, and `declaration()` wants a
+/// VariableDeclaration. Matching only `function NAME(` reported 21 false
+/// missing on a suite that passes, which would have made this guard worse than
+/// none: a gate that cries wolf is one people learn to bypass.
+fn declares_top_level(app: &str, name: &str) -> bool {
+    ["function ", "async function ", "const ", "let ", "var "].iter().any(|kw| {
+        let needle = format!("{kw}{name}");
+        app.match_indices(&needle)
+            .filter(|(i, _)| *i == 0 || app.as_bytes()[i - 1] == b'\n')
+            .any(|(i, _)| {
+                // A real boundary, so `const _geoFix` does not satisfy `_geoFi`.
+                app[i + needle.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
+            })
+    })
+}
+
+/// AMUX-4948: a function the node suite NAMES must exist in the shipped bundle.
+///
+/// 8460dd8e bumped APP_VER and landed tests for `_peekPollNow`,
+/// `_peekPollInFlight` and `_peekPollAgain`, none of which it implemented. The
+/// suite's own `assert.ok(node, 'shipped function exists: ' + name)` is exactly
+/// the right guard and it fired in exactly the wrong place: inside a fixture,
+/// in a node suite that runs AFTER the SPA static gate. That gate failed first
+/// and killed all four shards, so the real defect was invisible under it, and
+/// main stayed red for three days across four rounds of push-and-watch, each
+/// revealing a failure the previous one had masked.
+///
+/// This asks the same question in the fast gate, where a missing function costs
+/// seconds instead of a CI round. It does not replace the node assertion, which
+/// also EXECUTES the function; it only stops a bundle that cannot possibly
+/// satisfy it from reaching that far.
+#[test]
+fn every_function_the_node_suite_names_exists_in_the_bundle() {
+    let suite = repo_file("tests/dashboard-outage-recovery.mjs");
+    let app = asset("app.js");
+    let names = names_required_by(&suite);
+
+    // THE EXTRACTOR MUST HAVE READ SOMETHING. A rename of `fixture(` would
+    // otherwise leave this green over an empty set, which is the vacuous-guard
+    // shape this very card is about (ethos rule 7).
+    assert!(
+        names.len() >= 40,
+        "only {} name(s) extracted from the suite; the guard has stopped reading it \
+         (did `fixture(` or the base list get renamed?)",
+        names.len()
+    );
+
+    let missing: Vec<&str> =
+        names.iter().map(String::as_str).filter(|n| !declares_top_level(&app, n)).collect();
+    assert!(
+        missing.is_empty(),
+        "tests/dashboard-outage-recovery.mjs names {} function(s) that app.js does not declare: \
+         {missing:?}. The node suite would die in its own fixture on \
+         `shipped function exists`, taking every assertion in that cell with it (AMUX-4948).",
+        missing.len()
+    );
+}
+
 #[test]
 fn the_service_worker_still_contains_a_service_worker() {
     let sw = asset("sw.js");
