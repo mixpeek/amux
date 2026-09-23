@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1010';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1011';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -44197,6 +44197,30 @@ function _bdEnhanceRecord(item) {
       + (Array.isArray(v.criteria) ? '<ul>' + v.criteria.map(c => '<li>' + esc(c.description) + '</li>').join('') + '</ul>' : '');
     if (v.state === 'needs_reverification' && v.gate_matches === false) record.innerHTML += '<button class="btn" onclick="_bdRecheckGate()">Recheck current gate</button>';
     meta.appendChild(record);
+  }
+
+  // AMUX-4956: `done` means implemented, not delivered. Without this the API
+  // carried the fact and nobody could see it, which is the half of the card
+  // that a reviewer actually reads — three-of-three-done over one-of-three-landed.
+  const notLanded = item.children_not_landed || [];
+  if (item.integration || notLanded.length) {
+    const deliver = document.createElement('section');
+    deliver.className = 'bd-card-section bd-delivery-section';
+    let html = '<h4>Delivery</h4>';
+    if (item.integration) {
+      html += '<p>Marked done, but its commits are not on origin/main — they are still in a worktree.</p>'
+        + '<p class="bd-muted">Integration: ' + esc(String(item.integration.integration_status || 'absent'))
+        + (item.integration.detail ? ' · ' + esc(String(item.integration.detail)) : '') + '</p>';
+    }
+    if (notLanded.length) {
+      html += '<p>' + notLanded.length + (notLanded.length === 1 ? ' child has' : ' children have')
+        + ' not reached origin/main, so this epic has not fully delivered:</p><ul>'
+        + notLanded.map(k => '<li>' + esc(String(k.card || '')) + ' — '
+            + esc(String(k.integration_status || 'absent')) + '</li>').join('')
+        + '</ul>';
+    }
+    deliver.innerHTML = html;
+    meta.appendChild(deliver);
   }
 
   const sectionKinds = { 'Linked messages': 'related', 'Linked tasks': 'related', 'Subtasks': 'subtasks', 'Produced output': 'files', 'Retired artifacts': 'files', 'Worker actions': 'history' };
