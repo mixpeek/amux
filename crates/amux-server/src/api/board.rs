@@ -6520,6 +6520,13 @@ async fn provision_ephemeral(
     } else {
         env.set("CC_DIR", parent.get_or("CC_DIR", ""));
         env.set("CC_WORKTREE", "1");
+        // NAME THE REPO THE WORKTREE BELONGS TO (AMUX-4914). Declaring
+        // CC_WORKTREE=1 without it left the delete path unable to say where to
+        // reclaim, so it skipped silently and every deleted fan-out worker kept
+        // its worktree. The delete path now prefers the workspace record, which
+        // repairs workers created before this line; writing it here keeps the
+        // env self-describing for anything else that reads it.
+        env.set("CC_WORKTREE_REPO", parent.get_or("CC_WORKTREE_REPO", parent.get_or("CC_DIR", "")));
         env.set("CC_WORKTREE_AUTO_MERGE", "1");
         if let Some(command) = parent.get("CC_WORKTREE_VERIFY") { env.set("CC_WORKTREE_VERIFY", command); }
         env.set("CC_EPHEMERAL", "1");

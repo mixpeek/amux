@@ -20667,12 +20667,48 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
     // them. The remedy a human would reach for, `git worktree prune`, skips
     // locked entries and so reported the repo clean the whole time.
     if cfg.get("CC_WORKTREE") == Some("1") {
-        let wt_repo = cfg.get_or("CC_WORKTREE_REPO", "").to_string();
-        let wt_dir = cfg.get_or("CC_DIR", "").to_string();
-        if !wt_repo.is_empty()
-            && !wt_dir.is_empty()
-            && !reclaim_worktree(&wt_repo, &wt_dir).await
-        {
+        // THE WORKSPACE RECORD IS THE AUTHORITY, THE ENV IS THE FALLBACK
+        // (AMUX-4914). The env used to be the only source, and fan-out creation
+        // never writes CC_WORKTREE_REPO: board.rs sets CC_DIR, CC_WORKTREE=1,
+        // CC_WORKTREE_AUTO_MERGE and CC_EPHEMERAL, and stops. With the repo
+        // empty the whole reclaim was skipped, INCLUDING the warn that lived
+        // inside the same condition, so DELETE answered 200 {"ok":true} while
+        // the worktree and its branch stayed on disk and nothing was logged.
+        //
+        // Measured 2026-09-20: 3 of 3 deleted fan-out workers kept their
+        // worktrees, and both survivors' env files still have no
+        // CC_WORKTREE_REPO. The ephemeral REAPER was never affected, because
+        // fanout_retirement resolves the repo from the workspace record. One
+        // path cleaned up and the other did not, for want of one variable.
+        //
+        // Reading the record first also repairs workers ALREADY created
+        // without the variable, which setting it at creation cannot do.
+        let record = crate::fanout_workspace::load(&home(), name);
+        let wt_repo = record
+            .as_ref()
+            .map(|w| w.repo.clone())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| cfg.get_or("CC_WORKTREE_REPO", "").to_string());
+        let wt_dir = record
+            .as_ref()
+            .map(|w| w.path.clone())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| cfg.get_or("CC_DIR", "").to_string());
+        if wt_repo.is_empty() || wt_dir.is_empty() {
+            // NEVER SKIP SILENTLY. From outside, a skipped reclaim and a
+            // successful one are the same 200, which is exactly how this ran
+            // unnoticed. A worker that declared CC_WORKTREE=1 and then cannot
+            // say where it is, is a fact worth a line.
+            tracing::warn!(
+                session = name,
+                verdict = "worktree_reclaim_unresolved",
+                repo = %wt_repo,
+                worktree = %wt_dir,
+                has_workspace_record = record.is_some(),
+                "worker declared CC_WORKTREE=1 but neither its workspace record nor its env \
+                 named a repo and a path, so any worktree it holds is left registered"
+            );
+        } else if !reclaim_worktree(&wt_repo, &wt_dir).await {
             {
                 // LOUD, because the old failure was silent and that is why it
                 // ran for as long as it did. `git worktree list` is what a
@@ -35684,6 +35720,22 @@ mod amux4770_worktree_isolation_tests {
             code.contains("reclaim_worktree(&wt_repo, &wt_dir)"),
             "reaping must go through the shared reclaim; `worktree remove --force` alone \
              refuses a locked worktree, which is the leak this card is about"
+        );
+        // AMUX-4914. Resolving the repo ONLY from CC_WORKTREE_REPO skipped the
+        // reclaim for every fan-out worker, because fan-out creation never
+        // wrote that variable. Verified on the live env files of two stranded
+        // workers: CC_WORKTREE=1 and CC_DIR present, CC_WORKTREE_REPO absent.
+        assert!(
+            code.contains("crate::fanout_workspace::load(&home(), name)"),
+            "the delete path must resolve the worktree from the WORKSPACE RECORD first: \
+             fan-out creation never wrote CC_WORKTREE_REPO, so an env-only lookup skipped \
+             the reclaim for every fan-out worker and left the worktree registered"
+        );
+        assert!(
+            code.contains("worktree_reclaim_unresolved"),
+            "an unresolvable worktree must log a verdict rather than skip: from outside a \
+             skipped reclaim and a successful one are the same 200 ok, which is how this \
+             ran unnoticed through three deletions"
         );
         assert!(
             !code.contains("\"worktree\", \"remove\", \"--force\""),
