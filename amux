@@ -853,6 +853,7 @@ cmd_start() {
   #
   # This is D6 (two launch constructions) leaking through the door the server
   # does not own. Delegating means the provider->binary map has one home.
+  local resume_fallback=""
   local _provider="${CC_PROVIDER:-claude}"
   # muse belongs in this list for the reason the comment above gives: the server owns the
   # provider->binary map. Left out, `amux start` on a muse worker fell through to the claude
@@ -955,7 +956,35 @@ cmd_start() {
     # starts fresh, exit 0, no error — so this is safe on a worker's very
     # first-ever start too. Skipped if the caller already asked to
     # resume/start a specific conversation another way.
+    #
+    # CORRECTION 2026-09-23: the sentence above ("verified safe ... exit 0, no
+    # error") is FALSE for an interactive launch, which is the only kind this
+    # function makes. Measured on a fresh directory:
+    #
+    #     claude --model haiku --continue -p "say ok"   -> ok, exit 0
+    #     claude --model haiku --continue               -> "No conversation
+    #                                                       found to continue"
+    #                                                      exit 1
+    #
+    # The original verification was almost certainly the print-mode one; I
+    # reproduced it first and believed it too. The interactive exit killed the
+    # tmux session within a second of every FIRST start of a new worker, while
+    # `amux start` printed "started" (AMUX-5005).
+    #
+    # The --continue default itself is right and stays: INIT-3 recorded one
+    # stop-all+start-all turning into 8 fresh untitled sessions without it. So
+    # resume is ATTEMPTED and a failure falls back to a plain launch, rather
+    # than the pane dying. `||` fires only on a non-zero exit, and a normal
+    # quit from claude exits 0, so this cannot relaunch a session the human
+    # closed on purpose.
+    #
+    # Deliberately NOT done by inspecting ~/.claude/projects/<encoded-dir>:
+    # that encoding is Claude Code's private business and it is already
+    # inconsistent about which characters it replaces (`irl-refresh.house`
+    # keeps its dot, `ethan.dev-minimal` does not). A fallback needs to know
+    # nothing.
     if [[ ! "$cmd" =~ (^|[[:space:]])(-c|--continue|--resume|--session-id|--from-pr|--teleport)([[:space:]]|$) ]]; then
+      resume_fallback="$cmd"
       cmd="$cmd --continue"
     fi
   fi
@@ -1041,9 +1070,13 @@ sys.exit(0 if any(line.startswith("n/") and os.path.realpath(line[1:].strip().sp
       die "refusing to replace tmux socket: $reason. Inspect /api/debug/tmux before starting workers."
     fi
   fi
+  local launch="$cmd"
+  if [[ -n "$resume_fallback" ]]; then
+    launch="$cmd || { echo '[amux] nothing to resume here; starting a new conversation' >&2; $resume_fallback; }"
+  fi
   tmux ${tmux_start_flag:+-N} new-session -d -s "$tname" -n "$name" -c "$dir" \
     -e "AMUX_SESSION=$name" -e "AMUX_WORKER=$name" -e "AMUX_URL=$AMUX_API" \
-    "${shell_setup}cd $(printf '%q' "$dir"); $cmd"
+    "${shell_setup}cd $(printf '%q' "$dir"); $launch"
   # Lock the window name so Claude can't overwrite it with escape sequences.
   # Trailing `:` is load-bearing: allow-rename/automatic-rename are WINDOW
   # options, and a bare `=$tname` session-exact-match target makes tmux look
@@ -1057,6 +1090,35 @@ sys.exit(0 if any(line.startswith("n/") and os.path.realpath(line[1:].strip().sp
   # created was left running and unlocked. See frustrations.md / INIT-2.
   tmux set-option -t "=$tname:" allow-rename off 2>/dev/null
   tmux set-window-option -t "=$tname:" automatic-rename off 2>/dev/null
+
+  # "started" USED TO MEAN "tmux new-session returned", which it always does:
+  # the session is created before the command inside it runs, so a command that
+  # exits immediately leaves a dead session and a success message (AMUX-5005).
+  # Measured on the original defect: session present at t=2s, gone at t=3s,
+  # `amux start` exit 0 the whole time.
+  #
+  # This is the general guard. Fix 1 above removes the cause I found; this
+  # catches the next one, whatever it is — a bad model name, a missing binary,
+  # a provider flag claude rejects. Costs one second on a path that already
+  # takes longer than that.
+  # POLL, DO NOT SAMPLE ONCE. A single check at t=1s could not catch the very
+  # failure this guard was written for: the original defect's pane was still
+  # ALIVE at t=2s and gone at t=3s, so a 1s sample returned "fine" every time.
+  # Found by disabling fix 1 above and watching this guard pass anyway.
+  local _alive=1 _t
+  for _t in 1 2 3 4; do
+    sleep 1
+    if ! tmux has-session -t "=$tname" 2>/dev/null; then _alive=0; break; fi
+  done
+  if [[ "$_alive" == 0 ]]; then
+    mkdir -p "$CC_HOME/logs"
+    printf '%s WARN amux::start verdict=pane_died_immediately session=%s cmd=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$cmd" >> "$CC_HOME/logs/server-rs.log"
+    echo "${RED}failed${RESET} ${BOLD}$name${RESET}: the pane exited within 4s of starting" >&2
+    echo "  ${DIM}$cmd${RESET}" >&2
+    echo "  ${DIM}run it by hand in $dir to see why; amux did not keep the output${RESET}" >&2
+    return 1
+  fi
   echo "${GREEN}started${RESET} ${BOLD}$name${RESET} in $dir"
   echo "  ${DIM}$cmd${RESET}"
   # The session is already created detached (new-session -d). Only attach when
