@@ -77,19 +77,90 @@ def group_rss(pgid):
     return sum(int(rss) * 1024 for group, rss in rows if int(group) == pgid), len(rows)
 
 
-def disk_usage(targets):
-    total, free = 0, None
+def profile_dir(command):
+    """The target subdirectory this cargo command will read and write.
+
+    `--release`/`-r` is `release/`; `--profile X` is `X/`, except `dev`, which
+    cargo writes to `debug/`; a cargo command with neither builds `debug/`.
+
+    Returns None when the command is not a cargo invocation this can read, and
+    the budget then gates on the WHOLE directory. That is the old behaviour and
+    it is the safe direction to be wrong in.
+    """
+    if not command or 'cargo' not in Path(command[0]).name:
+        return None
+    for i, arg in enumerate(command):
+        if arg in ('--release', '-r'):
+            return 'release'
+        if arg.startswith('--profile='):
+            name = arg.split('=', 1)[1]
+            return 'debug' if name == 'dev' else name
+        if arg == '--profile' and i + 1 < len(command):
+            name = command[i + 1]
+            return 'debug' if name == 'dev' else name
+    return 'debug'
+
+
+def disk_usage(targets, profile=None):
+    """Free space, the total under `targets`, and the per-profile breakdown.
+
+    Returns `(gated, free, total, by_profile)`. `gated` is what the budget
+    REFUSES on: the profile this command will actually read and write, when
+    that profile is known. The whole shared directory is still reported.
+
+    WHY NOT THE TOTAL (AMUX-4945). rust-auto-build.sh only ever builds
+    `--release`. Measured 2026-09-22: total 72GB, of which debug/ was 66GB and
+    release/ was 1.4GB, with 103GB free disk throughout. A release build
+    needing ~1.4GB of warm cache was refused because a profile it neither
+    reads nor writes had grown large.
+
+    And the refusal could never clear itself: refusing a build does not shrink
+    debug/. Reclaiming debug/ does, and that is a different mechanism, which
+    AMUX-4944 was simultaneously deadlocking. A constraint with no truthful
+    path forward is ethos rule 3, and the retry loop below it is the tell.
+
+    Disk exhaustion stays guarded by `min_free` against real free space, which
+    is the limit that actually expresses "the disk is filling up".
+    """
+    total, free, by_profile = 0, None, {}
     for target in targets:
         if target.exists():
-            result = subprocess.run(['du', '-sk', str(target)], capture_output=True,
-                                    text=True, check=True, timeout=DU_TIMEOUT_S)
-            total += int(result.stdout.split()[0]) * 1024
+            children = sorted(p for p in target.iterdir() if p.is_dir() and not p.is_symlink())
+            if children:
+                # ONE du walk over the children, not one over the parent plus
+                # one per child: the same tree and the same cost, and it yields
+                # the breakdown the refusal needs to name a dominant profile.
+                result = subprocess.run(['du', '-sk', *[str(p) for p in children]],
+                                        capture_output=True, text=True, check=True,
+                                        timeout=DU_TIMEOUT_S)
+                for line in result.stdout.splitlines():
+                    if not line.strip():
+                        continue
+                    kilobytes, _, path = line.partition('\t')
+                    name = Path(path.strip()).name
+                    by_profile[name] = by_profile.get(name, 0) + int(kilobytes) * 1024
+                total += sum(by_profile.values())
+            else:
+                # NO SUBDIRECTORIES STILL PROBES. Skipping `du` here would be
+                # correct arithmetic (there is nothing to sum) and would quietly
+                # remove the timeout surface this probe is supposed to have:
+                # `test_a_real_du_timeout_through_the_shipped_path_still_commits`
+                # stopped seeing a timeout at all, because `du` was never run.
+                # A probe that cannot fail is not a probe (ethos rule 7).
+                result = subprocess.run(['du', '-sk', str(target)], capture_output=True,
+                                        text=True, check=True, timeout=DU_TIMEOUT_S)
+                total += int(result.stdout.split()[0]) * 1024
+            # Loose files at the target root (CACHEDIR.TAG, .rustc_info.json)
+            # are kilobytes, but counting them keeps `total` a total.
+            total += sum(p.stat().st_size for p in target.iterdir()
+                         if p.is_file() and not p.is_symlink())
         parent = target
         while not parent.exists():
             parent = parent.parent
         available = shutil.disk_usage(parent).free
         free = available if free is None else min(free, available)
-    return total, free
+    gated = by_profile.get(profile, 0) if profile else total
+    return gated, free, total, by_profile
 
 
 def signal_group(pgid, sig):
@@ -148,9 +219,19 @@ def stop_group(proc):
 
 
 def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
-              interval=2, disk_interval=30):
+              interval=2, disk_interval=30, profile=None):
     started = time.monotonic()
-    size = free = None
+    size = free = total = None
+    profiles = {}
+
+    def dominant():
+        """The biggest subdirectory, so a refusal can NAME what filled the disk.
+
+        `reason='target_size'` names the symptom and cannot say WHICH profile,
+        so an operator reading it could not tell "your build is too big" from
+        "someone else's test artifacts are too big" (AMUX-4945).
+        """
+        return max(profiles.items(), key=lambda kv: kv[1])[0] if profiles else None
     unenforced = set()
     # A limit is ENFORCED only once a probe has actually returned a reading for
     # it. Absence of failure is not evidence of measurement: a short command can
@@ -178,16 +259,27 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
                       'unmeasurable budget degrades to unenforced, never to a refusal')
 
     try:
-        size, free = disk_usage(targets)
+        size, free, total, profiles = disk_usage(targets, profile)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         lapse(error, ['target_size', 'disk_reserve'])
     else:
         measured_limits.update(('target_size', 'disk_reserve'))
+        # THE CACHE IS OVER BUDGET, BUT NOT THE PART THIS BUILD USES. Say so
+        # rather than passing silently: the size is real and a reclaim is what
+        # answers it, so a quiet pass here would hide a growing directory the
+        # way the old refusal hid WHICH directory (AMUX-4945).
+        if total is not None and total > max_target and size <= max_target:
+            emit('cargo_budget_profile_scoped', measured=True, profile=profile,
+                 profile_bytes=size, total_bytes=total, max_target_bytes=max_target,
+                 dominant=dominant(), by_profile=profiles,
+                 note='gated on the profile this command builds; the total is over budget '
+                      'and wants a RECLAIM, which refusing this build would not deliver')
         # A MEASURED violation still refuses. Only an unmeasurable one degrades:
         # the distinction is the whole fix, and collapsing it would retire the
         # budget rather than repair it.
         if size > max_target or free < min_free:
             emit('cargo_budget_refused', measured=True, target_bytes=size, free_bytes=free,
+                 total_bytes=total, profile=profile, dominant=dominant(), by_profile=profiles,
                  reason='target_size' if size > max_target else 'disk_reserve')
             return 75
     emit('cargo_budget_started', max_rss_bytes=max_rss, max_seconds=max_seconds,
@@ -212,7 +304,7 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
                 if rss > max_rss:
                     reason = reason or 'memory'
                 if now >= next_disk:
-                    size, free = disk_usage(targets)
+                    size, free, total, profiles = disk_usage(targets, profile)
                     measured_limits.update(('target_size', 'disk_reserve'))
                     next_disk = now + disk_interval
                     if size > max_target or free < min_free:
@@ -232,6 +324,7 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
             if reason:
                 emit('cargo_budget_stopped', measured=failures == 0, n_considered=considered,
                      reason=reason, peak_rss_bytes=peak, target_bytes=size, free_bytes=free,
+                     total_bytes=total, profile=profile, dominant=dominant(),
                      unenforced=sorted(unenforced))
                 return 128 + interrupted[0] if interrupted else 124
             try:
@@ -241,7 +334,7 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
         # A short build may finish before the next periodic disk probe. Check
         # its final artifacts too, before the builder can install that result.
         try:
-            size, free = disk_usage(targets)
+            size, free, total, profiles = disk_usage(targets, profile)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             # THE WORST ONE, and it was `return 75`: the command had already
             # SUCCEEDED and its exit code was discarded because a `du` run after
@@ -252,7 +345,9 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
             if size > max_target or free < min_free:
                 emit('cargo_budget_stopped', measured=True, n_considered=len(targets),
                      reason='target_size' if size > max_target else 'disk_reserve',
-                     target_bytes=size, free_bytes=free, unenforced=sorted(unenforced))
+                     target_bytes=size, free_bytes=free, total_bytes=total,
+                     profile=profile, dominant=dominant(), by_profile=profiles,
+                     unenforced=sorted(unenforced))
                 return 124
         # WHAT WAS ACTUALLY ENFORCED, beside the result (ethos rule 4). A green
         # run with every probe broken and a green run with every probe working
@@ -260,7 +355,7 @@ def supervise(command, targets, *, max_rss, max_seconds, max_target, min_free,
         emit('cargo_budget_finished',
              measured=considered > 0 and not unenforced, n_considered=considered,
              elapsed_s=round(time.monotonic() - started, 2), peak_rss_bytes=peak,
-             target_bytes=size, free_bytes=free,
+             target_bytes=size, free_bytes=free, total_bytes=total, profile=profile,
              enforced=['timeout'] + [l for l in PROBED_LIMITS
                                      if l in measured_limits and l not in unenforced],
              unenforced=sorted(unenforced), probe_failures=probe_failures,
@@ -291,7 +386,7 @@ def main():
     # Avoid double-counting a target nested inside another target.
     targets = [p for p in targets if not any(q in p.parents for q in targets)]
     try:
-        return supervise(command, targets,
+        return supervise(command, targets, profile=profile_dir(command),
                          max_rss=positive('AMUX_CARGO_MAX_RSS_MB', 12288) * 1024**2,
                          max_seconds=positive('AMUX_CARGO_MAX_SECONDS', 3600),
                          max_target=positive('AMUX_CARGO_MAX_TARGET_GB', 40) * 1024**3,

@@ -37,6 +37,73 @@ class CargoBudgetTests(unittest.TestCase):
             rc = budget.supervise([sys.executable, '-c', source], [self.target], **options)
         return rc, output.getvalue()
 
+    def make_profile(self, name, megabytes):
+        directory = self.target / name
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'artifact').write_bytes(b'\0' * (megabytes * 1024 * 1024))
+        return directory
+
+    def test_a_release_build_is_not_refused_because_debug_grew(self):
+        """AMUX-4945. The second half of the 2026-09-22 deploy deadlock.
+
+        rust-auto-build.sh only ever builds --release. Measured that day: total
+        72GB, debug/ 66GB, release/ 1.4GB, free disk 103GB throughout. A release
+        build needing ~1.4GB of warm cache was refused because a profile it
+        neither reads nor writes had grown large, and the refusal could never
+        clear itself: refusing a build does not shrink debug/.
+        """
+        self.make_profile('debug', 4)
+        self.make_profile('release', 1)
+
+        rc, log = self.run_budget('import sys; sys.exit(0)',
+                                  max_target=2 * 1024**2, profile='release')
+        self.assertEqual(rc, 0, 'a release build must not be refused for debug/: ' + log)
+
+        # The CONTROL, and the half that must not rot: the budget still refuses
+        # when the profile THIS build uses is the one over the limit. Without
+        # this, gating on nothing at all would satisfy the assertion above.
+        rc, log = self.run_budget('import sys; sys.exit(0)',
+                                  max_target=2 * 1024**2, profile='debug')
+        self.assertEqual(rc, 75, 'an over-budget debug build must still refuse: ' + log)
+        self.assertIn('"reason": "target_size"', log)
+
+    def test_an_over_budget_total_is_announced_and_names_the_dominant_profile(self):
+        """`reason='target_size'` named the symptom and could not say WHICH.
+
+        An operator could not tell "your build is too big" from "someone else's
+        test artifacts are too big". The total being over budget is real and
+        wants a RECLAIM, so passing silently would hide a growing directory the
+        way the old refusal hid which directory.
+        """
+        self.make_profile('debug', 4)
+        self.make_profile('release', 1)
+        rc, log = self.run_budget('import sys; sys.exit(0)',
+                                  max_target=2 * 1024**2, profile='release')
+        self.assertEqual(rc, 0, log)
+        scoped = [json.loads(line) for line in log.splitlines()
+                  if '"cargo_budget_profile_scoped"' in line]
+        self.assertEqual(len(scoped), 1, 'the over-budget total must be announced: ' + log)
+        self.assertEqual(scoped[0]['dominant'], 'debug')
+        self.assertEqual(scoped[0]['profile'], 'release')
+        self.assertGreater(scoped[0]['total_bytes'], scoped[0]['profile_bytes'])
+        self.assertIn('debug', scoped[0]['by_profile'])
+
+    def test_profile_dir_reads_the_subdirectory_cargo_will_actually_use(self):
+        """Pure, so the mapping is pinned without building anything."""
+        self.assertEqual(budget.profile_dir(['cargo', 'build', '--release']), 'release')
+        self.assertEqual(budget.profile_dir(['cargo', 'build', '-r']), 'release')
+        self.assertEqual(budget.profile_dir(['cargo', 'test']), 'debug')
+        self.assertEqual(budget.profile_dir(['cargo', 'build', '--profile=bench']), 'bench')
+        self.assertEqual(budget.profile_dir(['cargo', 'build', '--profile', 'bench']), 'bench')
+        # cargo writes the `dev` profile to debug/, which is the one name where
+        # the flag and the directory disagree.
+        self.assertEqual(budget.profile_dir(['cargo', 'build', '--profile', 'dev']), 'debug')
+        self.assertEqual(budget.profile_dir(['/usr/local/bin/cargo', 'build']), 'debug')
+        # NOT a cargo command: gate on the whole directory, which is the old
+        # behaviour and the safe direction to be wrong in.
+        self.assertIsNone(budget.profile_dir(['python3', '-c', 'pass']))
+        self.assertIsNone(budget.profile_dir([]))
+
     def test_success_and_failure_exit_codes_survive(self):
         for expected in (0, 7):
             rc, log = self.run_budget(f'import sys; sys.exit({expected})')
@@ -172,10 +239,10 @@ class CargoBudgetTests(unittest.TestCase):
         real = budget.disk_usage
         calls = []
 
-        def once_then_timeout(targets):
+        def once_then_timeout(targets, profile=None):
             calls.append(1)
             if len(calls) == 1:
-                return real(targets)
+                return real(targets, profile)
             raise subprocess.TimeoutExpired(['du'], 20)
 
         with patch.object(budget, 'disk_usage', side_effect=once_then_timeout):
