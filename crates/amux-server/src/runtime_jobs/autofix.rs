@@ -2223,10 +2223,36 @@ fn detect_latency_with_scan_cap(
     if p95_hits.len() >= outlier_rollup_at() {
         let n_f = p95_hits.len();
         let fams: Vec<String> = p95_hits.iter().map(|h| h.fam.clone()).collect();
-        let worst = p95_hits
+        // A RATIO NEEDS A DENOMINATOR THAT MEANS SOMETHING (AMUX-4930).
+        //
+        // `worst` was max(p95_w / p95_b) over every hit, and it becomes the
+        // card TITLE. A family whose trailing p95 is 1ms turns a 1217ms window
+        // into "worst 938.0x": a real regression wearing a catastrophic
+        // headline. Measured on the specimen: that family averages 180ms
+        // across 10,086 requests over 7 days, so 1ms was never its normal, it
+        // was a window that happened to serve only trivial responses.
+        //
+        // AMUX-3471's floor is on the WINDOW p95 and correctly allowed this,
+        // because 1217ms IS a regression worth filing. What it does not bound
+        // is the DENOMINATOR, which is the half the title is built from. This
+        // is the same threshold-below-baseline defect this file documents
+        // twice already, in its ratio form.
+        //
+        // So: headline the worst ABSOLUTE p95, which is the number a reader
+        // can act on and needs no denominator, and rate only against baselines
+        // big enough to carry a multiple.
+        const RATABLE_BASELINE_MS: f64 = 50.0;
+        let worst_ratio = p95_hits
             .iter()
+            .filter(|h| h.p95_b >= RATABLE_BASELINE_MS)
             .map(|h| h.p95_w / h.p95_b)
             .fold(0.0f64, f64::max);
+        let worst_ms = p95_hits.iter().map(|h| h.p95_w).fold(0.0f64, f64::max);
+        let headline = if worst_ratio > 0.0 {
+            format!("worst {worst_ms:.0}ms, {worst_ratio:.1}x")
+        } else {
+            format!("worst {worst_ms:.0}ms, no baseline large enough to rate")
+        };
         out.push(Finding {
             kind: DetectorKind::Latency,
             // Keyed on the FAMILY SET, matching the outlier rollup: a different
@@ -2235,7 +2261,7 @@ fn detect_latency_with_scan_cap(
             // condition rather than one request.
             signature: format!("latency|p95|ROLLUP|{}", fams.join(",")),
             title: format!(
-                "{n_f} families regressed at once — one event, not {n_f} tasks (worst {worst:.1}x)"
+                "{n_f} families regressed at once — one event, not {n_f} tasks ({headline})"
             ),
             evidence: vec![
                 (
@@ -2253,11 +2279,20 @@ fn detect_latency_with_scan_cap(
                         .iter()
                         .map(|h| {
                             format!(
-                                "\n  {} {:.0}ms vs {:.0}ms ({:.1}x)",
+                                // Same rule per line as in the headline: a
+                                // multiple against a near-zero baseline is
+                                // noise wearing a number (AMUX-4930).
+                                "\n  {} {:.0}ms vs {:.0}ms{}",
                                 h.fam,
                                 h.p95_w,
                                 h.p95_b,
-                                h.p95_w / h.p95_b
+                                if h.p95_b >= RATABLE_BASELINE_MS {
+                                    format!(" ({:.1}x)", h.p95_w / h.p95_b)
+                                } else {
+                                    format!(
+                                        " (baseline under {RATABLE_BASELINE_MS:.0}ms, too small to rate)"
+                                    )
+                                }
                             )
                         })
                         .collect::<String>(),
@@ -13726,6 +13761,78 @@ mod tests {
     /// honest: a rollup that swallowed every regression would pass a
     /// one-directional test and would have deleted the per-family card that is
     /// correct when a single endpoint really does regress.
+    /// AMUX-4930. A MULTIPLE NEEDS A DENOMINATOR THAT MEANS SOMETHING.
+    ///
+    /// The rollup title was built from max(window / baseline) across hits, so a
+    /// family whose trailing p95 is 1ms turned a 1217ms window into
+    /// "worst 938.0x" — a real regression wearing a catastrophic headline.
+    /// Measured on the specimen: that family averages 180ms across 10,086
+    /// requests over 7 days, so 1ms was never its normal.
+    ///
+    /// AMUX-3471's floor is on the WINDOW p95 and correctly allows this, since
+    /// 1217ms IS worth filing. It does not bound the denominator, which is the
+    /// half the title was built from.
+    ///
+    /// The fixture puts a near-zero baseline BESIDE two ratable ones, because
+    /// the bug is not "no ratio" but "the wrong family supplying it": the tiny
+    /// baseline wins a max() against honest competitors.
+    #[tokio::test]
+    async fn a_near_zero_baseline_does_not_supply_the_rollup_headline() {
+        let seed = |st: &crate::api::AppState, now: f64, fam: &'static str, base_ms: f64, win_ms: f64| {
+            for i in 0..60 {
+                log_row(st, Row { ts: now - 200_000.0 - i as f64, method: "GET", path: fam,
+                    family: fam, status: 200, body: "", worker: "", ua: "curl/8", ms: base_ms });
+            }
+            for i in 0..60 {
+                log_row(st, Row { ts: now - 100.0 - i as f64, method: "GET", path: fam,
+                    family: fam, status: 200, body: "", worker: "", ua: "curl/8", ms: win_ms });
+            }
+        };
+        let (st, _d) = state();
+        let now = unix_now();
+        // Two honest regressions: baselines well above the ratable floor.
+        seed(&st, now, "/api/rate-a", 200.0, 1000.0); //  5x
+        seed(&st, now, "/api/rate-b", 400.0, 1600.0); //  4x
+        // The specimen: a 1ms baseline that would otherwise headline at 1200x.
+        seed(&st, now, "/api/tiny-base", 1.0, 1200.0);
+
+        let (f, _) = detect_latency(&st.store.read().unwrap(), now);
+        let rollup = f
+            .iter()
+            .find(|x| x.signature.contains("p95|ROLLUP"))
+            .expect("three simultaneous regressions must roll up");
+
+        assert!(
+            !rollup.title.contains("1200.0x"),
+            "a 1ms baseline must not supply the headline multiple: {}",
+            rollup.title
+        );
+        assert!(
+            rollup.title.contains("5.0x"),
+            "the headline multiple must come from the worst RATABLE baseline: {}",
+            rollup.title
+        );
+        assert!(
+            rollup.title.contains("1600ms"),
+            "the headline must name the worst ABSOLUTE p95, which needs no denominator: {}",
+            rollup.title
+        );
+        let families = rollup
+            .evidence
+            .iter()
+            .find(|(k, _)| k == "families")
+            .map(|(_, v)| v.clone())
+            .expect("the rollup names its families");
+        assert!(
+            families.contains("too small to rate"),
+            "the unratable family's line must say so instead of printing a multiple: {families}"
+        );
+        assert!(
+            families.contains("5.0x") && families.contains("4.0x"),
+            "ratable families keep their multiples: {families}"
+        );
+    }
+
     #[tokio::test]
     async fn simultaneous_p95_regressions_collapse_to_one_card_but_two_do_not() {
         let fast_then_slow = |st: &crate::api::AppState, now: f64, fam: &'static str| {
