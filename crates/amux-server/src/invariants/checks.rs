@@ -2792,6 +2792,14 @@ pub struct ArgvSecret {
     pub pid: String,
     pub key: String,
     pub value_len: usize,
+    /// How long the carrying process has been alive, when `ps` could say.
+    ///
+    /// AMUX-4985: without this, a 3d22h exposure in a long-lived tmux server
+    /// and a 90-second agent shell command are the same verdict. They are not
+    /// the same risk, and the difference decides whether a firing is an
+    /// incident or a habit worth changing. AMUX-4946's original harm was
+    /// measured at 3d22h precisely because the carrier outlived everything.
+    pub age_s: Option<u64>,
 }
 
 /// Does this argv key have the SHAPE of an environment variable? (AMUX-4964)
@@ -2844,7 +2852,13 @@ pub fn no_secrets_in_process_argv(found: &[ArgvSecret], n_considered: usize) -> 
     pids.sort_unstable();
     pids.dedup();
     let who: Vec<String> =
-        found.iter().map(|f| format!("pid {} {} (len {})", f.pid, f.key, f.value_len)).collect();
+        found
+            .iter()
+            .map(|f| match f.age_s {
+                Some(a) => format!("pid {} {} (len {}, alive {}s)", f.pid, f.key, f.value_len, a),
+                None => format!("pid {} {} (len {}, age unknown)", f.pid, f.key, f.value_len),
+            })
+            .collect();
     vec![InvariantResult::fail(
         ID,
         "no live process carries a credential-shaped NAME=VALUE in its argv".to_string(),
@@ -2863,8 +2877,10 @@ pub fn no_secrets_in_process_argv(found: &[ArgvSecret], n_considered: usize) -> 
         "pairs": found.len(),
         "n_considered": n_considered,
         "measured": true,
-        "keys": found.iter().map(|f| json!({"pid": f.pid, "key": f.key, "value_len": f.value_len}))
+        "keys": found.iter().map(|f| json!({
+            "pid": f.pid, "key": f.key, "value_len": f.value_len, "age_s": f.age_s}))
             .collect::<Vec<_>>(),
+        "max_age_s": found.iter().filter_map(|f| f.age_s).max(),
     }))]
 }
 
@@ -9163,8 +9179,34 @@ mod registered_lane_running_tests {
 mod argv_secret_invariant_tests {
     use super::*;
 
+    /// AMUX-4985: age is the discriminator between an incident and a habit.
+    /// Without it a 3d22h exposure and a 90-second agent shell read identically.
+    #[test]
+    fn the_verdict_states_how_long_the_carrier_has_been_alive() {
+        let long = ArgvSecret {
+            pid: "1".into(), key: "OPENAI_API_KEY".into(), value_len: 51,
+            age_s: Some(340_800),
+        };
+        let r = no_secrets_in_process_argv(&[long], 900);
+        let msg = format!("{:?}", r[0]);
+        assert!(msg.contains("alive 340800s"), "age must be in the message: {msg}");
+        assert_eq!(r[0].evidence["max_age_s"], serde_json::json!(340_800));
+    }
+
+    /// And an unknown age must say so rather than read as zero.
+    #[test]
+    fn an_unknown_age_is_named_not_silently_zero() {
+        let unknown = ArgvSecret {
+            pid: "2".into(), key: "MIXPEEK_API_KEY".into(), value_len: 7, age_s: None,
+        };
+        let r = no_secrets_in_process_argv(&[unknown], 900);
+        let msg = format!("{:?}", r[0]);
+        assert!(msg.contains("age unknown"), "unknown age must be explicit: {msg}");
+        assert_eq!(r[0].evidence["max_age_s"], serde_json::Value::Null);
+    }
+
     fn secret(pid: &str, key: &str, len: usize) -> ArgvSecret {
-        ArgvSecret { pid: pid.into(), key: key.into(), value_len: len }
+        ArgvSecret { pid: pid.into(), key: key.into(), value_len: len, age_s: None }
     }
 
     /// AMUX-4946. Both arms, because a detector that only ever sees zero is

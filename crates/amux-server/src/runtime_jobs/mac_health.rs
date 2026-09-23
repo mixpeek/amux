@@ -165,7 +165,7 @@ fn pid_exists(pid: u32) -> bool {
 }
 
 /// Parse ps etime field [[DD-]HH:]MM:SS into total seconds.
-fn parse_etime(s: &str) -> Option<u64> {
+pub(crate) fn parse_etime(s: &str) -> Option<u64> {
     // Split on '-' first (days), then on ':'
     let (days, rest) = if let Some((d, r)) = s.split_once('-') {
         (d.parse::<u64>().ok()?, r)

@@ -2478,7 +2478,10 @@ async fn served_commit_check() -> Vec<InvariantResult> {
 async fn argv_secret_check() -> Vec<InvariantResult> {
     const ID: &str = "security.no_secrets_in_process_argv";
     let output =
-        tokio::process::Command::new("ps").args(["-axww", "-o", "pid=,command="]).output().await;
+        tokio::process::Command::new("ps")
+            .args(["-axww", "-o", "pid=,etime=,command="])
+            .output()
+            .await;
     match output {
         Ok(out) if out.status.success() => {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -2490,7 +2493,13 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                     continue;
                 }
                 considered += 1;
+                // pid, etime, then the command. AMUX-4985: etime is what tells
+                // a 3d22h exposure apart from a 90-second agent shell, and the
+                // two were previously the same verdict.
                 let (pid, rest) = line.split_once(' ').unwrap_or((line, ""));
+                let rest = rest.trim_start();
+                let (etime, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let age_s = crate::runtime_jobs::mac_health::parse_etime(etime);
                 for token in rest.split_whitespace() {
                     let Some((key, value)) = token.split_once('=') else { continue };
                     // ENV-VAR SHAPE, not merely identifier shape (AMUX-4964).
@@ -2504,6 +2513,7 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                             key: key.to_string(),
                             // LENGTH, never the value.
                             value_len: value.len(),
+                            age_s,
                         });
                     }
                 }
