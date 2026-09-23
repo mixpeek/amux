@@ -4944,16 +4944,20 @@ mod tests {
     /// AMUX-4954. A deleted worker must stop being a lease holder.
     #[test]
     fn releasing_a_holders_leases_frees_only_its_own_cards_and_bumps_the_generation() {
-        let conn = Connection::open_in_memory().unwrap();
+        // THE REAL MIGRATION CHAIN, not a hand-rolled table. My first version
+        // declared its own `issues`, which `tests/schema_fixtures.rs` exists to
+        // forbid — and it caught it in CI after my local `--lib` runs did not,
+        // because that guard is an integration test. A fixture that invents the
+        // schema silently falls behind the moment a migration adds a column.
+        let conn = crate::db::migrate::test_memdb();
         conn.execute_batch(
-            "CREATE TABLE issues (id TEXT PRIMARY KEY, status TEXT, lease_owner TEXT,
-                lease_acquired_at INTEGER, lease_heartbeat_at INTEGER,
-                lease_expires_at INTEGER, lease_generation INTEGER DEFAULT 0,
-                deleted INTEGER);
-             INSERT INTO issues VALUES ('A-1','doing','gone-worker',10,20,9999,3,NULL);
-             INSERT INTO issues VALUES ('A-2','doing','gone-worker',10,20,9999,0,NULL);
-             INSERT INTO issues VALUES ('B-1','doing','live-worker',10,20,9999,1,NULL);
-             INSERT INTO issues VALUES ('C-1','doing','gone-worker',10,20,9999,0,1);",
+            "INSERT INTO issues (id,title,created,updated,status,lease_owner,\
+                                 lease_acquired_at,lease_heartbeat_at,lease_expires_at,\
+                                 lease_generation,deleted)
+             VALUES ('A-1','a',1,1,'doing','gone-worker',10,20,9999,3,NULL),
+                    ('A-2','b',1,1,'doing','gone-worker',10,20,9999,0,NULL),
+                    ('B-1','c',1,1,'doing','live-worker',10,20,9999,1,NULL),
+                    ('C-1','d',1,1,'doing','gone-worker',10,20,9999,0,1);",
         )
         .unwrap();
 
