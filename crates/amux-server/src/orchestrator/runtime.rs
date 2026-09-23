@@ -144,6 +144,83 @@ fn agent_accepts_boundary_delivery(
 }
 
 
+/// WHICH SECTION OF A SLOW TICK BLOCKED (AMUX-4955).
+///
+/// `runtime_job_blocking_poll` names the JOB and how long one poll held a
+/// worker; it cannot say which operation inside the tick did the holding. That
+/// gap is why this card could measure an 849s poll with 8s of CPU and still not
+/// say what to fix — and why the card's earlier claim that "the instrument is
+/// already right and needs nothing" was wrong for this step.
+///
+/// Wall time per section, not CPU: the whole finding is that these threads are
+/// blocked rather than computing, so CPU would read ~0 everywhere and name
+/// nothing.
+///
+/// Reports only when the tick is actually slow. A per-tick line at this
+/// frequency would be its own noise, and the sections of a fast tick are not a
+/// question anyone is asking.
+struct TickSections {
+    marks: Vec<(&'static str, std::time::Duration)>,
+    last: std::time::Instant,
+    started: std::time::Instant,
+}
+
+impl TickSections {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self { marks: Vec::new(), last: now, started: now }
+    }
+
+    fn mark(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.marks.push((name, now.duration_since(self.last)));
+        self.last = now;
+    }
+
+    /// Slow-tick threshold. Env-tunable because the default is a judgement from
+    /// one box's numbers, and the whole point of this is to be re-pointed.
+    fn slow_ms() -> u128 {
+        std::env::var("AMUX_TICK_SECTION_WARN_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1_000)
+    }
+
+    /// The slowest section and the full breakdown.
+    ///
+    /// Pure and separate from the logging so the thing a reader ACTS on — which
+    /// section to go open — is pinned by a test rather than by reading a WARN
+    /// and trusting it.
+    fn summarize(marks: &[(&'static str, std::time::Duration)]) -> ((&'static str, u64), String) {
+        let worst = marks
+            .iter()
+            .max_by_key(|(_, d)| *d)
+            .map(|(n, d)| (*n, d.as_millis() as u64))
+            .unwrap_or(("none", 0));
+        let breakdown: Vec<String> =
+            marks.iter().map(|(n, d)| format!("{n}={}ms", d.as_millis())).collect();
+        (worst, breakdown.join(" "))
+    }
+
+    fn report(mut self, job: &'static str) {
+        let total = self.started.elapsed();
+        if total.as_millis() < Self::slow_ms() {
+            return;
+        }
+        self.mark("tail");
+        let (worst, breakdown) = Self::summarize(&self.marks);
+        tracing::warn!(
+            target: "runtime", verdict = "tick_section_slow", job,
+            total_ms = total.as_millis() as u64,
+            worst_section = worst.0, worst_ms = worst.1,
+            measured = true, n_considered = self.marks.len(),
+            sections = %breakdown,
+            "slow tick: naming the section that held the thread, which \
+             runtime_job_blocking_poll cannot (AMUX-4955)"
+        );
+    }
+}
+
 impl Runtime {
     /// Startup reconciliation (Invariant 9): the DB's picture of live
     /// sessions vs what each backend actually hosts. Every mismatch becomes
@@ -366,8 +443,10 @@ impl Runtime {
 
     /// One tick: load state, evaluate the circuit breaker, plan, execute.
     pub async fn tick_once(&self, heartbeat: bool) -> anyhow::Result<()> {
+        let mut sections = TickSections::new();
         let now = Utc::now();
         let (mut workers, leases, quarantined_total) = self.load_state()?;
+        sections.mark("load_state");
 
         // Recover BEFORE deriving provider state, pumping commands, or
         // planning. The old order wrote Idle to SQLite only after the pump had
@@ -384,6 +463,7 @@ impl Runtime {
         // planning. While open, reconciliation looks for runnable work and
         // auto-closes when it finds the fleet can actually move again.
         let window = self.window_stats(now)?;
+        sections.mark("window_stats");
         // Evaluate under the lock WITHOUT awaiting (the guard is not Send);
         // publish the change after the guard drops.
         let (fleet_state, changed) = {
@@ -427,6 +507,7 @@ impl Runtime {
         }
 
         let tasks = self.load_board_tasks(&workers).await?;
+        sections.mark("load_board_tasks");
         // Measure the queue the runtime actually sees, at the same seam that
         // feeds the scheduler. Each task contributes once, so repeated ticks
         // cannot manufacture evidence. Meaningful writer contention is also
@@ -487,6 +568,7 @@ impl Runtime {
         if let Err(e) = self.pump_commands(now, &provider_states).await {
             tracing::warn!(error = %e, "command pump failed this tick");
         }
+        sections.mark("pump_commands");
         let hints = BTreeMap::new();
         // The attempt ledger (Invariant 49) feeds BOTH the planner (so
         // attempt N+1's prompt carries why 1..N failed) and enforce_limits
@@ -496,6 +578,7 @@ impl Runtime {
         // arrived with zero prior attempts, so no task could ever exhaust
         // its budget and quarantine never triggered.
         let attempts = self.load_attempts()?;
+        sections.mark("load_attempts");
         let wip_limit = {
             let conn = self.store.read()?;
             crate::db::throughput_store::effective_wip_limit(&conn)?
@@ -549,6 +632,7 @@ impl Runtime {
         };
         let plan = TickPlan { assignments: proceed, ..plan };
         self.execute(&plan).await?;
+        sections.mark("execute");
         for action in exhaustion {
             self.apply_exhaustion(action, now).await?;
         }
@@ -583,6 +667,7 @@ impl Runtime {
                 })
                 .await?;
         }
+        sections.report(crate::runtime_jobs::registry::ids::ORCH_RUNTIME);
         Ok(())
     }
 
@@ -3242,5 +3327,56 @@ mod tick_bracket_guard {
             "the one-shot cannot express a duration, which is what made this job's slowness \
              indistinguishable from death"
         );
+    }
+}
+
+#[cfg(test)]
+mod tick_section_tests {
+    use super::TickSections;
+    use std::time::Duration;
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// AMUX-4955. The verdict has to name the section a reader should go open.
+    #[test]
+    fn the_slowest_section_is_named_and_every_section_is_reported() {
+        let marks = [
+            ("load_state", ms(12)),
+            ("window_stats", ms(4)),
+            ("load_board_tasks", ms(8_400)),
+            ("pump_commands", ms(120)),
+        ];
+        let ((worst, worst_ms), breakdown) = TickSections::summarize(&marks);
+        assert_eq!(worst, "load_board_tasks");
+        assert_eq!(worst_ms, 8_400);
+        // The WHOLE breakdown travels, not just the winner: "load_board_tasks
+        // dominated" and "load_board_tasks dominated while everything else was
+        // also slow" are different findings and only the second rules out a
+        // fleet-wide stall.
+        for name in ["load_state", "window_stats", "load_board_tasks", "pump_commands"] {
+            assert!(breakdown.contains(name), "{name} missing from {breakdown}");
+        }
+    }
+
+    /// No sections is a real state (a tick that returned early), and it must
+    /// not be reported as a section called "" taking 0ms.
+    #[test]
+    fn an_empty_tick_names_nothing_rather_than_inventing_a_section() {
+        let ((worst, worst_ms), breakdown) = TickSections::summarize(&[]);
+        assert_eq!(worst, "none");
+        assert_eq!(worst_ms, 0);
+        assert_eq!(breakdown, "");
+    }
+
+    /// Ties must not silently pick a section by declaration order and present
+    /// it as the finding; assert the reported ms matches whatever was chosen.
+    #[test]
+    fn a_tie_still_reports_a_duration_that_matches_the_named_section() {
+        let marks = [("a", ms(500)), ("b", ms(500))];
+        let ((worst, worst_ms), _) = TickSections::summarize(&marks);
+        assert!(worst == "a" || worst == "b");
+        assert_eq!(worst_ms, 500);
     }
 }
