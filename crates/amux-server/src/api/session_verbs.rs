@@ -14462,6 +14462,37 @@ fn pickup_stale_void(
     }
 }
 
+/// Stamp the `cmd_history` row for a queued message that has just been
+/// delivered, and say how many rows it touched (AMUX-5007).
+///
+/// EXTRACTED so the test drives the shipped statement rather than a copy of it.
+/// A test carrying its own SQL passes while the real one drifts, which is the
+/// shape this file keeps re-learning about.
+///
+/// Matched on (session, text) because the queue id is minted independently of
+/// the history row and the two share no key. Oldest unstamped match wins, so
+/// two identical sends stamp in the order they were made. The text is the RAW
+/// text: only `steering_history` stores the redacted form.
+///
+/// Returns the row count. 0 means the join missed, which the caller reports —
+/// the previous behaviour was indistinguishable from a successful stamp, and
+/// that is how 930 rows accumulated over 16 days.
+pub(crate) fn stamp_queued_delivery(
+    conn: &rusqlite::Connection,
+    session: &str,
+    text: &str,
+    at_ms: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE cmd_history SET delivered_at=?1 \
+         WHERE id = (SELECT id FROM cmd_history \
+                     WHERE session=?2 AND text=?3 \
+                       AND delivery='queued' AND delivered_at IS NULL \
+                     ORDER BY ts LIMIT 1)",
+        rusqlite::params![at_ms, session, text],
+    )
+}
+
 pub async fn steer_deliver_tick(state: &AppState) -> usize {
     // Only lanes that actually HAVE a queue: costs nothing on an empty fleet,
     // and keeps the pane captures below proportional to real work.
@@ -14947,6 +14978,36 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
                      VALUES(?,?,?,?,?,?,?,?)",
                     rusqlite::params![id2, sess2, redact_secrets(&text2), queued_at, now_f64(), outcome2, src_guard, src_sender],
                 )?;
+                // STAMP THE HISTORY ROW (AMUX-5007).
+                //
+                // `steering_history` has carried the real delivery time since
+                // AMUX-3541. `cmd_history.delivered_at` has stayed NULL on every
+                // queued row because nothing wrote it, and the comment at the
+                // send site says so: "nothing does yet ... which is the point: a
+                // NULL that persists is countable". It was counted. 930 rows,
+                // oldest ~16 days, and the client shows "1 message waiting" over
+                // a message the worker already has.
+                //
+                // Same write as the two statements above, so a crash cannot
+                // record the delivery in one place and not the other.
+                //
+                // Matched on (session, text) because the queue id is minted
+                // independently of the cmd_history row and there is no shared
+                // key. Oldest unstamped match wins, so two identical sends stamp
+                // in the order they were made. The text here is the RAW text;
+                // only steering_history stores the redacted form.
+                let stamped = stamp_queued_delivery(conn, &sess2, &text2, now_i64() * 1000)?;
+                if stamped == 0 {
+                    // COUNTABLE, not silent. Zero means the join missed — the
+                    // send recorded different text, or the row was never
+                    // written — and the old behaviour was indistinguishable
+                    // from that, which is how this lasted 16 days.
+                    tracing::warn!(
+                        session = %sess2, id = %id2, measured = true, n_considered = 1,
+                        verdict = "delivery_stamp_unmatched",
+                        "delivered a queued message and found no cmd_history row to stamp"
+                    );
+                }
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             })
             .await;
@@ -36002,6 +36063,107 @@ mod schedule_target_refusal_tests {
 /// AMUX-4803: the worker-spawn path must not put provider keys in tmux argv.
 #[cfg(test)]
 mod spawn_argv_secret_tests {
+
+    /// THE DELIVERER MUST ACTUALLY CALL IT (AMUX-5007).
+    ///
+    /// The unit test below covers the statement. It does NOT cover the wiring:
+    /// mutating the call site to `let stamped = 1usize;` left it green, which
+    /// means deleting the stamp from the deliverer would break nothing. That is
+    /// ethos rule 7's question — what would still be green if you broke it —
+    /// and this is the answer.
+    ///
+    /// Same idiom as `the_at_boundary_scheduler_path_no_longer_borrows_the_owners_origin`
+    /// above: read the shipped source, code lines only, so the function's own
+    /// prose cannot satisfy it.
+    #[test]
+    fn the_queue_deliverer_stamps_the_history_row() {
+        const SRC: &str = include_str!("session_verbs.rs");
+        let start = SRC.find("pub async fn steer_deliver_tick(").expect("steer_deliver_tick is gone");
+        let rest = &SRC[start..];
+        let end = rest[1..].find("\n}\n").map(|i| i + 3).expect("steer_deliver_tick has no closing brace");
+        let body: String = rest[..end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("stamp_queued_delivery("),
+            "steer_deliver_tick no longer stamps cmd_history.delivered_at. A delivered message \
+             whose row still reads queued is what put 930 rows, oldest 16 days, behind the \
+             client's \"1 message waiting\" badge (AMUX-5007)."
+        );
+        assert!(
+            body.contains("delivery_stamp_unmatched"),
+            "a stamp that matched no row must stay countable; without this verdict a failed \
+             join is indistinguishable from a successful stamp, which is how the original \
+             defect lasted"
+        );
+    }
+
+    /// AMUX-5007. The stamp that was promised four times in this file and
+    /// written nowhere, driven against a real schema.
+    ///
+    /// Calls the SHIPPED statement (`stamp_queued_delivery`) rather than a copy,
+    /// because a test carrying its own SQL passes while the real one drifts.
+    #[test]
+    fn a_delivered_queued_message_gets_its_history_row_stamped() {
+        let conn = rusqlite::Connection::open_in_memory().expect("db");
+        conn.execute_batch(
+            "CREATE TABLE cmd_history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'direct', session TEXT NOT NULL DEFAULT '',
+                ts INTEGER NOT NULL, delivery TEXT, delivered_at INTEGER);",
+        )
+        .expect("schema");
+        let add = |text: &str, sess: &str, ts: i64, delivery: Option<&str>| {
+            conn.execute(
+                "INSERT INTO cmd_history(text, session, ts, delivery) VALUES(?,?,?,?)",
+                rusqlite::params![text, sess, ts, delivery],
+            )
+            .expect("insert");
+        };
+        let stamped_at = |id: i64| -> Option<i64> {
+            conn.query_row("SELECT delivered_at FROM cmd_history WHERE id=?", [id], |r| r.get(0))
+                .expect("read")
+        };
+
+        // Two identical sends to one lane, plus decoys that must not be touched.
+        add("hello", "amux", 100, Some("queued"));          // id 1, oldest
+        add("hello", "amux", 200, Some("queued"));          // id 2
+        add("hello", "other-lane", 150, Some("queued"));    // id 3, wrong lane
+        add("hello", "amux", 120, Some("direct"));          // id 4, not queued
+
+        // First delivery stamps the OLDEST match and nothing else.
+        assert_eq!(crate::api::session_verbs::stamp_queued_delivery(&conn, "amux", "hello", 9_000).unwrap(), 1);
+        assert_eq!(stamped_at(1), Some(9_000), "the oldest queued row must be the one stamped");
+        assert_eq!(stamped_at(2), None, "the second send is still waiting");
+        assert_eq!(stamped_at(3), None, "another lane's row must not be touched");
+        assert_eq!(stamped_at(4), None, "a direct send was never queued and has nothing to stamp");
+
+        // Second delivery takes the next one, in order.
+        assert_eq!(crate::api::session_verbs::stamp_queued_delivery(&conn, "amux", "hello", 9_100).unwrap(), 1);
+        assert_eq!(stamped_at(2), Some(9_100));
+
+        // Nothing left: the caller reports 0 rather than believing it stamped.
+        assert_eq!(
+            crate::api::session_verbs::stamp_queued_delivery(&conn, "amux", "hello", 9_200).unwrap(),
+            0,
+            "a third delivery with no unstamped row must report 0, which is what the \
+             delivery_stamp_unmatched warning is for"
+        );
+
+        // THE COUNTABLE THIS CARD IS ABOUT. 930 rows matched this query on the
+        // live DB; after a delivery the count must fall.
+        let unstamped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM cmd_history WHERE delivery='queued' AND delivered_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unstamped, 1, "only the other lane's row should still be waiting");
+    }
+
     /// A SOURCE GUARD, because nothing observable distinguishes the two.
     ///
     /// Both spellings compile, both spawn a working worker, and both look
