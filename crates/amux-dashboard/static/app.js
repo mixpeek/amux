@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1008';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1009';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24406,11 +24406,33 @@ function peekCheckSelection(event) {
       _peekPollBeacon('selection-recovered', peekSession, { reason: event.type,
         verdict: 'no_terminal_selection', measured: true, n_considered: 1 });
     }
+    // A CLEARED SELECTION GIVES FOLLOWING BACK (AMUX-4802). Selecting pauses
+    // following so the text cannot move under the cursor, and that pause had
+    // no way out: copy one line and the view stopped tracking for good. Only
+    // when the reader is still AT THE BOTTOM, so clearing a selection made up
+    // in history does not yank them forward to the newest output.
+    const _selBody = document.getElementById('peek-body');
+    if (peekSelecting && _selBody && _isScrolledToBottom(_selBody)) {
+      _peekScrollLocked = false;
+      _peekFollowBottom = true;
+    }
     peekSelecting = false;
   }
 }
-document.getElementById('peek-body').addEventListener('mousedown', () => { _peekStopFollowing(); peekSelecting = true; clearTimeout(peekSelectTimer); });
-document.getElementById('peek-body').addEventListener('touchstart', () => { peekSelecting = true; clearTimeout(peekSelectTimer); }, {passive: true});
+// Where the current finger started, so touchmove can tell which way it is
+// travelling. null means the gesture arrived without a usable touch point.
+let _peekTouchStartY = null;
+// A MOUSEDOWN IS NOT YET A SELECTION (AMUX-4802). This used to relinquish
+// following on the press itself, so a single click to focus the terminal
+// parked the view while output kept arriving. A real drag-selection still
+// pauses, via peekCheckSelection on selectionchange/mouseup below, which is
+// the event that knows whether anything is actually selected.
+document.getElementById('peek-body').addEventListener('mousedown', () => { peekSelecting = true; clearTimeout(peekSelectTimer); });
+document.getElementById('peek-body').addEventListener('touchstart', e => {
+  peekSelecting = true; clearTimeout(peekSelectTimer);
+  const t = e.touches && e.touches[0];
+  _peekTouchStartY = t ? t.clientY : null;
+}, {passive: true});
 const _peekScrollBody = document.getElementById('peek-body');
 // ONLY A GESTURE TOWARD EARLIER OUTPUT relinquishes following (AMUX-4601).
 // A resting trackpad sends zero-distance and sideways wheel events, and a
@@ -24420,7 +24442,16 @@ const _peekScrollBody = document.getElementById('peek-body');
 // (Ethan's recording, 2026-09-14, tubescience). bottom-follow-paused still
 // reports every real pause with its input and gap.
 _peekScrollBody.addEventListener('wheel', e => { if (e.deltaY < 0) _peekStopFollowing(e); }, {passive: true});
-_peekScrollBody.addEventListener('touchmove', _peekStopFollowing, {passive: true});
+// The touch half of the same rule the wheel handler above already follows.
+// Every touchmove used to relinquish, so an upward swipe toward NEWER output,
+// or a sideways drag across a wide table, parked a reader who was already on
+// the newest line. A finger travelling DOWN the screen is the one asking for
+// earlier output. No dead zone: a 6px downward drag must relinquish from its
+// first pixels, so this only rejects jitter below half a pixel.
+_peekScrollBody.addEventListener('touchmove', e => {
+  const t = e.touches && e.touches[0];
+  if (!t || _peekTouchStartY === null || t.clientY > _peekTouchStartY + 0.5) _peekStopFollowing(e);
+}, {passive: true});
 _peekScrollBody.addEventListener('keydown', e => {
   if (['ArrowUp','PageUp','Home'].includes(e.key)) _peekStopFollowing(e);
 });
