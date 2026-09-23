@@ -932,6 +932,18 @@ pub async fn approve(
     Extension(ctx): Extension<Arc<EmailCtx>>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    // OPTIONAL edited body (AMUX-5021). Ethan asked the approval banner for an
+    // Edit mode: "make edit enter edit mode where i can edit it manually".
+    //
+    // The frozen payload is a safety property — what the worker drafted is what
+    // sends — and a HUMAN rewriting it before release does not violate that,
+    // because the human is the authority the gate defers to. What would violate
+    // it is an edit nobody can see afterwards, so an edited approval is logged
+    // as edited, with both byte counts.
+    //
+    // Last extractor, and Optional: a plain POST with no body still approves
+    // the frozen draft exactly as before.
+    body: Option<Json<Value>>,
 ) -> Response {
     if let Some(lane) = hdr_worker(&headers) {
         tracing::warn!(
@@ -1075,7 +1087,31 @@ pub async fn approve(
             return err(StatusCode::NOT_FOUND, json!({ "error": fate }));
         }
     };
-    let payload = doc.get("payload").cloned().unwrap_or_else(|| json!({}));
+    let mut payload = doc.get("payload").cloned().unwrap_or_else(|| json!({}));
+    // THE HUMAN'S EDIT, APPLIED AND RECORDED. Only `body` is editable: the
+    // recipient, subject and attachments are what the gate is protecting, and
+    // an approver who wants a different recipient is asking for a different
+    // message rather than an edit of this one.
+    let edited_body = body
+        .and_then(|Json(v)| v.get("body").and_then(Value::as_str).map(str::to_string))
+        .filter(|b| !b.trim().is_empty());
+    let mut approver_edited = false;
+    if let Some(edited) = edited_body {
+        let before = payload.get("body").and_then(Value::as_str).unwrap_or("").to_string();
+        if edited != before {
+            approver_edited = true;
+            tracing::warn!(
+                approval = %id, approver = %approver,
+                before_bytes = before.len(), after_bytes = edited.len(),
+                measured = true, n_considered = 1,
+                verdict = "approval_body_edited",
+                "[email] the approver rewrote the held draft before releasing it"
+            );
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("body".into(), json!(edited));
+            }
+        }
+    }
     let session = doc.get("session").and_then(Value::as_str).unwrap_or("").to_string();
     let endpoint = doc.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
     let p = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or("").to_string();
@@ -1135,6 +1171,11 @@ pub async fn approve(
                     // a claim rather than a finding.
                     "approved_by": approver,
                     "approver_verified": false,
+                    // AN EDITED RELEASE IS NOT THE DRAFT THE WORKER WROTE
+                    // (AMUX-5021). The ledger's whole job is that a reader can
+                    // tell what actually left; without this the body_preview
+                    // below would attribute the approver's words to the lane.
+                    "approver_edited": approver_edited,
                     "from": p("from"),
                     "to": resolved_envelope(&res, "to", &p("to")),
                     "cc": resolved_envelope(&res, "cc", &p("cc")),

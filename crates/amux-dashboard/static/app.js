@@ -16100,6 +16100,10 @@ else document.addEventListener('DOMContentLoaded', _syncChipsFromServer);
 async function _approvalsRefresh() {
   const el = document.getElementById('email-approvals-banner');
   if (!el) return;
+  // A 60s poll that rewrote innerHTML under a half-typed correction would throw
+  // the edit away, on the one surface whose job is letting a human change what
+  // goes out (AMUX-5021).
+  if (_apprEditing.size) return;
   try {
     const r = await fetch(API + '/api/email/approvals', { headers: _authHeaders() });
     if (!r.ok) return;
@@ -16191,7 +16195,17 @@ async function _approvalsRefresh() {
         + '<span style="opacity:0.7;font-size:0.76rem;">expires in ' + mins + 'm</span>'
         + '<button onclick="event.preventDefault();_apprApprove(\'' + esc(p.id) + '\',this)" '
         + 'style="background:#16a34a;color:#fff;border:none;border-radius:6px;'
-        + 'padding:8px 14px;font-size:0.8rem;cursor:pointer;min-height:34px;">Approve &amp; send</button>'
+        + 'padding:8px 14px;font-size:0.8rem;cursor:pointer;min-height:34px;">Approve</button>'
+        // EDIT (Ethan, 2026-09-23: "just make it Approve, Discard and Edit. and
+        // then make edit enter edit mode where i can edit it manually"). The
+        // preview becomes a textarea in place; Approve then sends what is in it.
+        // Only the BODY is editable — the recipient and subject are what the
+        // gate is protecting, and wanting a different recipient is a different
+        // message rather than an edit of this one.
+        + '<button onclick="event.preventDefault();_apprEdit(\'' + esc(p.id) + '\',this)" '
+        + 'style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.45);'
+        + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
+        + 'min-height:34px;min-width:44px;">Edit</button>'
         // DISCARD (AMUX-3698). Until this existed the only button here was
         // "Approve & send", so a human looking at a draft they did not want had
         // one move: wait an hour. Ethan hit it directly — two of autodesk's
@@ -16202,7 +16216,8 @@ async function _approvalsRefresh() {
         + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
         + 'min-height:34px;min-width:44px;">Discard</button>'
         + '</summary>'
-        + '<div style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
+        + '<div id="appr-body-' + esc(p.id) + '" '
+        + 'style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
         + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:320px;overflow:auto;">'
         + (pv.cc ? 'cc: ' + esc(pv.cc) + '\n' : '')
         + esc(pv.body || '') + '</div></details>';
@@ -16265,6 +16280,51 @@ async function _apprReject(id, btn) {
   } catch (e) { showToast('Discard failed: ' + e); }
   _approvalsRefresh();
 }
+/// Swap the frozen preview for a textarea holding the same text (AMUX-5021).
+///
+/// In place rather than in a modal: the reader is already looking at the draft
+/// and the decision is "send this, with these words". A modal would hide the
+/// recipient and subject line the moment you start editing the body.
+///
+/// The poll is paused while editing — a 60s refresh that rewrote innerHTML
+/// under a half-typed correction would throw the edit away, which is the worst
+/// possible failure on this surface.
+function _apprEdit(id, btn) {
+  const host = document.getElementById('appr-body-' + id);
+  if (!host) return;
+  if (host.dataset.editing === '1') { _apprEditCancel(id); return; }
+  const text = host.innerText.replace(/^cc: .*\n/, '');
+  host.dataset.editing = '1';
+  host.dataset.original = text;
+  _apprEditing.add(id);
+  host.innerHTML = '';
+  const ta = document.createElement('textarea');
+  ta.id = 'appr-edit-' + id;
+  ta.value = text;
+  ta.setAttribute('style', 'width:100%;min-height:220px;background:rgba(0,0,0,0.35);'
+    + 'color:#fff;border:1px solid rgba(255,255,255,0.35);border-radius:6px;'
+    + 'padding:8px 10px;font:inherit;font-size:0.8rem;line-height:1.45;');
+  host.appendChild(ta);
+  const note = document.createElement('div');
+  note.setAttribute('style', 'opacity:0.7;font-size:0.72rem;margin-top:4px;');
+  note.textContent = 'Editing. Approve sends what is in this box; the edit is recorded in the send ledger.';
+  host.appendChild(note);
+  ta.focus();
+  if (btn) btn.textContent = 'Cancel edit';
+}
+
+function _apprEditCancel(id) {
+  const host = document.getElementById('appr-body-' + id);
+  _apprEditing.delete(id);
+  if (!host) return;
+  host.dataset.editing = '';
+  _approvalsRefresh();
+}
+
+/// Ids currently under edit. `_approvalsRefresh` refuses to repaint while this
+/// is non-empty, so a poll cannot discard what someone is typing.
+const _apprEditing = new Set();
+
 async function _apprApprove(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
@@ -16272,9 +16332,19 @@ async function _apprApprove(id, btn) {
     // mean "a human at the dashboard", which a worker produces by sending no
     // headers at all — and the ledger then recorded that inference as fact.
     // This names the approver in the send-audit ledger; it is not a password.
-    const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), {
+    // Send what is ON SCREEN when the reader has been editing. With no
+    // textarea this is a plain POST and the server releases the frozen draft
+    // exactly as before.
+    const ta = document.getElementById('appr-edit-' + id);
+    const init = {
       method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard' },
-    });
+    };
+    if (ta) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify({ body: ta.value });
+    }
+    const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), init);
+    _apprEditing.delete(id);
     const d = await r.json().catch(() => ({}));
     if (r.ok) showToast('Approved — sent for ' + (d.sent_for_session || 'worker'));
     else showToast('Approve failed: ' + (d.error || r.status));
