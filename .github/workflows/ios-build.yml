@@ -80,7 +80,30 @@ jobs:
             exit 1
           fi
           echo "simulator: $UDID"
-          xcodebuild test -project AmuxApp.xcodeproj -scheme AmuxAppTests -sdk iphonesimulator -destination "platform=iOS Simulator,id=$UDID" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | grep -E "Test Case|Executed|error:|TEST (SUCCEEDED|FAILED)" | tail -30
+          OUT=$(mktemp)
+          xcodebuild test -project AmuxApp.xcodeproj -scheme AmuxAppTests -sdk iphonesimulator -destination "platform=iOS Simulator,id=$UDID" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee "$OUT" | grep -E "Test Case|Executed|error:|Skipped|TEST (SUCCEEDED|FAILED)" | tail -30
+          # A bundle that SELECTS NOTHING exits 0 and still prints "TEST
+          # SUCCEEDED", so the line above is a pass either way. If project.yml
+          # ever stops compiling AmuxClient.swift into the test target, or the
+          # scheme loses the target, that is what this run would look like.
+          # Name the number beside the verdict (ethos rule 4).
+          # `|| true` on both: with pipefail a grep that matches nothing kills
+          # the step with no explanation, and the explanation is the point.
+          RAN=$(grep -oE 'Executed [0-9]+ test' "$OUT" | grep -oE '[0-9]+' | sort -rn | head -1 || true)
+          # Parse the SUMMARY clause, not a per-test line: xcodebuild writes
+          # "skipped (0.002 seconds)" per case and "with 4 tests skipped" in the
+          # total. An earlier version of this counted 'was skipped', which
+          # appears nowhere, so it printed 0 beside a run that skipped 4.
+          SKIPPED=$(grep -oE 'with [0-9]+ tests? skipped' "$OUT" | grep -oE '[0-9]+' | sort -rn | head -1 || true)
+          echo "tests executed: ${RAN:-0} (skipped: ${SKIPPED:-0})"
+          if [ "${RAN:-0}" -lt 1 ]; then
+            echo "::error::the test bundle executed 0 tests. TEST SUCCEEDED means nothing here."
+            exit 1
+          fi
+          # AmuxClientLiveTests needs a non-loopback amux server and skips
+          # without one, which is correct on a hosted runner. Said out loud so
+          # nobody reads this step as covering the authentication path.
+          echo "note: the live-server tests (AmuxClientLiveTests) skip here by design. They are run against a real server before release."
 
       # A build that silently stopped producing the extension would still be
       # "BUILD SUCCEEDED", and the share feature would ship broken. Name the
