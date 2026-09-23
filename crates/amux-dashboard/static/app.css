@@ -748,7 +748,15 @@
      is written beside it in index.html. If you add another global strip, put it
      under 100 too. */
   .overlay {
-    padding: 12px; padding-top: max(12px, env(safe-area-inset-top));
+    /* PLAIN 12px. The rule ~20 lines up already sets
+       `top: max(var(--chrome-tab-h), env(safe-area-inset-top))`, so this
+       element is ALREADY positioned below the carve. Adding the same inset as
+       padding charged it twice: on an iPhone 17, env(safe-area-inset-top) is a
+       constant 50px here, so the worker header started 100px down instead of
+       50 and read as a dead band above the title.
+       Nothing changes off-notch, where env(top) is 0 and max(12px, 0) was
+       already 12px. */
+    padding: 12px;
     overflow: hidden;
     display: flex; pointer-events: none; opacity: 0;
     transform: translateY(12px);

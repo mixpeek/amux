@@ -26,7 +26,17 @@ struct WebView: UIViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = (webView.value(forKey: "userAgent") as? String ?? "") + " AmuxApp"
-        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+        // .never, NOT .automatic. The dashboard ships `viewport-fit=cover` and
+        // 39 `env(safe-area-inset-*)` rules, so it already carves the notch and
+        // the home indicator itself. `.automatic` makes UIKit inset the scroll
+        // view by the SAME safe area, and the two stack: measured on an
+        // iPhone 17 simulator, a dead band above the worker header and another
+        // below the composer, both far larger than the 59pt/34pt insets that
+        // explain them.
+        //
+        // The page is the right owner of that decision, because it is the only
+        // side that knows which of its elements are pinned to an edge.
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = false
         webView.backgroundColor = UIColor(red: 0.051, green: 0.067, blue: 0.09, alpha: 1) // #0d1117
 
