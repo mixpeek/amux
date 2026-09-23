@@ -2803,7 +2803,7 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
     // out of scope (not merely dropped) before lane_block_reason's tmux await,
     // or the whole invariant future stops being Send. This also releases the
     // read lock before that terminal I/O rather than holding it across the await.
-    let (reports, rows): (serde_json::Value, Vec<(String, f64)>) = {
+    let (reports, rows): (serde_json::Value, Vec<(String, f64, usize)>) = {
         let Ok(conn) = state.store.read() else {
             return vec![InvariantResult::unknown(ID, "store unreadable")];
         };
@@ -2815,21 +2815,24 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| json!({}));
         let Ok(mut stmt) = conn.prepare(
-            "SELECT session, MIN(queued_at) FROM steering_queue GROUP BY session",
+            // COUNT(*) as well as MIN(queued_at): this query is grouped per
+            // lane, so an invariant counting the rows it returns can only ever
+            // say "1". queue.parked_behind_hold shipped doing exactly that.
+            "SELECT session, MIN(queued_at), COUNT(*) FROM steering_queue GROUP BY session",
         ) else {
             // The table not existing is a real answer (nothing queued), but an
             // unreadable one is not; do not turn a failed read into a clean pass.
             return vec![InvariantResult::unknown(ID, "steering_queue unreadable")];
         };
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+        let rows: Vec<(String, f64, usize)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)? as usize)))
             .map(|it| it.flatten().collect())
             .unwrap_or_default();
         (reports, rows)
     };
 
     let mut items: Vec<checks::QueuedItem> = Vec::with_capacity(rows.len());
-    for (session, queued_at) in rows {
+    for (session, queued_at, queued_count) in rows {
         let report = &reports[&session];
         let idle = report["state"].as_str() == Some("idle");
         // The report's own timestamp IS when the lane went idle: the Stop hook
@@ -2866,6 +2869,7 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
             block_reason,
             idle_since,
             target_selector_wait: selector_wait,
+            queued_count,
         });
     }
 

@@ -1699,7 +1699,9 @@ pub fn queue_parked_behind_hold(items: &[QueuedItem], now: f64, max_parked_s: f6
         }
         let age = now - it.queued_at;
         let e = oldest.entry(it.target.as_str()).or_insert((0.0, 0, reason.to_string()));
-        e.1 += 1;
+        // The lane's real queue depth, not the number of items the caller
+        // built. See `queued_count`.
+        e.1 += it.queued_count.max(1);
         if age > e.0 {
             e.0 = age;
             e.2 = reason.to_string();
@@ -1906,6 +1908,17 @@ pub struct QueuedItem {
     /// Without it the check could not tell an unroutable ghost from an
     /// idle-but-lagging consumer (AMUX-3084 / AMUX-3111).
     pub block_reason: Option<String>,
+    /// HOW MANY rows this lane has queued, not how many items the caller built.
+    ///
+    /// The monitor groups the queue per lane (`GROUP BY session`), so `items`
+    /// holds ONE entry per lane however deep that lane's queue is. Counting
+    /// entries therefore always yields 1, which is a constant wearing a
+    /// measurement's clothes — `queue.parked_behind_hold` shipped saying
+    /// "1 message(s) parked for 'ts-gke'" while steering_queue held 21.
+    ///
+    /// Defaults to 1 so the older constructors keep their meaning: one item,
+    /// one row.
+    pub queued_count: usize,
     /// When the target last REPORTED itself idle, if it is idle now. The idle
     /// branch below measures against this rather than against `queued_at`,
     /// because those are different clocks and only one of them matches what the
@@ -6288,6 +6301,7 @@ mod negative_controls {
             block_reason: Some("paused".into()),
             idle_since: None,
             target_selector_wait: false,
+            queued_count: 1,
         };
         let day = 86_400.0;
         let bound = 72.0 * 3600.0;
@@ -6318,12 +6332,22 @@ mod negative_controls {
             "an hour behind a paused lane is ordinary"
         );
 
-        // ONE verdict for 21 rows on one lane, carrying the count. The nag
-        // shape this file keeps re-learning about.
-        let many: Vec<QueuedItem> = (0..21).map(|_| parked("ts-gke", 9.1 * day)).collect();
-        let rs = queue_parked_behind_hold(&many, 0.0, bound);
-        assert_eq!(rs.len(), 1, "21 rows on one lane must not produce 21 findings");
-        assert!(rs[0].observed.contains("21 message(s)"), "the count belongs in the verdict: {}", rs[0].observed);
+        // THE COUNT COMES FROM THE LANE, NOT FROM THE ITEM LIST, and this is the
+        // assertion that was wrong first. The monitor groups the queue
+        // (`GROUP BY session`), so it builds ONE item per lane however deep the
+        // queue is — the shipped invariant said "1 message(s) parked for
+        // 'ts-gke'" while steering_queue held 21. The original test constructed
+        // 21 items itself, which the real caller never does, so it passed while
+        // production printed 1.
+        let deep = vec![QueuedItem { queued_count: 21, ..parked("ts-gke", 9.1 * day) }];
+        let rs = queue_parked_behind_hold(&deep, 0.0, bound);
+        assert_eq!(rs.len(), 1, "one lane must produce one finding");
+        assert!(
+            rs[0].observed.contains("21 message(s)"),
+            "the LANE's queue depth belongs in the verdict, not the number of items the \
+             caller happened to build: {}",
+            rs[0].observed
+        );
 
         // A REAPABLE reason is the other check's business, not this one's.
         let reapable = vec![QueuedItem {
@@ -6334,6 +6358,7 @@ mod negative_controls {
             block_reason: Some("archived".into()),
             idle_since: None,
             target_selector_wait: false,
+            queued_count: 1,
         }];
         assert!(
             queue_parked_behind_hold(&reapable, 0.0, bound).is_empty(),
@@ -6353,6 +6378,7 @@ mod negative_controls {
             block_reason: None,
             idle_since: None,
             target_selector_wait: false,
+            queued_count: 1,
         }];
         let rs = queue_has_live_consumer(&items, 7_560.0, 300.0, 3_600.0); // 2h6m, the real age
         assert!(rs.iter().any(|r| r.status == Status::Fail), "must detect the dead consumer");
@@ -6375,6 +6401,7 @@ mod negative_controls {
             block_reason: Some(reason.into()),
             idle_since: None,
             target_selector_wait: false,
+            queued_count: 1,
         };
         // Inside the reaper's deadline: sanctioned wait, pass.
         let rs = queue_has_live_consumer(&[mk("no-env-file", 6_000.0)], 7_560.0, 300.0, 3_600.0);
@@ -6445,6 +6472,7 @@ mod negative_controls {
             block_reason: Some("no-env-file".into()),
             idle_since: None,
             target_selector_wait: false,
+            queued_count: 1,
         }];
         // Post-AMUX-3473: the ghost still fails, but only PAST the reaper's
         // deadline (2h6m old vs a 1h deadline here), and the class names the
@@ -6651,6 +6679,7 @@ mod negative_controls {
             block_reason: None,
             idle_since: None,
             target_selector_wait: false, // pane genuinely shows a live turn, not a selector
+            queued_count: 1,
         }];
         let rs = queue_has_live_consumer(&items, 7_560.0, 300.0, 3_600.0);
         assert!(
@@ -6677,6 +6706,7 @@ mod negative_controls {
             block_reason: None,
             idle_since: None,
             target_selector_wait: true, // but the pane shows a live AskUserQuestion selector
+            queued_count: 1,
         }];
         // Inside the delivery loop's own tick window: not yet worth surfacing.
         let rs = queue_has_live_consumer(&items, 120.0, 300.0, 3_600.0);
@@ -6769,6 +6799,7 @@ mod negative_controls {
             block_reason: None,
             idle_since: Some(idle_since),
             target_selector_wait: false,
+            queued_count: 1,
         };
 
         // Just went idle after a long turn: the queue has had 5s to drain.
