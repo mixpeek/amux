@@ -2634,8 +2634,40 @@ function updateConnectionStatus() {
     el.setAttribute('aria-label', el.textContent + ' — connection details');
     if (el.id === 'conn-status') el.title = el.textContent + ' — connection details';
   });
+  // AMUX-4971: WHEN THERE IS NOTHING ELSE ON SCREEN, SAY WHY.
+  //
+  // Owner-reported: the iOS PWA over Tailscale showed the app background and
+  // nothing else. Its own beacon carried the cause — session-load-failure,
+  // reason network_error, status 0, had_data FALSE, recovered 2823ms later.
+  // The fetch failing is expected on a cold Tailscale connect; rendering it as
+  // a blank page is the defect.
+  //
+  // Everything needed already existed and was not wired: `_sessionReadNotice()`
+  // builds the message (including "Cannot reach the server... address or VPN")
+  // and a Retry, index.html carries `#session-read-notice`, and this line
+  // CLEARED it on recovery. Nothing ever filled it, so the notice only appeared
+  // inside the connection modal — which a user staring at an empty screen has
+  // no reason to open.
+  //
+  // Only when there is no data to show. With a worker list on screen the app
+  // is usable, the badge and modal already say the read failed, and an inline
+  // banner on every transient blip is the noise that gets banners ignored.
   const notice = document.getElementById('session-read-notice');
-  if (notice && notice.innerHTML) { notice.innerHTML = ''; notice._noticeHTML = ''; }
+  if (notice) {
+    // `sessions` is module-level and initialised to [], but this function can
+    // run during boot before that assignment is reached — which is precisely
+    // the cold-start path this whole fix is about. Guarding costs nothing and
+    // a throw here would blank the page it exists to explain.
+    const loaded = typeof sessions === 'undefined' ? [] : (sessions || []);
+    const nothingElseOnScreen = !!_sessionLoadError && !loaded.length;
+    const html = nothingElseOnScreen ? _sessionReadNotice() : '';
+    // Compare before writing so an expanded <details> survives an unchanged
+    // error, the same guard the modal below uses.
+    if (notice._noticeHTML !== html) {
+      notice.innerHTML = html;
+      notice._noticeHTML = html;
+    }
+  }
   // Keep an open error modal current, including successful Retry. Preserve
   // expanded details while the error is unchanged.
   const modalNotice = document.getElementById('conn-modal-read-notice');
@@ -11640,7 +11672,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1012';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1013';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

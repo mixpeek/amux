@@ -198,6 +198,44 @@ test('connection status follows reads while pending write errors remain visible 
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Access required');
 });
 
+test('a failed session read with nothing on screen says why instead of rendering blank', () => {
+  const {ctx, element} = fixture(['updateConnectionStatus']);
+  const connection = element('connection');
+  const notice = element('session-read-notice');
+  ctx.document.querySelectorAll = () => [connection];
+  Object.assign(ctx, {_boardReadError:'', _syncReadError:'', _liveSSE:false, _writeError:'',
+    _recordConnState() {}, sessions: [], offlineQueue: [], drafts: [],
+    _sessionReadNotice: () => '<div role="alert">Cannot reach the server<button>Retry connection</button></div>'});
+
+  // THE OWNER-REPORTED SHAPE: status 0 (the fetch never got a response) and no
+  // cached workers, which is what rendered an empty page on iOS over Tailscale.
+  ctx._sessionLoadError = {status:0, reason:'network_error'};
+  ctx.sessions = [];
+  ctx.updateConnectionStatus();
+  assert.match(notice.innerHTML, /Cannot reach the server/,
+    'an empty screen must say why; this is the black screen the owner reported');
+  assert.match(notice.innerHTML, /Retry/, 'and offer the action that fixes it');
+
+  // RECOVERY CLEARS IT BY ITSELF. The real incident recovered 2823ms later, so
+  // a banner needing a dismiss would outlive the fault it describes.
+  ctx._sessionLoadError = null;
+  ctx.sessions = [{name:'amux'}];
+  ctx.updateConnectionStatus();
+  assert.equal(notice.innerHTML, '', 'a recovered read leaves nothing behind');
+
+  // AND A HEALTHY LOAD RENDERS NOTHING EXTRA.
+  ctx.updateConnectionStatus();
+  assert.equal(notice.innerHTML, '', 'no permanent banner on the happy path');
+
+  // THE CONTROL, and the half that stops this becoming noise: the SAME failure
+  // with a worker list on screen is not blank, so the badge and modal carry it
+  // and the inline banner stays out of the way.
+  ctx._sessionLoadError = {status:500, reason:'http_error'};
+  ctx.sessions = [{name:'amux'}];
+  ctx.updateConnectionStatus();
+  assert.equal(notice.innerHTML, '', 'with data on screen the inline banner must not fire');
+});
+
 function sharedStorage() {
   const flights = new Map();
   return {stored: new Map(), locks: {request(name, work) {
