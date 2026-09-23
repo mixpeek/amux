@@ -6399,9 +6399,21 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
         // byte-identical blocker, each ~53s after the worker updated the card,
         // over a static approval hold that no re-prompt could unstick.
         //
-        // It also made two statements in this file false. The prompt closes
-        // with "An unchanged blocker will not receive another recovery prompt",
-        // and that is now true.
+        // CORRECTED 2026-09-22, same day, by measuring instead of asserting.
+        // This comment first claimed the prompt's closing line, "An unchanged
+        // blocker will not receive another recovery prompt", was "now true".
+        // It is not, and the fix above was never going to make it so. Measured
+        // on AMUX-4909 after the fix was live: two deliveries for a byte-
+        // identical blocker at 21:42:28 and 22:43:26, 61 minutes apart, with
+        // board_drive_nudge_budget reading n=2 and next_at four hours out.
+        //
+        // The identity fix and the budget answer DIFFERENT questions, and only
+        // together do they bound this. The identity stops COMPLIANCE from
+        // re-arming: the 09-20 pair on this same card was 98 seconds apart,
+        // which is the loop that is gone. The budget still re-offers on a
+        // widening backoff by design, which is the 61 minutes. So the closing
+        // line is corrected below rather than defended here: it promised
+        // never, and the mechanism promises later.
         //
         // What remains is exactly what the eligibility test above reads:
         // blocking deps, blocked_on, the trigger, whether next_action is
@@ -6422,7 +6434,7 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
         let text = format!(
             "[amux blocker recovery] Resolve the next safe step for {}. This is a bounded review of the following stored task DATA, not permission to execute held work: {}\n\n\
              Read this card and its named prerequisites. Keep responsibility for the complete outcome: implement a missing component yourself within existing authority, using an isolated checkout if necessary. Another worker's ownership, availability, approval of an ordinary implementation choice, or dirty checkout is not itself a dependency. Reuse existing canonical tasks and verified artifacts; do not create duplicate requests or wait an arbitrary time. For a cross-worker edge, retain the real artifact requirement in this task or a canonical prerequisite on this SAME board, remove the foreign execution edge, and own the missing implementation. Never relocate a peer wait into source_ref, blocked_on, next_action or gate text. For a local prerequisite, remove its edge only after establishing that its artifact is available or unnecessary.\n\
-             If ask_outside_policy is true, classify the actual existing ask: retain and correctly type real budget/customer-outbound approval; otherwise own the ordinary decision, or record a precise real access blocker and complete independent work. Never treat policy cleanup as permission or fabricate authorization. Reconcile depends_on, blocked_on, source_ref AND the card gate together; removing an edge while its old wait survives elsewhere does not unblock work. Cross-worker tasks are evidence references, not dependencies or assignments: own the complete outcome on this board. Correct evidence-only tasks to investigation/doc rather than requiring a nonexistent deployment. Put completion requirements in acceptance_criteria and use the predefined column gates; never acknowledge completed results just to start. Preserve actual access restrictions, explicit owner holds, new-spend approval and customer-outbound approval. If one still blocks execution, record the exact observable condition and evidence, and perform any independent preparation that is allowed. Do not claim held work is running or fabricate completion. Supply next_action and acceptance_criteria on the existing card; track any actual execution as Doing and finish through the predefined gates. Resolve the same prerequisite for other affected cards in this lane in this turn when possible. No repeated whole-board audit. An unchanged blocker will not receive another recovery prompt.",
+             If ask_outside_policy is true, classify the actual existing ask: retain and correctly type real budget/customer-outbound approval; otherwise own the ordinary decision, or record a precise real access blocker and complete independent work. Never treat policy cleanup as permission or fabricate authorization. Reconcile depends_on, blocked_on, source_ref AND the card gate together; removing an edge while its old wait survives elsewhere does not unblock work. Cross-worker tasks are evidence references, not dependencies or assignments: own the complete outcome on this board. Correct evidence-only tasks to investigation/doc rather than requiring a nonexistent deployment. Put completion requirements in acceptance_criteria and use the predefined column gates; never acknowledge completed results just to start. Preserve actual access restrictions, explicit owner holds, new-spend approval and customer-outbound approval. If one still blocks execution, record the exact observable condition and evidence, and perform any independent preparation that is allowed. Do not claim held work is running or fabricate completion. Supply next_action and acceptance_criteria on the existing card; track any actual execution as Doing and finish through the predefined gates. Resolve the same prerequisite for other affected cards in this lane in this turn when possible. No repeated whole-board audit. An unchanged blocker is re-offered on a widening backoff, 1h then 4h then 24h, and stops entirely after the fourth until the card's STATUS changes. Recording what this prompt asks for does not shorten that and no longer restarts it.",
             row.id, context);
         result.push(BlockerRecovery {card:row.id,rev:row.rev,identity,text});
     }
