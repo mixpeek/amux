@@ -2448,7 +2448,27 @@ fn detect_latency_with_scan_cap(
         /// threshold from cards that carry this line, not from this sample.
         local_n: u64,
         remote_n: u64,
+        /// AMUX-4918: when each offending row ARRIVED, capped.
+        ///
+        /// The rollup groups N slow targets and asserts one fault, and its
+        /// client_split evidence then argued the opposite, throwing out 5 of 6
+        /// endpoints. Both cannot be right. client_split aggregates over the
+        /// WHOLE window and answers "which client population sees this target
+        /// slow more often", which is not the question "did these targets go
+        /// slow TOGETHER". An off-box client that polls one path harder during
+        /// a stall skews that ratio toward "client network" for a path that was
+        /// genuinely server-stalled.
+        ///
+        /// Temporal co-occurrence across DISTINCT paths is the discriminator,
+        /// and it needs arrival times rather than counts. Two clients' networks
+        /// cannot go slow on different paths in the same few seconds.
+        ///
+        /// Capped: a busy window carries hundreds of rows per target, and this
+        /// lives only for the length of one rollup.
+        ts_samples: Vec<f64>,
     }
+    /// Enough to find bursts without holding a window's worth of rows.
+    const OUTLIER_TS_SAMPLE_CAP: usize = 256;
     /// Outlier RATE per client population, which is the statistic that
     /// separates a server fault from a reporting client's bad network.
     ///
@@ -2470,29 +2490,109 @@ fn detect_latency_with_scan_cap(
             return "not measured: no rows in this window carried a client_ip (AMUX-4818)."
                 .to_string();
         }
-        let pct = |o: u64, t: u64| if t == 0 { None } else { Some(o as f64 * 100.0 / t as f64) };
-        match (pct(lo, lt), pct(ro, rt)) {
-            (Some(l), Some(r)) if l > 0.0 => format!(
-                "on-box {l:.2}% of requests slow ({lo}/{lt}) | off-box {r:.2}% ({ro}/{rt}) | \
-                 off-box is {:.1}x more likely. Near 1x means the endpoint is slow for EVERYONE, \
-                 which is a server fault. Well above 1x means the time is the reporting client's \
-                 network rather than this server's work (AMUX-4818).",
-                r / l
-            ),
-            (Some(l), Some(r)) => format!(
-                "on-box {l:.2}% of requests slow ({lo}/{lt}) | off-box {r:.2}% ({ro}/{rt}). No \
-                 on-box outliers, so the ratio is undefined rather than infinite (AMUX-4818)."
-            ),
-            (Some(l), None) => format!(
-                "on-box {l:.2}% of requests slow ({lo}/{lt}) | no off-box requests in this \
-                 window, so there is nothing to compare against (AMUX-4818)."
-            ),
-            (None, Some(r)) => format!(
-                "off-box {r:.2}% of requests slow ({ro}/{rt}) | no on-box requests in this \
-                 window, so there is no local baseline (AMUX-4818)."
-            ),
-            (None, None) => "not measured (AMUX-4818).".to_string(),
+        // A RATE FROM A HANDFUL OF ROWS READS LIKE A VERDICT AND CARRIES NONE
+        // (AMUX-4918). This printed "/api/lookup/bulk: on-box 100.00% of
+        // requests slow (1/1)", which looks like a total outage and is one
+        // request. Below this denominator the raw count is printed and no rate
+        // is computed.
+        // Deliberately LOW. The reported case was "(1/1)", a percentage from a
+        // single request that reads like a total outage. Five is the smallest
+        // denominator where a rate is not simply an artifact of one or two
+        // rows, and it is chosen not to silently gut this split on the modest
+        // traffic real cards carry. This file already declines to guess a
+        // suppression threshold from one sample (AMUX-4818); the same applies
+        // here, so raise it from cards that carry this line rather than now.
+        const MIN_SPLIT_DENOM: u64 = 5;
+        let share = |o: u64, t: u64| -> String {
+            if t == 0 {
+                "no requests".to_string()
+            } else if t < MIN_SPLIT_DENOM {
+                format!("{o}/{t} (too few to rate, under {MIN_SPLIT_DENOM})")
+            } else {
+                format!("{:.2}% ({o}/{t})", o as f64 * 100.0 / t as f64)
+            }
+        };
+        let head = format!("on-box {} | off-box {}", share(lo, lt), share(ro, rt));
+        let rateable = lt >= MIN_SPLIT_DENOM && rt >= MIN_SPLIT_DENOM;
+        let l = if lt == 0 { 0.0 } else { lo as f64 * 100.0 / lt as f64 };
+        let r = if rt == 0 { 0.0 } else { ro as f64 * 100.0 / rt as f64 };
+        if !rateable {
+            return format!(
+                "{head}. Not rated: a ratio needs at least {MIN_SPLIT_DENOM} requests on each \
+                 side (AMUX-4918)."
+            );
         }
+        if l <= 0.0 {
+            return format!(
+                "{head}. No on-box outliers, so the ratio is undefined rather than infinite \
+                 (AMUX-4818)."
+            );
+        }
+        // SCOPED TO THE QUESTION IT CAN ANSWER (AMUX-4918). This used to close
+        // with "Near 1x means the endpoint is slow for EVERYONE ... Well above
+        // 1x means the time is the reporting client's network", and a reader
+        // applying that rule to a rollup's own numbers throws out most of the
+        // targets it just grouped. The rule is not wrong about one endpoint
+        // over a whole window; it is answering a DIFFERENT question from the
+        // one the grouping asks, and it cannot see time at all.
+        format!(
+            "{head} | off-box is {:.1}x more likely. That compares how OFTEN each client \
+             population sees THIS target slow across the whole window. It cannot say whether \
+             targets went slow TOGETHER, which is what the grouping claims, and an off-box \
+             client polling one path harder during a stall skews it toward \"client network\" \
+             for a path that was genuinely server-stalled. Read co_occurrence for that \
+             (AMUX-4818, AMUX-4918).",
+            r / l
+        )
+    }
+
+    /// AMUX-4918. DID THESE TARGETS GO SLOW TOGETHER?
+    ///
+    /// The rollup's claim is "one fault, not N tasks", and until now its only
+    /// evidence argued against that claim. This is the evidence FOR it: sort
+    /// every offending row across all targets by arrival, cut bursts wherever
+    /// the gap exceeds `gap_s`, and count the bursts that touched MORE THAN ONE
+    /// distinct target. Two clients' networks cannot go slow on different paths
+    /// within seconds of each other, so a burst spanning distinct paths is a
+    /// server-side stall.
+    ///
+    /// Measured by hand over 24h when this was written: 315 rows at or over
+    /// 10s out of 307,983 (0.10%), 150 bursts at a 90s gap, and 51 of those 150
+    /// touched more than one path, overwhelmingly /api/board and /api/sessions
+    /// within seconds of each other.
+    ///
+    /// Same table, same window, no new collection.
+    fn describe_co_occurrence(rows: &[(&str, f64)], gap_s: f64) -> String {
+        if rows.is_empty() {
+            return "not measured: no offending row carried an arrival time (AMUX-4918)."
+                .to_string();
+        }
+        let mut rows: Vec<(&str, f64)> = rows.to_vec();
+        rows.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let targets: std::collections::BTreeSet<&str> = rows.iter().map(|(t, _)| *t).collect();
+        let (mut bursts, mut shared, mut i) = (0usize, 0usize, 0usize);
+        while i < rows.len() {
+            let mut j = i + 1;
+            while j < rows.len() && rows[j].1 - rows[j - 1].1 <= gap_s {
+                j += 1;
+            }
+            let distinct: std::collections::BTreeSet<&str> =
+                rows[i..j].iter().map(|(t, _)| *t).collect();
+            bursts += 1;
+            if distinct.len() > 1 {
+                shared += 1;
+            }
+            i = j;
+        }
+        format!(
+            "{shared} of {bursts} burst(s) at a {gap_s:.0}s gap touched MORE THAN ONE distinct \
+             target, over {} offending row(s) across {} target(s). Two clients' networks cannot \
+             go slow on different paths within seconds, so a shared burst is a server-side stall \
+             and supports grouping these as one fault. Zero shared bursts would argue the \
+             opposite, and this line says so either way (AMUX-4918).",
+            rows.len(),
+            targets.len()
+        )
     }
     let mut seen: BTreeMap<(String, String), OutlierGroup> = BTreeMap::new();
     // AF-175: THIS shape is where the reported incident came from, and it had no
@@ -2631,8 +2731,14 @@ fn detect_latency_with_scan_cap(
                         worst_load1: None,
                         local_n: 0,
                         remote_n: 0,
+                        ts_samples: Vec::new(),
                     });
                 e.n += 1;
+                // AMUX-4918: arrival times, so the rollup can show whether its
+                // targets went slow TOGETHER rather than merely often.
+                if e.ts_samples.len() < OUTLIER_TS_SAMPLE_CAP {
+                    e.ts_samples.push(ts);
+                }
                 if ms > row_budget {
                     e.n_over_budget += 1;
                 }
@@ -2879,11 +2985,26 @@ fn detect_latency_with_scan_cap(
                         })
                         .collect();
                     format!(
-                        "{}\n  A target whose off-box multiple is near 1x is slow for everyone and \
-                         belongs to this fault. One well above 1x is probably a reporting client's \
-                         network and not part of it (AMUX-4818).",
+                        "{}\n  These are per-target rates over the whole window. They cannot \
+                         confirm or refute the grouping on their own, which is what they were \
+                         previously read as doing; co_occurrence answers that (AMUX-4918).",
                         rows.join("\n  ")
                     )
+                }),
+                // AMUX-4918. THE EVIDENCE THAT ACTUALLY SUPPORTS THE GROUPING.
+                // The card says "one fault, not N tasks" and then printed only
+                // client_split, whose published rule, applied to its own
+                // numbers, threw out 5 of 6 endpoints. A reader following the
+                // rule reached the wrong answer. This line answers the question
+                // the grouping actually asks.
+                ("co_occurrence".into(), {
+                    let rows: Vec<(&str, f64)> = candidates
+                        .iter()
+                        .flat_map(|((_, t), g)| {
+                            g.ts_samples.iter().map(move |ts| (t.as_str(), *ts))
+                        })
+                        .collect();
+                    describe_co_occurrence(&rows, 90.0)
                 }),
                 ("host_load".into(), describe_window_load(&mut window_load)),
                 ("rollup_threshold".into(), format!(
@@ -2928,6 +3049,12 @@ fn detect_latency_with_scan_cap(
             worst_load1,
             local_n,
             remote_n,
+            // AMUX-4918: co-occurrence is a question about MULTIPLE targets
+            // going slow together, and this is the single-endpoint path, which
+            // has one target by construction. Bound and dropped deliberately
+            // rather than hidden behind `..`, so the next field added still
+            // forces a decision here instead of being silently ignored.
+            ts_samples: _,
         },
     ) in seen
     {
@@ -12732,6 +12859,80 @@ mod tests {
     /// sentence deliberately does not spell the whole string: an earlier
     /// version of this doc did, which put a second copy in the file and made
     /// `mutate.sh` refuse its own instructions as an ambiguous revert.
+    /// AMUX-4918. THE ROLLUP'S EVIDENCE MUST SUPPORT ITS OWN GROUPING.
+    ///
+    /// The rollup groups N slow targets and says "one fault, not N tasks".
+    /// Its only evidence used to be client_split, whose published rule, applied
+    /// to the rollup's own numbers, threw out 5 of 6 endpoints. A reader who
+    /// trusted it reached the opposite conclusion from the card.
+    ///
+    /// The fixture is the shape that matters: three distinct paths going slow
+    /// WITHIN SECONDS of each other. Two clients' networks cannot do that on
+    /// different paths, so it is a server-side stall and the grouping is right.
+    #[tokio::test]
+    async fn the_rollup_shows_its_targets_went_slow_together() {
+        let (st, _d) = state();
+        let now = unix_now();
+        fn log_at(st: &AppState, ts: f64, path: &str, ms: f64) {
+            let pa = path.to_string();
+            st.store
+                .write(move |conn| {
+                    conn.execute(
+                        "INSERT INTO _amux_request_log (ts, method, path, family, status, \
+                         latency_ms, client_ip, user_agent, amux_session, worker, answered_by, \
+                         error_body) VALUES (?1,'POST',?2,?2,200,?3,'127.0.0.1','ua','','','native','')",
+                        rusqlite::params![ts, pa, ms],
+                    )?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                })
+                .unwrap();
+        }
+        // Two bursts. Inside each, three DISTINCT paths stall within seconds.
+        for (base, k) in [(600.0_f64, 0), (300.0_f64, 1)] {
+            let _ = k;
+            for (off, path) in [(0.0, "/api/alpha"), (2.0, "/api/beta"), (4.0, "/api/gamma")] {
+                for rep in 0..6 {
+                    log_at(&st, now - base + off + rep as f64 * 0.1, path, 20_000.0);
+                }
+            }
+        }
+        let (found, _sup) = detect_latency_at(&st.store.read().unwrap(), now, None);
+        let rollup = found
+            .iter()
+            .find(|f| f.evidence.iter().any(|(k, _)| k == "co_occurrence"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no rollup carried co_occurrence evidence: {:?}",
+                    found.iter().map(|f| f.signature.clone()).collect::<Vec<_>>()
+                )
+            });
+        let co = rollup
+            .evidence
+            .iter()
+            .find(|(k, _)| k == "co_occurrence")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert!(
+            co.contains("touched MORE THAN ONE distinct target"),
+            "co_occurrence must state the shared-burst count: {co}"
+        );
+        assert!(
+            !co.starts_with("0 of "),
+            "three paths stalling within seconds of each other must register as a SHARED burst, \
+             which is the evidence the grouping rests on: {co}"
+        );
+        // The corrected client_split must no longer tell the reader to discard
+        // targets by their off-box multiple, which is what contradicted the
+        // grouping this same card asserts.
+        if let Some((_, split)) = rollup.evidence.iter().find(|(k, _)| k == "client_split") {
+            assert!(
+                !split.contains("belongs to this fault"),
+                "client_split must not re-state a rule that throws out the rollup's own \
+                 targets: {split}"
+            );
+        }
+    }
+
     #[tokio::test]
     /// AMUX-4818: the outlier card must say whether the slowness is the
     /// SERVER's or the reporting CLIENT's. Those are different faults and the
