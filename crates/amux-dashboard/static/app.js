@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1009';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1010';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13360,6 +13360,9 @@ let peekSelecting = false;
 let _peekScrollLocked = false;
 let _peekBufferedOutput = false;
 let _peekFollowBottom = false;
+// Did a SELECTION cause the current pause? Only that pause may be undone when
+// the selection clears; a reader who dragged toward history keeps their pause.
+let _peekPausedBySelection = false;
 let _peekLastScrollTop = 0;
 let _peekBottomResize = null, _peekBottomMutation = null, _peekBottomFrame = 0;
 
@@ -13407,6 +13410,10 @@ function _peekStopFollowing(e) {
     });
   }
   _peekFollowBottom = false;
+  // Any relinquish that is not the selection path owns the pause from here on.
+  // peekCheckSelection re-sets this immediately after calling us, so only a
+  // selection-caused pause stays undoable.
+  _peekPausedBySelection = false;
 }
 
 
@@ -24399,6 +24406,9 @@ function peekCheckSelection(event) {
   clearTimeout(peekSelectTimer);
   if (_peekHasSelection()) {
     _peekStopFollowing();
+    // AFTER the stop, which clears this: the pause we are allowed to undo is
+    // only the one a SELECTION caused.
+    _peekPausedBySelection = true;
     peekSelecting = true;
     peekSelectTimer = setTimeout(peekCheckSelection, 500);
   } else {
@@ -24408,14 +24418,20 @@ function peekCheckSelection(event) {
     }
     // A CLEARED SELECTION GIVES FOLLOWING BACK (AMUX-4802). Selecting pauses
     // following so the text cannot move under the cursor, and that pause had
-    // no way out: copy one line and the view stopped tracking for good. Only
-    // when the reader is still AT THE BOTTOM, so clearing a selection made up
-    // in history does not yank them forward to the newest output.
+    // no way out: copy one line and the view stopped tracking for good.
+    //
+    // GATED ON _peekPausedBySelection, NOT on "nothing is selected now".
+    // This runs on touchend too, and peekSelecting is set by touchstart, so
+    // the looser condition gave following back at the END of the very gesture
+    // that relinquished it: a downward drag paused on touchmove and resumed on
+    // touchend, because it ended at the bottom with no selection. Only undo
+    // the pause this function itself caused.
     const _selBody = document.getElementById('peek-body');
-    if (peekSelecting && _selBody && _isScrolledToBottom(_selBody)) {
+    if (_peekPausedBySelection && _selBody && _isScrolledToBottom(_selBody)) {
       _peekScrollLocked = false;
       _peekFollowBottom = true;
     }
+    _peekPausedBySelection = false;
     peekSelecting = false;
   }
 }
