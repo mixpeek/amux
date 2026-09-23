@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 class Deferred(Exception):
@@ -31,6 +32,57 @@ def overlaps(left, right):
 
 def lease_path(target):
     return target.parent / ('.' + target.name + '.reclaim.lock')
+
+
+# A DEFERRAL STREAK ON THE SAME CONDITION IS A WEDGE, NOT A PAUSE (AMUX-4944).
+#
+# The deferral logs with measured:true and a real pid, so it reads as the guard
+# working. Nothing counted CONSECUTIVE deferrals, so 243 identical refusals
+# looked exactly like one and the fleet's deploys were dark for days before
+# anyone asked why their own work was not live.
+WEDGE_STREAK = int(os.environ.get('AMUX_CARGO_GUARD_WEDGE_STREAK', '10'))
+
+
+def streak_path(target):
+    return target.parent / ('.' + target.name + '.reclaim.streak')
+
+
+def bump_streak(targets, reason, now=None):
+    """Consecutive deferrals for the SAME reason, as a count.
+
+    Keyed on the reason text, so a DIFFERENT blocker resets it: a new pid is a
+    new condition, and calling that a continuing wedge would be the same class
+    of lie as not counting at all. Both fields are computed from stored state;
+    neither can disagree with the run that produced it.
+    """
+    if not targets:
+        return None
+    path = streak_path(sorted(targets)[0])
+    now = int(time.time()) if now is None else now
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, ValueError):
+        previous = {}
+    if previous.get('reason') == reason:
+        count = int(previous.get('count', 0)) + 1
+        since = int(previous.get('since', now))
+    else:
+        count, since = 1, now
+    try:
+        path.write_text(json.dumps({'reason': reason, 'count': count, 'since': since}))
+    except OSError:
+        pass  # an unwritable streak file must never fail the reclaim itself
+    return {'deferral_streak': count, 'streak_since': since,
+            'wedged': count >= WEDGE_STREAK}
+
+
+def clear_streak(targets):
+    """A reclaim that got through ends the streak: the condition cleared."""
+    for target in targets:
+        try:
+            streak_path(target).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def open_lock(path, shared=False, wait=False):
@@ -100,25 +152,80 @@ def process_executable(pid, command, *, linux=None, proc_root=Path('/proc'),
     return executable
 
 
+# A BUILD EXITS; A DAEMON DOES NOT (AMUX-4944).
+#
+# Anything older than this that merely LIVES under a target dir is not treated
+# as an in-flight build. Compilers are exempt by name below: a long compile is
+# still a compile. Deliberately generous — the longest build recorded on this
+# hardware is 26m48s (CLAUDE.md) and the CI lib suite is ~7m — so no real build
+# is near it, while the process that deadlocked the fleet had been up for days.
+#
+# RESIDUAL EXPOSURE, stated rather than hidden: an UNWRAPPED build older than
+# this would no longer defer cleanup. Anything started through `guard run`
+# holds a shared lease fd that `exclusive()` blocks on regardless of age, so
+# the exposure is only a bare `cargo` invocation running over four hours.
+STALE_BUILD_AGE_S = int(os.environ.get('AMUX_CARGO_GUARD_MAX_BUILD_AGE_S', '14400'))
+
+
+def parse_etime(text):
+    """`ps -o etime` as seconds, or None when it does not parse.
+
+    `[[DD-]HH:]MM:SS`, the one format macOS and procps agree on — `etimes`
+    (seconds) is Linux-only and macOS `ps` rejects the keyword outright.
+
+    Pure and separate from the probe so the age rule can be pinned without
+    spawning a process that has been running for four hours.
+    """
+    days = 0
+    text = text.strip()
+    if '-' in text:
+        head, _, text = text.partition('-')
+        if not head.isdigit():
+            return None
+        days = int(head)
+    parts = text.split(':')
+    if not (2 <= len(parts) <= 3) or not all(p.isdigit() for p in parts):
+        return None
+    parts = [int(p) for p in parts]
+    hours, minutes, seconds = ([0] + parts) if len(parts) == 2 else parts
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
 def active_processes(targets):
     try:
-        output = subprocess.run(['ps', '-A', '-ww', '-o', 'pid=,comm='],
+        output = subprocess.run(['ps', '-A', '-ww', '-o', 'pid=,etime=,comm='],
                                 capture_output=True, text=True, check=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError) as error:
         raise Deferred('process probe unmeasured: ' + str(error)) from error
-    rows = [line.split(None, 1) for line in output.splitlines() if line.strip()]
-    if not rows or any(len(row) != 2 or not row[0].isdigit() for row in rows):
+    rows = [line.split(None, 2) for line in output.splitlines() if line.strip()]
+    if not rows or any(len(row) != 3 or not row[0].isdigit() for row in rows):
         raise Deferred('process probe unmeasured: empty or malformed ps output')
     active = []
-    for pid, command in rows:
+    stale = []
+    for pid, etime, command in rows:
         # Linux ps comm is truncated. Resolve same-user executable paths so a
         # directly launched test binary is protected after its Cargo parent exits.
         executable = process_executable(pid, command)
         if executable is None:
             continue
-        if executable.name in ('cargo', 'rustc', 'rustdoc', 'clippy-driver') or any(
-                executable == root or root in executable.parents for root in targets):
+        if executable.name in ('cargo', 'rustc', 'rustdoc', 'clippy-driver'):
             active.append(pid)
+            continue
+        if any(executable == root or root in executable.parents for root in targets):
+            age = parse_etime(etime)
+            # FAIL CLOSED on an unparseable age: ATE-92 made this refuse rather
+            # than delete a live build, and an unmeasured age is not evidence
+            # that the process is stale.
+            if age is None or age < STALE_BUILD_AGE_S:
+                active.append(pid)
+            else:
+                stale.append((pid, age, executable))
+    if stale:
+        # SURFACED, not silently dropped: this is the judgement that unblocks
+        # the reclaim, so it has to be auditable in the builder log.
+        print('cargo_guard_stale_under_target: not treating as in-flight build(s) '
+              + ', '.join('pid %s age %ds %s' % (p, a, e) for p, a, e in stale),
+              file=sys.stderr)
     return active, len(rows)
 
 
@@ -233,10 +340,13 @@ def main():
         result = mutate(args.action, Path(args.path),
                         Path(args.destination) if args.destination else None, targets,
                         [Path(p).resolve() for p in args.protected_path], args.dry_run, probe)
+        clear_streak(targets)
         print(json.dumps(result))
     except (Deferred, OSError) as error:
-        print(json.dumps({'verdict': 'cargo_reclaim_deferred', 'measured': getattr(error, 'measured', False),
-                          'n_considered': getattr(error, 'considered', 0), 'reason': str(error)}))
+        payload = {'verdict': 'cargo_reclaim_deferred', 'measured': getattr(error, 'measured', False),
+                   'n_considered': getattr(error, 'considered', 0), 'reason': str(error)}
+        payload.update(bump_streak(targets, str(error)) or {})
+        print(json.dumps(payload))
         return 75
     return 0
 

@@ -217,6 +217,105 @@ class CargoReclaimTests(unittest.TestCase):
                 '1178', 'orphan-test-012', linux=True, proc_root=self.base / 'proc',
                 readlink=denied, which=lambda _: None)
 
+    def test_etime_parses_every_shape_ps_emits_and_refuses_the_rest(self):
+        """AMUX-4944. The age rule is only as good as the parse under it.
+
+        `[[DD-]HH:]MM:SS` is the one format macOS and procps agree on; `etimes`
+        is Linux-only and macOS `ps` rejects the keyword outright, which is why
+        this parses rather than reads seconds.
+        """
+        self.assertEqual(guard.parse_etime('00:07'), 7)
+        self.assertEqual(guard.parse_etime('30:23'), 30 * 60 + 23)
+        self.assertEqual(guard.parse_etime('04:47:38'), 4 * 3600 + 47 * 60 + 38)
+        self.assertEqual(guard.parse_etime('3-04:47:38'), 3 * 86400 + 4 * 3600 + 47 * 60 + 38)
+        self.assertEqual(guard.parse_etime('  30:23  '), 30 * 60 + 23)
+        # Unparseable must be None, NOT zero: the probe fails CLOSED on None and
+        # would treat a zero as a brand-new build. Opposite outcomes.
+        for junk in ('', '-', 'nope', '1:2:3:4', 'aa:bb', '-04:47:38', '30'):
+            self.assertIsNone(guard.parse_etime(junk), junk)
+
+    def test_process_age_tells_a_daemon_from_an_in_flight_build(self):
+        """AMUX-4944. The same real process, two bounds, opposite verdicts.
+
+        pid 13664 was an orphaned `debug/amux-server` from a PAUSED lane. It
+        deferred the builder's cleanup on every tick (243 recorded deferrals),
+        debug/ grew 65.5 -> 72.0 GB, the budget then refused every build, and
+        no commit deployed fleet-wide for days. The predicate could not express
+        the difference between a build using the directory and a daemon that
+        happens to live in it.
+        """
+        binary = self.artifacts / 'daemon-0123456789abcdef'
+        source = self.base / 'daemon.c'
+        source.write_text('#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
+        subprocess.run(['cc', str(source), '-o', str(binary)], check=True, capture_output=True)
+        proc = subprocess.Popen([str(binary)])
+        try:
+            # CONTROL, and the behaviour ATE-92 exists to protect: a brand-new
+            # binary under the target IS an in-flight build and still defers.
+            active, _ = self.measured_active([self.root])
+            self.assertIn(str(proc.pid), active)
+
+            original = guard.STALE_BUILD_AGE_S
+            guard.STALE_BUILD_AGE_S = 0
+            self.addCleanup(setattr, guard, 'STALE_BUILD_AGE_S', original)
+            aged, _ = self.measured_active([self.root])
+            self.assertNotIn(str(proc.pid), aged,
+                             'past the build-age bound this is a daemon, not an in-flight build')
+            # ...and the reclaim it had been deadlocking now gets through.
+            self.mutate(probe=guard.active_processes)
+            self.assertFalse(self.marker.exists())
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_a_compiler_is_exempt_by_name_however_old_it_is(self):
+        """A long compile is still a compile, so age must not reach it.
+
+        Without this, the age bound would silently become a licence to delete
+        the target dir out from under a genuinely slow build, which is the
+        failure ATE-92 made this guard refuse in the first place.
+        """
+        binary = self.artifacts / 'cargo'
+        source = self.base / 'slow.c'
+        source.write_text('#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
+        subprocess.run(['cc', str(source), '-o', str(binary)], check=True, capture_output=True)
+        proc = subprocess.Popen([str(binary)])
+        try:
+            original = guard.STALE_BUILD_AGE_S
+            guard.STALE_BUILD_AGE_S = 0
+            self.addCleanup(setattr, guard, 'STALE_BUILD_AGE_S', original)
+            active, _ = self.measured_active([self.root])
+            self.assertIn(str(proc.pid), active,
+                          'a compiler is active by NAME; the age bound must not reach it')
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_consecutive_deferrals_on_one_condition_count_up_and_reset_on_a_new_one(self):
+        """AMUX-4944. 243 identical refusals logged exactly like one.
+
+        The deferral carries measured:true and a real pid, so it reads as the
+        guard working. Without a count, a wedge and a pause are the same line.
+        """
+        first = guard.bump_streak([self.root], 'active cargo/rustc/test process(es): 13664')
+        self.assertEqual(first['deferral_streak'], 1)
+        self.assertFalse(first['wedged'])
+
+        for expected in range(2, guard.WEDGE_STREAK + 1):
+            latest = guard.bump_streak([self.root], 'active cargo/rustc/test process(es): 13664')
+            self.assertEqual(latest['deferral_streak'], expected)
+        self.assertTrue(latest['wedged'], 'a run of identical refusals must declare itself a wedge')
+        self.assertEqual(latest['streak_since'], first['streak_since'], 'the streak keeps its start')
+
+        # A DIFFERENT blocker is a different condition, not a continuing wedge.
+        moved = guard.bump_streak([self.root], 'active cargo/rustc/test process(es): 99999')
+        self.assertEqual(moved['deferral_streak'], 1)
+        self.assertFalse(moved['wedged'])
+
+        # A reclaim that got through ends it.
+        guard.clear_streak([self.root])
+        self.assertEqual(guard.bump_streak([self.root], 'anything')['deferral_streak'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

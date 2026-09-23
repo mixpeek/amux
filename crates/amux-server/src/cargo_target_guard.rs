@@ -33,17 +33,31 @@ fn mutate(action: &str, path: &Path, destination: Option<&Path>, originals: &[St
         command.arg("--protected-path").arg(original);
     }
     let output = command.output().map_err(|e| format!("Cargo reclaim guard unmeasured: {e}"));
+    // THE STREAK HAS TO REACH THE SERVER LOG, NOT JUST THE GUARD'S STDOUT
+    // (AMUX-4944). A single deferral is routine; 243 consecutive ones on the
+    // same condition is the fleet's deploy pipeline wedged, and the two logged
+    // identically. A sweep reads this file, so the count has to be in it.
+    let mut streak: Option<(i64, bool)> = None;
     let result = output.and_then(|out| {
         let verdict: serde_json::Value = serde_json::from_slice(&out.stdout)
             .map_err(|e| format!("Cargo reclaim guard returned no valid verdict: {e}"))?;
         if !out.status.success() {
+            streak = Some((
+                verdict["deferral_streak"].as_i64().unwrap_or(0),
+                verdict["wedged"].as_bool().unwrap_or(false),
+            ));
             return Err(verdict["reason"].as_str().unwrap_or("Cargo reclaim guard refused").to_string());
         }
         tracing::info!(path = %path.display(), action, verdict = %verdict, "cargo_reclaim_result");
         Ok(())
     });
     if let Err(reason) = &result {
-        tracing::warn!(path = %path.display(), action, reason, "cargo_reclaim_deferred");
+        // OPTION, not a defaulted 0: this path is also reached when the guard
+        // produced no verdict at all, and a count of 0 there would read as
+        // "measured, nothing wrong" for a probe that never ran (ethos rule 4).
+        let (deferral_streak, wedged) = streak.map_or((None, None), |(n, w)| (Some(n), Some(w)));
+        tracing::warn!(path = %path.display(), action, reason,
+                       ?deferral_streak, ?wedged, "cargo_reclaim_deferred");
     }
     result
 }
