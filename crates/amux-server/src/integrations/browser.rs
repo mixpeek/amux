@@ -921,7 +921,35 @@ fn write_running_file(home: &Path, map: &std::collections::HashMap<String, serde
     let _ = std::fs::write(running_state_path(home), serde_json::Value::Object(obj).to_string());
 }
 
-fn persist_running(home: &Path, profile: &str, dir: &Path, port: u16, pid: u32, started: i64, started_by: &str) {
+/// How long a just-spawned Chrome is protected from reconciliation (AMUX-4961).
+///
+/// The CDP wait is 30s, so the grace must cover it with margin. After it
+/// expires an unfinished record IS reclaimable, which is what keeps a crashed
+/// launch from protecting a dead pid forever.
+pub(crate) const STARTUP_GRACE_S: i64 = 45;
+
+/// The grace must OUTLAST the CDP wait it exists for, or it protects nothing at
+/// the moment that matters. Checked at compile time rather than by a test: the
+/// relationship between two constants cannot be observed at runtime, and a
+/// `#[test]` asserting it is the "check that cannot fail" shape — clippy says so
+/// directly with `assertions_on_constants`. Shortening the grace below the CDP
+/// deadline now fails the BUILD.
+const _: () = assert!(STARTUP_GRACE_S > 30, "the CDP wait is 30s; the grace must outlast it");
+
+/// Is this persisted record a browser still inside its startup window?
+///
+/// A MISSING `cdp_ready` MEANS READY, deliberately: records written before this
+/// field existed must keep their old meaning, or an upgrade would grant every
+/// stale record a 45s reprieve exactly once.
+pub(crate) fn record_is_starting(record: &serde_json::Value, now: i64, grace_s: i64) -> bool {
+    !record["cdp_ready"].as_bool().unwrap_or(true)
+        && now.saturating_sub(record["started_at"].as_i64().unwrap_or(0)) < grace_s
+}
+
+// A flat record writer: every argument is one column of the persisted row, so
+// grouping them into a struct would only move the same list one line up.
+#[allow(clippy::too_many_arguments)]
+fn persist_running(home: &Path, profile: &str, dir: &Path, port: u16, pid: u32, started: i64, started_by: &str, cdp_ready: bool) {
     let mut map = read_running_file(home);
     map.insert(
         profile.to_string(),
@@ -932,6 +960,8 @@ fn persist_running(home: &Path, profile: &str, dir: &Path, port: u16, pid: u32, 
             "pid": pid,
             "started_at": started,
             "started_by": started_by,
+            // AMUX-4961: a launching Chrome is neither absent nor dead.
+            "cdp_ready": cdp_ready,
         }),
     );
     write_running_file(home, &map);
@@ -1141,7 +1171,23 @@ async fn reconcile_orphan_before_launch(home: &Path, target_dir: &Path) {
         let pid = persisted_process_id(&v).unwrap_or(0);
         let dir = v.get("user_data_dir").and_then(serde_json::Value::as_str).unwrap_or_default();
         if pid != 0 && Path::new(dir) == target_dir {
-            let alive = pid_alive(pid);
+            // A CONCURRENT LAUNCH IS NOT A DEAD ORPHAN (AMUX-4961).
+            //
+            // Registering the pid before the CDP wait (so the stray branch
+            // below sees it as a tenant) moves it into THIS branch's sights
+            // instead: a launching Chrome has a persisted pid and no CDP yet,
+            // which is exactly what this arm reaps. Closing one branch and
+            // opening the other is not a fix, so the record carries whether it
+            // has reached CDP, and a starting one is left alone until its
+            // grace expires.
+            let starting = record_is_starting(&v, crate::config::now_f64() as i64, STARTUP_GRACE_S);
+            if starting {
+                tracing::debug!(
+                    pid, dir, verdict = "startup_grace_respected",
+                    "browser: a launch on this profile is still waiting for CDP; not reaping it"
+                );
+            }
+            let alive = !starting && pid_alive(pid);
             if alive {
                 tracing::warn!(
                     pid, dir,
@@ -1168,8 +1214,32 @@ async fn reconcile_orphan_before_launch(home: &Path, target_dir: &Path) {
     // With N browsers, filtering on a single pid would have this loop kill its
     // own siblings — the exact "two Chromes on one dir" harm it exists to stop,
     // caused by the fix for it.
-    let adopted: std::collections::HashSet<u32> =
+    let mut adopted: std::collections::HashSet<u32> =
         running_all().into_iter().map(|(_, _, _, pid, _, _)| pid).collect();
+    // A LAUNCH IN FLIGHT IS A LEGITIMATE TENANT TOO (AMUX-4961).
+    //
+    // `running_all()` reads the IN-MEMORY registry, and a start does not join
+    // it until CDP has answered — the insert sits beside the final persist at
+    // the end of `start`. So for the whole 30s CDP wait a just-spawned Chrome
+    // is live on the dir and absent from this set, which is exactly the stray
+    // predicate below. Without this line the sweep reaps the very browser
+    // another start is still waiting on, and the caller reads "exited signal: 9
+    // (SIGKILL) before CDP came up" — indistinguishable from the host-level
+    // kill AMUX-4939 turned out to be.
+    //
+    // The persisted file is the cross-invocation channel here; the in-memory
+    // registry cannot be, because the record has to be visible to a DIFFERENT
+    // call to `start` before this one finishes.
+    {
+        let now = crate::config::now_f64() as i64;
+        for record in read_running_file(home).values() {
+            if record_is_starting(record, now, STARTUP_GRACE_S) {
+                if let Some(pid) = persisted_process_id(record) {
+                    adopted.insert(pid);
+                }
+            }
+        }
+    }
     let strays: Vec<u32> = live_chromes_on_dir(home, target_dir)
         .into_iter()
         .filter(|p| !adopted.contains(p))
@@ -1513,6 +1583,35 @@ fn chrome_launch_args(
 /// `session` is the lane this launch belongs to. It exists because of AC-336:
 /// the tab Chrome opens for `url` must be CLAIMED by the caller, or the next
 /// lane to run a driver verb adopts it as an unowned page.
+/// Clears a `starting` record unless the launch completes (AMUX-4961).
+///
+/// A GUARD RATHER THAN A CLEAR AT EACH EXIT. Registering the pid before the CDP
+/// wait deliberately overrides the old ordering, whose comment explained why it
+/// was late: "written AFTER the handle is live so a file never claims a browser
+/// that failed to start." That property is worth keeping, and `start` has three
+/// error exits between spawn and the final persist — a fourth added later would
+/// not know to clear. Drop does not forget.
+struct StartingRecord<'a> {
+    home: &'a Path,
+    profile: &'a str,
+    armed: bool,
+}
+
+impl StartingRecord<'_> {
+    /// The launch reached CDP; the final persist owns the record now.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StartingRecord<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            clear_running_for(self.home, self.profile);
+        }
+    }
+}
+
 pub async fn start(
     home: &Path,
     profile: &str,
@@ -1660,6 +1759,24 @@ pub async fn start(
     }
     let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?;
     let pid = child.id();
+
+    // REGISTER BEFORE THE CDP WAIT (AMUX-4961). Until this, a Chrome was live
+    // on the profile dir and absent from the running-file for up to 30s, which
+    // is precisely the stray predicate a CONCURRENT start reconciles against —
+    // it would SIGKILL this one and the caller would see "exited signal: 9
+    // (SIGKILL) before CDP came up", indistinguishable from the host-level kill
+    // that AMUX-4939 turned out to be.
+    //
+    // `cdp_ready: false` is what keeps this from simply moving the kill into
+    // the dead-CDP-orphan branch, which reaps a persisted pid whose CDP does
+    // not answer — which a launching Chrome's, by definition, does not yet.
+    let starting_guard = pid.map(|p| {
+        persist_running(
+            home, profile, &target.user_data_dir, port, p,
+            chrono::Utc::now().timestamp(), started_by, false,
+        );
+        StartingRecord { home, profile, armed: true }
+    });
 
     // A port Chrome never bound is not a started browser; wait for CDP HTTP.
     // Two failure modes, told apart because they need opposite responses:
@@ -1899,7 +2016,12 @@ pub async fn start(
     });
     // Survive a server restart (AC-325). Written AFTER the handle is live so a
     // file never claims a browser that failed to start.
-    persist_running(home, profile, &udd_for_state, port, pid_num, started_at, started_by);
+    persist_running(home, profile, &udd_for_state, port, pid_num, started_at, started_by, true);
+    // CDP answered, so the record is no longer provisional and the guard must
+    // not clear it on the way out.
+    if let Some(guard) = starting_guard {
+        guard.disarm();
+    }
     spawn_exit_monitor();
     Ok(info)
 }
@@ -5718,4 +5840,54 @@ mod cdp_frame_attribution_tests {
             "an id past the head window is not searched for; the frame is skipped, not claimed"
         );
     }
+}
+
+/// AMUX-4961: a Chrome that is still starting is neither absent nor dead.
+#[cfg(test)]
+mod startup_grace_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// BOTH kill branches read this predicate, and they fail in opposite
+    /// directions without it: the stray sweep reaps a launch it cannot see in
+    /// the in-memory registry, and the dead-CDP arm reaps one whose CDP has not
+    /// answered YET. Registering early without this only moves the kill from
+    /// the first branch to the second.
+    #[test]
+    fn a_launch_inside_its_grace_is_protected_and_one_past_it_is_not() {
+        let now = 1_000_000i64;
+        let starting = json!({"pid": 4242, "cdp_ready": false, "started_at": now - 5});
+        assert!(
+            record_is_starting(&starting, now, STARTUP_GRACE_S),
+            "a Chrome 5s into a 30s CDP wait must not be reaped"
+        );
+
+        // THE CONTROL, and the half that must not rot: the grace EXPIRES, so a
+        // launch that crashed without clearing its record becomes reclaimable
+        // rather than protecting a dead pid forever.
+        let expired = json!({"pid": 4242, "cdp_ready": false, "started_at": now - STARTUP_GRACE_S});
+        assert!(!record_is_starting(&expired, now, STARTUP_GRACE_S));
+        let long_gone = json!({"pid": 4242, "cdp_ready": false, "started_at": now - 86_400});
+        assert!(!record_is_starting(&long_gone, now, STARTUP_GRACE_S));
+    }
+
+    /// Once CDP answered, ordinary reconciliation applies again.
+    #[test]
+    fn a_browser_that_reached_cdp_is_not_treated_as_starting() {
+        let now = 1_000_000i64;
+        let ready = json!({"pid": 7, "cdp_ready": true, "started_at": now - 1});
+        assert!(!record_is_starting(&ready, now, STARTUP_GRACE_S));
+    }
+
+    /// A MISSING FIELD MEANS READY. Records written before `cdp_ready` existed
+    /// keep their old meaning, or an upgrade hands every stale record a one-time
+    /// 45s reprieve — a silent behaviour change on the very reconciliation path
+    /// this exists to make predictable.
+    #[test]
+    fn a_legacy_record_without_the_field_keeps_its_old_meaning() {
+        let now = 1_000_000i64;
+        let legacy = json!({"pid": 9, "started_at": now - 1});
+        assert!(!record_is_starting(&legacy, now, STARTUP_GRACE_S));
+    }
+
 }
