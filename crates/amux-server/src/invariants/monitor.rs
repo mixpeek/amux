@@ -1599,7 +1599,16 @@ fn self_reports_check(state: &AppState) -> Vec<InvariantResult> {
                 .get(n)
                 .and_then(|r| r["ts"].as_f64())
                 .map(|ts| signals.now - ts);
-            checks::LaneReport { name: n.to_string(), report_age_s: age }
+            // AMUX-4917: what the last report SAID, not just when it landed.
+            // Read from the same row `age` comes from, so the two cannot
+            // describe different reports.
+            let last_state = signals
+                .reports
+                .get(n)
+                .and_then(|r| r["state"].as_str())
+                .unwrap_or("")
+                .to_string();
+            checks::LaneReport { name: n.to_string(), report_age_s: age, last_state }
         })
         .collect();
     // Policy in config, not baked in (ethos D4). Defaults: a fleet of >=10 lanes

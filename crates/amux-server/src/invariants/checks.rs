@@ -1869,14 +1869,73 @@ pub fn self_reports_landing(
                              pre-cutover sessions carry — status is running blind on pane-scrape",
         }))];
     }
-    if freshest > max_freshest_s {
+    // AGE ALONE CANNOT TELL A QUIET FLEET FROM A DEAD HOOK (AMUX-4917), and
+    // for 166 evaluations this read one as the other. "Freshest report across
+    // the fleet" measures HOW RECENTLY ANY LANE WORKED, because an idle lane's
+    // last report is its stop-hook and then ages forever by design. So a fleet
+    // that simply went quiet for an hour tripped this while perfectly healthy.
+    //
+    // Measured 2026-09-22 with hooks demonstrably working: the active lane's
+    // report was 9s old and idle lanes ranged to 6,909s. The 2026-09-20
+    // occurrence was 3,679s against a 3,600s threshold, 79 seconds over, and
+    // the freshest belonged to a lane that had itself been idle over an hour.
+    //
+    // The discriminator is what the last report SAID. A lane whose last report
+    // says `active` emits on every tool use, so a stale one is a hook that died
+    // mid-turn, and that is the real fault this exists to catch.
+    let stale_active: Vec<(&str, f64)> = lanes
+        .iter()
+        .filter(|l| l.last_state == "active")
+        .filter_map(|l| l.report_age_s.map(|age| (l.name.as_str(), age)))
+        .filter(|(_, age)| *age > max_freshest_s)
+        .collect();
+    // NAME THE AGE BESIDE THE LANE, so the reader does not re-derive it from
+    // the threshold. A pre-existing test requires this and caught its absence.
+    let stale_named = stale_active
+        .iter()
+        .map(|(n, age)| format!("{n} {age:.0}s"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !stale_active.is_empty() {
         return vec![InvariantResult::fail(
             ID,
-            format!("freshest self-report across the fleet < {max_freshest_s:.0}s"),
+            format!("a lane reporting `active` self-reports within {max_freshest_s:.0}s"),
             format!(
-                "youngest report across {} running lanes is {freshest:.0}s old (from {freshest_name}; \
-                 {with_report} lanes carry any report) — report control plane down fleet-wide, \
-                 status is on pane-scrape",
+                "{} of {} running lanes last reported `active` but have not reported in over \
+                 {max_freshest_s:.0}s ({}) — their hooks stopped mid-turn, so status for them is \
+                 on pane-scrape",
+                stale_active.len(),
+                lanes.len(),
+                stale_named
+            ),
+        )
+        .evidence(json!({
+            "running_lanes": lanes.len(),
+            "lanes_with_report": with_report,
+            "stale_active_lanes": stale_active
+                .iter()
+                .map(|(n, age)| json!({"lane": n, "report_age_s": age}))
+                .collect::<Vec<_>>(),
+            "freshest_report_age_s": freshest,
+            "freshest_lane": freshest_name,
+            "threshold_s": max_freshest_s,
+            "class": "report-control-plane-down",
+            "incident": "2026-08-13: baked-in report hooks POSTed to the dead 8822 silently; \
+                         0/48 fresh self-reports, worker status inaccurate/delayed",
+        }))];
+    }
+    if freshest > max_freshest_s {
+        // UNKNOWN, NOT PASS and not FAIL. Every report is stale and not one
+        // lane claims to be working, which is exactly what a quiet fleet and a
+        // dead control plane both look like from here. Saying which is missing
+        // is the honest answer; asserting either would be a guess.
+        return vec![InvariantResult::unknown(
+            ID,
+            format!(
+                "freshest report across {} running lanes is {freshest:.0}s old (from \
+                 {freshest_name}), but no lane's last report says `active` — an idle lane stops \
+                 reporting by design, so a quiet fleet and a dead hook are indistinguishable \
+                 until some lane is mid-turn",
                 lanes.len()
             ),
         )
@@ -1886,9 +1945,7 @@ pub fn self_reports_landing(
             "freshest_report_age_s": freshest,
             "freshest_lane": freshest_name,
             "threshold_s": max_freshest_s,
-            "class": "report-control-plane-down",
-            "incident": "2026-08-13: baked-in report hooks POSTed to the dead 8822 silently; \
-                         0/48 fresh self-reports, worker status inaccurate/delayed",
+            "missing_condition": "no running lane last reported `active`",
         }))];
     }
     vec![InvariantResult::pass(ID).evidence(json!({
@@ -1904,6 +1961,16 @@ pub fn self_reports_landing(
 pub struct LaneReport {
     pub name: String,
     pub report_age_s: Option<f64>,
+    /// AMUX-4917: what that last report SAID the lane was doing.
+    ///
+    /// Age alone cannot tell a quiet fleet from a dead hook. An ACTIVE lane
+    /// reports every tool use, so a stale report from one is a hook that died
+    /// mid-turn. An IDLE lane's last report was its stop-hook and then ages
+    /// indefinitely by design, which is health, not an outage.
+    ///
+    /// Empty when the lane has never reported, which the `with_report == 0`
+    /// arm handles separately and still treats as a real outage.
+    pub last_state: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -6198,9 +6265,11 @@ mod negative_controls {
             .map(|i| LaneReport {
                 name: format!("lane-{i}"),
                 report_age_s: Some(143_000.0 + i as f64),
+                // Idle: their last report was a stop-hook and ages by design.
+                last_state: "idle".into(),
             })
             .collect();
-        lanes.push(LaneReport { name: "primis".into(), report_age_s: Some(7_379.0) });
+        lanes.push(LaneReport { name: "primis".into(), report_age_s: Some(7_379.0), last_state: "active".into() });
         let rs = self_reports_landing(&lanes, 10, 3600.0);
         assert_eq!(rs.len(), 1);
         assert_eq!(rs[0].status, Status::Fail, "youngest 7379s > 3600s must fail: {rs:?}");
@@ -6218,9 +6287,10 @@ mod negative_controls {
             .map(|i| LaneReport {
                 name: format!("idle-{i}"),
                 report_age_s: Some(30_000.0),
+                last_state: "idle".into(),
             })
             .collect();
-        lanes.push(LaneReport { name: "busy".into(), report_age_s: Some(4.0) });
+        lanes.push(LaneReport { name: "busy".into(), report_age_s: Some(4.0), last_state: "active".into() });
         let rs = self_reports_landing(&lanes, 10, 3600.0);
         assert!(
             rs.iter().all(|r| r.status == Status::Pass),
@@ -6233,18 +6303,91 @@ mod negative_controls {
     #[test]
     fn a_fleet_with_zero_reports_fails_as_control_plane_down() {
         let lanes: Vec<LaneReport> = (0..20)
-            .map(|i| LaneReport { name: format!("l-{i}"), report_age_s: None })
+            .map(|i| LaneReport { name: format!("l-{i}"), report_age_s: None, last_state: String::new() })
             .collect();
         let rs = self_reports_landing(&lanes, 10, 3600.0);
         assert_eq!(rs[0].status, Status::Fail);
         assert!(rs[0].observed.contains("0 of 20"), "{}", rs[0].observed);
     }
 
+    /// AMUX-4917. A FLEET THAT IS MERELY QUIET IS NOT A DEAD CONTROL PLANE.
+    ///
+    /// Every lane is idle and every report is stale, which is exactly what a
+    /// healthy fleet looks like overnight: an idle lane's last report is its
+    /// stop-hook and then ages forever by design. Reading that as an outage is
+    /// what filed this check 166 times, including a 2026-09-20 occurrence that
+    /// was 79 seconds over its own threshold.
+    ///
+    /// Unknown, not Pass: nothing here proves the hooks work either, and the
+    /// message must name the condition that is missing.
+    #[test]
+    fn an_all_idle_fleet_is_unknown_not_an_outage() {
+        let lanes: Vec<LaneReport> = (0..40)
+            .map(|i| LaneReport {
+                name: format!("idle-{i}"),
+                report_age_s: Some(30_000.0),
+                last_state: "idle".into(),
+            })
+            .collect();
+        let rs = self_reports_landing(&lanes, 10, 3600.0);
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            rs[0].status,
+            Status::Unknown,
+            "an all-idle fleet is quiet, not a reported outage: {rs:?}"
+        );
+        assert!(
+            rs[0].observed.contains("active"),
+            "must name the missing condition, that no lane is mid-turn: {}",
+            rs[0].observed
+        );
+    }
+
+    /// AMUX-4917, the other direction, and the one that matters most: narrowing
+    /// this check must not buy silence. A lane whose last report says `active`
+    /// emits on every tool use, so a stale one is a hook that died MID-TURN.
+    /// That still fails, and it fails even though a sibling lane is reporting
+    /// fresh, because the fleet minimum would otherwise hide it.
+    #[test]
+    fn a_lane_stale_while_reporting_active_still_fails() {
+        let mut lanes: Vec<LaneReport> = (0..40)
+            .map(|i| LaneReport {
+                name: format!("idle-{i}"),
+                report_age_s: Some(30_000.0),
+                last_state: "idle".into(),
+            })
+            .collect();
+        // A healthy neighbour, so the fleet minimum is fresh.
+        lanes.push(LaneReport {
+            name: "healthy".into(),
+            report_age_s: Some(5.0),
+            last_state: "idle".into(),
+        });
+        // The dead hook: says it is working, has not reported in two hours.
+        lanes.push(LaneReport {
+            name: "wedged".into(),
+            report_age_s: Some(7_200.0),
+            last_state: "active".into(),
+        });
+        let rs = self_reports_landing(&lanes, 10, 3600.0);
+        assert_eq!(rs.len(), 1);
+        assert_eq!(
+            rs[0].status,
+            Status::Fail,
+            "a lane claiming `active` with a two-hour-old report is a hook that died mid-turn: {rs:?}"
+        );
+        assert!(
+            rs[0].observed.contains("wedged"),
+            "must name the lane whose hook stopped: {}",
+            rs[0].observed
+        );
+    }
+
     /// A one- or two-lane box must read Unknown, never fire: a genuine quiet
     /// spell is plausible there, and a false alarm trains the reader to skim.
     #[test]
     fn a_tiny_fleet_is_unknown_not_a_false_alarm() {
-        let lanes = vec![LaneReport { name: "solo".into(), report_age_s: Some(999_999.0) }];
+        let lanes = vec![LaneReport { name: "solo".into(), report_age_s: Some(999_999.0), last_state: "active".into() }];
         let rs = self_reports_landing(&lanes, 10, 3600.0);
         assert_eq!(rs[0].status, Status::Unknown, "too-small fleet must be Unknown: {rs:?}");
     }
