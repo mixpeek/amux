@@ -735,8 +735,26 @@ pub fn builder_has_ticked_recently(
         vec![InvariantResult::fail(
             ID,
             format!("builder log written within {budget:.0}s ({max_intervals:.0} x {interval_s:.0}s interval)"),
+            // SAY ONLY WHAT LOG AGE ESTABLISHES (AMUX-4923). This used to
+            // close with "deploys stop silently and /health commit stops
+            // moving", which this function has no input to observe: its only
+            // argument is `log_age_s`. The claim is not merely unproven, it is
+            // separable from the measurement in BOTH directions, and the false
+            // direction is the expensive one.
+            //
+            // Measured this session: through the AMUX-4947 deploy wedge the
+            // builder emitted 92 `cargo_build_backoff` lines at ~60s intervals,
+            // so its log was never stale and this check PASSED, while /health
+            // stayed frozen at 2c375773 and origin/main moved four commits
+            // ahead. A total deploy outage, for days, underneath a green tick.
+            //
+            // A stale log is still worth catching and this still catches it.
+            // What it must not do is let a reader take the pass as evidence
+            // that deploys are landing, which is what the old sentence invited.
             format!(
-                "last write {age:.0}s ago, about {missed:.0} missed cycle(s); deploys stop silently and /health commit stops moving",
+                "last write {age:.0}s ago, about {missed:.0} missed cycle(s). This measures the \
+                 builder LOG only: a builder that keeps logging while every build fails passes \
+                 this check, so a pass is not evidence that deploys are landing (AMUX-4923)",
                 missed = age / interval_s
             ),
         )
@@ -8853,6 +8871,33 @@ mod builder_tick_tests {
         assert!(
             seen.contains("59") || seen.contains("3540"),
             "the failure must carry the observed staleness so a reader can act: {seen}"
+        );
+    }
+
+    /// AMUX-4923. THE MESSAGE MUST NOT CLAIM WHAT THIS FUNCTION CANNOT SEE.
+    ///
+    /// Its only argument is `log_age_s`. The failure text used to close with
+    /// "deploys stop silently and /health commit stops moving", which is a
+    /// statement about deploy progress that no input here can establish, and
+    /// the two come apart in the direction that costs the most.
+    ///
+    /// Measured 2026-09-22: through the AMUX-4947 wedge the builder emitted 92
+    /// `cargo_build_backoff` lines at ~60s intervals, so its log was fresh and
+    /// this check PASSED, while /health sat frozen at 2c375773 and origin/main
+    /// moved four commits ahead. Days of total deploy outage under a green tick.
+    #[test]
+    fn the_failure_says_only_what_log_age_establishes() {
+        let out = builder_has_ticked_recently(Some(59.0 * INTERVAL), INTERVAL, MAX);
+        let seen = format!("{:?}", out[0]);
+        assert!(
+            !seen.contains("deploys stop silently"),
+            "this check sees log age and nothing else; it must not assert that deploys \
+             stopped: {seen}"
+        );
+        assert!(
+            seen.contains("not evidence that deploys are landing"),
+            "a reader has to be told what a PASS does NOT mean, or a fresh log is taken as \
+             a healthy pipeline, which is exactly how AMUX-4947 stayed invisible: {seen}"
         );
     }
 
