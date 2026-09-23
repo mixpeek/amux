@@ -810,6 +810,15 @@ function _peekKickFast() {
   _peekUrgentUntil = _peekLastChangeMs + 1500;
   if (peekSession && !document.hidden) _schedulePeekPoll(40);
 }
+// Ask for a tick NOW, from anywhere, without caring whether one is running.
+// Idle, it pulls the waiting timer forward to 0. Mid-request, it does NOT
+// start a second fetch: it records the ask, and the loop serves it with one
+// more tick as soon as the current one lands, so a caller can never reorder
+// or drop a refresh by asking at the wrong moment.
+function _peekPollNow() {
+  if (_peekPollInFlight) { _peekPollAgain = true; return; }
+  _schedulePeekPoll(0);
+}
 let _peekPollGen = 0;
 // Raw timer clear, used on every reschedule, so it must stay beacon-free.
 function _stopPeekPoll() { _peekPollGen++; if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; } }
@@ -821,6 +830,12 @@ function _stopPeekPoll() { _peekPollGen++; if (peekTimer) { clearTimeout(peekTim
 // remembers the target so a 'stop' after peekSession was cleared still names it.
 let _peekPollActive = false;
 let _peekPollSession = null;
+// AMUX-4802. One tick at a time, and a request never stacks a second one.
+// _peekPollInFlight is true only while refreshPeek is awaited; _peekPollAgain
+// records that somebody asked for a tick during that window, so the answer is
+// one MORE tick after this one rather than a concurrent fetch.
+let _peekPollInFlight = false;
+let _peekPollAgain = false;
 function _peekPollBeacon(action, session, extra) {
   try {
     fetch(API + '/api/client-debug', {
@@ -857,6 +872,8 @@ function _schedulePeekPoll(delay) {
   peekTimer = setTimeout(async () => {
     peekTimer = null;
     if (gen !== _peekPollGen) return;
+    const startedAt = performance.now();
+    _peekPollInFlight = true;
     try {
       const _s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
       const _st = (_s && _s.status) || '';
@@ -874,8 +891,16 @@ function _schedulePeekPoll(delay) {
       // flip to "needs input" shows without closing and reopening the view.
       if (typeof updatePeekStatus === 'function') updatePeekStatus();
     } catch(e) {}
+    finally { _peekPollInFlight = false; }
     if (gen !== _peekPollGen) return;
-    _schedulePeekPoll();
+    // THE CADENCE IS A PERIOD, NOT A GAP (AMUX-4802). The request's own
+    // duration counts toward it, so a 1500ms cadence with a 200ms request
+    // waits 1300. Adding the interval on top of the request made the real
+    // rate drift slower than the setting, worst on the slow requests where
+    // the view was already furthest behind. The 40ms floor keeps a request
+    // slower than its own period from becoming a busy loop.
+    if (_peekPollAgain) { _peekPollAgain = false; _schedulePeekPoll(40); return; }
+    _schedulePeekPoll(Math.max(40, _peekPollInterval() - (performance.now() - startedAt)));
   }, delay ?? _peekPollInterval());
 }
 // Composer drafts live in ONE place: _draftGet/_draftSave, keyed by session.
@@ -11615,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1007';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1008';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
