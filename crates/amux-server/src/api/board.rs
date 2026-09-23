@@ -11213,7 +11213,41 @@ pub async fn patch_item(
             }
 
             if let Some((observed_rev, owner, verdict, gate_target)) = &workspace_verification {
-                if row.rev != *observed_rev || next.session.as_deref() != owner.as_deref() {
+                // A REPLAY OF A TRANSITION THE CARD HAS ALREADY MADE CARRIES NO
+                // VERDICT TO MISAPPLY (AMUX-4962).
+                //
+                // This check exists to stop a verification verdict being applied
+                // against a card state it was not measured on. When the card is
+                // already AT the status this verdict would authorize, there is no
+                // transition left for it to authorize, so there is nothing the
+                // staleness could get wrong.
+                //
+                // Without this, two identical finishers racing the same terminal
+                // write make the loser a 409, because the winner bumped `rev`. That
+                // retired a documented idempotency contract two weeks older than
+                // this gate: `message_decomposition_chaos_...` has asserted since
+                // 366c1468 (2026-09-06) that "exactly one transition applies; the
+                // replay is an honest 200 no-op with rev intact", and it was
+                // written to chaos-harden exactly this lifecycle. Proven by
+                // reverting only this condition, which turns that test green.
+                //
+                // An idempotent retry answering 409 is not a safe default either:
+                // every client that retries on timeout sees a spurious conflict for
+                // an outcome that succeeded, re-reads, and finds nothing to do.
+                //
+                // Deliberately narrow. The VERDICT check below still runs, so a
+                // failing integration proof still refuses (AMUX-4922/d51c1257), and
+                // any patch that would really move the card still takes the full
+                // staleness check.
+                // `row.status` is the stored string; parse it with the SAME
+                // parser `workspace_gate_target` was built from, so the two
+                // cannot disagree about what a status is. `is_some()` guards the
+                // None == None case, which would otherwise read as "at target".
+                let already_at_target =
+                    gate_target.is_some() && *gate_target == bs::parse_status(&row.status);
+                if !already_at_target
+                    && (row.rev != *observed_rev || next.session.as_deref() != owner.as_deref())
+                {
                     tracing::warn!(target: "amux::verification", card = %row.id,
                         observed_rev, current_rev = row.rev, observed_owner = ?owner,
                         current_owner = ?next.session, verdict = "verification_observation_stale",
