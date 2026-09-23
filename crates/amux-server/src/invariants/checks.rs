@@ -2042,14 +2042,18 @@ pub fn registered_lanes_are_running(lanes: &[LaneRunState]) -> Vec<InvariantResu
                     "a registered, non-archived lane has a live tmux session",
                     format!(
                         "{} is registered and not archived, but is_running() — the same \
-                         probe /api/sessions itself trusts — says it is not running",
-                        l.name
+                         probe /api/sessions itself trusts — says it is not running{}",
+                        l.name,
+                        held_clause(l.held)
                     ),
                 )
                 .entity(&l.name)
                 .evidence(json!({
                     "session": l.name,
                     "class": "session-died-silently",
+                    "held_open_cards": l.held.map(|h| h.open),
+                    "held_doing_cards": l.held.map(|h| h.doing),
+                    "held_measured": l.held.is_some(),
                     "incident": "AMUX-48/INIT-1: INIT-1 fixed the deploy-restart path via \
                                  KillMode=process, but named a second, never-built half — \
                                  catching a session that died some OTHER way (OOM, manual \
@@ -2067,11 +2071,54 @@ pub fn registered_lanes_are_running(lanes: &[LaneRunState]) -> Vec<InvariantResu
     out
 }
 
+/// WHAT A DEAD LANE IS SITTING ON (AMUX-4949).
+///
+/// "Registered but not running" is the symptom; it does not say whether the
+/// registration is harmless. A dead lane holding nothing is cleanup. A dead
+/// lane holding a card in `doing` is work CLAIMED by a worker that does not
+/// exist, and nothing else on the board will pick it up.
+///
+/// Measured 2026-09-23: six lanes failed this check at once, holding 18 open
+/// cards between them, two of those claimed as in progress — and two other
+/// failing lanes held nothing at all. The verdict could not tell those apart,
+/// so triage meant re-deriving it by hand every time. It had already recurred
+/// once (AMUX-4903 -> AMUX-4949).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldWork {
+    pub open: i64,
+    pub doing: i64,
+}
+
+/// The clause naming what the dead lane holds, or NOTHING when it was not
+/// measured.
+///
+/// Silence rather than a zero on the unmeasured path: `held 0 cards` for a
+/// query that never ran is the shape ethos rule 4 exists to forbid, and the
+/// honest form of having nothing to say is saying nothing.
+fn held_clause(held: Option<HeldWork>) -> String {
+    match held {
+        None => String::new(),
+        Some(h) if h.open == 0 => ", and it holds no open cards".to_string(),
+        Some(h) if h.doing == 0 => {
+            format!(", and it holds {} open card(s), none claimed as in progress", h.open)
+        }
+        Some(h) => format!(
+            ", and it holds {} open card(s), {} of them CLAIMED AS IN PROGRESS by a worker \
+             that is not running",
+            h.open, h.doing
+        ),
+    }
+}
+
 /// One registered lane's expected-vs-actual running state.
 #[derive(Debug, Clone)]
 pub struct LaneRunState {
     pub name: String,
     pub is_running: bool,
+    /// Open board cards this lane holds. `None` when the board could not be
+    /// read: a 0 there would read as "holds nothing" for a query that never
+    /// ran, which is the distinction the verdict exists to make.
+    pub held: Option<HeldWork>,
 }
 
 // ---------------------------------------------------------------------------
@@ -8763,6 +8810,76 @@ mod repeat_offer_tests {
         // ...and the threshold, or a later reader cannot tell whether the zero
         // means "nothing cycled" or "the bar was set impossibly high".
         assert!(d.contains("threshold"), "{d}");
+    }
+}
+
+#[cfg(test)]
+mod registered_lane_running_tests {
+    use super::*;
+
+    fn lane(name: &str, running: bool, held: Option<HeldWork>) -> LaneRunState {
+        LaneRunState { name: name.into(), is_running: running, held }
+    }
+
+    /// This check shipped with NO tests at all, both arms unpinned.
+    #[test]
+    fn a_running_lane_passes_and_a_dead_one_fails_naming_itself() {
+        let out = registered_lanes_are_running(&[
+            lane("amux", true, Some(HeldWork { open: 9, doing: 1 })),
+            lane("gs-8-mvs-turbopuffer", false, Some(HeldWork { open: 12, doing: 0 })),
+        ]);
+        assert_eq!(out[0].status, Status::Pass);
+        assert_eq!(out[0].entity_key, "amux");
+        assert_eq!(out[1].status, Status::Fail);
+        assert_eq!(out[1].entity_key, "gs-8-mvs-turbopuffer");
+        assert!(out[1].observed.contains("gs-8-mvs-turbopuffer"));
+        // A RUNNING lane holding a `doing` card is ordinary work, not a finding.
+        assert!(!out[0].observed.contains("CLAIMED"));
+    }
+
+    /// AMUX-4949. The verdict must separate a dead registration that is
+    /// harmless from one sitting on work nobody will pick up.
+    #[test]
+    fn a_dead_lane_says_whether_it_is_sitting_on_claimed_work() {
+        let claimed = registered_lanes_are_running(&[lane(
+            "gs-5-templates-one-click",
+            false,
+            Some(HeldWork { open: 1, doing: 1 }),
+        )]);
+        assert!(
+            claimed[0].observed.contains("CLAIMED AS IN PROGRESS"),
+            "a card in `doing` on a dead lane is the harmful case: {}",
+            claimed[0].observed
+        );
+
+        let queued = registered_lanes_are_running(&[lane(
+            "gs-7-single-image",
+            false,
+            Some(HeldWork { open: 3, doing: 0 }),
+        )]);
+        assert!(queued[0].observed.contains("3 open card(s), none claimed"), "{}", queued[0].observed);
+        assert!(!queued[0].observed.contains("CLAIMED"));
+
+        // The CONTROL, and the reason the distinction is worth reporting: two
+        // of the six lanes in the measured incident held nothing at all, and
+        // the verdict read identically to the ones holding claimed work.
+        let empty =
+            registered_lanes_are_running(&[lane("gs-6-bottlenecks", false, Some(HeldWork { open: 0, doing: 0 }))]);
+        assert!(empty[0].observed.contains("holds no open cards"), "{}", empty[0].observed);
+    }
+
+    /// An UNMEASURED board says nothing, rather than reporting zero.
+    ///
+    /// `held 0 cards` for a query that never ran reads as "harmless" for a lane
+    /// that might be sitting on anything — a zero that means "not measured" is
+    /// exactly what ethos rule 4 forbids.
+    #[test]
+    fn an_unreadable_board_omits_the_clause_instead_of_claiming_zero() {
+        let out = registered_lanes_are_running(&[lane("gs-2-rtsp-pipelines", false, None)]);
+        assert!(!out[0].observed.contains("holds"), "{}", out[0].observed);
+        assert!(!out[0].observed.contains(" 0 "), "{}", out[0].observed);
+        assert_eq!(out[0].evidence["held_measured"], json!(false));
+        assert_eq!(out[0].evidence["held_open_cards"], json!(null));
     }
 }
 

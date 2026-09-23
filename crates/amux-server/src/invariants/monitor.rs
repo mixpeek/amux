@@ -326,7 +326,7 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
     // shipped. Catches a session dying any way OTHER than the deploy-restart
     // path INIT-1's KillMode=process already covers (an OOM kill of the
     // pane, a manual kill, a crash).
-    out.extend(registered_lanes_running_check().await);
+    out.extend(registered_lanes_running_check(state).await);
     out.push(crate::backend::tmux_health::observe().await.invariant());
 
     tm.mark(&out, "5c. every registered, non-archived lane actually has");
@@ -1512,12 +1512,43 @@ fn status_pane_check(state: &AppState) -> Vec<InvariantResult> {
 /// sweep already trust — reused here rather than a bespoke `has-session`
 /// call, so this check cannot disagree with the rest of the system about
 /// what "registered" or "running" means.
-async fn registered_lanes_running_check() -> Vec<InvariantResult> {
+async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult> {
     let names = crate::api::session_verbs::all_lane_names();
+    // WHAT EACH LANE IS SITTING ON (AMUX-4949). One grouped query for the whole
+    // fleet, not one per lane: the verdict needs to distinguish a dead
+    // registration holding nothing from one holding a card claimed as `doing`,
+    // and re-deriving that by hand was the whole cost of triaging this check.
+    let held: Option<std::collections::HashMap<String, checks::HeldWork>> = state
+        .store
+        .read()
+        .ok()
+        .and_then(|conn| {
+            conn.prepare(
+                "SELECT COALESCE(session,''), \
+                        SUM(CASE WHEN status='doing' THEN 1 ELSE 0 END), COUNT(*) \
+                 FROM issues \
+                 WHERE deleted IS NULL AND COALESCE(archived,0)=0 \
+                   AND status NOT IN ('done','verified','discarded') \
+                 GROUP BY 1",
+            )
+            .and_then(|mut st| {
+                st.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        checks::HeldWork { doing: r.get::<_, i64>(1)?, open: r.get::<_, i64>(2)? },
+                    ))
+                })
+                .map(|it| it.flatten().collect())
+            })
+            .ok()
+        });
     let mut lanes = Vec::with_capacity(names.len());
     for name in names {
         let is_running = crate::api::session_verbs::is_running(&name).await;
-        lanes.push(checks::LaneRunState { name, is_running });
+        let held = held.as_ref().map(|m| {
+            m.get(&name).copied().unwrap_or(checks::HeldWork { open: 0, doing: 0 })
+        });
+        lanes.push(checks::LaneRunState { name, is_running, held });
     }
     checks::registered_lanes_are_running(&lanes)
 }
