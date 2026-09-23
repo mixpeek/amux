@@ -49,6 +49,28 @@ pub(crate) fn save(home: &Path, name: &str, workspace: &Workspace) -> Result<(),
     std::fs::rename(tmp, p).map_err(|e| e.to_string())
 }
 
+/// The commit an ADOPTED workspace's history is known to descend from.
+///
+/// Never returns an empty string: a caller that cannot name a base must fail
+/// at creation, where the cause is still visible, rather than persist a record
+/// that can never integrate (AMUX-4921).
+///
+/// The fork point with `origin/main` is preferred because it is the weakest
+/// true statement about this history, so the ancestry guard stays meaningful.
+/// When there is no common ancestor, or no `origin/main` to compare against,
+/// the workspace's own HEAD is still a real commit its history descends from,
+/// and recording it catches any later rewrite that drops the adopted work.
+async fn adopted_base(repo: &str, path: &str) -> Result<String, String> {
+    let head = git(path, &["rev-parse", "HEAD"]).await?;
+    if head.is_empty() {
+        return Err("adopted workspace has no HEAD to derive a creation base from".into());
+    }
+    match git(repo, &["merge-base", &head, "origin/main"]).await {
+        Ok(fork) if !fork.is_empty() => Ok(fork),
+        _ => Ok(head),
+    }
+}
+
 /// Called under the worker operation lock, before its provider is launched.
 /// Existing files/index/commits are retained even after an interrupted start.
 pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Workspace, String> {
@@ -68,15 +90,39 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
         .into_owned();
     let branch = format!("amux/fanout/{name}");
     let existing = Path::new(&path).join(".git").exists();
-    let base = if let Some(w) = old.as_ref() {
-        w.base.clone()
-    } else if existing {
-        // Preserve legacy history, but do not invent its creation base.
-        String::new()
-    } else {
-        git(&repo, &["rev-parse", "--verify", "origin/main"])
+    // THE RECORDED BASE IS THE ANCESTRY GUARD'S ONLY ANCHOR (AMUX-4921), so an
+    // empty one disables that guard for the life of the workspace and blocks
+    // automatic integration forever. This used to be reachable two ways, and
+    // the second one is not legacy at all:
+    //
+    //   1. adopting a worktree that predates base tracking, and
+    //   2. a RACE. `save` lands at the END of this function, after `worktree
+    //      add`, so a second ensure() for the same worker inside that window
+    //      sees the directory without the record and cannot tell itself apart
+    //      from case 1. Measured 2026-09-20: three workers from ONE launch
+    //      call, two with a sha and one empty.
+    //
+    // Both now resolve to a MEASURED commit. The merge-base of the workspace
+    // HEAD with origin/main is the fork point its history actually descends
+    // from: evidence rather than an invention, and the weakest claim that
+    // still lets the guard catch a later rewrite. Anchoring it HERE is the
+    // point. Re-deriving it at integration time instead would make the guard
+    // vacuous, because a fork point is always an ancestor of the head it was
+    // computed from.
+    //
+    // An empty RECORDED base is also repaired rather than copied forward, so
+    // a workspace stranded by the old path recovers on its next adoption
+    // instead of stalling permanently.
+    let recorded = old
+        .as_ref()
+        .map(|w| w.base.clone())
+        .filter(|b| !b.is_empty());
+    let base = match recorded {
+        Some(b) => b,
+        None if existing => adopted_base(&repo, &path).await?,
+        None => git(&repo, &["rev-parse", "--verify", "origin/main"])
             .await
-            .or(git(&repo, &["rev-parse", "HEAD"]).await)?
+            .or(git(&repo, &["rev-parse", "HEAD"]).await)?,
     };
     if existing {
         let common = git(
@@ -344,7 +390,27 @@ async fn integrate_attempt<F: Fn() -> Result<(), String>>(
         return Ok(Some(main));
     }
     if workspace.base.is_empty() {
-        return Err("Legacy workspace has no recorded creation base; reconcile its own commits against origin/main before automatic integration".into());
+        // NAME WHICH OF THE TWO SITUATIONS THIS IS (AMUX-4921). This used to
+        // say "Legacy workspace", which sent every reader toward migration or
+        // manual reconciliation. It was wrong for the case that actually
+        // happened: a worker created minutes earlier by the current code,
+        // emptied by a race in `ensure`. The two are now distinguishable,
+        // because since that fix the creation path CANNOT persist an empty
+        // base, so an empty one here can only predate the fix.
+        let created = std::fs::metadata(Path::new(&workspace.path).join(".git"))
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+            .unwrap_or_else(|| "unknown".into());
+        return Err(format!(
+            "workspace has no recorded creation base, so its history cannot be checked for a \
+             rewrite and automatic integration will not run. This record PREDATES the AMUX-4921 \
+             fix: the creation path can no longer persist an empty base, it fails at creation \
+             instead. Worktree {} created {created}, branch {}. RECOVERY: the next adoption \
+             re-derives the base from the merge-base of its HEAD with origin/main, so restarting \
+             this worker clears the stall without reconciling anything by hand.",
+            workspace.path, workspace.branch
+        ));
     }
     git(
         &workspace.repo,
@@ -762,12 +828,83 @@ mod tests {
         let index = git(&w.path, &["ls-files", "--stage"]).await.unwrap();
         write_integration_status(&d.path().join("home"), "child-a", &serde_json::json!({"status":"workspace_requires_recovery"}));
         let adopted = ensure(&d.path().join("home"), "child-a", &w.repo).await.unwrap();
-        assert!(adopted.base.is_empty());
+        // AMUX-4921 CHANGED THIS ASSERTION ON PURPOSE. It used to pin
+        // `adopted.base.is_empty()`, which is the defect: an empty base
+        // disables the ancestry guard for good and blocks integration
+        // forever. Adoption now records a MEASURED commit. Here HEAD,
+        // origin/main and their fork point are all the same commit, so that
+        // is what lands.
+        assert_eq!(adopted.base, head, "adoption must record a real base, never an empty string");
         assert_eq!(integration_status(&d.path().join("home"), "child-a")["status"], "workspace_ready");
         assert_eq!(git(&w.path, &["rev-parse", "HEAD"]).await.unwrap(), head);
         assert_eq!(git(&w.path, &["ls-files", "--stage"]).await.unwrap(), index);
         assert_eq!(git(&w.path, &["branch", "--show-current"]).await.unwrap(), w.branch);
         assert_eq!(std::fs::read_to_string(Path::new(&w.path).join("app.txt")).unwrap(), "uncommitted work\n");
+    }
+
+    /// AMUX-4921. The measured shape: several fan-out workers created by ONE
+    /// launch call, one of which recorded an empty base. Asserts on the
+    /// PERSISTED records rather than the returned values, because the record
+    /// is what integration reads later.
+    #[tokio::test]
+    async fn every_workspace_in_one_launch_records_a_base() {
+        let (d, w) = fixture().await;
+        let home = d.path().join("home");
+        for name in ["child-b", "child-c", "child-d"] {
+            ensure(&home, name, &w.repo).await.unwrap();
+        }
+        for name in ["child-a", "child-b", "child-c", "child-d"] {
+            let rec = load(&home, name).unwrap_or_else(|| panic!("{name} has no workspace record"));
+            assert!(
+                !rec.base.is_empty(),
+                "{name} persisted an EMPTY base; integration can never run for it"
+            );
+        }
+    }
+
+    /// AMUX-4921. `save` lands at the END of ensure(), so a second call for the
+    /// same worker can observe the worktree directory without its record and
+    /// mistake itself for a legacy adoption. Running the two concurrently
+    /// exercises that window; the fix has to hold whichever way they interleave.
+    #[tokio::test]
+    async fn concurrent_ensure_never_records_an_empty_base() {
+        let (d, w) = fixture().await;
+        let home = d.path().join("home");
+        let (repo, h1, h2) = (w.repo.clone(), home.clone(), home.clone());
+        let (a, b) = tokio::join!(
+            ensure(&h1, "child-race", &repo),
+            ensure(&h2, "child-race", &w.repo),
+        );
+        // One arm may legitimately refuse (the worktree is being built by the
+        // other). What must never happen is a PERSISTED record with no base.
+        assert!(a.is_ok() || b.is_ok(), "both concurrent ensure() calls failed: {a:?} / {b:?}");
+        for done in [a, b].into_iter().flatten() {
+            assert!(!done.base.is_empty(), "concurrent ensure() returned an empty base");
+        }
+        if let Some(rec) = load(&home, "child-race") {
+            assert!(
+                !rec.base.is_empty(),
+                "concurrent ensure() PERSISTED an empty base, which strands the worker forever"
+            );
+        }
+    }
+
+    /// AMUX-4921 criterion 3: a workspace already stranded by the old path must
+    /// have a way out, not a permanent stall. The next adoption repairs it.
+    #[tokio::test]
+    async fn a_recorded_empty_base_is_repaired_rather_than_copied_forward() {
+        let (d, w) = fixture().await;
+        let home = d.path().join("home");
+        let mut stranded = load(&home, "child-a").unwrap();
+        assert!(!stranded.base.is_empty());
+        stranded.base = String::new(); // exactly what the old creation path wrote
+        save(&home, "child-a", &stranded).unwrap();
+        let repaired = ensure(&home, "child-a", &w.repo).await.unwrap();
+        assert!(
+            !repaired.base.is_empty(),
+            "an empty recorded base was copied forward; the stall is permanent"
+        );
+        assert!(!load(&home, "child-a").unwrap().base.is_empty());
     }
 
     async fn fixture() -> (tempfile::TempDir, Workspace) {
