@@ -4396,6 +4396,41 @@ mod tests {
         assert_eq!(chrome::classify_launch_death(&code(127)), "exited_nonzero");
     }
 
+    /// AMUX-4932. A CDP helper that decodes a body nobody status-checked
+    /// reports serde's "expected value at line 1 column 1" and nothing else.
+    ///
+    /// The specimen reached a caller as a bare 502 after 12.1s on 2026-09-21
+    /// carrying nothing to investigate. An empty body and an HTML error page
+    /// produce that identical sentence, and they send an investigator to
+    /// opposite places: one is Chrome closing the connection without
+    /// answering, the other is Chrome answering something that is not CDP.
+    #[test]
+    fn a_cdp_body_that_is_not_json_names_the_endpoint_status_and_body() {
+        let empty = chrome::decode_cdp_json(200, "", "CDP /json/new on port 9222")
+            .unwrap_err()
+            .to_string();
+        assert!(empty.contains("<empty>"), "an empty body must SAY it was empty: {empty}");
+        assert!(empty.contains("200"), "the HTTP status is half the diagnosis: {empty}");
+        assert!(empty.contains("/json/new"), "the endpoint must be named: {empty}");
+
+        // The OTHER fault: Chrome answered, just not with JSON. The head has to
+        // travel or this stays indistinguishable from the empty case above.
+        let html =
+            chrome::decode_cdp_json(403, "<html>Forbidden</html>", "CDP /json/list on port 9222")
+                .unwrap_err()
+                .to_string();
+        assert!(html.contains("Forbidden"), "the body head must travel: {html}");
+        assert!(html.contains("403"), "the status must travel: {html}");
+        assert!(!html.contains("<empty>"), "a non-empty body must not read as empty: {html}");
+
+        // CONTROL: the happy path still decodes. Without this, a helper that
+        // always errored would satisfy every assertion above while breaking
+        // every working CDP call.
+        let ok = chrome::decode_cdp_json(200, r#"{"id":"A","url":"about:blank"}"#, "CDP /json/list")
+            .expect("valid JSON must still decode");
+        assert_eq!(ok["id"], "A");
+    }
+
     /// AMUX-98. A malformed selector (Playwright-style `text=...` syntax
     /// reaching a native `document.querySelector`) throws INSIDE the page,
     /// which `CdpClient::eval` now carries as a `PageException` rather than

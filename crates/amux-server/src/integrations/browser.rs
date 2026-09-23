@@ -2067,7 +2067,44 @@ pub async fn cdp_list(port: u16) -> anyhow::Result<serde_json::Value> {
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await?;
-    Ok(r.json().await?)
+    cdp_json(r, &format!("CDP /json/list on port {port}")).await
+}
+
+/// WHAT A CDP HTTP HELPER ACTUALLY GOT, WHEN IT WAS NOT JSON (AMUX-4932).
+///
+/// `.json()` on a response nobody status-checked reports serde's "error
+/// decoding response body: expected value at line 1 column 1" and nothing
+/// else — naming neither the endpoint, nor the HTTP status, nor what the body
+/// held. One specimen reached a caller as a bare 502 after 12.1s on 2026-09-21
+/// and carried nothing to investigate: an empty body and a 403 produce the
+/// identical sentence, and they send an investigator to opposite places.
+///
+/// This is the lesson AMUX-3689 already taught the readiness probe a few
+/// hundred lines up ("connection-refused, a timeout, a 403 and a 500 all
+/// produced the identical 'CDP never answered within 30s'"). These two helpers
+/// never got it.
+async fn cdp_json(resp: reqwest::Response, what: &str) -> anyhow::Result<serde_json::Value> {
+    let status = resp.status().as_u16();
+    // `text()` first, unconditionally: the body is the evidence, and consuming
+    // it as JSON destroys it exactly when it was not JSON.
+    let body = resp.text().await.unwrap_or_default();
+    decode_cdp_json(status, &body, what)
+}
+
+/// Pure half of [`cdp_json`], extracted for the reason `describe_cdp_probe` and
+/// `is_delegation_exit` are: pinning what the message says must not require a
+/// live Chrome serving a malformed body on cue.
+pub fn decode_cdp_json(status: u16, body: &str, what: &str) -> anyhow::Result<serde_json::Value> {
+    serde_json::from_str(body).map_err(|e| {
+        // EMPTY AND NON-EMPTY ARE DIFFERENT FAULTS. An empty body is Chrome
+        // closing the connection without answering; a non-empty one that fails
+        // to parse is Chrome answering something else (an HTML error page, a
+        // proxy interception). Quoting the head tells them apart at a glance,
+        // and `<empty>` is a statement rather than a blank nobody can read.
+        let head: String = body.chars().take(200).collect();
+        let shown = if head.trim().is_empty() { "<empty>".to_string() } else { head };
+        anyhow::anyhow!("{what} answered HTTP {status} with a body that is not JSON ({e}): {shown}")
+    })
 }
 
 /// CDP over plain HTTP: open a new tab. Chrome 111+ requires PUT on
@@ -2091,7 +2128,7 @@ pub async fn cdp_new_tab(port: u16, url: &str) -> anyhow::Result<serde_json::Val
             .send()
             .await?,
     };
-    Ok(resp.json().await?)
+    cdp_json(resp, &format!("CDP /json/new on port {port}")).await
 }
 
 /// Minimal query-encoding for the one place we build a query string by hand
