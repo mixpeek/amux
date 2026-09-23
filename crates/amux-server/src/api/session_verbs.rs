@@ -20761,6 +20761,38 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
             conn.execute("DELETE FROM steering_queue WHERE session=?", [&n])?;
+            // A DELETED WORKER MUST STOP BEING A LEASE HOLDER (AMUX-4954).
+            //
+            // Measured 2026-09-20: after DELETE returned 200 for three fan-out
+            // workers, moving their cards was refused `lease_held`, naming a
+            // holder that no longer existed, with ~30 minutes left on the lease.
+            // The refusal is correct and is not what changed here — the defect
+            // is that deletion left a holder behind that can never heartbeat
+            // again, so the card stayed frozen for the full TTL.
+            //
+            // The lease reaper does NOT cover this: it only considers leases
+            // where `expires_at < now`, so it waits out the same window. That is
+            // not the AMUX-4914 split, where fanout_retirement did the right
+            // thing and delete_post did not; here neither path released early.
+            //
+            // Releases the LEASE ONLY and leaves `status` alone. The expiry
+            // reaper reclaims to `todo` because nobody is coming back for the
+            // card; a delete is usually someone cleaning up who is about to move
+            // these cards themselves, and relocating them mid-cleanup would
+            // fight that. The generation bump is the same stale-resume guard the
+            // reaper's `lease_generation = ?` condition relies on.
+            let released = crate::db::board_store::release_leases_for_holder(conn, &n)?;
+            if released > 0 {
+                // COUNTED, not just done: a delete that strands leases is
+                // invisible until someone tries to move a card, which is how
+                // this went unnoticed for the whole expiry window.
+                tracing::warn!(
+                    target: "amux::board", session = %n, released, measured = true,
+                    n_considered = released, verdict = "lease_released_on_delete",
+                    "deleted worker held {released} board lease(s); released so its cards are \
+                     movable now rather than at expiry (AMUX-4954)"
+                );
+            }
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
@@ -35741,6 +35773,32 @@ mod amux4770_worktree_isolation_tests {
     /// it must have is pinned against real git by the reclaim cells above, and
     /// what this adds is that the teardown path is wired to them at all. Without
     /// it, reverting the one-line call site reddens nothing.
+    /// AMUX-4954, the lease half. Same shape as the worktree guard below and for
+    /// the same reason: the behaviour is pinned in board_store, and what this
+    /// adds is that the teardown path is WIRED to it. Reverting the one-line
+    /// call site otherwise reddens nothing.
+    #[test]
+    fn reaping_a_worker_releases_its_board_leases() {
+        let src = include_str!("session_verbs.rs");
+        let body = src
+            .split_once("async fn delete_post(")
+            .expect("the delete handler exists")
+            .1;
+        let body = body.split_once("\n    j200(").expect("its end marker").0;
+        // Comments stripped: this file DESCRIBES the release at length, and a
+        // scan that matches the prose passes on the description.
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("release_leases_for_holder(conn, &n)"),
+            "deleting a worker must release the board leases it holds, or its cards stay \
+             frozen until expiry over a holder that can never heartbeat again (AMUX-4954)"
+        );
+    }
+
     #[test]
     fn reaping_a_worker_reclaims_its_worktree_and_says_so_when_it_cannot() {
         let src = include_str!("session_verbs.rs");

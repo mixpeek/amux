@@ -2277,12 +2277,64 @@ pub(crate) fn lease_held_409(row: &IssueRow, caller_lane: &str, target: &str, no
              A move by another lane would strand the holder's attempt mid-work.",
             holder, row.id
         ),
-        "exits": {
-            "ask_the_holder": format!("amux send {holder} --stdin   (ask them to move {} to {target})", row.id),
-            "wait_for_expiry": "a holder that stops reporting loses the lease at expires_at; the board driver returns the card to todo and you can claim it",
-            "override_on_the_record": format!("amux board {target} {} --force --reason \"<why the holder cannot do this>\"", row.id),
-        },
+        "exits": lease_exits(&row.id, holder, target, holder_is_registered(holder)),
     })
+}
+
+/// Is the named holder still a registered session?
+///
+/// Registration, not liveness, because this runs inside the patch transaction
+/// where nothing can await a tmux probe. It is the exact test for the case this
+/// fixes — a DELETED worker is deregistered — and it is honest about the one it
+/// does not cover: a lane that is registered but not running still looks
+/// askable here, which is AMUX-4949's state and a different defect.
+fn holder_is_registered(holder: &str) -> bool {
+    !holder.is_empty()
+        && crate::api::session_verbs::all_lane_names().iter().any(|n| n == holder)
+}
+
+/// The exits a lease refusal may HONESTLY offer (AMUX-4954).
+///
+/// The refusal itself is a good one and is not what changed: it names the
+/// holder, says why a non-holder must not move the card, and offers three ways
+/// out. But it offered "ask the holder" FIRST and unconditionally, and after a
+/// delete that path does not exist — `amux send` answers "worker not found".
+/// Ethos rule 3 asks whether there is a truthful path forward in every
+/// legitimate state; here there were two, and the refusal led with the dead one.
+///
+/// So a gone holder gets the two exits that still work, plus a statement of why
+/// the third is missing. Saying the holder is gone is worth more than silently
+/// dropping the line: it tells the reader the lease will never be released by
+/// its holder, which is the thing they need to know to choose between waiting
+/// and overriding.
+pub(crate) fn lease_exits(card: &str, holder: &str, target: &str, holder_registered: bool) -> Value {
+    let mut exits = serde_json::Map::new();
+    if holder_registered {
+        exits.insert(
+            "ask_the_holder".into(),
+            json!(format!("amux send {holder} --stdin   (ask them to move {card} to {target})")),
+        );
+    } else {
+        exits.insert(
+            "holder_is_gone".into(),
+            json!(format!(
+                "{holder} is not a registered session: it cannot be asked and cannot \
+                 heartbeat, so this lease will not be released by its holder"
+            )),
+        );
+    }
+    exits.insert(
+        "wait_for_expiry".into(),
+        json!("a holder that stops reporting loses the lease at expires_at; the board driver \
+               returns the card to todo and you can claim it"),
+    );
+    exits.insert(
+        "override_on_the_record".into(),
+        json!(format!(
+            "amux board {target} {card} --force --reason \"<why the holder cannot do this>\""
+        )),
+    );
+    Value::Object(exits)
 }
 
 /// RR-0052: who holds this card and how fresh the holding is, as one object on
@@ -17473,5 +17525,35 @@ mod bulk_migrate_tests {
 
         // Nothing considered is nothing to report.
         assert_eq!(unanimous_gate(0, 0, &[]), None, "an empty column is not a gate refusal");
+    }
+}
+
+
+#[cfg(test)]
+mod lease_exit_tests {
+    use super::*;
+
+    /// AMUX-4954. The refusal led with "ask the holder", which after a delete
+    /// is a path that does not exist: `amux send` answers "worker not found".
+    #[test]
+    fn a_gone_holder_is_not_offered_as_someone_you_can_ask() {
+        let gone = lease_exits("CL-4", "1-write-docs-reference-amux-4913-1", "done", false);
+        assert!(gone.get("ask_the_holder").is_none(), "a dead exit must not be offered: {gone}");
+        assert!(
+            gone["holder_is_gone"].as_str().unwrap().contains("not a registered session"),
+            "say WHY it is missing, so the reader knows the lease will never be released \
+             by its holder: {gone}"
+        );
+        // THE TWO THAT STILL WORK MUST SURVIVE. Dropping the dead exit is only
+        // correct if a truthful path remains (ethos rule 3).
+        assert!(gone["wait_for_expiry"].is_string());
+        assert!(gone["override_on_the_record"].as_str().unwrap().contains("--force"));
+
+        // THE CONTROL: a live holder still gets the ask, which is the whole
+        // point of the refusal and the half a blanket drop would destroy.
+        let live = lease_exits("CL-4", "amux", "done", true);
+        assert!(live["ask_the_holder"].as_str().unwrap().contains("amux send amux --stdin"));
+        assert!(live.get("holder_is_gone").is_none());
+        assert!(live["override_on_the_record"].as_str().unwrap().contains("--force"));
     }
 }

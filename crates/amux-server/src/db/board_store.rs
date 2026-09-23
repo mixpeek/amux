@@ -3523,6 +3523,39 @@ pub fn refresh_lease_heartbeat(conn: &Connection, holder: &str, now: i64) -> rus
     Ok(n)
 }
 
+/// Release every lease held by `holder`, and say how many (AMUX-4954).
+///
+/// A DELETED WORKER MUST STOP BEING A HOLDER. Measured 2026-09-20: after DELETE
+/// returned 200 for three fan-out workers, moving their cards was refused
+/// `lease_held`, naming a holder that no longer existed, with ~30 minutes left
+/// to run. The refusal is correct and is not what this changes; the defect is
+/// that deletion left behind a holder that can never heartbeat again.
+///
+/// The expiry reaper does not cover it: that only scans leases where
+/// `expires_at < now`, so it waits out the same window.
+///
+/// Releases the LEASE ONLY, leaving `status` alone. The reaper reclaims to
+/// `todo` because nobody is coming back for the card; a delete is usually
+/// someone cleaning up who is about to move these cards themselves, and
+/// relocating them mid-cleanup would fight that.
+///
+/// The generation bump is the stale-resume guard the reaper's own
+/// `lease_generation = ?` condition relies on: an in-flight operation from the
+/// dead holder must not be able to act as if it still held the lease.
+pub fn release_leases_for_holder(conn: &Connection, holder: &str) -> rusqlite::Result<usize> {
+    let holder = holder.trim();
+    if holder.is_empty() {
+        return Ok(0);
+    }
+    conn.execute(
+        "UPDATE issues SET lease_owner = NULL, lease_acquired_at = NULL, \
+                lease_heartbeat_at = NULL, lease_expires_at = NULL, \
+                lease_generation = lease_generation + 1 \
+         WHERE lease_owner = ?1 AND deleted IS NULL",
+        params![holder],
+    )
+}
+
 /// A completed dependency must satisfy its type's real completion boundary.
 /// Code/ops/blockers need verification; docs and chores finish at done. Missing
 /// and discarded tasks are not proof that a required dependency was resolved.
@@ -4906,6 +4939,58 @@ mod tests {
         assert!(narrow.iter().any(|p| p.raw_status == "some-operator-column"));
         // And the archived row is excluded by both.
         assert!(!narrow.iter().any(|p| p.task.id == internal_id("P-4")));
+    }
+
+    /// AMUX-4954. A deleted worker must stop being a lease holder.
+    #[test]
+    fn releasing_a_holders_leases_frees_only_its_own_cards_and_bumps_the_generation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, status TEXT, lease_owner TEXT,
+                lease_acquired_at INTEGER, lease_heartbeat_at INTEGER,
+                lease_expires_at INTEGER, lease_generation INTEGER DEFAULT 0,
+                deleted INTEGER);
+             INSERT INTO issues VALUES ('A-1','doing','gone-worker',10,20,9999,3,NULL);
+             INSERT INTO issues VALUES ('A-2','doing','gone-worker',10,20,9999,0,NULL);
+             INSERT INTO issues VALUES ('B-1','doing','live-worker',10,20,9999,1,NULL);
+             INSERT INTO issues VALUES ('C-1','doing','gone-worker',10,20,9999,0,1);",
+        )
+        .unwrap();
+
+        assert_eq!(release_leases_for_holder(&conn, "gone-worker").unwrap(), 2);
+
+        let freed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM issues WHERE lease_owner IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(freed, 2, "both of the dead worker's live cards are free");
+
+        // EVERY lease field goes, not just the owner: an expires_at left behind
+        // still reads as a live lease to anything that checks it.
+        let leftovers: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE id IN ('A-1','A-2') AND (lease_acquired_at IS NOT NULL \
+             OR lease_heartbeat_at IS NOT NULL OR lease_expires_at IS NOT NULL)",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(leftovers, 0);
+
+        // The generation bump is the reaper's stale-resume guard.
+        let gen: i64 =
+            conn.query_row("SELECT lease_generation FROM issues WHERE id='A-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(gen, 4, "generation must advance so a dead holder cannot resume");
+
+        // THE CONTROLS. A release that freed everything would satisfy the count
+        // above, and this is the half that would strand a live worker mid-work.
+        let other: String = conn
+            .query_row("SELECT lease_owner FROM issues WHERE id='B-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(other, "live-worker", "another lane's lease must be untouched");
+        let deleted_row: String = conn
+            .query_row("SELECT lease_owner FROM issues WHERE id='C-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(deleted_row, "gone-worker", "a deleted card is not part of the live board");
+
+        // An empty holder must not free the whole board.
+        assert_eq!(release_leases_for_holder(&conn, "   ").unwrap(), 0);
+        assert_eq!(release_leases_for_holder(&conn, "").unwrap(), 0);
     }
 
     #[test]

@@ -146,6 +146,34 @@ pub(crate) async fn retire<F: Fleet>(
     if fleet.is_running(name).await {
         return Err("provider did not stop; workspace retained".into());
     }
+    // REAPING RELEASES LEASES TOO, not just DELETE (AMUX-4954).
+    //
+    // A retired worker is as unable to heartbeat as a deleted one, so the same
+    // rule applies: a holder that can never report must stop being a holder.
+    //
+    // Expected to release nothing in the normal case — retirement requires a
+    // fully Verified board and a lease lives on `doing` — which is exactly why
+    // it is here rather than assumed. The card's criterion is "deleting OR
+    // reaping", and a property that holds only on the path someone happened to
+    // check is the asymmetry AMUX-4914 was about.
+    {
+        let holder = name.to_string();
+        let _ = state
+            .store
+            .write_async(move |conn| {
+                let n = crate::db::board_store::release_leases_for_holder(conn, &holder)?;
+                if n > 0 {
+                    tracing::warn!(
+                        target: "amux::board", session = %holder, released = n, measured = true,
+                        n_considered = n, verdict = "lease_released_on_retirement",
+                        "retired worker still held {n} board lease(s) on a board that should \
+                         have been terminal; released (AMUX-4954)"
+                    );
+                }
+                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            })
+            .await;
+    }
     if !still_current()? {
         return Ok(Outcome::Deferred);
     }
