@@ -3993,7 +3993,16 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "spans_groups_explicit_deny": cross_group.explicit_deny,
             "spans_groups_own": cross_group.worker_defined,
             "steering_queue": [],
-            "managed_by": "python",
+            // WAS THE LITERAL `"python"` FOR EVERY SESSION (AMUX-4943). It
+            // reported python for 164 of 164 lanes and would have reported the
+            // same if every one were herdr-backed, so a count taken from it
+            // measured the field rather than the fleet — and it named a server
+            // that was deleted at 792ce1f. Now the resolved backend, through
+            // the SAME function the four herdr branch points act on, so the
+            // field cannot drift from the behaviour it describes.
+            "managed_by": crate::api::session_verbs::backend_from(
+                env.get("CC_BACKEND").map(String::as_str),
+            ),
         }));
     }
     out

@@ -842,8 +842,18 @@ async fn sleep_ms(ms: u64) {
 // Backend selection (py:4673-4692). CC_BACKEND wins, then AMUX_BACKEND env.
 // ---------------------------------------------------------------------------
 
-fn backend_of_cfg(cfg: &EnvFile) -> String {
-    let b = cfg.get_or("CC_BACKEND", "").trim().to_lowercase();
+/// The backend precedence as a pure rule over the one per-session value and
+/// the process default.
+///
+/// ONE DEFINITION, TWO READERS (AMUX-4943), the same discipline
+/// [`TargetRefusal`] is written under. The four sites that branch on `herdr`
+/// call this through [`backend_of_cfg`]; `/api/sessions` REPORTS it through
+/// this function directly, because it holds a plain env map rather than an
+/// [`EnvFile`]. Restating the precedence at the reporting site is how a field
+/// starts disagreeing with the behaviour it claims to describe, which is the
+/// defect one layer up from the one this fixes.
+pub(crate) fn backend_from(cc_backend: Option<&str>) -> String {
+    let b = cc_backend.unwrap_or_default().trim().to_lowercase();
     if b == "herdr" || b == "tmux" {
         return b;
     }
@@ -853,6 +863,10 @@ fn backend_of_cfg(cfg: &EnvFile) -> String {
     } else {
         "tmux".into()
     }
+}
+
+fn backend_of_cfg(cfg: &EnvFile) -> String {
+    backend_from(cfg.get("CC_BACKEND"))
 }
 fn session_backend(name: &str) -> String {
     backend_of_cfg(&parse_env(name))
@@ -23629,6 +23643,32 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    /// AMUX-4943. `managed_by` was the literal `"python"` for every session, so
+    /// it reported the same value for 164 of 164 lanes and would have reported
+    /// it if every one were herdr-backed. The ethos test is "what input would
+    /// change this output?", and for a constant there is none.
+    ///
+    /// So the property under test is that the value CAN DIFFER between two
+    /// lanes in genuinely different states. Both cases here are explicit
+    /// `CC_BACKEND` values, which win before the process-wide `AMUX_BACKEND`
+    /// is consulted — deliberately, so this does not read shared process env
+    /// that a parallel test could be mutating underneath it.
+    #[test]
+    fn two_lanes_in_different_backend_states_get_different_managed_by_values() {
+        use super::backend_from;
+        assert_eq!(backend_from(Some("herdr")), "herdr");
+        assert_eq!(backend_from(Some("tmux")), "tmux");
+        assert_ne!(
+            backend_from(Some("herdr")),
+            backend_from(Some("tmux")),
+            "a field that cannot differ between two lanes is not a classification (AMUX-4943)"
+        );
+        // Case and padding are the shapes an env file actually carries, and
+        // `herdr` reaching a caller as `Herdr` would silently fall through to
+        // the default — reported as tmux while the lane is herdr-backed.
+        assert_eq!(backend_from(Some("  HERDR ")), "herdr");
+    }
+
     #[derive(Clone)]
     struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
