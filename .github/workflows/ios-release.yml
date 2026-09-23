@@ -1,0 +1,61 @@
+name: iOS — submit to the App Store
+
+# MANUAL ONLY, and deliberately not on a schedule or a push. `fastlane release`
+# calls `deliver(submit_for_review: true, automatic_release: true)`, so a run
+# sends the app to Apple review and, on approval, publishes to every user with
+# no further human gate. That is not a thing to leave on a cron.
+#
+# WHY IT EXISTS (AMUX-4952, Ethan 2026-09-23: "i still dont see ... an updated
+# version in app store"). The `release` lane has been in ios/fastlane/Fastfile
+# the whole time and NOTHING invoked it: ios.yml runs `beta`, which uploads to
+# TestFlight only. So every build since 1.0 shipped in March reached TestFlight
+# and the public store stayed on 1.0 — including the Share Extension, which is
+# why the share sheet has no amux on a store install.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type SUBMIT to send the current TestFlight build to Apple review'
+        required: true
+        default: ''
+
+jobs:
+  release:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      # A dispatch is one click and this publishes to every user. The typed
+      # word is the second signal, and the job refuses without it rather than
+      # trusting that whoever pressed the button meant this one.
+      - name: The confirmation must be typed
+        run: |
+          if [ "${{ inputs.confirm }}" != "SUBMIT" ]; then
+            echo "::error::confirm was '${{ inputs.confirm }}', not SUBMIT — refusing to submit to Apple review"
+            exit 1
+          fi
+          echo "confirmed"
+
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Install xcodegen
+        run: brew install xcodegen || true
+
+      # deliver reads metadata and screenshots from the generated project's
+      # fastlane directory, and the project is gitignored.
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Submit for review
+        run: bundle exec fastlane release
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}

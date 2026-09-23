@@ -1,1 +1,3 @@
-Faster, more reliable session monitoring, plus bug fixes and stability improvements.
+Share to amux from any app. Pick a worker, add a note, and your links, photos and files go straight to it.
+
+Also in this version: a clearer message when a server cannot be reached, instead of a dark screen.
