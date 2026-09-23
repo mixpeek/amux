@@ -2545,7 +2545,13 @@
      keyboard-open (vv-compact) state still hide it — those are deliberate
      space-saving modes. */
   @media (max-width: 600px) {
-    #peek-overlay { padding: 6px; padding-top: max(6px, env(safe-area-inset-top)); }
+    /* padding-top is a PLAIN 6px for the same reason as `.overlay` above: the
+       element is already positioned at `top: max(--chrome-tab-h,
+       env(safe-area-inset-top))`, so adding the inset again as padding put the
+       worker title a full carve-height below where it belonged. This is the
+       selector that actually governs the worker detail view on a phone; the
+       `.overlay` rule is overridden here. */
+    #peek-overlay { padding: 6px; }
     #peek-overlay .overlay-header { padding-bottom: 0 !important; gap: 2px !important; margin-bottom: 2px; }
     #peek-overlay #peek-task-row { display: none !important; }
     #peek-overlay .peek-dir-bar { padding: 1px 6px; font-size: 0.68rem; }
