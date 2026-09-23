@@ -114,7 +114,7 @@ fn read_page(path: &Path, before: Option<u64>, budget: usize) -> std::io::Result
             tool_output_arrays += 1;
         }
         let normalized = readable_records(record);
-        let text = render_transcript_records(normalized.clone(), usize::MAX);
+        let text = render_transcript_records(normalized.clone(), usize::MAX, false);
         count += 1;
         if !text.is_empty() {
             chars += text.chars().count();
@@ -123,7 +123,7 @@ fn read_page(path: &Path, before: Option<u64>, budget: usize) -> std::io::Result
         if chars >= budget { break; }
     }
     parts.reverse();
-    Ok(Page { text: render_transcript_records(parts.into_iter().flatten().collect(), usize::MAX), before: cursor, records: count, tool_output_arrays })
+    Ok(Page { text: render_transcript_records(parts.into_iter().flatten().collect(), usize::MAX, false), before: cursor, records: count, tool_output_arrays })
 }
 
 pub(super) fn response(name: &str, qs: &[(String, String)]) -> Response {

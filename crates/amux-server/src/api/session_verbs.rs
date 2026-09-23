@@ -3509,11 +3509,57 @@ fn last_assistant_message(name: &str, max_chars: usize) -> String {
 fn render_session_transcript(name: &str, max_chars: usize) -> String {
     let Some(path) = session_jsonl_path(name) else { return String::new() };
     let max_read = std::cmp::max(max_chars * 5, 5_000_000) as u64;
-    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars)
+    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, true)
 }
 
-fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
+/// Emit one line for a run of consecutive tool calls, the way Claude Code's own
+/// terminal does ("Ran 2 shell commands"), and reset the run (AMUX-5017).
+///
+/// Extracted so the flush happens identically at both call sites — before prose
+/// and at the end of the records — rather than being written twice and drifting.
+/// A run of zero emits nothing.
+fn flush_tool_run(out: &mut Vec<String>, run: &mut usize, names: &mut Vec<String>) {
+    if *run == 0 {
+        names.clear();
+        return;
+    }
+    let plural = if *run == 1 { "" } else { "s" };
+    // "shell command" only when every call in the run was Bash, which is what
+    // the terminal says. A mixed run gets the neutral word rather than a wrong
+    // specific one.
+    let what = if names.len() == 1 && names[0] == "Bash" {
+        format!("shell command{plural}")
+    } else {
+        format!("tool call{plural}")
+    };
+    out.push(format!("\x1b[38;5;246mRan {run} {what}\x1b[0m"));
+    *run = 0;
+    names.clear();
+}
+
+/// `collapse_tools` is the DENSITY, and it belongs to the caller rather than to
+/// this function (AMUX-5017).
+///
+/// The peek pane is read beside Claude Code's own terminal, which collapses a
+/// run of tool calls into "Ran 2 shell commands" and shows every prose message.
+/// This renderer printed the tool name, its argument and up to six output lines
+/// per call, so the same window held the bash detail and far less conversation.
+/// Ethan, comparing the two: "looks like our amux has different content than
+/// amux raw in terminal ... we should only classify messages and color code
+/// based on message type."
+///
+/// The DETAIL views want the opposite, and their tests say so: the codex
+/// history page asserts it contains `exec_command`, `Actual tool output` and
+/// `fixture completed`, and the subagent view exists to show what a subagent
+/// did. Collapsing in the shared renderer broke all four of those tests, which
+/// is what established that this is a per-caller choice and not a bug in the
+/// renderer.
+fn render_transcript_records(records: Vec<Value>, max_chars: usize, collapse_tools: bool) -> String {
     let mut out: Vec<String> = Vec::new();
+    // Consecutive tool activity, counted and flushed as one line. See the
+    // "tool_use" arm below for why (AMUX-5017).
+    let mut tool_run: usize = 0;
+    let mut tool_names: Vec<String> = Vec::new();
     let sysrem = cached_re!(r"(?s)<system-reminder>.*?</system-reminder>");
     let tasknote = cached_re!(r"(?s)<task-notification>.*?</task-notification>");
     let caveat = cached_re!(r"(?s)<local-command-caveat>.*?</local-command-caveat>");
@@ -3594,10 +3640,35 @@ fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
                         out.push(user_echo_ansi(&txt));
                     } else {
                         let body = md_to_ansi(&txt).replace('\n', "\n  ");
+                        flush_tool_run(&mut out, &mut tool_run, &mut tool_names);
                         out.push(format!("\x1b[38;5;231m\u{23fa}\x1b[39m {body}\x1b[0m"));
                     }
                     out.push(String::new());
                 }
+                // TOOL ACTIVITY IS COUNTED, NOT TRANSCRIBED (AMUX-5017).
+                //
+                // Ethan, comparing peek against the same lane's terminal:
+                // "looks like our amux has different content than amux raw in
+                // terminal ... we should only classify messages and color code
+                // based on message type."
+                //
+                // The terminal collapses a run of tool calls into one line,
+                // "Ran 2 shell commands", and shows every prose message. This
+                // renderer printed the tool name, its argument, and up to six
+                // lines of output per call — so the same window held the bash
+                // detail and far less of the conversation. Nothing was missing;
+                // it was crowded out, which reads as missing.
+                //
+                // The run is flushed when prose arrives or the records end, so
+                // the count spans exactly what the terminal counts.
+                "tool_use" if collapse_tools => {
+                    tool_run += 1;
+                    let nm = b["name"].as_str().unwrap_or("tool").to_string();
+                    if !tool_names.contains(&nm) {
+                        tool_names.push(nm);
+                    }
+                }
+                "tool_result" if collapse_tools => {}
                 "tool_use" => {
                     let nm = b["name"].as_str().unwrap_or("tool");
                     let arg = tool_brief(&b["input"]);
@@ -3635,6 +3706,7 @@ fn render_transcript_records(records: Vec<Value>, max_chars: usize) -> String {
             }
         }
     }
+    flush_tool_run(&mut out, &mut tool_run, &mut tool_names);
     let mut text = out.join("\n").trim_matches('\n').to_string();
     if text.chars().count() > max_chars {
         let chars: Vec<char> = text.chars().collect();
@@ -16607,7 +16679,7 @@ fn session_subagents_from(conversations: &[PathBuf], name: &str, selected: Optio
                 // caller-controlled filesystem path, and identical child
                 // names in different conversations cannot cross-link.
                 if agent != wanted_agent || stem != wanted_conversation { continue; }
-                let output = render_transcript_records(iter_jsonl_tail(&p, 5_000_000), 300_000);
+                let output = render_transcript_records(iter_jsonl_tail(&p, 5_000_000), 300_000, false);
                 tracing::debug!(session = name, agent, conversation = %stem,
                     verdict = "subagent-output", bytes = output.len(), "read subagent transcript");
                 return json!({"session":name,"agent":agent,"conversation":stem,
@@ -36063,6 +36135,54 @@ mod schedule_target_refusal_tests {
 /// AMUX-4803: the worker-spawn path must not put provider keys in tmux argv.
 #[cfg(test)]
 mod spawn_argv_secret_tests {
+
+    /// AMUX-5017. The peek pane is read beside Claude Code's terminal, which
+    /// collapses a run of tool calls into "Ran 2 shell commands". The detail
+    /// views want the opposite and their own tests say so. Both directions are
+    /// asserted here, over the SAME records, so the parameter cannot be
+    /// silently dropped in either direction.
+    #[test]
+    fn tool_density_is_the_callers_choice_not_the_renderers() {
+        let recs: Vec<serde_json::Value> = vec![
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"text","text":"Found the culprit."}]}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"tool_use","name":"Bash","input":{"command":"kubectl get pods"}}]}}),
+            serde_json::json!({"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","content":"pod/api-1 Running"}]}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"tool_use","name":"Bash","input":{"command":"kubectl logs api-1"}}]}}),
+            serde_json::json!({"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","content":"listening on 8080"}]}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"text","text":"Both checks pass."}]}}),
+        ];
+
+        let dense = crate::api::session_verbs::render_transcript_records(recs.clone(), usize::MAX, false);
+        assert!(dense.contains("kubectl get pods"), "detail view must keep the command: {dense}");
+        assert!(dense.contains("pod/api-1 Running"), "detail view must keep tool output: {dense}");
+
+        let peek = crate::api::session_verbs::render_transcript_records(recs.clone(), usize::MAX, true);
+        assert!(
+            peek.contains("Ran 2 shell commands"),
+            "peek must collapse the run the way the terminal does: {peek}"
+        );
+        assert!(
+            !peek.contains("pod/api-1 Running") && !peek.contains("listening on 8080"),
+            "peek must not transcribe tool output; that is what crowds the conversation out: {peek}"
+        );
+        // THE PROSE IS THE POINT. Collapsing is only worth doing if what it
+        // makes room for survives.
+        for said in ["Found the culprit.", "Both checks pass."] {
+            assert!(peek.contains(said), "peek dropped a prose message: {said} not in {peek}");
+            assert!(dense.contains(said), "detail view dropped a prose message: {said}");
+        }
+        // A single call reads "command", not "commands".
+        let one = crate::api::session_verbs::render_transcript_records(recs[..3].to_vec(), usize::MAX, true);
+        assert!(one.contains("Ran 1 shell command"), "singular for one call: {one}");
+        assert!(!one.contains("Ran 1 shell commands"), "no double plural: {one}");
+    }
+
 
     /// THE DELIVERER MUST ACTUALLY CALL IT (AMUX-5007).
     ///
