@@ -171,6 +171,20 @@ export default defineConfig({
   timeout: 30_000,
   retries: 0,
   use: {
+    // AMUX-4984. A failure used to leave NOTHING but its error string, so an
+    // unexplained red could only be reasoned about. Two of them this week were
+    // diagnosed by re-deriving the code path and one of those derivations was
+    // WRONG — a probe built from it failed to reproduce the failure it was
+    // supposed to explain.
+    //
+    // rust.yml already has a step named "Upload traces" pointing at
+    // test-results/. It was uploading nothing of the sort, because nothing
+    // here ever produced a trace. The step promised an artifact the config
+    // could not give it.
+    //
+    // Screenshot is global: it costs nothing on a passing run, since it is
+    // only taken when a test fails.
+    screenshot: 'only-on-failure',
     ignoreHTTPSErrors: true, // self-signed cert is the product behavior
     // SERVICE WORKERS OFF BY DEFAULT — opt-OUT, not opt-in (AMUX-3057 class).
     //
@@ -217,7 +231,18 @@ export default defineConfig({
     // the next step is instrumenting the launch itself — the config already
     // prints host load every run for exactly that reason (AMUX-3605/3646,
     // load averages in the thirties on 28 cores).
-    ...(t.name === 'ios-safari' ? { timeout: 90_000 } : {}),
+    ...(t.name === 'ios-safari'
+      ? {
+          timeout: 90_000,
+          // Full trace for this project only. `retain-on-failure` records
+          // every test and discards the passes, so it is the one setting here
+          // with a real per-test cost — scoped to where the failures actually
+          // are (4 of the 5 specs AMUX-4967 catalogued were ios-safari).
+          // Widening it to the others is a one-line change if a desktop
+          // failure ever needs it.
+          use: { ...t.use, baseURL: `https://localhost:${t.port}`, trace: 'retain-on-failure' as const },
+        }
+      : {}),
   })),
   webServer: TARGETS.map((t) => ({
     // Builds from COMMITTED HEAD, not this shared working tree — a peer
