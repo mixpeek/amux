@@ -6388,11 +6388,31 @@ fn blocker_recoveries_with_policy(conn: &Connection, lane: &str, allowed_asks: &
             bs::get_issue(conn, id).map(|dep| dep.map(|d|
                 json!({"id":d.id,"status":d.status,"evidence":d.evidence,"acceptance_criteria":d.acceptance_criteria})))
         }).collect::<rusqlite::Result<Vec<_>>>()?;
-        // Progress-note appends are not a changed blocker. Re-arm only for a
-        // changed execution contract, input evidence or blocking condition.
-        let signature = json!([lane,row.id,row.title,row.item_type,row.status,row.next_action,
-            row.acceptance_criteria,row.gate,row.evidence,row.depends_on,row.blocked_on,row.source_ref,row.waiting_on,
-            row.ask_type,row.ask_question,row.ask_unblocks,allowed_asks,dep_state]);
+        // THE KEY IS THE BLOCKER, NOT THE CARD (AMUX-4912). This used to hash
+        // next_action, acceptance_criteria, gate, evidence, ask_question and
+        // ask_unblocks, which are precisely the fields the recovery prompt
+        // tells the worker to write. So COMPLIANCE ROTATED THE KEY: the worker
+        // did as instructed, the hash moved, the dedupe missed, and the
+        // identical blocker was re-delivered. The only way to stop the loop was
+        // to stop recording state, the opposite of the instruction. Measured by
+        // mixpeek-fanout: 5 prompts on MF-1238 and 2 on MFEM1-55 against a
+        // byte-identical blocker, each ~53s after the worker updated the card,
+        // over a static approval hold that no re-prompt could unstick.
+        //
+        // It also made two statements in this file false. The prompt closes
+        // with "An unchanged blocker will not receive another recovery prompt",
+        // and that is now true.
+        //
+        // What remains is exactly what the eligibility test above reads:
+        // blocking deps, blocked_on, the trigger, whether next_action is
+        // MISSING, and whether the ask sits outside policy. next_action is the
+        // boolean rather than the text on purpose, so supplying it re-arms ONCE
+        // (the blocker genuinely cleared) and editing the wording afterwards
+        // never does. Progress notes, evidence and criteria are the worker's
+        // record of the same blocker, not a different one.
+        let signature = json!([lane,row.id,row.item_type,row.status,missing_next,
+            row.depends_on,row.blocked_on,row.source_ref,row.waiting_on,
+            row.ask_type,ask_outside_policy,allowed_asks,dep_state]);
         let identity = format!("board-blocker:{:x}", Sha256::digest(signature.to_string().as_bytes()));
         let context = json!({"card":row.id,"title":row.title,"status":row.status,
             "blocked_on":row.blocked_on,"trigger":row.source_ref,"waiting_on":row.waiting_on,
@@ -9616,6 +9636,79 @@ mod tests {
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
         assert_ne!(blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity);
+    }
+
+    #[test]
+    fn complying_with_the_recovery_prompt_does_not_re_arm_it() {
+        // AMUX-4912. The prompt demands next_action, acceptance_criteria and
+        // evidence, and the signature hashed all three, so doing as instructed
+        // rotated the key and the SAME blocker came back. Measured by
+        // mixpeek-fanout: 5 prompts on one card, each ~53s after an update, over
+        // a static approval hold no re-prompt could unstick.
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (_dir, _state, store) = drive_state();
+        drive_card(&store, "HELD", "backlog", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET blocked_on='one IAM binding, grantable only by the owner' WHERE id='HELD'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let identity = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
+        // Every field the prompt tells the worker to write, in one turn.
+        store.write(|conn| {
+            conn.execute(
+                "UPDATE issues SET next_action='Ask the owner to grant the binding, then retry',\
+                 acceptance_criteria='[\"the binding exists on the service account\"]',\
+                 evidence='checked 09:00 and 11:00; still absent',\
+                 gate='[\"Implemented and merged\"]',\
+                 ask_question='grant the binding?',ask_unblocks='the tenant roll',\
+                 title='Held on one IAM binding',rev=rev+1 WHERE id='HELD'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        assert_eq!(
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity,
+            "recording exactly what the prompt demanded re-armed the prompt"
+        );
+        // A genuinely different blocking condition still earns a turn.
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET blocked_on='binding granted; the roll now fails on quota' WHERE id='HELD'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        assert_ne!(
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, identity,
+            "a changed blocking condition must still re-arm"
+        );
+    }
+
+    #[test]
+    fn supplying_a_missing_continuation_re_arms_once_then_settles() {
+        // AMUX-4912. next_action is hashed as the missing/present BOOLEAN the
+        // eligibility test reads, never as text: supplying it clears a real
+        // blocker and legitimately earns ONE turn, and rewording it afterwards
+        // earns none.
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (_dir, _state, store) = drive_state();
+        drive_card(&store, "NOCONT", "backlog", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET blocked_on='waiting on an upstream artifact',next_action=NULL WHERE id='NOCONT'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let missing = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET next_action='Poll the upstream artifact, then validate it' WHERE id='NOCONT'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        let supplied = blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity.clone();
+        assert_ne!(supplied, missing, "a missing continuation becoming present IS a changed blocker");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET next_action='Poll the upstream artifact hourly, then validate its signature' WHERE id='NOCONT'", [])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+        assert_eq!(
+            blocker_recoveries(&store.read().unwrap(), "lane").unwrap()[0].identity, supplied,
+            "rewording a continuation that already exists is not a changed blocker"
+        );
     }
 
     #[test]
