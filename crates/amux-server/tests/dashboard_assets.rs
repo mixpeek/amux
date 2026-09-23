@@ -1740,3 +1740,45 @@ fn the_ui_closed_statuses_match_the_servers_derivation() {
     // And the count is not a coincidence of two short lists.
     assert!(from_js.len() >= 5, "{from_js:?}");
 }
+
+/// AMUX-5011. `delivery='board'` means amux read the message as a work request
+/// and DELIBERATELY did not send its text to the lane. That value was missing
+/// from `_msgDeliveryChip`'s ladder, so it fell to the trailing arm and
+/// rendered as `direct?` over a tooltip saying the delivery path was not
+/// recorded. It was recorded, and it was the one path that delivers no text.
+///
+/// Ethan hit exactly that on MSG-68459: the row read `direct?`, he read it as
+/// sent, and reported the message as vanished. It had become AMUX-5008.
+///
+/// A source guard rather than a render test because this file is where the
+/// dashboard's shipped bytes are already checked, and the failure being
+/// guarded is the arm going missing again.
+#[test]
+fn the_delivery_chip_still_handles_a_message_routed_to_the_board() {
+    let app = asset("app.js");
+    let start = app
+        .find("function _msgDeliveryChip(e) {")
+        .expect("_msgDeliveryChip is gone from the bundle");
+    let end = app[start..]
+        .find("\n}\n")
+        .map(|i| start + i + 3)
+        .expect("_msgDeliveryChip has no closing brace");
+    let body = &app[start..end];
+
+    assert!(
+        body.contains("rec === 'board'"),
+        "_msgDeliveryChip no longer handles delivery='board'. Without that arm an \
+         intercepted message renders as `direct?` — \"inferred from its type\" — which \
+         is how a message that was deliberately never delivered reads as sent."
+    );
+    assert!(
+        body.contains("NOT delivered as text"),
+        "the board arm must say the text was not delivered; a neutral label here is the \
+         whole defect"
+    );
+    assert!(
+        body.contains("card_id"),
+        "the board arm must name the card the message became, or the reader has no way \
+         to find where their request went"
+    );
+}

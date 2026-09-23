@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1016';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1017';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -17865,6 +17865,21 @@ function _msgDeliveryChip(e) {
   } else if (rec === 'direct') {
     label = 'direct'; color = '#3fb950'; bg = 'rgba(63,185,80,0.14)';
     title = 'Handed to a live session at the moment it was sent';
+  } else if (rec === 'board') {
+    // AMUX-5011. `board` means amux read the message as a work request and
+    // DELIBERATELY did not send its text to the lane — session_verbs.rs logs
+    // "existing board dispatcher owns execution, no duplicate raw prompt sent".
+    // It was missing from this ladder, so it fell to the `direct?` arm below
+    // and was labelled "inferred from its type", over a tooltip saying the
+    // delivery path was not recorded. It WAS recorded, and it was the one path
+    // that does not deliver the text at all.
+    //
+    // Ethan hit exactly this on MSG-68459: the row read `direct?`, he read that
+    // as sent, and concluded the message had vanished. It had become AMUX-5008.
+    label = 'board'; color = '#a371f7'; bg = 'rgba(163,113,247,0.16)';
+    title = 'NOT delivered as text. amux read this as a work request and routed it to the board'
+          + (e.card_id ? ' — it became ' + e.card_id + '.' : '.')
+          + ' The lane sees the resulting card, not this message.';
   } else {
     // Pre-0014 row: inferred, and SAID to be inferred.
     label = 'direct?'; color = 'var(--dim)'; bg = 'rgba(139,148,158,0.12)';
