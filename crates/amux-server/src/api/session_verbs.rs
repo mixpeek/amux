@@ -3833,19 +3833,36 @@ fn flush_tool_run(out: &mut Vec<String>, run: &mut usize, names: &mut Vec<String
 /// did. Collapsing in the shared renderer broke all four of those tests, which
 /// is what established that this is a per-caller choice and not a bug in the
 /// renderer.
-fn render_transcript_records(
-    records: Vec<Value>,
-    max_chars: usize,
-    collapse_tools: bool,
-) -> String {
+/// Remove the harness envelopes Claude Code injects into a conversation, and
+/// say whether anything of the message survived (AMUX-5017).
+///
+/// ONE function, TWO callers, because there were two code paths and only one of
+/// them stripped. A `queued_command` attachment renders through
+/// `user_echo_ansi` and had no strip at all, so 598 of 706 attachment prompts
+/// in one live transcript carried a raw `<task-notification>` block straight
+/// into the peek pane — displayed with the `❯` prompt glyph, which is why it
+/// read as something a human typed. Measured on this lane 2026-09-23.
+///
+/// The message-content path stripped correctly the whole time (280 of 280),
+/// which is what made this hard to see: every test of the mechanism passed.
+fn strip_harness_envelopes(text: &str) -> String {
+    let sysrem = cached_re!(r"(?s)<system-reminder>.*?</system-reminder>");
+    let tasknote = cached_re!(r"(?s)<task-notification>.*?</task-notification>");
+    let caveat = cached_re!(r"(?s)<local-command-caveat>.*?</local-command-caveat>");
+    let out = sysrem.replace_all(text, "");
+    let out = tasknote.replace_all(&out, "");
+    let out = caveat.replace_all(&out, "");
+    out.trim().to_string()
+}
+
+fn render_transcript_records(records: Vec<Value>, max_chars: usize, collapse_tools: bool) -> String {
     let mut out: Vec<String> = Vec::new();
     // Consecutive tool activity, counted and flushed as one line. See the
     // "tool_use" arm below for why (AMUX-5017).
     let mut tool_run: usize = 0;
     let mut tool_names: Vec<String> = Vec::new();
-    let sysrem = cached_re!(r"(?s)<system-reminder>.*?</system-reminder>");
-    let tasknote = cached_re!(r"(?s)<task-notification>.*?</task-notification>");
-    let caveat = cached_re!(r"(?s)<local-command-caveat>.*?</local-command-caveat>");
+    // The three envelope regexes now live in `strip_harness_envelopes`, which
+    // both the attachment path and the message path call.
     let cmd_re = cached_re!(r"(?s)<command-name>(.*?)</command-name>");
     let arg_re = cached_re!(r"(?s)<command-args>(.*?)</command-args>");
     let out_re = cached_re!(r"(?s)<local-command-stdout>(.*?)</local-command-stdout>");
@@ -3855,9 +3872,14 @@ fn render_transcript_records(
         // not user records. Queue enqueue/dequeue records are bookkeeping;
         // only the consumed attachment is a conversation message.
         if t == "attachment" && o["attachment"]["type"].as_str() == Some("queued_command") {
-            let prompt = o["attachment"]["prompt"].as_str().unwrap_or("").trim();
+            // SAME STRIP AS THE MESSAGE PATH. A queued attachment is where
+            // the harness's own notifications arrive, and this branch rendered
+            // them verbatim under the `❯` glyph (AMUX-5017).
+            let prompt = strip_harness_envelopes(
+                o["attachment"]["prompt"].as_str().unwrap_or(""),
+            );
             if !prompt.is_empty() {
-                out.push(user_echo_ansi(prompt));
+                out.push(user_echo_ansi(&prompt));
                 out.push(String::new());
             }
             continue;
@@ -3887,10 +3909,9 @@ fn render_transcript_records(
                             || txt.contains("<task-notification>")
                             || txt.contains("<local-command-caveat>")
                         {
-                            txt = sysrem.replace_all(&txt, "").into_owned();
-                            txt = tasknote.replace_all(&txt, "").into_owned();
-                            txt = caveat.replace_all(&txt, "").into_owned();
-                            txt = txt.trim().to_string();
+                            // The SAME function the attachment branch calls, so
+                            // the two paths cannot drift apart again.
+                            txt = strip_harness_envelopes(&txt);
                             if txt.is_empty() {
                                 continue;
                             }
@@ -43597,6 +43618,57 @@ mod schedule_target_refusal_tests {
 /// AMUX-4803: the worker-spawn path must not put provider keys in tmux argv.
 #[cfg(test)]
 mod spawn_argv_secret_tests {
+
+    /// AMUX-5017. The leak was a SECOND rendering path that never stripped.
+    ///
+    /// A `queued_command` attachment goes through `user_echo_ansi` and carried
+    /// its prompt verbatim, so a harness task-notification reached the peek
+    /// pane under the `❯` glyph and read as something a human typed. Measured
+    /// on one live transcript: 598 of 706 attachment prompts carried one.
+    ///
+    /// The message-content path stripped correctly the whole time, 280 of 280,
+    /// which is exactly why this survived every test of the mechanism. So both
+    /// paths are asserted here, over the same envelope.
+    #[test]
+    fn harness_envelopes_are_stripped_on_both_rendering_paths() {
+        let note = "<task-notification>\n<task-id>abc</task-id>\n</task-notification>";
+        let render = |recs: Vec<serde_json::Value>| {
+            crate::api::session_verbs::render_transcript_records(recs, usize::MAX, true)
+        };
+
+        // PATH 1: the queued attachment, which is the one that leaked.
+        let only_note = render(vec![serde_json::json!({
+            "type": "attachment",
+            "attachment": {"type": "queued_command", "prompt": note},
+        })]);
+        assert!(
+            !only_note.contains("task-notification"),
+            "a queued attachment still renders the harness envelope: {only_note}"
+        );
+        assert!(
+            only_note.trim().is_empty(),
+            "an attachment that was ONLY an envelope must leave no row at all: {only_note:?}"
+        );
+
+        // A real queued command still renders: the strip must not eat content.
+        let real = render(vec![serde_json::json!({
+            "type": "attachment",
+            "attachment": {"type": "queued_command",
+                           "prompt": format!("{note}\nship the release")},
+        })]);
+        assert!(real.contains("ship the release"), "the human's words were dropped: {real}");
+        assert!(!real.contains("task-notification"), "envelope survived beside the text: {real}");
+
+        // PATH 2: message content, which was already correct and must stay so.
+        let msg = render(vec![serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "text", "text": format!("{note}\nrun the tests")}]},
+        })]);
+        assert!(msg.contains("run the tests"), "the message path dropped the text: {msg}");
+        assert!(!msg.contains("task-notification"), "the message path leaked: {msg}");
+    }
+
 
     /// AMUX-5017. The peek pane is read beside Claude Code's terminal, which
     /// collapses a run of tool calls into "Ran 2 shell commands". The detail
