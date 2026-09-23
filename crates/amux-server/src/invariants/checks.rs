@@ -1645,6 +1645,94 @@ pub fn config_env_reaches_process(env_file: &str, lookup: &dyn Fn(&str) -> Optio
 /// KEPT by design (the 2026-08-19 panic: age cannot distinguish a 6.5h outage
 /// from a dead lane, and every queued row delivered on restart), so failing
 /// them forever was a permanent red that trains skimming.
+/// How long a message may sit behind a DELIBERATE hold before the fleet stops
+/// calling that healthy. `AMUX_QUEUE_PARKED_MAX_S`, default 72h.
+///
+/// Not a delivery deadline and not a reap deadline: nothing is dropped when
+/// this passes. It is the bound on how long amux will report a silent queue as
+/// fine.
+pub fn queue_parked_max_s() -> f64 {
+    std::env::var("AMUX_QUEUE_PARKED_MAX_S")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v >= 3600.0)
+        .unwrap_or(72.0 * 3600.0)
+}
+
+/// A QUEUE NOBODY POLICES IS NOT A HEALTHY QUEUE (AMUX-5006).
+///
+/// `queue_has_live_consumer` PASSES every row whose block reason is not
+/// reapable, on the reasoning that "waiting is the design, so there is no
+/// deadline to be past". That is correct about the REAPER and it is what made
+/// the following invisible, measured on the live DB 2026-09-23:
+///
+/// ```text
+/// 61 rows in steering_queue, 0 in flight, oldest 218.2h (9.1 days),
+/// 13 lanes, every one of them lifecycle=paused
+/// ```
+///
+/// Every one of those rows produced a PASS. The fleet reported healthy while
+/// peer task callbacks, fan-out integration requests and board reminders sat
+/// undelivered for over a week, and the senders — mvs-infra had 21 to ts-gke
+/// alone — believed they had been delivered.
+///
+/// This does NOT change delivery. A paused lane is stopped on purpose and
+/// `lane_block_reason` is right to hold its queue; dropping the rows would turn
+/// a visible delay into silent data loss. What changes is the CLAIM: past the
+/// bound, amux stops saying this is fine and names the lane, the count and the
+/// age.
+///
+/// Deliberately separate from `queue.has_live_consumer` rather than a new arm
+/// inside it. That check answers "did the reaper fail?" and the answer here is
+/// no — the reaper is doing exactly what it should. Two questions, two
+/// verdicts; folding them would make one of the answers wrong.
+pub fn queue_parked_behind_hold(items: &[QueuedItem], now: f64, max_parked_s: f64) -> Vec<InvariantResult> {
+    const ID: &str = "queue.parked_behind_hold";
+    use std::collections::HashMap;
+    // Per LANE, not per row: 21 failures naming ts-gke 21 times is the nag this
+    // codebase keeps re-learning about. One verdict, with the count in it.
+    let mut oldest: HashMap<&str, (f64, usize, String)> = HashMap::new();
+    for it in items {
+        let Some(reason) = it.block_reason.as_deref() else { continue };
+        if crate::api::session_verbs::reason_is_reapable(reason) {
+            continue; // the reaper owns these; queue.has_live_consumer judges them
+        }
+        let age = now - it.queued_at;
+        let e = oldest.entry(it.target.as_str()).or_insert((0.0, 0, reason.to_string()));
+        e.1 += 1;
+        if age > e.0 {
+            e.0 = age;
+            e.2 = reason.to_string();
+        }
+    }
+    let mut out: Vec<InvariantResult> = Vec::new();
+    let mut lanes: Vec<_> = oldest.into_iter().collect();
+    lanes.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
+    for (lane, (age, count, reason)) in lanes {
+        if age <= max_parked_s {
+            out.push(InvariantResult::pass(ID).entity(lane));
+            continue;
+        }
+        out.push(
+            InvariantResult::fail(
+                ID,
+                format!(
+                    "a message held behind '{reason}' is delivered or retired within {:.0}h",
+                    max_parked_s / 3600.0
+                ),
+                format!(
+                    "{count} message(s) parked for '{lane}' behind '{reason}', oldest {:.1}h. \
+                     Nothing is being dropped and nothing will deliver until the hold clears; \
+                     the sender has been told via steering.undelivered and cannot act on it.",
+                    age / 3600.0
+                ),
+            )
+            .entity(lane),
+        );
+    }
+    out
+}
+
 pub fn queue_has_live_consumer(
     items: &[QueuedItem],
     now: f64,
@@ -6184,6 +6272,73 @@ mod negative_controls {
     fn quoted_values_are_not_false_drift() {
         let rs = config_env_reaches_process("K=\"v\"\n", &|_| Some("v".into()));
         assert!(rs.iter().all(|r| r.status == Status::Pass), "quotes must be stripped before comparing");
+    }
+
+    /// AMUX-5006. The live shape that read as healthy: rows parked behind a
+    /// DELIBERATE hold. `queue.has_live_consumer` passes all of them and is
+    /// right to — the reaper never touches them — which is exactly why the
+    /// fleet reported fine with 61 messages sitting up to 9.1 days.
+    #[test]
+    fn a_deliberate_hold_still_gets_a_deadline_on_the_claim_not_the_delivery() {
+        let parked = |target: &str, age: f64| QueuedItem {
+            queue: "steering".into(),
+            target: target.into(),
+            queued_at: 0.0 - age,
+            target_idle: false,
+            block_reason: Some("paused".into()),
+            idle_since: None,
+            target_selector_wait: false,
+        };
+        let day = 86_400.0;
+        let bound = 72.0 * 3600.0;
+
+        // The old check says healthy, and that verdict is not being changed.
+        let nine_days = vec![parked("ts-gke", 9.1 * day)];
+        let old = queue_has_live_consumer(&nine_days, 0.0, 300.0, 3_600.0);
+        assert!(
+            old.iter().all(|r| r.status == Status::Pass),
+            "the reaper question is still answered 'no failure' for a deliberate hold"
+        );
+
+        // The new one does not.
+        let rs = queue_parked_behind_hold(&nine_days, 0.0, bound);
+        assert_eq!(rs.len(), 1, "one verdict per LANE, not one per row");
+        assert_eq!(rs[0].status, Status::Fail, "9.1 days behind a hold is not healthy");
+        assert!(
+            rs[0].observed.contains("ts-gke") && rs[0].observed.contains("paused"),
+            "must name the lane and the hold: {}",
+            rs[0].observed
+        );
+
+        // INSIDE the bound it passes, so the check is a deadline and not a
+        // blanket complaint about holding.
+        let fresh = vec![parked("ts-gke", 3600.0)];
+        assert!(
+            queue_parked_behind_hold(&fresh, 0.0, bound).iter().all(|r| r.status == Status::Pass),
+            "an hour behind a paused lane is ordinary"
+        );
+
+        // ONE verdict for 21 rows on one lane, carrying the count. The nag
+        // shape this file keeps re-learning about.
+        let many: Vec<QueuedItem> = (0..21).map(|_| parked("ts-gke", 9.1 * day)).collect();
+        let rs = queue_parked_behind_hold(&many, 0.0, bound);
+        assert_eq!(rs.len(), 1, "21 rows on one lane must not produce 21 findings");
+        assert!(rs[0].observed.contains("21 message(s)"), "the count belongs in the verdict: {}", rs[0].observed);
+
+        // A REAPABLE reason is the other check's business, not this one's.
+        let reapable = vec![QueuedItem {
+            queue: "steering".into(),
+            target: "ghost".into(),
+            queued_at: 0.0 - 9.1 * day,
+            target_idle: false,
+            block_reason: Some("archived".into()),
+            idle_since: None,
+            target_selector_wait: false,
+        }];
+        assert!(
+            queue_parked_behind_hold(&reapable, 0.0, bound).is_empty(),
+            "archived rows belong to the reaper and to queue.has_live_consumer"
+        );
     }
 
     /// NEGATIVE CONTROL: the producer-without-consumer shape. An old item in

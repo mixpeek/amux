@@ -2876,7 +2876,15 @@ async fn steering_queue_check(state: &AppState) -> Vec<InvariantResult> {
     // 300s: comfortably more than several delivery ticks, so a normal
     // busy->idle transition never trips it, but far below the 2h6m the real
     // incident reached.
-    checks::queue_has_live_consumer(&items, now, 300.0, crate::api::session_verbs::steer_dead_letter_s())
+    let mut out =
+        checks::queue_has_live_consumer(&items, now, 300.0, crate::api::session_verbs::steer_dead_letter_s());
+    // Second question, same rows: `has_live_consumer` asks whether the REAPER
+    // failed, and answers "no" for every deliberate hold. That is right and it
+    // is why 61 messages parked up to 9.1 days behind paused lanes all read as
+    // PASS (AMUX-5006). This one asks whether anything still expects them to
+    // arrive.
+    out.extend(checks::queue_parked_behind_hold(&items, now, checks::queue_parked_max_s()));
+    out
 }
 
 /// Client call sites, extracted from the shipped artifacts.
