@@ -1945,6 +1945,95 @@ fn the_ui_closed_statuses_match_the_servers_derivation() {
 /// A source guard rather than a render test because this file is where the
 /// dashboard's shipped bytes are already checked, and the failure being
 /// guarded is the arm going missing again.
+/// AMUX-5020. A saved profile whose DIRECTORY is gone must not render as a
+/// normal signed-in one.
+///
+/// The registry keeps `domains` forever, so `⭐ PostHog (ethan-posthog) —
+/// us.posthog.com` is exactly what the picker drew for a profile with nothing
+/// behind it. Choosing it creates an empty directory and the session is logged
+/// out, with every visible field having said otherwise. Measured live: 11
+/// registry entries, 2 of them with no directory.
+///
+/// `last_used` cannot carry this, which is why the server grew `on_disk`: None
+/// there also means "created and never opened".
+/// AMUX-5033. A message from another Claude session read "Unclassified" in
+/// peek, directly above a block naming its sender in an attribute.
+///
+/// Ethan's constraint is that classification is the ONE thing peek may change,
+/// so a classifier that gives up on a message whose sender is written in the
+/// text is the defect. Claude Code delivers a peer message as the literal
+/// sentence "Another Claude session sent a message:" followed by a
+/// `<cross-session-message ... from-name="<lane>">` block. amux never sees it
+/// as a send, so no Messages row exists to match against and the row-matching
+/// path cannot classify it.
+#[test]
+fn a_peer_message_from_another_claude_session_is_classified_not_unknown() {
+    let app = asset("app.js");
+    let start = app
+        .find("const _NON_HUMAN_PROMPT_MARKS = [")
+        .expect("_NON_HUMAN_PROMPT_MARKS is gone from the bundle");
+    let end = app[start..]
+        .find("\n];\n")
+        .map(|i| start + i + 4)
+        .expect("_NON_HUMAN_PROMPT_MARKS has no closing bracket");
+    let table = &app[start..end];
+
+    // MATCH THE ENTRY, NOT THE PROSE. The first draft of this test searched for
+    // the bare string and found it inside the comment directly above the entry,
+    // written in the same sitting — the self-matching trap ethos rule 7 names.
+    // A table ENTRY is `['<mark>', '<kind>'],`, so the leading `['` is what
+    // makes the needle an entry rather than a mention.
+    for mark in [
+        "['Another Claude session sent a message:'",
+        "['<cross-session-message'",
+    ] {
+        let at = match table.find(mark) {
+            Some(i) => i,
+            None => panic!(
+                "the marker table no longer lists {mark}, so a message from another \
+                 Claude session falls through to Unclassified"
+            ),
+        };
+        let line_end = table[at..].find('\n').map(|i| at + i).unwrap_or(table.len());
+        // Must map to `session`, the peer bucket. Landing it in `amux` would say
+        // the harness wrote it, which is a different and wrong claim.
+        assert!(
+            table[at..line_end].contains("'session'"),
+            "{mark} is classified as something other than 'session': {}",
+            &table[at..line_end]
+        );
+    }
+}
+
+#[test]
+fn the_profile_picker_marks_a_saved_profile_whose_directory_is_gone() {
+    let app = asset("app.js");
+    let start = app
+        .find("async function _bwLoadProfiles() {")
+        .expect("_bwLoadProfiles is gone from the bundle");
+    let end = app[start..]
+        .find("\n}\n")
+        .map(|i| start + i + 3)
+        .expect("_bwLoadProfiles has no closing brace");
+    let body = &app[start..end];
+
+    assert!(
+        body.contains("p.on_disk === false"),
+        "the picker no longer reads on_disk, so a profile with no directory renders \
+         exactly like a signed-in one"
+    );
+    assert!(
+        body.contains("starts logged out"),
+        "the option text must say what picking it will do; a neutral label here is the \
+         whole defect"
+    );
+    assert!(
+        !body.contains("p.on_disk == false") && !body.contains("!p.on_disk"),
+        "use a STRICT `=== false`. An older server omits the field entirely, and a \
+         loose test would mark every profile in that listing as missing"
+    );
+}
+
 #[test]
 fn the_delivery_chip_still_handles_a_message_routed_to_the_board() {
     let app = asset("app.js");
