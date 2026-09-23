@@ -65,6 +65,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tail -40
 
+      # Unit tests (AMUX-4981). Hostless logic tests over the Share
+      # Extension's bootstrap parser, compiled into the test target from the
+      # SHIPPING source rather than copied — see ios/project.yml.
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          # Resolve the simulator instead of hardcoding a name: a runner image
+          # bump changes which iPhone exists, and a stale -destination name
+          # fails with a device-not-found that reads like a code error.
+          UDID=$(xcrun simctl list devices available | grep iPhone | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' | head -1)
+          if [ -z "$UDID" ]; then
+            echo "::error::no available iPhone simulator on this runner — the tests did NOT run"
+            exit 1
+          fi
+          echo "simulator: $UDID"
+          xcodebuild test -project AmuxApp.xcodeproj -scheme AmuxAppTests -sdk iphonesimulator -destination "platform=iOS Simulator,id=$UDID" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | grep -E "Test Case|Executed|error:|TEST (SUCCEEDED|FAILED)" | tail -30
+
       # A build that silently stopped producing the extension would still be
       # "BUILD SUCCEEDED", and the share feature would ship broken. Name the
       # artifact rather than trusting the exit code (ethos rule 4).

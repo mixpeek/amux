@@ -66,6 +66,33 @@ targets:
         com.apple.security.application-groups:
           - group.com.EthanSteininger.nextup
 
+  # Unit tests (AMUX-4981). Hostless logic tests: they exercise pure parsing,
+  # so they need no app to launch and run in seconds.
+  #
+  # AmuxClient.swift is listed here so it compiles INTO this target, the same
+  # mechanism AmuxStore.swift already uses to reach both app and extension.
+  # That is what lets the tests call the shipping function instead of a copy
+  # of it — before this target existed there was nowhere for an iOS test to
+  # live, and the AMUX-4976 verification had to duplicate the parser body into
+  # standalone scripts that cannot notice a later edit.
+  AmuxAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.EthanSteininger.nextup.Tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        # Overrides the project-wide manual signing above: a simulator logic
+        # test needs no identity, and inheriting "Apple Distribution" would
+        # make this target unbuildable without the release credentials.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+    sources:
+      - path: AmuxAppTests
+      - path: AmuxShare/Sources/AmuxClient.swift
+
   # Share Extension: puts amux in the iOS share sheet (AMUX-4940).
   #
   # A PWA cannot do this. iOS Safari does not implement the Web Share Target
