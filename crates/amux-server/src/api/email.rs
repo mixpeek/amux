@@ -882,12 +882,32 @@ pub async fn reject(
                 approval = %id, session = %session, by = %by, reason = %reason,
                 "[email] approval DISCARDED — the draft was never sent (AMUX-3698)"
             );
+            // AMUX-4974, second half. This row recorded WHO rejected and WHY
+            // and never WHAT, so all 35 reject rows in the live ledger carried
+            // an empty recipient and subject. The card asked whether that was
+            // legitimate; it is not. The stored approval doc keeps both the
+            // `preview` (which carries to/cc/subject for send AND reply, since
+            // the reply preview resolves them when the draft is built) and the
+            // frozen `payload`, so the envelope was available the whole time.
+            //
+            // `rejected_endpoint` is here because "endpoint": "reject" is the
+            // ACTION, not the thing acted on, and without it a reader cannot
+            // tell a refused reply from a refused send.
+            let d_preview = doc.get("preview").cloned().unwrap_or(Value::Null);
+            let d_payload = doc.get("payload").cloned().unwrap_or(Value::Null);
+            let dp = |k: &str| {
+                d_payload.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+            };
             email_log(
                 ctx.client.home(),
                 json!({
                     "endpoint": "reject", "approval_id": id, "session": session,
                     "rejected": true, "rejected_by": by, "reason": reason,
                     "approver_verified": false,
+                    "rejected_endpoint": doc.get("endpoint").cloned().unwrap_or(Value::Null),
+                    "to": resolved_envelope(&d_preview, "to", &dp("to")),
+                    "cc": resolved_envelope(&d_preview, "cc", &dp("cc")),
+                    "subject": resolved_envelope(&d_preview, "subject", &dp("subject")),
                 }),
             );
             (
