@@ -1952,6 +1952,8 @@ mod tests {
 
     #[tokio::test]
     async fn cache_serves_repeat_opens_from_one_probe_and_reports_age() {
+        // Reads AMUX_USAGE_TTL_S; five sibling tests set it to "0" (AMUX-4963).
+        let _env = default_env().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let app = app(probe_fn(
             UsageProbe::Ok(live_shaped_body()),
@@ -1978,6 +1980,9 @@ mod tests {
     #[tokio::test]
     async fn failures_are_cached_too_so_a_rate_limit_is_not_amplified() {
         // Retrying a 429 on every render is what provokes the 429.
+        // Same unlocked read as its neighbour above; it had simply not lost
+        // the race yet, which is not a difference worth waiting on (AMUX-4963).
+        let _env = default_env().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let app = app(probe_fn(UsageProbe::Http(429), calls.clone()));
         for _ in 0..5 {
@@ -2148,7 +2153,24 @@ mod tests {
         std::env::remove_var("AMUX_USAGE_STALE_S");
     }
 
-    /// One process-wide async lock for every env-mutating test.
+    /// Hold the env steady at its DEFAULTS for a test that READS it (AMUX-4963).
+    ///
+    /// The lock below used to be documented as "for every env-MUTATING test",
+    /// and that word was the gap: it serialized writers against each other and
+    /// left readers racing them. `cargo` runs these on parallel threads in one
+    /// process, so a reader observes a writer's temporarily-set value.
+    ///
+    /// Measured in CI on e33f14c2: five sites set AMUX_USAGE_TTL_S="0", which
+    /// DISABLES the cache by design, and `cache_serves_repeat_opens...` read
+    /// that 0 and made three probes for three opens — `left: 3, right: 1`. The
+    /// count was never wrong about caching; caching was genuinely off, because
+    /// of somebody else's env.
+    async fn default_env() -> tokio::sync::MutexGuard<'static, ()> {
+        env_lock().lock().await
+    }
+
+    /// One process-wide async lock for every test that READS OR WRITES this
+    /// module's env knobs. Reading is not the safe half (AMUX-4963).
     fn env_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -2169,8 +2191,11 @@ mod tests {
         std::env::remove_var("AMUX_USAGE_TTL_S");
     }
 
-    #[test]
-    fn ttl_default_and_override() {
+    // Async only so it can await the same lock its mutators hold: it asserts
+    // the DEFAULT ttl, which is exactly what a concurrent setter breaks.
+    #[tokio::test]
+    async fn ttl_default_and_override() {
+        let _env = default_env().await;
         assert_eq!(usage_ttl(), Duration::from_secs(DEFAULT_USAGE_TTL_S));
     }
 }
