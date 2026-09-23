@@ -1782,3 +1782,46 @@ fn the_delivery_chip_still_handles_a_message_routed_to_the_board() {
          to find where their request went"
     );
 }
+
+/// AMUX-5017. Ethan's own message rendered as "Unclassified" in peek, and his
+/// constraint is that classification is the ONLY thing peek may change about
+/// the terminal's content — so it has to be right.
+///
+/// amux stamps every message a human sends through it with `[H:MM AM]`. That
+/// is a POSITIVE signal, where the previous fallback reasoned from an absence
+/// ("not in the loaded history window") and therefore labelled every human
+/// message outside the fetched page as unclassifiable.
+///
+/// THE ORDER IS THE CORRECTNESS ARGUMENT. An amux notice carries the same
+/// stamp, so `[05:27 PM] [amux] Idle with...` must match the marker table
+/// FIRST and classify as harness. This pins both the test and its position.
+#[test]
+fn a_stamped_prompt_is_human_and_the_marker_table_still_wins() {
+    let app = asset("app.js");
+    let start = app
+        .find("function _classifyPromptKind(promptText) {")
+        .expect("_classifyPromptKind is gone from the bundle");
+    let end = app[start..]
+        .find("\n}\n")
+        .map(|i| start + i + 3)
+        .expect("_classifyPromptKind has no closing brace");
+    let body = &app[start..end];
+
+    let marker_at = body
+        .find("_NON_HUMAN_PROMPT_MARKS")
+        .expect("the marker table is no longer consulted — every harness notice would read as human");
+    let stamp_at = body
+        .find("return 'human';")
+        .expect("a timestamp-stamped prompt no longer classifies as human; Ethan's own messages \
+                 would read as Unclassified again");
+    assert!(
+        marker_at < stamp_at,
+        "the timestamp test runs BEFORE the marker table, so an amux notice — which carries the \
+         same [H:MM AM] stamp — would be attributed to a human"
+    );
+    assert!(
+        body.contains("return 'unknown';"),
+        "unknown must remain reachable: a prompt with no row, no marker and no stamp genuinely \
+         cannot be told, and saying so is the honest answer"
+    );
+}

@@ -11640,7 +11640,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1018';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1019';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13255,7 +13255,26 @@ function _classifyPromptKind(promptText) {
   for (const [mark, kind] of _NON_HUMAN_PROMPT_MARKS) {
     if (clean.startsWith(mark)) return kind;
   }
-  // Absence from a loaded history window is not evidence of human authorship.
+  // A POSITIVE SIGNAL, not an absence (Ethan, 2026-09-23: his own message read
+  // "Unclassified" in peek — "the only modification of peek should be the
+  // user/session/system/peer, etc. classification of messages", so the
+  // classification has to be right).
+  //
+  // amux stamps every message a human sends through it with a `[H:MM AM]`
+  // prefix; `.claude/rules` relies on that elsewhere to tell amux's own sends
+  // from a stranger's. `_peekPromptNormalized` strips it, which is why `clean`
+  // cannot see it and the raw text can.
+  //
+  // Checked AFTER the marker table on purpose: an amux notice is delivered
+  // with the same stamp, so `[05:27 PM] [amux] Idle with...` must match
+  // `[amux]` and be classified harness, not human. Order is the whole
+  // correctness argument here.
+  if (/^[ \t\u00a0]*[❯›>]?[ \t\u00a0]*\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s/i.test(String(promptText || ''))) {
+    return 'human';
+  }
+  // No row, no marker, no stamp: absence from a loaded history window is not
+  // evidence of human authorship, and this is the case that genuinely cannot
+  // be told.
   return 'unknown';
 }
 function highlightPrompts(html) {
