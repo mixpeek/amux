@@ -69,6 +69,100 @@ def _session_is_isolated(name):
     return False
 
 
+def _consent_message(msg_id, expect_origin, sha):
+    """Verify a consent CITATION of the form `<sha>:<session>:msg:<MSG-id>`.
+
+    WHY THIS FORM EXISTS (AMUX-4972). The two-field author form is refused for
+    an ISOLATED author, reasoning that `amux send` to it is refused by
+    construction so its consent cannot have been obtained. That is true of
+    INBOUND sends and false as a claim about the worker: isolation does not
+    stop an isolated lane from INITIATING. On 2026-09-23 amux-helper sent this
+    lane an unprompted, server-stamped message asking to push and naming the
+    commits, which is precisely the yes the guard asserted could not exist,
+    and no field here could carry it. The remaining exits each asserted
+    something nobody had said, which is ethos rule 3: a constraint with no
+    truthful path in a legitimate state.
+
+    So a volunteered yes is admitted only when it can be CHECKED, against the
+    record the SERVER stamps rather than against text the caller supplies:
+
+      1. the record's `origin` must equal the session named by the commit's
+         Amux-Session trailer. `origin` is the SENDER. `session` on that same
+         record is the RECIPIENT, and reading the wrong one compares a lane
+         against its own name, which silently passes or silently fails
+         depending only on who is pushing.
+      2. the message must POSTDATE the commit. A yes recorded before the
+         commit existed cannot be about it, and back-dating is the cheapest
+         way to fabricate one.
+      3. anything that cannot be resolved REFUSES.
+
+    FAILS CLOSED, and that is the design rather than a caveat. CI has no amux
+    server, so this probe cannot resolve there and every citation refuses.
+    `_session_is_isolated` above carries the scar from the opposite choice: it
+    used to ask the server, and a verdict that depended on the host's state
+    turned main red. "I could not check" is only safe to be wrong about in the
+    refusing direction, because the other reading turns an offline server into
+    a blanket override, which is the exact shape this whole mechanism exists
+    to avoid.
+
+    Returns (ok, reason). `reason` is printed on refusal and recorded in the
+    audit line on acceptance, so an accepted citation names its own evidence.
+    """
+    mid = str(msg_id or "").strip()
+    if mid.upper().startswith("MSG-"):
+        mid = mid[4:]
+    if not mid.isdigit():
+        return False, ("message id %r is not a MSG-<n> id. These are cmd_history "
+                       "row ids, the `MSG-27463` form you see and paste" % (msg_id,))
+
+    base = (os.environ.get("AMUX_URL") or "https://localhost:8824").rstrip("/")
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        rec = json.loads(urllib.request.urlopen(
+            "%s/api/history/%s" % (base, mid), context=ctx,
+            timeout=_API_TIMEOUT_S).read())
+    except Exception as exc:
+        return False, ("MSG-%s could not be read from the message store at %s (%s). "
+                       "A citation that cannot be checked is REFUSED, never assumed"
+                       % (mid, base, type(exc).__name__))
+    if not isinstance(rec, dict):
+        return False, "MSG-%s did not resolve to a record" % mid
+
+    origin = str(rec.get("origin") or "").strip()
+    if not origin:
+        return False, ("MSG-%s carries no server-stamped origin, so there is nothing "
+                       "to attribute it to. A body-text signature is not provenance"
+                       % mid)
+    if origin != expect_origin:
+        return False, ("MSG-%s was sent by %r, not by %r, the session that authored "
+                       "the commit" % (mid, origin, expect_origin))
+
+    raw_ts = rec.get("ts")
+    try:
+        ts = float(raw_ts)
+    except (TypeError, ValueError):
+        return False, "MSG-%s has no usable timestamp (%r)" % (mid, raw_ts)
+    # The store records milliseconds. Normalise rather than assume, so a
+    # seconds-valued record does not read as 1970 and pass the ordering test
+    # against every commit.
+    msg_s = ts / 1000.0 if ts > 1e11 else ts
+
+    got = subprocess.run(["git", "log", "-1", "--format=%ct", sha],
+                         capture_output=True, text=True, timeout=15)
+    if got.returncode != 0 or not got.stdout.strip():
+        return False, "could not read the commit time of %s" % sha
+    commit_s = float(got.stdout.strip())
+    if msg_s <= commit_s:
+        return False, ("MSG-%s predates the commit it consents to (message %s, commit "
+                       "%s), so it cannot be about it"
+                       % (mid, datetime.datetime.fromtimestamp(msg_s).isoformat(),
+                          datetime.datetime.fromtimestamp(commit_s).isoformat()))
+    return True, ("MSG-%s from %s at %s"
+                  % (mid, origin, datetime.datetime.fromtimestamp(msg_s).isoformat()))
+
+
 def _patch_ids(argv, timeout=25):
     """`git <argv> | git patch-id --stable` -> {patch_id: sha}.
 
@@ -469,11 +563,20 @@ def main():
             # from author consent, because "the owner authorized this on behalf
             # of a worker that cannot speak" is a different fact from "the
             # author said yes" and the audit should not blur them.
+            # FOUR FIELDS = A CITED, CHECKABLE AUTHOR CONSENT (AMUX-4972).
+            # `<sha>:<session>:msg:<MSG-id>` names the server-stamped message
+            # in which that session volunteered the yes. It is the only form
+            # available to an ISOLATED author, whose consent the two-field
+            # form refuses on the reasoning that it could not have been
+            # obtained. See _consent_message for why that reasoning is half
+            # right and what is verified instead.
             bits = [b.strip() for b in tok.split(":")]
-            if len(bits) == 3 and bits[2].lower() == "owner":
-                pairs.append((bits[0], bits[1], True))
+            if len(bits) == 4 and bits[2].lower() == "msg":
+                pairs.append((bits[0], bits[1], False, bits[3]))
+            elif len(bits) == 3 and bits[2].lower() == "owner":
+                pairs.append((bits[0], bits[1], True, None))
             elif len(bits) == 2:
-                pairs.append((bits[0], bits[1], False))
+                pairs.append((bits[0], bits[1], False, None))
             else:
                 malformed.append(tok)
         # A malformed entry is REFUSED, never skipped. Silently ignoring one
@@ -487,7 +590,7 @@ def main():
                 % ", ".join(malformed))
             return 1
         cleared, mismatched = [], []
-        for sha_in, who_in, owner_grant in pairs:
+        for sha_in, who_in, owner_grant, msg_id in pairs:
             real = subprocess.run(
                 ["git", "log", "-1",
                  "--format=%h%x1f%(trailers:key=Amux-Session,valueonly)", sha_in],
@@ -500,6 +603,18 @@ def main():
             if real_who != who_in:
                 mismatched.append(
                     (sha_in, who_in, "actually authored by %s" % (real_who or "(no trailer)")))
+                continue
+            if msg_id:
+                # CHECKED BEFORE the isolation branches below, deliberately. A
+                # cited message is STRONGER evidence than the bare two-field
+                # form, not a special case of it, so it is not gated on the
+                # author being isolated: the citation either resolves to that
+                # author's own stamped yes or it does not.
+                ok_msg, why_msg = _consent_message(msg_id, who_in, sha_in)
+                if not ok_msg:
+                    mismatched.append((sha_in, who_in, why_msg))
+                    continue
+                cleared.append((bits[0], who_in, False, why_msg))
                 continue
             if owner_grant and not _session_is_isolated(who_in):
                 # FAIL CLOSED. Unreachable-or-not-isolated both land here: if we
@@ -531,11 +646,17 @@ def main():
                 mismatched.append((
                     sha_in, who_in,
                     "'%s' is an ISOLATED (raw-agent) worker — `amux send` to it is refused "
-                    "by construction, so its author consent cannot have been obtained. "
-                    "Only the owner can grant this, and it is recorded distinctly: use "
-                    "%s:%s:owner" % (who_in, sha_in, who_in)))
+                    "by construction, so its author consent cannot have been ASKED FOR. "
+                    "Two exits, and they assert different things:\n"
+                    "         %s:%s:msg:<MSG-id>  if %s VOLUNTEERED a yes unprompted "
+                    "(isolation blocks inbound sends, not outbound ones). The message is "
+                    "resolved against the store and must be stamped from %s and postdate "
+                    "the commit.\n"
+                    "         %s:%s:owner          if the OWNER is granting it on their "
+                    "behalf. Do not spell one as the other; they are audited separately"
+                    % (who_in, sha_in, who_in, who_in, who_in, sha_in, who_in)))
                 continue
-            cleared.append((bits[0], who_in, owner_grant))
+            cleared.append((bits[0], who_in, owner_grant, None))
         if mismatched:
             sys.stderr.write(
                 "\namux push-guard: AMUX_FOREIGN_CONSENT does not match the commits.\n"
@@ -552,16 +673,30 @@ def main():
             if keep:
                 remaining[who] = keep
         if not remaining:
+            # THREE DISTINCT FACTS, THREE DISTINCT AUDIT KINDS. "the author
+            # said yes", "the owner authorized it on behalf of a worker that
+            # cannot speak" and "the author's own stamped message says yes,
+            # and here is its id" are different claims, and an audit that
+            # blurs them cannot answer who authorized a push months later.
+            # CONSENT-MSG is the only one that carries its own evidence.
+            _kind = ("CONSENT-OWNER" if any(c[2] for c in cleared)
+                     else "CONSENT-MSG" if any(c[3] for c in cleared)
+                     else "CONSENT")
             _audit(
-                "CONSENT-OWNER" if any(c[2] for c in cleared) else "CONSENT",
+                _kind,
                 "cleared=%s" % ",".join(
-                    "%s:%s%s" % (c[0], c[1], ":owner-granted" if c[2] else "") for c in cleared))
+                    "%s:%s%s" % (c[0], c[1],
+                                 ":owner-granted" if c[2]
+                                 else (":%s" % c[3].split(" from ")[0]) if c[3] else "")
+                    for c in cleared))
             sys.stderr.write(
                 "\namux push-guard: %d foreign commit(s) cleared by recorded author consent:\n"
                 "  %s\n"
                 "  (logged to ~/.amux/logs/push-guard.log — this is an AUDITED exit, not a bypass)\n\n"
                 % (len(cleared), ", ".join(
-                    "%s (%s%s)" % (c[0], c[1], ", owner-granted: isolated worker" if c[2] else "")
+                    "%s (%s%s)" % (c[0], c[1],
+                                   ", owner-granted: isolated worker" if c[2]
+                                   else ", cited: %s" % c[3] if c[3] else "")
                     for c in cleared)))
             return 0
         # PARTIAL consent still blocks, and says exactly what is uncovered —
@@ -708,8 +843,12 @@ def main():
           "      AMUX_FOREIGN_CONSENT=\"%s\" git push ...\n" % _consent)
         if _isolated:
             w("    (that string covers the reachable authors only — the isolated ones\n"
-              "     above need their own `:owner` entries, and every foreign commit\n"
-              "     must be covered or the push stays blocked.)\n")
+              "     above need their own entry, and every foreign commit must be\n"
+              "     covered or the push stays blocked. For an isolated author there\n"
+              "     are two, and they are not interchangeable: `<sha>:<session>:msg:\n"
+              "     <MSG-id>` if that session VOLUNTEERED a yes unprompted, which\n"
+              "     isolation permits because it only blocks inbound sends; or\n"
+              "     `<sha>:<session>:owner` if the owner is granting it for them.)\n")
     w("  - or, if the HUMAN explicitly asked you to ship everything regardless of\n"
       "    who wrote it:\n"
       "      AMUX_ALLOW_FOREIGN=1 git push ...\n\n")
@@ -803,11 +942,16 @@ def main():
                     # for an isolated lane the answer does not depend on whether
                     # it is live. It cannot be nudged either way.
                     w("  BLOCKING RUN: the %d commit(s) at the bottom belong to %s, which is\n"
-                      "  ISOLATED and cannot be asked or nudged — its live status does not\n"
-                      "  matter here. Selective pushes cannot drain past them. The exit is the\n"
-                      "  owner grant named above, not the blanket override:\n"
+                      "  ISOLATED, so it cannot be ASKED or nudged and its live status does\n"
+                      "  not matter here. Selective pushes cannot drain past them. Two exits,\n"
+                      "  neither of them the blanket override, asserting different things:\n"
+                      "      AMUX_FOREIGN_CONSENT=\"...%s:%s:msg:<MSG-id>\" git push ...\n"
+                      "        if %s already volunteered a yes. Isolation blocks inbound\n"
+                      "        sends, not outbound ones, so a message from it can exist and\n"
+                      "        is checked against the store.\n"
                       "      AMUX_FOREIGN_CONSENT=\"...%s:%s:owner\" git push ...\n"
-                      % (_brun, _bown, _bsha_hint, _bown))
+                      "        if the owner is granting it on their behalf.\n"
+                      % (_brun, _bown, _bsha_hint, _bown, _bown, _bsha_hint, _bown))
                 elif not _api_ok:
                     # AH-91: the API was unreachable, so the blocker's LIVE status
                     # is unknown — but the OWNER is not: it came from the
