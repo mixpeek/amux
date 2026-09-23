@@ -950,7 +950,7 @@ impl Fleet for LiveFleet {
             let c=self.state.store.read().map_err(|e|e.to_string())?;
             let row=bs::get_issue(&c,card).map_err(|e|e.to_string())?.ok_or("reminder card disappeared")?;
             let started:f64=c.query_row("SELECT coalesce(max(ts),0) FROM session_events WHERE session=?1 AND type='session.started'",[lane],|r|r.get(0)).map_err(|e|e.to_string())?;
-            reminder_identity(lane,text,&row,started)
+            idle_reminder_identity(lane,text,&row,started)
         };
         let result=crate::api::session_verbs::enqueue_state_reminder(
             &self.state.store,lane,text,GUARD,card,rev,&identity).await?;
@@ -1083,6 +1083,39 @@ pub(crate) fn nudge_budget_record(
 
 /// A reminder is a reaction to meaningful card state, not to a timer, log
 /// heartbeat or revision counter. A new process lifetime legitimately re-arms it.
+/// WHAT AN IDLE NUDGE IS ABOUT: THE SITUATION, NOT THE WORKER'S NOTES
+/// (AMUX-4953, the AMUX-4912 shape on the idle path).
+///
+/// `reminder_identity` hashes desc, next_action, acceptance_criteria and
+/// evidence. On the idle path that is perverse, because the nudge it keys ends
+/// with "Update the card desc with current state before moving on" and its
+/// numbered options tell the worker to write the others. The identity is a
+/// SUPPRESSION key, so complying rotates it and earns another nudge at the next
+/// budget window, while doing nothing keeps it and is suppressed. The worker who
+/// obeys is nudged more than the worker who ignores it.
+///
+/// Measured 2026-09-23 before changing anything, as the card required: of 32
+/// `idle-with-card` budget rows, 17 (53%) recorded more than one spent delivery.
+/// The budget only resets on a status CHANGE, so those are re-nudges under an
+/// unchanged status.
+///
+/// So the idle key tracks what the nudge is actually reacting to: this lane is
+/// idle holding this card, in this status, under this lease, since this worker
+/// started. `text` already carries the card's title and status wording, so a
+/// card that really changes shape still rotates the key.
+///
+/// DELIBERATELY NOT a change to `reminder_identity` itself. Tracking
+/// requirement changes is intended for the general reminder and
+/// `reminder_identity_ignores_heartbeat_but_tracks_requirements_and_worker_lifetime`
+/// pins it; narrowing that would sweep a different path's designed behaviour.
+/// This also leaves the prompt free to keep asking for the desc write, which is
+/// worth having once complying is no longer punished.
+fn idle_reminder_identity(lane:&str,text:&str,row:&bs::IssueRow,started:f64)->String {
+    use sha2::{Digest,Sha256};
+    let state=json!([lane,text,row.id,row.status,row.lease_generation,started]);
+    format!("board-state-reminder:{:x}",Sha256::digest(state.to_string().as_bytes()))
+}
+
 fn reminder_identity(lane:&str,text:&str,row:&bs::IssueRow,started:f64)->String {
     use sha2::{Digest,Sha256};
     let state=json!([lane,text,row.id,row.title,row.desc,row.status,row.item_type,
@@ -12699,6 +12732,55 @@ mod tests {
         // A status change resets it.
         assert_eq!(nudge_budget_check(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), NudgeBudget::Admit { n: 0 });
         assert_eq!(nudge_budget_record(&conn, s, c, k, "doing", t0 + 9_000_000.0).unwrap(), 1);
+    }
+
+    /// AMUX-4953. The idle nudge tells the worker to write desc, next_action,
+    /// acceptance_criteria and evidence, then used a key that hashed all four.
+    /// Complying rotated it and earned another nudge; doing nothing did not.
+    #[test]
+    fn writing_what_the_idle_nudge_asked_for_does_not_earn_another_idle_nudge() {
+        let conn=board_db();add_card(&conn,"IDLE-1","lane","doing","Report","Current requirements");
+        let mut row=bs::get_issue(&conn,"IDLE-1").unwrap().unwrap();
+        let before=idle_reminder_identity("lane","idle nudge",&row,10.0);
+
+        // EVERY field the nudge's own text asks the worker to write.
+        row.desc="current state, as the nudge asked for".into();
+        row.next_action=Some("what the next actor should do".into());
+        row.acceptance_criteria=Some("[\"include gamma\"]".into());
+        row.evidence=Some("the command and its result line".into());
+        assert_eq!(
+            idle_reminder_identity("lane","idle nudge",&row,10.0), before,
+            "complying with the nudge must not rotate the key it is suppressed by"
+        );
+
+        // THE CONTROLS, and the half that must not rot. A key that ignored
+        // everything would satisfy the assertion above.
+        row.status="review".into();
+        assert_ne!(idle_reminder_identity("lane","idle nudge",&row,10.0),before,
+            "a status change is a new situation");
+        row.status="doing".into();
+        row.lease_generation+=1;
+        assert_ne!(idle_reminder_identity("lane","idle nudge",&row,10.0),before,
+            "a re-claim is a new situation");
+        row.lease_generation-=1;
+        assert_ne!(idle_reminder_identity("lane","idle nudge",&row,20.0),before,
+            "a worker restart is a new situation");
+        assert_ne!(idle_reminder_identity("lane","a different nudge",&row,10.0),before,
+            "different nudge text is a different reminder");
+    }
+
+    /// The GENERAL reminder is deliberately unchanged: tracking requirement
+    /// changes is intended there, and this pins that AMUX-4953 did not sweep it.
+    #[test]
+    fn the_general_reminder_still_tracks_requirements_after_the_idle_key_was_narrowed() {
+        let conn=board_db();add_card(&conn,"GEN-1","lane","doing","Report","Current requirements");
+        let mut row=bs::get_issue(&conn,"GEN-1").unwrap().unwrap();
+        let before=reminder_identity("lane","finish",&row,10.0);
+        row.acceptance_criteria=Some("[\"include gamma\"]".into());
+        assert_ne!(reminder_identity("lane","finish",&row,10.0),before);
+        row.acceptance_criteria=None;
+        row.desc="rewritten".into();
+        assert_ne!(reminder_identity("lane","finish",&row,10.0),before);
     }
 
     #[test]
