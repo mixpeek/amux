@@ -50,6 +50,27 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # EVERY SCHEME THIS FILE INVOKES MUST EXIST, and the way they stop
+      # existing is invisible: naming any target inside a `schemes:` block in
+      # project.yml turns OFF XcodeGen's auto-generation for that target. Doing
+      # that removed the AmuxApp scheme once and the AmuxAppTests scheme once,
+      # in consecutive edits. The failure downstream is
+      # "scheme is not currently configured for the test action" or "scheme not
+      # found", which reads like a typo in the step rather than a project.yml
+      # regression two steps earlier.
+      - name: Every scheme the later steps use must exist
+        run: |
+          set -o pipefail
+          HAVE=$(xcodebuild -project AmuxApp.xcodeproj -list | sed -n '/Schemes:/,$p')
+          echo "$HAVE"
+          for s in AmuxApp AmuxAppTests AmuxShareUITests; do
+            echo "$HAVE" | grep -qE "^ +$s\b" || {
+              echo "::error::scheme '$s' is missing. A target named inside project.yml's schemes: block no longer gets an auto-generated scheme; declare it explicitly."
+              exit 1
+            }
+          done
+          echo "all 3 schemes present"
+
       # CODE_SIGNING_ALLOWED=NO: this is a compile check, and signing would
       # need the match credentials the release job carries. Entitlements are
       # stripped by that, which is fine here and is NOT fine for a release —

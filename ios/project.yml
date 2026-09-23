@@ -43,6 +43,15 @@ targets:
     info:
       path: AmuxApp/Info.plist
       properties:
+        # THE SHARE SHEET LABELS THE ROW WITH THE CONTAINING APP'S NAME, not
+        # the extension's. AmuxShare already sets CFBundleDisplayName: amux and
+        # the row still read "AmuxApp" (measured in the simulator's share sheet:
+        # cell id 'shareCell', label 'AmuxApp'), because iOS takes the name from
+        # here. Ethan went looking for "amux" in the sheet's app list, so the
+        # name it shows is the name people search for.
+        #
+        # Same key drives the home-screen icon label, which also read "AmuxApp".
+        CFBundleDisplayName: amux
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
@@ -92,6 +101,31 @@ targets:
     sources:
       - path: AmuxAppTests
       - path: AmuxShare/Sources/AmuxClient.swift
+
+  # UI tests that drive the SYSTEM SHARE SHEET from another app (AMUX-4990).
+  #
+  # Separate from AmuxAppTests because this needs `bundle.ui-testing`: a UI
+  # test runs out of process and drives springboard, which a logic-test bundle
+  # cannot do. It is also the only place the extension is exercised as an
+  # EXTENSION rather than as a library — AmuxAppTests compiles AmuxClient.swift
+  # in and calls it directly, which cannot notice a missing NSExtension dict, a
+  # wrong activation rule, or an App Group the two targets disagree about.
+  AmuxShareUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.EthanSteininger.nextup.UITests
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+        TEST_TARGET_NAME: AmuxApp
+    sources:
+      - path: AmuxShareUITests
+    dependencies:
+      - target: AmuxApp
 
   # Share Extension: puts amux in the iOS share sheet (AMUX-4940).
   #
@@ -153,3 +187,46 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.EthanSteininger.nextup
+
+# XcodeGen auto-creates a scheme for application and unit-test targets and NOT
+# for `bundle.ui-testing`, so without this block the target builds and
+# `xcodebuild test -scheme AmuxShareUITests` fails with "scheme not found" —
+# which reads like a typo rather than a missing scheme.
+schemes:
+  # DECLARING ANY scheme here turns OFF XcodeGen's auto-generation for every
+  # target named in one. AmuxApp is named below, so it needs its own entry or
+  # `-scheme AmuxApp` (what ios-build.yml uses) stops resolving.
+  AmuxApp:
+    build:
+      targets:
+        AmuxApp: all
+    test:
+      targets:
+        - AmuxAppTests
+    run:
+      config: Debug
+
+  # Named explicitly for the same reason: it appears in AmuxApp's test list
+  # above, so XcodeGen stops generating it, and ios-build.yml runs
+  # `-scheme AmuxAppTests`.
+  AmuxAppTests:
+    build:
+      targets:
+        AmuxAppTests: [test]
+    test:
+      targets:
+        - AmuxAppTests
+
+  AmuxShareUITests:
+    build:
+      targets:
+        # The HOST APP has to be in this list. With only the test bundle here
+        # xcodebuild does not install AmuxApp, the share extension is therefore
+        # not registered, and the sheet comes back
+        # ["Reminders", "Preview", "More"] — a real-looking failure caused
+        # entirely by the rig. Measured exactly that way once.
+        AmuxApp: [test]
+        AmuxShareUITests: [test]
+    test:
+      targets:
+        - AmuxShareUITests

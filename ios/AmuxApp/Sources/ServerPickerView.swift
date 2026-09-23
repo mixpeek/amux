@@ -1,6 +1,13 @@
 import SwiftUI
 
+/// Where the cloud button sends people. One constant, because the app, the
+/// site and the Cloudflare redirect all have to agree on it.
+enum AmuxCloud {
+    static let onboardingURL = URL(string: "https://amux.io/cloud/")!
+}
+
 struct ServerPickerView: View {
+    @Environment(\.openURL) private var openURL
     @EnvironmentObject var serverManager: ServerManager
     @State private var customURL = ""
     @State private var customName = ""
@@ -23,17 +30,26 @@ struct ServerPickerView: View {
                 }
                 .padding(.bottom, 36)
 
-                // Cloud option
+                // Cloud option.
+                //
+                // This used to add https://cloud.amux.io as a server and select
+                // it, which sent a first-run user straight into the black
+                // screen: that origin has been unreachable for days and the
+                // picker has no way to know. Onboarding for cloud now goes
+                // through the web page, where a human schedules it.
+                //
+                // OPENS EXTERNALLY rather than loading in the app's WebView,
+                // because the destination is a marketing page and Calendly, not
+                // an amux server. Loading it in the dashboard WebView would
+                // leave the app pointed at something it cannot talk to.
                 VStack(spacing: 12) {
-                    Button(action: {
-                        if serverManager.addServer(name: "amux cloud", urlString: "https://cloud.amux.io") {
-                            serverManager.selectServer("https://cloud.amux.io")
-                        }
-                    }) {
+                    Button(action: { openURL(AmuxCloud.onboardingURL) }) {
                         HStack {
                             Image(systemName: "cloud.fill")
-                            Text("Sign in to amux cloud")
+                            Text("Get amux cloud")
                                 .font(.headline)
+                            Image(systemName: "arrow.up.right")
+                                .font(.footnote.weight(.semibold))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(14)
@@ -42,7 +58,9 @@ struct ServerPickerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
 
-                    Text("Includes Sign in with Apple")
+                    // The old caption said "Includes Sign in with Apple", which
+                    // described the sign-in this button no longer performs.
+                    Text("Opens amux.io to schedule onboarding")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -27,7 +27,36 @@ enum AmuxClient {
     struct Worker: Identifiable, Hashable {
         let name: String
         let status: String
+        /// `active` | `paused` | `archived`. Distinct from `status`: a worker
+        /// can be lifecycle-active and momentarily idle.
+        let lifecycle: String
+        let running: Bool
+        /// Unix seconds. 0 when the server has never seen activity, which is
+        /// kept as 0 rather than mapped to "now" so activity sort puts it last.
+        let lastActivity: Int
+        let dir: String
+        let task: String
         var id: String { name }
+
+        /// One word for the row. `status` is EMPTY on most rows (measured: 156
+        /// of 164 sessions), so a row that showed only `status` would be blank
+        /// for almost everyone — which is what the first version did.
+        var display: String {
+            if running {
+                switch status {
+                case "active": return "working"
+                case "idle": return "idle"
+                default: return "running"
+                }
+            }
+            return lifecycle.isEmpty ? "stopped" : lifecycle
+        }
+
+        /// The last path component of the workspace, which is what
+        /// distinguishes two workers with similar names.
+        var workspace: String {
+            dir.split(separator: "/").last.map(String.init) ?? ""
+        }
     }
 
     enum ClientError: LocalizedError {
@@ -195,7 +224,14 @@ enum AmuxClient {
         return rows.compactMap { row in
             guard let name = row["name"] as? String, !name.isEmpty else { return nil }
             if (row["archived"] as? Bool) == true { return nil }
-            return Worker(name: name, status: row["status"] as? String ?? "")
+            return Worker(
+                name: name,
+                status: row["status"] as? String ?? "",
+                lifecycle: row["lifecycle"] as? String ?? "",
+                running: (row["running"] as? Bool) ?? false,
+                lastActivity: (row["last_activity"] as? Int) ?? 0,
+                dir: row["dir"] as? String ?? "",
+                task: row["task_name"] as? String ?? "")
         }
     }
 

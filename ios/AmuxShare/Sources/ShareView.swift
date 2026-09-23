@@ -13,10 +13,55 @@ struct ShareView: View {
     @State private var loadError: String?
     @State private var loading = true
     @State private var filter = ""
+    @State private var sort: SortOrder = .activity
 
+    /// ACTIVITY IS THE DEFAULT because the worker you want is almost always the
+    /// one you were just looking at. Name is there for the other case: you know
+    /// exactly which lane you want out of 160-odd and do not care what it has
+    /// been doing.
+    enum SortOrder: String, CaseIterable, Identifiable {
+        case activity = "Activity"
+        case name = "Name"
+        var id: String { rawValue }
+    }
+
+    /// Search matches more than the name on purpose. Half the workers here are
+    /// named for a repo area and the thing you remember is the task text or the
+    /// directory, so matching only names makes the field useless exactly when
+    /// the list is long enough to need it.
     private var shown: [AmuxClient.Worker] {
-        filter.isEmpty ? workers
-            : workers.filter { $0.name.localizedCaseInsensitiveContains(filter) }
+        let matched = filter.isEmpty ? workers : workers.filter {
+            $0.name.localizedCaseInsensitiveContains(filter)
+                || $0.task.localizedCaseInsensitiveContains(filter)
+                || $0.workspace.localizedCaseInsensitiveContains(filter)
+        }
+        switch sort {
+        case .name:
+            return matched.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .activity:
+            // Running first, then most recent. Without the first clause a lane
+            // that is live right now but quiet sorts below a stopped one that
+            // happened to be touched more recently, which reads as wrong.
+            return matched.sorted {
+                if $0.running != $1.running { return $0.running }
+                if $0.lastActivity != $1.lastActivity { return $0.lastActivity > $1.lastActivity }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+    }
+
+    private static let ago: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    private func lastSeen(_ w: AmuxClient.Worker) -> String {
+        // 0 means the server has never recorded activity. Saying "56 years ago"
+        // is worse than saying nothing.
+        guard w.lastActivity > 0 else { return "" }
+        return Self.ago.localizedString(
+            for: Date(timeIntervalSince1970: TimeInterval(w.lastActivity)), relativeTo: Date())
     }
 
     var body: some View {
@@ -43,48 +88,106 @@ struct ShareView: View {
                         Section("Note") {
                             TextField("Optional", text: $note, axis: .vertical)
                                 .lineLimit(1...4)
+                                .accessibilityIdentifier("note")
+                        }
+                        Section {
+                            Picker("Sort", selection: $sort) {
+                                ForEach(SortOrder.allCases) { Text($0.rawValue).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("sortOrder")
                         }
                         Section {
                             ForEach(shown) { w in
                                 Button {
                                     selected = w.name
                                 } label: {
-                                    HStack {
-                                        Text(w.name).foregroundStyle(.primary)
-                                        Spacer()
-                                        if !w.status.isEmpty {
-                                            Text(w.status)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
+                                    HStack(spacing: 10) {
+                                        // A filled dot for a live lane. The word
+                                        // beside it still says which kind of live,
+                                        // because colour alone is not readable to
+                                        // everyone.
+                                        Circle()
+                                            .fill(w.running ? Color.green : Color.secondary.opacity(0.35))
+                                            .frame(width: 8, height: 8)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(w.name)
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            HStack(spacing: 6) {
+                                                Text(w.display)
+                                                if !lastSeen(w).isEmpty {
+                                                    Text("·")
+                                                    Text(lastSeen(w))
+                                                }
+                                                if !w.workspace.isEmpty {
+                                                    Text("·")
+                                                    Text(w.workspace).lineLimit(1)
+                                                }
+                                            }
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            if !w.task.isEmpty {
+                                                Text(w.task)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.tertiary)
+                                                    .lineLimit(1)
+                                            }
                                         }
+                                        Spacer(minLength: 8)
                                         if selected == w.name {
                                             Image(systemName: "checkmark")
+                                                .foregroundStyle(Color.accentColor)
                                         }
                                     }
                                 }
+                                // A Button's accessibility label is everything
+                                // inside it concatenated, so the row cannot be
+                                // addressed by worker name without this.
+                                .accessibilityIdentifier("worker-\(w.name)")
                             }
                         } header: {
-                            Text("Send to")
+                            HStack {
+                                Text("Send to")
+                                Spacer()
+                                Text(countLabel)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         } footer: {
                             Text(summary)
                         }
                     }
-                    .searchable(text: $filter, prompt: "Filter workers")
+                    .searchable(text: $filter, prompt: "Search name, task or folder")
                 }
             }
             .navigationTitle("Share to amux")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // Identifiers, not labels. A toolbar Button's LABEL is matched
+                // only after its identifier, and `buttons["Send"]` failed with
+                // `No matches found for Elements matching predicate
+                // '"Send" IN identifiers'` once the view around it changed.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
+                        .accessibilityIdentifier("cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send") { onSend(selected, note) }
                         .disabled(selected.isEmpty || loading)
+                        .accessibilityIdentifier("send")
                 }
             }
         }
         .task { await load() }
+    }
+
+    /// Says which population the list is showing. Without it a filter that
+    /// matches nothing looks identical to a fleet with no workers.
+    private var countLabel: String {
+        let live = shown.filter(\.running).count
+        if !filter.isEmpty { return "\(shown.count) of \(workers.count) · \(live) running" }
+        return "\(workers.count) workers · \(live) running"
     }
 
     private var summary: String {

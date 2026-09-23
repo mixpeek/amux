@@ -104,6 +104,65 @@ final class AmuxClientLiveTests: XCTestCase {
                       "upload/finish gave \(path), which is not host-absolute")
     }
 
+    /// THE WHOLE SHARE, END TO END, and the only test that proves a share
+    /// ARRIVES rather than merely being accepted.
+    ///
+    /// Ethan asked for exactly this: "confirm the share + note gets delivered
+    /// to a worker". So it uploads a file, sends the message the Share
+    /// Extension would compose (note + shared text + the host-absolute
+    /// attachment path), and then reads the RECIPIENT'S OWN history back until
+    /// the message shows up. A 200 from /send is not delivery; the recipient
+    /// having it is.
+    ///
+    /// Target is `amux`, this repo's own lane, so the verification prompt lands
+    /// where it is expected rather than interrupting somebody else's work.
+    func testAShareWithANoteIsDeliveredToTheWorker() async throws {
+        let server = try liveServer()
+        let token = "amux-share-e2e-\(UUID().uuidString.prefix(8))"
+
+        let payload = "attachment body for \(token)\n"
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("amux-share-\(token).txt")
+        try payload.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let uploaded = try await AmuxClient.upload(fileURL: tmp, server: server)
+
+        let note = "verification note \(token)"
+        let body = "\(note)\n\nShared from iOS:\n\(uploaded)"
+        try await AmuxClient.send(text: body, to: Self.target, server: server)
+
+        let delivered = try await waitForDelivery(of: token, to: Self.target, timeout: 90)
+        XCTAssertTrue(delivered.contains(note),
+                      "the message reached \(Self.target) without the note text")
+        XCTAssertTrue(delivered.contains(uploaded),
+                      "the message reached \(Self.target) without the attachment path")
+    }
+
+    private static let target = "amux"
+
+    /// Reads the recipient's own history until the token appears. Loopback,
+    /// where the server answers anonymously, so this needs no credential of its
+    /// own and cannot accidentally prove the auth path twice.
+    private func waitForDelivery(of token: String, to worker: String,
+                                 timeout: TimeInterval) async throws -> String {
+        let url = URL(string: "https://localhost:8823/api/history?session=\(worker)&limit=25")!
+        let session = URLSession(configuration: .ephemeral, delegate: TrustAll(), delegateQueue: nil)
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastBytes = 0
+        while Date() < deadline {
+            let (data, _) = try await session.data(for: URLRequest(url: url, timeoutInterval: 20))
+            lastBytes = data.count
+            let body = String(data: data, encoding: .utf8) ?? ""
+            if body.contains(token) { return body }
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        XCTFail(
+            "no message carrying \(token) reached \(worker) within \(Int(timeout))s. "
+            + "The last history read was \(lastBytes) bytes; 0 would mean the loopback "
+            + "server was unreachable, which is a rig gap rather than a delivery failure.")
+        return ""
+    }
+
     /// The delivery path, WITHOUT delivering anything to a real worker.
     ///
     /// A share that reached a live lane would inject a prompt into somebody's
