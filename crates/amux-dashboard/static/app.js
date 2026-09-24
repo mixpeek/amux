@@ -844,21 +844,12 @@ let _peekPollInFlight = false, _peekPollAgain = false;
 let _peekUrgentUntil = 0;    // bounded low-latency window after local input
 let _peekLastChangeMs = 0;   // performance.now() of the last time the live frame ACTUALLY changed
 function _peekPollInterval() {
+  // Only the visible terminal polls. Offline requests stay restrained, but an
+  // idle CLI can receive input through `amux attach` with no browser send or
+  // status hook to wake us: keep that path within the same half-second budget.
+  if (!online) return 1500;
   if (performance.now() < _peekUrgentUntil) return 100;
-  const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
-  const st = s && s.status;
-  // CHANGE-DRIVEN cadence. A live=1 poll is ~650B (trimmed frame) / ~33ms server
-  // / a 304 when unchanged, so polling fast is cheap. While the terminal is
-  // actively producing output we poll near-instant; as it goes quiet we relax.
-  // This is deliberately independent of the SSE-fed status — that status lags
-  // ~2s behind a turn starting, so keying the cadence off *observed output
-  // change* makes streaming feel real-time without waiting for the status flip.
-  const sinceChange = performance.now() - _peekLastChangeMs;
-  if (sinceChange < 2500) return 350;    // actively streaming → near-instant updates
-  if (sinceChange < 6000) return 650;    // just settled → still brisk
-  if (st === 'active') return 900;       // model working, no visible output yet
-  if (st === 'waiting') return 1500;
-  return 1500;   // idle ticks remain lightweight conditional requests
+  return performance.now() - _peekLastChangeMs < 2500 ? 250 : 500;
 }
 // After a send/keystroke, treat the session as "just changed" and re-arm the poll
 // loop immediately so the streaming RESPONSE is picked up at the fast cadence —
@@ -3143,6 +3134,21 @@ function _clearSyncTransientToast() {
   toast.classList.remove('visible');
 }
 let _syncChecklist = [];
+// Delivery diagnostics contain identities/timing, never prompt text. The
+// replay may happen long after the original click's fast-peek window expired.
+function _outboxMessageProgress(q, phase, startedAt) {
+  const target = q.url.split('?')[0].match(/\/api\/sessions\/([^/]+)\/(send|steer)$/);
+  if (!target) return;
+  const worker = decodeURIComponent(target[1]);
+  const now = Date.now();
+  _outboxDiagnostic('message_delivery_' + phase, {
+    id:q.id, msg_id:_outboxMessageId(q), worker,
+    queued_ms:Math.max(0, now - (q.timestamp || now)),
+    attempt_ms:Math.max(0, now - startedAt), attempts:(q.attempts || 0) + 1,
+  });
+  if (typeof peekSession !== 'undefined' && peekSession === worker) _peekKickFast();
+}
+
 async function _runSyncBanner(quiet = false) {
   // A real browser offline switch cannot deliver anything. Keep work durable
   // without painting a failed checklist over the editor on each timer tick.
@@ -3251,6 +3257,8 @@ async function _runSyncBanner(quiet = false) {
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
       let retryableMessageRefusal = false;
+      const attemptStarted = Date.now();
+      _outboxMessageProgress(q, 'attempt', attemptStarted);
       const r = _outboxUncertainMessage(q)
         ? await _outboxConfirmMessage(q, opts) : await _boundedMutationFetch(q.url, opts);
       if ([409, 503].includes(r.status) && /\/(send|steer)$/.test(q.url.split('?')[0])) {
@@ -3280,6 +3288,7 @@ async function _runSyncBanner(quiet = false) {
       }
       if (/\/(send|steer)$/.test(q.url.split('?')[0])) {
         _validateMessageAcknowledgement(await r.clone().json(), q.url);
+        _outboxMessageProgress(q, 'acknowledged', attemptStarted);
       }
       await _interactionAcknowledge(interaction.id, r);
       await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
@@ -11717,7 +11726,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1084';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1085';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

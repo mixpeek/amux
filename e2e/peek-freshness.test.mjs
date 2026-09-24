@@ -179,3 +179,16 @@ test('sending feedback uses the live loop instead of spawning history timers',()
   assert.deepEqual(calls,['live']);
   assert.deepEqual(delays,[15000],'only the indicator safety timer remains');
 });
+
+
+test('idle attach input has a half-second polling budget without speeding offline requests',()=>{
+ let now=10000;
+ const ctx=vm.createContext({online:true,performance:{now:()=>now},_peekUrgentUntil:0,_peekLastChangeMs:0});
+ vm.runInContext(source.slice(source.indexOf('function _peekPollInterval()'),source.indexOf('// After a send/keystroke')),ctx);
+ assert.equal(ctx._peekPollInterval(),500,'native attach has no browser send nudge');
+ ctx._peekLastChangeMs=now;assert.equal(ctx._peekPollInterval(),250);
+ ctx._peekUrgentUntil=now+1500;assert.equal(ctx._peekPollInterval(),100);
+ ctx.online=false;assert.equal(ctx._peekPollInterval(),1500,'an outage must not poll at input-burst cadence');
+ now+=2000;ctx.online=true;assert.equal(ctx._peekPollInterval(),250);
+ now+=1000;assert.equal(ctx._peekPollInterval(),500);
+});
