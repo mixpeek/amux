@@ -193,6 +193,22 @@ family_too_old() { # <oldest_secs> <ceiling_hours>
   awk -v s="$1" -v h="$2" 'BEGIN{ exit !(h+0 > 0 && s+0 >= (h+0) * 3600) }'
 }
 
+# The owner label for a LIVE pid, classified from its FULL command line.
+# classify_owner matches on substrings, and the substring that names a process
+# can sit past any fixed column: Apple's VM helper is 173 characters and
+# "Virtualization.VirtualMachine.xpc" starts after character 80. Both call sites
+# used to cut the command to 80 or 70 characters BEFORE classifying, so the case
+# added for exactly this process could never match, and the live report went on
+# calling a stoppable 31 GB guest VM "SIP-protected, reboot only". Its unit test
+# passed the whole path in by hand, which is not the value the caller passed.
+# Truncate for DISPLAY if you must; never for classification.
+owner_label_for_pid() { # <pid>
+  local c u
+  c=$(ps -o command= -p "$1" 2>/dev/null)
+  u=$(ps -o user= -p "$1" 2>/dev/null | tr -d ' ')
+  classify_owner "${u:-?}" "${c:-unknown}"
+}
+
 needs_reboot() { # <fseventsd_gb> <threshold>
   awk -v f="$1" -v t="$2" 'BEGIN{ exit !(f+0 >= t+0) }'
 }
@@ -323,9 +339,8 @@ while IFS= read -r line; do
   pid=$(printf '%s' "$line" | awk '{print $1}'); mem=$(printf '%s' "$line" | awk '{print $2}')
   gb=$(to_gb "$mem")
   awk -v g="$gb" -v t="$REPORT_GB" 'BEGIN{ exit !(g+0 >= t+0) }' || continue
-  cmd=$(ps -o command= -p "$pid" 2>/dev/null | cut -c1-80)
-  usr=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
-  echo "mac-cleanup:   ${gb}G pid=$pid $(classify_owner "$usr" "$cmd") — $(printf '%s' "$cmd" | awk '{print $1}' | sed 's|.*/||')"
+  cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+  echo "mac-cleanup:   ${gb}G pid=$pid $(owner_label_for_pid "$pid") — $(printf '%s' "$cmd" | awk '{print $1}' | sed 's|.*/||')"
   reported=$((reported+1))
 done <<EOF
 $(top -l 1 -o mem -n 12 -stats pid,mem 2>/dev/null | awk 'f{print} /^PID/{f=1}' | sed 's/\*//')
@@ -363,12 +378,10 @@ if [ -n "$fam" ]; then
   fam_gb=$(awk -v k="$fam_kb" 'BEGIN{ printf "%.1f", k/1048576 }')
   fam_pct=$(awk -v f="$fam_kb" -v p="$phys_kb" 'BEGIN{ printf "%.1f", (p>0)? f/p*100 : -1 }')
   fam_hours=$(awk -v s="$fam_age" 'BEGIN{ printf "%.1f", s/3600 }')
-  fam_cmd=$(ps -o command= -p "$fam_ppid" 2>/dev/null | cut -c1-70)
-  fam_user=$(ps -o user= -p "$fam_ppid" 2>/dev/null | tr -d ' ')
   if family_exceeds "$fam_kb" "$phys_kb" "$FAMILY_SHARE_PCT"; then
-    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, oldest ${fam_hours}h — $(classify_owner "${fam_user:-?}" "${fam_cmd:-unknown}") — reported, never killed"
+    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, oldest ${fam_hours}h — $(owner_label_for_pid "$fam_ppid") — reported, never killed"
   elif family_too_old "$fam_age" "$FAMILY_AGE_H"; then
-    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid} has run ${fam_hours}h, past the ${FAMILY_AGE_H}h ceiling — $(classify_owner "${fam_user:-?}" "${fam_cmd:-unknown}")"
+    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid} has run ${fam_hours}h, past the ${FAMILY_AGE_H}h ceiling — $(owner_label_for_pid "$fam_ppid")"
   else
     echo "mac-cleanup: largest family ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, under the ${FAMILY_SHARE_PCT}% share and ${FAMILY_AGE_H}h ceiling"
   fi

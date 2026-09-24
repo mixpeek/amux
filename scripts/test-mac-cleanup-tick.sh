@@ -94,6 +94,34 @@ case "$(classify_owner ethan /Applications/Ollama.app/Contents/Resources/llama-s
   *"ollama stop"*) echo "  ok   an ollama model server carries its unload command" ;;
   *) echo "  FAIL an ollama model server is not named with its remedy"; fails=$((fails+1)) ;; esac
 
+echo "5b. the label comes from the FULL command line of a live process, not a truncated one"
+# The lima VM helper is 173 characters and its name starts after column 80. A
+# fixture that hands classify_owner the whole path passes while the shipped call
+# sites cut the command first, so this spawns a REAL process and asks about its pid.
+LONGD="$FIX/$(printf 'd%.0s' $(seq 1 50))"; mkdir -p "$LONGD"
+cat > "$LONGD/com.apple.Virtualization.VirtualMachine.xpc" <<'VM'
+#!/bin/bash
+sleep 30
+VM
+chmod +x "$LONGD/com.apple.Virtualization.VirtualMachine.xpc"
+"$LONGD/com.apple.Virtualization.VirtualMachine.xpc" &
+VPID=$!
+sleep 1
+VCMD=$(ps -o command= -p "$VPID" 2>/dev/null)
+VPOS=$(awk -v s="$VCMD" 'BEGIN{ print index(s, "Virtualization.VirtualMachine.xpc") }')
+# Positive control: without this the cell proves nothing, because a short path
+# would match even with the truncation still in place.
+check "fixture puts the VM name past column 80" "yes" "$([ "${VPOS:-0}" -gt 80 ] && echo yes || echo no)"
+case "$(owner_label_for_pid "$VPID")" in
+  *"guest VM"*) echo "  ok   a live VM helper is labelled a user-owned guest VM" ;;
+  *) echo "  FAIL live VM helper mislabelled: $(owner_label_for_pid "$VPID")"; fails=$((fails+1)) ;;
+esac
+kill "$VPID" 2>/dev/null || true; wait "$VPID" 2>/dev/null || true
+# Source-level pin of the defect CLASS, because the two call sites are inline and
+# a behavioural cell cannot reach them: no `ps -o command=` may feed a cut.
+check "no call site truncates the command it classifies" "0" \
+  "$(grep -c -E 'ps -o command=.*\| *cut ' "$TICK" || true)"
+
 echo "6. the reboot line appears only when fseventsd is actually large"
 check "small fseventsd asks for no reboot" "no"  "$(needs_reboot 8 20 && echo yes || echo no)"
 check "large fseventsd asks for a reboot"  "yes" "$(needs_reboot 96 20 && echo yes || echo no)"
