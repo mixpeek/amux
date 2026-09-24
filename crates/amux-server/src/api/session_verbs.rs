@@ -22521,6 +22521,30 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             if let Some(id) = queue_id.as_deref() {
                 link_queued_message(state, name, row_id, id).await;
             }
+        } else if !origin.is_empty() && origin == name {
+            // A LANE SENDING TO ITSELF IS STILL A MESSAGE (AMUX-5030).
+            //
+            // The peer arm below reads `origin != name` to avoid attributing a
+            // lane's own text as a peer's. That is right about the ATTRIBUTION
+            // and wrong about the RECORD: with no arm for the equal case,
+            // neither branch ran and the send left no `cmd_history` row at all.
+            // Measured 2026-09-23: `amux send amux` from this lane, answered
+            // "sent (queued while generating)", delivered to the pane verbatim,
+            // and absent from cmd_history and from every other table carrying
+            // the text. The Messages ledger had no record it ever existed,
+            // which is the exact shape of "it says sent but it was never sent".
+            //
+            // Recorded as `session` with the origin equal to the lane, so the
+            // row says what it is: not a human prompt, and from itself. A new
+            // type would render "Unclassified" until both the server allowlist
+            // and `_msgKind` learned it.
+            let row_id = cmd_hist_record_with_id(
+                state, name, &orig_text, "session", &origin, skip_board, meta,
+            )
+            .await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
         } else if !origin.is_empty() && origin != name {
             // skip_board, not `false` (AMUX-4555). This is the DELIVERED peer
             // branch and the one the 37 reported cards came through.
@@ -22582,6 +22606,14 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                 let author = member_actor.as_deref().unwrap_or(email);
                 cmd_hist_record_full(state, name, &orig_text, "user", author, skip_board, meta)
                     .await;
+            } else if !origin.is_empty() && origin == name {
+                // Same gap on the failure side (AMUX-5030): a self-send that
+                // did NOT submit also left no row, so there was nothing to find
+                // afterwards on either outcome.
+                cmd_hist_record_full(
+                    state, name, &orig_text, "session", &origin, skip_board, meta,
+                )
+                .await;
             } else if !origin.is_empty() && origin != name {
                 // skip_board, not `false` (AMUX-4555). A PEER send is the shape
                 // this bug was reported from: mixpeek-orchestrator's every-4h

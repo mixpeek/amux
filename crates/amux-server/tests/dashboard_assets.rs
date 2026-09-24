@@ -1966,6 +1966,40 @@ fn the_ui_closed_statuses_match_the_servers_derivation() {
 /// `<cross-session-message ... from-name="<lane>">` block. amux never sees it
 /// as a send, so no Messages row exists to match against and the row-matching
 /// path cannot classify it.
+/// AMUX-5030. A self-send is recorded as `session`, and `session` must stay in
+/// the classifier's allowlist or the row renders "Unclassified".
+///
+/// The server now writes a `cmd_history` row for `origin == name` (a lane
+/// sending to itself), which previously produced no row at all. That row's type
+/// is `session` deliberately: a new type would fall through `_msgKind`'s
+/// allowlist to `unknown`, which is the badge Ethan reported, so the fix would
+/// have traded an absent message for an unclassified one.
+#[test]
+fn the_type_a_self_send_is_recorded_under_is_one_the_classifier_knows() {
+    let app = asset("app.js");
+    let start = app
+        .find("function _msgKind(e) {")
+        .expect("_msgKind is gone from the bundle");
+    let end = app[start..]
+        .find("\n}\n")
+        .map(|i| start + i + 3)
+        .expect("_msgKind has no closing brace");
+    let body = &app[start..end];
+
+    assert!(
+        body.contains("t === 'session'"),
+        "_msgKind no longer recognises 'session', so every peer AND self-send row \
+         renders Unclassified"
+    );
+    // The fallthrough must stay `unknown` rather than `human`: 355 rows once wore
+    // a Human badge that way (AMUX-3737), and a self-send is not a person.
+    assert!(
+        body.contains("return 'unknown';"),
+        "the allowlist's fallthrough is no longer 'unknown'; an unrecognised type \
+         must not be given a person's badge"
+    );
+}
+
 #[test]
 fn a_peer_message_from_another_claude_session_is_classified_not_unknown() {
     let app = asset("app.js");
