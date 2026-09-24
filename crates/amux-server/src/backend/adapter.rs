@@ -316,7 +316,23 @@ fn claude_background_wait_verdict(raw: &str) -> (bool, bool) {
 }
 
 pub(crate) fn claude_background_agents_working(raw: &str) -> bool {
-    claude_background_wait_verdict(raw).0
+    // The current footer survives a parent Stop while a Bash job runs. Only
+    // accept provider chrome after the last prompt, never quoted scrollback.
+    let footer = raw.rsplit_once('❯').map(|(_, footer)| footer).unwrap_or("");
+    let shells = footer.lines().any(|line| {
+        let line = line.trim();
+        (line.starts_with('⏸') || line.starts_with('⏵'))
+            && line.split('·').any(|part| {
+                let mut words = part.split_whitespace();
+                words
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| n > 0)
+                    && matches!(words.next(), Some("shell" | "shells"))
+                    && words.next().is_none()
+            })
+    });
+    shells || claude_background_wait_verdict(raw).0
 }
 
 pub(crate) fn claude_background_wait_superseded(raw: &str) -> bool {

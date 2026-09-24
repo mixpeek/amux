@@ -4184,3 +4184,14 @@ CARD: AF-946
 SYMPTOM: Clicking Enter on status-hooks-luna's Codex hook review screen produced message.queued(chars=0) and a boot-delivery queue row, leaving the picker unchanged. The shortcut first called suggestion extraction; the startup gate queued the empty probe before checking whether any suggestion existed.
 COST: The worker appeared stuck on input even after using its Enter control; one empty test queue row required cancellation.
 FIX: Key chips send literal keys; isolated empty Send is also literal Enter and never invokes suggestion extraction. Empty startup probes return no_effect and cannot enter the durable queue. Four dashboard regressions and the empty_control_probe Rust regression pass. The exact test-only empty queue row was cancelled through the standard queue API.
+
+## Claude question cancellation stayed blocked and a live background shell appeared idle
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Live status-hooks-haiku test emitted a permission_prompt notification for AskUserQuestion, then no Stop hook after Escape; the card stayed blocked over a completed cancellation. A separate parent Stop hid its running background shell.
+COST: Two incorrect worker statuses reproduced in UI; three additional bounded test turns and status inspection.
+FIX: Preserve explicit question waiting across notifications, reconcile newer provider transcript interruption boundaries in both display and delivery, and retain working while provider-owned background shell footer remains. Regression tests added; final deployed validation recorded separately.

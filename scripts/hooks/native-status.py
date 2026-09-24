@@ -23,7 +23,7 @@ def state_for(data):
                 'agent_needs_input': 'waiting'}.get(data.get('notification_type'))
     if event == 'SessionStart':
         return 'active' if data.get('source') == 'compact' else 'idle'
-    if event == 'PreToolUse' and data.get('tool_name', '').split('.')[-1] in ('AskUserQuestion', 'request_user_input'):
+    if event in ('PreToolUse', 'PermissionRequest') and data.get('tool_name', '').split('.')[-1] in ('AskUserQuestion', 'request_user_input'):
         return 'waiting'
     return {'UserPromptSubmit': 'active', 'PreToolUse': 'active',
             'PermissionRequest': 'blocked', 'PostToolUse': 'active',
@@ -67,6 +67,10 @@ def observe(data, root, worker, run, provider, occurred_at):
         fcntl.flock(lock, fcntl.LOCK_EX)
         counter = folder / 'counter.json'
         previous = json.loads(counter.read_text()) if counter.exists() else {}
+        # Claude also calls an AskUserQuestion notification 'permission_prompt'.
+        # Preserve the explicit tool's waiting state until a real next edge.
+        if data.get('hook_event_name') == 'Notification' and previous.get('state') == 'waiting':
+            state = 'waiting'
         seq = previous.get('sequence', 0) + 1
         payload = {'native_status': True, 'provider': provider, 'run_id': run,
                    'sequence': seq, 'event_ts': occurred_at, 'state': state,
@@ -74,7 +78,7 @@ def observe(data, root, worker, run, provider, occurred_at):
                    'session_id': data.get('session_id', ''),
                    'turn_id': data.get('turn_id', ''), 'model': data.get('model', '')}
         target = folder / ('%020d.json' % seq)
-        for path, value in ((counter, {'sequence': seq}), (target, payload)):
+        for path, value in ((counter, {'sequence': seq, 'state': state}), (target, payload)):
             temp = path.with_suffix('.tmp')
             with temp.open('w') as out:
                 json.dump(value, out)

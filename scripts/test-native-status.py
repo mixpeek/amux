@@ -50,6 +50,20 @@ class NativeStatus(unittest.TestCase):
             self.assertTrue(all(v['event_ts']==100 for v in values))
             self.assertFalse(observer.observe(dict(data,agent_id='child'),root,'worker','abc','codex',101))
 
+    def test_question_notification_preserves_waiting_but_real_permission_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for i, data in enumerate([
+                {'hook_event_name':'PreToolUse','tool_name':'AskUserQuestion'},
+                {'hook_event_name':'PermissionRequest','tool_name':'AskUserQuestion'},
+                {'hook_event_name':'Notification','notification_type':'permission_prompt'},
+                {'hook_event_name':'PostToolUse'},
+                {'hook_event_name':'PermissionRequest','tool_name':'Bash'},
+            ], 1):
+                observer.observe(data, root, 'worker', 'abc', 'claude', float(i))
+            values=[json.loads(p.read_text())['state'] for p in sorted((root/'status-events/worker/abc').glob('0*.json'))]
+            self.assertEqual(values, ['waiting','waiting','waiting','active','blocked'])
+
     def test_installer_preserves_other_hooks_idempotently_without_trust_changes(self):
         for provider in ('claude','codex'):
             other={'type':'command','command':'echo other'}

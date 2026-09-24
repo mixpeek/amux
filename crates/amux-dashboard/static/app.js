@@ -5153,7 +5153,7 @@ async function _openStatusDetail(name) {
       }
     }
     if (peekRes) {
-      const lines = (peekRes.output || '').split('\n').filter(l => l.trim());
+      const lines = stripAnsi(peekRes.output || '').split('\n').filter(l => l.trim());
       const last = lines.slice(-12);
       if (last.length) {
         html += '<h3>Terminal</h3><pre style="font-size:0.8rem;max-height:200px;overflow:auto;padding:8px;border-radius:6px;background:var(--surface);white-space:pre-wrap;word-break:break-all;margin:0">'
@@ -11623,7 +11623,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1056';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1057';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

@@ -16584,9 +16584,13 @@ pub(crate) fn lane_report(state: &AppState, name: &str) -> Option<LaneReport> {
         .ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     let rep = v.get(name)?;
-    let st = rep["state"].as_str()?.to_string();
+    let mut st = rep["state"].as_str()?.to_string();
     // ts is a FLOAT (time.time()); as_i64 reads every report as epoch-0.
-    let ts = rep["ts"].as_f64().unwrap_or(0.0);
+    let mut ts = rep["ts"].as_f64().unwrap_or(0.0);
+    if let Some(interrupted) = native_claude_interrupt(name, rep) {
+        st = "idle".into();
+        ts = interrupted;
+    }
     let started: f64 = conn
         .query_row(
             "SELECT MAX(ts) FROM session_events WHERE type='session.started' AND session=?1",
@@ -24657,6 +24661,46 @@ fn transcript_terminal_agents(
     latest.into_values().collect()
 }
 
+// Claude emits no Stop hook when an owner cancels a tool/question. Read the
+// explicit provider interruption marker, never infer completion from silence.
+fn claude_interrupt_from_records(records: &[Value]) -> Option<f64> {
+    let record = records
+        .iter()
+        .rev()
+        .find(|r| matches!(r["type"].as_str(), Some("user" | "assistant")))?;
+    if record["type"] != "user" {
+        return None;
+    }
+    let content = record["message"]["content"].as_array()?;
+    if content.len() != 1
+        || content[0]["type"] != "text"
+        || !matches!(
+            content[0]["text"].as_str(),
+            Some("[Request interrupted by user]" | "[Request interrupted by user for tool use]")
+        )
+    {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(record["timestamp"].as_str()?)
+        .ok()
+        .map(|ts| ts.timestamp_millis() as f64 / 1000.0)
+}
+
+pub(crate) fn native_claude_interrupt(name: &str, report: &Value) -> Option<f64> {
+    if report["native_status"] != true
+        || report["provider"] != "claude"
+        || !matches!(
+            report["state"].as_str(),
+            Some("active" | "waiting" | "blocked")
+        )
+    {
+        return None;
+    }
+    let path = lifecycle_transcript_path(name, report["session_id"].as_str()?)?;
+    let ts = claude_interrupt_from_records(&iter_jsonl_tail(&path, 131_072))?;
+    (ts > report["ts"].as_f64().unwrap_or(f64::MAX) && ts <= now_f64() + 5.0).then_some(ts)
+}
+
 fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> Option<PathBuf> {
     if !cached_re!(r"^[0-9a-fA-F-]{36}$").is_match(lifecycle_session) {
         return None;
@@ -27539,6 +27583,28 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_claude_interrupt_requires_latest_explicit_provider_boundary() {
+        let interrupted = serde_json::json!({"type":"user","timestamp":"2026-09-24T01:54:18.202Z",
+            "message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}});
+        assert!(super::claude_interrupt_from_records(std::slice::from_ref(&interrupted)).is_some());
+        assert!(super::claude_interrupt_from_records(&[
+            interrupted.clone(),
+            serde_json::json!({"type":"system"})
+        ])
+        .is_some());
+        for kind in ["user", "assistant"] {
+            assert!(super::claude_interrupt_from_records(&[
+                interrupted.clone(),
+                serde_json::json!({"type":kind,"message":{"content":"continue"}})
+            ])
+            .is_none());
+        }
+        assert!(super::claude_interrupt_from_records(&[
+            serde_json::json!({"type":"user","message":{"content":"[Request interrupted by user]"}})
+        ])
+        .is_none());
+    }
     /// AMUX-4943. `managed_by` was the literal `"python"` for every session, so
     /// it reported the same value for 164 of 164 lanes and would have reported
     /// it if every one were herdr-backed. The ethos test is "what input would

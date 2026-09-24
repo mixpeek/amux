@@ -1302,7 +1302,7 @@ impl FleetSignals {
                 }
             }
         }
-        let reports = conn
+        let mut reports = conn
             .query_row(
                 "SELECT value FROM prefs WHERE key='session_reports'",
                 [],
@@ -1356,6 +1356,13 @@ impl FleetSignals {
                 name.to_owned(),
                 super::native_status::launch_started_at(name, fallback),
             );
+        }
+        for name in running.iter().filter_map(|tmux| tmux.strip_prefix("amux-")) {
+            if let Some(report) = reports.get_mut(name) {
+                if let Some(ts) = crate::api::session_verbs::native_claude_interrupt(name, report) {
+                    report["transcript_interrupt_ts"] = json!(ts);
+                }
+            }
         }
         let codex_turns = running
             .iter()
@@ -2276,9 +2283,22 @@ impl FleetSignals {
                 }
             }
         }
+        if let Some(ts) = self
+            .reports
+            .get(name)
+            .and_then(|r| r["transcript_interrupt_ts"].as_f64())
+        {
+            if ts >= self.started.get(name).copied().unwrap_or(0.0) {
+                status = "idle".into();
+                decided = "claude_transcript_interrupt";
+                ex.insert("transcript_interrupt_ts".into(), json!(ts));
+            }
+        }
         // Main-turn completion does not complete its live tool/subagents.
         if status == "idle"
-            && (self.provider_child_activity.contains(name) || subagents_reported_live)
+            && (self.provider_child_activity.contains(name)
+                || subagents_reported_live
+                || provider_background_working)
         {
             status = "active".into();
             decided = "structured_live_children";
@@ -6716,6 +6736,41 @@ Claude usage limit reached. Your limit will reset at 3pm.
             s.derive_status_explain(lane, true).1["decided_by"],
             "native_hook"
         );
+    }
+
+    #[test]
+    fn native_claude_question_cancel_overrides_its_older_notification() {
+        let mut s = signals();
+        let lane = "claude-question";
+        s.started.insert(lane.into(), s.now - 100.0);
+        s.reports = json!({lane:{"native_status":true,"state":"waiting","ts":s.now - 10.0,"transcript_interrupt_ts":s.now - 1.0}});
+        let (status, explain) = s.derive_status_explain(lane, true);
+        assert_eq!(status, "idle");
+        assert_eq!(explain["decided_by"], "claude_transcript_interrupt");
+        s.started.insert(lane.into(), s.now);
+        assert_ne!(
+            s.derive_status_explain(lane, true).1["decided_by"],
+            "claude_transcript_interrupt"
+        );
+    }
+
+    #[test]
+    fn native_parent_stop_does_not_hide_claude_background_shell() {
+        let mut s = signals();
+        let lane = "claude-shell";
+        s.started.insert(lane.into(), s.now - 100.0);
+        s.activity.insert(format!("amux-{lane}"), s.now as i64);
+        s.reports =
+            json!({lane:{"native_status":true,"state":"idle","ts":s.now - 1.0,"event":"Stop"}});
+        s.panes.insert(lane.into(), "✻ Baked for 7s · done 9:52 PM · 1 shell still running\n❯\n  ⏸ manual mode on · 1 shell · ← 5 agents".into());
+        assert_eq!(s.derive_status_explain(lane, true).0, "active");
+        s.panes.insert(lane.into(), "✻ Baked for 7s · done 9:52 PM · 1 shell still running\n❯\n  ⏸ manual mode on · ? for shortcuts · ← 5 agents".into());
+        assert_eq!(s.derive_status_explain(lane, true).0, "idle");
+        s.panes.insert(
+            lane.into(),
+            "❯ Text saying 1 shell\n  ⏸ manual mode on · 0 shells".into(),
+        );
+        assert_eq!(s.derive_status_explain(lane, true).0, "idle");
     }
 
     #[test]
