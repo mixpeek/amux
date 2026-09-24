@@ -4309,3 +4309,25 @@ CARD: AF-947
 SYMPTOM: Goal 03 is about 29 KB, but the model input truncated file content at 16,000 characters. Studio, API regression and standalone acceptance bodies begin later; only their headings reached setup and decomposition. The setup request basis also omitted the existing truncation flag.
 COST: Counting all 23 headings could look like complete decomposition while later requirements were unavailable to the planner.
 FIX: Retain up to 64,000 characters per referenced file within the existing three-file bound; normal goal specifications now reach planning intact. Oversized source previews explicitly require the executor to read the full source. Test exact tail acceptance preservation and retain the existing oversized-section coverage test.
+
+## Project draft accepted partial capability coverage as a suite gate
+AREA: reliability
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The generated Studio contract listed every workflow but required only one passing capability and one screenshot. That did not mechanically reject missing or failed capabilities.
+COST: Partial runtime coverage could look complete until human review.
+FIX: The reviewed UI contract adds zero failed and zero missing capabilities; setup guidance now requests raw per-capability coverage with those gates, and fixture reuse rather than an arbitrary command-count limit. Existing draft validation logs remain visible. This improves generation guidance, not semantic proof; runtime and human evidence review remain required.
+
+## Project intake confused required outputs with background and commit instructions
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Live Goal 03 intake rejected a complete 23-task draft because Ray appeared only in a cross-project context paragraph. Its next attempt rejected the requested equivalence-contract task because its next action said to commit the document. Both paid attempts were exhausted with no board items.
+COST: Scope creep on retry and a stalled project despite an otherwise useful retained decomposition.
+FIX: For indexed specs, enforce technology keywords against the requested sections and operator command, not unrelated background; keep full context for reasoning. Detect administrative-only tasks by their outcome title, allowing normal commit/report instructions inside producing tasks. Revalidate retained exhausted responses once per harness validation revision with no paid retry; invalid responses remain bounded and cannot starve later requests. Log project_intake_revalidate and command_plan_recovered. Regression tests cover real requested artifacts, background-only technologies, actual missing scope, and valid/invalid exhausted-response recovery.

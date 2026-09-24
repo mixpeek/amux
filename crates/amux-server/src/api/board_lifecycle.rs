@@ -366,6 +366,8 @@ fn validate(d: &Decision, rows: &[Candidate], session: &str) -> Result<(), Strin
     validate_for_request(d, rows, session, "", "")
 }
 
+pub(crate) const INTAKE_VALIDATION_REVISION: i64 = 2;
+
 fn validate_for_request(
     d: &Decision,
     rows: &[Candidate],
@@ -419,8 +421,9 @@ fn validate_for_request(
             return Err("duplicate/empty plan key or outcome title".into());
         }
         if session.starts_with("project:") {
-            let admin = format!("{} {} {}", task.title, task.description, task.next_action)
-                .to_ascii_lowercase();
+            // Producing tasks must commit and report their work. Administrative
+            // verbs in their next action do not make the outcome a protocol task.
+            let admin = task.title.to_ascii_lowercase();
             let is_harness_step = admin.contains("commit ")
                 || admin.contains("git commit")
                 || admin.contains("report retained")
@@ -561,7 +564,16 @@ fn project_scope_errors(d: &Decision, command: &str, request_basis: &str) -> Res
     if d.kind != "tasks" || request_basis.trim().is_empty() || explicit_scoping_only(command) {
         return Ok(());
     }
-    let source = request_basis.to_ascii_lowercase();
+    let required_sections = required_spec_sections(request_basis);
+    // Indexed specifications distinguish executable requirements from background
+    // links to other projects. Keep those links in model context, but never turn
+    // a technology mentioned only there into mandatory work in this project.
+    let source = if required_sections.is_empty() {
+        request_basis.to_ascii_lowercase()
+    } else {
+        let ids = required_sections.iter().map(|(id, _)| id.clone()).collect();
+        format!("{command}\n{}", scoped_spec_excerpt(request_basis, &ids)).to_ascii_lowercase()
+    };
     let plan = lower_task_plan(d);
     let concrete_runtime = contains_any(
         &source,
@@ -578,7 +590,7 @@ fn project_scope_errors(d: &Decision, command: &str, request_basis: &str) -> Res
             "test it all e2e",
         ],
     );
-    if !concrete_runtime {
+    if !concrete_runtime && required_sections.is_empty() {
         return Ok(());
     }
     let mut errors = Vec::new();
@@ -647,7 +659,6 @@ fn project_scope_errors(d: &Decision, command: &str, request_basis: &str) -> Res
             &["artifact", "evidence", "report", "screenshot", "video"],
         );
     }
-    let required_sections = required_spec_sections(request_basis);
     for (id, title) in &required_sections {
         let marker = format!("[spec:{id}]");
         let count = d
@@ -1492,6 +1503,15 @@ pub(crate) async fn capture_inner(
         let Some(r) = row else { return Ok(()) };
         r
     };
+    let revalidate_saved = project.is_some() && saved.as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .is_some_and(|v| v["state"] == "received"
+            && v["validation_revision"].as_i64().unwrap_or(0) != INTAKE_VALIDATION_REVISION);
+    if revalidate_saved {
+        tracing::info!(message_id=id, revision=INTAKE_VALIDATION_REVISION, model_calls=0,
+            measured=true,n_considered=1,verdict="project_intake_revalidate",
+            "revalidate retained interpretation once after harness validation changes");
+    }
     let referenced_files = referenced_project_files(project.as_ref(), &text);
     let basis = request_basis(&text, &referenced_files);
     let waiting_on = saved
@@ -1529,11 +1549,10 @@ pub(crate) async fn capture_inner(
             if v["state"] == "prepared" {
                 return serde_json::from_value::<Prepared>(v["plan"].clone()).ok();
             }
-            // A project retry can revalidate the retained response after a
-            // harness rule is fixed. Exhausted receipts stay inert until the
-            // operator grants another bounded attempt.
+            // A changed validator rechecks retained bytes without spending a
+            // model attempt. Current invalid receipts remain bounded.
             if v["state"] != "received"
-                || (v.get("error").is_some() && !(project.is_some() && attempts < attempt_limit))
+                || (v.get("error").is_some() && !revalidate_saved && !(project.is_some() && attempts < attempt_limit))
             {
                 return None;
             }
@@ -1554,6 +1573,14 @@ pub(crate) async fn capture_inner(
                 telemetry: v["telemetry"].clone(),
             })
         });
+    if revalidate_saved && prepared.is_none() {
+        // Stamp only a completed rejection. A restart before a valid plan is
+        // committed must still recover it on the next sweep.
+        state.store.write_async(move |c| {
+            c.execute("UPDATE cmd_history SET intake_result=json_set(intake_result,'$.validation_revision',?2) WHERE id=?1 AND capture_pending!=0", rusqlite::params![id,INTAKE_VALIDATION_REVISION])?;
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).await?;
+    }
     if let Some(mut plan) = prepared {
         let reusable = {
             let conn = state.store.read()?;
@@ -1786,7 +1813,7 @@ pub(crate) async fn capture_inner(
         .unwrap_or_default();
     attempt_responses.push(json!(raw));
     let telemetry = json!({"provider":provider,"model":model,"model_calls":1,"attempt":attempts+1,"prompt_chars":prompt_chars,"response_chars":raw.chars().count(),"token_usage_measured":completion.usage.is_some(),"usage":completion.usage,"attempt_usage":attempt_usage,"model_ms":started.elapsed().as_millis() as u64,"n_considered":rows.len(),"n_available":available});
-    let received = json!({"state":"received","response":raw,"attempt_responses":attempt_responses,"attempt_errors":saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok()).and_then(|v|v.get("attempt_errors").cloned()),"candidates":rows,"telemetry":telemetry}).to_string();
+    let received = json!({"state":"received","validation_revision":INTAKE_VALIDATION_REVISION,"response":raw,"attempt_responses":attempt_responses,"attempt_errors":saved.as_deref().and_then(|s|serde_json::from_str::<Value>(s).ok()).and_then(|v|v.get("attempt_errors").cloned()),"candidates":rows,"telemetry":telemetry}).to_string();
     state
         .store
         .write_async(move |c| {
@@ -2603,6 +2630,7 @@ mod tests {
             tasks: vec![step("a"), step("b"), step("c")],
         };
         p.tasks[0].title = "Create visible smoke markdown artifact".into();
+        p.tasks[0].next_action = "Write and git commit the requested artifact".into();
         p.tasks[0]
             .acceptance_criteria
             .push("commit contains the artifact".into());
@@ -2758,6 +2786,20 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
             &basis,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn indexed_spec_background_does_not_expand_required_project_work() {
+        let mut d: Decision = serde_json::from_value(json!({
+            "kind":"tasks","reason":"implement the spec","confidence":0.99,
+            "tasks":[{"key":"t1","title":"Verify MVS lifecycle","description":"Implement and verify MVS lifecycle", "type":"code","action":"create","next_action":"Run the lifecycle", "acceptance_criteria":["[spec:T1] MVS lifecycle returns nonzero documents and retained evidence"],"needs":[],"dependency_reason":""}]
+        })).unwrap();
+        let basis="### T1. MVS lifecycle\nRun end-to-end MVS lifecycle and retain evidence.\n## Dependencies on other projects\nAnother project migrates Celery to Ray in one Docker image.\nREQUIRED_SPEC_SECTION [spec:T1] MVS lifecycle";
+        project_scope_errors(&d,"Implement the referenced spec",basis).unwrap();
+        let required=basis.replace("Run end-to-end MVS lifecycle", "Run end-to-end MVS and Ray lifecycle");
+        assert!(project_scope_errors(&d,"Implement the referenced spec",&required).unwrap_err().contains("ray"));
+        d.tasks[0].acceptance_criteria.clear();
+        assert!(project_scope_errors(&d,"Implement the referenced spec",basis).unwrap_err().contains("[spec:T1]"));
     }
 
     #[test]

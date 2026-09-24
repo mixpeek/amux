@@ -49,3 +49,21 @@ API-suite and standalone acceptance bodies. The bounded preview now retains up
 to 64,000 characters per file (three files maximum), and explicitly marks larger
 previews. A regression requires complete later-section details to reach setup;
 the existing oversized source still must account for every section exactly once.
+
+The corrected live draft was accepted on its second bounded attempt. The operator
+created `bucket-objects-gs3` through the UI, retaining the initial request and 22
+acceptance criteria. Review caught a weak Studio gate (one passing capability could
+pass a multi-capability requirement); the reviewed contract now also requires zero
+failed and zero missing capabilities. Setup guidance now requests this complete
+coverage pattern and shared fixture reuse instead of an arbitrary two-command cap.
+This remains semantic model guidance plus human review, not a guarantee that a
+generated contract is exhaustive. No runtime result is claimed at project creation.
+
+The first real intake retained two 23-section model responses but failed to create
+tasks: whole-file keyword scanning imported Ray from another project's background,
+and the admin-step guard mistook "commit the contract" inside a requested output
+for a separate commit-only task. Scope checks now use indexed requirement bodies,
+while the model still sees the complete document. Admin checks inspect outcome
+titles instead of punishing normal producing-task instructions. A validator
+revision rechecks exhausted retained responses once without another model call;
+invalid responses remain bounded and a restart cannot consume valid recovery.

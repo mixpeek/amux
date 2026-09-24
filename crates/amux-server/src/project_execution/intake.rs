@@ -111,9 +111,9 @@ pub(crate) async fn interpret(
 fn pending_receipts(conn: &Connection, now: i64) -> rusqlite::Result<Vec<(i64, String)>> {
     // Exhausted malformed responses and duplicates waiting on them must not
     // monopolize the bounded recovery batch and starve newer accepted commands.
-    let mut q=conn.prepare("SELECT c.id,c.project_group FROM cmd_history c JOIN group_config g ON g.name=c.project_group WHERE c.session='project:'||c.project_group AND c.type='user' AND c.capture_pending!=0 AND c.intake_retry_at<=?1 AND json_extract(g.execution_policy,'$.paused')!=1 AND CASE WHEN json_extract(c.intake_result,'$.waiting_on') IS NOT NULL THEN EXISTS(SELECT 1 FROM cmd_history p WHERE p.id=json_extract(c.intake_result,'$.waiting_on') AND p.capture_pending=0) ELSE c.intake_attempts<2+coalesce(json_array_length(c.client_meta,'$.intake_retries'),0) OR json_extract(c.intake_result,'$.state')='prepared' OR (json_extract(c.intake_result,'$.state')='received' AND json_extract(c.intake_result,'$.error') IS NULL) END ORDER BY c.id LIMIT 2")?;
+    let mut q=conn.prepare("SELECT c.id,c.project_group FROM cmd_history c JOIN group_config g ON g.name=c.project_group WHERE c.session='project:'||c.project_group AND c.type='user' AND c.capture_pending!=0 AND c.intake_retry_at<=?1 AND json_extract(g.execution_policy,'$.paused')!=1 AND CASE WHEN json_extract(c.intake_result,'$.waiting_on') IS NOT NULL THEN EXISTS(SELECT 1 FROM cmd_history p WHERE p.id=json_extract(c.intake_result,'$.waiting_on') AND p.capture_pending=0) ELSE c.intake_attempts<2+coalesce(json_array_length(c.client_meta,'$.intake_retries'),0) OR json_extract(c.intake_result,'$.state')='prepared' OR (json_extract(c.intake_result,'$.state')='received' AND (json_extract(c.intake_result,'$.error') IS NULL OR coalesce(json_extract(c.intake_result,'$.validation_revision'),0)!=?2)) END ORDER BY c.id LIMIT 2")?;
     let rows = q
-        .query_map([now], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map(params![now,board_lifecycle::INTAKE_VALIDATION_REVISION], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect();
     rows
 }
@@ -334,7 +334,7 @@ mod tests {
                     "UPDATE cmd_history SET intake_attempts=2,intake_result=?2 WHERE id=?1",
                     params![
                         original,
-                        json!({"state":"received","error":"malformed JSON"}).to_string()
+                        json!({"state":"received","error":"malformed JSON","validation_revision":board_lifecycle::INTAKE_VALIDATION_REVISION}).to_string()
                     ],
                 )?;
                 c.execute(
@@ -368,6 +368,27 @@ mod tests {
             })
             .unwrap();
     }
+    #[tokio::test]
+    async fn harness_revision_revalidates_exhausted_response_once_without_paid_retry() {
+        for valid in [true, false] {
+            let (_dir,state)=fixture();
+            let id=receipt(&state,"revision-recovery");
+            let response=if valid {json!({"kind":"tasks","reason":"requested useful artifact","confidence":1.0,"tasks":[{"key":"a","title":"Write equivalence contract","description":"Document the requested storage contract","type":"doc","action":"create","next_action":"Write and commit the contract","acceptance_criteria":["All four stores are documented"]}]}).to_string()} else {"invalid JSON".into()};
+            state.store.write(move |c| {
+                c.execute("UPDATE cmd_history SET intake_attempts=2,intake_retry_at=0,intake_result=?2 WHERE id=?1",params![id,json!({"state":"received","error":"previous validator rejected this","response":response,"candidates":[],"telemetry":{}}).to_string()])?;
+                assert_eq!(pending_receipts(c,chrono::Utc::now().timestamp())?,vec![(id,"sample".into())]);
+                Ok(WriteOutcome{applied:true,events:vec![]})
+            }).unwrap();
+            let fake=Arc::new(Fake{calls:Default::default(),response:"must not call".into()});
+            interpret(&state,id,"sample",fake.clone()).await.unwrap();
+            let c=state.store.read().unwrap();
+            assert_eq!(fake.calls.load(std::sync::atomic::Ordering::SeqCst),0);
+            assert!(pending_receipts(&c,chrono::Utc::now().timestamp()).unwrap().is_empty());
+            assert_eq!(bs::project_issues(&c,"sample").unwrap().len(),usize::from(valid));
+            assert_eq!(receipts(&c,"sample").unwrap()[0]["pending"],!valid);
+        }
+    }
+
     #[test]
     fn project_provider_routing_reaches_real_cli_callsite_once_per_attempt() {
         use std::os::unix::fs::PermissionsExt;
