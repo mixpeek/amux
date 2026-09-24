@@ -4716,3 +4716,14 @@ CARD: AF-947
 SYMPTOM: The bucket project requires acceptance.md, decisions.md and budget/scale review artifacts, but intake omitted human criteria entirely. Producer reports therefore omitted required review inputs, and missing human evidence was excluded from owner repair.
 COST: A completed implementation could strand acceptance on missing files despite a preserved human approval gate.
 FIX: Separate review-evidence ownership from contract approval. Include preparable paths in the intake catalog and executor packet, exclude automated-run-owned outputs, require exact retained assets, and route missing review evidence to its bounded owning task repair. Neither preparation nor repair records human approval. Regression rejects missing files, unknown/automated review IDs and worker approval, while proving missing review inputs trigger repair. Deterministically create one ordinary evidence-preparation task only for unowned preparable contract inputs; deduplicate on exact markers, defer to pending intake and preserve pauses and explicit archive/delete decisions. Emit project.review_inputs_catalogued and project.review_preparation_reconciled. Evaluate human evidence after automated checks regardless of contract order, and retain runtime-produced review files through the generated-artifact path. A real verifier regression proves fresh receipt/raw files remain reviewable and false raw measurements still fail.
+
+## Assigned project tasks claimed Working now during provider startup
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Auto-created POG-25 showed Working now while its provider was at a hook-review picker. The project execution stage recorded assignment, but the UI treated it as live activity despite the worker view reporting Needs input.
+COST: Conflicting project and worker status hid startup and delivery progress.
+FIX: Derive Working now only from fresh active/working provider observations. Distinguish queued, assigned, starting, idle, paused, stopped, input, error, rate-limit and stale/unavailable states, and remove their working highlight. Emit project-worker-state-mismatch through client-debug when an existing displayed card changes into a mismatch. Regression covers each state and offline/cache startup.

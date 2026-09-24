@@ -2066,6 +2066,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_projectRender": {
+      "kind": "command._projectRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_projectResumeWorker": {
       "kind": "command._projectResumeWorker",
       "feedback_required": true,

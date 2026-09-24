@@ -100,7 +100,7 @@ test('a checked task candidate cannot imply its integrated runtime goal is verif
  assert.equal(ctx._projectTaskDisplay(card,acceptance).label,'Candidate ready');
  acceptance.criteria[0].result={state:'passed'};
  assert.equal(ctx._projectTaskDisplay(card,acceptance).label,'Verified');
- assert.equal(ctx._projectTaskDisplay({...card,phase:'working',execution_plan:{execution:{stage:'working'}}},acceptance).label,'Working now');
+ assert.equal(ctx._projectTaskDisplay({...card,phase:'working',execution_plan:{execution:{stage:'working'}}},acceptance).label,'Assigned to worker');
 });
 
 
@@ -160,4 +160,22 @@ test('project wait cards show the authorization cause without leaking scheduler 
  assert.equal(display('required_output:T1','old failure').detail,'');
  assert.equal(display('authorization_required','spend: Production backfill needs approval').detail,'spend: Production backfill needs approval');
  assert.equal(display('verification failed (test): assertion mismatch').detail,'verification failed (test): assertion mismatch');
+});
+
+
+test('assigned project tasks require live activity before claiming working now',()=>{
+ const ctx=vm.createContext({sessions:[{name:'worker',status:'active',running:true}],_initialLoad:false,_sessionLoadError:null,online:true});
+ vm.runInContext(source.slice(source.indexOf('function _projectTaskDisplay('),source.indexOf('function _projectOutcomeVerdict(')),ctx);
+ const card={phase:'working',execution_plan:{execution:{stage:'working',worker:'worker'}}};
+ const label=()=>ctx._projectTaskDisplay(card).label;
+ assert.equal(label(),'Working now');
+ for(const [status,expected] of Object.entries({waiting:'Worker needs input',idle:'Waiting for worker',starting:'Starting worker',stopped:'Worker stopped',error:'Worker error',rate_limited:'Worker rate limited'})){
+  ctx.sessions[0].status=status;assert.equal(label(),expected);assert.notEqual(ctx._projectTaskDisplay(card).cls,'working');
+ }
+ ctx.sessions[0].status='active';ctx.sessions[0].paused=true;assert.equal(label(),'Worker paused');
+ ctx.sessions[0].paused=false;ctx._sessionLoadError={status:503};assert.equal(label(),'Worker state unavailable');
+ ctx._sessionLoadError=null;ctx._initialLoad=true;assert.equal(label(),'Worker state unavailable');
+ ctx._initialLoad=false;ctx.online=false;assert.equal(label(),'Worker state unavailable');
+ ctx.online=true;ctx.sessions=[];assert.equal(label(),'Assigned to worker');
+ card.execution_plan.execution.stage='reserved';assert.equal(label(),'Queued to worker');assert.notEqual(ctx._projectTaskDisplay(card).cls,'working');
 });

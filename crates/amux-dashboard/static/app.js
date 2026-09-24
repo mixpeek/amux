@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1072';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1073';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45135,8 +45135,19 @@ function _projectTaskDisplay(card, acceptance=(typeof _projectsData==='undefined
   if(e.stage==='repair') return {label:plan.action==='claim'?'Repair queued':'Repairing', cls:'waiting', detail:e.waiting || e.last_failure || ''};
   if(plan.action==='grant_repair') return {label:'Repair grant queued', cls:'waiting', detail:e.waiting || ''};
   if(e.stage==='reported' || e.stage==='verifying' || phase==='verifying') return {label:'Verifying', cls:'verifying', detail:e.waiting || ''};
-  if(e.stage==='reserved') return {label:'Queued to worker', cls:'working', detail:''};
-  if(e.stage==='working') return {label:'Working now', cls:'working', detail:''};
+  if(e.stage==='reserved') return {label:'Queued to worker', cls:'waiting', detail:''};
+  if(e.stage==='working') {
+    const reg=typeof sessions==='undefined'?null:sessions.find(s=>s.name===e.worker);
+    const stale=(typeof _sessionLoadError!=='undefined' && !!_sessionLoadError) || (typeof _initialLoad!=='undefined' && _initialLoad) || (typeof online!=='undefined' && !online);
+    if(stale) return {label:'Worker state unavailable',cls:'waiting',detail:'Task is assigned; live worker state has not been confirmed.'};
+    if(!reg) return {label:'Assigned to worker',cls:'waiting',detail:'Waiting for a current worker observation.'};
+    if(reg.paused || reg.lifecycle==='paused') return {label:'Worker paused',cls:'waiting',detail:''};
+    if(reg.running===false || reg.status==='stopped') return {label:'Worker stopped',cls:'waiting',detail:''};
+    const labels={idle:'Waiting for worker',waiting:'Worker needs input',starting:'Starting worker',error:'Worker error',rate_limited:'Worker rate limited'};
+    if(labels[reg.status]) return {label:labels[reg.status],cls:'waiting',detail:''};
+    if(!['active','working'].includes(reg.status)) return {label:'Assigned to worker',cls:'waiting',detail:'Waiting for confirmed activity.'};
+    return {label:'Working now', cls:'working', detail:''};
+  }
   if(phase==='verified') {
     const refs=Array.isArray(card?.acceptance_criteria)?card.acceptance_criteria:[];
     const pendingRuntime=(acceptance?.criteria||[]).some(c=>refs.includes('contract:'+c.id) && c.verifier?.type==='execution' && c.result?.state!=='passed');
@@ -45691,8 +45702,14 @@ function _projectRender(data) {
           ? '<button type="button" class="btn project-card-action" onclick="_projectRetry(\''+escJs(c.id)+'\')">Repair now</button>'
           : (c.verification_retry_available===true ? '<button type="button" class="btn project-card-action" onclick="_projectRetry(\''+escJs(c.id)+'\',true)">Rerun checks</button>' : '');
         const sig=JSON.stringify([c.id,c.title,c.phase,c.next_action,display.label,display.detail,working,(e.retained_assets||[]).length,c.verification_retry_available===true,c.retry_available===true]);
+        const node=holder.querySelector(':scope > [data-key="'+CSS.escape(c.id)+'"]');
+        const mismatch=e.stage==='working' && display.cls!=='working' ? display.label : '';
+        if(mismatch && node && node.dataset.workerMismatch!==mismatch && typeof _sessionLoadError!=='undefined' && !_sessionLoadError) {
+          fetch(API+'/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'project-worker-state-mismatch',ver:APP_VER,task:c.id,worker:e.worker,execution_stage:e.stage,observed:mismatch})}).catch(()=>{});
+        }
+        if(node) node.dataset.workerMismatch=mismatch;
         const stateLine=display.label?'<p class="project-wait">'+esc(_projectClip(display.label,120))+(display.detail?' <span class="project-muted">'+esc(_projectClip(display.detail,120))+'</span>':'')+'</p>':'';
-        return {key:c.id,sig,html:'<article class="project-card '+(working?'project-working':'')+'" data-task="'+esc(c.id)+'"><button type="button" class="project-card-select" data-focus="card:'+esc(c.id)+'" aria-pressed="false" onclick="_projectSelectTask(\''+escJs(c.id)+'\')"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><strong>'+esc(c.title)+'</strong></button>'+stateLine+'<p>'+esc(_projectClip(c.next_action || '',160))+'</p>'+retryAction+((e.retained_assets||[]).length?'<p class="project-muted">'+(e.retained_assets||[]).length+' retained asset'+((e.retained_assets||[]).length===1?'':'s')+'</p>':'')+'</article>'};
+        return {key:c.id,sig,html:'<article class="project-card '+(working?'project-working':'')+'" data-worker-mismatch="'+esc(mismatch)+'" data-task="'+esc(c.id)+'"><button type="button" class="project-card-select" data-focus="card:'+esc(c.id)+'" aria-pressed="false" onclick="_projectSelectTask(\''+escJs(c.id)+'\')"><small>'+esc(c.id)+(working?' · Working now':'')+'</small><strong>'+esc(c.title)+'</strong></button>'+stateLine+'<p>'+esc(_projectClip(c.next_action || '',160))+'</p>'+retryAction+((e.retained_assets||[]).length?'<p class="project-muted">'+(e.retained_assets||[]).length+' retained asset'+((e.retained_assets||[]).length===1?'':'s')+'</p>':'')+'</article>'};
       }));
     });
     board.dataset.sig='cards';
