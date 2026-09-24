@@ -8572,6 +8572,99 @@ fn muse_prompt_hint(prompt_line: &str) -> bool {
         .starts_with("Start a message with")
 }
 
+#[cfg(test)]
+mod composer_absorbs_non_composer_lines {
+    //! AMUX-5053 / AMUX-5047. THE CHAOS FIXTURE FOR "unsubmitted text is wrong".
+    //!
+    //! `composer_state` finds the LAST line starting with a prompt glyph and
+    //! then absorbs every following line into the composer's content, breaking
+    //! only on four specific chrome shapes (a box rule, a codex plain footer, a
+    //! codex model footer, a muse popup row). There is no terminator for a line
+    //! that is simply not composer content, so anything painted below the
+    //! prompt becomes "unsubmitted text".
+    //!
+    //! Live specimen, 2026-09-24: lifecycle-haiku-r3-0915 stored
+    //! `[1]+Stopped claude --model claude-haiku-4-5 ... --resume b7664521-...`
+    //! as its composer preview and read `waiting` for 206 hours. `[1]+ Stopped`
+    //! is what bash prints when a process is SIGTSTP'd, so the block had swept
+    //! the shell's own output into the composer.
+    //!
+    //! WHY THIS IS A TABLE AND NOT A CONCURRENCY HARNESS. AMUX-5048's design
+    //! assumed the cause was concurrent idle/active transitions across the send
+    //! paths (inter-worker HTTP, tmux paste, steering_history). The measured
+    //! cause is none of those: it is a pure function of ONE frame, with no
+    //! second actor and no timing. A concurrency harness here would pass or
+    //! fail for reasons unrelated to the defect and would be the kind of green
+    //! that measures the harness instead of the code.
+    use super::{composer_state, ComposerState};
+
+    /// Claude's real frame shapes, from this file's own documentation:
+    ///   placeholder: "\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\x1b[0m"
+    ///   real input:  "\x1b[39m❯\u{a0}[10:20 PM] look at @… please"
+    /// The discriminator is the DIM attribute (SGR 2), so an empty composer is
+    /// dim and anything bright below it reads as content.
+    const DIM_EMPTY_PROMPT: &str = "\x1b[39m❯\u{a0}\x1b[2mTry \"fix lint errors\"\x1b[0m";
+
+    fn frame(below: &[&str]) -> String {
+        let mut out = vec![DIM_EMPTY_PROMPT.to_string()];
+        out.extend(below.iter().map(|l| (*l).to_string()));
+        out.join("\n")
+    }
+
+    /// THE INVARIANT: a composer holding nothing must never be reported as
+    /// holding text, whatever else the pane happens to be painting.
+    #[test]
+    fn an_empty_composer_never_reports_text_just_because_something_is_painted_below_it() {
+        // Each row is a line that is NOT composer content, with the source that
+        // produces it, so a failure names what was absorbed.
+        let not_composer_content: &[(&str, &str)] = &[
+            (
+                "bash job control (the live specimen)",
+                "[1]+  Stopped                 claude --model claude-haiku-4-5 --effort low",
+            ),
+            ("bash job control, Done", "[2]-  Done                    sleep 30"),
+            ("a shell prompt after the agent exited", "ethan@desktop ~/Dev/amux %"),
+            ("a stray log line", "2026-09-24T06:05:11Z  INFO  worker reconnected"),
+            ("plain shell output", "total 48"),
+        ];
+
+        let mut violations = Vec::new();
+        for (source, line) in not_composer_content {
+            let got = composer_state(&frame(&[line]));
+            if let ComposerState::Typed(text) = &got {
+                violations.push(format!(
+                    "  ABSORBED {source}:\n    line    {line:?}\n    became  Typed({text:?})"
+                ));
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "an EMPTY composer reported pending text for {} of {} non-composer lines.\n\
+             The block continuation in `composer_state` has no terminator for a line that is \
+             not composer content, so whatever the pane paints below the prompt becomes \
+             \"unsubmitted text\" (AMUX-5047).\n{}",
+            violations.len(),
+            not_composer_content.len(),
+            violations.join("\n")
+        );
+    }
+
+    /// THE CONTROL, and it is load-bearing. Without it a "fix" that returns
+    /// NotVisible for everything passes the assertion above and silently
+    /// destroys send verification for the whole fleet.
+    #[test]
+    fn a_real_draft_is_still_read_as_pending_text() {
+        let typed = "\x1b[39m❯\u{a0}[10:20 PM] look at @/Users/ethan/README.md please";
+        match composer_state(typed) {
+            ComposerState::Typed(t) => assert!(
+                t.contains("README"),
+                "the draft's own text must survive: {t:?}"
+            ),
+            other => panic!("a genuine draft must stay Typed, got {other:?}"),
+        }
+    }
+}
+
 pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     let clean = strip_ansi(raw_frame);
     // The manager view owns the keyboard: its own status bar says so. Positive
@@ -8672,7 +8765,32 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
             .is_empty()
         && prompt_dim.trim() == "Ask Codex to do anything";
     let mut block: Vec<&str> = vec![raw_lines[idx]];
+    // AN EMPTY COMPOSER HAS NO CONTINUATION LINES (AMUX-5047 / AMUX-5053).
+    //
+    // A multi-line draft puts its FIRST line on the prompt line itself, so a
+    // prompt whose own non-dim content is empty is a composer holding nothing,
+    // and nothing painted below it can be a continuation of a draft that does
+    // not exist. Without this, the loop below absorbs whatever the pane happens
+    // to be painting: measured 2026-09-24, lifecycle-haiku-r3-0915 reported
+    // `waiting` for 206 hours on `[1]+ Stopped claude --model ...`, which is
+    // bash job control from a SIGTSTP'd process, and the fixture reproduces it
+    // for five separate kinds of non-composer line.
+    //
+    // Deliberately keyed on the PROMPT LINE rather than on what the following
+    // lines look like. A terminator that tried to recognise "shell output" or
+    // "a log line" would be an open-ended list of shapes, and the next shape
+    // nobody enumerated would be absorbed exactly like these five were.
+    let prompt_holds_nothing = {
+        let (p, _) = dim_mask(raw_lines[idx]);
+        p.trim_start()
+            .trim_start_matches(['\u{276f}', '\u{203a}', ' ', '\u{a0}', '\t'])
+            .trim()
+            .is_empty()
+    };
     for (i, s) in stripped.iter().enumerate().skip(idx + 1) {
+        if prompt_holds_nothing {
+            break;
+        }
         let t = s.trim();
         let plain_footer = codex_empty_prompt
             && i == idx + 1
