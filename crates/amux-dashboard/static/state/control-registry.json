@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2133,
+  "n_considered": 2132,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
