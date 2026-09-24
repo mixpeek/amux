@@ -21,18 +21,30 @@ test('every observed runtime state exposes inspectable status evidence',()=>{
    assert.match(html,/_openStatusDetail/);
  }
 });
-test('Enter sends a key directly; it cannot enqueue an empty suggested prompt',()=>{
- const calls=[];const ctx=vm.createContext({peekQuickKeys:k=>calls.push(['peek-key',k]),doKeys:(n,k)=>calls.push([n,k]),_submitSuggestion:()=>assert.fail('Enter must not extract a prompt')});
+test('the Enter chip sends the suggestion if one is showing, else presses Enter',()=>{
+ const calls=[];const ctx=vm.createContext({peekSession:'pk',peekQuickKeys:k=>calls.push(['peek-key',k]),doKeys:(n,k)=>calls.push([n,k]),_submitSuggestion:(n,isPeek,fb)=>calls.push(['suggest',n,isPeek,fb])});
  vm.runInContext(source.slice(source.indexOf('function _chipAction('),source.indexOf('function renderChips(')),ctx);
  ctx._chipAction({action:'keys',value:'Enter'},'raw',false);
  ctx._chipAction({action:'keys',value:'Enter'},'',true);
- assert.deepEqual(calls,[['raw','Enter'],['peek-key','Enter']]);
+ ctx._chipAction({action:'keys',value:'Up'},'raw',false);
+ assert.deepEqual(calls,[['suggest','raw',false,'Enter'],['suggest','pk',true,'Enter'],['raw','Up']]);
 });
-test('raw empty Send remains a literal key without suggestion extraction',async()=>{
- const calls=[];const ctx=vm.createContext({sessions:[{name:'raw',isolated:true}],peekQuickKeys:k=>calls.push(k),doKeys:(n,k)=>calls.push(n+':'+k)});
- vm.runInContext(source.slice(source.indexOf('async function _submitSuggestion('),source.indexOf('function _showSteerPrompt(')),ctx);
- await ctx._submitSuggestion('raw',false);
- assert.deepEqual(calls,['raw:Enter']);
+for (const isolated of [true,false]) test(`empty Send on a${isolated?'n isolated':' normal'} lane asks the server for the suggestion before any bare Enter`,async()=>{
+ const run=async reply=>{
+  const calls=[];const ctx=vm.createContext({sessions:[{name:'raw',isolated}],API:'',APP_VER:'t',_gridPanes:{},
+   showSendingIndicator(){},showToast:m=>calls.push('toast:'+m),amuxTrack(){},_refreshPeekSoon(){},setTimeout(){},
+   peekQuickKeys:async k=>{calls.push('peek:'+k);return {accepted:true,effect:'unverified'};},
+   doKeys:async(n,k)=>{calls.push(n+':'+k);return {accepted:true,effect:'unverified'};},
+   fetch:async(url,o)=>{calls.push('POST '+url+' '+o.body);return {status:200,json:async()=>reply};}});
+  vm.runInContext(source.slice(source.indexOf('async function _submitSuggestion('),source.indexOf('function _showSteerPrompt(')),ctx);
+  await ctx._submitSuggestion('raw',false);
+  return calls;
+ };
+ const sent=await run({ok:true,message:'sent'});
+ assert.deepEqual(sent.slice(0,2),['POST /api/sessions/raw/send {"text":""}','toast:Sent suggestion']);
+ assert.ok(!sent.includes('raw:Enter'),'a submitted suggestion must not also press Enter');
+ const none=await run({ok:true,submission:'no_effect',message:'no suggestion found'});
+ assert.deepEqual(none.slice(0,2),['POST /api/sessions/raw/send {"text":""}','raw:Enter']);
 });
 test('the worker-details header pill is the status-evidence button, with no separate info icon',()=>{
  const ctx=vm.createContext({esc:String,escJs:String,_agentsChip:()=>'',_waitingTitle:()=>'',_waitingLabel:()=> 'needs input',_idleMovedTitle:()=>'',_idleMovedSuffix:()=>''});

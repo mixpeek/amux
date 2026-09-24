@@ -99,7 +99,6 @@ pub mod ids {
     pub const SCAN: &str = "terminal-scan";
     pub const BOOTSTRAP: &str = "session-bootstrap";
     pub const EMAIL_THEMES: &str = "email-themes";
-    pub const COMMIT_NUDGE: &str = "commit-nudge";
     pub const COMMIT_MENTION_NOTES: &str = "commit-mention-notes";
     pub const SELF_ADOPT: &str = "self-adoption";
     pub const TUNNEL: &str = "tunnel-relay";
@@ -147,7 +146,6 @@ pub const ALL_IDS: &[&str] = &[
     ids::SCAN,
     ids::BOOTSTRAP,
     ids::EMAIL_THEMES,
-    ids::COMMIT_NUDGE,
     ids::COMMIT_MENTION_NOTES,
     ids::SELF_ADOPT,
     ids::TUNNEL,
@@ -393,18 +391,6 @@ pub const CATALOG: &[Doc] = &[
             var: "AMUX_COMMIT_MENTION_TICK_S",
             effect: "seconds between scans (floor 60)",
             off: None,
-        }],
-        pref: None,
-        detail: None,
-    },
-    Doc {
-        id: ids::COMMIT_NUDGE,
-        name: "Commit nudge",
-        purpose: "Nudges an idle lane that is sitting on uncommitted work it owns via the staged-guard.",
-        env: &[EnvControl {
-            var: "AMUX_COMMIT_NUDGE_SECS",
-            effect: "sweep seconds; 0 stops the sweep",
-            off: Some("0"),
         }],
         pref: None,
         detail: None,
@@ -1665,6 +1651,12 @@ mod tests {
         assert_eq!(classify(&f, T + 100.0), "stalled");
     }
 
+    #[test]
+    fn retired_commit_nudge_is_not_a_missing_runtime_job() {
+        assert!(doc_for("commit-nudge").is_none());
+        assert!(!health_issues(unix_now()).iter().any(|issue| issue.id == "commit-nudge"));
+    }
+
     /// The distinction that cost hours: a loop nobody started, versus one a
     /// human switched off. Both are "not running"; only one is a bug.
     #[test]
@@ -1681,7 +1673,7 @@ mod tests {
         };
         assert_eq!(classify(&g, T), "disabled");
         // A job whose loop was spawned and immediately returned because its
-        // env var says 0 is OFF, not dead — commit-nudge's exact shape. Red
+        // env var says 0 is OFF, not dead. Red
         // for a switch someone deliberately flipped teaches people to ignore
         // red.
         let h = Facts {

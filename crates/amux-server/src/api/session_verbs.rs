@@ -3853,7 +3853,7 @@ fn render_session_transcript(name: &str, max_chars: usize) -> String {
         return String::new();
     };
     let max_read = std::cmp::max(max_chars * 5, 5_000_000) as u64;
-    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, true)
+    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, false)
 }
 
 /// Emit one line for a run of consecutive tool calls, the way Claude Code's own
@@ -3920,6 +3920,78 @@ fn strip_harness_envelopes(text: &str) -> String {
     out.trim().to_string()
 }
 
+#[cfg(test)]
+mod peek_history_is_verbatim {
+    //! Ethan, 2026-09-24: "i dont want all the text parsing of output i want
+    //! amux to display everything". Peek's history is a re-render of the
+    //! provider transcript, and it was dropping or synthesizing content in six
+    //! places. Measured across 12 recent transcripts before this change:
+    //! 21,793 `thinking` blocks dropped, every `tool_result` dropped under
+    //! peek's collapse (29,306), tool output clipped to 6 lines of 200 chars,
+    //! and every visible system notice ("Conversation compacted") dropped.
+    //!
+    //! Rule: never drop conversation, never synthesize it, only classify it.
+    use serde_json::json;
+
+    fn render(records: Vec<serde_json::Value>) -> String {
+        crate::backend::adapter::strip_ansi(&super::render_transcript_records(
+            records, usize::MAX, false,
+        ))
+    }
+
+    #[test]
+    fn a_long_tool_result_arrives_whole_not_clipped_to_six_lines() {
+        let body: Vec<String> = (1..=20).map(|n| format!("line {n:02} {}", "x".repeat(300))).collect();
+        let out = render(vec![json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": body.join("\n")}]}})]);
+        for n in 1..=20 {
+            assert!(out.contains(&format!("line {n:02}")), "line {n} of 20 was dropped:\n{out}");
+        }
+        assert!(!out.contains("more line"), "the `+N more lines` clip is back:\n{out}");
+        assert!(out.contains(&"x".repeat(300)), "a 300-char line was clipped to 200");
+    }
+
+    #[test]
+    fn thinking_is_shown_and_classified_rather_than_dropped() {
+        let out = render(vec![json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "the reasoning that used to vanish"}]}})]);
+        assert!(out.contains("the reasoning that used to vanish"), "thinking dropped:\n{out}");
+        assert!(out.contains('\u{2234}'), "thinking must carry its own classification mark:\n{out}");
+    }
+
+    #[test]
+    fn a_system_notice_with_text_is_shown_and_a_metric_without_text_is_not() {
+        let out = render(vec![
+            json!({"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted"}),
+            json!({"type": "system", "subtype": "turn_duration", "durationMs": 885627}),
+            json!({"type": "mode", "mode": "default"}),
+        ]);
+        assert!(out.contains("Conversation compacted"), "a visible system notice was dropped:\n{out}");
+        // THE NEGATIVE HALF IS LOAD-BEARING: without it, rendering everything,
+        // including ~90k bookkeeping records, would pass the assertion above.
+        assert!(!out.contains("885627"), "a metric record leaked into the conversation:\n{out}");
+        assert!(!out.contains("default"), "Claude Code state bookkeeping leaked in:\n{out}");
+    }
+
+    #[test]
+    fn an_unknown_block_type_is_named_rather_than_disappearing() {
+        let out = render(vec![json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "image", "source": {}}]}})]);
+        assert!(out.contains("[image]"), "an unknown block vanished:\n{out}");
+    }
+
+    #[test]
+    fn peeks_own_entry_point_does_not_collapse_tool_runs() {
+        let src = include_str!("session_verbs.rs");
+        let i = src.find("fn render_session_transcript(").expect("entry point");
+        let body = &src[i..i + 400];
+        assert!(
+            body.contains("max_chars, false)"),
+            "peek's history must not collapse tool runs, which also dropped every tool_result:\n{body}"
+        );
+    }
+}
+
 fn render_transcript_records(
     records: Vec<Value>,
     max_chars: usize,
@@ -3951,6 +4023,25 @@ fn render_transcript_records(
             }
             continue;
         }
+        // SYSTEM NOTICES ARE CONVERSATION WHEN THEY HAVE TEXT. Measured across
+        // 12 recent transcripts: `compact_boundary` ("Conversation compacted"),
+        // `informational`, `scheduled_task_fire`, `local_command` and
+        // `model_refusal_fallback` all carry a human-readable `content` that the
+        // terminal shows, and this renderer dropped every one. `turn_duration`
+        // and `stop_hook_summary` are metrics with no `content`. So the rule is
+        // the presence of text, not a list of subtypes that will go stale.
+        if t == "system" {
+            if let Some(text) = o["content"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                flush_tool_run(&mut out, &mut tool_run, &mut tool_names);
+                out.push(format!("\x1b[38;5;180m\u{2139} {}\x1b[0m", text.replace('\n', "\n  ")));
+                out.push(String::new());
+            }
+            continue;
+        }
+        // Everything else (`mode`, `last-prompt`, `atis-latch`, `queue-operation`,
+        // `file-history-*`, `cost-state` ...) is Claude Code's own state
+        // bookkeeping. None of it is conversation and none of it reaches the
+        // terminal, so rendering it would bury the conversation, not reveal it.
         if t != "user" && t != "assistant" {
             continue;
         }
@@ -4001,7 +4092,7 @@ fn render_transcript_records(
                             if let Some(mo) = &m_out {
                                 let body = mo[1].trim();
                                 if !body.is_empty() {
-                                    for (k, ln) in body.split('\n').take(6).enumerate() {
+                                    for (k, ln) in body.split('\n').enumerate() {
                                         let prefix = if k == 0 { "  \u{23bf}  " } else { "     " };
                                         out.push(format!(
                                             "\x1b[38;5;246m{}{}\x1b[0m",
@@ -4067,29 +4158,34 @@ fn render_transcript_records(
                     while rlines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
                         rlines.pop();
                     }
-                    if !rlines.is_empty() {
-                        const MAXL: usize = 6;
-                        const MAXW: usize = 200;
-                        for (k, ln) in rlines.iter().take(MAXL).enumerate() {
-                            let mut ln = (*ln).to_string();
-                            if ln.chars().count() > MAXW {
-                                ln = format!("{}\u{2026}", chars_truncate(&ln, MAXW));
-                            }
-                            let prefix = if k == 0 { "  \u{23bf}  " } else { "     " };
-                            out.push(format!("\x1b[38;5;246m{prefix}{ln}\x1b[0m"));
-                        }
-                        if rlines.len() > MAXL {
-                            let extra = rlines.len() - MAXL;
-                            let word = if extra != 1 {
-                                " more lines"
-                            } else {
-                                " more line"
-                            };
-                            out.push(format!("\x1b[38;5;246m     \u{2026} +{extra}{word}\x1b[0m"));
-                        }
+                    // EVERY LINE, FULL WIDTH. This used to keep six lines of at
+                    // most 200 characters and print `… +N more lines`, so peek
+                    // showed less than the tool produced. Verbatim history
+                    // (Ethan, 2026-09-24) means nothing is dropped.
+                    for (k, ln) in rlines.iter().enumerate() {
+                        let prefix = if k == 0 { "  \u{23bf}  " } else { "     " };
+                        out.push(format!("\x1b[38;5;246m{prefix}{ln}\x1b[0m"));
                     }
                 }
-                _ => {}
+                // THINKING WAS THE LARGEST SILENT LOSS: 21,793 blocks across
+                // 12 recent transcripts, dropped by the `_ => {}` arm that used
+                // to be here. Classified and dimmed so it reads as reasoning,
+                // never as something the assistant said.
+                "thinking" => {
+                    let th = b["thinking"].as_str().unwrap_or("").trim();
+                    if !th.is_empty() {
+                        flush_tool_run(&mut out, &mut tool_run, &mut tool_names);
+                        out.push(format!("\x1b[2;3m\u{2234} {}\x1b[0m", th.replace('\n', "\n  ")));
+                        out.push(String::new());
+                    }
+                }
+                // Any other block type is NAMED rather than dropped, so a new
+                // one surfaces instead of disappearing (image, fallback, ...).
+                other => {
+                    if !other.is_empty() {
+                        out.push(format!("\x1b[38;5;246m[{other}]\x1b[0m"));
+                    }
+                }
             }
         }
     }
@@ -8673,6 +8769,29 @@ mod composer_absorbs_non_composer_lines {
     }
 }
 
+/// What an EMPTY send (the Enter control) should do with the composer as drawn.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EmptySendPlan {
+    /// Real typed input is waiting: the Enter key submits it.
+    PressEnter,
+    /// A dim suggestion, an empty box, or no composer: look for a suggested
+    /// prompt to submit as text (a bare Enter does nothing to a suggestion).
+    ExtractSuggestion,
+    /// Keystrokes would land somewhere other than this worker's composer.
+    Refuse(&'static str),
+}
+
+/// Takes the RAW capture: stripped of ANSI, a dim suggestion reads as typed.
+pub(crate) fn empty_send_plan(raw_frame: &str) -> EmptySendPlan {
+    match composer_state(raw_frame) {
+        ComposerState::Typed(_) => EmptySendPlan::PressEnter,
+        ComposerState::BackgroundManager => EmptySendPlan::Refuse(
+            "the background-task manager is open over this worker; close it before sending",
+        ),
+        _ => EmptySendPlan::ExtractSuggestion,
+    }
+}
+
 pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     let clean = strip_ansi(raw_frame);
     // The manager view owns the keyboard: its own status bar says so. Positive
@@ -9013,6 +9132,19 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
         ),
         ("session at a selector", "a prompt is open in the pane — answer it, then retry"),
         ("session started generating", "retry at the next turn boundary, or POST with deliver_now"),
+        // DEFERRED, NOT FAILED, AND MUST NOT BE RESENT (5d8edd55 added the
+        // outcome; this arm classifies it). The text is already in the lane's
+        // composer and amux submits it itself at the next idle boundary. As an
+        // unclassified literal it answered 500, so a client read a message that
+        // was in flight as a failed send, which is the "these messages are just
+        // not appearing to have been sent" report. The hint says "do not
+        // resend" because a resend would paste the same text a second time.
+        // Safe as a 409: the client auto-retries only rows flagged `retryable`,
+        // which `transient_send_refusal` sets for three other prefixes, not this.
+        (
+            "this message is already pasted in the composer",
+            "nothing to do: the text is already pasted and amux submits it at the next idle boundary; do not resend, or it will be pasted twice",
+        ),
         ("structured worker state", "retry when the worker's structured state confirms an idle boundary"),
         ("started, but durable resume context", "repair the worker's durable task/directory context before resuming"),
         ("saved resume context", "reconcile the worker identity and active card before restarting"),
@@ -10810,6 +10942,36 @@ async fn send_text_inner_bound(
                 },
             );
         }
+        // ENTER MEANS "SUBMIT WHAT IS IN THE BOX", AND THE BOX HAS TWO SHAPES
+        // (Ethan 2026-09-24: "pressing enter should send this", a dim
+        // "\u{276f} do G4GM-49 and the idle capacity stuff" sitting unsent).
+        // Read the RAW frame, because stripping ANSI makes a dim suggestion and
+        // real typed text the same string (a_dim_suggestion_is_not_pending_input).
+        //  - Typed: real input is already in the composer. Press Enter. Pasting
+        //    the extracted line again would double it.
+        //  - Placeholder: Claude's dim suggestion. A bare Enter does NOTHING to
+        //    it, so fall through and submit the suggestion as text.
+        match empty_send_plan(&pane) {
+            EmptySendPlan::PressEnter => {
+                let (ok, msg) = send_keys_op(name, "Enter").await;
+                tracing::info!(
+                    session = %name, ok, detail = %msg,
+                    measured = true, n_considered = 1,
+                    verdict = "empty_send_submitted_typed_composer",
+                    "empty send: composer already holds typed input; pressed Enter instead of re-pasting it"
+                );
+                return (
+                    ok,
+                    if ok {
+                        "pressed Enter to submit the text already in the input box".into()
+                    } else {
+                        format!("Enter failed: {msg}")
+                    },
+                );
+            }
+            EmptySendPlan::Refuse(why) => return (false, why.into()),
+            EmptySendPlan::ExtractSuggestion => {}
+        }
         let nonblank: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
         let footer: Vec<&str> = nonblank[nonblank.len().saturating_sub(4)..]
             .iter()
@@ -10875,6 +11037,12 @@ async fn send_text_inner_bound(
                         );
                     }
                     text = suggested.to_string();
+                    tracing::info!(
+                        session = %name, chars = text.chars().count(),
+                        measured = true, n_considered = 1,
+                        verdict = "empty_send_submitted_suggestion",
+                        "empty send: submitting the composer's suggested prompt as text"
+                    );
                     break;
                 }
             }
@@ -23582,6 +23750,14 @@ pub(crate) async fn keys_verb(name: &str, body: &Value) -> Response {
         return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'keys'"}));
     }
     let (ok, msg) = send_keys_op(name, &keys).await;
+    // A key press had no log line at all, so "no Enter in the log" could not
+    // tell a press that never arrived from one the TUI ignored (2026-09-24).
+    tracing::info!(
+        session = %name, keys = %keys, ok, detail = %msg,
+        measured = true, n_considered = 1,
+        verdict = if ok { "keys_delivered_effect_unverified" } else { "keys_not_sent" },
+        "keys verb"
+    );
     let code = if ok {
         update_meta(name, &[("last_send", json!(now_i64()))]);
         StatusCode::OK
@@ -41056,6 +41232,20 @@ mod composer_state_tests {
         assert_eq!(
             composer_state("just some scrollback\nand more\n"),
             ComposerState::NotVisible
+        );
+    }
+
+    #[test]
+    fn enter_submits_typed_text_by_key_and_a_dim_suggestion_by_text() {
+        // Typed input: the key submits it; re-pasting would double it.
+        assert_eq!(empty_send_plan(LIVE_TYPED), EmptySendPlan::PressEnter);
+        // A dim suggestion: a bare Enter does nothing to it, so it is extracted.
+        assert_eq!(empty_send_plan(LIVE_PLACEHOLDER), EmptySendPlan::ExtractSuggestion);
+        // The control: stripped, the suggestion reads as typed. The plan must be
+        // computed from the raw frame or the Enter control silently no-ops.
+        assert_eq!(
+            empty_send_plan(&strip_ansi(LIVE_PLACEHOLDER)),
+            EmptySendPlan::PressEnter
         );
     }
 

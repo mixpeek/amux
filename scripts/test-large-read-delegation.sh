@@ -42,6 +42,23 @@ print(json.dumps({"tool_name":"Read","cwd":"/","tool_input":tool}))
 PY
 }
 
+# Heredoc bodies are not shell argv. Valid prose must not become probe failures.
+python3 - <<'PYTEST'
+import importlib.util
+spec=importlib.util.spec_from_file_location("read_guard", "scripts/hooks/large-read-guard.py")
+guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
+for command in ["python3 - <<'EOF'\nprint(\"don't parse this as shell\")\nEOF", "cat small.txt && python3 - <<'EOF'\nowner's note\nEOF"]:
+    assert guard.simple_shell_argv(command)==[]
+assert guard.simple_shell_argv("cat 'file with spaces.txt'")==['cat','file with spaces.txt']
+try:
+    guard.simple_shell_argv("cat 'invalid")
+except ValueError:
+    pass
+else:
+    raise AssertionError("malformed simple commands must remain diagnostic failures")
+PYTEST
+ok "complex shell and heredoc bodies stop before unsupported lexical parsing"
+
 # GMA-123: an IMAGE must NOT be routed to `amux delegate read`. The delegate is a
 # text summarizer and died on the first byte of any PNG (0x89) with a raw
 # UnicodeDecodeError, while this guard was actively recommending it — the guard's

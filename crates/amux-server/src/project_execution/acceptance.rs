@@ -1152,7 +1152,7 @@ pub(crate) fn reconcile_review_preparation(conn: &Connection, name: &str) -> any
     if p.policy.paused || !p.policy.enabled { return Ok(unchanged()); }
     let Some(contract)=p.policy.acceptance.as_ref() else { return Ok(unchanged()); };
     let rows=bs::project_issues(conn,name)?;
-    if rows.is_empty() || matches!(status(conn,&p)?["state"].as_str(),Some("accepted"|"awaiting_human")) { return Ok(unchanged()); }
+    if rows.is_empty() { return Ok(unchanged()); }
     let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM cmd_history WHERE project_group=?1 AND capture_pending!=0)",[name],|r|r.get(0))?;
     if pending { return Ok(unchanged()); }
     // An explicitly archived/deleted owner must not be recreated by discovery.
@@ -1162,6 +1162,10 @@ pub(crate) fn reconcile_review_preparation(conn: &Connection, name: &str) -> any
     let missing=contract.criteria.iter().filter(|c| review_inputs(contract,&c.id).is_some_and(|paths|!paths.is_empty()))
         .map(|c|format!("review-evidence:{}",c.id)).filter(|marker|!owned.contains(marker)).collect::<Vec<_>>();
     if missing.is_empty() { return Ok(unchanged()); }
+    // The acceptance display assembles task receipts and retained assets. Do
+    // not rebuild it under the shared writer on every unchanged scheduler tick.
+    // Ownership is authoritative even for archived/deleted preparation tasks.
+    if matches!(status(conn,&p)?["state"].as_str(),Some("accepted"|"awaiting_human")) { return Ok(unchanged()); }
     let inputs=review_preparation(contract,&missing);
     let mut new=crate::api::board_lifecycle::new_issue(&format!("project:{name}"),"Prepare project acceptance review evidence",&format!("Prepare the human-review inputs required by the project's acceptance contract. Reuse the checked same-project candidates; do not redo their implementation. Preserve unresolved scope and absent authorizations truthfully. Produce a useful, current acceptance report and supporting measurements/generator. Never approve criteria or execute production work awaiting authorization. Exact obligations: {}",json!(inputs)),"doc");
     new.creator="project-harness".into();new.source=Some("project-review-inputs".into());
@@ -3122,6 +3126,20 @@ path.write_text(json.dumps({
         db.execute("UPDATE issues SET archived=1 WHERE id=?1",[&task.id]).unwrap();
         assert!(!reconcile_review_preparation(&db,"p").unwrap().applied,"owner archive is not undone");
         assert!(events(&db,"p","project.acceptance_approval",None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_owned_review_inputs_skip_acceptance_history_reads() {
+        let db=crate::db::migrate::test_memdb();
+        let mut contract=two();contract.criteria[1].evidence=vec!["acceptance.md".into()];
+        project(&db,Some(contract));verified(&db,"IMPL");
+        let created=reconcile_review_preparation(&db,"p").unwrap();assert!(created.applied);
+        // Deny the expensive history surface to prove the settled ownership
+        // path no longer reconstructs acceptance at all (not a timing test).
+        db.execute("ALTER TABLE session_events RENAME TO saved_session_events",[]).unwrap();
+        assert!(!reconcile_review_preparation(&db,"p").unwrap().applied);
+        db.execute("DELETE FROM issues WHERE id=?1",[&created.events[0].entity_id]).unwrap();
+        assert!(reconcile_review_preparation(&db,"p").is_err(),"new work must still check acceptance; missing history is never approval");
     }
 
     fn project(db: &Connection, contract: Option<AcceptanceContract>) -> store::Project {

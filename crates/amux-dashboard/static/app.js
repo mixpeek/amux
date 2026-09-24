@@ -501,8 +501,9 @@ function _showUpgradeModal(d) {
 }
 
 // Cloud plan card in Settings. /api/stripe/status only exists on the cloud
-// gateway, so a failed fetch (self-hosted) simply leaves the card hidden.
+// gateway. Identity discovers that capability before requesting billing.
 async function _loadCloudPlan() {
+  if (!_cloudEmail) return;
   try {
     const r = await fetch('/api/stripe/status');
     if (!r.ok) return;
@@ -1463,6 +1464,8 @@ async function _initIdentity() {
     // controls from that brief pre-identity render.
     if (document.getElementById('settings-menu')?.classList.contains('open')) {
       loadTeamSection();
+      _loadCloudPlan();
+      loadBillingSection();
     }
     if (_cloudEmail) {
       const lb = document.getElementById('logout-btn');
@@ -9072,7 +9075,7 @@ async function sendFromInput(name) {
   if (!text && _files.length === 0) {
     // Empty send = extract + submit the suggested prompt from the session
     inp.value = '';
-    _submitSuggestion(name, false);
+    _submitSuggestion(name, false, 'Enter');
     return;
   }
   // No newlines: tmux treats \n as Enter, which would split the message and
@@ -15547,7 +15550,7 @@ async function sendPeekCmd() {
   const original = inp.value;
   const text = original.trim();
   const files = peekFiles.filter(f => f.path);
-  if (!text && !files.length) { _submitSuggestion(session, true); return; }
+  if (!text && !files.length) { _submitSuggestion(session, true, 'Enter'); return; }
   let message = text;
   if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
   const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
@@ -15632,10 +15635,13 @@ async function peekQuickKeys(keys) {
   _refreshPeekSoon();
   return result;
 }
+// Enter on an empty composer. The server decides from the raw pane: typed text
+// gets the Enter key, a picker gets the Enter key, and Claude's dim suggested
+// prompt is submitted AS TEXT, because a bare Enter does nothing to it. Isolated
+// lanes used to skip straight to a bare Enter, so their suggestion could never
+// be sent (2026-09-24). With nothing to submit, fall back to the literal key.
 async function _submitSuggestion(name, isPeek, fallbackKeys) {
-  if (sessions.find(s => s.name === name)?.isolated) {
-    return isPeek ? peekQuickKeys(fallbackKeys || 'Enter') : doKeys(name, fallbackKeys || 'Enter');
-  }
+  fallbackKeys = fallbackKeys || 'Enter';
   showSendingIndicator();
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
@@ -16552,6 +16558,12 @@ function _chipAction(chip, sessionName, isPeek) {
     if (isPeek) peekQuickSend(chip.value);
     else doSend(sessionName, chip.value);
   } else if (chip.action === 'keys') {
+    // The Enter chip is the same control as Enter in an empty box: send the
+    // suggestion if one is showing, otherwise press Enter.
+    if (chip.value === 'Enter') {
+      _submitSuggestion(isPeek ? peekSession : sessionName, isPeek, 'Enter');
+      return;
+    }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {
@@ -37535,6 +37547,7 @@ async function loadBillingSection() {
   const sep = document.getElementById('settings-billing-sep');
   const info = document.getElementById('settings-billing-info');
   if (!sec || !info) return;
+  if (!_cloudEmail) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; return; }
   try {
     const r = await fetch('/api/stripe/status');
     if (!r.ok) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; return; }
