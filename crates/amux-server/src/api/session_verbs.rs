@@ -11669,9 +11669,95 @@ async fn send_text_inner_bound(
         );
         send_key(name, "Enter").await;
         let (second, _) = verify_submitted(name, &text, sent_at, false).await;
+        if second == Submission::Stuck {
+            // THE ROOT OF "UNSUBMITTED TEXT" (Ethan 2026-09-24: "figure out why
+            // we so often have this unsubmitted text status"). Of the stamps in
+            // 36h of log, 7 of 9 were the owner's own direct messages, pasted
+            // while the worker was mid-turn, whose Enter Claude Code did not
+            // take. Steering re-submits its own paste at the next idle boundary
+            // (submit_own_steering_draft); the direct path returned "not
+            // submitted" and nobody ever pressed Enter, so the text sat until a
+            // human noticed. Now it gets the same treatment, bounded and logged.
+            spawn_direct_draft_idle_submit(name, &text);
+            return (
+                true,
+                "queued (held in the input box; submitted automatically when this turn ends)".into(),
+            );
+        }
         return send_outcome(second, generating, true);
     }
     send_outcome(first, generating, retried)
+}
+
+/// Lanes with a direct message waiting in the composer for its idle Enter.
+fn direct_draft_watches() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    W.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Press Enter on a direct message amux pasted mid-turn, at the lane's next
+/// idle boundary, if and only if the composer still holds exactly that
+/// message. A human who edited or cleared it wins; the watch stops. Bounded to
+/// 30 minutes; every exit is a counted verdict.
+fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
+    let key = format!("{name}\u{0}{}", text.split_whitespace().collect::<String>());
+    if let Ok(mut w) = direct_draft_watches().lock() {
+        if !w.insert(key.clone()) {
+            return; // already watching this exact message on this lane
+        }
+    }
+    let (name, text) = (name.to_string(), text.to_string());
+    tokio::spawn(async move {
+        let deadline = now_f64() + 1800.0;
+        let verdict: &'static str = loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if now_f64() > deadline {
+                break "direct_draft_idle_submit_gave_up";
+            }
+            if !is_running(&name).await {
+                break "direct_draft_lane_stopped";
+            }
+            let send_lock = session_send_lock(&name);
+            let _guard = send_lock.lock().await;
+            let raw = tmux_capture(&name, 25).await;
+            match composer_state(&raw) {
+                ComposerState::Typed(draft) => {
+                    if !composer_holds_this_delivery(&draft, &text) {
+                        break "direct_draft_changed_by_human";
+                    }
+                }
+                ComposerState::Empty | ComposerState::Placeholder(_) => {
+                    break "direct_draft_left_composer";
+                }
+                // A full-screen view or the background manager: keep waiting.
+                ComposerState::NotVisible | ComposerState::BackgroundManager => continue,
+            }
+            if detect_claude_status(&raw) == "active" || pane_bar_says_generating(&raw) {
+                continue;
+            }
+            let sent_at = now_f64();
+            send_key(&name, "Enter").await;
+            let (sub, _) = verify_submitted(&name, &text, sent_at, true).await;
+            if sub == Submission::Confirmed {
+                break "direct_draft_submitted_at_idle";
+            }
+            tracing::warn!(session = %name, submission = ?sub, measured = true, n_considered = 1,
+                verdict = "direct_draft_idle_enter_not_confirmed",
+                "idle Enter on the held direct message was not confirmed; will retry while it is still there");
+        };
+        if let Ok(mut w) = direct_draft_watches().lock() {
+            w.remove(&key);
+        }
+        let preview = chars_truncate(&text, 80);
+        if verdict == "direct_draft_submitted_at_idle" || verdict == "direct_draft_left_composer" {
+            tracing::info!(session = %name, %preview, measured = true, n_considered = 1, verdict,
+                "held direct message resolved");
+        } else {
+            tracing::warn!(session = %name, %preview, measured = true, n_considered = 1, verdict,
+                "held direct message was not submitted by amux");
+        }
+    });
 }
 
 /// py:25815 send_keys — allowed control keys only.
