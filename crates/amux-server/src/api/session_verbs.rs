@@ -10226,6 +10226,64 @@ async fn submit_project_execution_draft_if_owned(
     Some(send_outcome(submission, generating, retried))
 }
 
+/// Does the composer hold EXACTLY the message steering is delivering right now?
+///
+/// Then the draft is amux's own earlier paste whose Enter never took (the lane
+/// was mid-turn), not a human's unsaved thought. `steering_draft_preserved`
+/// used to protect it from its own sender: measured 2026-09-24 on amux-helper,
+/// the owner's first queued message sat pasted in the composer from 06:27 and
+/// eleven more queued behind it, refused 4x every ~9s, while the lane read
+/// idle between turns. Same provenance rule as the project-execution rescue
+/// above, for every steering delivery. Pure so the exact-match rule is tested.
+fn composer_holds_this_delivery(draft: &str, text: &str) -> bool {
+    let want: String = text.split_whitespace().collect();
+    want.chars().count() >= 8 && draft == want
+}
+
+/// Submit the lane's own pasted steering message at an idle boundary. Returns
+/// None when the draft is not this delivery (the human-draft guard applies).
+async fn submit_own_steering_draft(
+    state: &AppState,
+    name: &str,
+    text: &str,
+) -> Option<(bool, String)> {
+    let send_lock = session_send_lock(name);
+    let _guard = send_lock.lock().await;
+    let raw = tmux_capture(name, 25).await;
+    let draft = composer_state(&raw).typed()?.to_string();
+    if !composer_holds_this_delivery(&draft, text) {
+        return None;
+    }
+    if detect_claude_status(&raw) == "active" || pane_bar_says_generating(&raw) {
+        return Some((
+            false,
+            "this message is already pasted in the composer; the lane is mid-turn, so it is submitted at the next idle boundary".into(),
+        ));
+    }
+    let preview = chars_truncate(&draft, 120);
+    tracing::warn!(
+        session = %name,
+        preview = %preview,
+        measured = true,
+        n_considered = 1,
+        verdict = "steering_own_draft_submitted",
+        "the composer draft is this steering delivery's own earlier paste; submitting it instead of preserving it as a human draft"
+    );
+    emit_event(
+        state,
+        name,
+        "session.own_draft_submitted",
+        Some(json!({"preview": preview})),
+        None,
+        "steering",
+    )
+    .await;
+    let sent_at = now_f64();
+    send_key(name, "Enter").await;
+    let (submission, retried) = verify_submitted(name, text, sent_at, true).await;
+    Some(send_outcome(submission, false, retried))
+}
+
 /// Is `draft` (a composer `Typed` value: whitespace already stripped) exactly a
 /// user turn the lane's own transcript has already recorded?
 ///
@@ -10475,6 +10533,9 @@ async fn send_text_inner_bound(
             submit_project_execution_draft_if_owned(state, name, text, delivery, &out_st).await
         {
             return rescued;
+        }
+        if let Some(submitted) = submit_own_steering_draft(state, name, text).await {
+            return submitted;
         }
         if clear_delivered_duplicate_draft(state, name).await {
             out_st = tmux_capture(name, 15).await;
@@ -45962,6 +46023,17 @@ mod stale_draft_tests {
     const DRAFT: &str =
         "figureoutwhythisishereandfixattheharnesslevel@/Users/ethan/.amux/uploads/ecac2d0681e8-image.png";
     const SENT: &str = "figure out why this is here and fix at the harness level @/Users/ethan/.amux/uploads/ecac2d0681e8-image.png";
+
+    #[test]
+    fn the_composer_holding_this_exact_delivery_is_amuxs_own_paste() {
+        let text = "this isn\u{2019}t right @/Users/ethan/.amux/uploads/a056f2d8dd0d-image.png";
+        let draft: String = text.split_whitespace().collect();
+        assert!(composer_holds_this_delivery(&draft, text));
+        // A human who typed more, or only part of it, keeps the guard.
+        assert!(!composer_holds_this_delivery(&format!("{draft}andmore"), text));
+        assert!(!composer_holds_this_delivery("thisisn\u{2019}t", text));
+        assert!(!composer_holds_this_delivery("ok", "ok"));
+    }
 
     #[test]
     fn a_draft_equal_to_a_recorded_user_turn_is_a_duplicate() {
