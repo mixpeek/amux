@@ -4639,3 +4639,14 @@ CARD: AF-947
 SYMPTOM: POG-8 stopped on a pre-commit workflow dependency check; other workers bypassed it. A read-only rerun independently confirmed 16 unmet PyYAML claims across 174 workflows and 225 resolved script invocations.
 COST: A repository-local prerequisite became a permanent operational hold, or validation was bypassed.
 FIX: Consolidate owned-output, premature-runtime-check and repository-gate preparation into one bounded path. An operational commit-hook failure gets one ordinary repair turn with explicit instructions to repair the check/source, retain before/after evidence and rerun the unchanged gate. Forbid SKIP/core.hooksPath bypass in every task packet. Preserve real authorization and budget holds; exhausted preparation produces no repeated grants or model calls.
+
+## Publish preflight hooks could inspect the wrong checkout
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The project publish preflight passed a candidate SHA to git push --dry-run but ran Git from the main checkout. Mixpeek's installed pre-push hook includes worktree-reading checks, so ref-correct input did not guarantee candidate-correct file reads.
+COST: A preflight could validate unrelated main files or fail on a defect already repaired by the project.
+FIX: Run the unchanged repository pre-push hook from a disposable checkout of the exact candidate. Remove that checkout on success/failure; no remote ref is created and main is untouched. Version the gate signature to invalidate prior checkout-ambiguous receipts. Test with a hook that requires candidate-only file content, then a real rejecting gate, and assert main/remote/worktree cleanup.

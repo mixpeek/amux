@@ -798,7 +798,21 @@ async fn publish_gate_signature(repo: &str, base: &str, candidate: &str) -> anyh
     let hooks = workspace::git(repo, &["rev-parse", &format!("{candidate}:.githooks")])
         .await
         .unwrap_or_else(|_| "no-committed-hooks".into());
-    Ok(sha(&json!([repo, raw, hooks]).to_string()))
+    Ok(sha(&json!(["candidate-worktree-v1", repo, raw, hooks]).to_string()))
+}
+
+/// Hooks that read the working tree must see the candidate, never unrelated
+/// files in the operator's main checkout. Dry-run creates no remote ref.
+async fn preflight_candidate(repo: &str, candidate: &str) -> anyhow::Result<()> {
+    let temp=tempfile::Builder::new().prefix("amux-publish-check-").tempdir()?;
+    let path=temp.path().join("candidate").to_string_lossy().into_owned();
+    workspace::git(repo,&["worktree","add","--detach",&path,candidate]).await.map_err(anyhow::Error::msg)?;
+    let reference=format!("{candidate}:refs/heads/amux-preflight/{candidate}");
+    let result=workspace::git(&path,&["push","--dry-run","origin",&reference]).await;
+    let cleanup=workspace::git(repo,&["worktree","remove","--force",&path]).await;
+    result.map_err(anyhow::Error::msg)?;
+    cleanup.map_err(anyhow::Error::msg)?;
+    Ok(())
 }
 
 async fn ensure_publish_gate(
@@ -823,13 +837,7 @@ async fn ensure_publish_gate(
     // Dry-run executes the real pre-push hook without publishing. A unique throwaway ref avoids
     // racing main during the lengthy hook; no remote branch is created by --dry-run. The actual
     // main push below may omit the already-attested hook only for this identical patch signature.
-    let preflight_ref = format!("{candidate}:refs/heads/amux-preflight/{candidate}");
-    workspace::git(
-        &p.policy.repository,
-        &["push", "--dry-run", "origin", &preflight_ref],
-    )
-    .await
-    .map_err(anyhow::Error::msg)?;
+    preflight_candidate(&p.policy.repository,candidate).await?;
     let receipt = json!({"state":"passed","signature":signature,"candidate":candidate,"base_main":base,"reused":false});
     let project = p.name.clone();
     let stored = receipt.clone();
@@ -2426,6 +2434,30 @@ mod tests {
                 .to_string()
                 .contains("image ID")
         );
+    }
+
+    #[tokio::test]
+    async fn project_publish_preflight_checks_candidate_files_and_never_publishes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();let repo=dir.path().join("repo");let remote=dir.path().join("remote.git");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git=|args:&[&str]| {
+            let output=std::process::Command::new("git").current_dir(&repo).env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").args(args).output().unwrap();
+            assert!(output.status.success(),"git {args:?}: {}",String::from_utf8_lossy(&output.stderr));
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init","-q"]);git(&["config","user.name","Preflight Test"]);git(&["config","user.email","preflight@example.invalid"]);
+        git(&["init","--bare",remote.to_str().unwrap()]);git(&["remote","add","origin",remote.to_str().unwrap()]);
+        std::fs::write(repo.join("subject.txt"),"main").unwrap();git(&["add","."]);git(&["commit","-qm","base"]);git(&["branch","-M","main"]);git(&["push","-q","origin","main"]);
+        let base=git(&["rev-parse","HEAD"]);git(&["checkout","-qb","candidate"]);
+        std::fs::write(repo.join("subject.txt"),"candidate").unwrap();git(&["add","."]);git(&["commit","-qm","candidate"]);let candidate=git(&["rev-parse","HEAD"]);git(&["checkout","-q","main"]);
+        let hook=repo.join(".git/hooks/pre-push");std::fs::write(&hook,"#!/bin/sh\n[ \"$(cat subject.txt)\" = candidate ] || { echo wrong-checkout >&2; exit 1; }\n").unwrap();std::fs::set_permissions(&hook,std::fs::Permissions::from_mode(0o755)).unwrap();
+        preflight_candidate(repo.to_str().unwrap(),&candidate).await.unwrap();
+        assert_eq!(git(&["rev-parse","main"]),base);assert_eq!(std::fs::read_to_string(repo.join("subject.txt")).unwrap(),"main");
+        assert_eq!(git(&["ls-remote","--heads","origin"]).lines().count(),1);assert_eq!(git(&["worktree","list","--porcelain"]).lines().filter(|line|line.starts_with("worktree ")).count(),1);
+        std::fs::write(&hook,"#!/bin/sh\necho real-gate-failure >&2\nexit 1\n").unwrap();
+        assert!(preflight_candidate(repo.to_str().unwrap(),&candidate).await.unwrap_err().to_string().contains("real-gate-failure"));
+        assert_eq!(git(&["worktree","list","--porcelain"]).lines().filter(|line|line.starts_with("worktree ")).count(),1);
     }
 
     #[tokio::test]
