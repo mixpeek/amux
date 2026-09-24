@@ -3274,6 +3274,10 @@ async function _runSyncBanner(quiet = false) {
     if (q.state === 'blocked' && !_outboxUncertainMessage(q)) { item.status = 'failed'; return; }
     const interaction = _interactionReplay(q);
     try {
+      if ((q.attempts || 0) >= 5 && !_outboxUncertainMessage(q)) {
+        q.state = 'blocked';
+        throw new Error('Gave up after ' + q.attempts + ' failed attempts');
+      }
       if (!_outboxQueueable(q.url, q.options || {}) || (!_outboxUncertainMessage(q) && q.timestamp && Date.now() - (q.reviewed_at || q.timestamp) > 7 * 86400000)) {
         q.state = 'blocked';
         throw new Error('Needs review before retry: expired or unsupported operation');
@@ -11779,7 +11783,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1093';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1094';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
