@@ -10209,6 +10209,91 @@ async fn submit_project_execution_draft_if_owned(
     Some(send_outcome(submission, generating, retried))
 }
 
+/// Is `draft` (a composer `Typed` value: whitespace already stripped) exactly a
+/// user turn the lane's own transcript has already recorded?
+///
+/// `steering_draft_preserved` refuses to touch a composer draft because it
+/// might be a human's unsaved thought. That is right for text nobody has seen,
+/// and wrong for text the provider has provably already RECEIVED: then the draft
+/// is a stale duplicate (Claude Code restoring input after an interrupt, or a
+/// re-paste), and preserving it blocks every later delivery forever. Measured
+/// 2026-09-24 on the `amux` lane: a draft identical to a user turn recorded at
+/// 03:09:00Z held steering for ~11h (4 refusals every ~9s) while the owner's
+/// messages went nowhere and the dashboard read "unsubmitted text".
+///
+/// Exact equality only. A human draft that merely CONTAINS a delivered prefix,
+/// or extends one, is not matched and stays preserved.
+fn draft_matches_delivered_turn(draft: &str, records: &[Value]) -> bool {
+    let draft: String = draft.split_whitespace().collect();
+    if draft.chars().count() < 8 {
+        return false;
+    }
+    records.iter().any(|r| {
+        if r.get("type").and_then(Value::as_str) != Some("user") {
+            return false;
+        }
+        let Some(content) = r.get("message").and_then(|m| m.get("content")) else {
+            return false;
+        };
+        let text: String = match content {
+            Value::String(s) => s.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => return false,
+        };
+        text.split_whitespace().collect::<String>() == draft
+    })
+}
+
+/// Clear a composer draft that duplicates an already-delivered user turn, so
+/// steering can deliver behind it. Returns true only when the draft matched,
+/// Ctrl-U was sent, and a fresh capture shows the composer no longer typed.
+async fn clear_delivered_duplicate_draft(state: &AppState, name: &str) -> bool {
+    if !writes_claude_transcript(&provider_of(&parse_env(name))) {
+        return false;
+    }
+    let Some(path) = session_jsonl_path(name) else {
+        return false;
+    };
+    let send_lock = session_send_lock(name);
+    let _guard = send_lock.lock().await;
+    let raw = tmux_capture(name, 25).await;
+    let Some(draft) = composer_state(&raw).typed().map(str::to_string) else {
+        return false;
+    };
+    let records = iter_jsonl_tail(&path, 4 * 1024 * 1024);
+    if !draft_matches_delivered_turn(&draft, &records) {
+        return false;
+    }
+    send_key(name, "C-u").await;
+    sleep_ms(200).await;
+    let cleared = composer_state(&tmux_capture(name, 25).await).typed().is_none();
+    let preview = chars_truncate(&draft, 120);
+    tracing::warn!(
+        session = %name,
+        preview = %preview,
+        cleared,
+        measured = true,
+        n_considered = records.len(),
+        verdict = "steering_delivered_duplicate_draft_cleared",
+        "composer draft duplicated a user turn already in the transcript; cleared it so queued steering can deliver"
+    );
+    emit_event(
+        state,
+        name,
+        "session.stale_draft_cleared",
+        Some(json!({"preview": preview, "cleared": cleared})),
+        None,
+        "steering",
+    )
+    .await;
+    cleared
+}
+
 async fn send_text_inner(
     state: &AppState,
     name: &str,
@@ -10374,6 +10459,11 @@ async fn send_text_inner_bound(
         {
             return rescued;
         }
+        if clear_delivered_duplicate_draft(state, name).await {
+            out_st = tmux_capture(name, 15).await;
+        }
+    }
+    if from_steering && composer_state(&out_st).typed().is_some() {
         tracing::warn!(
             session = name,
             measured = true,
@@ -45729,5 +45819,43 @@ mod startup_profile_recovery_tests {
         let text=String::from_utf8_lossy(&out.stdout);let lines=text.lines().collect::<Vec<_>>();
         assert_eq!(&lines[..2],["broken","working"]);
         assert_eq!(std::fs::canonicalize(lines[2]).unwrap(),std::fs::canonicalize(dir.path()).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod stale_draft_tests {
+    use super::*;
+
+    fn user(content: Value) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": content}})
+    }
+
+    // The live specimen: composer Typed() is whitespace-stripped, the
+    // transcript holds the spaced original.
+    const DRAFT: &str =
+        "figureoutwhythisishereandfixattheharnesslevel@/Users/ethan/.amux/uploads/ecac2d0681e8-image.png";
+    const SENT: &str = "figure out why this is here and fix at the harness level @/Users/ethan/.amux/uploads/ecac2d0681e8-image.png";
+
+    #[test]
+    fn a_draft_equal_to_a_recorded_user_turn_is_a_duplicate() {
+        assert!(draft_matches_delivered_turn(DRAFT, &[user(json!(SENT))]));
+        let blocks = json!([{"type": "text", "text": SENT}]);
+        assert!(draft_matches_delivered_turn(DRAFT, &[user(blocks)]));
+    }
+
+    #[test]
+    fn a_human_draft_that_extends_or_prefixes_a_delivered_turn_is_preserved() {
+        let longer = format!("{DRAFT}andalsocheckthelogs");
+        assert!(!draft_matches_delivered_turn(&longer, &[user(json!(SENT))]));
+        assert!(!draft_matches_delivered_turn("figureoutwhythisishere", &[user(json!(SENT))]));
+    }
+
+    #[test]
+    fn only_user_turns_count_and_tiny_drafts_never_match() {
+        let assistant = json!({"type": "assistant", "message": {"content": SENT}});
+        assert!(!draft_matches_delivered_turn(DRAFT, &[assistant]));
+        let tool_result = user(json!([{"type": "tool_result", "content": SENT}]));
+        assert!(!draft_matches_delivered_turn(DRAFT, &[tool_result]));
+        assert!(!draft_matches_delivered_turn("yes", &[user(json!("yes"))]));
     }
 }
