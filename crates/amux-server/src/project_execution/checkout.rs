@@ -557,6 +557,16 @@ mod tests {
             2,
             "main plus exactly one project checkout"
         );
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        for name in ["worker-a", "worker-b", "worker-a-retry"] {
+            std::fs::write(home.join("sessions").join(format!("{name}.env")),
+                format!("CC_DIR={repo}\nCC_PROJECT=demo\n")).unwrap();
+        }
+        let dirs = crate::runtime_jobs::codex_ledger::workspace_workdirs(&home, Default::default());
+        assert_eq!(dirs.len(), 3, "all project workers retain a validated usage identity");
+        assert!(dirs.values().all(|path| path == &a.path));
+        std::fs::rename(home.join("sessions/worker-a.env"), home.join("sessions/worker-a.env.reaped")).unwrap();
+        assert_eq!(crate::runtime_jobs::codex_ledger::workspace_workdirs(&home, Default::default())["worker-a"], a.path);
         let other = ensure(&home, "other", "worker-c", repo).await.unwrap();
         assert_ne!(a.path, other.path);
         assert!(belongs_to(&home, "demo", &a));

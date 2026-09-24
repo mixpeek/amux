@@ -173,14 +173,17 @@ PY
 fi
 MODE="${1:-idle}"; SRC="${2:-stop-hook}"
 DERIVED=0
-if [ -z "$AMUX_SESSION" ]; then
+# Outside a worker, an unqualified tmux display-message names the last selected
+# session, not this process. Never let an intake/helper Claude hook mark an
+# unrelated Codex project executor busy or adopt its conversation identity.
+if [ -z "$AMUX_SESSION" ] && [ -n "${TMUX_PANE:-}" ]; then
   # MR-43: the var can go missing INSIDE a lane that IS running in its
   # amux-launched pane (spawn always injects it — session_verbs.rs — so this
   # is loss in-process, not absence at launch). Recover it from tmux so the
   # lane is not invisible to its own liveness report, and flag the recovery
   # in the body so /api/logs/analyze can count how often this happens instead
   # of a human noticing a lane that silently never reported.
-  TNAME=$(tmux display-message -p '#S' 2>/dev/null)
+  TNAME=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
   case "$TNAME" in
     amux-*) export AMUX_SESSION="${TNAME#amux-}"; DERIVED=1 ;;
   esac
@@ -202,8 +205,8 @@ fi
 # 404, zero 200s). It cannot capture a deliberate cross-session claim, because
 # there the claimed session exists and this leaves it alone.
 CORRECTED=0
-if [ -n "$AMUX_SESSION" ] && [ ! -f "$HOME/.amux/sessions/$AMUX_SESSION.env" ]; then
-  _TN=$(tmux display-message -p '#S' 2>/dev/null)
+if [ -n "$AMUX_SESSION" ] && [ -n "${TMUX_PANE:-}" ] && [ ! -f "$HOME/.amux/sessions/$AMUX_SESSION.env" ]; then
+  _TN=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
   case "$_TN" in
     amux-*)
       _TRUE="${_TN#amux-}"
@@ -316,6 +319,7 @@ if norm.startswith("subagent:"):
     out={"subagent":norm.split(":",1)[1],"source":src}
 else:
     out={"state":mode,"source":src}
+out["provider"]="claude"
 h={}; tp=""; nlines=0; err=""
 try:
     h=json.loads(raw) if raw.strip() else {}

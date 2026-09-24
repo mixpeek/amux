@@ -26,6 +26,7 @@
 //! being able to notice, which is the bug this file exists to end.
 
 use crate::db::{SharedStore, WriteOutcome};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -446,9 +447,118 @@ fn claude_projects_dir() -> PathBuf {
         .join("projects")
 }
 
+/// A helper hook once borrowed tmux's selected lane and charged Claude usage
+/// to a Codex project. Recover only rows inside a proven Codex launch whose
+/// transcript belongs outside that project's repo. Preserve every token and
+/// older provider history; uncertain ownership stays in fleet totals.
+async fn repair_foreign_project_owners(
+    store: &SharedStore,
+    home: &Path,
+    projects: &Path,
+) -> anyhow::Result<()> {
+    let Ok(entries) = std::fs::read_dir(home.join("status-events")) else {
+        return Ok(());
+    };
+    let mut repairs = Vec::new();
+    for entry in entries.flatten() {
+        let worker = entry.file_name().to_string_lossy().to_string();
+        let launch: Value = std::fs::read(entry.path().join("current.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(Value::Null);
+        if launch["provider"] != "codex" {
+            continue;
+        }
+        let Some(started) = launch["started"].as_f64() else {
+            continue;
+        };
+        let settings =
+            crate::config::parse_env_file(&home.join("sessions").join(format!("{worker}.env")));
+        if settings.get("CC_PROJECT").is_none_or(String::is_empty) {
+            continue;
+        }
+        let Some(repo) = settings
+            .get("CC_DIR")
+            .filter(|s| Path::new(s).is_absolute())
+        else {
+            continue;
+        };
+        let c = store.read()?;
+        let proven: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM session_events WHERE session=?1 AND type='session.native_status' AND json_extract(data,'$.provider')='codex' AND json_extract(data,'$.run_id')=?2)", rusqlite::params![worker,launch["run_id"].as_str().unwrap_or("")], |r|r.get(0))?;
+        if !proven {
+            continue;
+        }
+        // A newly allocated worker is claimed before its first CLI is launched.
+        // False helper reports can arrive in that startup gap. Prior launches
+        // retain their history; only the first launch can include this gap.
+        let previous_launch: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM session_events WHERE session=?1 AND type='session.started' AND ts<?2)", rusqlite::params![worker,started], |r|r.get(0))?;
+        let started = if previous_launch {
+            started
+        } else {
+            c.query_row("SELECT coalesce(min(ts),?2) FROM session_events WHERE session=?1 AND type='project.claimed' AND ts<=?2 AND json_extract(data,'$.project_group')=?3", rusqlite::params![worker,started,settings["CC_PROJECT"]], |r|r.get::<_,f64>(0))?
+        };
+        let mut q = c.prepare("SELECT id,conversation FROM token_ledger INDEXED BY idx_ledger_session WHERE session=?1 AND ts>=?2 AND model LIKE 'claude-%' ORDER BY id LIMIT 1000")?;
+        let rows = q
+            .query_map(rusqlite::params![worker, started], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut foreign = HashMap::new();
+        for (id, conversation) in rows {
+            let outside = *foreign.entry(conversation.clone()).or_insert_with(|| {
+                if conversation.contains('/') || conversation.contains('\\') {
+                    return false;
+                }
+                let Ok(dirs) = std::fs::read_dir(projects) else {
+                    return false;
+                };
+                let mut cwds = Vec::new();
+                for dir in dirs.flatten() {
+                    let path = dir.path().join(format!("{conversation}.jsonl"));
+                    let Ok(f) = std::fs::File::open(path) else {
+                        continue;
+                    };
+                    for line in BufReader::new(f).lines().take(32).flatten() {
+                        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                            continue;
+                        };
+                        if let Some(cwd) = v["cwd"].as_str().filter(|s| Path::new(s).is_absolute())
+                        {
+                            cwds.push(PathBuf::from(cwd));
+                            break;
+                        }
+                    }
+                }
+                cwds.len() == 1 && !cwds[0].starts_with(repo)
+            });
+            if outside {
+                repairs.push((id, worker.clone()));
+            }
+        }
+    }
+    if repairs.is_empty() {
+        return Ok(());
+    }
+    store.write_async(move |c| {
+        let mut n = 0;
+        for (id, worker) in repairs {
+            let prior: (String, String) = c.query_row("SELECT task,conversation FROM token_ledger WHERE id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?)))?;
+            let changed = c.execute("UPDATE token_ledger SET session='',task='' WHERE id=?1 AND session=?2", rusqlite::params![id,worker])?;
+            if changed > 0 {
+                c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,'usage.ownership_repaired',?3,'token-ledger')", rusqlite::params![crate::config::now_f64(),worker,serde_json::json!({"ledger_row":id,"previous_task":prior.0,"conversation":prior.1,"reason":"foreign_provider_transcript"}).to_string()])?;
+            }
+            n += changed;
+        }
+        tracing::warn!(verdict="foreign_provider_usage_unbound", rows=n, "retained foreign Claude usage in fleet totals without charging a Codex project");
+        Ok(crate::db::WriteOutcome { applied: n>0, events: vec![] })
+    }).await?;
+    Ok(())
+}
+
 /// One indexing pass. Returns rows inserted. Cheap on a fully-indexed tree —
 /// a stat per file and nothing else.
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
+    repair_foreign_project_owners(store, home, &claude_projects_dir()).await?;
     index_once_at(
         store,
         home,
@@ -1363,6 +1473,80 @@ mod tests {
     /// session) absorbed $2,680 of ownerless conversations in 7 days, and
     /// AMUX-2598 (session `amux`) absorbed $1,618 of every amux turn. Both
     /// stale rows are seeded here in the shape the live DB actually holds.
+    #[tokio::test]
+    async fn foreign_hook_usage_recovery_preserves_tokens_history_and_audit() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = tempfile::tempdir().unwrap();
+        let store = store();
+        for dir in ["sessions", "status-events/worker"] {
+            std::fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        std::fs::create_dir_all(projects.path().join("foreign")).unwrap();
+        std::fs::write(
+            home.path().join("sessions/worker.env"),
+            "CC_DIR=/project/repo\nCC_PROJECT=demo\nCC_PROVIDER=codex\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join("status-events/worker/current.json"),
+            r#"{"provider":"codex","started":100,"run_id":"run"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            projects.path().join("foreign/foreign.jsonl"),
+            "{\"cwd\":\"/other/repo\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            projects.path().join("foreign/local.jsonl"),
+            "{\"cwd\":\"/project/repo/subdir\"}\n",
+        )
+        .unwrap();
+        store.write(|c| {
+            c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(101,'worker','session.native_status',?1,'native-hook')", [r#"{"provider":"codex","run_id":"run"}"#])?;
+            for (ts, conversation) in [(99,"foreign"),(101,"foreign"),(101,"local"),(101,"unknown")] {
+                c.execute("INSERT INTO token_ledger(ts,session,conversation,model,input,task) VALUES(?1,'worker',?2,'claude-opus',10,'task')", rusqlite::params![ts,conversation])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        for _ in 0..2 {
+            repair_foreign_project_owners(&store, home.path(), projects.path())
+                .await
+                .unwrap();
+        }
+        let c = store.read().unwrap();
+        let totals: (i64,i64,i64) = c.query_row("SELECT count(*),sum(input),sum(CASE WHEN session='' AND task='' THEN 1 ELSE 0 END) FROM token_ledger", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(totals, (4, 40, 1));
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM session_events WHERE type='usage.ownership_repaired'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(c);
+        store.write(|c| {
+            c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(95,'worker','project.claimed',?1,'project')", [r#"{"project_group":"demo"}"#])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        repair_foreign_project_owners(&store, home.path(), projects.path())
+            .await
+            .unwrap();
+        let c = store.read().unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM token_ledger WHERE session=''",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2,
+            "the first launch also recovers misattribution between allocation and launch"
+        );
+    }
+
     #[tokio::test]
     async fn a_stale_open_window_stops_absorbing_every_later_turn() {
         let st = store();
