@@ -313,12 +313,13 @@ fn provider_launch_recoverable(e: &Execution, project: &store::Project) -> bool 
 fn owned_output_recoverable(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> bool {
     if e.stage!="waiting" || e.suspended || e.report.is_some() || e.wait_category.as_deref()!=Some("operational") { return false; }
     let reason=e.waiting.as_deref().unwrap_or("").to_ascii_lowercase();
-    if !["absent","missing","unavailable","not available","no accepted receipt"].iter().any(|term|reason.contains(term)) { return false; }
+    if !["absent","missing","unavailable","not available","no accepted receipt","without"].iter().any(|term|reason.contains(term)) { return false; }
     let no_inputs=row.depends_on.is_empty();
+    let missing_source=no_inputs && reason.contains("source spec") && row.desc.contains("Source of truth:");
     let mistaken_receipt=no_inputs && reason.contains("accepted") && ["outputs","receipt","integration evidence","verifier","runtime fixture"].iter().any(|term|reason.contains(term));
     row.acceptance_criteria.as_deref().and_then(|s|serde_json::from_str::<Vec<String>>(s).ok()).is_some_and(|criteria|criteria.iter().any(|criterion| {
         criterion.strip_prefix("contract:").and_then(|id|project.policy.acceptance.as_ref()?.criterion(id)).is_some_and(|contract| {
-            mistaken_receipt || contract.evidence.iter().any(|path|path.len()>4 && reason.contains(&path.to_ascii_lowercase()))
+            missing_source || mistaken_receipt || contract.evidence.iter().any(|path|path.len()>4 && reason.contains(&path.to_ascii_lowercase()))
         })
     }))
 }
@@ -462,6 +463,8 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "claim";
                 None
             }
+        } else if !stale_requirements && state.stage=="waiting" && !state.suspended && state.wait_category.is_none() && state.report.is_some() && state.verification_retries.is_empty() && state.waiting.as_deref().is_some_and(|r|r.contains("ModuleNotFoundError: No module named")) {
+            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="recover_verification_environment"; None }
         } else if stale_requirements || auto_repairable_wait(&state, project.policy.max_attempts) {
             if let Some(reason) = &budget_wait {
                 Some(reason.clone())

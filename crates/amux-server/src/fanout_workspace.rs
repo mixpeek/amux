@@ -25,7 +25,7 @@ pub(crate) fn status_without_harness_receipts(raw: &str) -> String {
             let path = line.get(3..).unwrap_or(line).trim();
             !matches!(
                 path,
-                ".amux/project-report.json" | ".amux/project-wait.json"
+                ".amux/project-report.json" | ".amux/project-wait.json" | ".amux/project-required-outputs.json"
             ) && !path.ends_with(" -> .amux/project-report.json")
                 && !path.ends_with(" -> .amux/project-wait.json")
         })
@@ -412,6 +412,23 @@ pub(crate) fn distinct_verification_commands<'a>(
     let mut seen = std::collections::HashSet::new();
     commands.into_iter().filter(|c| seen.insert(*c)).collect()
 }
+pub(crate) async fn verification_tool_path<F:Fn()->Result<(),String>>(permit:&F)->Result<String,String> {
+    let shell=std::env::var("SHELL").unwrap_or_else(|_|"/bin/sh".into());
+    let mut probe=tokio::process::Command::new(shell);
+    probe.args(["-lc","printf '\\nAMUX_VERIFY_PATH=%s\\n' \"$PATH\""]);
+    let (status,output)=checked_command(probe,permit,Duration::from_secs(15)).await?;
+    if !status.success() {return Err("verification tool environment discovery failed".into())}
+    output.lines().rev().find_map(|line|line.strip_prefix("AMUX_VERIFY_PATH=")).filter(|path|!path.is_empty()).map(str::to_owned).ok_or_else(||"verification tool environment returned no PATH".into())
+}
+
+pub(crate) fn verification_process(tool_path:&str,candidate:&str,command:&str)->tokio::process::Command {
+    // Discover tools once before checks. Profiles cannot change the candidate
+    // cwd or consume each command's verification budget.
+    let mut process=tokio::process::Command::new("sh");
+    process.args(["-c",command]).current_dir(candidate).env("PATH",tool_path);
+    process
+}
+
 pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
     workspace: &Workspace,
     candidate: &str,
@@ -437,9 +454,10 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
     if !project_clean_status(candidate).await?.is_empty() {
         return Err("worktree has uncommitted changes".into());
     }
+    let tool_path=verification_tool_path(permit).await?;
     for command in commands {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", command]).current_dir(candidate).env(
+        let mut cmd = verification_process(&tool_path,candidate,command);
+        cmd.env(
             "AMUX_SESSION",
             workspace.branch.trim_start_matches("amux/fanout/"),
         );
@@ -1655,6 +1673,16 @@ mod tests {
         assert_eq!(status.code(), Some(7));
         assert!(output.contains("assertion-failed"));
     }
+    #[tokio::test]
+    async fn project_verification_profile_keeps_checkout_and_command_as_separate_arguments() {
+        let d=tempfile::tempdir().unwrap();let path=d.path().join("candidate with ' quote");std::fs::create_dir(&path).unwrap();
+        let mut process=verification_process("/usr/bin:/bin",path.to_str().unwrap(),"pwd; printf '%s' 'literal $not_expanded'");
+        let out=process.output().await.unwrap();assert!(out.status.success());
+        let text=String::from_utf8_lossy(&out.stdout);let lines=text.lines().collect::<Vec<_>>();
+        assert_eq!(std::fs::canonicalize(lines[0]).unwrap(),std::fs::canonicalize(&path).unwrap());
+        assert_eq!(lines[1],"literal $not_expanded");
+    }
+
     #[test]
     fn project_status_ignores_only_durable_harness_receipt() {
         let raw = "\

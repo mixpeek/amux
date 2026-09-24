@@ -1616,11 +1616,10 @@ async fn run(
                 }
             }
             let timeout = Duration::from_secs(timeout_secs.unwrap_or(p.policy.verification_timeout_secs));
-            let mut cmd = tokio::process::Command::new("sh");
+            let tool_path=workspace::verification_tool_path(&permit).await.map_err(anyhow::Error::msg)?;
+            let mut cmd = workspace::verification_process(&tool_path,&candidate,command);
             let run_id = format!("{}-{}-{}", p.name, std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
-            cmd.args(["-c", command])
-                .current_dir(&candidate)
-                .env("AMUX_SESSION", format!("acceptance-{}", p.name))
+            cmd.env("AMUX_SESSION", format!("acceptance-{}", p.name))
                 .env("AMUX_ACCEPTANCE_RUN_ID", &run_id)
                 .env("AMUX_ACCEPTANCE_MAIN", main)
                 .env("AMUX_ACCEPTANCE_STARTED_AT", format!("{started:.6}"))

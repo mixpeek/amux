@@ -4485,3 +4485,25 @@ CARD: AF-947
 SYMPTOM: POG-21 exhausted startup retries without launching a model. Its surviving shell selected an obsolete /usr/local Codex wrapper whose packaged binary was absent (spawn ENOENT); fresh workers and the user's login shell resolved the working installation.
 COST: No task progress despite available CLI and capacity, with an unhelpful generic launch failure.
 FIX: Reuse the same user-profile setup for surviving shells and clear shell command caching while preserving the requested checkout, provider flags and sandbox. Recognize the observed Codex spawn ENOENT only, measure the current login-shell CLI with --version, and grant one preparation retry without resetting prior attempts or authorization gates. Add a shell regression that starts with a stale cached executable and confirms the profile selects the healthy one.
+
+## Worktree executors lost source documents and could not declare real inputs offline
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Source specs were untracked in the main checkout and absent from project worktrees. POG-13 reported its T12 source missing; several tasks tried to declare imagined or real prerequisites over sandbox-blocked HTTP.
+COST: Missing requirement context turned assigned implementation into operational waits, and callback reachability became a hidden execution prerequisite.
+FIX: Capture the relevant source section and shared constraints into the durable task packet using the existing bounded, redacted, repository-contained intake reader. Include absolute source provenance and digest, plus an identity-only local task catalog. Add a local required-output receipt consumed through the same graph/authorization/idempotency checks as HTTP; no cross-project edges or inferred prose dependencies. Continuations compose exact local candidate SHAs rather than fetching unpublished changes from remote main.
+
+## Host verification resolved a different Python than its worker
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-17 host validation could not import FastAPI while the worker's login-profile Python could. Verification launched plain sh with launchd PATH instead of the user's provider/tool profile.
+COST: A machine-environment mismatch looked like a candidate defect and consumed model repairs.
+FIX: Discover verification tools through the user login shell, explicitly repin the candidate directory after profile startup, and pass checkout/command as positional arguments. Preserve timeout, process-group cancellation, source-boundary and clean-worktree checks. Give a retained report one checks-only environment retry on a missing-module failure; preserve failed evidence and never grant another model turn through that path.

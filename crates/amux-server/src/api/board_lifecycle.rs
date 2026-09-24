@@ -854,6 +854,22 @@ pub(crate) fn project_request_context(repository: &str, text: &str) -> String {
     request_basis(text, &referenced_files(repository, text))
 }
 
+/// Carry the referenced requirements into the durable execution packet even
+/// when the source document is untracked and absent from a new worktree.
+/// Reuse intake's repository boundary and extension/size/redaction rules.
+pub(crate) fn project_task_context(repository: &str, description: &str, criteria: Option<&str>) -> Value {
+    let criteria: Vec<String>=criteria.and_then(|raw|serde_json::from_str(raw).ok()).unwrap_or_default();
+    let files=referenced_files(repository,description);
+    json!(files.into_iter().map(|file| {
+        let ids:BTreeSet<String>=file.sections.iter().filter(|section|criteria.iter().any(|c|c.contains(&format!("[spec:{}]",section.id)))).map(|s|s.id.clone()).collect();
+        let content=if ids.is_empty() {file.content.clone()} else {
+            let preamble=file.content.lines().take_while(|line| !line.starts_with("### T")).collect::<Vec<_>>().join("\n");
+            format!("{}\n{}",preamble,scoped_spec_excerpt(&file.content,&ids))
+        };
+        json!({"path":Path::new(repository).join(&file.path),"repository_relative_path":file.path,"content":content,"source_sha256":hex::encode(Sha256::digest(file.content.as_bytes())),"truncated":file.truncated,"sections":ids})
+    }).collect::<Vec<_>>())
+}
+
 fn referenced_project_files(
     project: Option<&crate::project_execution::store::Project>,
     text: &str,
@@ -3219,5 +3235,23 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
                 .unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod project_task_source_tests {
+    use super::*;
+    #[test]
+    fn untracked_spec_is_carried_with_shared_constraints_and_only_owned_section() {
+        let repo=tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("specs")).unwrap();
+        std::fs::write(repo.path().join("specs/goal.md"),"# Goal\nKeep unchanged APIs.\n## Constraints\nNo external spend.\n## Tasks\n### T1. First\nFirst-only detail.\n### T2. Second\nSecond-only detail.\n").unwrap();
+        let context=project_task_context(repo.path().to_str().unwrap(),"Source of truth: specs/goal.md sections T2.",Some("[\"[spec:T2] Second\"]"));
+        let text=context[0]["content"].as_str().unwrap();
+        assert!(text.contains("No external spend") && text.contains("Second-only detail"));
+        assert!(!text.contains("First-only detail"));
+        assert!(Path::new(context[0]["path"].as_str().unwrap()).is_absolute());
+        assert_eq!(context[0]["source_sha256"].as_str().unwrap().len(),64);
+        assert_eq!(project_task_context(repo.path().to_str().unwrap(),"/etc/passwd",None),json!([]));
     }
 }
