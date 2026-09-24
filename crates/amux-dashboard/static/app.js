@@ -2593,6 +2593,70 @@ async function bulkSwitchModel(model) {
   await Promise.all(matched.map(s => _send(s.name, 'continue')));
   showToast(`Switched ${switched} worker${switched>1?'s':''} to ${model} & resumed`);
 }
+// ── Act on every VISIBLE worker ──
+// "Visible" is literal: the worker cards the main list is rendering right now,
+// after group pills, hidden groups, search and filters. Reading the DOM rather
+// than re-deriving the filter keeps the action and the eye in agreement.
+function _visibleWorkerNames() {
+  return [...document.querySelectorAll('#cards .card[data-session]')]
+    .filter(c => c.offsetParent !== null && !c.classList.contains('draft-card'))
+    .map(c => c.dataset.session)
+    .filter((n, i, a) => n && a.indexOf(n) === i && sessions.some(s => s.name === n));
+}
+function _refreshVisibleBulkButton() {
+  const b = document.getElementById('bulk-visible-btn');
+  if (!b) return;
+  const n = _visibleWorkerNames().length;
+  b.textContent = 'All shown (' + n + ')';
+  b.disabled = !n;
+}
+const _VISIBLE_ACTIONS = {
+  start:   { label: 'Start',   verb: 'Starting',  done: 'started',  path: n => '/api/sessions/' + encodeURIComponent(n) + '/start' },
+  resume:  { label: 'Resume',  verb: 'Resuming',  done: 'resumed',  path: n => '/api/workers/' + encodeURIComponent(n) + '/resume' },
+  stop:    { label: 'Stop',    verb: 'Stopping',  done: 'stopped',  path: n => '/api/sessions/' + encodeURIComponent(n) + '/stop' },
+  pause:   { label: 'Pause',   verb: 'Pausing',   done: 'paused',   path: n => '/api/workers/' + encodeURIComponent(n) + '/pause' },
+  archive: { label: 'Archive', verb: 'Archiving', done: 'archived', path: n => '/api/sessions/' + encodeURIComponent(n) + '/archive', ui: true },
+  delete:  { label: 'Delete',  verb: 'Deleting',  done: 'deleted',  path: n => '/api/sessions/' + encodeURIComponent(n) + '/delete', ui: true, danger: true },
+};
+function openVisibleWorkerActions() {
+  const names = _visibleWorkerNames();
+  const body = document.getElementById('bulk-actions-body');
+  if (!names.length) { showToast('No workers are shown'); return; }
+  body.innerHTML = '<div style="font-size:0.85rem;margin-bottom:8px;">' + names.length + ' worker' + (names.length === 1 ? '' : 's') + ' shown:</div>'
+    + '<div class="bulk-visible-names">' + names.map(n => '<span>' + esc(n) + '</span>').join('') + '</div>'
+    + '<div class="bulk-visible-actions">'
+    + Object.entries(_VISIBLE_ACTIONS).map(([k, a]) =>
+        '<button type="button" class="btn' + (a.danger ? ' danger' : '') + '" onclick="runVisibleWorkerAction(\'' + k + '\')">' + a.label + '</button>').join('')
+    + '</div>';
+  document.getElementById('bulk-actions-overlay').classList.add('open');
+}
+async function runVisibleWorkerAction(key) {
+  const a = _VISIBLE_ACTIONS[key];
+  const names = _visibleWorkerNames();
+  if (!a || !names.length) return;
+  closeBulkActions();
+  const list = names.length > 8 ? names.slice(0, 8).join(', ') + ' and ' + (names.length - 8) + ' more' : names.join(', ');
+  if (!await showConfirm(a.label + ' ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + '?\n\n' + list, a.label, !!a.danger)) return;
+  if (a.danger) {
+    const typed = await showPrompt('Type ' + names.length + ' to delete ' + names.length + ' worker' + (names.length === 1 ? '' : 's'), String(names.length));
+    if (typed !== String(names.length)) { showToast('Delete cancelled'); return; }
+  }
+  const failed = []; let done = 0;
+  const queue = names.slice();
+  const one = async () => {
+    for (let n; (n = queue.shift()); ) {
+      const opts = { method: 'POST' };
+      if (a.ui) opts.headers = { 'X-Amux-UI-Token': (window._AMUX_UI_TOKEN || '') };
+      const r = await apiCall(API + a.path(n), opts);
+      if (r) done++; else failed.push(n);
+      showToast(a.verb + ' ' + (done + failed.length) + '/' + names.length + '…');
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, names.length) }, one));
+  try { amuxTrack('bulk_visible_action', { action: key, n: names.length, ok: done, failed: failed.length }); } catch (e) {}
+  showToast(done + ' of ' + names.length + ' ' + a.done + (failed.length ? '. Not ' + a.done + ': ' + failed.join(', ') : ''));
+  await fetchSessions();
+}
 function closeBulkActions() {
   document.getElementById('bulk-actions-overlay').classList.remove('open');
 }
@@ -5782,12 +5846,19 @@ function render() {
   // the pills and the cards. Scope belongs with the group it configures, and
   // the Groups tab already renders it (_renderGroupsTab / _scopeLoad, the same
   // derivation), so this is a removal, not a reimplementation.
-  if (allTags.length) {
+  if (allTags.length || sessions.length) {
     tagEl.innerHTML = allTags.map(t =>
       `<span class="tag-filter${activeTag === t ? ' active' : ''}${hiddenTags.has(t) ? ' hidden-tag' : ''}" `
       + `title="${activeTag === t ? 'Showing only this group. Tap to hide it' : hiddenTags.has(t) ? 'Hidden. Tap to show it again' : 'Tap to show only this group'}" `
       + `onclick="toggleTagFilter('${escJs(t)}')">${hiddenTags.has(t) ? '\u2298 ' : ''}${esc(t)}</span>`
-    ).join('');
+    ).join('')
+      // Act on everything the list is showing right now (Ethan 2026-09-24:
+      // "add a button to apply an action to all visible workers ... maybe on
+      // the group pills row"). The count is filled in after the cards render.
+      + '<button type="button" class="tag-filter bulk-visible-btn" id="bulk-visible-btn" '
+      + 'onclick="openVisibleWorkerActions()" title="Apply an action to every worker shown below">All shown</button>';
+    // After this render finishes building the cards, whichever return it takes.
+    requestAnimationFrame(_refreshVisibleBulkButton);
   } else {
     tagEl.innerHTML = '';
   }
@@ -11659,7 +11730,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1088';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1089';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

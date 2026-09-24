@@ -7237,3 +7237,16 @@ select.input { height:var(--control-height); }
 
 /* Live reads failing: the cached fleet stays usable, its statuses read as last-known. */
 .cards.workers-stale .status-badge { filter: grayscale(1); opacity: 0.55; }
+
+/* "All shown (N)": acts on every worker the list is currently showing. */
+.tag-filter.bulk-visible-btn { font: inherit; font-size: 0.72rem; cursor: pointer; margin-left: auto; min-height: 32px; border-style: dashed;
+  /* The row scrolls sideways on a phone; keep this reachable at its right edge. */
+  position: sticky; right: 0; background: var(--bg, #0d1117); box-shadow: -8px 0 8px var(--bg, #0d1117); }
+.tag-filter.bulk-visible-btn:disabled { opacity: 0.5; cursor: default; }
+.bulk-visible-names { display: flex; flex-wrap: wrap; gap: 4px; max-height: 160px; overflow-y: auto; margin-bottom: 14px; }
+.bulk-visible-names span { font-size: 0.78rem; padding: 2px 8px; border-radius: 6px; background: rgba(127,127,127,0.12); }
+.bulk-visible-actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.bulk-visible-actions .btn { min-height: 44px; }
+@media (max-width: 600px) { .tag-filter.bulk-visible-btn { min-height: 44px; } }
+/* The bulk button's 44px touch height must not stretch the group pills. */
+.tag-filters { align-items: center; }

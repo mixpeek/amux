@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2139,
+  "n_considered": 2143,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -3706,6 +3706,12 @@
     },
     "runSyncBanner": {
       "kind": "command.runSyncBanner",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "runVisibleWorkerAction": {
+      "kind": "command.runVisibleWorkerAction",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
