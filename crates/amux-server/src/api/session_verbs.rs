@@ -7833,11 +7833,11 @@ const STRANDED_TEXT_MAX: usize = 800;
 
 /// Whether a Claude transcript holds a user prompt that is exactly `text` (or
 /// `text` after an amux origin stamp), dated at or after `since` (unix seconds,
-/// 60 s of skew). `None` when the answer cannot be trusted: the file is
+/// the requested clock skew). `None` when the answer cannot be trusted: the file is
 /// unreadable, or the part read starts after `since`, which covers both a file
 /// too large for the tail read and a conversation that began after the
 /// reservation (the prompt could be in an older transcript).
-fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64) -> Option<bool> {
+fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64, clock_skew_s: i64) -> Option<bool> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 16 * 1024 * 1024;
     let mut f = std::fs::File::open(path).ok()?;
@@ -7876,7 +7876,7 @@ fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64) -
         };
         if v["type"] == "user"
             && (content == text || content.ends_with(&stamped))
-            && at_of(&v).is_none_or(|t| t >= since - 60)
+            && at_of(&v).map_or(clock_skew_s > 0, |t| t >= since - clock_skew_s)
         {
             found = true;
         }
@@ -7943,8 +7943,9 @@ fn stranded_answer(body: Value) -> Response {
 /// 2026-09-14, the oldest from 09-10, one of them Ethan's 3:17 PM "continue"
 /// to mixpeek-homepage-claude, which never reached the worker.
 ///
-/// Stranded means no receipt, older than the gate's 120 s pending window, and
-/// no send task in this process holds it. Delivery is then decided from the one
+/// No live send may own the reservation. Positive, hash-bound transcript proof
+/// can confirm immediately after restart; releasing a missing prompt still
+/// requires the gate's 120 s pending window. Delivery uses the one
 /// piece of evidence amux has, the lane's transcript:
 /// - the text is there after the reservation: record a receipt, so the sender
 ///   stops waiting and nothing is resent;
@@ -7977,7 +7978,13 @@ async fn send_receipt_resolving(
     // No row (an ID never reserved) or a schema without text_sha yet: the plain
     // receipt answer is already the truth.
     let Ok((ts, text_sha)) = row else { return base };
-    if now_i64().saturating_sub(ts) <= 120 || send_is_in_flight(name, msg_id) {
+    if send_is_in_flight(name, msg_id) {
+        return base;
+    }
+    let aged = now_i64().saturating_sub(ts) > 120;
+    // A restarted process has no live owner. Exact positive evidence is safe
+    // now; lack of evidence must not authorize a replay sooner than before.
+    if !aged && text_sha.as_deref() != Some(text_sha256(text).as_str()) {
         return base;
     }
     let judgeable = !text.is_empty()
@@ -7986,32 +7993,44 @@ async fn send_receipt_resolving(
         && text_sha
             .as_deref()
             .is_none_or(|sha| sha == text_sha256(text));
-    let codex = matches!(provider_of(&parse_env(name)).as_str(), "codex" | "ollama");
-    let evidence = if codex
-        && !text.is_empty()
-        && text.len() <= 2000
-        && text_sha.as_deref() == Some(text_sha256(text).as_str())
-    {
-        codex_rollout_path(name).map(|path| (codex_receipt_evidence(&path, text, ts), path))
-    } else if !codex && judgeable {
-        session_jsonl_path(name).map(|path| (transcript_has_prompt_since(&path, text, ts), path))
-    } else {
-        None
-    };
+    // Rollout discovery and bounded transcript reads are filesystem work;
+    // keep receipt recovery off the async executor during reconnect bursts.
+    let (worker, prompt) = (name.to_owned(), text.to_owned());
+    let evidence = tokio::task::spawn_blocking(move || {
+        let codex = matches!(
+            provider_of(&parse_env(&worker)).as_str(),
+            "codex" | "ollama"
+        );
+        if codex
+            && !prompt.is_empty()
+            && prompt.len() <= 2000
+            && text_sha.as_deref() == Some(text_sha256(&prompt).as_str())
+        {
+            codex_rollout_path(&worker)
+                .map(|path| (codex_receipt_evidence(&path, &prompt, ts), path))
+        } else if !codex && judgeable {
+            session_jsonl_path(&worker)
+                .map(|path| (transcript_has_prompt_since(&path, &prompt, ts, if aged { 60 } else { 0 }), path))
+        } else {
+            None
+        }
+    })
+    .await
+    .unwrap_or(None);
     match evidence {
         Some((Some(true), path)) => {
             let id = format!("reconciled-{msg_id}");
             send_dedup_accept(state, name, msg_id, &id).await;
             tracing::warn!(
                 target: "amux::message_acceptance", session = name, verdict = "stranded_reservation_reconciled",
-                measured = true, n_considered = 1, transcript = %path.display(),
+                measured = true, n_considered = 1, transcript = %path.display(), early_recovery = !aged,
                 "a stranded reservation's text is in the lane transcript; recorded its receipt (AMUX-4594)"
             );
             stranded_answer(
                 json!({"ok": true, "accepted": true, "reconciled": true, "id": id, "msg_id": msg_id}),
             )
         }
-        Some((Some(false), path)) => {
+        Some((Some(false), path)) if aged => {
             send_dedup_forget(state, name, msg_id).await;
             tracing::warn!(
                 target: "amux::message_acceptance", session = name, verdict = "stranded_reservation_released",
@@ -8023,6 +8042,7 @@ async fn send_receipt_resolving(
                 "evidence": format!("no prompt matching the text after the reservation in {}", path.display()),
             }))
         }
+        _ if !aged => base,
         _ => {
             tracing::warn!(
                 target: "amux::message_acceptance", session = name, verdict = "stranded_reservation_unknown",
@@ -35971,6 +35991,19 @@ CLAUDE-POSTFIX-COMPLETE
     }
 
     #[test]
+    fn fresh_receipt_proof_requires_a_prompt_timestamp_after_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.jsonl");
+        let row = |stamp: Option<i64>| json!({"type":"user","timestamp":stamp.map(|t| chrono::DateTime::from_timestamp(t,0).unwrap().to_rfc3339()),"message":{"content":"repeat"}}).to_string();
+        std::fs::write(&path, row(Some(99))).unwrap();
+        assert_eq!(transcript_has_prompt_since(&path, "repeat", 100, 0), Some(false));
+        std::fs::write(&path, row(None)).unwrap();
+        assert_eq!(transcript_has_prompt_since(&path, "repeat", 100, 0), None);
+        std::fs::write(&path, row(Some(100))).unwrap();
+        assert_eq!(transcript_has_prompt_since(&path, "repeat", 100, 0), Some(true));
+    }
+
+    #[test]
     fn codex_receipt_evidence_requires_recent_exact_user_text() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rollout.jsonl");
@@ -36166,6 +36199,49 @@ CLAUDE-POSTFIX-COMPLETE
             )
             .unwrap();
         assert_eq!(still, 1);
+        // A killed server can have typed the prompt but not written its
+        // receipt. A recent reservation must recover from exact Codex proof.
+        let codex_name = "fresh-codex-receipt";
+        std::fs::write(env_path(codex_name), "CC_PROVIDER=codex\n").unwrap();
+        update_meta(
+            codex_name,
+            &[("codex_session_id", json!("fresh-receipt-rollout"))],
+        );
+        let rollout_dir = dir.path().join(".codex/sessions");
+        std::fs::create_dir_all(&rollout_dir).unwrap();
+        let prompt = "fresh restart proof";
+        std::fs::write(rollout_dir.join("rollout-fresh-receipt-rollout.jsonl"),
+            json!({"timestamp":stamp(now_i64()),"type":"response_item",
+                "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}}).to_string()).unwrap();
+        for id in ["fresh", "missing", "live"] {
+            assert!(send_dedup_gate(&state, codex_name, id).await.is_none());
+            send_dedup_note_text(&state, codex_name, id, prompt).await;
+        }
+        let (status, value) =
+            read(send_receipt_resolving(&state, codex_name, "fresh", prompt).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            value["reconciled"], true,
+            "exact proof must not wait two minutes: {value}"
+        );
+        send_dedup_note_text(&state, codex_name, "missing", "not delivered").await;
+        let (status, value) =
+            read(send_receipt_resolving(&state, codex_name, "missing", "not delivered").await)
+                .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(
+            value.get("released").is_none(),
+            "absence cannot authorize early duplicate delivery: {value}"
+        );
+        let fresh_owner = InFlightSend::enter(codex_name, "live");
+        let (status, _) =
+            read(send_receipt_resolving(&state, codex_name, "live", prompt).await).await;
+        assert_eq!(
+            status,
+            StatusCode::ACCEPTED,
+            "a live handler still owns its result"
+        );
+        drop(fresh_owner);
         let _flight = InFlightSend::enter(name, "unchecked-id");
         let (status, v) = read(
             send_receipt_resolving(&state, name, "unchecked-id", "[03:17 PM] never typed").await,
