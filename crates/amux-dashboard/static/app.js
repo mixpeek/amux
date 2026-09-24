@@ -5864,12 +5864,7 @@ function render() {
   _renderGroupsTab();
   const stripEl = document.getElementById('grp-scope-strip');
   if (stripEl && stripEl.innerHTML) { stripEl.innerHTML = ''; stripEl._want = ''; }
-  if (_sessionLoadError && sessions.length && !_cachedWorkersVisible) {
-    el.innerHTML = _staleWorkerCacheGate(sessions.length);
-    _restoreCardFocus(focusedId);
-    return;
-  }
-  const staleWorkerPrefix = (_sessionLoadError && _cachedWorkersVisible) ? _staleWorkerListBanner() : '';
+  const staleWorkerPrefix = '';
   const _nonArchivedCount = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s)).length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
