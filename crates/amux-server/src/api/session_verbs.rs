@@ -802,8 +802,9 @@ fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
 /// because the detector pass holds a lock and the two slow detectors beside it
 /// (disk, connectors) are computed outside it for exactly that reason.
 ///
-/// `since > 0` for every returned lane, by construction.
-pub(crate) fn composer_stuck_lanes() -> Vec<(String, i64)> {
+/// `since > 0` AND the lane is running, for every returned lane, by
+/// construction.
+pub(crate) async fn composer_stuck_lanes() -> Vec<(String, i64)> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(sessions_dir()) else {
         return out;
@@ -815,9 +816,25 @@ pub(crate) fn composer_stuck_lanes() -> Vec<(String, i64)> {
             continue;
         };
         let since = meta_i64(&load_meta(name), "composer_stuck_since");
-        if since > 0 {
-            out.push((name.to_string(), since));
+        if since <= 0 {
+            continue;
         }
+        // A LANE THAT IS NOT RUNNING CANNOT BE HOLDING TEXT, and its stamp can
+        // never be cleared either: `rate_limit_sweep` is the only writer and it
+        // skips `!is_running`, so a lane stamped once and then stopped keeps
+        // that stamp forever. Measured 2026-09-24: lifecycle-haiku-r3-0915 read
+        // 206.5h "stuck" with `running: false`, no tmux session at all, and a
+        // preview of `[1]+Stopped claude --model ...`, which is bash job
+        // control rather than anything a person typed.
+        //
+        // The SAME predicate the fleet list already uses for this field
+        // (`sessions_legacy`: `is_running && ... && composer_stuck_since > 0`),
+        // so the detector and the status display cannot disagree about which
+        // lanes count (ethos rule 1).
+        if !is_running(name).await {
+            continue;
+        }
+        out.push((name.to_string(), since));
     }
     // Stable order so a card's evidence does not reshuffle between passes.
     out.sort();

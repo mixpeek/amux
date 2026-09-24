@@ -816,7 +816,7 @@ function _peekPollInterval() {
 function _peekKickFast() {
   _peekLastChangeMs = performance.now();
   _peekUrgentUntil = _peekLastChangeMs + 1500;
-  if (peekSession && !document.hidden) _schedulePeekPoll(40);
+  _peekPollNow();
 }
 let _peekPollGen = 0;
 // Raw timer clear, used on every reschedule, so it must stay beacon-free.
@@ -848,6 +848,7 @@ function _peekPollStop(reason) {
   _stopPeekPoll();
   if (_peekPollActive) { _peekPollBeacon('stop', _peekPollSession, { reason: reason || 'stop' }); _peekPollActive = false; _peekPollSession = null; }
 }
+let _peekLastFullAttemptMs = 0;
 let _peekLastFullMs = 0;    // when the FULL payload (history) was last fetched
 let _peekFullPending = false; // retain a turn-end history refresh through the input burst
 let _peekPrevStatus = '';   // peeked session's status on the previous poll tick
@@ -874,9 +875,12 @@ function _schedulePeekPoll(delay) {
       _peekPrevStatus = _st;
       if (turnEnded) _peekFullPending = true;
       const needFull = performance.now() >= _peekUrgentUntil
-        && (_peekFullPending || (performance.now() - _peekLastFullMs > _PEEK_HISTORY_REFRESH_MS));
+        && (_peekFullPending || (performance.now() - Math.max(_peekLastFullMs, _peekLastFullAttemptMs) > _PEEK_HISTORY_REFRESH_MS));
       if (needFull) _peekFullPending = false;
-      await refreshPeek(!needFull);
+      // History must never hold up the current terminal frame. Each channel
+      // coalesces its own requests; a slow transcript can run beside live ticks.
+      if (needFull) refreshPeek();
+      await refreshPeek(true);
       _peekUpdateBranch();
       // Keep the open view's STATUS indicator live too, not just the log. The
       // session status arrives via the sessions array (SSE or the polling
@@ -884,8 +888,8 @@ function _schedulePeekPoll(delay) {
       // flip to "needs input" shows without closing and reopening the view.
       if (typeof updatePeekStatus === 'function') updatePeekStatus();
     } catch(e) {}
-    finally { _peekPollInFlight = false; }
-    if (gen !== _peekPollGen) { _peekPollAgain = false; return; }
+    finally { if (gen === _peekPollGen) _peekPollInFlight = false; }
+    if (gen !== _peekPollGen) return;
     // THE CADENCE IS A PERIOD, NOT A GAP (AMUX-4802). The request's own
     // duration counts toward it, so a 1500ms cadence with a 200ms request
     // waits 1300. Adding the interval on top of the request made the real
@@ -4799,7 +4803,7 @@ function _refreshOpenPeekOnSessions() {
     const pov = document.getElementById('peek-overlay');
     if (typeof peekSession !== 'undefined' && peekSession && pov && pov.classList.contains('active')) {
       if (typeof updatePeekStatus === 'function') updatePeekStatus();
-      if (!document.hidden && typeof refreshPeek === 'function') refreshPeek();
+      if (!document.hidden) _peekPollNow();
     }
   } catch (e) {}
 }
@@ -8735,10 +8739,9 @@ function showSendingIndicator() {
       peekWrap.appendChild(ind);
     }
     ind.style.display = '';
-    // Rapid refresh burst to detect output change quickly (early paint at 150ms)
-    setTimeout(refreshPeek, 150);
-    setTimeout(refreshPeek, 500);
-    setTimeout(refreshPeek, 1500);
+    // Reuse the serial live loop; three full-history timers used to race
+    // the response precisely when immediate input feedback mattered most.
+    _peekKickFast();
   }
   // Auto-clear after 15s as safety net
   clearTimeout(_sendingTimer);
@@ -11911,6 +11914,7 @@ function openPeek(name, opts) {
   // out and the numbers are real. Cheap: one hidden probe element and one POST.
   requestAnimationFrame(() => requestAnimationFrame(() => _peekInsetReport('open')));
   _peekOpenGeneration++;
+  _resetPeekRequests();
   const openIdentity = _peekIdentity(name);
   _peekPollStop('switch');   // wind down any prior open-view poller (beaconed)
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
@@ -12009,6 +12013,10 @@ function openPeek(name, opts) {
   _bindPeekTaskIdentity(_peekSess, openIdentity);
   updatePeekStatus();
   document.getElementById('peek-body').innerHTML = '<div class="peek-loading"><div class="peek-spin-lg"></div><span>Loading latest…</span></div>';
+  // Get terminal bytes on the wire before badge, message and settings reads
+  // compete for the browser's connections. The view identity is now ready.
+  _peekLastChangeMs = performance.now();
+  refreshPeek(true);
   // Reset tab badges; will be repopulated by _peekUpdateTabCounts
   _dictCount = 0;   // stale count from the previous session must not linger
   ['peek-tab-steering-count','peek-tab-issues-count','peek-tab-schedules-count',
@@ -12098,14 +12106,12 @@ function openPeek(name, opts) {
   // full payload (~138KB, mostly transcript history) to fill in scrollback. Clicking
   // a session now shows the latest immediately instead of waiting on ~120KB of
   // history — and 4 ansiToHtml passes over it — before anything appears.
-  _peekLastChangeMs = performance.now();   // snappy first couple seconds after opening a peek
   // Race the small live frame and the full transcript. The former is normally
   // fastest, but it must not be a serial gate: one stuck live request used to
   // prevent the healthy full response from even starting, leaving "Loading
   // latest…" on screen indefinitely. Identity checks make either
   // arrival order safe, and the client overlap guard keeps a late raw live
   // frame from duplicating transcript content.
-  refreshPeek(true, true);
   refreshPeek();
   _schedulePeekPoll();
   // resize-on-peek + its lease removed (AMUX-2981); the capture is a fixed
@@ -12245,6 +12251,7 @@ function closePeek() {
     _peekFilesStash(peekSession);   // the other half of the same draft
   }
   _peekOpenGeneration++;   // invalidate every response issued by this open
+  _resetPeekRequests();
   peekSession = null;
   peekSearchQuery = '';
   lastPeekHTML = '';
@@ -13819,31 +13826,61 @@ function _fitRules(html) {
   }).join('\n');
 }
 
-async function refreshPeek(liveOnly, bypassTrim) {
+const _peekRequests = new Map();
+let _peekRequestSequence = 0;
+let _peekFrameSequence = 0;
+let _peekFirstFrameAt = 0;
+let _peekStaleReported = false;
+function _resetPeekRequests() {
+  for (const request of _peekRequests.values()) request.controller.abort();
+  _peekRequests.clear();
+  _peekFrameSequence = 0;
+  _peekLastFullAttemptMs = 0;
+  _peekFirstFrameAt = performance.now();
+  _peekStaleReported = false;
+  _peekPollInFlight = false;
+  _peekPollAgain = false;
+  _peekFullPending = false;
+}
+function refreshPeek(liveOnly) {
+  if (!peekSession) return Promise.resolve();
+  const identity = _peekIdentity(peekSession);
+  const key = JSON.stringify([identity, !!liveOnly]);
+  const pending = _peekRequests.get(key);
+  if (pending) return pending.promise;
+  if (!liveOnly) _peekLastFullAttemptMs = performance.now();
+  const request = { sequence: ++_peekRequestSequence, controller: new AbortController() };
+  request.promise = _refreshPeekFrame(liveOnly, request).finally(() => {
+    if (_peekRequests.get(key) === request) _peekRequests.delete(key);
+  });
+  _peekRequests.set(key, request);
+  return request.promise;
+}
+async function _refreshPeekFrame(liveOnly, request) {
   if (_peekAgents.selected) return _peekAgentRefresh();
-  _peekAgentsLoad();
   const name = peekSession;
   const identity = _peekIdentity(name);
   if (!name) return;
-  // Refresh the Plan strip (throttled — task files change slowly).
-  if (performance.now() - _peekPlanLast > 8000) { _peekPlanLast = performance.now(); _peekLoadPlan(); }
   if (peekSelecting) return;
   if (_peekHasSelection()) return;
   const body = document.getElementById('peek-body');
   const statusEl = document.getElementById('peek-status');
-  const _peekAc = new AbortController();
+  const _peekAc = request.controller;
   // Headers are not a completed frame. Keep the deadline armed through body
   // consumption; otherwise a half-open response strands the awaited poll loop.
-  const _peekTimeout = setTimeout(() => _peekAc.abort(), 15000);
+  const _peekTimeout = setTimeout(() => _peekAc.abort(), liveOnly ? 3000 : 15000);
   let phase = 'headers';
   try {
-    // liveOnly (open path): a few-KB live frame — the CURRENT terminal — so the
-    // peek paints the latest instantly on click. The full payload (~138KB, mostly
-    // transcript history) follows and fills in scrollback. Only the full response
-    // carries the ETag the poll conditions on.
+    // Codex history comes from its rollout, not tmux scrollback. Match the
+    // full endpoint's viewport capture instead of retransmitting 300 old rows.
+    const provider = sessionProvider(sessions.find(s => s.name === name) || {});
+    const lines = liveOnly && (provider === 'codex' || provider === 'ollama') ? 0 : 300;
     const _et = liveOnly ? _peekLiveEtag : _peekEtag;
-    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=300' + (liveOnly ? '&live=1' : '') + (bypassTrim ? '&notrim=1' : ''),
+    const response = fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=' + lines + (liveOnly ? '&live=1&notrim=1' : ''),
       { ...(_et ? { headers: { 'If-None-Match': _et } } : {}), signal: _peekAc.signal });
+    _peekAgentsLoad();
+    if (performance.now() - _peekPlanLast > 8000) { _peekPlanLast = performance.now(); _peekLoadPlan(); }
+    const r = await response;
     if (!_peekIdentityCurrent(identity)) return;
     // AF-83: a peek on a session that NO LONGER EXISTS 404s, and this poller had
     // no r.ok check. It fell straight through to r.json(), parsed the error body
@@ -13864,6 +13901,7 @@ async function refreshPeek(liveOnly, bypassTrim) {
       return;
     }
     if (r.status === 304) {   // unchanged — nothing transferred, skip parse + render entirely
+      _peekFrameSequence = Math.max(_peekFrameSequence, request.sequence);
       hidePeekLoading();
       if (!liveOnly) _peekLastFullMs = performance.now();
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
@@ -13895,7 +13933,12 @@ async function refreshPeek(liveOnly, bypassTrim) {
     // character was lost. Capping the text flow restores the author's line
     // breaks. Box blocks are unaffected — wrapBoxBlocks gives them their own
     // horizontal scroller, and that runs inside these regions.
-    if (data.pane_cols > 0) {
+    const staleLive = request.sequence < _peekFrameSequence;
+    if (staleLive && !_peekStaleReported) {
+      _peekStaleReported = true;
+      _peekPollBeacon('stale-live-suppressed', name, { verdict: 'newer_frame_retained', measured: true, n_considered: 1 });
+    }
+    if (!staleLive && data.pane_cols > 0) {
       const b = document.getElementById('peek-body');
       if (b) b.style.setProperty('--peek-cols', data.pane_cols);
     }
@@ -13903,8 +13946,16 @@ async function refreshPeek(liveOnly, bypassTrim) {
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
     if (typeof rawOutput !== 'string' || (histRaw !== null && typeof histRaw !== 'string')) throw new Error('Malformed terminal frame');
     const overlapBase = histRaw !== null ? histRaw : _peekHistoryRaw;
-    const output = _trimPeekLiveOverlap(overlapBase, rawOutput);
+    // A delayed history response may add history, but must not rewind a
+    // newer live frame. Trim against the history actually displayed here;
+    // live requests skip the server's expensive transcript read entirely.
+    const output = _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
     const acceptFrame = () => {
+      if (!_peekFrameSequence) {
+        _peekPollBeacon('first-frame', name, { elapsed_ms: Math.round(performance.now() - _peekFirstFrameAt),
+          source: liveOnly ? 'live' : 'history', measured: true, n_considered: 1 });
+      }
+      _peekFrameSequence = Math.max(_peekFrameSequence, request.sequence);
       if (liveOnly) _peekLiveEtag = r.headers.get('ETag');
       else { _peekEtag = r.headers.get('ETag'); _peekLastFullMs = performance.now(); }
       hidePeekLoading();
@@ -14001,7 +14052,8 @@ async function refreshPeek(liveOnly, bypassTrim) {
     _peekPollBeacon('refresh-failed', name, { phase,
       reason: _peekAc.signal.aborted ? 'timeout' : 'request_or_render_error',
       verdict: 'retrying', measured: true, n_considered: 1 });
-    statusEl.textContent = 'Reconnecting… retrying terminal updates';
+    // A failed history request is not a disconnected live terminal.
+    if ((liveOnly && request.sequence >= _peekFrameSequence) || !_peekFrameSequence) statusEl.textContent = 'Reconnecting… retrying terminal updates';
     hidePeekLoading();   // fetch failed — stop the "Loading latest…" cue (we fall back to cache / retry below)
     // Offline: load cached peek
     if (!lastPeekHTML || lastPeekHTML.includes('Loading...')) {
@@ -15633,7 +15685,7 @@ async function peekLoadLogIntoSession() {
     'Use it as context for what we work on next. If the file is large, read it in chunks.';
   await doSend(sess, msg);
   showToast('Asked ' + sess + ' to read its full log');
-  setTimeout(refreshPeek, 500);
+  _refreshPeekSoon();
 }
 
 async function peekShowTranscripts() {

@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2131,
+  "n_considered": 2133,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2306,6 +2306,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_refreshPeekFrame": {
+      "kind": "command._refreshPeekFrame",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_refreshPeekSoon": {
       "kind": "command._refreshPeekSoon",
       "feedback_required": true,
@@ -3910,6 +3916,12 @@
     },
     "showIcalInfo": {
       "kind": "command.showIcalInfo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "showSendingIndicator": {
+      "kind": "command.showSendingIndicator",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

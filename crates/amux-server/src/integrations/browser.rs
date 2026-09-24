@@ -2488,9 +2488,38 @@ pub async fn cdp_new_tab(port: u16, url: &str) -> anyhow::Result<serde_json::Val
         Ok(r) => Some(format!("PUT answered HTTP {}", r.status())),
         Err(e) => Some(format!("PUT failed: {e}")),
     };
+    // AND THE FALLBACK ONLY RUNS FOR THE REASON IT EXISTS. It is here for
+    // pre-111 Chrome, which accepts GET and refuses PUT. On anything newer GET
+    // can NEVER succeed, so falling back on a TIMEOUT buys nothing and costs
+    // the diagnosis: measured 2026-09-23, this endpoint's worst request took
+    // 27.5s against a 5s PUT timeout, so a slow browser blew the PUT, GET was
+    // refused instantly at the HTTP layer, and a timeout arrived wearing a verb
+    // error. Reproduced against Chrome/153.0.8010.54: PUT 200, GET 405.
+    //
+    // 405/501 is Chrome SAYING it does not support the verb, which is the only
+    // signal that the other verb might work. A connect error or a timeout says
+    // nothing about verbs and is surfaced as itself.
+    let put_refused_the_verb = matches!(
+        &put,
+        Ok(r) if matches!(
+            r.status(),
+            reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
+        )
+    );
     let resp = match put {
         Ok(r) if r.status().is_success() => r,
-        _ => {
+        other => {
+            if !put_refused_the_verb {
+                // Report the PUT, not a GET that was never going to work.
+                return match other {
+                    Ok(r) => cdp_json(r, &format!("CDP /json/new on port {port} (PUT)")).await,
+                    Err(e) => Err(anyhow::anyhow!(
+                        "CDP /json/new on port {port}: PUT failed and amux did not fall back \
+                         to GET, because Chrome did not refuse the VERB (a 405/501) — it \
+                         failed to answer at all, and GET cannot fix that: {e}"
+                    )),
+                };
+            }
             client
                 .get(&endpoint)
                 .timeout(std::time::Duration::from_secs(5))
@@ -5899,6 +5928,72 @@ mod tests {
     }
 
     // ---- CDP client + driver mechanics (hermetic — fake WS, temp dirs) ----
+
+    /// A TIMEOUT IS NOT A VERB PROBLEM, so GET must not be tried for one.
+    ///
+    /// The fallback exists for pre-111 Chrome, which accepts GET and refuses
+    /// PUT. Against anything newer GET can never succeed, so running it after a
+    /// TIMEOUT converts a slow browser into a 405 that tells the reader to use
+    /// the verb amux already used. Measured 2026-09-23: worst request 27.5s
+    /// against a 5s PUT timeout. Reproduced on Chrome/153.0.8010.54: PUT 200,
+    /// GET 405 with exactly that body.
+    ///
+    /// The fake Chrome here answers PUT with 500, which is a failure that says
+    /// NOTHING about verbs, and then fails the test if a second request ever
+    /// arrives.
+    #[tokio::test]
+    async fn a_put_failure_that_is_not_a_verb_refusal_does_not_try_get() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                counter.fetch_add(1, Ordering::SeqCst);
+                // 500 on PUT: a real failure, and not a statement about verbs.
+                let body = if req.starts_with("PUT") {
+                    "boom"
+                } else {
+                    "GET SHOULD NEVER HAVE BEEN TRIED"
+                };
+                let resp = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let err = super::cdp_new_tab(port, "https://example.com")
+            .await
+            .expect_err("a 500 is still a failure");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("GET SHOULD NEVER HAVE BEEN TRIED"),
+            "the fallback ran on a non-verb failure: {msg}"
+        );
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "exactly one request: the PUT. A second means GET was tried for a \
+             failure that says nothing about verbs."
+        );
+        assert!(
+            msg.contains("(PUT)") || msg.contains("PUT"),
+            "the error must name the verb that actually failed: {msg}"
+        );
+    }
 
     /// A FALLBACK THAT HIDES WHY IT RAN TURNS ONE FAULT INTO A WRONG FIX.
     ///
