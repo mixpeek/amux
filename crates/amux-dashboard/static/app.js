@@ -6592,7 +6592,7 @@ function _renderBranchBadge(name, sessionBranch) {
   if (!displayBranch) return '';
   const isMain = _isBranchMain(displayBranch);
   const cls = gi && gi._conflict ? 'conflict' : isMain ? 'on-main' : 'on-branch';
-  const tip = gi && gi._conflict ? 'Another worker shares this branch — risk of conflicts' : isMain ? 'On main — click to create a worker branch' : 'Worker branch';
+  const tip = gi && gi._conflict ? 'Another worker shares this branch — risk of conflicts' : gi?.project_checkout ? 'Shared project checkout — tasks run one at a time' : isMain ? 'On main — click to create a worker branch' : 'Worker branch';
   const conflictWarn = gi && gi._conflict ? ' ⚠' : '';
   return `<div class="card-dir"><span class="branch-badge ${cls}" onclick="event.stopPropagation();showBranchPopover('${name}',event)" title="${tip}">⎇ ${esc(displayBranch)}${conflictWarn}</span></div>`;
 }
@@ -6637,7 +6637,12 @@ async function _fetchGitBranches(sess) {
     (byKey[key] = byKey[key] || []).push(n);
   }
   for (const names of Object.values(byKey)) {
-    if (names.length > 1) names.forEach(n => { if (newInfo[n]) newInfo[n]._conflict = true; });
+    if (names.length < 2) continue;
+    const project = newInfo[names[0]].project_checkout;
+    const sharedProject = !!project && names.every(n => newInfo[n].project_checkout === project);
+    names.forEach(n => { newInfo[n]._conflict = !sharedProject; });
+    if (sharedProject && names.some(n => gitInfo[n]?._conflict))
+      console.info('project_shared_checkout_classified', {project, workers:names.length});
   }
   if (JSON.stringify(newInfo) !== JSON.stringify(gitInfo)) {
     gitInfo = newInfo;
@@ -6659,6 +6664,7 @@ function _peekUpdateBranch() {
   el.className = 'peek-dir-branch ' + (conflict ? 'conflict' : isMain ? 'on-main' : 'on-branch');
   el.textContent = '\u2387 ' + b + (conflict ? ' \u26A0' : '');
   el.title = conflict ? 'Another worker shares this branch — conflict risk'
+           : gi?.project_checkout ? 'Shared project checkout — tasks run one at a time'
            : isMain ? ('On ' + b + ' — tap to make a worker branch') : 'Worker branch';
   el.onclick = (e) => { e.stopPropagation(); showBranchPopover(peekSession, e); };
   el.style.display = '';
@@ -6681,7 +6687,7 @@ function showBranchPopover(name, e) {
   if (hasBranch) {
     pop.innerHTML = `
       <div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;font-weight:600;">⎇ ${esc(displayBranch)}</div>
-      ${gi._conflict ? '<div style="font-size:0.78rem;color:var(--red);margin-bottom:6px;">⚠ Another worker shares this branch — conflicts possible</div>' : '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Isolated from other workers</div><div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;">Not on main, so nothing here reaches anyone until it is merged or pushed. Isolation is not delivery.</div>'}
+      ${gi._conflict ? '<div style="font-size:0.78rem;color:var(--red);margin-bottom:6px;">⚠ Another worker shares this branch — conflicts possible</div>' : gi.project_checkout ? '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Shared project checkout</div><div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;">Project tasks run one at a time on this branch. Approval publishes the reviewed project result.</div>' : '<div style="font-size:0.78rem;color:var(--green);margin-bottom:6px;">✓ Isolated from other workers</div><div style="font-size:0.75rem;color:var(--dim);margin-bottom:6px;">Not on main, so nothing here reaches anyone until it is merged or pushed. Isolation is not delivery.</div>'}
       <button class="btn" style="width:100%;" onclick="document.querySelectorAll('.branch-popover').forEach(p=>p.remove())">Close</button>`;
   } else {
     const suggested = 'session/' + name;
@@ -11812,7 +11818,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1097';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1098';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

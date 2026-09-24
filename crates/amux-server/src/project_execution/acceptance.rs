@@ -980,7 +980,7 @@ fn repair_failed_criteria(conn: &Connection, p: &store::Project, result: &Value)
         if owned.is_empty() { continue; }
         let e=planner::execution(conn,&row.id)?;
         let Some(report)=e.report else { continue; };
-        let failures=owned.iter().map(|r|json!({"criterion":r["criterion"],"command":r["command"],"state":r["state"],"exit":r["exit"],"output":tail(r["output"].as_str().unwrap_or(""),4000),"evidence_error":r["evidence_error"],"evidence":r["evidence"]})).collect::<Vec<_>>();
+        let failures=owned.iter().map(|r|json!({"criterion":r["criterion"],"command":r["command"],"state":r["state"],"exit":r["exit"],"output":tail(r["output"].as_str().unwrap_or(""),4000),"receipt_error":r["receipt_error"],"evidence_error":r["evidence_error"],"evidence":r["evidence"]})).collect::<Vec<_>>();
         let context=json!({"fingerprint":result["fingerprint"],"candidate":result["candidate"],"failures":failures});
         let changed=repair_owner(conn,p,&row.id,&report.head,&context)?;
         out.applied|=changed.applied;out.events.extend(changed.events);
@@ -1161,6 +1161,41 @@ pub(crate) fn review_preparation(contract: &AcceptanceContract, criteria: &[Stri
         let paths=review_inputs(contract,id)?; let criterion=contract.criterion(id)?;
         Some(json!({"criterion":format!("review-evidence:{id}"),"requirement":criterion.requirement,"evidence_required":paths,"scope":"Prepare truthful human-review inputs and retain them as report assets. Implement any report generator needed to reflect fresh acceptance results. Do not fabricate missing measurements, decisions or approvals. Automated run outputs stay owned by project acceptance; this task cannot satisfy human review."}))
     }).collect()
+}
+
+/// Literal copies of an approved requirement must carry its verifier identity.
+/// Repair omitted markers without another model call or a duplicate task.
+pub(crate) fn reconcile_contract_ownership(conn: &Connection, name: &str) -> anyhow::Result<WriteOutcome> {
+    let mut out=WriteOutcome{applied:false,events:vec![]};
+    let Some(p)=store::get(conn,name)? else { return Ok(out); };
+    if p.policy.paused || !p.policy.enabled { return Ok(out); }
+    let Some(contract)=p.policy.acceptance.as_ref() else { return Ok(out); };
+    for row in bs::project_issues(conn,name)? {
+        if row.item_type=="epic" || row.archived!=0 || row.status=="discarded" { continue; }
+        let mut criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+        let old=criteria.clone();
+        for text in &mut criteria {
+            let matches=contract.criteria.iter().filter(|c|!c.verifier.is_human() && c.requirement.trim()==text.trim()).collect::<Vec<_>>();
+            if matches.len()==1 { *text=format!("contract:{}",matches[0].id); }
+        }
+        if criteria==old { continue; }
+        let mut seen=HashSet::new();criteria.retain(|s|seen.insert(s.clone()));
+        let e=planner::execution(conn,&row.id)?;
+        if matches!(e.stage.as_str(),"reserved"|"working"|"reported"|"verifying") { continue; }
+        if row.status=="verified" {
+            let Some(report)=e.report.as_ref() else { continue; };
+            let context=json!({"reason":"The task copied an approved requirement without its contract marker; it never received the runtime receipt protocol. Bind the approved criterion, implement its fresh-evidence generator, and resubmit. Do not commit any runtime_evidence_required output; generate it only during the fresh acceptance invocation. Preserve earlier diagnostics as history, not current proof.","acceptance":status(conn,&p)?});
+            let repair=repair_owner(conn,&p,&row.id,&report.head,&context)?;
+            if !repair.applied { continue; }
+            out.events.extend(repair.events);
+        }
+        conn.execute("UPDATE issues SET acceptance_criteria=?2,rev=rev+1,version=version+1 WHERE id=?1",params![row.id,serde_json::to_string(&criteria)?])?;
+        let updated=bs::get_issue(conn,&row.id)?.ok_or_else(||anyhow::anyhow!("contract owner disappeared"))?;
+        out.applied=true;
+        out.events.push(PendingEvent{entity_type:EntityType::Task,entity_id:row.id.clone(),mutation:MutationKind::Updated,payload:Some(updated.snapshot())});
+        tracing::info!(project=name,task=%row.id,measured=true,n_considered=old.len(),verdict="project.contract_ownership_reconciled","literal approved requirement bound to its verifier; no duplicate task created");
+    }
+    Ok(out)
 }
 
 /// Fill only unowned review-input obligations from an already accepted contract.
@@ -3189,6 +3224,31 @@ path.write_text(json.dumps({
         db.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES(?1,?1,'verified','doc','p',1,1,'do it','[\"x\"]')", [id]).unwrap();
     }
     #[test]
+    fn literal_contract_ownership_reopens_existing_task_without_duplicate_or_approval() {
+        let db=crate::db::migrate::test_memdb();
+        let mut contract=two();contract.criteria[0].requirement="The measured lifecycle passes".into();
+        let p=project(&db,Some(contract));
+        verified(&db,"T-1");
+        db.execute("UPDATE issues SET acceptance_criteria='[\"The measured lifecycle passes\"]' WHERE id='T-1'",[]).unwrap();
+        let row=bs::get_issue(&db,"T-1").unwrap().unwrap();
+        let e=planner::Execution{stage:"verified".into(),attempt:1,generation:1,worker:"existing-worker".into(),input_hash:planner::input_hash(&row),report:Some(report(&[("The measured lifecycle passes","cargo test")])),..Default::default()};
+        planner::save_execution(&db,&row,&e,"fixture").unwrap();
+        db.execute("UPDATE group_config SET execution_policy=json_set(execution_policy,'$.paused',json('true')) WHERE name='p'",[]).unwrap();
+        assert!(!reconcile_contract_ownership(&db,"p").unwrap().applied);
+        db.execute("UPDATE group_config SET execution_policy=json_set(execution_policy,'$.paused',json('false')) WHERE name='p'",[]).unwrap();
+        assert!(reconcile_contract_ownership(&db,"p").unwrap().applied);
+        let updated=bs::get_issue(&db,"T-1").unwrap().unwrap();
+        assert_eq!(updated.acceptance_criteria.as_deref(),Some("[\"contract:unit\"]"));
+        let repaired=planner::execution(&db,"T-1").unwrap();
+        assert_eq!(repaired.worker,"existing-worker");assert_eq!(repaired.stage,"repair");
+        assert!(repaired.retry_grants[0].previous_result["report"].is_object());
+        assert_eq!(bs::project_issues(&db,"p").unwrap().len(),1);
+        assert!(!reconcile_contract_ownership(&db,"p").unwrap().applied);
+        assert!(planner::plan(&db,&p).unwrap().iter().any(|c| c.action=="claim"));
+        assert!(events(&db,"p","project.acceptance_approval",None).unwrap().is_empty());
+    }
+
+    #[test]
     fn acceptance_failure_repairs_the_owner_preserves_receipts_and_respects_limits() {
         let c=crate::db::migrate::test_memdb();
         let mut p=project(&c,Some(two()));
@@ -3199,7 +3259,7 @@ path.write_text(json.dumps({
         let mut e=planner::Execution{stage:"verified".into(),attempt:2,generation:2,worker:"owned-worker".into(),input_hash:planner::input_hash(&row),report:Some(report(&[("contract:unit","cargo test")])),..Default::default()};
         e.report.as_mut().unwrap().head="a".repeat(40);
         planner::save_execution(&c,&row,&e,"fixture").unwrap();
-        let failure=json!({"state":"failed","fingerprint":"failure-1","candidate":"b".repeat(40),"results":[{"criterion":"unit","state":"failed","output":"real integration failed","exit":1},{"criterion":"owner","state":"failed","evidence_error":"missing approval"}]});
+        let failure=json!({"state":"failed","fingerprint":"failure-1","candidate":"b".repeat(40),"results":[{"criterion":"unit","state":"failed","output":"real integration failed","receipt_error":"receipt belongs to a different invocation","exit":1},{"criterion":"owner","state":"failed","evidence_error":"missing approval"}]});
         p.policy.paused=true;assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied);p.policy.paused=false;
         let mut held=e.clone();held.suspended=true;planner::save_execution(&c,&row,&held,"fixture").unwrap();
         assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied);
@@ -3210,6 +3270,7 @@ path.write_text(json.dumps({
         assert_eq!(next.stage,"repair");assert_eq!(next.worker,"owned-worker");assert_eq!(next.attempt_limit(2),3);
         assert_eq!(next.retry_grants[0].previous_result["report"]["head"],"a".repeat(40));
         assert!(next.waiting.as_ref().unwrap().contains("real integration failed"));
+        assert!(next.waiting.as_ref().unwrap().contains("receipt belongs to a different invocation"));
         assert_eq!(bs::get_issue(&c,"EP").unwrap().unwrap().status,"backlog");
         assert_eq!(bs::get_issue(&c,"T-2").unwrap().unwrap().status,"verified");
         assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied,"unchanged failed run cannot queue another turn");

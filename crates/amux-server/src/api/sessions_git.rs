@@ -294,13 +294,15 @@ async fn recompute(state: &AppState) -> anyhow::Result<Value> {
     }
 
     let mut out = Map::new();
+    let home = crate::config::amux_home();
     for (name, dir, branch) in rows {
         let Some(repo) = repos.get(&dir) else {
             continue;
         };
         out.insert(
             name.clone(),
-            json!({"name": name, "branch": branch, "repo": repo}),
+            json!({"name": name, "branch": branch, "repo": repo,
+                "project_checkout": project_checkout(&home, &name, &branch)}),
         );
     }
     let body = Value::Object(out);
@@ -311,9 +313,43 @@ async fn recompute(state: &AppState) -> anyhow::Result<Value> {
     Ok(body)
 }
 
+fn project_checkout(home: &std::path::Path, worker: &str, branch: &str) -> Option<String> {
+    let env = crate::config::parse_env_file(&home.join("sessions").join(format!("{worker}.env")));
+    if env.get("CC_ISOLATED").is_some_and(|v| v == "1") {
+        return None;
+    }
+    let project = env.get("CC_PROJECT").filter(|v| !v.is_empty())?;
+    let w = crate::fanout_workspace::load(home, worker)?;
+    (w.branch == branch && crate::project_execution::checkout::belongs_to(home, project, &w))
+        .then(|| project.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn project_branch_label_requires_registered_shared_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.to_str().unwrap();
+        for args in [vec!["init", "-b", "main"], vec!["-c", "user.name=Test", "-c", "user.email=test@local", "commit", "--allow-empty", "-m", "base"]] {
+            crate::fanout_workspace::git(repo, &args).await.unwrap();
+        }
+        let w = crate::project_execution::checkout::ensure(&home, "example", "worker", repo).await.unwrap();
+        let config = home.join("sessions/worker.env");
+        assert_eq!(project_checkout(&home, "worker", &w.branch), None);
+        std::fs::write(&config, "CC_PROJECT=example\n").unwrap();
+        assert_eq!(project_checkout(&home, "worker", &w.branch).as_deref(), Some("example"));
+        assert_eq!(project_checkout(&home, "worker", "different-branch"), None);
+        std::fs::write(&config, "CC_PROJECT=other\n").unwrap();
+        assert_eq!(project_checkout(&home, "worker", &w.branch), None);
+        std::fs::write(&config, "CC_PROJECT=example\nCC_ISOLATED=1\n").unwrap();
+        assert_eq!(project_checkout(&home, "worker", &w.branch), None);
+    }
 
     /// AMUX-4700: the retry predicate decides on the TYPE, never the message.
     ///

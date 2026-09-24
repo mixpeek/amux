@@ -202,3 +202,21 @@ test('project checkout settings restore one writer for either checkout mode',()=
  ctx._projectCheckoutChanged();assert.equal(capacity.value,'1');
  checkout.value='0';capacity.value='2';ctx._projectCheckoutChanged();assert.equal(capacity.value,'1');
 });
+
+test('shared project branch is intentional but outside workers remain a conflict', async()=>{
+ let rows={},now=30000;const logs=[];
+ const ctx=vm.createContext({sessions:[{name:'a',dir:'/repo'},{name:'b',dir:'/repo'}],gitInfo:{},peekSession:null,API:'',Date:{now:()=>now},fetch:async()=>({ok:true,json:async()=>structuredClone(rows)}),render:()=>{},console:{info:(...a)=>logs.push(a),error:()=>{}},esc:s=>s});
+ vm.runInContext(source.slice(source.indexOf('function _isBranchMain('),source.indexOf('// Show the working directory')),ctx);
+ const branch='amux/project/example';
+ rows={a:{repo:'/repo',branch,project_checkout:'example'},b:{repo:'/repo',branch,project_checkout:'example'}};
+ await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,false);
+ assert.match(ctx._renderBranchBadge('a',''),/Shared project checkout/);
+ assert.doesNotMatch(ctx._renderBranchBadge('a',''),/⚠/);
+ rows.b.project_checkout=null;now+=21000;await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,true,'unmanaged worker on the branch is still a conflict');
+ rows.b.project_checkout='other';now+=21000;await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,true,'different project cannot borrow the shared checkout exemption');
+ rows.b.project_checkout='example';now+=21000;await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,false);assert.equal(logs.length,1);
+});
