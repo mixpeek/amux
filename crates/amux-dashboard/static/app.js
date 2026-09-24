@@ -11896,7 +11896,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1050';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1051';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45952,7 +45952,7 @@ function _projectConfig(project) {
     '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
     '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+hint('Runs after each task. Exit 0 means the task passed — a test suite, a lint+build, or a smoke-test script.')+
     '</div>'+
-    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label>'+hint('What a task must prove to count as done. This runs independently on the composed, unpublished candidate: a runtime/e2e claim needs a fresh execution receipt, a raw measurement per stage, and retained evidence. Human approval publishes that exact candidate to <code>origin/main</code>.')+
+    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" data-default="'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label>'+hint('What a task must prove to count as done. This runs independently on the composed, unpublished candidate: a runtime/e2e claim needs a fresh execution receipt, a raw measurement per stage, and retained evidence. Human approval publishes that exact candidate to <code>origin/main</code>.')+
     '<details class="project-settings"><summary>Advanced settings</summary><div class="project-form-grid">'+
     '<label>Executor checkout<select id="project-worktree" onchange="_projectCheckoutChanged()"><option value="1" '+(worktree?'selected':'')+'>Dedicated worktrees (default)</option><option value="0" '+(!worktree?'selected':'')+'>Shared project checkout (single executor)</option></select></label>'+hint('Dedicated worktrees let parallel executors work without colliding. Shared checkout uses one directory, so it only supports a single executor.')+
     '<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('The AI that decomposes your request into tasks, before any executor runs.')+'</label>'+
@@ -45992,7 +45992,10 @@ async function _projectDraftFields() {
     const verifyEl=document.getElementById('project-verify');
     if (verifyEl && !verifyEl.value.trim() && d.verify_command) verifyEl.value=d.verify_command;
     const contractEl=document.getElementById('project-contract');
-    if (contractEl && !contractEl.value.trim() && d.requirement) {
+    // The textarea starts PRE-FILLED with the default human-review criterion
+    // (not empty), so "only fill an empty field" never fired here. Compare
+    // against the default it was actually rendered with instead.
+    if (contractEl && contractEl.value===(contractEl.dataset.default||'') && d.requirement) {
       contractEl.value=JSON.stringify({criteria:[{id:'requested-outcome',requirement:d.requirement,verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]},null,2);
     }
     _projectSettingsDirty();
