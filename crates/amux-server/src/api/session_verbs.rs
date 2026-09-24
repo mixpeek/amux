@@ -1767,6 +1767,26 @@ pub(crate) fn rate_limit_action() -> String {
 /// lanes that were merely CODING the strings (2026-08-16). Line-anchored
 /// `1.`/`2.` shapes do not appear when this source file itself is on screen
 /// (quoted strings carry a leading `"`).
+// Project startup must not grant new hook authority. Codex offers a safe
+// continuation that skips untrusted hooks; only select that exact option.
+// Isolated and paused workers remain untouched. Trusted hooks are not changed.
+fn project_hook_review_key(cfg: &EnvFile, raw: &str) -> Option<&'static str> {
+    if cfg.get("CC_PROVIDER") != Some("codex")
+        || cfg.get("CC_PROJECT").is_none_or(str::is_empty)
+        || ["CC_ISOLATED", "CC_PAUSED", "CC_ARCHIVED"].iter().any(|key| env_flag_on(cfg.get(key)))
+    { return None; }
+    let clean = strip_ansi(raw);
+    if crate::backend::adapter::provider_picker_reason(&clean, "codex") != Some("hook_trust_prompt") {
+        return None;
+    }
+    let choice = "3. Continue without trusting (hooks won't run)";
+    let selected = clean.lines().map(str::trim).any(|line| {
+        line.strip_prefix('›').or_else(|| line.strip_prefix('❯')).is_some_and(|s| s.trim() == choice)
+    });
+    if selected { return Some("Enter"); }
+    clean.lines().map(str::trim).any(|line| line == choice).then_some("3")
+}
+
 pub(crate) fn is_resume_mode_prompt(raw: &str) -> bool {
     let clean = strip_ansi(raw).to_lowercase().replace('\u{2019}', "'");
     let opt1 = cached_re!(r"(?m)^\s*(?:[\u{276f}>]\s*)?1\.\s+resume from summary");
@@ -18965,6 +18985,14 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let _ = reconcile_terminal_subagents(state, name).await;
         }
         let pane = tmux_capture(name, 30).await;
+        if let Some(key) = project_hook_review_key(&cfg, &pane) {
+            let (ok, msg) = send_keys_op(name, key).await;
+            tracing::info!(session=%name,ok,detail=%msg,measured=true,n_considered=1,verdict="project_untrusted_hooks_declined","continuing project startup without granting hook trust");
+            emit_event(state,name,"session.untrusted_hooks_declined",Some(json!({"choice":"continue-without-trusting","key":key,"ok":ok,"detail":msg})),None,"status").await;
+            // Reobserve on the next sweep: never press Enter on an assumed
+            // selection or send task text while the picker is transitioning.
+            continue;
+        }
 
         // RESUME-MODE SELECTOR: amux's to answer (D2; policy set once by Ethan
         // 2026-08-19 — "resume from summary", fleet-wide, model-agnostic). The
@@ -45647,5 +45675,28 @@ mod boot_delivery_tests {
                 text
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod project_hook_review_tests {
+    use super::*;
+    #[test]
+    fn declines_only_exact_untrusted_hook_choice_for_active_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path=dir.path().join("worker.env");
+        std::fs::write(&path,"CC_PROVIDER=codex\nCC_PROJECT=demo\n").unwrap();
+        let mut cfg=EnvFile::load(&path);
+        let pane="Hooks need review\n10 hooks are new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\nPress enter to confirm or esc to go back";
+        assert_eq!(project_hook_review_key(&cfg,pane),Some("3"));
+        let selected=pane.replace("› 1.","  1.").replace("  3.","› 3.");
+        assert_eq!(project_hook_review_key(&cfg,&selected),Some("Enter"));
+        assert_eq!(project_hook_review_key(&cfg,&pane.replace("3. Continue without trusting (hooks won't run)","3. Trust all")),None);
+        assert_eq!(project_hook_review_key(&cfg,&format!("{pane}\n› Implement a feature")),None);
+        for key in ["CC_ISOLATED","CC_PAUSED","CC_ARCHIVED"] {
+            cfg.set(key,"1"); assert_eq!(project_hook_review_key(&cfg,pane),None); cfg.remove(key);
+        }
+        cfg.set("CC_PROVIDER","claude"); assert_eq!(project_hook_review_key(&cfg,pane),None);
+        cfg.set("CC_PROVIDER","codex"); cfg.remove("CC_PROJECT"); assert_eq!(project_hook_review_key(&cfg,pane),None);
     }
 }

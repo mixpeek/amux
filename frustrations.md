@@ -4386,3 +4386,14 @@ CARD: AF-947
 SYMPTOM: POG-21 retained the measured launcher error "provider launch ended without a live process or confirmed UI" after concurrent runtimes disrupted startup. The planner did not classify that prelaunch failure for recovery.
 COST: The task would remain waiting even after its underlying launch race was removed.
 FIX: Include the existing exact startup diagnostic in bounded prelaunch recovery, only without a submitted result and within the existing attempt and automatic-grant limits. The generic retry remains observable through the existing retry receipt/log; test the diagnostic alongside checkout recovery and nonretryable repository/user-change cases.
+
+## Optional untrusted hooks blocked every new project executor
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: After project resume, both Luna workers reached Codex but waited at "Hooks need review" before their task could be delivered. These hooks had not been authorized.
+COST: Project looked driving while no model execution could begin without manual terminal input.
+FIX: Active non-isolated Codex project workers may select only the exact "Continue without trusting (hooks won't run)" bootstrap option. Never trust hooks, edit trust state, answer tool approvals, or touch paused/isolated workers. Reobserve the selected option before Enter and log each action; retain normal status fallback when hooks are unavailable. Test precise menu recognition and all scope guards.
