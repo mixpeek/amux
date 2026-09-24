@@ -4793,3 +4793,14 @@ CARD: AF-947
 SYMPTOM: Open peek raced full and live responses without ordering, session invalidations launched redundant full requests, and the serial polling loop waited for history. Codex live polls also retransmitted 300 rows of tmux scrollback instead of the viewport used by the full endpoint.
 COST: Delayed history could freeze or rewind a current terminal. A sampled Codex response was 144144 serialized bytes at 300 rows versus 24044 for its viewport; this is a single-worker observation, not a fleet benchmark.
 FIX: Coalesce one request per channel/open identity; let history run beside live polling, retain newer frames when older requests finish, abort requests on close/switch, and request untrimmed live frames for client-side overlap removal. Codex live captures use the viewport. Input/session updates nudge the serial live loop. A stalled live body has a 3-second deadline; history retains 15 seconds and bounded retry cadence. Log first-frame latency, stale-live suppression and existing request-failure evidence. Ten executable regressions cover held history, out-of-order responses, deduplication, switches, timeout recovery, selection, conditional responses and session/input nudges.
+
+## Approval-gated rollout stranded independent local implementation
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: GS3 POG-13 stopped before producing a local implementation because production backfill requires spend approval. The project had 23 checked task candidates but no whole-project acceptance; its remaining implementation was parked with the production action. Ordinary model-interpreted task refinement could also clear execution.stage and thereby accidentally erase a spend hold.
+COST: Safe local code/tests did not advance; the only apparent escape was manual retry or weakening authorization.
+FIX: Discover one independent local-preparation task for an approval-held code task with no candidate. Preserve the original task/hold/criteria, use the existing bounded project executor and verification path, and never create human messages. Discovery respects project pause, budget, pending intake, suspension, terminal tasks and archived/deleted preparation; preparation cannot recursively create preparation. Log project.authorization_preparation_created with both task identities. Decomposition/executor instructions separate safe local preparation from gated rollout; normal refinement preserves authorization. Local evidence never substitutes for production parity or whole-project acceptance. The inspector now exposes the full authorization cause instead of the scheduler token; unfinished task counts no longer imply execution.

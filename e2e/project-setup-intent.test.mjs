@@ -179,3 +179,18 @@ test('assigned project tasks require live activity before claiming working now',
  ctx.online=true;ctx.sessions=[];assert.equal(label(),'Assigned to worker');
  card.execution_plan.execution.stage='reserved';assert.equal(label(),'Queued to worker');assert.notEqual(ctx._projectTaskDisplay(card).cls,'working');
 });
+
+
+test('task inspector retains the complete authorization diagnostic',()=>{
+ const reason='spend: Production backfill needs approval. '+ 'The local candidate is still preparable. '.repeat(12)+'Unapproved action: materialize the production bucket.';
+ const card={id:'A',title:'Cutover',phase:'waiting',acceptance_criteria:[],execution_plan:{waiting_label:'Authorization required',waiting_reason:'authorization_required',execution:{stage:'waiting',waiting:reason}}};
+ const data={project:{name:'sample',policy:{executor:{provider:'codex',model:'gpt-6-luna'}}},cards:[card],acceptance:{state:'pending'}};
+ const box={dataset:{},scrollTop:0,contains:()=>false};
+ const ctx=vm.createContext({document:{getElementById:()=>box,activeElement:null},_projectStorage:()=> 'A',_projectOpenState:new Map(),_projectClip:(s,n)=>String(s).slice(0,n),esc:String,escJs:String,_projectAssetLinks:()=>'',_projectsData:data});
+ vm.runInContext(source.slice(source.indexOf('function _projectTaskDisplay('),source.indexOf('function _projectOutcomeVerdict(')),ctx);
+ vm.runInContext(source.slice(source.indexOf('function _projectCriteria('),source.indexOf('function _projectAssetLinks(')),ctx);
+ ctx._projectInspectorRender(data);
+ assert.ok(box.innerHTML.includes('<pre class="project-diagnostic" tabindex="0">'+reason+'</pre>'));
+ assert.ok(box.innerHTML.includes('Full diagnostics ('+reason.length.toLocaleString()+' characters)'));
+ assert.ok(!box.innerHTML.includes('<pre class="project-diagnostic" tabindex="0">authorization_required</pre>'));
+});

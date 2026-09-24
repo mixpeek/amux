@@ -750,6 +750,49 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn project_refinement_cannot_erase_a_spend_hold() {
+        let (_dir, state) = fixture();
+        state.store.write(|c| {
+            let mut p = store::get(c,"sample").map_err(store::sql_error)?.unwrap();
+            p.policy.enabled = true;
+            store::save(c,"sample",p.revision,&p.policy,"test").map_err(store::sql_error)?;
+            c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,session,created,updated,next_action,acceptance_criteria) VALUES('HELD','Canonical cutover','Implement locally; rollout needs approval','blocked','code','sample','project:sample',1,1,'Implement locally','[\"Local cutover passes\"]')", [])?;
+            c.execute("UPDATE issues SET owner_type='agent' WHERE id='HELD'",[])?;
+            let row = bs::get_issue(c,"HELD")?.unwrap();
+            let e = super::super::planner::Execution {
+                stage:"waiting".into(),attempt:1,generation:1,
+                input_hash:super::super::planner::input_hash(&row),
+                wait_category:Some("spend".into()),waiting:Some("spend: production backfill unapproved".into()),
+                ..Default::default()
+            };
+            super::super::planner::save_execution(c,&row,&e,"project.waiting").map_err(store::sql_error)?;
+            let (_,out)=receive(c,"sample","refine","Add rollback tests to HELD without approving the production backfill").map_err(store::sql_error)?;
+            Ok(out)
+        }).unwrap();
+        let id = receipts(&state.store.read().unwrap(),"sample").unwrap()[0]["id"].as_i64().unwrap();
+        let response = json!({"kind":"tasks","reason":"refine existing implementation","confidence":0.99,"tasks":[{
+            "key":"a","title":"Canonical cutover","description":"Implement locally and verify rollback; production backfill remains unapproved",
+            "type":"code","action":"update","existing_id":"HELD","next_action":"Implement local rollback tests",
+            "acceptance_criteria":["Local cutover and rollback pass"],"needs":[],"dependency_reason":""
+        }]}).to_string();
+        interpret(&state,id,"sample",Arc::new(Fake {calls:Default::default(),response})).await.unwrap();
+        let c = state.store.read().unwrap();
+        let row = bs::get_issue(&c,"HELD").unwrap().unwrap();
+        assert!(row.acceptance_criteria.unwrap().contains("rollback"));
+        let e = super::super::planner::execution(&c,"HELD").unwrap();
+        assert_eq!(e.stage,"waiting");
+        assert_eq!(e.wait_category.as_deref(),Some("spend"));
+        assert_eq!(e.waiting.as_deref(),Some("spend: production backfill unapproved"));
+        assert!(!super::super::planner::claim(&c,"sample","HELD").unwrap().applied);
+        drop(c);
+        state.store.write(|c| {
+            let out = super::super::preparation::reconcile(c,"sample").map_err(store::sql_error)?;
+            assert!(out.applied,"local preparation remains available without authorizing the held action");
+            Ok(out)
+        }).unwrap();
+    }
+
+    #[tokio::test]
     async fn project_budget_holds_intake_without_another_model_call() {
         let (_dir, state) = fixture();
         let id = receipt(&state, "spent");
