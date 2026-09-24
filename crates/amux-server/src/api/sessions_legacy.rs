@@ -145,7 +145,8 @@ pub fn report_applies(state: &str, ts: f64, started: f64, now: f64) -> bool {
     from_this_life
         && !stale_active
         && age < trust_window
-        && matches!(state, "active" | "idle" | "waiting" | "blocked")
+        && age >= -5.0
+        && matches!(state, "active" | "idle" | "waiting" | "blocked" | "error")
 }
 
 /// Pane captures abandoned on a deadline, and the lanes they were for.
@@ -1976,6 +1977,10 @@ impl FleetSignals {
                 json!({
                     "state": st,
                     "source": rep.get("source").and_then(|v| v.as_str()).unwrap_or(""),
+                    "native": rep["native_status"].as_bool().unwrap_or(false),
+                    "event": rep["event"], "run_id": rep["run_id"],
+                    "sequence": rep["sequence"], "observed_at": ts,
+                    "received_at": rep["received_at"],
                     "age_s": age.max(0.0),
                     "trust_window_s": trust_window,
                     "from_this_life": from_this_life,
@@ -2181,6 +2186,21 @@ impl FleetSignals {
         // A signal from before the latest worker restart is a previous life and
         // cannot vote. A visible selector still wins as `waiting`: an open turn
         // says work is unfinished, not that it is safe to type into the picker.
+        // Native lifecycle edges lead while current and fresh. Physical
+        // contradictions still rescue a missed hook; older rollout boundaries
+        // cannot undo a newer permission, interrupt, or completion hook.
+        let native = self.reports.get(name).filter(|rep| {
+            rep["native_status"].as_bool() == Some(true)
+                && report_applies(rep["state"].as_str().unwrap_or(""),
+                    rep["ts"].as_f64().unwrap_or(0.0),
+                    self.started.get(name).copied().unwrap_or(0.0), self.now)
+                && self.now - rep["ts"].as_f64().unwrap_or(0.0) <= 120.0
+                && !fresh_idle_contradicted
+        });
+        if let Some(rep) = native {
+            status = rep["state"].as_str().unwrap_or("idle").into();
+            decided = "native_hook";
+        }
         if let Some(signal) = self.codex_turns.get(name) {
             let started = self.started.get(name).copied().unwrap_or(0.0);
             let from_this_life = started > 0.0 && signal.ts >= started;
@@ -2192,7 +2212,8 @@ impl FleetSignals {
                 || heartbeat_fresh
                 || tool_child_running
                 || self.subagents_working(name);
-            let applied = from_this_life && active_is_live;
+            let newer_than_hook = native.is_none_or(|rep| signal.ts > rep["ts"].as_f64().unwrap_or(0.0));
+            let applied = from_this_life && active_is_live && newer_than_hook;
             let pane_waiting = self
                 .pane_of(name)
                 .map(crate::api::session_verbs::detect_claude_status)
@@ -2222,7 +2243,7 @@ impl FleetSignals {
                     status = signal.state.clone();
                     decided = "codex_rollout";
                 }
-            } else if from_this_life && signal.state == "active" {
+            } else if from_this_life && signal.state == "active" && newer_than_hook {
                 // A `task_started` edge can survive a provider crash or an
                 // interrupted generation indefinitely. Codex also keeps its
                 // Working timer/footer repainting, so pane mtime/churn are not
@@ -4020,7 +4041,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
                 meta["last_started"].as_i64().unwrap_or(0)
             }
         };
-        let mut status = signals.derive_status(&name, is_running);
+        let (mut status, status_evidence) = signals.derive_status_explain(&name, is_running);
         // A lane parked on a real picker is WAITING, never idle (AMUX-2834). The
         // derivation above cannot see a picker — it reads self-reports and tmux
         // activity, and a lane at a prompt is producing neither. The sweep in
@@ -4058,6 +4079,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             .map(|workspace| std::path::PathBuf::from(workspace.path))
             .unwrap_or_else(|| home.join("worktrees").join(&name));
         out.push(json!({
+            "status_evidence": {
+                "source": status_evidence["decided_by"],
+                "report": status_evidence["report"],
+                "observed_at": signals.now,
+                "running": is_running
+            },
             "archived": archived,
             "lifecycle": lifecycle,
             // Why a `waiting` lane is waiting, and proof a lane is genuinely
@@ -6588,6 +6615,30 @@ Claude usage limit reached. Your limit will reset at 3pm.
         let (status, ex) = s.derive_status_explain("x", false);
         assert_eq!(status, "");
         assert_eq!(ex["decided_by"], json!("not_running"));
+    }
+
+    #[test]
+    fn native_hooks_lead_older_rollouts_and_yield_to_newer_evidence() {
+        let mut s = signals();
+        let lane = "native-test";
+        s.started.insert(lane.into(), s.now - 100.0);
+        s.reports = json!({lane: {"native_status":true,"state":"blocked","ts":s.now - 1.0,"source":"codex-hook","event":"PermissionRequest","sequence":4}});
+        s.codex_turns.insert(lane.into(), crate::api::session_verbs::CodexTurnSignal {
+            state:"active".into(), ts:s.now - 10.0, heartbeat_ts:s.now,
+            boundary:"task_started".into(), rollout_file:None,
+        });
+        let (status, ex) = s.derive_status_explain(lane, true);
+        assert_eq!(status, "blocked", "{ex}");
+        assert_eq!(ex["decided_by"], "native_hook");
+        assert_eq!(ex["report"]["sequence"], 4);
+        // Completion after a lost hook still heals from the native transcript.
+        let signal = s.codex_turns.get_mut(lane).unwrap();
+        signal.state = "idle".into(); signal.ts = s.now;
+        assert_eq!(s.derive_status_explain(lane, true).0, "idle");
+        // Killed processes always beat the last hook.
+        assert_eq!(s.derive_status_explain(lane, false).1["decided_by"], "not_running");
+        s.reports[lane]["ts"] = json!(s.now - 200.0);
+        assert_ne!(s.derive_status_explain(lane, true).1["decided_by"], "native_hook");
     }
 
     #[test]

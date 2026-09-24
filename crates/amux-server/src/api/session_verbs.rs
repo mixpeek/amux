@@ -12567,7 +12567,23 @@ pub(crate) async fn start_session(
     // Startup profiles and scoped environment files may change directory.
     // Pin the actual provider invocation to the resolved workspace, even when
     // an earlier shell setup line was delayed by interactive initialization.
-    let cmd = provider_command_in_workspace(&work_dir, &cmd, isolated);
+    // Passive status identity survives raw-mode routing scrubbing. It grants no
+    // board, prompt, or automation capability. Bind it before the first hook.
+    let status_launch = if matches!(provider.as_str(), "codex" | "claude") {
+        match super::native_status::begin_launch(name, &provider) {
+            Ok(launch) => Some(launch),
+            Err(error) => {
+                tracing::warn!(session=name, %error, verdict="status_observer_launch_failed", "using process/transcript status fallback");
+                None
+            }
+        }
+    } else { None };
+    let observer_prefix = if let Some((run, _)) = &status_launch {
+        format!("AMUX_STATUS_WORKER={} AMUX_STATUS_RUN_ID={} AMUX_STATUS_HOME={} AMUX_STATUS_URL={} ",
+            sh_quote(name), sh_quote(run), sh_quote(&home().to_string_lossy()),
+            sh_quote(&format!("https://localhost:{}", crate::config::canonical_port())))
+    } else { String::new() };
+    let cmd = provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated);
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -12692,7 +12708,7 @@ pub(crate) async fn start_session(
             let fresh_flag = format!("--name {}", sh_quote(name));
             let cmd_fresh = provider_command_in_workspace(
                 &work_dir,
-                &build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags),
+                &format!("{observer_prefix}{}", build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)),
                 isolated,
             );
             shell_step!(&cmd_fresh, true);
@@ -12802,7 +12818,7 @@ pub(crate) async fn start_session(
         "boot_fresh_launch".into(),
         json!(launch_was_childless && launched && pane_has_live_child(name).await == Some(true)),
     );
-    meta.insert("last_started".into(), json!(now_i64()));
+    meta.insert("last_started".into(), json!(status_launch.as_ref().map(|(_, ts)| *ts as i64).unwrap_or_else(now_i64)));
     // The launch directory is runtime identity, including when a saved active
     // task overrides the worker's general configured checkout.
     meta.insert("cc_cwd".into(), json!(work_dir));
@@ -19846,16 +19862,18 @@ async fn get_dispatch(
                 // by which time the lane has taken another turn and the live
                 // verdict is a different, correct, useless answer.
                 let (history, since) = status_decision_history(&conn, &nm, 20);
-                Ok((running, status, explain, history, since))
+                let native_events = super::native_status::history(&conn, &nm);
+                Ok((running, status, explain, history, since, native_events))
             })
             .await;
             match joined {
-                Ok(Ok((running, status, explain, history, since))) => j200(json!({
+                Ok(Ok((running, status, explain, history, since, native_events))) => j200(json!({
                     "session": name,
                     "running": running,
                     "status": status,
                     "explain": explain,
                     "history": history,
+                    "native_events": native_events,
                     // AN EMPTY HISTORY HAS TWO MEANINGS and they are opposite:
                     // this lane has been stable, or nothing has been sampling
                     // it. `history_recorded_since` is null in the second case,
@@ -25059,6 +25077,9 @@ pub(crate) async fn report_post(
             }),
         );
     }
+    if body["native_status"].as_bool() == Some(true) {
+        return super::native_status::post(state, name, body).await;
+    }
     // SELF-REPORTED CONVERSATION ID (AMUX-2936). Handled here, above the
     // subagent early-return, so EVERY report shape carries it — a lane that only
     // ever fires SubagentStart would otherwise never heal.
@@ -25214,6 +25235,9 @@ pub(crate) async fn report_post(
                 .unwrap_or_else(|| json!({}));
             let prev_state =
                 reports[&name_s]["state"].as_str().unwrap_or("").to_string();
+            if super::native_status::owns_report(&name_s, &reports[&name_s]) {
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            }
             // RR-0052 LEASE HEARTBEAT. Any self-report proves the process in this
             // lane is alive, so it renews the lease on every card the lane holds.
             // This runs BEFORE the resurrection guard below on purpose: that guard

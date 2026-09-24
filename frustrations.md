@@ -4162,3 +4162,14 @@ CARD: AF-946
 SYMPTOM: The isolated raw-pass-luna restart on main/8824 stopped the provider and left it stopped. All Stop requests now enter the durable outbox, while doRestart treated apiCall's null queued response as a failure and returned before observing termination or starting again.
 COST: Restart behaved as Stop, requiring manual recovery despite a successful durable delivery.
 FIX: Restart continues observing authoritative process state after queued stop acceptance and starts only after termination is confirmed. A worker_restart_waiting_for_stop beacon identifies the transition. Regression cases cover delayed queued stop, already-stopped workers and stop timeouts.
+
+## Provider hook state lost ordering and Codex had no native producer
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed (live provider validation pending)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Main-state reports had no launch identity or ordering and replaced observation time with receipt time. Older Codex rollout boundaries could override newer reports; isolated workers lacked a passive hook channel.
+COST: Delayed reports and missed permission/interrupt boundaries made worker badges disagree with their CLI and required manual inspection.
+FIX: Passive Codex/Claude hooks with per-launch ordered events, durable local delivery/replay, original observation timestamps and inspectable native history. Process absence and fresher fallback evidence still override stale claims. Producer privacy/concurrency/install tests, Rust replay/ordering/precedence regressions and dashboard lifecycle tests pass. Live proof is retained in ~/.amux/test-artifacts/native-status-20260923. Hook trust and launch identity are required; missing hooks remain explicitly identified as fallback.

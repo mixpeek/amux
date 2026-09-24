@@ -5121,12 +5121,25 @@ async function _openStatusDetail(name) {
   dialog.showModal();
   const body = dialog.querySelector('.work-queue-body');
   try {
-    const [peekRes, boardRes] = await Promise.all([
+    const isolated = !!sessions.find(s => s.name === name)?.isolated;
+    const [peekRes, boardRes, evidence] = await Promise.all([
       fetch('/api/sessions/' + encodeURIComponent(name) + '/peek?lines=15').then(r => r.json()).catch(() => null),
-      fetch('/api/board?session=' + encodeURIComponent(name) + '&status=doing&slim=0').then(r => r.json()).catch(() => []),
+      isolated ? Promise.resolve([]) : fetch('/api/board?session=' + encodeURIComponent(name) + '&status=doing&slim=0').then(r => r.json()).catch(() => []),
+      fetch('/api/sessions/' + encodeURIComponent(name) + '/status-explain').then(r => { if (!r.ok) throw Error('Status unavailable'); return r.json(); }).catch(() => null),
     ]);
     if (!dialog.open) return;
-    let html = '';
+    let html = '<h3>Current status evidence</h3>';
+    if (evidence) {
+      const reason = evidence.explain || {}, report = reason.report || {};
+      html += '<p><strong>' + esc(evidence.running ? evidence.status || 'unknown' : 'stopped')
+        + '</strong> · ' + esc((reason.decided_by || 'unavailable').replaceAll('_', ' ')) + '</p>';
+      if (report.source) html += '<p>' + esc(report.source) + (report.event ? ' · ' + esc(report.event) : '')
+        + ' · observed ' + Math.max(0, Math.round(report.age_s || 0)) + 's ago'
+        + (report.sequence ? ' · event ' + esc(String(report.sequence)) : '')
+        + (report.applied && ['native_hook','report'].includes(reason.decided_by) ? '' : ' · fallback in use') + '</p>';
+      if (!report.native && evidence.running) html += '<p>Native hook evidence is unavailable; process, transcript and terminal observations are the fallback.</p>';
+      if (evidence.native_events?.length) html += '<details><summary>Recent native events (' + evidence.native_events.length + ')</summary><ol>' + evidence.native_events.slice(0,12).map(e => '<li>' + esc(e.event) + ' → ' + esc(e.state) + ' · ' + esc(new Date(e.event_ts * 1000).toLocaleTimeString()) + '</li>').join('') + '</ol></details>';
+    } else html += '<p role="alert">Live status could not be verified. Retry when connected.</p>';
     const cards = Array.isArray(boardRes) ? boardRes : [];
     const blocked = cards.filter(c => c.blocked_on || (c.depends_on && c.depends_on.length));
     if (blocked.length) {
@@ -5180,7 +5193,7 @@ function _workerExecutionBadge(s, runtimeBoard) {
   else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
   else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
 
-  return badge;
+  return badge + '<button type="button" class="status-badge" aria-label="Status evidence for ' + esc(s.name) + '" title="Inspect live status evidence" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">ⓘ</button>';
 }
 
 function updatePeekStatus() {
@@ -11610,7 +11623,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1054';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1055';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
