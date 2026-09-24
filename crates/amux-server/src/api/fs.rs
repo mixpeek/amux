@@ -380,6 +380,29 @@ async fn resolve_rel(method: Method, RawQuery(q): RawQuery) -> Response {
     // probe existence inside paths the Files surface refuses to serve.
     let allowed_exists = |p: &Path| is_path_allowed(p) && p.exists();
     let (resolved, exists, mut tried) = resolve_rel_candidates(&cwd, &rel, &allowed_exists);
+    // An ELIDED path (`ff-capture/...FLOW-MAP.md`) names no file literally, so
+    // every candidate above fails and the caller used to fall back to a blind
+    // join that showed "not on disk" for a file that is right there.
+    if !exists {
+        let names = |d: &Path| if is_path_allowed(d) { real_list_names(d) } else { vec![] };
+        match resolve_rel_elided(&cwd, &rel, &names, &allowed_exists) {
+            Ok(Some(found)) if is_path_allowed(&found) => {
+                let s = found.display().to_string();
+                tracing::info!(rel = %rel, resolved = %s, measured = true, n_considered = 1,
+                    verdict = "fs_resolve_elided_match", "resolved an elided path to its one match");
+                tried.push(s.clone());
+                return Json(json!({ "resolved": s, "exists": true, "elided": true, "tried": tried })).into_response();
+            }
+            Err(many) => {
+                let c: Vec<String> = many.iter().map(|p| p.display().to_string()).collect();
+                tracing::info!(rel = %rel, n = c.len(), measured = true, n_considered = c.len(),
+                    verdict = "fs_resolve_elided_ambiguous", "elided path matches several files; not guessing");
+                return Json(json!({ "resolved": resolved, "exists": false, "elided": true,
+                    "ambiguous": c, "tried": tried })).into_response();
+            }
+            _ => {}
+        }
+    }
     // AMUX-4661 (Ethan's screenshots, jobs.py "does not exist here"): the
     // ancestor walk above only ever climbs — it cannot find a session
     // registered at a SCAFFOLD directory one level above where the worker
@@ -582,6 +605,75 @@ pub(crate) fn real_list_dirs(dir: &Path) -> Vec<PathBuf> {
                 .filter(|p| p.is_dir())
                 .collect()
         })
+        .unwrap_or_default()
+}
+
+/// Does this path segment elide part of a name (`...FLOW-MAP.md`,
+/// `ff-capture…`)? `..` and `.` are navigation, not elision.
+pub(crate) fn segment_is_elided(seg: &str) -> bool {
+    seg != ".." && seg != "." && (seg.contains("...") || seg.contains('\u{2026}'))
+}
+
+/// Resolve a path a worker printed with part of a name elided, the way Claude
+/// Code shortens long paths (tubescience-parity, 2026-09-24:
+/// `customers/tubescience/parity/ff-capture/...FLOW-MAP.md` for
+/// `.../2026-09-24-FLAWLESS-FOOTAGE-FLOW-MAP.md`). An elided segment matches
+/// entries that start with the text before the marker and end with the text
+/// after it. Bases are the cwd, then its ancestors, nearest first. Returns the
+/// match when exactly one entry fits at the first base with any fit; several
+/// fits are returned as `Err` rather than guessed between.
+pub(crate) fn resolve_rel_elided(
+    cwd: &str,
+    rel: &str,
+    list_names: &dyn Fn(&Path) -> Vec<String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, Vec<PathBuf>> {
+    let rel = rel.trim().trim_start_matches("./").trim_start_matches('/');
+    let segs: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    if !segs.iter().any(|s| segment_is_elided(s)) {
+        return Ok(None);
+    }
+    let mut base = PathBuf::from(cwd.trim_end_matches('/'));
+    for _ in 0..=4 {
+        let mut frontier = vec![base.clone()];
+        for seg in &segs {
+            let mut next = Vec::new();
+            for dir in &frontier {
+                if segment_is_elided(seg) {
+                    let marker = if seg.contains("...") { "..." } else { "\u{2026}" };
+                    let (pre, suf) = seg.split_once(marker).unwrap_or((seg, ""));
+                    for name in list_names(dir) {
+                        if name.len() >= pre.len() + suf.len() && name.starts_with(pre) && name.ends_with(suf) {
+                            next.push(dir.join(name));
+                        }
+                    }
+                } else {
+                    let cand = dir.join(seg);
+                    if exists(&cand) {
+                        next.push(cand);
+                    }
+                }
+            }
+            frontier = next;
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        match frontier.len() {
+            0 => {}
+            1 => return Ok(frontier.pop()),
+            _ => return Err(frontier),
+        }
+        if !base.pop() {
+            break;
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn real_list_names(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
         .unwrap_or_default()
 }
 
@@ -2561,6 +2653,28 @@ async fn delete_path(req: Request) -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_elided_path_resolves_to_its_one_file_from_a_repo_ancestor() {
+        let tree: std::collections::HashMap<&str, Vec<&str>> = [
+            ("/r/customers/tubescience/parity/ff-capture", vec!["2026-09-24-FLAWLESS-FOOTAGE-FLOW-MAP.md", "notes.md", "endpoint_inventory.json"]),
+        ].into_iter().collect();
+        let names = |d: &Path| tree.get(d.to_str().unwrap()).map(|v| v.iter().map(|s| s.to_string()).collect()).unwrap_or_default();
+        let exists = |p: &Path| {
+            let s = p.to_str().unwrap();
+            s == "/r/customers" || s == "/r/customers/tubescience" || s == "/r/customers/tubescience/parity" || s == "/r/customers/tubescience/parity/ff-capture"
+                || tree.values().flatten().any(|n| s.ends_with(&format!("/{n}")))
+        };
+        let got = resolve_rel_elided("/r/customers/tubescience", "customers/tubescience/parity/ff-capture/...FLOW-MAP.md", &names, &exists);
+        assert_eq!(got, Ok(Some(PathBuf::from("/r/customers/tubescience/parity/ff-capture/2026-09-24-FLAWLESS-FOOTAGE-FLOW-MAP.md"))));
+        // The unicode ellipsis works the same way.
+        let got = resolve_rel_elided("/r/customers/tubescience", "parity/ff-capture/2026-09-24\u{2026}MAP.md", &names, &exists);
+        assert!(matches!(got, Ok(Some(_))), "{got:?}");
+        // Several fits are reported, never guessed between.
+        assert!(matches!(resolve_rel_elided("/r/customers/tubescience", "parity/ff-capture/....md", &names, &exists), Err(v) if v.len() == 2));
+        // `..` is navigation, not elision.
+        assert_eq!(resolve_rel_elided("/r", "../x/y.md", &names, &exists), Ok(None));
+    }
+
 
     use std::cell::Cell;
     use std::io::{Error, ErrorKind};
