@@ -7290,3 +7290,12 @@ select.input { height:var(--control-height); }
    text, not at the left edge, as they do in the terminal (see _hangIndent). */
 .pk-hang { display: inline-block; max-width: 100%; box-sizing: border-box; vertical-align: top;
   padding-left: var(--h); text-indent: calc(-1 * var(--h)); }
+
+/* Settings → Integrations → Vault */
+.vault-item { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; font-size: 0.82rem; }
+.vault-item-head { margin-bottom: 6px; overflow-wrap: anywhere; }
+.vault-pending { color: var(--yellow, #d29922); }
+.vault-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.vault-actions .btn { min-height: 44px; }
+.tag-filter.tag-reset-btn { font: inherit; font-size: 0.72rem; cursor: pointer; color: var(--accent); }
+@media (max-width: 600px) { .tag-filter.tag-reset-btn { min-height: 44px; } }

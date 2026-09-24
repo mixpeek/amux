@@ -445,6 +445,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <details><summary>Browser blocks HTTPS before sign-in?</summary><p>On the server machine, open <code>http://localhost:&lt;this server's port&gt;/connection-setup</code> for local trust and install instructions. This page cannot grant OS/browser trust. Ask the operator to provide a trusted certificate; do not disable TLS checks.</p></details>
         </section>
         <div class="settings-sep"></div>
+        <section class="settings-section" id="settings-vault-section">
+          <div class="settings-section-label">Vault</div>
+          <p class="connection-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner.</p>
+          <div id="vault-items">Loading…</div>
+        </section>
+        <div class="settings-sep"></div>
         <div class="settings-section" id="settings-apikeys-section">
           <div class="settings-section-label">API Keys</div>
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Also used to fetch each vendor's own live model list instead of amux's static fallback.</div>

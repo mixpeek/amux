@@ -424,6 +424,26 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
                     }))
                     .into_response()
                 }
+                // A card charge above its vault rule (vault.rs). One yes opens
+                // exactly one charge: this worker, this card, this amount, this
+                // merchant. The worker's retry consumes it.
+                "vault_spend" => {
+                    let origin = p.get("origin").and_then(Value::as_str).unwrap_or_default();
+                    let target = p.get("target").and_then(Value::as_str).unwrap_or_default();
+                    write_allowance(&home, origin, target, &id);
+                    tracing::info!(grant = %id, origin, target, measured = true, n_considered = 1,
+                        verdict = "vault_spend_approved", "owner approved one vault charge");
+                    Json(json!({
+                        "ok": true,
+                        "granted": kind,
+                        "origin": origin,
+                        "amount_usd": p.get("amount_usd"),
+                        "merchant": p.get("merchant"),
+                        "single_use": true,
+                        "note": format!("{origin} may make this one charge. It takes effect when they retry the same request."),
+                    }))
+                    .into_response()
+                }
                 other => (
                     StatusCode::BAD_REQUEST,
                     Json(json!({

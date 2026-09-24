@@ -5874,6 +5874,13 @@ function render() {
       // Act on everything the list is showing right now (Ethan 2026-09-24:
       // "add a button to apply an action to all visible workers ... maybe on
       // the group pills row"). The count is filled in after the cards render.
+      // RESET THE GROUP VIEW (Ethan 2026-09-24: "add a reset thing on the group
+      // row so i can reset the view of groups"). Only shown when a group is
+      // selected or hidden, so the row costs nothing in the default view.
+      + ((activeTag || hiddenTags.size)
+          ? '<button type="button" class="tag-filter tag-reset-btn" onclick="resetGroupView()" '
+            + 'title="Show every group again">\u21ba Reset</button>'
+          : '')
       + '<button type="button" class="tag-filter bulk-visible-btn" id="bulk-visible-btn" '
       + 'onclick="openVisibleWorkerActions()" title="Apply an action to every worker shown below">All shown</button>';
     // After this render finishes building the cards, whichever return it takes.
@@ -11818,7 +11825,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1099';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1101';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -19984,6 +19991,11 @@ function _nextTagState(tag, active, hidden) {
 function _workerVisibleWithHiddenTags(tags, active, hidden) {
   if (active && tags.includes(active)) return true;
   return !tags.some(t => hidden.has(t));
+}
+function resetGroupView() {
+  activeTag = '';
+  hiddenTags = new Set();
+  render();   // render() persists the list view
 }
 function toggleTagFilter(tag) {
   const next = _nextTagState(tag, activeTag, hiddenTags);
@@ -36710,7 +36722,49 @@ function _offlineSettingsHTML() {
 // AMUX-2975: settings is grouped into 5 tabs (account/workers/notifications/
 // integrations/device). Switch the visible panel + active button, remember the
 // last tab, and reset the menu scroll so a new panel opens at the top.
+// ── Vault (vault.rs): cards workers use without reading, each with a limit ──
+async function _vaultLoad() {
+  const el = document.getElementById('vault-items');
+  if (!el) return;
+  try {
+    const r = await fetch(API + '/api/vault', { headers: _authHeaders() });
+    const d = await r.json();
+    const items = d.items || [];
+    if (!items.length) { el.innerHTML = '<p class="connection-help">No items yet.</p>'; return; }
+    el.innerHTML = items.map(i => {
+      const pending = i.status !== 'active';
+      return '<div class="vault-item" data-id="' + esc(i.id) + '">'
+        + '<div class="vault-item-head"><b>' + esc(i.name) + '</b> · ' + esc(i.brand) + ' ending ' + esc(i.last4) + ' · exp ' + esc(i.exp)
+        + (pending ? ' · <span class="vault-pending">added by ' + esc(i.created_by || 'a worker') + ', not active</span>' : '') + '</div>'
+        + '<label class="connection-control">Approval needed above $'
+        + '<input type="number" min="0" step="1" class="search-input vault-limit" value="' + esc(String(i.rules?.max_usd_without_approval ?? 100)) + '"></label>'
+        + '<div class="vault-actions">'
+        + (pending ? '<button class="btn primary" onclick="_vaultSave(\'' + escJs(i.id) + '\', true)">Activate</button>' : '')
+        + '<button class="btn" onclick="_vaultSave(\'' + escJs(i.id) + '\', false)">Save limit</button>'
+        + '<button class="btn danger" onclick="_vaultRemove(\'' + escJs(i.id) + '\')">Remove</button></div></div>';
+    }).join('');
+  } catch (e) { el.textContent = 'Vault unavailable: ' + (e.message || e); }
+}
+async function _vaultSave(id, activate) {
+  const row = document.querySelector('.vault-item[data-id="' + CSS.escape(id) + '"]');
+  const limit = Number(row?.querySelector('.vault-limit')?.value);
+  if (!Number.isFinite(limit) || limit < 0) { showToast('Enter a limit of 0 or more'); return; }
+  const body = { rules: { max_usd_without_approval: limit } };
+  if (activate) body.activate = true;
+  const r = await fetch(API + '/api/vault/' + encodeURIComponent(id), { method: 'PATCH',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  showToast(r.ok ? (activate ? 'Activated' : 'Limit saved') : ('Vault: ' + (d.error || r.status)));
+  _vaultLoad();
+}
+async function _vaultRemove(id) {
+  if (!await showConfirm('Remove this card from the vault? Workers will no longer be able to use it.', 'Remove', true)) return;
+  const r = await fetch(API + '/api/vault/' + encodeURIComponent(id), { method: 'DELETE', headers: _authHeaders() });
+  showToast(r.ok ? 'Removed' : 'Remove failed');
+  _vaultLoad();
+}
 function _settingsTab(name) {
+  if (name === 'integrations') setTimeout(_vaultLoad, 0);
   const menu = document.getElementById('settings-menu');
   if (!menu) return;
   menu.querySelectorAll('.settings-tab-btn').forEach(b =>
