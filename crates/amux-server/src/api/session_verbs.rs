@@ -1845,6 +1845,23 @@ fn project_checkout_repair_claim_ready(plans: &[crate::project_execution::planne
         && p.execution.worker == worker && !p.execution.suspended)
 }
 
+fn project_repair_claim_ready(state: &AppState, project: &str, worker: &str) -> bool {
+    state.store.read().ok().is_some_and(|c| {
+        let Ok(Some(p)) = crate::project_execution::store::get(&c, project) else { return false; };
+        p.policy.enabled && !p.policy.paused && crate::project_execution::planner::plan(&c, &p)
+            .ok().is_some_and(|plans| project_checkout_repair_claim_ready(&plans, worker))
+    })
+}
+
+fn project_codex_conversation_retry_ready(cfg: &EnvFile, pane: &str, last_retry: i64, now: i64) -> bool {
+    cfg.get("CC_PROVIDER") == Some("codex")
+        && cfg.get("CC_PROJECT").is_some_and(|p| !p.is_empty())
+        && !["CC_ISOLATED", "CC_PAUSED", "CC_PROJECT_PAUSED", "CC_ARCHIVED", "CC_REVIEW_HELD"]
+            .iter().any(|key| env_flag_on(cfg.get(key)))
+        && codex_conversation_open_elsewhere(pane)
+        && (last_retry == 0 || now - last_retry >= 300)
+}
+
 pub(crate) fn is_resume_mode_prompt(raw: &str) -> bool {
     let clean = strip_ansi(raw).to_lowercase().replace('\u{2019}', "'");
     let opt1 = cached_re!(r"(?m)^\s*(?:[\u{276f}>]\s*)?1\.\s+resume from summary");
@@ -12024,7 +12041,7 @@ const ALLOWED_TMUX_KEYS: [&str; 47] = [
 // Enter would take whatever is highlighted, including "Don't ask me again").
 // "2": the exact registered project-checkout picker selects the current
 // directory without persisting a provider preference.
-const ALLOWED_TMUX_CHAR_KEYS: [&str; 7] = ["y", "n", "q", "x", "1", "2", "3"];
+const ALLOWED_TMUX_CHAR_KEYS: [&str; 8] = ["y", "n", "q", "x", "r", "1", "2", "3"];
 
 async fn send_keys_op(name: &str, keys: &str) -> (bool, String) {
     if !is_running(name).await {
@@ -20155,6 +20172,31 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let _ = reconcile_terminal_subagents(state, name).await;
         }
         let pane = tmux_capture(name, 30).await;
+        // A Codex resume can stop at its exclusive-conversation screen after
+        // the previous project attempt has timed out. Delivery cannot retry it:
+        // the old packet is no longer an active claim, while the project driver
+        // refuses to claim a non-boundary worker. Only a *currently claimable*
+        // repair may retry this exact provider screen. Never press into an
+        // isolated, paused, archived, or unrelated worker.
+        let now = now_i64();
+        let last_retry = meta_i64(&load_meta(name), "codex_open_elsewhere_retry_at");
+        if project_codex_conversation_retry_ready(&cfg, &pane, last_retry, now) {
+            if let Some(project) = cfg.get("CC_PROJECT").filter(|p| !p.is_empty()) {
+                if project_repair_claim_ready(state, project, name) {
+                    let lock = lane_send_lock(name);
+                    let _guard = lock.lock().await;
+                    if codex_conversation_open_elsewhere(&tmux_capture(name, 15).await)
+                        && project_repair_claim_ready(state, project, name)
+                    {
+                        update_meta(name, &[("codex_open_elsewhere_retry_at", json!(now))]);
+                        let (ok, detail) = send_keys_op(name, "r").await;
+                        tracing::warn!(session=%name,project=%project,ok,detail=%detail,measured=true,n_considered=1,verdict="project_repair_codex_conversation_retry","retrying exact Codex conversation screen for a claimable project repair");
+                        emit_event(state,name,"project.conversation_retry",Some(json!({"ok":ok,"detail":detail})),None,"status").await;
+                        if ok { continue; }
+                    }
+                }
+            }
+        }
         if let Some(key) = project_hook_review_key(&cfg, &pane) {
             let (ok, msg) = send_keys_op(name, key).await;
             tracing::info!(session=%name,ok,detail=%msg,measured=true,n_considered=1,verdict="project_hook_review_safe_choice","requesting safe startup choice without granting hook trust");
@@ -20168,12 +20210,9 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let checkout = crate::project_execution::checkout::load(&home(), project);
             if let Some(key) = checkout.as_ref().filter(|w| crate::fanout_workspace::same_repository(&w.repo, repo))
                 .and_then(|w| project_checkout_directory_key(&cfg, &pane, Path::new(&w.path))) {
-                let permitted = state.store.read().ok().is_some_and(|c| {
-                    if crate::project_execution::checkout::start_permit(&c, project, name).is_ok() { return true; }
-                    let Ok(Some(p)) = crate::project_execution::store::get(&c, project) else { return false; };
-                    p.policy.enabled && !p.policy.paused && crate::project_execution::planner::plan(&c, &p)
-                        .ok().is_some_and(|plans| project_checkout_repair_claim_ready(&plans, name))
-                });
+                let permitted = state.store.read().ok().is_some_and(|c|
+                    crate::project_execution::checkout::start_permit(&c, project, name).is_ok())
+                    || project_repair_claim_ready(state, project, name);
                 if permitted {
                     let (ok, msg) = send_keys_op(name, key).await;
                     tracing::warn!(session=%name,project=%project,ok,detail=%msg,measured=true,n_considered=1,verdict=if ok {"registered_project_checkout_selected"} else {"registered_project_checkout_choice_failed"},"attempted registered project checkout choice");
@@ -47299,6 +47338,28 @@ mod project_hook_review_tests {
         plan.execution.suspended=true;assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
         plan.execution.suspended=false;plan.action="observe".into();assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
         plan.action="claim".into();plan.execution.stage="waiting".into();assert!(!project_checkout_repair_claim_ready(&[plan],"owner"));
+    }
+    #[test]
+    fn only_a_live_project_codex_retry_screen_is_eligible_for_bounded_repair() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("worker.env");
+        std::fs::write(&path,"CC_PROVIDER=codex\nCC_PROJECT=demo\n").unwrap();
+        let mut cfg=EnvFile::load(&path);
+        let pane="This conversation is open in another app   R to Retry\nClose it there and press R to continue here.\nr retry";
+        assert!(project_codex_conversation_retry_ready(&cfg,pane,0,1000));
+        assert!(ALLOWED_TMUX_CHAR_KEYS.contains(&"r"),"the retry key must be accepted by the sender");
+        assert!(!project_codex_conversation_retry_ready(&cfg,pane,900,1000));
+        assert!(project_codex_conversation_retry_ready(&cfg,pane,700,1000));
+        assert!(!project_codex_conversation_retry_ready(&cfg,"› Ask Codex to do anything",0,1000));
+        for key in ["CC_ISOLATED","CC_PAUSED","CC_PROJECT_PAUSED","CC_ARCHIVED","CC_REVIEW_HELD"] {
+            cfg.set(key,"1");
+            assert!(!project_codex_conversation_retry_ready(&cfg,pane,0,1000),"{key}");
+            cfg.remove(key);
+        }
+        cfg.set("CC_PROVIDER","claude");
+        assert!(!project_codex_conversation_retry_ready(&cfg,pane,0,1000));
+        cfg.set("CC_PROVIDER","codex");cfg.remove("CC_PROJECT");
+        assert!(!project_codex_conversation_retry_ready(&cfg,pane,0,1000));
     }
 }
 
