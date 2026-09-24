@@ -2475,6 +2475,19 @@ pub async fn cdp_new_tab(port: u16, url: &str) -> anyhow::Result<serde_json::Val
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
+    // WHY THE FALLBACK RAN, KEPT (AMUX-5039). The `_` arm used to discard the
+    // PUT's outcome, so when GET then failed, GET's error was the only one that
+    // survived. Chrome's is `405 ... Using unsafe HTTP verb GET to invoke
+    // /json/new. This action supports only PUT verb`, which reads as "amux uses
+    // GET, switch to PUT" while this function has led with PUT since Chrome
+    // 111. Measured 2026-09-23: three 502s on GET /api/browser/screenshot whose
+    // body said exactly that, sending the reader to implement a fix already
+    // three lines above the one they were reading.
+    let put_failure = match &put {
+        Ok(r) if r.status().is_success() => None,
+        Ok(r) => Some(format!("PUT answered HTTP {}", r.status())),
+        Err(e) => Some(format!("PUT failed: {e}")),
+    };
     let resp = match put {
         Ok(r) if r.status().is_success() => r,
         _ => {
@@ -2485,7 +2498,13 @@ pub async fn cdp_new_tab(port: u16, url: &str) -> anyhow::Result<serde_json::Val
                 .await?
         }
     };
-    cdp_json(resp, &format!("CDP /json/new on port {port}")).await
+    // The PUT's failure leads, because it is the one that explains why a
+    // verb Chrome rejects was tried at all.
+    let what = match &put_failure {
+        Some(why) => format!("CDP /json/new on port {port} ({why}, so amux fell back to GET)"),
+        None => format!("CDP /json/new on port {port}"),
+    };
+    cdp_json(resp, &what).await
 }
 
 /// Minimal query-encoding for the one place we build a query string by hand
@@ -5880,6 +5899,63 @@ mod tests {
     }
 
     // ---- CDP client + driver mechanics (hermetic — fake WS, temp dirs) ----
+
+    /// A FALLBACK THAT HIDES WHY IT RAN TURNS ONE FAULT INTO A WRONG FIX.
+    ///
+    /// `cdp_new_tab` leads with PUT (Chrome 111+) and falls back to GET for
+    /// older builds. When BOTH fail, the caller used to see only GET's error,
+    /// and Chrome's is `405 ... Using unsafe HTTP verb GET to invoke
+    /// /json/new. This action supports only PUT verb` — an instruction to do
+    /// the thing the function already does. Measured 2026-09-23: three 502s on
+    /// GET /api/browser/screenshot carrying exactly that body (AMUX-5039).
+    ///
+    /// The fake Chrome here refuses both verbs, which is the only state in
+    /// which the two errors can disagree about the cause.
+    #[tokio::test]
+    async fn a_failed_put_survives_into_the_error_the_caller_reads() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // Two connections: the PUT attempt and the GET fallback.
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Chrome's real refusal, verbatim, for whichever verb asked.
+                let verb = if req.starts_with("PUT") { "PUT" } else { "GET" };
+                let body = format!(
+                    "Using unsafe HTTP verb {verb} to invoke /json/new. \
+                     This action supports only PUT verb."
+                );
+                let resp = format!(
+                    "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let err = super::cdp_new_tab(port, "https://example.com")
+            .await
+            .expect_err("both verbs were refused");
+        let msg = err.to_string();
+        // THE PUT'S OUTCOME IS THE CAUSE and must be in what the caller reads.
+        assert!(
+            msg.contains("PUT answered HTTP 405"),
+            "the PUT's failure is what explains the fallback, and it was dropped: {msg}"
+        );
+        assert!(
+            msg.contains("fell back to GET"),
+            "the caller cannot tell which verb produced the body without this: {msg}"
+        );
+        // The port still has to be there; it is how a reader finds the browser.
+        assert!(msg.contains(&port.to_string()), "{msg}");
+    }
 
     /// The client's one job: match responses by id THROUGH interleaved
     /// events, and surface CDP errors as errors. A fake Chrome answers every
