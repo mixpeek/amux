@@ -4419,3 +4419,14 @@ CARD: AF-947
 SYMPTOM: Live hook-review recovery logged ok=false: key '3' not in allowed set. The parser test passed but the key sender allowed only the earlier numeric option 1.
 COST: Workers remained at the startup menu until the transport mismatch was fixed.
 FIX: Admit the exact option key 3 and assert the parser's selected key belongs to the sender's actual allowed set. Name the event a safe-choice request, not a completed decline; success remains subject to subsequent pane observation and normal task delivery confirmation.
+
+## Worktree breadcrumb displayed another directory's files
+AREA: ux
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Clicking the project worker checkout opened the correct worktree breadcrumb, but Files showed the parent repository's .git directory, credentials and node_modules. The actual worktree has a .git file and different entries.
+COST: A user could inspect or act on files believing they belonged to another checkout.
+FIX: Give shared directory navigation a generation token. Superseded network, error and offline-cache responses cannot repaint the current directory; delayed initial preferences cannot replace an explicitly navigated path. Regression resolves old network and cache requests after newer navigation and checks the displayed path/data remain current.

@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1065';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1066';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -21356,7 +21356,7 @@ let _exploreSession = null;  // set when explore overlay is opened from a sessio
       fetch(API + '/api/prefs?key=files_bookmarks'),
     ]);
     const d1 = await r1.json();
-    if (d1.value) { _filesPath = d1.value; _filesCwd = d1.value; }
+    if (d1.value) { if (!_filesLoadGeneration) _filesPath = d1.value; _filesCwd = d1.value; }
     const d2 = await r2.json();
     if (d2.value !== undefined && d2.value !== null) _filesShowHidden = d2.value === '1';
     // Server-synced shortcuts win over the local mirror, so they follow you across devices.
@@ -21460,7 +21460,10 @@ function _filesToolbarCheck() {
   });
 }
 window.addEventListener('resize', _filesToolbarCheck);
+let _filesLoadGeneration = 0;
 async function loadFiles(path) {
+  const generation = ++_filesLoadGeneration;
+  const current = () => generation === _filesLoadGeneration;
   const body = document.getElementById('files-body');
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
   _filesPath = path;
@@ -21484,13 +21487,16 @@ async function loadFiles(path) {
   try {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(path) + (_filesShowHidden ? '&hidden=1' : ''));
     const data = await r.json();
+    if (!current()) return;
     if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _renderFilesEntries(body, path, data, false);
     _idb.setFile(path, { type: 'dir', data });
     _autoCacheDirFiles(path, data.entries);   // background: cache small text files (.md, …) for offline
   } catch(e) {
+    if (!current()) return;
     // Offline: try IDB cache
     const cached = await _idb.getFile(path);
+    if (!current()) return;
     if (cached && cached.type === 'dir') {
       _renderFilesEntries(body, path, cached.data, cached.ts);
     } else {

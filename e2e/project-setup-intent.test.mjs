@@ -63,3 +63,17 @@ test('project worker lifecycle uses measured provider status rather than process
  session.lifecycle='paused';assert.equal(ctx._projectWorkerRuntime(worker).label,'Paused');
  ctx.sessions=[];assert.equal(ctx._projectWorkerRuntime({name:'demo',lifecycle:'expired'}).label,'Expired');
 });
+
+test('directory viewer ignores older network and offline cache responses after navigation',async()=>{
+ const nodes=new Map(),pending=[],renders=[],cache=[];
+ const ctx=vm.createContext({document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',value:''});return nodes.get(id)}},history:{replaceState:()=>{}},location:{pathname:'/'},_encodeHashPath:s=>s,_updateFilesCwdBtn:()=>{},_filesToolbarCheck:()=>{},esc:s=>s,API:'',_filesShowHidden:false,_renderFilesEntries:(_body,path,data)=>renders.push({path,data}),_autoCacheDirFiles:()=>{},_idb:{setFile:()=>{},getFile:()=>new Promise(resolve=>cache.push(resolve))},fetch:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject}))});
+ vm.runInContext(source.slice(source.indexOf('let _filesLoadGeneration ='),source.indexOf('function _feHighlight(')),ctx);
+ const old=ctx.loadFiles('/repo'); const fresh=ctx.loadFiles('/repo/.worktrees/task');
+ pending[1].resolve({json:async()=>({entries:['worktree']})});await fresh;
+ pending[0].resolve({json:async()=>({entries:['wrong repository']})});await old;
+ assert.deepEqual(renders.map(r=>r.path),['/repo/.worktrees/task']);
+ const offline=ctx.loadFiles('/old');pending[2].reject(new Error('offline'));await new Promise(resolve=>setImmediate(resolve));
+ const newer=ctx.loadFiles('/new');pending[3].resolve({json:async()=>({entries:['new']})});await newer;
+ cache[0]({type:'dir',data:{entries:['stale cached']},ts:1});await offline;
+ assert.deepEqual(renders.map(r=>r.path),['/repo/.worktrees/task','/new']);
+});
