@@ -4693,6 +4693,19 @@ pub(crate) fn route_model_to_env(
 /// hookless REPL and the capability report lied. Nothing joined the launcher to
 /// the adapter to notice. Mapping the launch binary here, and asserting it
 /// against the adapter, is what makes the next such divergence self-announce.
+fn startup_profile_command(home_dir: &std::path::Path, work_dir: &str) -> String {
+    let mut command=String::new();
+    for rc in [".zprofile", ".bash_profile", ".profile"] {
+        let path=home_dir.join(rc);
+        if path.exists() {
+            command.push_str(&format!("source {} 2>/dev/null; ",sh_quote(&path.to_string_lossy())));
+            break;
+        }
+    }
+    command.push_str(&format!("cd {}; hash -r 2>/dev/null || true; ",sh_quote(work_dir)));
+    command
+}
+
 pub fn launch_base_binary(provider: &str) -> &'static str {
     match provider {
         // ollama runs codex under the hood (`--oss --local-provider ollama`).
@@ -12267,17 +12280,8 @@ pub(crate) async fn start_session(
         }
     }
     let home_dir = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    for rc in [".zprofile", ".bash_profile", ".profile"] {
-        let p = home_dir.join(rc);
-        if p.exists() {
-            shell_rc.push_str(&format!(
-                "source {} 2>/dev/null; cd {}; ",
-                sh_quote(&p.to_string_lossy()),
-                sh_quote(&work_dir)
-            ));
-            break;
-        }
-    }
+    let profile_rc = startup_profile_command(&home_dir, &work_dir);
+    shell_rc.push_str(&profile_rc);
     let amux_env = home().join("amux.env");
     if amux_env.exists() {
         shell_rc.push_str(&format!(
@@ -12564,6 +12568,10 @@ pub(crate) async fn start_session(
             ),
             false
         );
+        // A surviving tmux shell can retain an obsolete provider PATH. Refresh
+        // the same user profile used by fresh startup, then discard shell caches.
+        // No provider flags, sandbox permissions, or trust settings change.
+        shell_step!(&profile_rc, false);
         // The surviving shell skips shell_rc, so give it the same isolated
         // server CLI priority as a fresh shell after the environment import.
         if local_cli_dir.join("amux").is_file() {
@@ -45699,5 +45707,27 @@ mod project_hook_review_tests {
         }
         cfg.set("CC_PROVIDER","claude"); assert_eq!(project_hook_review_key(&cfg,pane),None);
         cfg.set("CC_PROVIDER","codex"); cfg.remove("CC_PROJECT"); assert_eq!(project_hook_review_key(&cfg,pane),None);
+    }
+}
+
+#[cfg(test)]
+mod startup_profile_recovery_tests {
+    use super::*;
+    #[test]
+    fn surviving_shell_refreshes_provider_path_without_changing_workspace() {
+        let dir=tempfile::tempdir().unwrap();
+        let stale=dir.path().join("stale");let fresh=dir.path().join("fresh");
+        std::fs::create_dir_all(&stale).unwrap();std::fs::create_dir_all(&fresh).unwrap();
+        for (root,label) in [(&stale,"broken"),(&fresh,"working")] {
+            let file=root.join("codex");std::fs::write(&file,format!("#!/bin/sh\nprintf '%s\\n' {label}\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(file,std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(dir.path().join(".bash_profile"),format!("export PATH={}:\"$PATH\"\ncd /\n",sh_quote(&fresh.to_string_lossy()))).unwrap();
+        let command=format!("export PATH={}:\"$PATH\"; codex; {} codex; pwd",sh_quote(&stale.to_string_lossy()),startup_profile_command(dir.path(),&dir.path().to_string_lossy()));
+        let out=std::process::Command::new("bash").args(["--noprofile","--norc","-c",&command]).output().unwrap();
+        assert!(out.status.success());
+        let text=String::from_utf8_lossy(&out.stdout);let lines=text.lines().collect::<Vec<_>>();
+        assert_eq!(&lines[..2],["broken","working"]);
+        assert_eq!(std::fs::canonicalize(lines[2]).unwrap(),std::fs::canonicalize(dir.path()).unwrap());
     }
 }

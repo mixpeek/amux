@@ -63,6 +63,10 @@ fn permit(state: &AppState, project: &str, id: &str, expected: &Execution) -> Re
     Ok(())
 }
 
+fn broken_codex_installation(pane: &str) -> bool {
+    pane.contains("Error: spawn ") && pane.contains("@openai/codex/") && pane.contains("ENOENT")
+}
+
 async fn prepare(
     state: &AppState,
     p: &store::Project,
@@ -1166,6 +1170,18 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                     .await?;
                 Ok(())
             }
+            "recover_provider_launch" => {
+                let pane=sv::tmux_capture(&e.worker,80).await;
+                if !broken_codex_installation(&pane) { continue; }
+                let shell=std::env::var("SHELL").unwrap_or_else(|_|"/bin/bash".into());
+                let probe=tokio::time::timeout(std::time::Duration::from_secs(15),tokio::process::Command::new(shell).args(["-lc","exec codex --version"]).kill_on_drop(true).output()).await;
+                let Ok(Ok(probe))=probe else { continue; };
+                if !probe.status.success() { continue; }
+                let project=name.to_string();let task=id.clone();let expected=e.clone();
+                let result=state.store.write_async(move|c|planner::grant_preparation(c,&project,&task,&expected,"Amux measured a working Codex installation through the user's current profile after the surviving shell selected a broken installation. Startup now refreshes that profile; retry the original task with unchanged model and sandbox.").map_err(store::sql_error)).await.map_err(|error|error.to_string());
+                if result.is_ok() { tracing::info!(project=name,task=%id,measured=true,n_considered=1,verdict="project.provider_launch_recovered","working provider CLI measured; bounded startup retry granted"); }
+                result.map(|_|())
+            }
             "prepare_owned_outputs" => {
                 let project=name.to_string();let task=id.clone();let expected=e.clone();
                 let granted=state.store.write_async(move |c|planner::grant_preparation(c,&project,&task,&expected,"The missing evidence paths are this task's owned deliverables, not upstream inputs. Implement the missing verifier and artifacts, inspect the existing source, run falsifiable checks, commit the candidate and submit the report. Do not wait for another worker to produce your files or claim runtime proof without execution.").map_err(store::sql_error)).await.map_err(|e|e.to_string());
@@ -1393,6 +1409,12 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    #[test]
+    fn codex_installation_recovery_requires_the_observed_spawn_failure() {
+        assert!(broken_codex_installation("Error: spawn /usr/local/lib/node_modules/@openai/codex/vendor/codex ENOENT"));
+        assert!(!broken_codex_installation("Error: spawn tool ENOENT"));
+        assert!(!broken_codex_installation("codex waiting for user approval"));
+    }
     #[test]
     fn exact_attempt_receipts_recover_clean_corrections_without_model_retry() {
         let home=tempfile::tempdir().unwrap();

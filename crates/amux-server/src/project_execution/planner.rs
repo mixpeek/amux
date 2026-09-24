@@ -303,12 +303,19 @@ fn host_execution_recoverable(row: &bs::IssueRow, e: &Execution, project: &store
         }))
 }
 
+fn provider_launch_recoverable(e: &Execution, project: &store::Project) -> bool {
+    e.stage=="waiting" && !e.suspended && e.report.is_none() && e.wait_category.is_none()
+        && project.policy.executor.provider=="codex"
+        && e.waiting.as_deref()==Some("provider launch ended without a live process or confirmed UI")
+        && !e.retry_grants.iter().any(|g|g.request.idempotency_key.starts_with("implementation-prepare:"))
+}
+
 fn owned_output_recoverable(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> bool {
     if e.stage!="waiting" || e.suspended || e.report.is_some() || e.wait_category.as_deref()!=Some("operational") { return false; }
     let reason=e.waiting.as_deref().unwrap_or("").to_ascii_lowercase();
     if !["absent","missing","unavailable","not available","no accepted receipt"].iter().any(|term|reason.contains(term)) { return false; }
     let no_inputs=row.depends_on.is_empty();
-    let mistaken_receipt=no_inputs && reason.contains("accepted") && ["outputs","receipt","integration evidence"].iter().any(|term|reason.contains(term));
+    let mistaken_receipt=no_inputs && reason.contains("accepted") && ["outputs","receipt","integration evidence","verifier","runtime fixture"].iter().any(|term|reason.contains(term));
     row.acceptance_criteria.as_deref().and_then(|s|serde_json::from_str::<Vec<String>>(s).ok()).is_some_and(|criteria|criteria.iter().any(|criterion| {
         criterion.strip_prefix("contract:").and_then(|id|project.policy.acceptance.as_ref()?.criterion(id)).is_some_and(|contract| {
             mistaken_receipt || contract.evidence.iter().any(|path|path.len()>4 && reason.contains(&path.to_ascii_lowercase()))
@@ -472,6 +479,8 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "grant_repair";
                 None
             }
+        } else if provider_launch_recoverable(&state, project) {
+            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="recover_provider_launch"; None }
         } else if owned_output_recoverable(row, &state, project) {
             if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_owned_outputs"; None }
         } else if host_execution_recoverable(row, &state, project) {

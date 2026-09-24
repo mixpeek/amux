@@ -4474,3 +4474,14 @@ CARD: AF-947
 SYMPTOM: Evidence displayed POG-19 as Project acceptance although the retained report explicitly covered static candidate checks and deferred browser execution.
 COST: A task result could be mistaken for whole-project proof.
 FIX: Retain the owning task title for task artifacts; reserve Project acceptance for project-level assets. Standard viewer and retained artifact identity remain unchanged. Regression covers both labels.
+
+## Reused worker shell selected a broken Codex installation
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-21 exhausted startup retries without launching a model. Its surviving shell selected an obsolete /usr/local Codex wrapper whose packaged binary was absent (spawn ENOENT); fresh workers and the user's login shell resolved the working installation.
+COST: No task progress despite available CLI and capacity, with an unhelpful generic launch failure.
+FIX: Reuse the same user-profile setup for surviving shells and clear shell command caching while preserving the requested checkout, provider flags and sandbox. Recognize the observed Codex spawn ENOENT only, measure the current login-shell CLI with --version, and grant one preparation retry without resetting prior attempts or authorization gates. Add a shell regression that starts with a stale cached executable and confirms the profile selects the healthy one.
