@@ -7207,6 +7207,9 @@ function _applyPeekTabVisibility() {
   if (!bar) return;
   // The primary tab names the worker type's renderer (Terminal / Chat).
   const _primaryRenderer = peekSession ? _workerRenderer(peekSession) : 'terminal';
+  // Terminal-only controls (keystroke chips) key off this class in app.css.
+  const _peekOv = document.getElementById('peek-overlay');
+  if (_peekOv) _peekOv.classList.toggle('renderer-chat', _primaryRenderer === 'chat');
   const _primaryLbl = document.querySelector('#peek-tab-terminal .tab-lbl');
   if (_primaryLbl) _primaryLbl.textContent = _primaryRenderer === 'chat' ? 'Chat' : 'Terminal';
   const _primaryIco = document.querySelector('#peek-tab-terminal .tab-ico');
@@ -11824,7 +11827,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1096';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1097';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12121,6 +12124,7 @@ async function _chatLoad(name) {
     return;
   }
   if (gen !== _chat.gen || _chat.name !== name) return;
+  hidePeekLoading();
   _chat.messages = d.messages || [];
   _chat.busy = !!d.busy; _chat.queued = d.queued || 0;
   _chat.streaming = d.streaming && d.streaming.turn_id ? { turn_id: d.streaming.turn_id, text: d.streaming.text || '' } : null;
@@ -16960,7 +16964,7 @@ function renderChips(container, sessionName, isPeek) {
   chips.forEach((chip, i) => {
     const cls = chip.danger ? 'chip danger' : 'chip';
     const drag = _chipEditing ? 'draggable="true"' : '';
-    html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '"'
+    html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
       + ' onclick="_chipAction(_getChips()[' + i + '],\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
       + (_chipEditing ? '<span class="chip-drag-handle">\u2630</span>' : '')
       + esc(chip.label)

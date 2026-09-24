@@ -570,7 +570,10 @@
   .badge.ephemeral { background: rgba(251,146,60,0.15); color: #fb923c; }
   .badge.worker-type { background: rgba(88,166,255,0.14); color: var(--accent); }
   /* Chat renderer (ACW-7): the peek body shows a transcript, not a terminal. */
+  /* Keystrokes go to a terminal; a chat worker has none. */
+  #peek-overlay.renderer-chat .chip[data-chip-action="keys"] { display: none; }
   #peek-body.peek-chat {
+    background: var(--bg) !important; color: var(--text) !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     white-space: normal; font-size: 0.92rem; line-height: 1.5;
     padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
@@ -586,6 +589,7 @@
   .chat-user .chat-bubble { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .chat-bubble p { margin: 0 0 8px; } .chat-bubble p:last-child { margin-bottom: 0; }
   .chat-bubble pre { overflow-x: auto; max-width: 100%; white-space: pre; }
+  .chat-bubble ol, .chat-bubble ul { padding-left: 1.5em; margin: 4px 0 8px; }
   .chat-meta { font-size: 0.7rem; color: var(--dim); margin-top: 3px; padding: 0 4px; }
   .chat-msg.is-error .chat-bubble { border-color: var(--red, #f85149); }
   .chat-error { display: block; color: var(--red, #f85149); font-weight: 600; margin-bottom: 4px; white-space: pre-wrap; }
