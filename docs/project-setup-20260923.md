@@ -31,3 +31,10 @@ installed in the worker login environment. Helper discovery now matches workers
 and the existing account probe. Arguments remain literal, tools/hooks stay disabled,
 and explicit CLI overrides remain authoritative. This is one provider invocation,
 not a fallback call. Project/outbox/state regression scripts are also wired into CI.
+
+The next live retry exposed a separate transport defect: the generic mutation
+outbox aborted the long-running draft after 15s and repeatedly invoked the planner.
+Project drafting is now excluded from automatic replay, including already-retained
+outbox entries. Actual create/command mutations remain durable. The draft's outer
+and browser deadlines exceed the helper's bounded I/O deadline. Pending draft
+requests can be dismissed in the Connection modal; their original form stays saved.

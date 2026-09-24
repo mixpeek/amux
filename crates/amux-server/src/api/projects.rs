@@ -57,7 +57,9 @@ struct DraftFields {
     #[serde(default)]
     acceptance: Option<amux_core::project::AcceptanceContract>,
 }
-const DRAFT_MODEL_TIMEOUT_MS: u64 = 120_000;
+// Longer than the bounded helper I/O deadline (240s); do not abandon a live
+// model call while its blocking task still owns the provider process.
+const DRAFT_MODEL_TIMEOUT_MS: u64 = 250_000;
 async fn draft(headers: HeaderMap, Json(body): Json<DraftRequest>) -> Response {
     if !operator(&headers) {
         return error(StatusCode::FORBIDDEN, "project drafting is an operator setting");

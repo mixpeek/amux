@@ -26,3 +26,12 @@ test('busy SSE invalidations cannot indefinitely postpone status and queued-mess
 test('project draft text participates in the existing durable settings store',()=>{
  assert.match(source,/const _projectSettingIds=\['draft-input',/);
 });
+
+test('model drafting bypasses mutation outbox while real project commands remain durable',()=>{
+ const ctx=vm.createContext({location:{origin:'https://amux.example'}});
+ vm.runInContext(source.slice(source.indexOf('const _OUTBOX_SKIP ='),source.indexOf('function _outboxAccepted(')),ctx);
+ for(const url of ['/api/projects/draft','https://amux.example/api/projects/draft?test=1'])
+   assert.equal(ctx._outboxQueueable(url,{method:'POST',body:'{}'}),false);
+ assert.equal(ctx._outboxQueueable('/api/projects/example/commands',{method:'POST',body:'{}'}),true);
+ assert.equal(ctx._outboxQueueable('/api/projects/example',{method:'PUT',body:'{}'}),true);
+});

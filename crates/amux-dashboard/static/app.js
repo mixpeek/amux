@@ -1323,7 +1323,7 @@ function showConnHistory() {
       const age = Math.floor((Date.now() - q.timestamp) / 60000);
       const timeStr = age < 1 ? 'just now' : age + 'm ago';
       const uncertain = _outboxUncertainMessage(q);
-      const blocked = (q.state === 'blocked' || _projectReviewAction(q.url)) && !uncertain;
+      const blocked = (q.state === 'blocked' || _outboxManualAction(q.url)) && !uncertain;
       const ico = blocked ? '🔴' : uncertain ? '🟡' : '⏳';
       const status = blocked ? 'failed' : uncertain ? 'checking' : 'queued';
       const dismissId = 'conn-dismiss-' + esc(q.id);
@@ -3106,7 +3106,7 @@ async function _runSyncBanner(quiet = false) {
     // was never re-read and never timed out. Ethan's point about that change
     // still holds ("this shouldn't be appearing when I send, too invasive"),
     // so they are left out of the decision to SHOW the checklist instead.
-    return !blockedResources.has(q.url) && !_outboxActive.has(q.id) && !_projectReviewAction(q.url);
+    return !blockedResources.has(q.url) && !_outboxActive.has(q.id) && !_outboxManualAction(q.url);
   });
   let skipped = 0;
   const uploads = await _upqList();
@@ -3332,7 +3332,7 @@ async function _dismissQueuedOp(id) {
   let removed = false;
   await _mutateQueue(current => {
     // A different tab may have retried this operation since the row rendered.
-    const at = current.findIndex(q => q.id === id && (q.state === 'blocked' || _projectReviewAction(q.url)));
+    const at = current.findIndex(q => q.id === id && (q.state === 'blocked' || _outboxManualAction(q.url)));
     if (at >= 0) { current.splice(at, 1); removed = true; }
   });
   if (!removed) {
@@ -3687,8 +3687,8 @@ const _origFetch = window.fetch.bind(window);
 // deploy has its fetch fail, get queued, and report success. Ethan saw the two
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
-const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
-const _projectReviewAction = url => /\/api\/projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun))$/.test(url || '');
+const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
+const _outboxManualAction = url => /\/api\/projects\/(?:draft|[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))(?:[?#]|$)/.test(url || '');
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1061';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1062';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45439,7 +45439,7 @@ async function _projectDraftFields() {
   if (btn) btn.disabled=true;
   if (state) state.textContent='Thinking…';
   try {
-    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:document.getElementById('project-coordinator-provider').value,model:document.getElementById('project-coordinator').value.trim(),effort:document.getElementById('project-coordinator-effort').value||undefined}}),signal:AbortSignal.timeout(130000)});
+    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:document.getElementById('project-coordinator-provider').value,model:document.getElementById('project-coordinator').value.trim(),effort:document.getElementById('project-coordinator-effort').value||undefined}}),signal:AbortSignal.timeout(260000)});
     const d=await r.json();
     if (!r.ok || !d.measured) { if(state) state.textContent=d.why_unmeasured||d.error||'Could not draft from that description'; return; }
     const nameEl=document.getElementById('project-name');

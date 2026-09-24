@@ -7,7 +7,7 @@ const source=fs.readFileSync(process.env.AMUX_OUTBOX_SOURCE || 'crates/amux-dash
 function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert(a>=0 && b>a, start);return source.slice(a,b);}
 const run=section('async function _runSyncBanner(', 'async function _syncOneDraft(');
 const helpers=source.includes('function _outboxMessageId(') ? section('function _outboxMessageId(', '// Queue modal') : '';
-const reviewAction=section('const _projectReviewAction =', '\n');
+const reviewAction=section('const _outboxManualAction =', '\n');
 // AMUX-4844. THE SANDBOX IS HAND-MAINTAINED, SO MAKE ITS GAPS SAY SO.
 //
 // This file does not load app.js. It slices it by text markers and evaluates
@@ -223,4 +223,9 @@ test('worker startup races retry automatically, but authorization refusals do no
  await h.drain();assert.equal(h.queue.length,0);
  const denied=harness([pending()],[{status:403,body:{error:'not authorized'}}]);
  await denied.drain();assert.equal(denied.queue[0].state,'blocked');await denied.drain();assert.equal(denied.requests.length,1);
+});
+
+test('retained project draft and approval operations never replay automatically',async()=>{
+ const h=harness([pending({url:'/api/projects/draft'}),pending({id:'approve',url:'/api/projects/sample/acceptance/approve'})],[]);
+ await h.drain();assert.equal(h.requests.length,0);assert.equal(h.queue.length,2);
 });

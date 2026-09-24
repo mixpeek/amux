@@ -4273,3 +4273,15 @@ CARD: AF-947
 SYMPTOM: Retrying goal-spec project setup through the UI on f7f9b6a6 selected gpt-6-luna correctly, but Codex exited before inference: the service PATH found an abandoned npm wrapper whose native binary was missing. Worker sessions used the functioning login-shell installation.
 COST: Project creation could not proceed autonomously despite a working authenticated provider being installed. No fallback model was invoked and no project was falsely marked verified.
 FIX: Match existing worker and account-probe discovery through the login shell, pass all provider flags as literal argv, retain explicit helper CLI overrides, bounded I/O and data-only restrictions. Log the chosen resolution; test shell argument safety and wire project/outbox/state regressions into CI. Live project rerun pending.
+
+
+## Project settings inference was automatically replayed as a durable mutation
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-23
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: A UI click on Fill in the fields timed out at the global outbox's 15-second limit, then replayed the Codex draft repeatedly while its original inference continued. The UI showed a generic failure and a pending operation, discarding eventual model answers.
+COST: Duplicate low-cost model invocations and no usable project settings. Observed on d05d9737 with actual provider launch logs; stopped the test page before continuing repair.
+FIX: Exclude project draft inference from the mutation outbox and automatic replay of retained entries. Preserve real project commands and creation delivery. Align draft deadlines after bounded helper I/O, expose retained draft dismissal, and add shipped-predicate plus replay regressions. Live rerun pending.
