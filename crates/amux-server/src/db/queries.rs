@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 /// `updated_at` (migration 0067 adds the column; ALTER TABLE ADD COLUMN
 /// appends, so existing index positions are stable).
 const WORKER_COLS: &str = "id, display_name, name_aliases, cwd, provider, model, backend, \
-     environment, permissions, group_id, state, version, created_at, updated_at, lifecycle";
+     environment, permissions, group_id, state, version, created_at, updated_at, lifecycle, worker_type";
 
 /// The lifecycle filter replacing the old soft-delete sidecar. Applied to
 /// every normal read and guarded write so deleted workers cannot be resolved
@@ -56,6 +56,8 @@ pub struct WorkerRow {
     pub created_at: String,
     pub updated_at: String,
     pub lifecycle: WorkerLifecycle,
+    /// Migration 0087; `coding` for every row that predates it.
+    pub worker_type: String,
 }
 
 impl WorkerRow {
@@ -78,6 +80,7 @@ impl WorkerRow {
             created_at: now.to_string(),
             updated_at: now.to_string(),
             lifecycle: WorkerLifecycle::Active,
+            worker_type: String::new(),
         };
         row.set_config(config);
         row
@@ -97,6 +100,7 @@ impl WorkerRow {
         self.environment = config.environment.clone();
         self.permissions = config.permissions.clone();
         self.group_id = config.group.as_ref().map(|g| g.as_str().to_string());
+        self.worker_type = config.worker_type.as_str().to_string();
     }
 
     /// RR-0111a: the canonical replay snapshot of this row. Written into the
@@ -106,7 +110,7 @@ impl WorkerRow {
     /// writer recorded (ethos rule 1's corollary: a view must share the
     /// predicate of the mechanism it describes).
     pub fn snapshot(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut snap = serde_json::json!({
             "id": self.id,
             "display_name": self.display_name,
             "name_aliases": self.name_aliases,
@@ -124,13 +128,21 @@ impl WorkerRow {
             "version": self.version,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-        })
+        });
+        // Absent means coding (migration 0087), so a coding row's snapshot is
+        // byte-identical to the ones journaled before the column existed and
+        // replay verification of old events keeps matching.
+        if self.worker_type != amux_core::worker_type::WorkerTypeId::CODING {
+            snap["worker_type"] = serde_json::json!(self.worker_type);
+        }
+        snap
     }
 
     /// The row's config as the core type, for `classify_config_change` /
     /// `apply_config`.
     pub fn config(&self) -> WorkerConfig {
         WorkerConfig {
+            worker_type: amux_core::worker_type::WorkerTypeId::new(self.worker_type.clone()),
             display_name: self.display_name.clone(),
             name_aliases: self.name_aliases.clone(),
             cwd: self.cwd.clone(),
@@ -225,6 +237,7 @@ fn worker_from_row(r: &Row<'_>) -> rusqlite::Result<WorkerRow> {
         created_at: r.get(12)?,
         updated_at,
         lifecycle,
+        worker_type: r.get(15)?,
     })
 }
 
@@ -239,8 +252,8 @@ pub fn insert_worker(conn: &Connection, row: &WorkerRow) -> rusqlite::Result<()>
     conn.execute(
         "INSERT INTO _amux_workers (id, display_name, name_aliases, cwd, provider, model, \
          backend, environment, permissions, group_id, state, version, created_at, updated_at, \
-         lifecycle) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+         lifecycle, worker_type) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             row.id,
             row.display_name,
@@ -257,6 +270,7 @@ pub fn insert_worker(conn: &Connection, row: &WorkerRow) -> rusqlite::Result<()>
             row.created_at,
             row.updated_at,
             row.lifecycle.as_str(),
+            row.worker_type,
         ],
     )?;
     Ok(())
@@ -411,7 +425,7 @@ pub fn update_worker_config(
         &format!(
             "UPDATE _amux_workers SET display_name = ?2, name_aliases = ?3, cwd = ?4, \
              provider = ?5, model = ?6, backend = ?7, environment = ?8, permissions = ?9, \
-             group_id = ?10, version = ?11, updated_at = ?12 \
+             group_id = ?10, version = ?11, updated_at = ?12, worker_type = ?14 \
              WHERE id = ?1 AND version = ?13 AND {NOT_DELETED}"
         ),
         params![
@@ -428,6 +442,7 @@ pub fn update_worker_config(
             (expected_version + 1) as i64,
             now,
             expected_version as i64,
+            config.worker_type.as_str(),
         ],
     )
 }
@@ -599,6 +614,7 @@ mod tests {
 
     fn cfg(name: &str) -> WorkerConfig {
         WorkerConfig {
+            worker_type: Default::default(),
             display_name: name.into(),
             name_aliases: vec![],
             cwd: "/tmp/w".into(),

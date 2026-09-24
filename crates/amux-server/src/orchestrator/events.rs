@@ -802,6 +802,7 @@ mod tests {
 
     fn cfg() -> WorkerConfig {
         WorkerConfig {
+            worker_type: Default::default(),
             display_name: "w".into(),
             name_aliases: vec![],
             cwd: "/tmp/w".into(),

@@ -2267,6 +2267,7 @@ mod pump_tests {
                 let mut row = crate::db::queries::WorkerRow::new(
                     &wid(),
                     &WorkerConfig {
+                        worker_type: Default::default(),
                         display_name: "paused-pump".into(),
                         name_aliases: vec![],
                         cwd: "/tmp".into(),
@@ -2434,6 +2435,7 @@ mod pump_tests {
             let mut w = amux_core::worker::Worker::new(
                 id,
                 amux_core::worker::WorkerConfig {
+                    worker_type: Default::default(),
                     display_name: "w".into(),
                     name_aliases: vec![],
                     cwd: "/tmp".into(),
@@ -2575,6 +2577,7 @@ mod adherence_tests {
                 let row = crate::db::queries::WorkerRow::new(
                     &idc,
                     &WorkerConfig {
+                        worker_type: Default::default(),
                         display_name: name.clone(),
                         name_aliases: vec![],
                         cwd: "/tmp".into(),
@@ -3441,6 +3444,7 @@ mod rate_limit_recovery_tests {
                     let row = crate::db::queries::WorkerRow::new(
                         &idc,
                         &WorkerConfig {
+                            worker_type: Default::default(),
                             display_name: format!("w{n}"),
                             name_aliases: vec![],
                             cwd: "/tmp".into(),
@@ -3522,6 +3526,7 @@ mod rate_limit_recovery_tests {
                 let row = crate::db::queries::WorkerRow::new(
                     &idc,
                     &WorkerConfig {
+                        worker_type: Default::default(),
                         display_name: format!("w{n}"),
                         name_aliases: vec![],
                         cwd: "/tmp".into(),

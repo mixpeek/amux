@@ -859,6 +859,7 @@ mod tests {
                 let row = crate::db::queries::WorkerRow::new(
                     &id,
                     &WorkerConfig {
+                        worker_type: Default::default(),
                         display_name: format!("w{n}"),
                         name_aliases: vec![],
                         cwd: "/tmp".into(),

@@ -740,6 +740,7 @@ mod tests {
         use amux_core::ids::{GroupId, WorkerId};
         use amux_core::worker::WorkerConfig;
         let mut cfg = WorkerConfig {
+            worker_type: Default::default(),
             display_name: name.into(),
             name_aliases: vec![],
             cwd: "/tmp/w".into(),

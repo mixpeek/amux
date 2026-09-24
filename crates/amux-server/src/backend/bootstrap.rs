@@ -546,6 +546,7 @@ mod tests {
         let id = WorkerId::from_ulid(ulid::Ulid::new());
         let bref = backend_ref(&id);
         let config = CoreWorkerConfig {
+            worker_type: Default::default(),
             display_name: format!("w-{id}"),
             name_aliases: vec![],
             cwd: "/tmp/bootstrap-test-cwd".into(),

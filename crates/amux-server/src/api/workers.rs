@@ -22,6 +22,7 @@ use amux_core::provider::{ProviderCapabilities, ProviderId};
 use amux_core::revision::{EntityType, MutationKind};
 use amux_core::search::PagedResponse;
 use amux_core::session::{backend_ref, BackendId, ExitReason};
+use amux_core::worker_type::WorkerTypeId;
 use amux_core::worker::{
     apply_config, ConfigChangeResult, Worker, WorkerCapabilities, WorkerConfig, WorkerLifecycle,
     WorkerState,
@@ -316,6 +317,8 @@ fn worker_body(row: &WorkerRow) -> Value {
         "provider": row.provider,
         "model": row.model,
         "backend": row.backend,
+        "worker_type": row.worker_type,
+        "renderer": WorkerTypeId::new(row.worker_type.clone()).descriptor().renderer,
         "environment": row.environment,
         "permissions": row.permissions,
         "group": row.group_id,
@@ -492,6 +495,9 @@ pub struct CreateWorkerBody {
     pub permissions: Option<Vec<String>>,
     #[serde(default)]
     pub group: Option<String>,
+    /// ACW-2: `coding` (default) or `chat`; see `amux_core::worker_type`.
+    #[serde(default)]
+    pub worker_type: Option<String>,
 }
 
 /// AF-651 (gh#202): `backend` was accepted as any string and answered
@@ -628,11 +634,28 @@ async fn create_worker_inner(
         },
         None => None,
     };
+    let worker_type = match WorkerTypeId::parse(body.worker_type.as_deref().unwrap_or("")) {
+        Ok(t) => t,
+        Err(e) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": e, "worker_type": body.worker_type }),
+            )
+        }
+    };
+    let provider = body.provider.unwrap_or_else(|| "claude".into());
+    if let Err(e) = worker_type.descriptor().validate(&provider, false) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": e, "worker_type": worker_type }),
+        );
+    }
     let config = WorkerConfig {
+        worker_type,
         display_name,
         name_aliases: Vec::new(),
         cwd: body.cwd.unwrap_or_default(),
-        provider: ProviderId::new(body.provider.unwrap_or_else(|| "claude".into())),
+        provider: ProviderId::new(provider),
         model: body.model,
         backend: backend.unwrap_or_default(),
         environment: body.environment.unwrap_or_default(),
@@ -716,6 +739,9 @@ pub struct PatchWorkerBody {
     pub permissions: Option<Vec<String>>,
     #[serde(default)]
     pub group: Option<String>,
+    /// ACW-2: switching type swaps the execution adapter (`SessionRestart`).
+    #[serde(default)]
+    pub worker_type: Option<String>,
     /// Optimistic concurrency (Invariant 35): when present, the write only
     /// applies if the entity is still at this version; otherwise 409.
     #[serde(default)]
@@ -724,6 +750,10 @@ pub struct PatchWorkerBody {
 
 enum PatchOutcome {
     NotFound,
+    /// The merged config is one its worker type cannot run (ACW-2).
+    Invalid {
+        error: String,
+    },
     Conflict {
         current_version: u64,
     },
@@ -786,6 +816,14 @@ pub async fn patch_worker(
         None => None,
     };
 
+    let worker_type: Option<WorkerTypeId> = match &body.worker_type {
+        Some(t) => match WorkerTypeId::parse(t) {
+            Ok(id) => Some(id),
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e, "worker_type": t })),
+        },
+        None => None,
+    };
+
     let slot: Arc<Mutex<Option<PatchOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let key_w = key.clone();
@@ -835,6 +873,18 @@ pub async fn patch_worker(
             }
             if let Some(g) = group {
                 new_cfg.group = Some(g);
+            }
+            if let Some(t) = worker_type.clone() {
+                new_cfg.worker_type = t;
+            }
+            // Validate the MERGED config: a type-only patch must be checked
+            // against the provider already on the row, not just the body.
+            if let Err(error) = new_cfg
+                .worker_type
+                .descriptor()
+                .validate(new_cfg.provider.as_str(), false)
+            {
+                return finish(&slot_w, PatchOutcome::Invalid { error }, no_write());
             }
             // Invariant 17: a rename leaves the old name behind as an alias,
             // so `@old-name` written yesterday still resolves tomorrow.
@@ -973,6 +1023,9 @@ pub async fn patch_worker(
     match outcome {
         None => internal("patch produced no outcome"),
         Some(PatchOutcome::NotFound) => not_found(&key),
+        Some(PatchOutcome::Invalid { error }) => {
+            err(StatusCode::BAD_REQUEST, json!({ "error": error }))
+        }
         Some(PatchOutcome::Conflict { current_version }) => err(
             StatusCode::CONFLICT,
             json!({ "error": "version conflict", "current_version": current_version }),
@@ -1771,7 +1824,7 @@ pub async fn peek_worker(
                 return not_found(&key);
             }
             let qs = vec![("lines".to_string(), p.lines.unwrap_or(80).to_string())];
-            return crate::api::session_verbs::peek_verb(&key, &qs).await;
+            return crate::api::session_verbs::peek_verb(&state, &key, &qs).await;
         }
         Ok(Err(e)) => return internal(e),
         Err(e) => return internal(e),

@@ -716,6 +716,7 @@ async fn run_live_backend_lifecycle(backend: Arc<dyn SessionBackend>, label: &st
         store
             .write(move |conn| {
                 let cfg = CoreWorkerConfig {
+                    worker_type: Default::default(),
                     display_name: format!("live-{backend_name}"),
                     name_aliases: vec![],
                     cwd: cwd.clone(),

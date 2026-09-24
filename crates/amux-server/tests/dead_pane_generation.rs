@@ -152,6 +152,7 @@ async fn run(mutation: Mutation, concurrent: bool) {
         .write_async(move |conn| {
             let now = chrono::Utc::now();
             let config = WorkerConfig {
+                worker_type: Default::default(),
                 display_name: w.to_string(),
                 name_aliases: vec![],
                 cwd: "/tmp".into(),

@@ -104,6 +104,58 @@ pub(crate) fn home() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"))
 }
+/// Shell prelude for a HEADLESS provider turn (worker types whose adapter
+/// runs turns outside a terminal, ACW-4). Same environment a tmux launch
+/// gives a lane: profile, global -> group -> worker scope env layers, the
+/// harness routing vars (suppressed for an isolated worker), and the Claude
+/// OAuth/API-key rule. One definition of "a worker's environment", so scope
+/// settings and connectors reach every worker type identically.
+pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) -> String {
+    let cfg = parse_env(name);
+    let isolated = env_flag_on(cfg.get("CC_ISOLATED"));
+    let mut rc = String::new();
+    if provider == "claude" {
+        rc.push_str("unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; ");
+        let has_oauth = std::fs::read_to_string(
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude.json"),
+        )
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|v| !v["oauthAccount"].is_null() && v["oauthAccount"] != json!({}));
+        if has_oauth {
+            rc.push_str("unset ANTHROPIC_API_KEY; ");
+        }
+    }
+    let home_dir = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    rc.push_str(&startup_profile_command(&home_dir, work_dir));
+    for f in scope_env_layers(&home(), name) {
+        rc.push_str(&format!(
+            "set -a; source {} 2>/dev/null; set +a; ",
+            sh_quote(&f.to_string_lossy())
+        ));
+    }
+    let local_cli_dir = home().join("bin");
+    if local_cli_dir.join("amux").is_file() {
+        rc.push_str(&format!(
+            "export PATH={}:\"$PATH\"; ",
+            sh_quote(&local_cli_dir.to_string_lossy())
+        ));
+    }
+    if !isolated {
+        let scheme = if std::env::args().any(|a| a == "--no-tls") {
+            "http"
+        } else {
+            "https"
+        };
+        let endpoint = format!("{scheme}://localhost:{}", crate::config::canonical_port());
+        for (key, value) in worker_harness_env(name, &home(), &endpoint) {
+            rc.push_str(&format!("export {key}={}; ", sh_quote(&value)));
+        }
+    }
+    rc.push_str(&format!("cd {}; ", sh_quote(work_dir)));
+    rc
+}
+
 /// The CLI reads CC_HOME/AMUX_API while hooks read AMUX_HOME/AMUX_URL.
 /// Keep all consumers attached to the server that launched this worker.
 fn worker_harness_env(name: &str, root: &Path, endpoint: &str) -> Vec<(String, String)> {
@@ -759,7 +811,7 @@ fn expanduser(p: &str) -> PathBuf {
 // Meta I/O (py:12229-12251).
 // ---------------------------------------------------------------------------
 
-fn load_meta(name: &str) -> Map<String, Value> {
+pub(crate) fn load_meta(name: &str) -> Map<String, Value> {
     std::fs::read_to_string(meta_path(name))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -767,12 +819,12 @@ fn load_meta(name: &str) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn save_meta(name: &str, meta: &Map<String, Value>) {
+pub(crate) fn save_meta(name: &str, meta: &Map<String, Value>) {
     let _ = std::fs::create_dir_all(sessions_dir());
     let _ = std::fs::write(meta_path(name), Value::Object(meta.clone()).to_string());
 }
 
-fn update_meta(name: &str, updates: &[(&str, Value)]) {
+pub(crate) fn update_meta(name: &str, updates: &[(&str, Value)]) {
     let mut meta = load_meta(name);
     for (k, v) in updates {
         meta.insert((*k).to_string(), v.clone());
@@ -780,7 +832,7 @@ fn update_meta(name: &str, updates: &[(&str, Value)]) {
     save_meta(name, &meta);
 }
 
-fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
+pub(crate) fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
     meta.get(key)
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -851,7 +903,7 @@ pub(crate) async fn composer_stuck_lanes() -> Vec<(String, i64)> {
 /// on the first boot after the Python->Rust cutover (see below), because no
 /// pre-cutover `*.meta.json` carries `rate_limited_since` and the sweep indexes
 /// it on every lane.
-fn meta_i64(meta: &Map<String, Value>, key: &str) -> i64 {
+pub(crate) fn meta_i64(meta: &Map<String, Value>, key: &str) -> i64 {
     meta.get(key).and_then(|v| v.as_i64()).unwrap_or(0)
 }
 
@@ -4402,7 +4454,7 @@ fn split_flags(s: &str) -> Result<Vec<String>, String> {
 }
 
 /// POSIX single-quote escaping (shlex.quote parity).
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     if !s.is_empty()
         && s.bytes().all(|b| {
             b.is_ascii_alphanumeric()
@@ -8289,6 +8341,11 @@ async fn pane_has_live_child(name: &str) -> Option<bool> {
 }
 
 pub(crate) async fn is_running(name: &str) -> bool {
+    if let crate::api::worker_exec::Dispatch::Handled(r) =
+        crate::api::worker_exec::adapter_for_session(name).running(name)
+    {
+        return r;
+    }
     let cfg = parse_env(name);
     // A completed project executor may deliberately retain its tmux pane so a
     // person can inspect the exact terminal that produced the acceptance
@@ -10934,6 +10991,20 @@ async fn send_text_inner_bound(
             "iTerm2-backed sessions are not supported by the rust origin yet".into(),
         );
     }
+    // ACW-6: every producer (owner send, peers, steering, schedules, board
+    // dispatch) has converged by here, after the isolation, pause and
+    // project gates. The worker type's adapter delivers, or the terminal
+    // pipeline below does.
+    let adapter = crate::api::worker_exec::adapter_for(
+        &crate::api::worker_exec::worker_type_of_env(cfg.get("CC_WORKER_TYPE")),
+    );
+    if let crate::api::worker_exec::Dispatch::Handled(r) =
+        adapter.deliver(state, name, text, origin).await
+    {
+        crate::api::worker_exec::note_dispatch(name, "deliver", adapter.worker_type());
+        let _ = admitted_claim;
+        return r;
+    }
     if backend_of_cfg(&cfg) == "herdr" {
         return herdr_send(name, text).await;
     }
@@ -12695,6 +12766,13 @@ pub(crate) async fn start_session(
     let f = env_path(name);
     if !f.exists() {
         return (false, format!("session '{name}' not found"));
+    }
+    // ACW-6: the worker type's adapter starts it, or hands back to the
+    // terminal pipeline below (coding).
+    let adapter = crate::api::worker_exec::adapter_for_session(name);
+    if let crate::api::worker_exec::Dispatch::Handled(r) = adapter.start(state, name).await {
+        crate::api::worker_exec::note_dispatch(name, "start", adapter.worker_type());
+        return r;
     }
     let cfg = parse_env(name);
     if cfg.get("CC_PAUSED") == Some("1") {
@@ -14555,6 +14633,11 @@ async fn stop_session_process(name: &str) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
     }
+    let adapter = crate::api::worker_exec::adapter_for_session(name);
+    if let crate::api::worker_exec::Dispatch::Handled(r) = adapter.stop(name).await {
+        crate::api::worker_exec::note_dispatch(name, "stop", adapter.worker_type());
+        return r;
+    }
     let cfg = parse_env(name);
     if backend_of_cfg(&cfg) == "herdr" {
         if !herdr_agent_running(name).await {
@@ -14880,6 +14963,14 @@ pub(crate) fn set_legacy_paused(name: &str, paused: bool) -> anyhow::Result<()> 
 pub(crate) async fn stop_for_pause(state: &AppState, name: &str) -> anyhow::Result<()> {
     let lock = session_op_lock(name);
     let _guard = lock.lock().await;
+    let adapter = crate::api::worker_exec::adapter_for_session(name);
+    if let crate::api::worker_exec::Dispatch::Handled((ok, detail)) = adapter.stop(name).await {
+        crate::api::worker_exec::note_dispatch(name, "stop", adapter.worker_type());
+        anyhow::ensure!(ok, "{detail}");
+        crate::api::sessions_legacy::invalidate_sessions_runtime_cache();
+        let _ = state;
+        return Ok(());
+    }
     let cfg = parse_env(name);
     if backend_of_cfg(&cfg) == "herdr" {
         let (ok, detail) = stop_session_process(name).await;
@@ -21056,7 +21147,7 @@ async fn get_dispatch(
             )
             .await
         }
-        "peek" => peek_verb(name, qs).await,
+        "peek" => peek_verb(state, name, qs).await,
         "transcript" => {
             // Codex/Ollama run a native TUI whose raw mirror is what Ethan saw
             // looked nothing like Claude (AMUX-3201). They also write a
@@ -25192,8 +25283,13 @@ pub(crate) fn lane_env_exists(name: &str) -> bool {
 /// them is a store row, so that route answered 404 for essentially every lane
 /// it was asked about. `send` never had the problem because it falls back to
 /// the key and lands here; this is the same landing spot for peek.
-pub(crate) async fn peek_verb(name: &str, qs: &[(String, String)]) -> Response {
+pub(crate) async fn peek_verb(state: &AppState, name: &str, qs: &[(String, String)]) -> Response {
     let lines: i64 = qs_first(qs, "lines", "80").parse().unwrap_or(80);
+    let adapter = crate::api::worker_exec::adapter_for_session(name);
+    if let crate::api::worker_exec::Dispatch::Handled(v) = adapter.peek(state, name, lines).await {
+        crate::api::worker_exec::note_dispatch(name, "peek", adapter.worker_type());
+        return j200(v);
+    }
     let live_only = qs_flag(qs, "live");
     let no_trim = qs_flag(qs, "notrim");
     // The reader's visible width in columns, for table layout (default 100).
@@ -27775,6 +27871,7 @@ pub(crate) async fn config_patch(state: &AppState, name: &str, body: &Value) -> 
 async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Response {
     let changes_runtime = [
         "provider",
+        "worker_type",
         "model",
         "effort",
         "toggle_yolo",
@@ -27874,6 +27971,78 @@ async fn config_patch_with_liveness(
     // hood"). See rename_session below.
     if let Some(rename) = body.get("rename") {
         return rename_session(state, name, rename.as_str().unwrap_or("")).await;
+    }
+
+    // Change worker type (ACW-2/5). The type picks the execution adapter, so
+    // a running worker is stopped by its CURRENT adapter before the type is
+    // written and started by the NEW one after: the worker (name, board,
+    // history, groups) survives; only the execution is swapped.
+    if let Some(tv) = body.get("worker_type") {
+        let Some(tv) = tv.as_str() else {
+            return jresp(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "worker_type must be a string"}),
+            );
+        };
+        let new_type = match amux_core::worker_type::WorkerTypeId::parse(tv) {
+            Ok(t) => t,
+            Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
+        };
+        let old_type = crate::api::worker_exec::worker_type_of_env(cfg.get("CC_WORKER_TYPE"));
+        if new_type == old_type {
+            return j200(json!({"ok": true, "worker_type": new_type,
+                "message": format!("worker type already {new_type}")}));
+        }
+        let descriptor = new_type.descriptor();
+        if let Err(e) =
+            descriptor.validate(&provider_of(&cfg), cfg.get_or("CC_WORKTREE", "") == "1")
+        {
+            return jresp(StatusCode::BAD_REQUEST, json!({"error": e}));
+        }
+        if running {
+            let (ok, detail) = stop_session_process(name).await;
+            if !ok {
+                return jresp(
+                    StatusCode::CONFLICT,
+                    json!({"error": format!("could not stop the {old_type} session before switching type: {detail}")}),
+                );
+            }
+        }
+        if new_type.as_str() == amux_core::worker_type::WorkerTypeId::CODING {
+            cfg.remove("CC_WORKER_TYPE");
+        } else {
+            cfg.set("CC_WORKER_TYPE", new_type.as_str());
+        }
+        if cfg.get_or("CC_DIR", "").trim().is_empty()
+            && descriptor.project_dir != amux_core::worker_type::Requirement::Required
+        {
+            let dir = crate::api::chat_worker::default_chat_dir(name);
+            let _ = std::fs::create_dir_all(&dir);
+            cfg.set("CC_DIR", &dir);
+        }
+        if let Err(e) = cfg.write(&f) {
+            return jresp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": format!("could not write worker env: {e}")}),
+            );
+        }
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+        let restarted = running && start_session(state, name, "", false).await.0;
+        emit_event(
+            state,
+            name,
+            "worker.type_changed",
+            Some(json!({"from": old_type, "to": new_type, "was_running": running, "restarted": restarted})),
+            None,
+            "api-config",
+        )
+        .await;
+        tracing::info!(session = %name, from = %old_type, to = %new_type, restarted,
+            measured = true, n_considered = 1, verdict = "worker_type_changed",
+            "worker type changed; execution adapter swapped, worker identity kept");
+        return j200(json!({"ok": true, "worker_type": new_type, "renderer": descriptor.renderer,
+            "restarted": restarted,
+            "message": format!("worker type set to {}", descriptor.label)}));
     }
 
     // Change provider (py:76434).
@@ -37287,6 +37456,7 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
 
         let id = WorkerId::from_ulid(ulid::Ulid::new());
         let config = WorkerConfig {
+            worker_type: Default::default(),
             display_name: "hw".into(),
             name_aliases: Vec::new(),
             cwd: "/tmp".into(),
@@ -37378,6 +37548,7 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         // `managed` is store-managed; `plain` deliberately is not.
         let id = WorkerId::from_ulid(ulid::Ulid::new());
         let config = WorkerConfig {
+            worker_type: Default::default(),
             display_name: "managed".into(),
             name_aliases: vec!["oldname".into()],
             cwd: "/tmp".into(),

@@ -290,6 +290,7 @@ mod tests {
         let mut w = Worker::new(
             wid(n),
             WorkerConfig {
+                worker_type: Default::default(),
                 display_name: format!("w{n}"),
                 name_aliases: vec![],
                 cwd: "/tmp".into(),

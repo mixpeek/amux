@@ -216,7 +216,7 @@ async fn retained_dead_pane_cannot_remain_idle_in_worker_api() {
                 "specimen socket {actual_socket:?} must be under {expected_directory:?}");
             eprintln!("AF-784 private_socket={actual_socket:?}");
             let now = chrono::Utc::now();
-            let config = WorkerConfig { display_name: worker.to_string(), name_aliases: vec![], cwd,
+            let config = WorkerConfig { worker_type: Default::default(), display_name: worker.to_string(), name_aliases: vec![], cwd,
                 provider: ProviderId::new("claude"), model: None, backend: BackendId::tmux(),
                 environment: BTreeMap::new(), permissions: vec![], group: None };
             let row = WorkerRow::new(&worker, &config, &now.to_rfc3339());

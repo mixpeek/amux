@@ -3772,7 +3772,38 @@ pub async fn create_session_legacy(
         )
             .into_response();
     }
-    let dir = s("dir");
+    // WORKER TYPE (ACW-2): selects the execution adapter + renderer. Absent
+    // means coding, the only behaviour that existed before the field, so old
+    // clients create exactly what they always did. Type requirements are
+    // checked HERE, before anything is written, so an impossible combination
+    // (a chat worker in a worktree, a provider its adapter cannot drive) is a
+    // 400 naming the reason, not a worker that fails at its first turn.
+    let worker_type = match amux_core::worker_type::WorkerTypeId::parse(&s("worker_type")) {
+        Ok(t) => t,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response();
+        }
+    };
+    let descriptor = worker_type.descriptor();
+    let requested_provider = match s("provider") {
+        p if p.is_empty() => "claude".to_string(),
+        p => p,
+    };
+    if let Err(e) = descriptor.validate(&requested_provider, worktree) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e, "worker_type": worker_type})),
+        )
+            .into_response();
+    }
+    let mut dir = s("dir");
+    if dir.is_empty()
+        && descriptor.project_dir != amux_core::worker_type::Requirement::Required
+    {
+        // No project needed: a private scratch dir keeps every cwd reader
+        // (transcripts, scope, peek) working without a repo.
+        dir = crate::api::chat_worker::default_chat_dir(&name);
+    }
     match ensure_work_dir(&dir) {
         WorkDirOutcome::Ok => {}
         WorkDirOutcome::Created => {
@@ -3808,6 +3839,10 @@ pub async fn create_session_legacy(
         &default_model,
     );
     let mut pairs: Vec<(&str, String)> = vec![("CC_DIR", dir.clone())];
+    // Written only when not the default, same convention as CC_PROVIDER.
+    if worker_type.as_str() != amux_core::worker_type::WorkerTypeId::CODING {
+        pairs.push(("CC_WORKER_TYPE", worker_type.as_str().to_string()));
+    }
     // An invited human's author comes from the verified member cookie. The
     // request body and ordinary worker/session headers are caller-controlled,
     // so neither may decide who appears as the worker's creator.
@@ -3928,6 +3963,8 @@ pub async fn create_session_legacy(
             "name": name,
             "dir": dir,
             "provider": provider,
+            "worker_type": worker_type,
+            "renderer": descriptor.renderer,
             "creator": creator,
             "running": false,
             "starting": autostart,
@@ -4089,7 +4126,17 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         // the retained shell; the durable lifecycle marker supplies the
         // authoritative worker-liveness boundary.
         let review_held = env.get("CC_REVIEW_HELD").is_some_and(|v| v == "1");
-        let is_running = signals.agent_running(&tmux) && !review_held;
+        // ACW-6: liveness comes from the worker type's execution adapter;
+        // the terminal pipeline's answer is the tmux scan.
+        let worker_type = crate::api::worker_exec::worker_type_of_env(
+            env.get("CC_WORKER_TYPE").map(String::as_str),
+        );
+        let adapter_running =
+            match crate::api::worker_exec::adapter_for(&worker_type).running(&name) {
+                crate::api::worker_exec::Dispatch::Handled(r) => r,
+                crate::api::worker_exec::Dispatch::Terminal => signals.agent_running(&tmux),
+            };
+        let is_running = adapter_running && !review_held;
         // CC_ARCHIVED=1 is Python's session-archive marker (amux-server.py
         // :20346) — blocked-sessions.txt is QUARANTINE, a different thing;
         // conflating them reported 0 archived against a fleet with dozens.
@@ -4381,6 +4428,11 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
                 env.get("CC_BACKEND").map(String::as_str),
             ),
         }));
+        // Outside the literal above, which sits at json!'s recursion limit.
+        if let Some(row) = out.last_mut() {
+            row["worker_type"] = json!(worker_type);
+            row["renderer"] = json!(worker_type.descriptor().renderer);
+        }
     }
     out
 }
@@ -4485,7 +4537,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         "SELECT w.display_name, w.state, w.provider, w.model, w.cwd,
                 (SELECT COUNT(*) FROM _amux_sessions s
                  WHERE s.worker_id = w.id AND s.ended_at IS NULL) AS live,
-                w.lifecycle
+                w.lifecycle, w.worker_type
          FROM _amux_workers w
          WHERE w.lifecycle != 'deleted'
          ORDER BY w.display_name",
@@ -4501,6 +4553,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             .get::<_, Option<String>>(6)?
             .unwrap_or_else(|| "active".into());
         let archived = lifecycle == "archived";
+        let worker_type = amux_core::worker_type::WorkerTypeId::new(r.get::<_, String>(7)?);
         Ok(json!({
             // The Python list's load-bearing fields; ones the Rust side
             // cannot honestly fill yet are present-and-empty, NOT omitted —
@@ -4511,6 +4564,8 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             "archived": archived,
             "lifecycle": lifecycle,
             "provider": provider,
+            "worker_type": worker_type,
+            "renderer": worker_type.descriptor().renderer,
             "model": model.unwrap_or_default(),
             "dir": cwd,
             "preview": "",

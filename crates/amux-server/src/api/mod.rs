@@ -17,6 +17,7 @@ pub mod browser;
 pub mod browser_import;
 pub mod calendar;
 pub mod channels;
+pub mod chat_worker;
 pub mod commit_mentions;
 pub mod config_iac;
 pub mod connection;
@@ -105,6 +106,7 @@ pub mod usage;
 pub mod verify;
 pub mod why;
 pub mod worker_create;
+pub mod worker_exec;
 pub mod workers;
 pub mod workers_deadletters;
 
@@ -277,6 +279,7 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/layout-presets", layout_presets::routes())
         // The New Worker / Connect modals' supporting reads (AMUX-2871).
         .merge(worker_create::routes())
+        .merge(worker_exec::routes())
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
         .merge(observability::routes())
