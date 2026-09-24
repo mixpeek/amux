@@ -334,6 +334,14 @@ async fn configure(
     if let Err(e) = body.policy.validate() {
         return error(StatusCode::BAD_REQUEST, e);
     }
+    if let Some(contract) = &body.policy.acceptance {
+        if let Err(e) = contract.validate() {
+            tracing::warn!(project=%name, error=%e, measured=true,
+                n_considered=contract.criteria.len(), verdict="project_contract_invalid",
+                "invalid acceptance criteria refused before persistence");
+            return error(StatusCode::BAD_REQUEST, e);
+        }
+    }
     if [&body.policy.coordinator, &body.policy.executor]
         .iter()
         .any(|p| {
@@ -1635,6 +1643,51 @@ mod tests {
             );
         }
     }
+    #[tokio::test]
+    async fn invalid_acceptance_is_not_a_retryable_server_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(crate::db::Store::open(&dir.path().join("db")).unwrap()),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let app = routes().with_state(state.clone());
+        for (extension, expected) in [("log", StatusCode::BAD_REQUEST), ("txt", StatusCode::OK)] {
+            let body = json!({"expect_rev":0,"policy":{"repository":"/repo",
+                "coordinator":{"provider":"codex","model":"gpt-6-luna"},
+                "executor":{"provider":"codex","model":"gpt-6-luna"},
+                "verify_command":"git diff --check",
+                "acceptance":{"criteria":[{"id":"proof","requirement":"Retain results",
+                    "verifier":{"type":"command","id":"test","command":"./test.sh"},
+                    "evidence":[format!("artifacts/results.{extension}")]}]}}});
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("PUT")
+                        .uri("/validation")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            let saved = state
+                .store
+                .read_async(|c| Ok(store::get(c, "validation").map_err(store::sql_error)?))
+                .await
+                .unwrap();
+            assert_eq!(
+                saved.is_some(),
+                extension == "txt",
+                "invalid requests must not persist or consume a revision"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn project_coordinator_profiles_round_trip_and_refuse_unsupported() {
         let dir = tempfile::tempdir().unwrap();

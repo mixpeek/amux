@@ -92,7 +92,8 @@ pub fn routes() -> Router<AppState> {
 /// but it is a runtime job with a durable dedupe key and a named consumer,
 /// not seven columns and a checkbox. Carded as AMUX-2756 rather than
 /// half-ported.
-pub const UNHONOURED_FIELDS: [&str; 7] = [
+pub const UNHONOURED_FIELDS: [&str; 8] = [
+    "fan_out",
     "watch",
     "watch_timeout",
     "done_pattern",
@@ -108,7 +109,7 @@ pub const UNHONOURED_FIELDS: [&str; 7] = [
 /// ever disagree, because a declaration that silently drops a field is the
 /// same silent absence it exists to announce.
 const UNHONOURED_FIELDS_HEADER: &str =
-    "not implemented (stored, never read; AMUX-2680): watch, watch_timeout, done_pattern, \
+    "not implemented (stored, never read; AMUX-2680): fan_out, watch, watch_timeout, done_pattern, \
      done_action, trigger_on, trigger_cooldown, trigger_sessions";
 
 /// The subset of [`UNHONOURED_FIELDS`] that ARM a dead feature, and the value
@@ -123,6 +124,9 @@ const UNHONOURED_FIELDS_HEADER: &str =
 fn armed_unhonoured(body: &ScheduleBody) -> Vec<&'static str> {
     let set = |v: &Option<String>| v.as_deref().map(str::trim).is_some_and(|s| !s.is_empty());
     let mut out = Vec::new();
+    if body.fan_out.unwrap_or(0) != 0 {
+        out.push("fan_out");
+    }
     if body.watch.unwrap_or(0) != 0 {
         out.push("watch");
     }

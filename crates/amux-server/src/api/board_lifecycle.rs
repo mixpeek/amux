@@ -28,9 +28,10 @@ fn setting(session: &str, key: &str) -> Option<String> {
         .or_else(|| std::env::var(key).ok())
 }
 pub(crate) fn enabled(session: &str) -> bool {
-    !session_verbs::parse_env(session)
-        .get("CC_PROJECT")
-        .is_some()
+    !session_verbs::session_is_isolated(session)
+        && !session_verbs::parse_env(session)
+            .get("CC_PROJECT")
+            .is_some()
         && policy_enabled(setting(session, POLICY_KEY).as_deref())
 }
 
@@ -267,7 +268,10 @@ fn preserve_project_runtime_gates(d: &mut Decision, basis: &str) {
         .map(|criterion| criterion.to_ascii_lowercase())
         .collect::<Vec<_>>()
         .join(" ");
-    if !contains_any(&plan_criteria, &["docker build", "build the image", "image builds"]) {
+    if !contains_any(
+        &plan_criteria,
+        &["docker build", "build the image", "image builds"],
+    ) {
         if let Some(task) = d.tasks.iter_mut().find(|task| {
             let work = format!("{} {} {}", task.title, task.description, task.next_action)
                 .to_ascii_lowercase();
@@ -760,9 +764,15 @@ fn scoped_spec_ids(command: &str) -> BTreeSet<String> {
         let before = index.checked_sub(1).and_then(|i| words.get(i));
         let after = words.get(index + 1);
         let scoped = before.is_some_and(|word| {
-            matches!(word.to_ascii_lowercase().as_str(), "only" | "just" | "slice" | "section")
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "only" | "just" | "slice" | "section"
+            )
         }) || after.is_some_and(|word| {
-            matches!(word.to_ascii_lowercase().as_str(), "only" | "slice" | "section")
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "only" | "slice" | "section"
+            )
         });
         if scoped {
             ids.insert(upper);
@@ -1512,8 +1522,7 @@ pub(crate) async fn capture_inner(
             // harness rule is fixed. Exhausted receipts stay inert until the
             // operator grants another bounded attempt.
             if v["state"] != "received"
-                || (v.get("error").is_some()
-                    && !(project.is_some() && attempts < attempt_limit))
+                || (v.get("error").is_some() && !(project.is_some() && attempts < attempt_limit))
             {
                 return None;
             }
@@ -1865,6 +1874,19 @@ async fn commit_plan(
     state
         .store
         .write_async(move |c| {
+            if session_verbs::session_is_isolated(&session) {
+                c.execute("UPDATE cmd_history SET capture_pending=0 WHERE id=?1", [id])?;
+                tracing::info!(
+                    session,
+                    message_id = id,
+                    verdict = "isolated_plan_discarded",
+                    "isolation enabled during intake; no prepared board changes applied"
+                );
+                return Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                });
+            }
             let result = apply(
                 c,
                 id,
@@ -2897,7 +2919,10 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
             }],
         };
         preserve_project_runtime_gates(&mut decision, "Build and run a Docker image e2e");
-        assert!(decision.tasks[0].acceptance_criteria.iter().any(|criterion| criterion.contains("fresh docker build")));
+        assert!(decision.tasks[0]
+            .acceptance_criteria
+            .iter()
+            .any(|criterion| criterion.contains("fresh docker build")));
         preserve_project_runtime_gates(&mut decision, "Build and run a Docker image e2e");
         assert_eq!(decision.tasks[0].acceptance_criteria.len(), 2);
     }

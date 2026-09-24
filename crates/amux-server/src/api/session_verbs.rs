@@ -3855,7 +3855,11 @@ fn strip_harness_envelopes(text: &str) -> String {
     out.trim().to_string()
 }
 
-fn render_transcript_records(records: Vec<Value>, max_chars: usize, collapse_tools: bool) -> String {
+fn render_transcript_records(
+    records: Vec<Value>,
+    max_chars: usize,
+    collapse_tools: bool,
+) -> String {
     let mut out: Vec<String> = Vec::new();
     // Consecutive tool activity, counted and flushed as one line. See the
     // "tool_use" arm below for why (AMUX-5017).
@@ -3875,9 +3879,7 @@ fn render_transcript_records(records: Vec<Value>, max_chars: usize, collapse_too
             // SAME STRIP AS THE MESSAGE PATH. A queued attachment is where
             // the harness's own notifications arrive, and this branch rendered
             // them verbatim under the `❯` glyph (AMUX-5017).
-            let prompt = strip_harness_envelopes(
-                o["attachment"]["prompt"].as_str().unwrap_or(""),
-            );
+            let prompt = strip_harness_envelopes(o["attachment"]["prompt"].as_str().unwrap_or(""));
             if !prompt.is_empty() {
                 out.push(user_echo_ansi(&prompt));
                 out.push(String::new());
@@ -6107,8 +6109,10 @@ async fn cmd_hist_record_with_id(
     // Admit it and let `attach_prompt_qualifier` decide: with no live card from
     // the prompt before it, capture declines back to exactly this outcome, so
     // the widening can only add the attachment, never a card.
-    let project_executor = parse_env(&session).get("CC_PROJECT").is_some();
-    let capture_pending = !project_executor
+    let isolated = session_is_isolated(&session);
+    let project_executor = !isolated && parse_env(&session).get("CC_PROJECT").is_some();
+    let capture_pending = !isolated
+        && !project_executor
         && task_bearing
         && landed
         && !peer_coordination
@@ -6214,13 +6218,8 @@ async fn cmd_hist_record_with_id(
     // consequence (CLAUDE.md: hang the consequence off the write that happened).
     // Owner and scheduler work belong to the recipient. Peer messages remain
     // coordination by default. Questions/control messages also stay cardless.
-    // ISOLATED DOES NOT MEAN INVISIBLE WORK (AMUX-4159). Isolation controls
-    // what amux injects into a worker and whether peers/automation can reach it;
-    // it does not change the fact that an owner's delivered prompt is work in
-    // the shared ledger. The `amux` lane itself supplied the specimen: its
-    // CC_ISOLATED=1 prompt was delivered and recorded as confirmed while
-    // card_id stayed NULL. The board already renders isolated owners explicitly,
-    // so keep the card visible and let that label describe its reachability.
+    // Isolated owner input is CLI transport only. Retain delivery history, but
+    // never create/link tasks, decompose the prompt, or spend intake tokens.
     // AND NOT FOR A PROMPT THE LANE NEVER RECEIVED (AMUX-3903). A ledger card
     // asserts "this lane was given this task", and a stuck send means it was
     // not: the text is sitting in the composer. Minting one would hand the
@@ -6242,7 +6241,11 @@ async fn cmd_hist_record_with_id(
             }
         }
     }
-    if task_bearing && landed {
+    if isolated {
+        tracing::info!(session=%truth_session, measured=true, n_considered=1,
+            verdict="isolated_message_passthrough", "owner message retained without board intake or task attribution");
+    }
+    if !isolated && task_bearing && landed {
         let cardless_reason = if peer_coordination {
             Some("peer-coordination")
         } else if amux_core::board::is_informational_query(&cap_text) {
@@ -6572,6 +6575,31 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
             return;
         }
     };
+    // Recheck on recovery too: the mode may have changed after acceptance.
+    if session_is_isolated(&cap_session) {
+        let result = state
+            .store
+            .write_async(move |conn| {
+                let n = conn.execute(
+                    "UPDATE cmd_history SET capture_pending=0 WHERE id=?1 AND capture_pending!=0",
+                    [row_id],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: n > 0,
+                    events: vec![],
+                })
+            })
+            .await;
+        match result {
+            Ok(_) => {
+                tracing::info!(session=%cap_session, message_id=row_id, measured=true, n_considered=1,
+                verdict="isolated_capture_suppressed", "isolated input is not board work; pending intake cleared")
+            }
+            Err(error) => tracing::warn!(session=%cap_session, message_id=row_id, %error,
+                verdict="isolated_capture_clear_failed", "could not clear isolated intake receipt; no intake executed"),
+        }
+        return;
+    }
     if parse_env(&cap_session).get("CC_PROJECT").is_some() {
         if crate::log_dedupe::first_this_bucket(
             &format!("project-legacy-intake:{row_id}"),
@@ -6697,6 +6725,12 @@ pub(crate) async fn capture_recorded_message(state: &AppState, row_id: i64) {
     let res = state
         .store
         .write_async(move |conn| {
+            if session_is_isolated(&cap_session) {
+                conn.execute("UPDATE cmd_history SET capture_pending=0 WHERE id=?1", [row_id])?;
+                tracing::info!(session=%cap_session, message_id=row_id, verdict="isolated_capture_suppressed",
+                    "isolation enabled during intake; no fallback board changes applied");
+                return Ok(crate::db::WriteOutcome {applied:true,events:vec![]});
+            }
             let pending: bool = conn
                 .query_row(
                     "SELECT capture_pending!=0 AND card_id IS NULL FROM cmd_history WHERE id=?1",
@@ -7206,12 +7240,13 @@ async fn steer_enqueue_precond_with_id(
     // Owner peek/send stay working, which is the documented boundary. This
     // REFUSES rather than silently dropping: a producer that thinks it
     // delivered is how a board card gets claimed for a lane nobody is driving.
-    let guard = if guard.is_empty() && parse_env(name).get("CC_PROJECT").is_some() {
+    let project_managed = !session_is_isolated(name) && parse_env(name).get("CC_PROJECT").is_some();
+    let guard = if guard.is_empty() && project_managed {
         "project-steering"
     } else {
         guard
     };
-    if parse_env(name).get("CC_PROJECT").is_some()
+    if project_managed
         && !guard.is_empty()
         && !matches!(guard, "project-execution" | "project-steering")
     {
@@ -8776,7 +8811,67 @@ fn jsonl_submission_since(name: &str, text: &str, since: f64) -> bool {
     let Some(path) = session_jsonl_path(name) else {
         return false;
     };
-    submission_records_have(&iter_jsonl_tail(&path, 262_144), text, since)
+    let records = iter_jsonl_tail(&path, 262_144);
+    // AMUX-5018's regression check. One send that lands TWICE is invisible to
+    // every existing signal: `submission_records_have` answers "did it land",
+    // which is `true` for one copy and `true` for three, and the sender's
+    // receipt says "sent" either way.
+    //
+    // The 2026-09-23 specimen was one stored row and three arrivals, spliced
+    // identically each time. It no longer reproduces on three probes across
+    // both the direct and queued paths, and "no longer reproduces" is not a
+    // check. This is.
+    let landed = submission_delivery_count(&records, text, since);
+    if landed > 1 {
+        tracing::warn!(
+            session = name,
+            landed,
+            measured = true,
+            n_considered = records.len(),
+            verdict = "message_redelivered",
+            "one stored message reached the transcript more than once — the \
+             sender was told 'sent' once (AMUX-5018)"
+        );
+    }
+    landed > 0 || submission_records_have(&records, text, since)
+}
+
+/// How MANY times one submitted text appears among the records since the send.
+///
+/// Split from `submission_records_have` rather than folded into it, because the
+/// two questions have different right answers: acceptance wants "at least one"
+/// and must stay cheap and early-returning, while re-delivery only exists as a
+/// COUNT. A bool cannot express it, which is why three arrivals were reported
+/// as one delivery for as long as they were.
+fn submission_delivery_count(records: &[Value], text: &str, since: f64) -> usize {
+    let needle = text.trim();
+    if needle.is_empty() {
+        return 0;
+    }
+    records
+        .iter()
+        .filter(|rec| {
+            let msg = &rec["message"];
+            let role = msg["role"]
+                .as_str()
+                .or_else(|| rec["type"].as_str())
+                .unwrap_or("");
+            if role != "user" {
+                return false;
+            }
+            let hit = match &msg["content"] {
+                Value::String(s) => s.contains(needle),
+                Value::Array(items) => items
+                    .iter()
+                    .any(|c| c["text"].as_str().is_some_and(|t| t.contains(needle))),
+                _ => false,
+            };
+            hit && rec["timestamp"]
+                .as_str()
+                .and_then(parse_iso8601)
+                .is_some_and(|ts| ts >= since - 2.0)
+        })
+        .count()
 }
 
 fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
@@ -9913,6 +10008,9 @@ fn project_delivery_claim(
     name: &str,
     delivery: Option<&str>,
 ) -> Option<(String, i64, String)> {
+    if session_is_isolated(name) {
+        return None;
+    }
     let id = delivery?;
     let c = state.store.read().ok()?;
     let task:Option<String>=c.query_row("SELECT precond_card FROM steering_queue WHERE id=?1 AND session=?2 AND guard='project-steering'",rusqlite::params![id,name],|r|r.get(0)).ok()?;
@@ -9922,7 +10020,9 @@ fn project_delivery_claim(
 }
 
 fn project_send_hold(state: &AppState, name: &str, delivery: Option<&str>) -> Option<String> {
-    if delivery.is_none() && parse_env(name).get("CC_PROJECT").is_none() {
+    if session_is_isolated(name)
+        || (delivery.is_none() && parse_env(name).get("CC_PROJECT").is_none())
+    {
         return None;
     }
     let result = state.store.read().map_err(|e| e.to_string()).and_then(|c| {
@@ -10396,7 +10496,7 @@ async fn send_text_inner_bound(
     // selector, nothing else dismisses a menu, and every later send queues
     // behind the same one. Live specimen: mvs-infra held two messages for 400s+
     // and pressing Enter in the dashboard only added a third.
-    if waiting {
+    if waiting && !session_is_isolated(name) {
         let pane = tmux_capture(name, 30).await;
         // The resume-mode selector is amux's to answer, same as the rate-limit
         // menu below (D2; policy set once by Ethan 2026-08-19). Answering here
@@ -12467,7 +12567,7 @@ pub(crate) async fn start_session(
     // Startup profiles and scoped environment files may change directory.
     // Pin the actual provider invocation to the resolved workspace, even when
     // an earlier shell setup line was delayed by interactive initialization.
-    let cmd = provider_command_in_workspace(&work_dir, &cmd);
+    let cmd = provider_command_in_workspace(&work_dir, &cmd, isolated);
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -12593,6 +12693,7 @@ pub(crate) async fn start_session(
             let cmd_fresh = provider_command_in_workspace(
                 &work_dir,
                 &build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags),
+                isolated,
             );
             shell_step!(&cmd_fresh, true);
             for _ in 0..10 {
@@ -12713,9 +12814,10 @@ pub(crate) async fn start_session(
     // Keep pending identity until the durable steering queue accepts it. The
     // session.started row is the generation shared with board-drive; both
     // producers use exactly the same generation/card delivery id.
-    let pending_resume = meta.contains_key("pending_structured_resume")
-        || meta.contains_key("pending_log_reload")
-        || pending_context.is_some();
+    let pending_resume = !isolated
+        && (meta.contains_key("pending_structured_resume")
+            || meta.contains_key("pending_log_reload")
+            || pending_context.is_some());
     let context = pending_context.or_else(|| {
         pending_resume
             .then(|| {
@@ -12787,7 +12889,9 @@ pub(crate) async fn start_session(
             "started, but durable resume context is unresolved".into(),
         );
     };
-    if let Some(context) = context.filter(|_| parse_env(name).get("CC_PROJECT").is_none()) {
+    if let Some(context) =
+        context.filter(|_| !isolated && parse_env(name).get("CC_PROJECT").is_none())
+    {
         if let Err(error) = enqueue_generation_resume(state, &context, generation, &reason).await {
             tracing::warn!(session = name, %error, generation, verdict = "swap_resume_enqueue_failed",
                 "worker started; recovery remains pending for the next board-drive retry");
@@ -12797,7 +12901,7 @@ pub(crate) async fn start_session(
     let instr = meta_str(&load_meta(name), "instructions")
         .trim()
         .to_string();
-    if !instr.is_empty() && parse_env(name).get("CC_PROJECT").is_none() {
+    if !isolated && !instr.is_empty() && parse_env(name).get("CC_PROJECT").is_none() {
         let st2 = state.clone();
         let n = name.to_string();
         queue_start_prompt(st2, n, instr, SendOrigin::Owner).await;
@@ -12805,8 +12909,17 @@ pub(crate) async fn start_session(
     (true, "started".into())
 }
 
-fn provider_command_in_workspace(work_dir: &str, command: &str) -> String {
-    format!("cd {} && {command}", sh_quote(work_dir))
+fn provider_command_in_workspace(work_dir: &str, command: &str, isolated: bool) -> String {
+    // Not adding routing variables is insufficient: tmux and login profiles
+    // can inherit them from the server or a previous managed launch. Scrub at
+    // the final invocation, after profile/scoped-env loading, on fresh and
+    // resumed launches alike. Provider authentication remains untouched.
+    let scrub = if isolated {
+        "unset AMUX_SESSION AMUX_WORKER AMUX_URL AMUX_API AMUX_API_URL AMUX_HOME CC_HOME TMUX_SESSION_NAME AMUX_AUTH_TOKEN AMUX_TOKEN; "
+    } else {
+        ""
+    };
+    format!("{scrub}cd {} && {command}", sh_quote(work_dir))
 }
 
 /// Start the exact provider configured for a board-driven worker, and do not
@@ -12904,6 +13017,14 @@ fn resume_launch_context(
     meta: &Map<String, Value>,
     configured_cwd: &str,
 ) -> Result<Option<StructuredResumeContext>, String> {
+    if session_is_isolated(name) {
+        tracing::info!(
+            session = name,
+            verdict = "isolated_resume_context_suppressed",
+            "raw CLI resumes provider history without board context or standing-prompt replay"
+        );
+        return Ok(None);
+    }
     let exact = crate::runtime_jobs::board_drive::exact_resume_card(conn, name)?;
     let context = if let Some(value) = meta.get("pending_structured_resume_context") {
         let mut context: StructuredResumeContext =
@@ -14249,6 +14370,17 @@ pub async fn debug_logs(RawQuery(q): RawQuery) -> Response {
 }
 
 fn mark_pending_structured_resume(state: &AppState, name: &str, reason: &str) -> bool {
+    if session_is_isolated(name) {
+        tracing::info!(
+            session = name,
+            reason,
+            measured = true,
+            n_considered = 1,
+            verdict = "isolated_restart_context_suppressed",
+            "isolated configuration restart preserves CLI transport without board context"
+        );
+        return true;
+    }
     let meta = load_meta(name);
     let cfg = parse_env(name);
     let context = state
@@ -20651,7 +20783,7 @@ pub(crate) async fn steer_mutate(
         // `task.cardless` events in 7 days carrying a hardcoded false.
         let skip_board =
             body.get("no_board").map(py_truthy).unwrap_or(false) || no_board_re().is_match(&text);
-        if no_board_re().is_match(&text) {
+        if !session_is_isolated(name) && no_board_re().is_match(&text) {
             text = no_board_re().replace(&text, "").trim().to_string();
             if text.is_empty() {
                 return jresp(
@@ -20708,7 +20840,9 @@ pub(crate) async fn steer_mutate(
         // screen — intent is only knowable at the moment it existed (AMUX-2823).
         // The `selector-answer` guard also dedupes: at most one pending menu
         // answer per lane, which is the right cardinality for a keypress.
-        let picker_answer = {
+        let picker_answer = if session_is_isolated(name) {
+            false
+        } else {
             let pane = tmux_capture(name, 30).await;
             answers_visible_picker(&text, &pane)
         };
@@ -21074,9 +21208,9 @@ pub(crate) fn env_flag_on(v: Option<&str>) -> bool {
 /// keep in step (deliberately not a second spelling in a SQLite column). This
 /// function is the single source of truth every isolation decision consults:
 /// spawn-env suppression, `--mcp-config`, the peer fleet list, the fleet roster,
-/// the peer-send guard, and the status/rate-limit sweep. Owner prompt capture is
-/// deliberately not an isolation decision: the shared board records human work
-/// even when the worker receiving it has no injected harness (AMUX-4159).
+/// the peer-send guard, and the status/rate-limit sweep. Isolated owner input
+/// never participates in board capture, attribution, or decomposition; only
+/// transport receipts and ordinary message history are retained.
 ///
 /// AND WHAT GETS TYPED INTO ITS PANE, which that list did not cover for two
 /// months (Ethan, 2026-08-26: "we have an isolated worker but it still has amux
@@ -22098,6 +22232,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             }
         }
     }
+    let isolated = session_is_isolated(name);
     let mut text = body_str(body, "text");
     // AF-534 / AF-352, twice in five days. The isolation boundary is enforced at
     // REPLY time, on the peer: `cross_group_send_ok` refuses a send TO an
@@ -22123,6 +22258,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     // Project owner input has only next-turn delivery. Reject before reserving
     // an identity or writing history: replaying queue text must not duplicate it.
     if body.get("deliver_now").map(py_truthy).unwrap_or(false)
+        && !isolated
         && parse_env(name).get("CC_PROJECT").is_some()
     {
         tracing::info!(
@@ -22166,7 +22302,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     // longer carries the marker, so the flag must be threaded explicitly.
     let skip_board =
         body.get("no_board").map(py_truthy).unwrap_or(false) || no_board_re().is_match(&text);
-    if no_board_re().is_match(&text) {
+    if !isolated && no_board_re().is_match(&text) {
         text = no_board_re().replace(&text, "").trim().to_string();
     }
     let orig_text = text.clone();
@@ -22224,7 +22360,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             }),
         );
     }
-    if parse_env(name).get("CC_PROJECT").is_some() {
+    if !isolated && parse_env(name).get("CC_PROJECT").is_some() {
         let task = state
             .store
             .read()
@@ -22461,6 +22597,30 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             if let Some(id) = queue_id.as_deref() {
                 link_queued_message(state, name, row_id, id).await;
             }
+        } else if !origin.is_empty() && origin == name {
+            // A LANE SENDING TO ITSELF IS STILL A MESSAGE (AMUX-5030).
+            //
+            // The peer arm below reads `origin != name` to avoid attributing a
+            // lane's own text as a peer's. That is right about the ATTRIBUTION
+            // and wrong about the RECORD: with no arm for the equal case,
+            // neither branch ran and the send left no `cmd_history` row at all.
+            // Measured 2026-09-23: `amux send amux` from this lane, answered
+            // "sent (queued while generating)", delivered to the pane verbatim,
+            // and absent from cmd_history and from every other table carrying
+            // the text. The Messages ledger had no record it ever existed,
+            // which is the exact shape of "it says sent but it was never sent".
+            //
+            // Recorded as `session` with the origin equal to the lane, so the
+            // row says what it is: not a human prompt, and from itself. A new
+            // type would render "Unclassified" until both the server allowlist
+            // and `_msgKind` learned it.
+            let row_id = cmd_hist_record_with_id(
+                state, name, &orig_text, "session", &origin, skip_board, meta,
+            )
+            .await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
         } else if !origin.is_empty() && origin != name {
             // skip_board, not `false` (AMUX-4555). This is the DELIVERED peer
             // branch and the one the 37 reported cards came through.
@@ -22522,6 +22682,14 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                 let author = member_actor.as_deref().unwrap_or(email);
                 cmd_hist_record_full(state, name, &orig_text, "user", author, skip_board, meta)
                     .await;
+            } else if !origin.is_empty() && origin == name {
+                // Same gap on the failure side (AMUX-5030): a self-send that
+                // did NOT submit also left no row, so there was nothing to find
+                // afterwards on either outcome.
+                cmd_hist_record_full(
+                    state, name, &orig_text, "session", &origin, skip_board, meta,
+                )
+                .await;
             } else if !origin.is_empty() && origin != name {
                 // skip_board, not `false` (AMUX-4555). A PEER send is the shape
                 // this bug was reported from: mixpeek-orchestrator's every-4h
@@ -22892,13 +23060,6 @@ pub(crate) fn memory_post_verb(name: &str, body: &Value) -> Response {
         write_claude_memory(name, &wd);
     }
     j200(json!({"ok": true}))
-}
-
-/// Seed a role prompt without overwriting instructions edited by the owner.
-pub(crate) fn set_initial_instructions(name: &str, instructions: &str) {
-    if meta_str(&load_meta(name), "instructions").trim().is_empty() {
-        update_meta(name, &[("instructions", json!(instructions))]);
-    }
 }
 
 /// `instructions` as a callable verb, extracted for the promoted
@@ -26104,7 +26265,7 @@ async fn apply_live_config_change(
                         mode: SwapMode::Restart,
                         applied: restarted,
                         note: if restarted {
-                            " (live switch failed; session restarted to apply it, pending work resumes from board)"
+                            " (live switch failed; session restarted to apply the change)"
                         } else {
                             " (live switch failed AND the restart failed — the session may still be on the old model)"
                         },
@@ -26140,7 +26301,7 @@ async fn apply_live_config_change(
                 mode,
                 applied: restarted,
                 note: if restarted {
-                    " (session restarted; pending work resumes from board)"
+                    " (session restarted)"
                 } else {
                     " (restart failed)"
                 },
@@ -26340,7 +26501,7 @@ async fn config_patch_with_liveness(
             set_confirmed_active_model(name, &provider_val, None);
         }
         let suffix = if restarted {
-            " (session restarted; pending work resumes from board)"
+            " (session restarted)"
         } else {
             ""
         };
@@ -26622,7 +26783,7 @@ async fn config_patch_with_liveness(
         };
         let state_word = if enabled { "enabled" } else { "disabled" };
         let suffix = if restarted {
-            " (session restarted; pending work resumes from board)"
+            " (session restarted)"
         } else {
             ""
         };
@@ -27363,11 +27524,40 @@ mod tests {
     }
 
     #[test]
+    fn isolated_launch_scrubs_inherited_harness_routing_but_keeps_provider_auth() {
+        for isolated in [true, false] {
+            let script = super::provider_command_in_workspace(
+                "/", "printf '%s|%s|%s|%s|%s|%s|%s|%s' \"${AMUX_SESSION-unset}\" \"${AMUX_WORKER-unset}\" \"${AMUX_URL-unset}\" \"${AMUX_API-unset}\" \"${AMUX_HOME-unset}\" \"${CC_HOME-unset}\" \"${AMUX_AUTH_TOKEN-unset}\" \"$OPENAI_API_KEY\"", isolated);
+            let output = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .envs([
+                    ("AMUX_SESSION", "inherited"),
+                    ("AMUX_WORKER", "inherited"),
+                    ("AMUX_URL", "inherited"),
+                    ("AMUX_API", "inherited"),
+                    ("AMUX_HOME", "inherited"),
+                    ("CC_HOME", "inherited"),
+                    ("AMUX_AUTH_TOKEN", "inherited"),
+                    ("OPENAI_API_KEY", "fixture-auth"),
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let routing = if isolated { "unset" } else { "inherited" };
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{}|fixture-auth", [routing; 7].join("|"))
+            );
+        }
+    }
+
+    #[test]
     fn provider_launch_and_recovery_pin_workspace_even_after_shell_profile_changes_dir() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("worker's checkout");
         std::fs::create_dir(&workspace).unwrap();
-        let command = super::provider_command_in_workspace(workspace.to_str().unwrap(), "pwd -P");
+        let command =
+            super::provider_command_in_workspace(workspace.to_str().unwrap(), "pwd -P", false);
         let output = std::process::Command::new("sh")
             .args(["-c", &command])
             .current_dir("/")
@@ -27381,6 +27571,7 @@ mod tests {
         let absent = super::provider_command_in_workspace(
             "/nonexistent-amux-fixture-workspace",
             "printf provider-started",
+            false,
         );
         let output = std::process::Command::new("sh")
             .args(["-c", &absent])
@@ -32535,26 +32726,154 @@ mod tests {
         }
     }
 
-    /// AMUX-4159: `CC_ISOLATED` strips the agent-side harness; it must not strip
-    /// the owner's work from the shared ledger. This is the exact prompt shape
-    /// that was delivered to the live isolated `amux` lane with
-    /// submit_verdict=confirmed while card_id remained NULL.
     #[tokio::test]
-    async fn an_isolated_workers_owner_prompt_still_reaches_the_board() {
+    async fn isolated_owner_messages_never_use_boards_including_recovery_and_stale_projects() {
         let (st, dir) = state();
         let _g = crate::api::settings::test_env::set_home(dir.path());
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("raw.env"), "CC_ISOLATED=1\n").unwrap();
+        std::fs::write(
+            sessions.join("raw.env"),
+            "CC_ISOLATED=1\nCC_PROJECT=stale-project\n",
+        )
+        .unwrap();
+        assert!(!super::super::board_lifecycle::enabled("raw"));
+        let before = load_meta("raw");
+        assert!(mark_pending_structured_resume(&st, "raw", "effort change"));
+        assert_eq!(
+            load_meta("raw"),
+            before,
+            "raw config changes cannot manufacture resume instructions"
+        );
+        let empty_db = rusqlite::Connection::open_in_memory().unwrap();
+        let mut stale = Map::new();
+        stale.insert(
+            "pending_structured_resume_context".into(),
+            json!("invalid board context"),
+        );
         assert!(
-            session_is_isolated("raw"),
-            "fixture must exercise the isolated path"
+            resume_launch_context(&empty_db, "raw", &stale, "/missing-old-task")
+                .unwrap()
+                .is_none(),
+            "raw resume must not query the board or parse stale task metadata"
         );
 
-        cmd_hist_record_full(
+        for delivery in [Delivery::Direct, Delivery::Queued] {
+            cmd_hist_record_full(
+                &st,
+                "raw",
+                "Implement parser validation and regression tests",
+                "user",
+                "",
+                false,
+                DeliveryMeta {
+                    delivery: Some(delivery),
+                    queued_at_ms: None,
+                    submit_verdict: Some("confirmed"),
+                    client_meta: None,
+                },
+            )
+            .await;
+        }
+        {
+            let c = st.store.read().unwrap();
+            let linked: i64 = c.query_row("SELECT COUNT(*) FROM cmd_history WHERE session='raw' AND (card_id IS NOT NULL OR project_group IS NOT NULL OR capture_pending!=0 OR intake_attempts!=0 OR type!='user')", [], |r|r.get(0)).unwrap();
+            assert_eq!(
+                linked, 0,
+                "isolated receipts remain human messages without harness processing"
+            );
+            let count: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM cmd_history WHERE session='raw'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 2, "transport history is retained");
+        }
+        // Replay a receipt accepted before isolation was enabled. No model,
+        // qualifier attachment or fallback board capture may run on recovery.
+        st.store
+            .write_async(|c| {
+                c.execute(
+                    "UPDATE cmd_history SET capture_pending=1 WHERE session='raw'",
+                    [],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        for id in [1, 2] {
+            capture_recorded_message(&st, id).await;
+        }
+        let c = st.store.read().unwrap();
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT sum(capture_pending+intake_attempts) FROM cmd_history",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(c);
+        assert!(project_send_hold(&st, "raw", None).is_none());
+        let queued = steer_enqueue(&st, "raw", "literal owner message", "", "")
+            .await
+            .unwrap();
+        let c = st.store.read().unwrap();
+        let guard: Option<String> = c
+            .query_row(
+                "SELECT guard FROM steering_queue WHERE id=?1",
+                [queued],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            guard.is_none(),
+            "stale project metadata cannot convert raw input into project steering"
+        );
+        drop(c);
+        let literal = "[no-board] Implement literal queue proof\n  Keep indentation →";
+        let response = steer_mutate(
             &st,
             "raw",
-            "[09:23 AM] implement something like this\n\nhttps://x.com/undefinedki/status/2095942506433089832?s=46",
+            &Method::POST,
+            &HeaderMap::new(),
+            &json!({"text":literal,"record_history":true,"msg_id":"raw-queue-literal"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let c = st.store.read().unwrap();
+        let saved:(String,Option<String>,i64)=c.query_row("SELECT text,card_id,capture_pending FROM cmd_history WHERE session='raw' ORDER BY id DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(saved, (literal.into(), None, 0));
+        let queued: String = c
+            .query_row(
+                "SELECT text FROM steering_queue WHERE text=?1",
+                [literal],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, literal);
+        drop(c);
+        // Same task-bearing prompt into managed mode still captures work.
+        std::fs::write(
+            sessions.join("managed.env"),
+            "CC_ISOLATED=0\nAMUX_COMMAND_LIFECYCLE=0\n",
+        )
+        .unwrap();
+        cmd_hist_record_full(
+            &st,
+            "managed",
+            "Implement parser validation and regression tests",
             "user",
             "",
             false,
@@ -32566,22 +32885,16 @@ mod tests {
             },
         )
         .await;
-
-        let (card_id, verdict): (Option<String>, Option<String>) = st
-            .store
-            .read()
-            .unwrap()
-            .query_row(
-                "SELECT card_id, submit_verdict FROM cmd_history WHERE session='raw' ORDER BY id DESC LIMIT 1",
+        let c = st.store.read().unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM cmd_history WHERE session='managed' AND card_id IS NOT NULL",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get::<_, i64>(0)
             )
-            .unwrap();
-        assert!(
-            card_id.is_some(),
-            "an isolated owner must still see delivered work on the board"
+            .unwrap(),
+            1
         );
-        assert_eq!(verdict.as_deref(), Some("confirmed"));
     }
 
     // AMUX-3330: a pure status query is answered inline and produces no
@@ -38911,7 +39224,68 @@ mod submission_gate_tests {
         assert_eq!(submit_verdict_of(""), None);
     }
 
-    #[test]
+    /// AMUX-5018's regression check: ONE stored message reaching a pane more than
+/// once must be detectable.
+///
+/// The specimen was one `cmd_history` row and three arrivals, the first
+/// truncated at a fixed offset and the other two complete. Nothing saw it: the
+/// acceptance predicate answers "did this land", which is `true` for one copy
+/// and `true` for three, and the sender's receipt said "sent" either way. It no
+/// longer reproduces across three probes on both the direct and queued paths,
+/// and a non-reproduction is not a check.
+///
+/// A COUNT is the thing a bool could not express, so both are asserted here
+/// over the same records.
+#[test]
+fn one_message_landing_more_than_once_is_counted_not_flattened_to_landed() {
+    let sent_at = 100.0;
+    let say = |text: &str, at: &str| {
+        json!({
+            "type": "user",
+            "message": {"role": "user", "content": text},
+            "timestamp": at,
+        })
+    };
+    // 1970-01-01T00:01:41Z is 101.0, i.e. after `sent_at`.
+    let once = vec![say("rebuild the shared plane", "1970-01-01T00:01:41Z")];
+    let thrice = vec![
+        say("rebuild the shared pl", "1970-01-01T00:01:41Z"), // the truncated copy
+        say("rebuild the shared plane", "1970-01-01T00:01:42Z"),
+        say("rebuild the shared plane", "1970-01-01T00:01:43Z"),
+    ];
+
+    assert_eq!(
+        submission_delivery_count(&once, "rebuild the shared plane", sent_at),
+        1,
+        "a single delivery must count as one"
+    );
+    assert_eq!(
+        submission_delivery_count(&thrice, "rebuild the shared plane", sent_at),
+        2,
+        "the two COMPLETE copies are what the count is for; the spliced partial \
+         does not contain the full text and is a separate symptom"
+    );
+
+    // THE POINT: the existing predicate cannot tell these apart. Asserted so
+    // nobody deletes the count as a duplicate of the bool.
+    assert!(submission_records_have(&once, "rebuild the shared plane", sent_at));
+    assert!(submission_records_have(&thrice, "rebuild the shared plane", sent_at));
+
+    // And the count must be able to read ZERO, or a >1 test proves nothing
+    // about whether the function looks at its input at all.
+    assert_eq!(
+        submission_delivery_count(&once, "a phrase nobody sent", sent_at),
+        0
+    );
+    // Records older than the send are not this send's deliveries.
+    assert_eq!(
+        submission_delivery_count(&once, "rebuild the shared plane", 1_000.0),
+        0,
+        "an identical message from before the send must not count as a re-delivery"
+    );
+}
+
+#[test]
     fn native_queue_acceptance_requires_exact_new_provider_receipt() {
         let receipt = json!({"type":"queue-operation","operation":"enqueue",
             "timestamp":"1970-01-01T00:02:00Z","content":GHOST});
@@ -43656,8 +44030,14 @@ mod spawn_argv_secret_tests {
             "attachment": {"type": "queued_command",
                            "prompt": format!("{note}\nship the release")},
         })]);
-        assert!(real.contains("ship the release"), "the human's words were dropped: {real}");
-        assert!(!real.contains("task-notification"), "envelope survived beside the text: {real}");
+        assert!(
+            real.contains("ship the release"),
+            "the human's words were dropped: {real}"
+        );
+        assert!(
+            !real.contains("task-notification"),
+            "envelope survived beside the text: {real}"
+        );
 
         // PATH 2: message content, which was already correct and must stay so.
         let msg = render(vec![serde_json::json!({
@@ -43665,10 +44045,15 @@ mod spawn_argv_secret_tests {
             "message": {"role": "user", "content": [
                 {"type": "text", "text": format!("{note}\nrun the tests")}]},
         })]);
-        assert!(msg.contains("run the tests"), "the message path dropped the text: {msg}");
-        assert!(!msg.contains("task-notification"), "the message path leaked: {msg}");
+        assert!(
+            msg.contains("run the tests"),
+            "the message path dropped the text: {msg}"
+        );
+        assert!(
+            !msg.contains("task-notification"),
+            "the message path leaked: {msg}"
+        );
     }
-
 
     /// AMUX-5017. The peek pane is read beside Claude Code's terminal, which
     /// collapses a run of tool calls into "Ran 2 shell commands". The detail

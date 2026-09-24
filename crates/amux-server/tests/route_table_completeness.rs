@@ -206,7 +206,7 @@ fn the_module_that_regressed_is_inside_the_scanned_surface() {
         subs.len()
     );
     assert!(
-        subs.iter().any(|s| s == "/{id}/fan-out"),
-        "the scan must see the route whose omission this file exists for"
+        subs.iter().any(|s| s == "/{id}/decompose"),
+        "the scan must see a nested board action"
     );
 }

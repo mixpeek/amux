@@ -894,6 +894,23 @@ impl ModelClient for ReadOnlyCliModel {
             .map(|answer| answer.text)
     }
     fn complete_measured(&self, model: &str, prompt: &str) -> Result<ModelCompletion, String> {
+        match std::env::var("AMUX_HELPER_PROVIDER")
+            .unwrap_or_else(|_| "claude".into())
+            .as_str()
+        {
+            "codex" => return codex_helper::complete(model, prompt).map_err(|e| e.message),
+            "claude" => {}
+            provider => {
+                tracing::warn!(
+                    provider,
+                    measured = true,
+                    n_considered = 1,
+                    verdict = "helper_provider_unsupported",
+                    "read-only helper provider refused"
+                );
+                return Err(format!("unsupported read-only helper provider: {provider}"));
+            }
+        }
         let cli = helper_cli();
         if warm_helper::enabled() {
             let ready = warm_helper::take(&cli, model);

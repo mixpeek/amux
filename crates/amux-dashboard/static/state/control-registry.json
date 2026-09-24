@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2157,
+  "n_considered": 2127,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1676,42 +1676,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_orchLoad": {
-      "kind": "command._orchLoad",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchPlan": {
-      "kind": "command._orchPlan",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchStartRec": {
-      "kind": "command._orchStartRec",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchTextRoute": {
-      "kind": "command._orchTextRoute",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchToggleRec": {
-      "kind": "command._orchToggleRec",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchTranscribe": {
-      "kind": "command._orchTranscribe",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_outboxConfirmMessage": {
       "kind": "command._outboxConfirmMessage",
       "feedback_required": true,
@@ -2062,6 +2026,12 @@
     },
     "_projectCloseout": {
       "kind": "command._projectCloseout",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectDraftFields": {
+      "kind": "command._projectDraftFields",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

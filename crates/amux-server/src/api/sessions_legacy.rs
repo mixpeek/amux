@@ -4638,6 +4638,17 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             let Some(name) = v["name"].as_str().map(String::from) else {
                 continue;
             };
+            if v["isolated"].as_bool() == Some(true) {
+                // Raw CLI status must not be rewritten by historical board claims.
+                v["task_name"] = v["desc"].clone();
+                v["task_source"] = json!("desc");
+                v["task_board_id"] = json!("");
+                v["last_human_ts"] = json!(last_human_ts.get(&name).copied().unwrap_or(0));
+                v["runtime_board"] = json!({"measured":true,"n_considered":0,
+                    "status":"isolated","verdict":"isolated","violation":false,
+                    "card_id":null,"card_count":0,"card_live":false});
+                continue;
+            }
             let runtime_status = v["status"].as_str().unwrap_or("").to_string();
             let running = v["running"].as_bool().unwrap_or(false);
             let selection = task_markers

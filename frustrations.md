@@ -4107,3 +4107,47 @@ CARD: single-image-gs7
 SYMPTOM: The advertised 18972 server was down while a direct Rust acceptance test was described as harness progress. Its prior home lived under `/private/tmp/amux-astra-20260920`, which disappeared, and the process had no restart supervisor. After restoring a durable server, project request 501 explicitly scoped to the Mixpeek T7 slice still loaded all twenty indexed goal-spec sections, spent two gpt-5.5-low intake attempts, and remained pending with no board tasks or workers. The acceptance tick also warned every cadence about missing candidate heads on an empty project.
 COST: The browser could not show the allegedly running project or its evidence; the direct Docker proof never entered project state. The new live request wasted model calls and stalled before execution, while normal pending state polluted failure logs.
 FIX: Moved the isolated 18972 home to durable workspace storage under a KeepAlive launch agent with the required CLI paths and existing trusted certificates. The branch now narrows indexed spec coverage and model context only when the operator explicitly requests a Tn slice, retains full-spec coverage otherwise, warns when AMUX_HOME is volatile, and skips candidate-head inspection until tasks settle. Live retry, worker execution, and acceptance evidence are still under verification.
+
+## Isolated owner messages still created board work and gained prompt prefixes
+AREA: isolation
+SEVERITY: blocks
+STATUS: fixed (validation in progress)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: The raw Codex messaging probe created MRL-1/MRL-2 despite CC_ISOLATED=1; the dashboard prepended clock metadata, and a stale project association could route owner input into project steering.
+COST: Raw CLI communication silently enrolled in board intake, consumed interpretation tokens, and presented unrelated board claims as live work.
+FIX: Isolated delivery now skips task attribution, intake and recovery, preserves literal owner input, strips inherited harness routing at launch, and avoids answering provider menus automatically. Read-only message/delivery history remains. Runtime status and the isolated worker UI no longer borrow board claims or offer board automation. Logs emit isolated_message_passthrough / isolated_capture_suppressed. Regression coverage exercises direct and queued receipts, stale project settings, replay, and a managed-worker positive control.
+
+## `--continue` handed a lane a peer's conversation, and peek then read a third file
+AREA: cli
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: amux
+CARD: AMUX-5033
+SYMPTOM: A message recorded as delivered to `gs-4-gke-minimization` was absent from that lane's peek, its terminal, and the transcript peek resolves for it. `tmux capture-pane -t amux-gs-4-gke-minimization` prints a status bar reading `gs-10-zero-base-cicd`; of 12 live sessions it is the only one whose pane disagrees with its name. A third lane confirmed it from outside: mixpeek-finances' history holds `<cross-session-message from="uds:/tmp/cc-socks/7053.sock" from-name="gs-10-zero-base-cicd">`, and 7053 is the claude process inside gs-4's pane.
+COST: A message the owner sent was executed by the wrong lane; two lanes appended to one transcript; the correct lane looked idle and 22.7 hours stale. It read as a peek bug and cost a full investigation of the rendering path before the pane was checked. 21 lanes sit in a shared directory with no conversation id of their own, so the exposure is fleet-wide, not one accident.
+FIX: 2651ffea. `amux start` resumes by the lane's own `cc_conversation_id` when it has one, starts fresh and says so when the directory is shared and it has none, and keeps `--continue` only where recency is unambiguous. `scripts/test-resume-by-identity.sh`, 13 cells, wired into checks.yml.
+
+## A send refused by the server on a retry printed nothing at all
+AREA: cli
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: amux
+CARD: AMUX-5028
+SYMPTOM: `amux send` produced no output on either stream and stored no row. `_send_via_api`'s first attempt printed `send to X FAILED: <reason>` on refusal; the retry block three lines away was a bare `sys.exit(2)`, which the shell turns into `return 1`. The server log carried the missing half: `kind=cli-transport-failure ... "n":2 ... "curl_exit":16`, so two attempts failed at transport and the third reached the server and was refused.
+COST: The entire evidence of a dropped message was an absent line, which is indistinguishable from never having run the command. Fleet-wide over 2h40m the beacon recorded 12 transport failures across 3 lanes, so every refusal landing on the retry path has been silent for as long as the path has existed.
+FIX: a7bd6c14. Both arms print to stderr, and the retry arm names the attempt and the wait because by then two different things have gone wrong. `scripts/test-send-retry-annotation.sh` grew 6 cells over the shipped block's own bytes.
+
+## A schedule failing on every fire reached nobody, and no cross-board route exists
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-23
+SESSION: amux
+CARD: AMUX-5034
+SYMPTOM: SCHED-410 recorded `status=error` with a Python traceback in `note` on every 30-minute fire. Nothing counted it and nothing surfaced it; I found it by accident while chasing an unrelated invariant. All three routes to its owner were closed at once: `amux send coaching` -> "worker 'coaching' is not running"; `POST /api/board` on their board -> 403 `cross_board_create_forbidden`; `amux board request coaching` -> `cross_board_delegation_forbidden`.
+COST: A scheduled job produced nothing for an unknown number of days while reporting faithfully into a table nobody reads. The refusals are correct policy, so the gap is that a RECORDED failure with a named owner has no route when that owner is absent, and recording is treated as sufficient.
+FIX: The policy's own answer is "implement it yourself", and I did (Vault/Leadership 8895ce4; SCHED-410 now records `ok` on two consecutive runs). The remaining fix is surfacing: queue an `amux send` for a stopped lane's next start, or let the finder file on ITS OWN board naming the owner, or carry schedules erroring for N consecutive fires in the digest.
