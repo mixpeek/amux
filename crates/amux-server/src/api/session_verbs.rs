@@ -8121,6 +8121,14 @@ pub(crate) async fn is_running(name: &str) -> bool {
 /// MATCH A VISIBLE OPTION: the bare option number, or a prefix of the option's
 /// own words. Anything else is treated as an ordinary prompt and delivered
 /// normally.
+/// An owner send that finds the lane at a dialog is typed only when it answers
+/// the visible options. Anything else is queued (see the call site in
+/// `send_text_inner_bound`): typed text vanishes into the dialog and its Enter
+/// picks the highlighted option, which on a permission prompt is "Yes".
+pub(crate) fn owner_text_parks_at_dialog(text: &str, pane: &str) -> bool {
+    !answers_visible_picker(text, pane)
+}
+
 pub(crate) fn answers_visible_picker(text: &str, pane: &str) -> bool {
     let t = text.trim().to_lowercase();
     if t.is_empty() || t.chars().count() > 120 {
@@ -8922,6 +8930,15 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
                 "this lane is isolated: amux automation is not delivered into it. Send as the \
                  owner, or clear CC_ISOLATED on the lane if it should take automation.",
             ),
+        );
+    }
+    // --- 409: amux's own paste of this exact message is already in the
+    //     composer and will be submitted at the next idle boundary. Nothing is
+    //     lost and nothing needs retrying; 500 would send someone debugging.
+    if m.starts_with("this message is already pasted in the composer") {
+        return (
+            StatusCode::CONFLICT,
+            Some("the message is in the lane's composer and submits at its next idle boundary; do not resend it"),
         );
     }
     // --- 404: the target does not exist.
@@ -10983,6 +11000,36 @@ async fn send_text_inner_bound(
             }
             Err(reason) => (false, block_reason_refused(reason, name)),
         };
+    }
+    // AN OWNER MESSAGE IS NOT A MENU ANSWER just because a menu is up
+    // (2026-09-24, live on ah-toggle-e2e MSG-68664). Owner sends skip the park
+    // above so a person can answer a dialog from the dashboard, and that stays
+    // true for text that answers the visible options ("1", "yes"). Anything
+    // else was typed INTO the permission dialog: the dialog ignored the text,
+    // the Enter chose the highlighted "1. Yes", a git commit was approved that
+    // nobody approved, and the send still reported `confirmed`. Queue it and
+    // say so; steering delivers it once the dialog resolves.
+    if waiting && !defer_if_busy && !from_steering {
+        let pane = tmux_capture(name, 30).await;
+        if owner_text_parks_at_dialog(&text, &pane) {
+            tracing::warn!(
+                session = %name,
+                preview = %chars_truncate(&text, 80),
+                verdict = "owner_send_parked_at_selector",
+                "owner message is not an answer to the visible dialog; queued instead of typed into it"
+            );
+            return match steer_enqueue(state, name, &text, park_guard(origin), "").await {
+                Ok(id) => {
+                    *queue_id = Some(id);
+                    (
+                        true,
+                        "queued (steering) — worker is waiting on a dialog; delivers once it is answered"
+                            .into(),
+                    )
+                }
+                Err(reason) => (false, block_reason_refused(reason, name)),
+            };
+        }
     }
     if waiting && from_steering {
         // A live selector is NOT overridden by the deadline: typing here and
@@ -35216,6 +35263,24 @@ CLAUDE-POSTFIX-COMPLETE
             !has_current_api_error(prose),
             "prose quoting the phrase mid-line must not match (anchored)"
         );
+    }
+
+    #[test]
+    fn an_owner_message_at_a_permission_dialog_is_queued_not_typed() {
+        // The live pane from ah-toggle-e2e, 2026-09-24 (MSG-68664).
+        let pane = " Bash command\n\n   git add SECOND.txt && git commit -m \"add second.\"\n\n \
+                    This command requires approval\n\n Do you want to proceed?\n \u{276f} 1. Yes\n   \
+                    2. Yes, and don't ask again for git add commands\n   3. No\n\n Esc to cancel \u{00b7} Tab to amend";
+        assert!(owner_text_parks_at_dialog(
+            "Create a file named SECOND.txt containing the word toggle-two, then commit it.",
+            pane
+        ));
+        for answer in ["1", "3", "3."] {
+            assert!(!owner_text_parks_at_dialog(answer, pane), "{answer} answers the dialog");
+        }
+        let src = include_str!("session_verbs.rs");
+        let site = src.find("if owner_text_parks_at_dialog(&text, &pane) {").expect("call site");
+        assert!(src[site..site + 900].contains("steer_enqueue("), "a parked owner send must be queued");
     }
 
     /// AMUX-3054: an empty send is the user pressing "Enter" at a picker. The

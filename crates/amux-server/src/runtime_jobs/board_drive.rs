@@ -1314,10 +1314,16 @@ impl LiveFleet {
             .write_async(move |conn| {
                 // Best-effort: a missing attribution row must never stop a
                 // delivery. The pickup is the product; this is its receipt.
+                // delivery='queued': every caller records AFTER a steering
+                // enqueue, and the steering deliverer stamps delivered_at only
+                // on queued rows. Left NULL, each pickup logged
+                // delivery_stamp_unmatched and the Messages tab never showed it
+                // as delivered.
+                let at_ms = (ts * 1000.0) as i64;
                 let _ = conn.execute(
-                    "INSERT INTO cmd_history (text, type, session, ts, origin) \
-                     VALUES (?1, 'pickup', ?2, ?3, 'board-drive')",
-                    rusqlite::params![text, lane, (ts * 1000.0) as i64],
+                    "INSERT INTO cmd_history (text, type, session, ts, origin, delivery, queued_at) \
+                     VALUES (?1, 'pickup', ?2, ?3, 'board-drive', 'queued', ?3)",
+                    rusqlite::params![text, lane, at_ms],
                 );
                 Ok(crate::db::WriteOutcome {
                     applied: true,
@@ -1653,10 +1659,28 @@ fn dispatchable_where() -> String {
          AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id \
                          AND lower(t.tag) LIKE 'needs:you%') \
          AND i.updated >= ?2 \
+         AND NOT EXISTS ({delivered}) \
          AND i.id NOT IN ({claimed})",
+        delivered = DELIVERED_MESSAGE_CARD_SQL,
         claimed = claimed_since_sql(3)
     )
 }
+
+/// A card the background planner filed from an owner message whose TEXT was
+/// already delivered to the worker. The worker has the request verbatim, so the
+/// card documents the work; dispatching it again sent a ~250-word
+/// "[amux auto-pickup] Claimed X -- work it now" prompt about work already in
+/// hand (Ethan, 2026-09-24: decomposition "should be a background/async thing
+/// so doesnt impact worker"; seen live on ATE-139 from MSG-68664).
+///
+/// No force-adherence lookup is needed: under force-adherence the message is
+/// recorded `delivery='board'` and withheld, so this never matches and the
+/// card stays the delivery. Correlated on `i`, the dispatchable alias.
+const DELIVERED_MESSAGE_CARD_SQL: &str = "SELECT 1 FROM cmd_history h \
+     WHERE h.session=i.session AND h.card_id IS NOT NULL \
+       AND h.delivery IN ('direct','queued') AND h.delivered_at IS NOT NULL \
+       AND (h.card_id=i.id OR EXISTS (SELECT 1 FROM json_each(\
+            COALESCE(json_extract(h.intake_result,'$.task_ids'),'[]')) j WHERE j.value=i.id))";
 
 /// py:14403 — the count over EXACTLY the rows pickup selects from, via
 /// [`DISPATCHABLE_WHERE`]. Per-card refusals (junk shells, structured deps) still
@@ -12797,6 +12821,58 @@ mod tests {
             rusqlite::params![id, t, added_at],
         )
         .expect("tag");
+    }
+
+    /// ATE-139 from MSG-68664: the owner's text went to the worker directly
+    /// and the planner filed a card in the background. Pickup must not prompt
+    /// the worker about work it already has. The same card from a WITHHELD
+    /// message (force-adherence, delivery='board') is the delivery, so it
+    /// must still dispatch. Covers the multi-card plan via task_ids.
+    #[test]
+    fn a_card_planned_from_a_delivered_message_is_documentation_not_a_pickup() {
+        let conn = board_db();
+        let desc = "SCOPE: x\n- [ ] do it";
+        let card = |id: &str| {
+            add_card(&conn, id, "lane", "todo", "Create SECOND.txt", desc);
+            conn.execute(
+                "UPDATE issues SET source='command', next_action='Write the file' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        };
+        let message = |card_id: &str, delivery: &str, delivered: bool, task_ids: &str| {
+            conn.execute(
+                "INSERT INTO cmd_history(text,type,session,ts,delivery,delivered_at,card_id,intake_result) \
+                 VALUES ('Create SECOND.txt','user','lane',1,?1,?2,?3,?4)",
+                rusqlite::params![
+                    delivery,
+                    delivered.then_some(1i64),
+                    card_id,
+                    format!("{{\"task_ids\":{task_ids}}}")
+                ],
+            )
+            .unwrap();
+        };
+
+        card("WITHHELD-1");
+        message("WITHHELD-1", "board", false, "[\"WITHHELD-1\"]");
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("WITHHELD-1"),
+            "a withheld message's card is the delivery and must dispatch"
+        );
+        conn.execute("DELETE FROM issues WHERE id='WITHHELD-1'", []).unwrap();
+
+        card("SENT-1");
+        card("SENT-2");
+        message("SENT-1", "direct", true, "[\"SENT-1\",\"SENT-2\"]");
+        let pick = select_pickup_with(&conn, "lane", now_f64(), false);
+        assert_eq!(
+            claimed(&pick),
+            None,
+            "the worker already has this text; no pickup prompt: {pick:?}"
+        );
+        assert_eq!(eligible_todo_count(&conn, "lane", now_f64()), 0);
     }
 
     fn claimed(p: &Pickup) -> Option<&str> {
