@@ -20192,7 +20192,35 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                         let (ok, detail) = send_keys_op(name, "r").await;
                         tracing::warn!(session=%name,project=%project,ok,detail=%detail,measured=true,n_considered=1,verdict="project_repair_codex_conversation_retry","retrying exact Codex conversation screen for a claimable project repair");
                         emit_event(state,name,"project.conversation_retry",Some(json!({"ok":ok,"detail":detail})),None,"status").await;
-                        if ok { continue; }
+                        if ok {
+                            sleep_ms(2000).await;
+                            if codex_conversation_open_elsewhere(&tmux_capture(name, 15).await)
+                                && project_repair_claim_ready(state, project, name)
+                            {
+                                // The other app still owns the old Codex
+                                // conversation. The task packet and candidate
+                                // files are durable, so release only this
+                                // worker's locked process; the normal project
+                                // claim path will start a fresh conversation.
+                                // Never attempt to take over the other owner.
+                                send_key(name, "Escape").await;
+                                sleep_ms(500).await;
+                                let (stopped, stop_detail) = stop_session(state, name).await;
+                                if stopped && !is_running(name).await {
+                                    kill_tmux_session(name).await;
+                                    let mut meta = load_meta(name);
+                                    meta.remove("codex_session_id");
+                                    meta.remove("pending_structured_resume_context");
+                                    meta.remove("pending_structured_resume_token");
+                                    save_meta(name, &meta);
+                                    tracing::warn!(session=%name,project=%project,measured=true,n_considered=1,verdict="project_repair_codex_conversation_recycled","locked local process stopped; next project claim will launch a fresh Codex conversation in the registered checkout");
+                                    emit_event(state,name,"project.conversation_recycled",Some(json!({"reason":"codex_open_elsewhere","stopped":true})),None,"status").await;
+                                } else {
+                                    tracing::warn!(session=%name,project=%project,stopped,detail=%stop_detail,measured=true,n_considered=1,verdict="project_repair_codex_recycle_held","locked provider could not be stopped; conversation identity retained");
+                                }
+                            }
+                            continue;
+                        }
                     }
                 }
             }
