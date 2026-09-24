@@ -4928,3 +4928,17 @@ FIX: One project-owned checkout and branch, serialized claims and direct starts,
 - **Fix:** keep task-claimed usage and scope additional executor usage to its first durable project claim. Retain the original ledger history. The `project_usage_assignment_scoped` log records the boundary policy without exposing messages.
 - **Verification:** add pre-project Claude history to the real project-budget regression; it must remain in the ledger without changing the project total.
 - **Additional case:** delegated Claude transcripts inherit their parent's identity. Recovery now follows that same parent mapping, including subagent records, rather than leaving foreign child usage on the project.
+
+### 2026-09-24 — project checkout reuse displayed as a branch conflict (AF-952)
+
+- **Symptom:** the second project worker showed a conflict warning solely because its completed predecessor shared the same branch.
+- **Root cause:** the generic branch collision check did not distinguish the project's registered shared checkout from unrelated workers on a branch.
+- **Fix:** the Git map identifies validated project checkout ownership; the UI describes intentional project sharing and keeps warnings when an unmanaged or different-project worker also uses the branch. Reclassification logs `project_shared_checkout_classified`.
+- **Verification:** backend registration/branch/isolation tests and UI classification tests cover the intended pair plus outside-worker and different-project collisions.
+
+### 2026-09-24 — copied acceptance prose lost verifier ownership (AF-953)
+
+- **Symptom:** the second task completed, but whole-project verification rejected historical runtime evidence and no repair worker started.
+- **Root cause:** intake copied an approved requirement literally without its contract marker. The executor did not receive the receipt protocol; failure routing could not find the task. Receipt validation errors were also omitted from repair context.
+- **Fix:** reconcile unambiguous exact requirement matches into approved verifier markers on the same task before dispatch. Already-completed owners receive bounded repair through the normal claim/budget path with retained history. Include receipt errors in failure packets. Log `project.contract_ownership_reconciled`.
+- **Verification:** regressions require task reuse, no duplicate board items, normal automatic claiming, retained prior report, idempotence and preserved human approval boundary.

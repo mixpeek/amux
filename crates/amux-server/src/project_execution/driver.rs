@@ -1156,6 +1156,8 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             let name = name.to_string();
             move |c| {
                 let mut result=crate::api::board_lifecycle::reconcile_project_intake_order(c,&name)?;
+                let bindings=super::acceptance::reconcile_contract_ownership(c,&name).map_err(store::sql_error)?;
+                result.applied|=bindings.applied;result.events.extend(bindings.events);
                 let reviews=super::acceptance::reconcile_review_preparation(c,&name).map_err(store::sql_error)?;
                 result.applied|=reviews.applied;result.events.extend(reviews.events);
                 let statuses=planner::reconcile_issue_statuses(c,&name).map_err(store::sql_error)?;
