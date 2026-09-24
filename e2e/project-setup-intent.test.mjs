@@ -50,3 +50,16 @@ test('empty project board distinguishes retained intake from a missing outcome',
  assert.match(ctx._projectEmptyTasksHtml(held),/Do not resubmit/);
  assert.equal(ctx._projectIntakeState({commands:[{pending:false}]}),null);
 });
+
+test('project worker lifecycle uses measured provider status rather than process presence',()=>{
+ const worker={name:'demo',lifecycle:'active'};
+ const session={name:'demo',running:true,lifecycle:'active',status:'waiting'};
+ const ctx=vm.createContext({sessions:[session],_expiredWorkerInventory:new Map()});
+ vm.runInContext(source.slice(source.indexOf('function _projectWorkerRuntime('),source.indexOf('async function _projectResumeWorker(')),ctx);
+ assert.equal(ctx._projectWorkerRuntime(worker).label,'Needs input');
+ session.status='active';assert.equal(ctx._projectWorkerRuntime(worker).label,'Working');
+ session.status='idle';assert.equal(ctx._projectWorkerRuntime(worker).label,'Idle');
+ session.running=false;assert.equal(ctx._projectWorkerRuntime(worker).label,'Stopped');
+ session.lifecycle='paused';assert.equal(ctx._projectWorkerRuntime(worker).label,'Paused');
+ ctx.sessions=[];assert.equal(ctx._projectWorkerRuntime({name:'demo',lifecycle:'expired'}).label,'Expired');
+});

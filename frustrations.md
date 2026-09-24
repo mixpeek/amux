@@ -4397,3 +4397,25 @@ CARD: AF-947
 SYMPTOM: After project resume, both Luna workers reached Codex but waited at "Hooks need review" before their task could be delivered. These hooks had not been authorized.
 COST: Project looked driving while no model execution could begin without manual terminal input.
 FIX: Active non-isolated Codex project workers may select only the exact "Continue without trusting (hooks won't run)" bootstrap option. Never trust hooks, edit trust state, answer tool approvals, or touch paused/isolated workers. Reobserve the selected option before Enter and log each action; retain normal status fallback when hooks are unavailable. Test precise menu recognition and all scope guards.
+
+## Project worker card hid the provider's waiting state
+AREA: ux
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Project Workers showed "Active · running" while the same worker terminal correctly showed "needs input" at its hook review picker.
+COST: Process existence looked like task progress, so the user had to open each worker to find a startup block.
+FIX: Reuse the measured session provider status for active project-worker labels: Working, Idle, Needs input, Starting, Error, Rate limited. Keep paused, archived and expired lifecycle states distinct. Test waiting-to-working-to-idle and stopped/paused/expired transitions.
+
+## Safe startup selector key was rejected by its transport
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Live hook-review recovery logged ok=false: key '3' not in allowed set. The parser test passed but the key sender allowed only the earlier numeric option 1.
+COST: Workers remained at the startup menu until the transport mismatch was fixed.
+FIX: Admit the exact option key 3 and assert the parser's selected key belongs to the sender's actual allowed set. Name the event a safe-choice request, not a completed decline; success remains subject to subsequent pane observation and normal task delivery confirmation.

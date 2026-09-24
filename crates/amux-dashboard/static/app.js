@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1064';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1065';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45270,7 +45270,8 @@ function _projectWorkerRuntime(worker) {
   if(reg) lifecycle=reg.lifecycle || (reg.archived?'archived':reg.paused?'paused':'active');
   else if(inv && (!lifecycle || lifecycle==='missing')) lifecycle='expired';
   const running=!!reg && reg.running!==false && reg.status!=='stopped';
-  const label=lifecycle==='active'?(running?'Active · running':'Active · stopped'):lifecycle==='review'?'Retained for review':lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
+  const liveLabel=({active:'Working',working:'Working',idle:'Idle',waiting:'Needs input',starting:'Starting',error:'Error',rate_limited:'Rate limited'})[reg?.status] || 'Running';
+  const label=lifecycle==='active'?(running?liveLabel:'Stopped'):lifecycle==='review'?'Retained for review':lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
   return {reg,inv,lifecycle,running,label};
 }
 async function _projectResumeWorker(name) {

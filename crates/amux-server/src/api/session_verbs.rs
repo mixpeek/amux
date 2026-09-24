@@ -10999,7 +10999,7 @@ const ALLOWED_TMUX_KEYS: [&str; 47] = [
 ];
 // "1": the resume-mode auto-answer selects BY DIGIT (see resume_mode_action —
 // Enter would take whatever is highlighted, including "Don't ask me again").
-const ALLOWED_TMUX_CHAR_KEYS: [&str; 5] = ["y", "n", "q", "x", "1"];
+const ALLOWED_TMUX_CHAR_KEYS: [&str; 6] = ["y", "n", "q", "x", "1", "3"];
 
 async fn send_keys_op(name: &str, keys: &str) -> (bool, String) {
     if !is_running(name).await {
@@ -18987,8 +18987,8 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         let pane = tmux_capture(name, 30).await;
         if let Some(key) = project_hook_review_key(&cfg, &pane) {
             let (ok, msg) = send_keys_op(name, key).await;
-            tracing::info!(session=%name,ok,detail=%msg,measured=true,n_considered=1,verdict="project_untrusted_hooks_declined","continuing project startup without granting hook trust");
-            emit_event(state,name,"session.untrusted_hooks_declined",Some(json!({"choice":"continue-without-trusting","key":key,"ok":ok,"detail":msg})),None,"status").await;
+            tracing::info!(session=%name,ok,detail=%msg,measured=true,n_considered=1,verdict="project_hook_review_safe_choice","requesting safe startup choice without granting hook trust");
+            emit_event(state,name,"session.hook_review_choice",Some(json!({"choice":"continue-without-trusting","key":key,"ok":ok,"detail":msg})),None,"status").await;
             // Reobserve on the next sweep: never press Enter on an assumed
             // selection or send task text while the picker is transitioning.
             continue;
@@ -45689,6 +45689,7 @@ mod project_hook_review_tests {
         let mut cfg=EnvFile::load(&path);
         let pane="Hooks need review\n10 hooks are new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won't run)\nPress enter to confirm or esc to go back";
         assert_eq!(project_hook_review_key(&cfg,pane),Some("3"));
+        assert!(ALLOWED_TMUX_CHAR_KEYS.contains(&project_hook_review_key(&cfg,pane).unwrap()), "the safe choice must be accepted by the actual key sender");
         let selected=pane.replace("› 1.","  1.").replace("  3.","› 3.");
         assert_eq!(project_hook_review_key(&cfg,&selected),Some("Enter"));
         assert_eq!(project_hook_review_key(&cfg,&pane.replace("3. Continue without trusting (hooks won't run)","3. Trust all")),None);
