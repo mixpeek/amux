@@ -96,6 +96,68 @@ else
   echo "  ok    a missing attempt number crashes rather than printing an empty field"
 fi
 
+# 3b. A REFUSAL ON THE RETRY PATH MUST SPEAK (AMUX-5028).
+#
+# This arm shipped as a bare `sys.exit(2)`, which the shell turns into
+# `return 1`. Measured on lat-probe 2026-09-23: two transport failures
+# (curl_exit 16, confirmed in the cli-transport beacon) followed by a server
+# refusal on the third attempt produced NO output on either stream and no
+# cmd_history row. The operator's only evidence was an absent line, which is
+# indistinguishable from not having run the command.
+#
+# Cells 1-3 above cannot see this: they feed a SUCCESS response, so they never
+# enter the refusal arm at all.
+REFUSAL='{"error":"worker is paused"}'
+if out3=$(_R=2 _R_WAITED=4 RESP="$REFUSAL" TGT="somelane" python3 -c "$PY" 2>&1); then
+  rc3=0
+else
+  rc3=$?
+fi
+check "a refused retry names the target"   "send to somelane FAILED" "$out3"
+check "a refused retry quotes the reason"  "worker is paused"        "$out3"
+check "a refused retry names the attempt"  "retry 2"                 "$out3"
+check_not "a refusal is never reported as sent" "sent to somelane"   "$out3"
+CELLS=$((CELLS + 1))
+if [ "$rc3" -eq 2 ]; then
+  echo "  ok    a refusal still exits 2, so the shell does not fall back"
+else
+  echo "  FAIL  a refusal exited $rc3; the shell reads anything but 2 as retryable"
+  FAILED=$((FAILED + 1))
+fi
+
+# The refusal must reach STDERR, not stdout. `amux send` output gets piped and
+# tail'd; a refusal on stdout is one `| tail -1` away from invisible, and a
+# caller capturing the send's output reads it as a value.
+if out4=$(_R=2 _R_WAITED=4 RESP="$REFUSAL" TGT="somelane" python3 -c "$PY" 2>/dev/null); then :; fi
+CELLS=$((CELLS + 1))
+if [ -z "$out4" ]; then
+  echo "  ok    nothing about a refusal is written to stdout"
+else
+  echo "  FAIL  the refusal went to stdout: $out4"
+  FAILED=$((FAILED + 1))
+fi
+
+# And the SAME property one layer up, on the first-attempt block, which had the
+# opposite defect: it spoke, but on stdout.
+PY_FIRST=$(awk '
+  /python3 - <<.PYEOF./ { collecting=1; buf=""; next }
+  collecting && /^PYEOF$/ { if (buf ~ /origin-stamped\)/ && buf !~ /retry/) print buf; collecting=0; next }
+  collecting { buf = buf $0 "\n" }
+' amux)
+CELLS=$((CELLS + 1))
+if [ -z "$PY_FIRST" ]; then
+  echo "  FAIL  could not extract the first-attempt block; this cell cannot run"
+  FAILED=$((FAILED + 1))
+else
+  if out5=$(RESP="$REFUSAL" TGT="somelane" python3 -c "$PY_FIRST" 2>/dev/null); then :; fi
+  if [ -z "$out5" ]; then
+    echo "  ok    the first attempt's refusal is on stderr too"
+  else
+    echo "  FAIL  the first attempt's refusal went to stdout: $out5"
+    FAILED=$((FAILED + 1))
+  fi
+fi
+
 # 4. THE SHELL HALF. Cells 1-3 drive the python directly, so deleting the
 #    assignment that FEEDS it leaves them all green — measured: mutating
 #    `_R="$_retry" _R_WAITED=... RESP=` down to `RESP=` kept 9 of 9 passing.

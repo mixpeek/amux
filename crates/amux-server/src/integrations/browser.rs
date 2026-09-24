@@ -430,6 +430,19 @@ pub struct BrowserProfile {
     pub domains: Vec<String>,
     pub label: String,
     pub registered: bool,
+    /// Does the directory this name resolves to actually EXIST?
+    ///
+    /// `registered` and `on_disk` are independent and the interesting case is
+    /// registered-and-absent: the registry keeps the profile's `domains`, so a
+    /// picker shows a profile claiming to be signed into us.posthog.com with
+    /// nothing behind it. Starting it creates an empty dir and the lane acts
+    /// LOGGED OUT while every field in the listing says otherwise.
+    ///
+    /// `last_used` is already None in that case, but None also means "made and
+    /// never opened", so it cannot carry this. Measured 2026-09-23: 11 registry
+    /// entries, 2 of them (`ethan-posthog`, `lob`) with no directory, and
+    /// nothing anywhere said so (AMUX-5020).
+    pub on_disk: bool,
 }
 
 fn dir_mtime_unix(p: &Path) -> Option<i64> {
@@ -522,7 +535,25 @@ pub fn list_profiles(home: &Path, with_sizes: bool) -> Vec<BrowserProfile> {
                     .unwrap_or("")
                     .to_string(),
                 registered: meta.is_some(),
+                on_disk: dir.is_dir(),
                 name,
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .inspect(|p| {
+            // Two-fix rule: the next one of these announces itself in a sweep
+            // rather than waiting for somebody to notice a logged-out lane.
+            if p.registered && !p.on_disk {
+                tracing::warn!(
+                    profile = %p.name,
+                    path = %p.path,
+                    domains = p.domains.len(),
+                    measured = true,
+                    verdict = "browser_registered_profile_missing",
+                    "browser: a REGISTERED profile has no directory — starting it \
+                     creates an empty one and the lane acts logged out"
+                );
             }
         })
         .collect()
@@ -5578,6 +5609,45 @@ mod tests {
         // sizes are opt-in
         let slim = list_profiles(home.path(), false);
         assert!(slim.iter().all(|p| p.size_mb.is_none()));
+    }
+
+    /// AMUX-5020. `registered` and `last_used` together cannot express
+    /// "the registry says this profile exists and the directory is gone".
+    ///
+    /// Measured live: 11 registry entries, 2 with no directory, and every field
+    /// in the listing reads as a normal never-opened profile — including the
+    /// `domains` the registry still carries, which is the part that lies. A
+    /// lane that starts it gets a fresh empty profile and is logged out.
+    #[test]
+    fn a_registered_profile_whose_directory_is_gone_is_distinguishable() {
+        let home = fake_home();
+        let profiles = home.path().join("playwright-auth/profiles");
+        std::fs::create_dir_all(profiles.join("present")).unwrap();
+        std::fs::create_dir_all(home.path().join("playwright-auth/profile")).unwrap();
+        std::fs::write(
+            home.path().join("playwright-auth/profiles.json"),
+            r#"{"present":{"domains":["a.example"],"label":"here"},
+                "gone":{"domains":["us.posthog.com"],"label":"PostHog"}}"#,
+        )
+        .unwrap();
+
+        let list = list_profiles(home.path(), false);
+        let gone = list.iter().find(|p| p.name == "gone").expect("registry entry is listed");
+        let present = list.iter().find(|p| p.name == "present").unwrap();
+
+        assert!(gone.registered, "the registry entry is still what makes it visible");
+        assert!(!gone.on_disk, "there is no directory behind it");
+        assert!(present.registered && present.on_disk, "the control is both");
+
+        // THE PART THAT LIES, asserted so nobody removes the field thinking
+        // last_used already covers it: the absent profile still advertises a
+        // domain it cannot be signed into.
+        assert_eq!(gone.domains, vec!["us.posthog.com"]);
+        assert!(gone.last_used.is_none());
+
+        // `default` exists here, so a listing where everything is on_disk is
+        // reachable and the field is not a constant.
+        assert!(list.iter().any(|p| p.name == "default" && p.on_disk));
     }
 
     #[test]
