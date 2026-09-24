@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""A stand-in for the `claude` CLI, for delivery chaos tests. No model runs.
+
+It paints the composer frame amux reads (the same shape as `frame_cleared` in
+session_verbs.rs), accepts whatever amux pastes and submits, and appends every
+submitted line to a log. That log is GROUND TRUTH: it records what actually
+reached the agent, independent of what amux believes it sent.
+
+Log path: $FAKE_CLAUDE_LOG (required). One JSON object per line:
+  {"seq": <1-based>, "text": <submitted line>, "t": <epoch seconds>}
+plus one launch record per process, written before anything is painted:
+  {"event": "launch", "cwd": <os.getcwd()>, "pid": <pid>, "argv": [...], "t": ...}
+The launch cwd is the agent's own report of where it runs, which is what a
+worktree test has to prove (not what amux believes it passed to tmux).
+
+It ignores every argument amux passes (--model, --resume, ...), because the
+point is to exercise amux's paste, Enter and submission-verification path,
+not the model.
+"""
+import json, os, sys, time, termios, tty
+
+LOG = os.environ.get("FAKE_CLAUDE_LOG")
+# Optional: every raw input byte, for diagnosing what the harness actually typed.
+RAW = os.environ.get("FAKE_CLAUDE_RAW_LOG")
+if not LOG:
+    sys.stderr.write("FAKE_CLAUDE_LOG is required\n")
+    sys.exit(2)
+
+RULE = "─" * 24
+buf = []          # the composer's current contents
+seq = 0           # submissions recorded so far
+
+def draw():
+    # Clear, then paint the idle frame amux recognises: a ruled composer box
+    # and the bypass footer, with no spinner line (no spinner == not generating).
+    out = sys.stdout
+    out.write("\x1b[2J\x1b[H")
+    out.write(RULE + " fake-claude " + RULE + "\r\n")
+    out.write("❯ " + "".join(buf) + "\r\n")
+    out.write(RULE + RULE + "\r\n")
+    out.write("⏵⏵ bypass permissions on (shift+tab to cycle)\r\n")
+    out.flush()
+
+def submit():
+    global seq
+    text = "".join(buf).strip()
+    buf.clear()
+    if text:
+        seq += 1
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"seq": seq, "text": text, "pid": os.getpid(), "t": time.time()}) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+def main():
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"event": "launch", "cwd": os.getcwd(), "pid": os.getpid(),
+                            "argv": sys.argv[1:], "t": time.time()}) + "\n")
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setraw(fd)
+    try:
+        draw()
+        # Terminal input parsing: ESC '[' ... final byte (0x40-0x7e) is a CSI
+        # sequence (arrows, bracketed-paste markers), ESC 'O' x is SS3, and an
+        # ESC followed by anything else is the Escape KEY, after which the next
+        # byte is ordinary input. (amux sends ESC, Ctrl-U before a paste; an
+        # earlier version treated that ESC as a sequence and ate the first
+        # letter of every message.)
+        state = None      # None | "esc" | "csi" | "ss3"
+        while True:
+            ch = os.read(fd, 1)
+            if not ch:
+                break
+            if RAW:
+                with open(RAW, "ab") as rf:
+                    rf.write(ch)
+            b = ch[0]
+            if state == "csi":
+                if 0x40 <= b <= 0x7E:
+                    state = None
+                continue
+            if state == "ss3":
+                state = None
+                continue
+            if state == "esc":
+                state = None
+                if b == ord("["):
+                    state = "csi"
+                    continue
+                if b == ord("O"):
+                    state = "ss3"
+                    continue
+                # A bare Escape key; fall through and handle b normally.
+            if b == 0x1b:
+                state = "esc"
+                continue
+            if b in (0x0d, 0x0a):          # Enter submits the composer
+                submit()
+            elif b in (0x7f, 0x08):        # Backspace
+                if buf:
+                    buf.pop()
+            elif b in (0x03, 0x15):        # Ctrl-C / Ctrl-U clear, like the real CLI
+                buf.clear()
+            elif b >= 0x20:
+                # Reassemble UTF-8 so a multi-byte character is one glyph.
+                need = 0
+                if b & 0xE0 == 0xC0: need = 1
+                elif b & 0xF0 == 0xE0: need = 2
+                elif b & 0xF8 == 0xF0: need = 3
+                raw = bytes([b]) + (os.read(fd, need) if need else b"")
+                if RAW and need:
+                    with open(RAW, "ab") as rf:
+                        rf.write(raw[1:])
+                buf.append(raw.decode("utf-8", "replace"))
+            draw()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+if __name__ == "__main__":
+    main()
