@@ -21,6 +21,14 @@ The Python server was deleted at `792ce1f`. Do not resurrect it.
 Gut-check every feature against `.claude/rules/ethos.md` (8 rules). The core question:
 when the next model is better, does this feature get better with it, or become the ceiling?
 
+## Isolated workers
+
+Isolated means direct owner-to-CLI transport: no board capture or attribution,
+command decomposition, injected prompts, automated schedule/steering, or Amux
+routing/hooks/MCP. Preserve owner input, delivery receipts and message history.
+Explicit owner queuing is transport only. Isolation overrides stale project
+metadata; a restarted raw CLI must not inherit harness routing.
+
 ## Primitives (do not reinvent)
 
 board, workers, schedulers, filesystem, groups, memories, environment, messages.

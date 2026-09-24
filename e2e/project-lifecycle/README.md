@@ -13,3 +13,14 @@ The test covers persisted per-project drafts, duplicate intake, parallel disposa
 The runner stops its own server and tmux instance even after a failed test. It retains repositories, database, screenshots, logs and `results.json` for inspection. A failure is not automatically retried. Review the failed artifact before another run. HTTPS certificate bypass is limited to the disposable Playwright browser; it does not change user browser settings.
 
 The fixture validates the harness contract. It does not prove a live provider's reasoning quality, token savings, or behavior across every model. Unit/integration suites cover additional claim, scope, concurrency and Git failure boundaries.
+
+## Opt-in real Codex transport
+
+For a separately authorized real-provider run, use `serve.py --live-codex` with
+an explicit private home, port and built binary. This installs no fake provider,
+uses the existing Codex account authentication, and defaults the helper to
+`gpt-6-luna`. Select Codex / `gpt-6-luna` / low for both project profiles and for
+each worker in the UI. The fixture creates its own repository, bare remote and
+tmux socket. Record message receipts **and** worker-produced files: accepted or
+queued is not proof that the model consumed a message. This opt-in consumes the
+account's model allowance; the default fixture remains deterministic and free.

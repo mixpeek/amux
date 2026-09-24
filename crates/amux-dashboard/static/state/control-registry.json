@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2157,
+  "n_considered": 2121,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1672,42 +1672,6 @@
     },
     "_openWorkerCard": {
       "kind": "command._openWorkerCard",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchLoad": {
-      "kind": "command._orchLoad",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchPlan": {
-      "kind": "command._orchPlan",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchStartRec": {
-      "kind": "command._orchStartRec",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchTextRoute": {
-      "kind": "command._orchTextRoute",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchToggleRec": {
-      "kind": "command._orchToggleRec",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_orchTranscribe": {
-      "kind": "command._orchTranscribe",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

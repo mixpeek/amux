@@ -110,7 +110,7 @@ try {
   assert.equal(calls().filter(c=>c.phase==='intake').length,1);
   // Projects are the only navigation entry for project work; orchestrations are legacy history.
   assert.equal(await page.locator('#tab-orchestrations').count(),0,'global Orchestrations tab must be gone');
-  assert.equal(await page.locator('#project-legacy').count(),1,'legacy history stays discoverable from Projects');
+  assert.equal(await page.locator('#project-legacy').count(),0,'retired workflows must not appear in Projects');
   await page.screenshot({path:path.join(out,'02-project-board.png'),fullPage:true});
   // Task inspector: open it, expand a disclosure, and prove a fresh refresh keeps everything as the user left it.
   await page.locator('#project-cards .project-card-select').first().click();

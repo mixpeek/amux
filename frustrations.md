@@ -4107,3 +4107,14 @@ CARD: single-image-gs7
 SYMPTOM: The advertised 18972 server was down while a direct Rust acceptance test was described as harness progress. Its prior home lived under `/private/tmp/amux-astra-20260920`, which disappeared, and the process had no restart supervisor. After restoring a durable server, project request 501 explicitly scoped to the Mixpeek T7 slice still loaded all twenty indexed goal-spec sections, spent two gpt-5.5-low intake attempts, and remained pending with no board tasks or workers. The acceptance tick also warned every cadence about missing candidate heads on an empty project.
 COST: The browser could not show the allegedly running project or its evidence; the direct Docker proof never entered project state. The new live request wasted model calls and stalled before execution, while normal pending state polluted failure logs.
 FIX: Moved the isolated 18972 home to durable workspace storage under a KeepAlive launch agent with the required CLI paths and existing trusted certificates. The branch now narrows indexed spec coverage and model context only when the operator explicitly requests a Tn slice, retains full-spec coverage otherwise, warns when AMUX_HOME is volatile, and skips candidate-head inspection until tasks settle. Live retry, worker execution, and acceptance evidence are still under verification.
+
+## Isolated owner messages still created board work and gained prompt prefixes
+AREA: isolation
+SEVERITY: blocks
+STATUS: fixed (validation in progress)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: The raw Codex messaging probe created MRL-1/MRL-2 despite CC_ISOLATED=1; the dashboard prepended clock metadata, and a stale project association could route owner input into project steering.
+COST: Raw CLI communication silently enrolled in board intake, consumed interpretation tokens, and presented unrelated board claims as live work.
+FIX: Isolated delivery now skips task attribution, intake and recovery, preserves literal owner input, strips inherited harness routing at launch, and avoids answering provider menus automatically. Read-only message/delivery history remains. Runtime status and the isolated worker UI no longer borrow board claims or offer board automation. Logs emit isolated_message_passthrough / isolated_capture_suppressed. Regression coverage exercises direct and queued receipts, stale project settings, replay, and a managed-worker positive control.

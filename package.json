@@ -3,7 +3,7 @@
   "scripts": {
     "build:state": "node scripts/build-state.mjs",
     "test:state": "node --test e2e/state-kernel.test.mjs",
-    "test:outbox": "node --test e2e/outbox-acceptance-recovery.test.mjs e2e/pending-message-projection.test.mjs",
+    "test:outbox": "node --test e2e/outbox-acceptance-recovery.test.mjs e2e/pending-message-projection.test.mjs e2e/isolated-send-passthrough.test.mjs",
     "test:ios": "node scripts/test-ios-browser.mjs",
     "test:ios:recovery": "node scripts/test-ios-session-recovery.mjs",
     "test:lifecycle": "python3 scripts/lifecycle/run.py full",

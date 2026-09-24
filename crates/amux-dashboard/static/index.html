@@ -238,7 +238,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnect()"><span class="mi">&#x1F517;</span> Connect tmux</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openConnectIterm2()"><span class="mi">&#x1F5A5;</span> Connect iTerm2 pane</div>
         <div class="card-menu-sep"></div>
-        <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();_orchOpen()"><span class="mi">&#x1F399;&#xFE0F;</span> Orchestrate (voice)</div>
         <div class="card-menu-item" onclick="event.stopPropagation();closeAddMenu();openBulkActions()"><span class="mi">&#x26A1;</span> Bulk actions</div>
       </div>
     </div>
@@ -1676,16 +1675,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 
 <div id="projects-view" style="display:none" class="projects-view"></div>
-<div id="orchestrations-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
-  <div style="padding:12px 14px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-    <h2 style="font-size:1rem;font-weight:600;margin:0;">Legacy orchestration history</h2>
-    <div id="orch-filters" class="orch-filters"></div>
-    <span style="flex:1;"></span>
-    <button class="btn primary" onclick="switchView('projects')" style="font-size:.8rem;">Open Projects</button>
-  </div>
-  <p class="orch-legacy-note" style="padding:0 14px;margin:0 0 8px;color:var(--dim);font-size:.8rem;">Older orchestration records, kept for history. Project work, tasks, evidence and executors live under Projects.</p>
-  <div id="orch-list" style="flex:1;min-height:0;overflow-x:auto;overflow-y:auto;padding:0 14px 14px;"></div>
-</div>
 <div id="graph-view" style="display:none;flex-direction:row;overflow:hidden;">
   <!-- Graph sidebar -->
   <div class="graph-sidebar" id="graph-sidebar">
@@ -1960,13 +1949,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
            They existed only to keep two dead columns in the save payload. -->
       <!-- Execution mode toggles -->
       <div id="sched-exec-modes" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.78rem;color:var(--text);margin-bottom:6px;" title="Treat the command as fan-out priorities: each line becomes a child worker via /api/board/launch">
-          <input type="checkbox" id="sched-fan-out" style="width:auto;accent-color:var(--accent);" onchange="updateSchedFanOutUI()">
-          <span>Fan-out orchestration</span>
-          <span style="font-size:0.66rem;color:var(--dim);">(each line = one worker)</span>
-        </label>
-        <div id="sched-fan-out-model-group" style="display:none;margin-left:24px;margin-bottom:6px;">
-          <label class="field-label" style="font-size:0.68rem;">Model for child workers</label>
+        <label class="field-label" style="font-size:0.68rem;">Model for child workers</label>
           <select id="sched-fan-out-model" style="font-size:0.76rem;padding:4px 8px;">
             <option value="haiku">haiku (fast/cheap)</option>
             <option value="sonnet">sonnet</option>
@@ -2107,64 +2090,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 
-<!-- Voice fleet-orchestrator modal (AMUX-3074): speak one command → fast model
-     routes it to the right workers → review → send. -->
-<div id="orch-overlay" class="edit-overlay" onclick="if(event.target===this)_orchClose()">
-  <div class="edit-box orch-box">
-    <div class="orch-heading">
-      <h3>Orchestrate the fleet</h3>
-      <button class="btn" onclick="_orchClose()" aria-label="Close orchestrator">&#x2715;</button>
-    </div>
-    <p class="orch-subtitle">Speak or paste, then review before sending.</p>
-
-    <!-- Step 1: record -->
-    <div id="orch-step-record" class="orch-step">
-      <button id="orch-mic" class="orch-mic" onclick="_orchToggleRec()" title="Tap to speak">&#x1F399;&#xFE0F;</button>
-      <div class="orch-wave" id="orch-wave">
-        <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
-        <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
-        <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
-        <span class="dict-bar"></span><span class="dict-bar"></span><span class="dict-bar"></span>
-      </div>
-      <div id="orch-status" class="orch-status">Tap the mic and speak a command for the fleet</div>
-      <!-- Text path (AMUX-3234): type or paste instead of speaking. It feeds the
-           SAME transcript field the dictation writes, so it enters the identical
-           infer-find-draft-approve flow (amux drafts per-worker commands, you
-           review and approve before anything sends). Voice is unchanged. -->
-      <div class="orch-or" style="text-align:center;color:var(--dim);font-size:0.72rem;margin:10px 0 4px;">or type / paste a command</div>
-      <textarea id="orch-typed" class="orch-textarea" rows="3" spellcheck="true"
-        placeholder="Type or paste a command for the fleet. You will review and approve the per-worker messages before anything is sent."
-        onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();_orchTextRoute();}"></textarea>
-      <div class="orch-actions">
-        <button class="btn primary" onclick="_orchTextRoute()">Route to workers &rarr;</button>
-      </div>
-    </div>
-
-    <!-- Step 2: transcript (editable) -->
-    <div id="orch-step-transcript" class="orch-step" style="display:none;">
-      <div class="orch-label">What you said <span style="color:var(--dim);font-weight:400;">— edit if the transcription is off</span></div>
-      <textarea id="orch-transcript" class="orch-textarea" rows="3" spellcheck="true"></textarea>
-      <div class="orch-actions">
-        <button class="btn" onclick="_orchReset()">Re-record</button>
-        <button class="btn primary" onclick="_orchPlan()">Route to workers &rarr;</button>
-      </div>
-    </div>
-
-    <!-- Step 3: routing plan review -->
-    <div id="orch-step-plan" class="orch-step" style="display:none;">
-      <div class="orch-label" id="orch-plan-summary"></div>
-      <div id="orch-plan-list" class="orch-plan-list"></div>
-      <div id="orch-plan-dropped" style="font-size:0.72rem;color:#d29922;margin:4px 0;"></div>
-      <div class="orch-actions">
-        <button class="btn" onclick="_orchReset()">Start over</button>
-        <button class="btn primary" id="orch-send-btn" onclick="_orchSendAll()">Send all</button>
-      </div>
-    </div>
-
-    <div id="orch-result" class="orch-step" style="display:none;"></div>
-  </div>
-</div>
-
 <!-- Create session modal -->
 <div id="create-overlay" class="edit-overlay" onclick="if(event.target===this)closeCreate()">
   <div class="edit-box">
@@ -2249,7 +2174,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         Isolated <span class="field-optional">(no amux harness &mdash; runs alone)</span>
       </label>
       <div id="create-isolated-info" style="display:none;margin-top:6px;font-size:0.78rem;color:var(--dim);background:rgba(240,136,62,0.08);border-radius:6px;padding:8px 10px;line-height:1.5;">
-        No auto-pickup, no board nudges, no MCP tools, and peers cannot discover or message it.
+        Direct CLI messages, unchanged. No boards, task creation, automated prompts, or MCP tools; peers cannot discover or message it.
         You can still peek and send to it yourself. Set at creation because an isolated worker must
         start that way &mdash; a worker isolated later has already launched with the harness attached.
       </div>
@@ -2396,7 +2321,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-memory" onclick="setPeekTab('memory')"><span class="tab-ico">&#x1F4DD;</span><span class="tab-lbl">Memory</span></button>
     <button class="peek-tab" id="peek-tab-git" onclick="setPeekTab('git')"><span class="tab-ico">⎇</span><span class="tab-lbl">Worktree</span></button>
     <button class="peek-tab" id="peek-tab-logs" onclick="setPeekTab('logs')" title="HTTP request log for this worker"><span class="tab-ico">≡</span><span class="tab-lbl">Logs</span><span class="peek-tab-count" id="peek-tab-logs-count"></span></button>
-    <button class="peek-tab" id="peek-tab-fanout" onclick="setPeekTab('fanout')" title="Ephemeral fan-out workers spawned by this session" style="display:none;"><span class="tab-ico">&#x1F680;</span><span class="tab-lbl">Fan-out</span><span class="peek-tab-count" id="peek-tab-fanout-count"></span></button>
     <button class="tab-customize-btn" id="peek-tab-customize" onclick="event.stopPropagation();togglePeekTabCustomizer()" title="Show, hide or reorder worker tabs" aria-label="Customize worker tabs" aria-expanded="false" style="flex:0 0 auto;">&#x229E;</button>
     <!-- The menu itself is NOT here on purpose — it is a direct child of the
          document body, at the end of this file. `.peek-tabs` is a ~44px
@@ -2535,7 +2459,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <span style="font-size:0.68rem;color:var(--dim);flex:1;">Re-sent on (re)start — survives compaction.</span>
       </div>
       <div id="peek-instructions-body" style="display:none;margin-top:8px;">
-        <textarea id="peek-instructions" rows="3" placeholder="e.g. Act autonomously — don't ask the user for permission or direction. Execute best practices for your mandate; pick the lowest-risk option. Record progress as evidence on your board items. Escalate only to the orchestrator if blocked outside your scope." style="width:100%;font-size:0.78rem;resize:vertical;box-sizing:border-box;"></textarea>
+        <textarea id="peek-instructions" rows="3" placeholder="e.g. Act autonomously — don't ask the user for permission or direction. Execute best practices for your mandate; pick the lowest-risk option. Record progress as evidence on your board items. Resolve project-local blockers and retain evidence on the task." style="width:100%;font-size:0.78rem;resize:vertical;box-sizing:border-box;"></textarea>
         <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;align-items:center;">
           <span id="peek-instructions-status" style="flex:1;font-size:0.7rem;color:var(--dim);"></span>
           <button class="btn" style="font-size:0.75rem;padding:4px 12px;" onclick="event.stopPropagation();savePeekInstructions(false)">Save</button>
@@ -2808,15 +2732,6 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <input id="peek-logs-search" class="search-input" type="text" placeholder="Filter..." style="flex:1;font-size:0.72rem;padding:4px 8px;min-width:60px;" oninput="_peekLogsSearchQ=this.value;_peekLogsRender()">
     </div>
     <div class="peek-tasks-list" id="peek-logs-list" style="padding:0;"></div>
-  </div>
-  <!-- Fan-out panel: shows ephemeral children of the peeked session -->
-  <div id="peek-fanout-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
-    <div style="padding:8px 12px 6px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;">
-      <span style="font-weight:600;font-size:0.85rem;">Fan-out Workers</span>
-      <span id="peek-fanout-stats" style="font-size:0.68rem;color:var(--dim);flex:1;"></span>
-      <button class="btn" title="Refresh" onclick="_peekFanoutLoad()" style="font-size:0.7rem;padding:2px 6px;">&#x21BB;</button>
-    </div>
-    <div class="peek-tasks-list" id="peek-fanout-list" style="padding:8px 12px;"></div>
   </div>
   <!-- Notes panel -->
 </div>

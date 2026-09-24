@@ -2207,8 +2207,7 @@ function _modalLayoutCheck() {
         if ((Math.max(a,b) + 0.05) / (Math.min(a,b) + 0.05) < 4.5) clipped.push((root.id || root.classList[0]) + ':low-contrast');
       }
     }
-    const dismiss = root.id === 'orch-overlay' ? 'button[onclick="_orchClose()"]'
-      : root.id === 'video-overlay' ? '.vp-heading button[onclick="_closeVideo()"]'
+    const dismiss = root.id === 'video-overlay' ? '.vp-heading button[onclick="_closeVideo()"]'
       : root.id === 'conn-hist-modal' ? '#conn-modal-close'
       : root.classList.contains('chip-picker-overlay') ? 'button[onclick="closeChipPicker()"]' : null;
     if (dismiss && !root.querySelector(dismiss)) clipped.push((root.id || root.classList[0]) + ':no-dismiss');
@@ -4884,7 +4883,6 @@ async function _fetchSessionsOnce() {
       render();
       _refreshOpenPeekOnSessions();   // list AND details update from the one event
       _refreshBoardActivityOnSessions();
-      _updateFanoutTabVisibility();
       if (!window._peekEmbed) _fetchGitBranches(sessions);
     }
   } catch(e) {
@@ -5460,7 +5458,7 @@ function _refreshBoardActivityOnSessions() {
 // object reports a contradiction, rendering a neutral synchronization state is
 // more honest than rebuilding WORKING from a separate board snapshot.
 function _runtimeBoardPresentation(s) {
-  if (!s || s.status !== 'active') return { syncing: false, cardless: false, cardId: '' };
+  if (!s || s.isolated || s.status !== 'active') return { syncing: false, cardless: false, cardId: '' };
   const truth = s.runtime_board;
   if (!truth || truth.measured !== true) return { syncing: true, cardless: false, cardId: '' };
   const status = String(truth.status || truth.verdict || '');
@@ -5958,6 +5956,7 @@ function render() {
                and even done cards active, making Primis's correctly parked
                queue look like a stalled worker. Spell out the nonzero board
                columns from the SSE-synced boardItems instead. */
+            if (s.isolated) return '';
             const byStatus = _cardBoardStatusCounts(s.name);
             const d = byStatus.doing || 0;
             const todo = byStatus.todo || 0;
@@ -7084,8 +7083,8 @@ function _applyPeekTabVisibility() {
   PEEK_TABS.forEach(t => {
     const el = document.getElementById('peek-tab-' + t.id);
     if (el) {
-      const eligible = t.id !== 'fanout' || (typeof sessions !== 'undefined' && sessions.some(s => s.ephemeral && s.ephemeral_parent === peekSession));
-      el.style.display = peekHiddenTabs.has(t.id) || !eligible ? 'none' : '';
+      const raw = sessions.find(s => s.name === peekSession)?.isolated;
+      el.style.display = peekHiddenTabs.has(t.id) || (raw && ['issues', 'schedules'].includes(t.id)) ? 'none' : '';
     }
   });
 }
@@ -7910,297 +7909,6 @@ function closeAddMenu() {
   if (!addMenuOpen) return;
   document.getElementById('add-menu').classList.remove('open');
   addMenuOpen = false;
-}
-
-// ── Voice fleet orchestrator (AMUX-3074) ──────────────────────────────────────
-// Speak ONE command → /api/dictate transcribes → /api/orchestrate/plan asks the
-// fast helper model which workers get which messages → review → send each through
-// the normal human-send path (so every routed message is recorded AND auto-captured
-// as a board card via cmd_hist_record_full). Pure composition: dictation + helper
-// model + workers + messages. A dedicated recorder (not the peek dictation outbox).
-let _orchStream = null, _orchRec = null, _orchChunks = [], _orchRecording = false, _orchStartMs = 0;
-let _orchAudioCtx = null, _orchAnalyser = null, _orchRaf = 0, _orchTick = 0, _orchCancelled = false;
-let _orchPlanData = [];
-
-function _orchOpen() {
-  const ov = document.getElementById('orch-overlay'); if (!ov) return;
-  ov.classList.add('active');
-  _orchReset();
-}
-function _orchClose() {
-  const ov = document.getElementById('orch-overlay'); if (ov) ov.classList.remove('active');
-  if (_orchRecording) _orchStopRec(true);
-  _orchStopMeter();
-}
-function _orchShowStep(step) {
-  ['record', 'transcript', 'plan'].forEach(s => {
-    const el = document.getElementById('orch-step-' + s);
-    if (el) el.style.display = (s === step ? '' : 'none');
-  });
-  const res = document.getElementById('orch-result'); if (res) res.style.display = 'none';
-}
-function _orchReset() {
-  if (_orchRecording) _orchStopRec(true);
-  _orchShowStep('record');
-  _orchStatus('Tap the mic and speak a command for the fleet');
-  document.getElementById('orch-mic')?.classList.remove('recording');
-  // Clear the text path's field too (AMUX-3234), so a fresh open / start-over
-  // does not carry the previous command's pasted text.
-  const typed = document.getElementById('orch-typed'); if (typed) typed.value = '';
-}
-function _orchStatus(t) { const s = document.getElementById('orch-status'); if (s) s.textContent = t; }
-function _orchToggleRec() { if (_orchRecording) _orchStopRec(false); else _orchStartRec(); }
-
-async function _orchStartRec() {
-  if (_orchRecording) return;
-  if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
-  _orchStatus('Starting mic…');
-  try {
-    _orchStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } } });
-  } catch (e) { showToast('Microphone access denied'); _orchStatus('Microphone access denied'); return; }
-  let mime = '';
-  for (const m of ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'])
-    if (window.MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) { mime = m; break; }
-  const opts = { audioBitsPerSecond: 16000 }; if (mime) opts.mimeType = mime;
-  try { _orchRec = new MediaRecorder(_orchStream, opts); }
-  catch (e) { try { _orchRec = new MediaRecorder(_orchStream); } catch (e2) { showToast('Recorder unavailable'); return; } }
-  _orchChunks = []; _orchCancelled = false;
-  _orchRec.ondataavailable = e => { if (e.data && e.data.size) _orchChunks.push(e.data); };
-  _orchRec.onstop = () => { _orchStopMeter(); if (!_orchCancelled) _orchTranscribe(); };
-  _orchRec.start(); _orchRecording = true; _orchStartMs = Date.now();
-  document.getElementById('orch-mic')?.classList.add('recording');
-  _orchStartMeter(); _orchClock();
-}
-function _orchStopRec(cancel) {
-  if (!_orchRecording) return;
-  _orchCancelled = !!cancel; _orchRecording = false;
-  document.getElementById('orch-mic')?.classList.remove('recording');
-  try { _orchRec && _orchRec.state !== 'inactive' && _orchRec.stop(); } catch (e) {}
-  try { (_orchStream?.getTracks() || []).forEach(t => t.stop()); } catch (e) {}
-  _orchStream = null;
-}
-function _orchClock() {
-  if (!_orchRecording) return;
-  const s = Math.floor((Date.now() - _orchStartMs) / 1000);
-  _orchStatus('Listening… ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + ' — tap the mic to stop');
-  _orchTick = setTimeout(_orchClock, 400);
-}
-function _orchStartMeter() {
-  try {
-    _orchAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = _orchAudioCtx.createMediaStreamSource(_orchStream);
-    _orchAnalyser = _orchAudioCtx.createAnalyser(); _orchAnalyser.fftSize = 256; _orchAnalyser.smoothingTimeConstant = 0.75;
-    src.connect(_orchAnalyser);
-  } catch (e) { return; }
-  const data = new Uint8Array(_orchAnalyser.frequencyBinCount);
-  const bars = Array.from(document.querySelectorAll('#orch-wave .dict-bar'));
-  const draw = () => {
-    if (!_orchRecording || !_orchAnalyser) return;
-    _orchAnalyser.getByteFrequencyData(data);
-    const n = bars.length || 1, per = Math.floor(data.length / n) || 1;
-    for (let i = 0; i < n; i++) { let sum = 0; for (let j = 0; j < per; j++) sum += data[i * per + j] || 0; bars[i].style.transform = 'scaleY(' + Math.max(0.12, Math.min(1, (sum / per) / 140)).toFixed(3) + ')'; }
-    _orchRaf = requestAnimationFrame(draw);
-  };
-  draw();
-}
-function _orchStopMeter() {
-  if (_orchTick) { clearTimeout(_orchTick); _orchTick = 0; }
-  if (_orchRaf) cancelAnimationFrame(_orchRaf); _orchRaf = 0; _orchAnalyser = null;
-  try { _orchAudioCtx && _orchAudioCtx.close(); } catch (e) {}
-  _orchAudioCtx = null;
-  document.querySelectorAll('#orch-wave .dict-bar').forEach(b => b.style.transform = 'scaleY(0.12)');
-}
-async function _orchTranscribe() {
-  if (!_orchChunks.length) { _orchStatus('Nothing recorded — tap the mic and speak'); return; }
-  const blob = new Blob(_orchChunks, { type: _orchChunks[0].type || 'audio/webm' });
-  _orchChunks = [];
-  if (blob.size < 1200) { _orchStatus('Too short — hold and speak a bit longer'); return; }
-  const mime = (blob.type || 'audio/webm').split(';')[0];
-  _orchStatus('Transcribing…');
-  try {
-    const url = API + '/api/dictate?dur_ms=' + (Date.now() - _orchStartMs) + '&mime=' + encodeURIComponent(mime);
-    const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': mime }), body: blob });
-    const d = await r.json();
-    if (d.error) throw new Error(d.error);
-    const el = document.getElementById('orch-transcript'); if (el) el.value = d.text || '';
-    _orchShowStep('transcript');
-    if ((d.text || '').trim()) _orchPlan();   // auto-route; the transcript stays editable for a re-route
-  } catch (e) { _orchStatus('Transcription failed: ' + (e.message || 'error') + ' — tap the mic to retry'); }
-}
-// Text path (AMUX-3234): route typed / pasted text through the SAME flow the
-// dictation transcript takes. It writes the text into #orch-transcript (the one
-// field _orchPlan reads) and calls _orchPlan, so amux infers the intent, finds
-// the workers, drafts the per-worker commands, and the user APPROVES before
-// anything sends. Nothing downstream changes; this is only another way in.
-function _orchTextRoute() {
-  const typed = (document.getElementById('orch-typed')?.value || '').trim();
-  if (!typed) { showToast('Type or paste a command first'); return; }
-  const el = document.getElementById('orch-transcript');
-  if (el) el.value = typed;   // the transcript stays editable for a re-route
-  _orchPlan();                // identical infer-find-draft-approve path
-}
-async function _orchPlan() {
-  const transcript = (document.getElementById('orch-transcript')?.value || '').trim();
-  if (!transcript) { showToast('Say or type a command first'); return; }
-  _orchShowStep('plan');
-  const list = document.getElementById('orch-plan-list');
-  const summary = document.getElementById('orch-plan-summary');
-  document.getElementById('orch-plan-dropped').textContent = '';
-  if (summary) summary.textContent = 'Routing…';
-  if (list) list.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center;">Deciding which workers get what…</div>';
-  try {
-    const r = await fetch(API + '/api/orchestrate/plan', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ transcript }) });
-    const d = await r.json();
-    if (d.error) {
-      if (summary) summary.textContent = 'Routing failed';
-      list.innerHTML = '<div style="color:#f85149;padding:12px;">' + esc(d.error) + (d.raw ? '<pre style="white-space:pre-wrap;font-size:0.7rem;color:var(--dim);margin-top:6px;">' + esc(d.raw) + '</pre>' : '') + '</div>';
-      document.getElementById('orch-send-btn').style.display = 'none';
-      return;
-    }
-    _orchRenderPlan(d);
-  } catch (e) {
-    if (summary) summary.textContent = 'Routing failed';
-    list.innerHTML = '<div style="color:#f85149;padding:12px;">' + esc(e.message || 'error') + '</div>';
-  }
-}
-// The plan is no longer send-only (AMUX-2984). An entry is a send, a board
-// action (create a card, or append a note to an existing one) or a lifecycle
-// verb. `action` is absent on entries from an older server, and that means
-// send — the shape this endpoint had for its first two weeks.
-//
-// Each type keeps ONE editable field, because the review step is where a
-// misheard word gets corrected and a field you cannot edit is a field you have
-// to reject and re-record.
-function _orchEditableOf(p) {
-  const a = p.action || 'send';
-  if (a === 'board') return p.card ? 'note' : 'title';
-  if (a === 'verb') return null;              // a verb has nothing to word
-  return 'message';
-}
-function _orchLabelOf(p) {
-  const a = p.action || 'send';
-  if (a === 'board') return p.card ? 'note on ' + p.card : 'new card';
-  if (a === 'verb') return p.verb;
-  return 'message';
-}
-function _orchRenderPlan(d) {
-  _orchPlanData = (d.plan || []).map((p, i) => ({
-    action: p.action || 'send', worker: p.worker, message: p.message || '',
-    title: p.title || '', card: p.card || '', note: p.note || '', verb: p.verb || '',
-    why: p.why || '', include: true, idx: i,
-  }));
-  const summary = document.getElementById('orch-plan-summary');
-  const list = document.getElementById('orch-plan-list');
-  const drop = document.getElementById('orch-plan-dropped');
-  const sendBtn = document.getElementById('orch-send-btn');
-  // EVERY DROPPED CLASS, SEPARATELY. A refused verb is amux declining something
-  // it understood; an unknown worker is a mis-hearing. Collapsing them would
-  // tell the reader something was discarded without telling them whether the
-  // command needs re-wording or was simply not allowed.
-  if (drop) {
-    const bits = [];
-    if ((d.dropped_unknown_workers || []).length) bits.push('unknown worker(s): ' + d.dropped_unknown_workers.join(', '));
-    if ((d.dropped_unknown_cards || []).length) bits.push('unknown card(s): ' + d.dropped_unknown_cards.join(', '));
-    if ((d.dropped_unknown_verbs || []).length) bits.push('not a verb: ' + d.dropped_unknown_verbs.join(', '));
-    if ((d.refused_verbs || []).length) bits.push('refused from voice: ' + d.refused_verbs.join(', ')
-      + ' (do these by hand; only ' + (d.verbs_available || []).join('/') + ' are voice-proposable)');
-    drop.textContent = bits.length ? '⚠ ' + bits.join(' · ') : '';
-  }
-  if (!_orchPlanData.length) {
-    // AN EMPTY PLAN AFTER A REFUSAL IS NOT "NOTHING MATCHED". Measured live:
-    // "delete the tubescience worker" produced an empty plan because the router
-    // understood it perfectly and declined, and this branch told the human the
-    // opposite — that it had not found a worker. Say which happened.
-    const ref = d.refused_verbs || [];
-    if (ref.length) {
-      if (summary) summary.textContent = 'Understood, and refused';
-      list.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center;">amux will not take <b>'
-        + esc(ref.join(', ')) + '</b> from a spoken command &mdash; a misheard word is too cheap for an action that expensive. '
-        + 'Only <b>' + esc((d.verbs_available || []).join(', ')) + '</b> are voice-proposable; do this one by hand.</div>';
-    } else {
-      if (summary) summary.textContent = 'No workers matched';
-      list.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center;">The router did not find a worker for this command. Edit the wording above (Re-record → edit) and re-route, or start over.</div>';
-    }
-    if (sendBtn) sendBtn.style.display = 'none';
-    return;
-  }
-  if (sendBtn) sendBtn.style.display = '';
-  if (summary) summary.innerHTML = _orchPlanData.length + ' action' + (_orchPlanData.length === 1 ? '' : 's')
-    + ' &mdash; review, edit, then run' + (d.via ? ' <span style="color:var(--dim);font-size:0.7rem;">via ' + esc(d.via) + '</span>' : '');
-  list.innerHTML = _orchPlanData.map(p => {
-    const f = _orchEditableOf(p);
-    return '<div class="orch-plan-item" data-idx="' + p.idx + '">'
-      + '<div class="orch-plan-top"><label class="orch-plan-inc"><input type="checkbox" checked onchange="_orchToggleInc(' + p.idx + ',this.checked)"> <span class="orch-plan-worker">' + esc(p.worker) + '</span></label>'
-      + '<span class="orch-plan-act">' + esc(_orchLabelOf(p)) + '</span>'
-      + (p.why ? '<span class="orch-plan-why">' + esc(p.why) + '</span>' : '') + '</div>'
-      + (f ? '<textarea class="orch-plan-msg" rows="2" oninput="_orchEditMsg(' + p.idx + ',this.value)">' + esc(p[f]) + '</textarea>' : '')
-      + '</div>';
-  }).join('');
-  _orchUpdateSendBtn();
-}
-function _orchToggleInc(idx, on) {
-  const p = _orchPlanData.find(x => x.idx === idx); if (p) p.include = on;
-  document.querySelector('.orch-plan-item[data-idx="' + idx + '"]')?.classList.toggle('excluded', !on);
-  _orchUpdateSendBtn();
-}
-function _orchEditMsg(idx, v) {
-  const p = _orchPlanData.find(x => x.idx === idx); if (!p) return;
-  const f = _orchEditableOf(p); if (f) p[f] = v;
-}
-// A verb has no text, so "has text" cannot be the readiness test any more —
-// that would silently exclude every verb from the count and the run.
-function _orchReady(p) {
-  const f = _orchEditableOf(p);
-  return p.include && (!f || (p[f] || '').trim() !== '');
-}
-function _orchUpdateSendBtn() {
-  const n = _orchPlanData.filter(_orchReady).length;
-  const b = document.getElementById('orch-send-btn');
-  if (b) { b.textContent = 'Run ' + n + ' action' + (n === 1 ? '' : 's'); b.disabled = n === 0; }
-}
-// Each action goes through the endpoint that ALREADY owns it — send, board,
-// session verb. The orchestrator composes primitives; it does not grow a
-// private execution path, and every one of these carries the same attribution
-// and gates a human clicking the same button by hand would get.
-function _orchRequestFor(p) {
-  const w = encodeURIComponent(p.worker);
-  if (p.action === 'board' && p.card) {
-    return { url: API + '/api/board/' + encodeURIComponent(p.card), method: 'PATCH',
-             body: { desc_append: '`voice` ' + p.note } };
-  }
-  if (p.action === 'board') {
-    return { url: API + '/api/board', method: 'POST',
-             body: { title: p.title, session: p.worker, status: 'todo' } };
-  }
-  if (p.action === 'verb') {
-    return { url: API + '/api/sessions/' + w + '/' + encodeURIComponent(p.verb), method: 'POST', body: {} };
-  }
-  return { url: API + '/api/sessions/' + w + '/send', method: 'POST',
-           body: { text: p.message, record_history: true, deliver_now: true } };
-}
-async function _orchSendAll() {
-  const items = _orchPlanData.filter(_orchReady);
-  if (!items.length) return;
-  const btn = document.getElementById('orch-send-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
-  const results = [];
-  for (const p of items) {
-    const label = p.worker + ' · ' + _orchLabelOf(p);
-    try {
-      const q = _orchRequestFor(p);
-      const r = await fetch(q.url, { method: q.method, headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(q.body) });
-      const d = await r.json().catch(() => ({}));
-      results.push({ label, ok: r.ok && d.ok !== false, msg: d.error || (typeof d.msg === 'string' ? d.msg : '') || (r.ok ? 'done' : 'failed') });
-    } catch (e) { results.push({ label, ok: false, msg: e.message || 'error' }); }
-  }
-  const ok = results.filter(r => r.ok).length;
-  _orchShowStep('');
-  const res = document.getElementById('orch-result');
-  if (res) {
-    res.style.display = '';
-    res.innerHTML = '<div class="orch-label">Ran ' + ok + ' of ' + results.length + '</div>'
-      + results.map(r => '<div class="orch-res-row ' + (r.ok ? 'ok' : 'bad') + '">' + (r.ok ? '&#10003;' : '&#10007;') + ' <b>' + esc(r.label) + '</b> <span style="color:var(--dim);">' + esc(r.msg) + '</span></div>').join('')
-      + '<div class="orch-actions" style="margin-top:12px;"><button class="btn" onclick="_orchReset()">Orchestrate again</button><button class="btn primary" onclick="_orchClose()">Done</button></div>';
-  }
 }
 
 // ── Set default model label from server config ──
@@ -9072,7 +8780,8 @@ async function doSend(name, text, identity = {}) {
   // Slash commands (e.g. /clear, /compact) must be sent verbatim — no timestamp prefix
   const isSlashCmd = /^\/[a-z]/.test(text.trim());
   amuxTrack('message_sent', { session: name, is_slash: isSlashCmd, cmd: isSlashCmd ? text.trim().split(/\s+/)[0] : null, length: text.length });
-  const payload = isSlashCmd ? text : _stampSendTime(text, new Date(), _cloudEmail || _localMemberEmail);
+  const isolated = sessions.find(s => s.name === name)?.isolated;
+  const payload = isSlashCmd || isolated ? text : _stampSendTime(text, new Date(), _cloudEmail || _localMemberEmail);
   // One msg_id per logical send, reused verbatim by the offline-queue replay:
   // the server dedups on it, so a retry after a lost response (e.g. the
   // server restarted mid-request AFTER the keys landed) can't deliver twice.
@@ -9845,7 +9554,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   ];
   const permissions = [
     _workerConfigurationRow('yolo', 'Model tool approval bypass (YOLO)', s.yolo ? 'Enabled' : 'Disabled', 'Uses the selected provider’s native tool-permission flag.', sw(!!s.yolo, 'toggleYolo', 'Toggle model tool approval bypass')),
-    _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'No amux harness, hooks, MCP config, or peer discovery; restart to apply.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
+    _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'Direct CLI messages; no boards, task intake, prompts, hooks, MCP config, or peer discovery. Restart to remove an already-loaded harness.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
     _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
     _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
   ];
@@ -9888,6 +9597,7 @@ async function _workerExternalEmailSet(name, value) {
 
 function _workerBoardConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
+  if (s.isolated) return '<p>Isolated mode: direct CLI messaging. Boards and harness automation are disabled.</p>';
   const rows = _WORKER_BOARD_CONFIGS.map(c => {
     const on = s[c.value] !== false;
     const own = !!s[c.own];
@@ -10348,12 +10058,7 @@ function setPeekTab(tab) {
   const logsP = document.getElementById('peek-logs-panel');
   if (tab === 'logs') { logsP.classList.add('active'); _peekLogsLoad(); }
   else { logsP.classList.remove('active'); }
-  document.getElementById('peek-tab-fanout')?.classList.toggle('active', tab === 'fanout');
-  const fanoutP = document.getElementById('peek-fanout-panel');
-  if (fanoutP) {
-    if (tab === 'fanout') { fanoutP.classList.add('active'); _peekFanoutLoad(); if (!_fanoutRefreshTimer) _fanoutRefreshTimer = setInterval(_peekFanoutLoad, 4000); }
-    else { fanoutP.classList.remove('active'); if (_fanoutRefreshTimer) { clearInterval(_fanoutRefreshTimer); _fanoutRefreshTimer = null; } }
-  }
+
   requestAnimationFrame(() => {
     const selected=document.getElementById('peek-tab-'+tab);
     if (!selected || _peekTab!==tab || !selected.getClientRects().length) return;
@@ -11896,7 +11601,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1047';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1049';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12170,7 +11875,6 @@ function openPeek(name, opts) {
     _peekFilesRestore(name);
   }
   peekSession = name;
-  try { _updateFanoutTabVisibility(); } catch(e) {}
   _syncComposerPending();
   const identityOverlay = document.getElementById('peek-overlay');
   if (identityOverlay) {
@@ -26518,7 +26222,6 @@ function switchView(view) {
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'],
-    ['orchestrations', 'orchestrations', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -26554,7 +26257,6 @@ function switchView(view) {
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
-  if (view === 'orchestrations') _orchLoad();
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -31791,10 +31493,6 @@ function updateSchedKindUI() {
   document.getElementById('sched-command').placeholder = shell
     ? 'e.g. /bin/bash /path/to/script.sh' : 'e.g. /status or npm run build';
 }
-function updateSchedFanOutUI() {
-  const on = document.getElementById('sched-fan-out').checked;
-  document.getElementById('sched-fan-out-model-group').style.display = on ? '' : 'none';
-}
 // Determine which mode an existing schedule maps to
 function schedModeOf(s) {
   if (s.sched_type === 'once' && !s.schedule_expr) return 'once';
@@ -31819,10 +31517,7 @@ function openSchedModal(editId) {
   setVal('sched-loop-every', '30m');
   setVal('sched-expr', '');
   setVal('sched-run-at', new Date(Date.now() + 3600000).toISOString().slice(0,16));
-  setChk('sched-fan-out', false);
-  setVal('sched-fan-out-model', 'haiku');
   setChk('sched-worktree', false);
-  updateSchedFanOutUI();
 
   let mode = 'loop';
   if (editId) {
@@ -31833,10 +31528,7 @@ function openSchedModal(editId) {
       sel.value = s.session;
       setVal('sched-command', s.command);
       setVal('sched-run-at', s.run_at && s.run_at.includes('T') ? s.run_at : '');
-      setChk('sched-fan-out', !!s.fan_out);
-      setVal('sched-fan-out-model', s.fan_out_model || 'haiku');
       setChk('sched-worktree', !!s.worktree);
-      updateSchedFanOutUI();
       mode = schedModeOf(s);
       const expr = s.schedule_expr || '';
       if (mode === 'loop') {
@@ -31910,12 +31602,10 @@ async function saveSchedModal() {
   // REFUSES to arm them (400, AMUX-2680), so sending them would turn every
   // save into an error; they are gone from the payload for the same reason
   // they are gone from the form.
-  const fanOut = document.getElementById('sched-fan-out').checked ? 1 : 0;
-  const fanOutModel = fanOut ? (document.getElementById('sched-fan-out-model').value || 'haiku') : null;
   const worktree = document.getElementById('sched-worktree').checked ? 1 : 0;
   const payload = { title, worker, kind, command, sched_type: stype, recurrence: null, run_at,
                     schedule_expr: schedExpr || null,
-                    fan_out: fanOut, fan_out_model: fanOutModel, worktree,
+                    worktree,
                     by: 'dashboard' };
   const url = _schedEditId ? API + '/api/schedules/' + _schedEditId : API + '/api/schedules';
   const method = _schedEditId ? 'PATCH' : 'POST';
@@ -32981,54 +32671,7 @@ async function deleteBoardItem(id) {
 }
 
 // The Board launch UI (typed priorities that created orchestrator and fan-out worker sets) is removed.
-// New work starts in Projects; existing orchestration records stay readable as legacy history.
-
-// ── Peek fan-out tab: show ephemeral children of peeked session ──
-let _fanoutRefreshTimer = null;
-
-function _peekFanoutLoad() {
-  const list = document.getElementById('peek-fanout-list');
-  const stats = document.getElementById('peek-fanout-stats');
-  if (!list || !peekSession) return;
-
-  const allSess = typeof sessions !== 'undefined' ? sessions : [];
-  const children = allSess.filter(s => s.ephemeral && s.ephemeral_parent === peekSession);
-
-  if (stats) stats.textContent = children.length + ' worker' + (children.length !== 1 ? 's' : '');
-
-  if (!children.length) {
-    list.innerHTML = '<div style="color:var(--dim);font-size:.82rem;padding:8px 0;">No active fan-out workers for this session.</div>';
-    return;
-  }
-
-  let html = '';
-  children.forEach(child => {
-    const statusCls = child.status === 'busy' ? 'running' : (child.status === 'idle' ? 'idle' : 'done');
-    const statusLabel = child.status || 'unknown';
-    const cardId = child.runtime_board && child.runtime_board.card_id ? child.runtime_board.card_id : '';
-    const cardStatus = child.runtime_board && child.runtime_board.runtime_status ? child.runtime_board.runtime_status : '';
-    html += '<div class="fanout-worker-row">'
-      + '<span class="fanout-worker-name" onclick="openPeek(\'' + escJs(child.name) + '\')">' + esc(child.name) + '</span>'
-      + '<span class="bd-fanout-status ' + statusCls + '">' + esc(statusLabel) + '</span>'
-      + _fanoutStartBtn(child.name, !!child.running)
-      + (cardId ? '<span class="fanout-worker-card" onclick="_openIssue(\'' + escJs(cardId) + '\')" style="cursor:pointer;text-decoration:underline;">' + esc(cardId) + (cardStatus ? ' (' + esc(cardStatus) + ')' : '') + '</span>' : '')
-      + '</div>';
-  });
-  list.innerHTML = html;
-}
-
-function _updateFanoutTabVisibility() {
-  const tab = document.getElementById('peek-tab-fanout');
-  const countBadge = document.getElementById('peek-tab-fanout-count');
-  if (!tab) return;
-
-  const allSess2 = typeof sessions !== 'undefined' ? sessions : [];
-  const children = allSess2.filter(s => s.ephemeral && s.ephemeral_parent === peekSession);
-  const hasChildren = children.length > 0;
-
-  if (countBadge) countBadge.textContent = hasChildren ? String(children.length) : '';
-  _applyPeekTabVisibility();
-}
+// Project workers and retained history live in Projects and Workers.
 
 // ── Enhanced subtasks in board detail with fan-out worker status ──
 function _bdRenderFanoutChildren(item) {
@@ -33064,219 +32707,12 @@ function _bdRenderFanoutChildren(item) {
   return html;
 }
 
-// ── Global Orchestrations: coordinators and their fan-out workers ──
-let _orchTimer = null;
-let _orchFilter = 'all';
-let _orchData = null;
-let _orchProjects = [];
-let _orchLoading = false;
-
-function _orchSetFilter(f) {
-  _orchFilter = f;
-  document.querySelectorAll('.orch-filter-pill').forEach(p => {
-    p.classList.toggle('active', p.dataset.filter === f);
-  });
-  if (_orchData) _orchRender(_orchData);
-  _projectOrchestrationsRender();
-}
-
-// A fan-out worker (epic-level or child-level) that is not currently running
-// gets a Start button beside its name, everywhere its name is rendered
-// clickable (Ethan, 2026-09-18: "I should be able to start workers that have
-// been paused, archived or expired... from the accordions"). Reuses doStart,
-// the same function the normal Sessions list's Start button calls -- it polls
-// for the session to come up and surfaces a real error via showAlert rather
-// than silently doing nothing, so a worker that is genuinely gone (no env
-// file left to start from, e.g. a reaped ephemeral worker) fails honestly
-// instead of the button looking broken.
 function _fanoutStartBtn(name, running, lifecycle) {
   if (running !== false) return '';
   if (lifecycle === 'expired') {
     return '<span class="bd-fanout-status done" title="Retired project executor">expired</span>';
   }
   return '<button class="bd-fanout-start-btn" onclick="event.stopPropagation();doStart(\'' + escJs(name) + '\');" title="Start ' + esc(name) + '">&#x25B6; Start</button>';
-}
-
-async function _orchLoad() {
-  const el = document.getElementById('orch-list');
-  if (!el || _orchLoading) return;
-  _orchLoading = true;
-  await _projectOrchestrations();
-  if (!_orchData) el.innerHTML = '<div role="status" style="padding:12px">Loading orchestration boards…</div>';
-  const controller = new AbortController();
-  const deadline = setTimeout(() => controller.abort(), 15000);
-  // Share the normal inventory request. Its cold runtime probes must never
-  // hold up the board, or create another full-fleet request from this view.
-  const activity = fetchSessions();
-  try {
-    const boardR = await fetch(API + '/api/board/orchestrations', {signal:controller.signal});
-    if (!boardR.ok) throw new Error('Board request failed');
-    const allCards = await boardR.json();
-    _orchBuild(allCards, sessions);
-    activity.then(() => {
-      if (activeView === 'orchestrations' && _orchData?.source === allCards) _orchBuild(allCards, sessions);
-    }).catch(e => console.warn('orchestration_activity_refresh_failed', e));
-  } catch (e) {
-    console.warn('orchestration_load_failed', e);
-    el.innerHTML = '<div role="alert" style="color:var(--error);padding:8px;">Could not load orchestrations: ' + esc(e.name === 'AbortError' ? 'request timed out' : e.message) + ' <button onclick="_orchLoad()">Retry</button></div>';
-  } finally { clearTimeout(deadline); _orchLoading = false; }
-  clearTimeout(_orchTimer);
-  if (activeView === 'orchestrations') _orchTimer = setTimeout(_orchLoad, 10000);
-}
-
-function _orchBuild(allCards, allSess) {
-  if (!allCards.measured || !Array.isArray(allCards.cards)) throw new Error('Orchestration boards were not measured');
-  const sessMap = {};
-  (allCards.workers || []).forEach(s => { sessMap[s.name] = s; });
-  (Array.isArray(allSess) ? allSess : []).forEach(s => { sessMap[s.name] = {...sessMap[s.name],...s}; });
-  (allCards.ephemeral_workers || []).forEach(name => {
-    if (!sessMap[name]) sessMap[name] = {name,ephemeral:true,running:null,lifecycle:'unknown'};
-  });
-  const projectWorkers = new Set(_orchProjects.flatMap(p=>p.cards.map(c=>c.execution_plan.execution.worker).filter(Boolean)));
-  const cards = allCards.cards;
-  const byId = new Map(cards.map(c => [c.id,c]));
-  const byWorker = new Map();
-  cards.forEach(c => { if (!byWorker.has(c.session)) byWorker.set(c.session,[]); byWorker.get(c.session).push(c); });
-  const groups = new Map();
-  const addGroup = (name, orphan = false) => {
-    const id = (orphan ? 'worker:' : 'orchestrator:') + name;
-    if (!groups.has(id)) groups.set(id,{id,session:name,_workerOnly:orphan,workerNames:[],epics:[],cards:[]});
-    return groups.get(id);
-  };
-  // Worker configuration is the membership authority. Ordinary board epics
-  // never create groups, and extra tasks never manufacture extra workers.
-  Object.values(sessMap).filter(s => !projectWorkers.has(s.name) && (s.orchestrator || s.role === 'orchestrator')).forEach(s => addGroup(s.name));
-  Object.values(sessMap).filter(s => s.ephemeral && !projectWorkers.has(s.name)).forEach(s => {
-    const parent = s.ephemeral_parent && s.ephemeral_parent !== s.name ? s.ephemeral_parent : null;
-    const group = addGroup(parent || s.name, !parent);
-    if (!group.workerNames.includes(s.name)) group.workerNames.push(s.name);
-  });
-  const orchEpics = [...groups.values()];
-  orchEpics.forEach(group => {
-    group.workerNames.sort((a,b) => a.localeCompare(b));
-    const own = sessMap[group.session];
-    const names = new Set(group.workerNames);
-    if (own?.orchestrator) names.add(group.session);
-    const owned = cards.filter(c => names.has(c.session));
-    const epics = new Map();
-    owned.forEach(card => {
-      const visited = new Set();
-      for (let c = card; c && !visited.has(c.id); c = byId.get(c.epic)) {
-        visited.add(c.id);
-        if (c.type === 'epic' && c.session === group.session) epics.set(c.id,c);
-      }
-    });
-    group.epics = [...epics.values()];
-    group.cards = owned.filter(c => c.type !== 'epic');
-    group.title = group.epics.length === 1 ? group.epics[0].title : (group._workerOnly ? 'Fan-out: ' : 'Orchestration: ') + group.session;
-    group.updated = Math.max(0,...owned.map(c => c.updated || 0));
-    const members = [...names].map(n => sessMap[n]).filter(Boolean);
-    if (!group._workerOnly && own && !names.has(group.session)) members.push(own);
-    const inactive = s => s.archived || ['paused','review','archived','expired'].includes(s.lifecycle);
-    if (members.length && members.every(s => s.archived || s.lifecycle === 'archived')) group._orchGroup = 'archived';
-    else if (members.length && members.every(s => s.lifecycle === 'expired')) group._orchGroup = 'expired';
-    else if (members.length && members.every(inactive) && members.some(s => s.lifecycle === 'paused' || s.lifecycle === 'review')) group._orchGroup = 'paused';
-    else group._orchGroup = 'active';
-  });
-  _orchData = {orchEpics,sessMap,byWorker,source:allCards};
-  _orchRenderFilters(orchEpics);
-  _orchRender(_orchData);
-}
-
-function _orchRenderFilters(epics) {
-  const fb = document.getElementById('orch-filters');
-  if (!fb) return;
-  epics = [...epics,..._orchProjects.map(p=>({_orchGroup:_projectOrchestrationState(p)}))];
-  const counts = { all: epics.length, active: 0, paused: 0, archived: 0, expired: 0 };
-  epics.forEach(e => { counts[e._orchGroup] = (counts[e._orchGroup] || 0) + 1; });
-  const pills = [
-    { key: 'all', label: 'All' },
-    { key: 'active', label: 'Active' },
-    { key: 'paused', label: 'Paused' },
-    { key: 'archived', label: 'Archived' },
-    { key: 'expired', label: 'Expired' },
-  ];
-  fb.innerHTML = pills.map(p =>
-    '<button class="orch-filter-pill' + (_orchFilter === p.key ? ' active' : '') + '" data-filter="' + p.key + '" onclick="_orchSetFilter(\'' + p.key + '\')">'
-    + esc(p.label) + ' <span class="orch-filter-count">' + (counts[p.key] || 0) + '</span></button>'
-  ).join('');
-}
-
-const _orchExpanded = new Set();
-let _orchActivitySignature = '';
-function _orchToggle(id) {
-  if (_orchExpanded.has(id)) _orchExpanded.delete(id); else _orchExpanded.add(id);
-  if (_orchData) _orchRender(_orchData);
-}
-
-function _orchModelLabel(worker) {
-  if (!worker) return 'Model unknown';
-  const provider=worker.profile?.provider || worker.provider || '';
-  const model=worker.profile?.model || worker.model || worker.active_model || 'Provider default';
-  return (provider ? provider+' · ' : '')+model;
-}
-
-function _orchRender(data) {
-  const el = document.getElementById('orch-list');
-  if (!el || !data) return;
-  const {orchEpics,sessMap,byWorker} = data;
-  const filtered = orchEpics.filter(g => _orchFilter === 'all' || g._orchGroup === _orchFilter);
-  if (!filtered.length) {
-    if (_orchProjects.some(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter)) {el.innerHTML='';return;}
-    el.innerHTML = '<div role="status" class="orch-empty">'+(_orchFilter === 'all' ? 'No orchestrations or fan-out workers yet. Start new work from Projects; this view is legacy history.' : 'No '+esc(_orchFilter)+' orchestrations.')+'</div>';
-    return;
-  }
-  const order = {active:0,paused:1,archived:2,expired:3};
-  filtered.sort((a,b) => order[a._orchGroup]-order[b._orchGroup] || b.updated-a.updated || a.id.localeCompare(b.id));
-  const taskLink = c => '<button type="button" class="orch-task-link" onclick="event.stopPropagation();switchView(\'board\');setTimeout(function(){openBoardDetail(\''+escJs(c.id)+'\')},300)">'+esc(c.id)+' · '+esc(c.title)+'</button>';
-  const progress = rows => rows.length ? rows.filter(c => c.execution_terminal === true).length+'/'+rows.length+' terminal' : 'No tasks yet';
-  const activity = [];
-  const workerRow = (name,role,group) => {
-    const worker = sessMap[name];
-    const rows = byWorker.get(name) || [];
-    // Ordinary parent workers may have unrelated board work; only a dedicated
-    // coordinator's whole board belongs to this orchestration.
-    const board = role === 'Orchestrator' && !worker?.orchestrator ? rows.filter(c => group.epics.some(e => e.id === c.id)) : rows;
-    const tasks = board.filter(c => c.type !== 'epic');
-    const linkedId = _runtimeBoardCardId(worker);
-    const current = tasks.find(c => c.id === (linkedId || worker?.task_board_id));
-    const active = !!current && !current.execution_terminal && _workerHasLiveActivity(worker) && linkedId === current.id;
-    activity.push({name,card:current?.id || '',active});
-    const key = 'tasks:'+group.id+':'+name;
-    const expanded = _orchExpanded.has(key);
-    const lifecycle = worker?.lifecycle || 'unknown';
-    const status = ['paused','review','archived','expired'].includes(lifecycle) ? lifecycle : worker?.status || (worker?.running === false ? 'stopped' : worker?.running ? 'running' : worker ? 'status pending' : 'worker unavailable');
-    let html = '<div class="orch-worker'+(active?' working-now':'')+'" data-orch-worker="'+esc(name)+'">';
-    html += '<div class="orch-worker-heading"><span class="orch-worker-role">'+role+'</span><button type="button" class="orch-worker-name" onclick="openPeek(\''+escJs(name)+'\')">'+esc(name)+'</button><span class="orch-worker-status">'+esc(status)+'</span>'+_fanoutStartBtn(name,worker?.running)+'</div>';
-    html += '<div class="orch-worker-meta"><span class="orch-role-profile">'+esc(_orchModelLabel(worker))+'</span><span>'+progress(tasks)+'</span>';
-    if (worker?.worktree_integration?.status) html += '<span class="orch-integration" title="'+esc(worker.worktree_integration.detail || '')+'">'+esc(worker.worktree_integration.status.replace(/_/g,' '))+'</span>';
-    if (worker?.worktree_active) html += '<span class="orch-worktree" title="'+esc(worker.branch || 'Detached worktree')+'">'+esc(worker.branch || 'Detached worktree')+'</span>';
-    html += '</div>';
-    if (current) html += '<div class="orch-active-task"><strong>'+(active?'Working now':'Current task')+'</strong> '+taskLink(current)+'</div>';
-    if (board.length) {
-      html += '<button type="button" class="orch-tasks-toggle" aria-expanded="'+expanded+'" onclick="_orchToggle(\''+escJs(key)+'\')">'+(expanded?'Hide':'Show')+' board tasks ('+board.length+')</button>';
-      if (expanded) html += '<div class="orch-worker-tasks">'+board.map(c => '<div class="orch-task'+(active && current.id===c.id?' working-now':'')+'">'+taskLink(c)+'<span class="status-badge '+esc(c.status || 'todo')+'">'+esc(c.status || 'todo')+'</span></div>').join('')+'</div>';
-    } else html += '<div class="orch-worker-empty">'+(role==='Orchestrator'?'No coordination tasks yet':'No board tasks yet')+'</div>';
-    return html+'</div>';
-  };
-  el.innerHTML = '<div class="orch-tree">'+filtered.map(group => {
-    const collapsed = _orchExpanded.has('collapsed:'+group.id);
-    let html = '<section class="orch-node '+group._orchGroup+'" data-orch-id="'+esc(group.id)+'">';
-    html += '<button type="button" class="orch-node-header" aria-expanded="'+!collapsed+'" onclick="_orchToggle(\'collapsed:'+escJs(group.id)+'\')"><span class="orch-node-chevron">'+(collapsed?'▸':'▾')+'</span><span class="orch-node-title">'+esc(group.title)+'</span><span class="orch-node-count">'+group.workerNames.length+' fan-out'+(group.workerNames.length===1?'':'s')+' · '+progress(group.cards)+'</span><span class="orch-worker-status">'+esc(group._orchGroup)+'</span></button>';
-    if (!collapsed) {
-      if (group.epics.length) html += '<div class="orch-epic-links">'+group.epics.map(taskLink).join('')+'</div>';
-      if (!group._workerOnly) html += workerRow(group.session,'Orchestrator',group);
-      html += '<div class="orch-workers">'+group.workerNames.map(name => workerRow(name,'Fan-out',group)).join('')+'</div>';
-      if (!group.workerNames.length) html += '<div class="orch-empty">No fan-out workers provisioned yet.</div>';
-    }
-    return html+'</section>';
-  }).join('')+'</div>';
-  const signature = JSON.stringify(activity);
-  if (signature !== _orchActivitySignature) {
-    _orchActivitySignature = signature;
-    amuxTrack('orchestration_activity_projection', {measured:true,n_considered:activity.length,
-      working_now:activity.filter(a=>a.active).length,retained_task_links:activity.filter(a=>a.card && !a.active).length});
-  }
 }
 
 // ── Board status GATES (confirm-on-move checklists) ──
@@ -35466,7 +34902,6 @@ function connectSSE() {
           // continuous mid-turn stream that SSE-on-change alone would miss.
           _refreshOpenPeekOnSessions();
           _refreshBoardActivityOnSessions();
-          _updateFanoutTabVisibility();
           // If workspace is open but no panes were restored yet (e.g. sessions
           // cache was empty on startup), retry restoration now that we have data.
           if (firstLoad && _grid && Object.keys(_gridPanes).length === 0) {
@@ -45743,7 +45178,7 @@ async function _projectsLoad() {
   const current=()=>token===_projectsToken && activeView==='projects';
   const root=document.getElementById('projects-view');
   if(!document.getElementById('project-selector')) {
-    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into accountable tasks, a verified candidate, human review and one approved publish.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
+    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into accountable tasks, a verified candidate, human review and one approved publish.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
     _projectsName=_projectStorage('selected');
   }
   try {
@@ -46226,21 +45661,4 @@ async function _projectRetry(id,verification=false) {
   try {await _projectRequest('/'+encodeURIComponent(name)+'/tasks/'+encodeURIComponent(id)+'/retry','POST',body);_projectStorage(key,'');}
   catch(e){if(e.status===409)_projectStorage(key,'');_projectError(e);}
   finally{_projectIntakeRetries.delete(key);await _projectsLoad();}
-}
-
-function _projectOrchestrationState(data) {
-  return data.project.policy.paused || !data.project.policy.enabled ? 'paused' : 'active';
-}
-function _projectOrchestrationsRender() {
-  const el=document.getElementById('orch-projects');if(!el) return;
-  el.innerHTML=_orchProjects.filter(p=>_orchFilter==='all' || _projectOrchestrationState(p)===_orchFilter).map(data=>'<article class="project-card"><h4>'+esc(data.project.name)+'</h4><p>Planning model: '+esc(data.project.policy.coordinator.model)+' · on demand. Executor: '+esc(data.project.policy.executor.model)+' · capacity '+data.project.policy.max_executors+'.</p><p>'+data.usage.verified_outcomes+' / '+data.usage.requested_outcomes+' structured outcomes verified · '+data.commands.filter(c=>c.pending).length+' requests awaiting intake</p><ul>'+data.cards.filter(c=>c.execution_plan.execution.worker).map(c=>'<li>'+esc(c.title)+' · '+esc(c.phase)+' · '+esc(c.execution_plan.execution.worker)+'</li>').join('')+'</ul><button class="btn" onclick="switchView(\'projects\');_projectChoose(\''+escJs(data.project.name)+'\')">Open project board</button></article>').join('');
-}
-async function _projectOrchestrations() {
-  const el=document.getElementById('orch-projects');if(!el) return;
-  try {
-    const inventory=await _projectRequest('');
-    _orchProjects=await Promise.all(inventory.projects.map(p=>_projectRequest('/'+encodeURIComponent(p.name))));
-    _projectOrchestrationsRender();
-    if(_orchData) _orchRenderFilters(_orchData.orchEpics);
-  }catch(e){el.textContent='Project orchestrations could not load: '+e.message;}
 }
