@@ -4949,3 +4949,10 @@ FIX: One project-owned checkout and branch, serialized claims and direct starts,
 - **Root cause:** receipt polling propagated validation failures before checking current-turn liveness; correction eligibility special-cased one validation message.
 - **Fix:** refuse incomplete receipts without interrupting a live turn. At a confirmed end, classify the invalid receipt for bounded normal repair. A fully validated same-claim first report can recover without another model turn; authorization holds, suspension, generation/input identity and clean-candidate checks remain required. Log `project.report_incomplete_observed` and the existing corrected-receipt recovery event.
 - **Verification:** active-to-stopped observation regression, bounded attempts, and clean corrected-first-receipt recovery without incrementing attempts. Live publication remains a separate gate.
+
+### 2026-09-24 — project said Driving while Codex waited at checkout selector
+
+- **Symptom:** `bucket-objects-gs3` showed Driving and POG-2 working for hours, but the live worker was parked on Codex's resume directory picker. Its queued task packet could not land.
+- **Root cause:** project list and overview treated a durable `working` assignment as live execution; the status join existed only on task cards. After the one-worktree migration, Codex asked whether to use the old session checkout or the current registered project checkout, and the harness did not resolve its own directory choice.
+- **Fix:** join project summaries with current worker observations in the list and overview. For an active project claim, resolve only the exact Codex directory selector to the registered project checkout, with no persistent provider preference or trust change. Record a `project.checkout_selector_resolved` event and measured warning.
+- **Verification:** picker safety and project-card status regressions added; live 8824 retest pending deployment.

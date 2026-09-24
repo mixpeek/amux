@@ -11825,7 +11825,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1101';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1102';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45487,15 +45487,29 @@ function _projectInventoryState(project) {
   if(summary.acceptance_state==='accepted') return {label:'Accepted',cls:'done'};
   if(['failed','operational_failure','rejected'].includes(summary.acceptance_state)) return {label:'Verification failed',cls:'review'};
   if(summary.acceptance_state==='not_configured' && Number(summary.active_tasks||0)===0 && Number(summary.task_count||0)>0) return {label:'Review setup',cls:'review'};
+  const live=_projectLiveWorkerState(summary.working_workers);
+  if(live) return live;
   if(Number(summary.active_tasks||0)>0 && Number(summary.waiting_tasks||0)===Number(summary.active_tasks||0) && Number(summary.running_executions||0)===0) return {label:'Execution held',cls:'review'};
   if(Number(summary.running_executions||0)>0 || Number(summary.active_tasks||0)>0) return {label:'Driving',cls:'active'};
   if(Number(summary.task_count||0)>0) return {label:'Verifying outcome',cls:'active'};
   return {label:'Ready',cls:'ready'};
 }
+function _projectLiveWorkerState(names) {
+  if(!Array.isArray(names) || !names.length) return null;
+  if((typeof _sessionLoadError!=='undefined' && _sessionLoadError) || (typeof online!=='undefined' && !online)) return {label:'Worker state unavailable',cls:'review'};
+  const observed=names.map(name=>(typeof sessions==='undefined'?[]:sessions).find(s=>s.name===name));
+  if(observed.some(s=>s?.running && ['active','working'].includes(s.status))) return null;
+  if(observed.some(s=>s?.status==='waiting')) return {label:'Worker needs input',cls:'review'};
+  if(observed.some(s=>s?.status==='rate_limited')) return {label:'Worker rate limited',cls:'review'};
+  if(observed.some(s=>s?.paused || s?.lifecycle==='paused')) return {label:'Worker paused',cls:'review'};
+  if(observed.some(s=>s?.running===false || s?.status==='stopped')) return {label:'Worker stopped',cls:'review'};
+  if(observed.some(s=>s?.status==='idle')) return {label:'Worker idle',cls:'review'};
+  return {label:'Checking worker',cls:'review'};
+}
 function _projectRenderInventory(projects) {
   const el=document.getElementById('project-list'); if(!el) return;
   const rows=[{name:'',newProject:true}].concat(projects || []);
-  const sig=JSON.stringify([_projectsName,rows.map(p=>[p.name,p.newProject,!!p.policy?.paused,p.policy?.enabled,p.policy?.repository,p.policy?.executor?.provider,p.policy?.executor?.model,p.policy?.executor?.effort,p.policy?.worktree,p.summary])]);
+  const sig=JSON.stringify([_projectsName,rows.map(p=>[p.name,p.newProject,!!p.policy?.paused,p.policy?.enabled,p.policy?.repository,p.policy?.executor?.provider,p.policy?.executor?.model,p.policy?.executor?.effort,p.policy?.worktree,p.summary,_projectLiveWorkerState(p.summary?.working_workers)])]);
   if(el.dataset.sig===sig) return;
   el.dataset.sig=sig;
   el.innerHTML='<div class="project-list-title">Projects</div>'+rows.map(p=>{
@@ -45824,6 +45838,8 @@ async function _projectsLoad() {
     const select=document.getElementById('project-selector');
     const options='<option value="">New project</option>'+inventory.projects.map(p=>'<option value="'+esc(p.name)+'">'+esc(p.name)+'</option>').join('');
     if(select.innerHTML!==options) select.innerHTML=options;select.value=_projectsName;
+    await fetchSessions();
+    if(!current()) return;
     _projectRenderInventory(inventory.projects);
     if(!_projectsName) {
       if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=(inventory.projects.length?'':'<p class="project-empty" role="status">No projects yet. Create one to describe an outcome and follow its tasks and evidence.</p>')+_projectConfig(null)
@@ -45837,7 +45853,6 @@ async function _projectsLoad() {
       // task still rendered an older `registered, running` snapshot until a
       // page reload. The shared sessions fetch is conditional (ETag/304) and
       // coalesced, so make the join current before rendering it.
-      await fetchSessions();
       if(!current() || expected!==_projectsName) return;
       if(!_projectsData) {
         document.getElementById('project-detail').innerHTML=_projectDetailTemplate(data.project);
@@ -46099,7 +46114,8 @@ function _projectRender(data) {
   const retirement=data.acceptance?.executor_retirement;
   const openCards=data.cards.filter(c=>!['verified','closed'].includes(c.phase));
   const allHeld=openCards.length>0 && openCards.every(c=>c.phase==='waiting');
-  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':(!openCards.length && _projectIntakeState(data)?.label)||'Driving project outcomes';
+  const live=_projectLiveWorkerState(openCards.filter(c=>c.execution_plan?.execution?.stage==='working').map(c=>c.execution_plan.execution.worker).filter(Boolean));
+  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':live?.label||(!openCards.length && _projectIntakeState(data)?.label)||'Driving project outcomes';
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   const setText=(id,text)=>{const el=document.getElementById(id);if(el && el.textContent!==text) el.textContent=text;};

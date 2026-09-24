@@ -64,6 +64,17 @@ test('project worker lifecycle uses measured provider status rather than process
  ctx.sessions=[];assert.equal(ctx._projectWorkerRuntime({name:'demo',lifecycle:'expired'}).label,'Expired');
 });
 
+test('project card stops claiming Driving when its assigned worker needs input',()=>{
+ const session={name:'worker-1',running:true,status:'waiting'};
+ const ctx=vm.createContext({sessions:[session],online:true,_sessionLoadError:null});
+ vm.runInContext(source.slice(source.indexOf('function _projectInventoryState('),source.indexOf('function _projectRenderInventory(')),ctx);
+ const project={policy:{enabled:true},summary:{active_tasks:2,running_executions:1,working_workers:['worker-1']}};
+ assert.equal(ctx._projectInventoryState(project).label,'Worker needs input');
+ session.status='active';assert.equal(ctx._projectInventoryState(project).label,'Driving');
+ session.status='stopped';session.running=false;assert.equal(ctx._projectInventoryState(project).label,'Worker stopped');
+ ctx._sessionLoadError='offline';assert.equal(ctx._projectInventoryState(project).label,'Worker state unavailable');
+});
+
 test('directory viewer ignores older network and offline cache responses after navigation',async()=>{
  const nodes=new Map(),pending=[],renders=[],cache=[];
  const ctx=vm.createContext({document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',value:''});return nodes.get(id)}},history:{replaceState:()=>{}},location:{pathname:'/'},_encodeHashPath:s=>s,_updateFilesCwdBtn:()=>{},_filesToolbarCheck:()=>{},esc:s=>s,API:'',_filesShowHidden:false,_renderFilesEntries:(_body,path,data)=>renders.push({path,data}),_autoCacheDirFiles:()=>{},_idb:{setFile:()=>{},getFile:()=>new Promise(resolve=>cache.push(resolve))},fetch:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject}))});

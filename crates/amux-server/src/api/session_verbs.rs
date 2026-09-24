@@ -1804,6 +1804,42 @@ fn project_hook_review_key(cfg: &EnvFile, raw: &str) -> Option<&'static str> {
     clean.lines().map(str::trim).any(|line| line == choice).then_some("3")
 }
 
+// A Codex resume after project checkout consolidation can ask which of two
+// directories to use. The registered project checkout is an Amux-owned choice,
+// not a new authorization or a question for the owner. Never choose a path
+// from the pane alone: it must equal the durable project checkout record.
+fn project_checkout_directory_key(cfg: &EnvFile, raw: &str, checkout: &Path) -> Option<&'static str> {
+    if cfg.get("CC_PROVIDER") != Some("codex")
+        || cfg.get("CC_PROJECT").is_none_or(str::is_empty)
+        || ["CC_ISOLATED", "CC_PAUSED", "CC_ARCHIVED", "CC_PROJECT_PAUSED"]
+            .iter().any(|key| env_flag_on(cfg.get(key)))
+    { return None; }
+    let clean = strip_ansi(raw);
+    if crate::backend::adapter::provider_picker_reason(&clean, "codex") != Some("user_input") {
+        return None;
+    }
+    let lines: Vec<_> = clean.lines().map(str::trim).filter(|line| !line.is_empty()).rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+    if lines.last().copied() != Some("Press enter to continue") { return None; }
+    let option = |number: usize| -> Option<(&str, bool)> {
+        let prefix = format!("{number}. ");
+        lines.iter().rev().find_map(|line| {
+            let selected = line.starts_with('›') || line.starts_with('❯');
+            let text = if selected { line[3..].trim() } else { line };
+            text.strip_prefix(&prefix).map(|value| (value, selected))
+        })
+    };
+    let (old, _) = option(1)?;
+    let (current, selected) = option(2)?;
+    if !old.starts_with("Use session directory (")
+        || !current.starts_with("Use current directory (")
+        || option(3)?.0 != "Always use session directory"
+        || option(4)?.0 != "Always use current directory"
+    { return None; }
+    let chosen = current.strip_prefix("Use current directory (")?.strip_suffix(')')?;
+    if Path::new(chosen) != checkout { return None; }
+    Some(if selected { "Enter" } else { "2" })
+}
+
 pub(crate) fn is_resume_mode_prompt(raw: &str) -> bool {
     let clean = strip_ansi(raw).to_lowercase().replace('\u{2019}', "'");
     let opt1 = cached_re!(r"(?m)^\s*(?:[\u{276f}>]\s*)?1\.\s+resume from summary");
@@ -20119,6 +20155,20 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             // Reobserve on the next sweep: never press Enter on an assumed
             // selection or send task text while the picker is transitioning.
             continue;
+        }
+
+        if let (Some(project), Some(repo)) = (cfg.get("CC_PROJECT"), cfg.get("CC_DIR")) {
+            let checkout = crate::project_execution::checkout::load(Path::new(repo), project);
+            if let Some(key) = checkout.as_ref().and_then(|w| project_checkout_directory_key(&cfg, &pane, Path::new(&w.path))) {
+                let permitted = state.store.read().ok().is_some_and(|c|
+                    crate::project_execution::checkout::start_permit(&c, project, name).is_ok());
+                if permitted {
+                    let (ok, msg) = send_keys_op(name, key).await;
+                    tracing::warn!(session=%name,project=%project,ok,detail=%msg,measured=true,n_considered=1,verdict="registered_project_checkout_selected","resolved project checkout selector");
+                    emit_event(state,name,"project.checkout_selector_resolved",Some(json!({"key":key,"ok":ok,"detail":msg})),None,"status").await;
+                    if ok { continue; }
+                }
+            }
         }
 
         // RESUME-MODE SELECTOR: amux's to answer (D2; policy set once by Ethan
@@ -47204,6 +47254,24 @@ mod project_hook_review_tests {
         }
         cfg.set("CC_PROVIDER","claude"); assert_eq!(project_hook_review_key(&cfg,pane),None);
         cfg.set("CC_PROVIDER","codex"); cfg.remove("CC_PROJECT"); assert_eq!(project_hook_review_key(&cfg,pane),None);
+    }
+    #[test]
+    fn project_checkout_picker_uses_only_the_registered_checkout_without_persisting_preference() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("worker.env");
+        std::fs::write(&path,"CC_PROVIDER=codex\nCC_PROJECT=demo\n").unwrap();
+        let mut cfg=EnvFile::load(&path);
+        let pane="› 1. Use session directory (/repo/.worktrees/old)\n  2. Use current directory (/repo/.worktrees/project-demo)\n  3. Always use session directory\n  4. Always use current directory\n  Press enter to continue";
+        let checkout=Path::new("/repo/.worktrees/project-demo");
+        assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),Some("2"));
+        assert_eq!(project_checkout_directory_key(&cfg,&pane.replace("› 1.","  1.").replace("  2.","› 2."),checkout),Some("Enter"));
+        assert_eq!(project_checkout_directory_key(&cfg,pane,Path::new("/repo/.worktrees/other")),None);
+        assert_eq!(project_checkout_directory_key(&cfg,&pane.replace("2. Use current directory", "2. Trust this directory"),checkout),None);
+        assert_eq!(project_checkout_directory_key(&cfg,&format!("{pane}\n› Work on something else"),checkout),None);
+        for key in ["CC_ISOLATED","CC_PAUSED","CC_ARCHIVED","CC_PROJECT_PAUSED"] {
+            cfg.set(key,"1"); assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),None); cfg.remove(key);
+        }
+        cfg.set("CC_PROVIDER","claude"); assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),None);
     }
 }
 

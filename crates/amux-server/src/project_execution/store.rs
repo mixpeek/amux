@@ -254,6 +254,13 @@ pub fn summary(conn: &Connection, project: &Project) -> anyhow::Result<Value> {
             )
         })
         .count();
+    // The planner stage is a durable assignment, not proof that its provider
+    // is doing work. Let the client join these names with the fresh session
+    // inventory before claiming the project is actively driving.
+    let working_workers: Vec<&str> = plans.iter()
+        .filter(|p| p.execution.stage == "working" && !p.execution.worker.is_empty())
+        .map(|p| p.execution.worker.as_str())
+        .collect();
     Ok(json!({
         "task_count": task_count,
         "verified_tasks": verified_tasks,
@@ -261,6 +268,7 @@ pub fn summary(conn: &Connection, project: &Project) -> anyhow::Result<Value> {
         "active_tasks": active_tasks,
         "waiting_tasks": waiting_tasks,
         "running_executions": running_executions,
+        "working_workers": working_workers,
         "acceptance_state": acceptance.get("state").and_then(Value::as_str).unwrap_or("unknown"),
         "acceptance_reason": acceptance.get("reason").and_then(Value::as_str),
         "retirement_state": retirement.get("state").and_then(Value::as_str).unwrap_or("unknown"),
