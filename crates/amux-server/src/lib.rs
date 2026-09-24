@@ -538,6 +538,18 @@ async fn async_main() {
     // whose absence is why the outage went unnoticed for hours.
     drop(runtime_jobs::board_drive::spawn(state.clone()));
 
+    // RESUME STARTS A RESTART CUT OFF. Deploys exec() this process on every
+    // commit; a worker start (a large worktree checkout takes over a minute)
+    // that was mid-flight died with no retry. Delayed so tmux and the
+    // bootstrap loop are up first.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let n = crate::api::session_verbs::resume_interrupted_starts(&state).await;
+            tracing::info!(resumed = n, measured = true, "interrupted-start resume pass complete");
+        });
+    }
     // Project lifecycle driver. Projects have their own contract, retained
     // evidence, verifier and main-integration gates; tying this to the legacy
     // board sweeper meant a preview server could either stay reachable with
