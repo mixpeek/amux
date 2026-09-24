@@ -2537,7 +2537,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
          the worker. Defaults: decompose on, force off. Hidden for isolated workers. -->
     <div id="peek-board-policy" class="peek-board-policy" style="display:none;">
       <label title="Your messages still reach the worker; a planner files them onto this board in the background"><input type="checkbox" id="peek-board-decompose" onchange="togglePeekBoardPolicy('board_decompose', this.checked)"> Decompose onto board</label>
-      <label title="Withhold task messages from the worker; it works only from the cards the planner creates"><input type="checkbox" id="peek-board-force" onchange="togglePeekBoardPolicy('board_force_adherence', this.checked)"> Force board adherence</label>
+      <label title="On: the board drives this worker (task messages become cards, it picks up cards and gets board reminders). Off: the board only records; nothing is typed into the worker."><input type="checkbox" id="peek-board-force" onchange="togglePeekBoardPolicy('board_force_adherence', this.checked)"> Force board adherence</label>
       <span id="peek-board-policy-note" class="peek-board-policy-note" style="display:none;"></span>
     </div>
     <div id="bf-chips-peek" style="display:none;flex-wrap:wrap;gap:6px;padding:0 10px 6px;"></div>

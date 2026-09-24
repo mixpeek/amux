@@ -756,6 +756,13 @@ pub trait Fleet: Send + Sync {
     /// this reached 4 of 101 sessions, so 97 lanes went idle on a full queue and
     /// stayed there (py:14437).
     fn auto_pickup_enabled(&self, lane: &str) -> bool;
+    /// Whether the board may steer this lane at all: pickups, resumes,
+    /// reminders. Off unless the owner turned on force-adherence (see
+    /// `board_reminders_wanted`). Defaults to true so test fleets model a lane
+    /// that opted in.
+    fn board_adherence(&self, _lane: &str) -> bool {
+        true
+    }
     /// `CC_TAGS`, lowercased — for explicit-mode status scoping (py:16096).
     fn tags(&self, lane: &str) -> Vec<String>;
     /// Isolation is a selection veto, not merely a delivery refusal: claiming
@@ -886,6 +893,9 @@ impl Fleet for LiveFleet {
     }
     fn auto_pickup_enabled(&self, lane: &str) -> bool {
         crate::api::session_verbs::standing_orders_on(lane, "CC_AUTO_PICKUP")
+    }
+    fn board_adherence(&self, lane: &str) -> bool {
+        board_reminders_wanted(lane)
     }
     fn tags(&self, lane: &str) -> Vec<String> {
         let cfg = crate::api::session_verbs::parse_env(lane);
@@ -6941,12 +6951,15 @@ fn publish_lane(trace: LaneTrace) {
     }
 }
 
-/// Whether board-drive may ask a lane to hand-decompose its own capture
-/// shells. Decomposition is the background planner's job (Ethan, 2026-09-24:
-/// "this should be a background/async thing so doesnt impact worker"), so the
-/// nudge wakes a lane for a whole turn to do work the planner already owns.
-/// It stays on only where the owner switched on force-adherence to the board.
-pub(crate) fn decompose_nudge_wanted(lane: &str) -> bool {
+/// Whether board-drive may paste board REMINDERS into a lane: capture-shell
+/// decompose asks, advance nudges, needs:you re-nags and review routing. All
+/// of them are the board steering the worker, which is what force-adherence
+/// means; with it off (the default) the board documents and the worker is
+/// left alone (Ethan, 2026-09-24: decomposition "should be a background/async
+/// thing so doesnt impact worker"; then, on an MI-4404 needs:you re-nag, "i
+/// thought we got rid of these injections when board adherence is disabled").
+/// Dispatch of real todo work is a separate switch (auto-pickup).
+pub(crate) fn board_reminders_wanted(lane: &str) -> bool {
     crate::api::board_lifecycle::force_adherence(lane)
 }
 
@@ -7153,6 +7166,20 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         return LaneTrace::skip(lane, "opted-out", "CC_AUTO_PICKUP=0 in the session env")
             .with_counts(eligible, open);
     }
+    // FORCE-ADHERENCE OFF MEANS THE BOARD DOES NOT STEER THIS WORKER (Ethan,
+    // 2026-09-24, after a needs:you re-nag and then an auto-pickup were pasted
+    // into mvs-infra between two /clears: "i thought we got rid of these
+    // injections when board adherence is disabled"). The board still records
+    // and plans; nothing is typed into the pane. Checked before any claim so a
+    // card is never claimed for a lane that will not be told about it.
+    if !fleet.board_adherence(lane) {
+        return LaneTrace::skip(
+            lane,
+            "board-adherence-off",
+            "force board adherence is off for this worker; the board documents, it does not steer",
+        )
+        .with_counts(eligible, open);
+    }
     // AMUX-4542. ISOLATION VETOES SELECTION, because delivery still refuses it.
     // 36ab5405 (2026-09-10) removed this skip so isolated lanes would be driven,
     // but the queue's isolation gate (`isolation_refusal`, AMUX-3764) still
@@ -7201,17 +7228,11 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     matches!(
                         select_pickup(&conn, lane, now_f64()),
                         Pickup::Claim { .. } | Pickup::DrainBacklog { .. }
-                    ) || matches!(
-                        select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
-                        Advance::Nudge {
-                            kind: "advance-nudged",
-                            ..
-                        }
-                    ) || (decompose_nudge_wanted(lane)
+                    ) || (fleet.board_adherence(lane)
                         && matches!(
                             select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
                             Advance::Nudge {
-                                kind: "decompose-asked",
+                                kind: "advance-nudged" | "decompose-asked",
                                 ..
                             }
                         )) || (eligible == 0
@@ -7573,12 +7594,13 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             kind,
         } = advance
         {
-            if kind == "decompose-asked" && !decompose_nudge_wanted(&target) {
+            if !fleet.board_adherence(&target) {
                 tracing::info!(
-                    event = "decompose_nudge_suppressed",
+                    event = "board_reminder_suppressed",
                     lane = %target,
                     card = %card,
-                    "capture shell left to the background planner; force-adherence is off"
+                    kind,
+                    "board reminder not pasted into the worker; force-adherence is off"
                 );
                 break 'reminder;
             }
@@ -7930,7 +7952,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             }
         }
         Pickup::Decompose { ids, text } => {
-            if !decompose_nudge_wanted(lane) {
+            if !fleet.board_adherence(lane) {
                 return LaneTrace::skip(
                     lane,
                     "decompose-planner-owned",
@@ -10512,6 +10534,7 @@ mod tests {
         start_error: std::sync::Mutex<Option<String>>,
         delivery_error: std::sync::Mutex<Option<String>>,
         suppress_about: std::sync::atomic::AtomicBool,
+        adherence: std::sync::atomic::AtomicBool,
     }
     impl Default for BoundaryFleet {
         fn default() -> Self {
@@ -10528,6 +10551,7 @@ mod tests {
                 start_error: std::sync::Mutex::new(None),
                 delivery_error: std::sync::Mutex::new(None),
                 suppress_about: std::sync::atomic::AtomicBool::new(false),
+                adherence: std::sync::atomic::AtomicBool::new(true),
             }
         }
     }
@@ -10537,6 +10561,9 @@ mod tests {
         }
         fn auto_pickup_enabled(&self, _: &str) -> bool {
             self.enabled.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn board_adherence(&self, _: &str) -> bool {
+            self.adherence.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn tags(&self, _: &str) -> Vec<String> {
             vec![]
@@ -11262,16 +11289,31 @@ mod tests {
             )
             .unwrap()
     }
+    /// mvs-infra, 2026-09-24: a needs:you re-nag and an auto-pickup were pasted
+    /// between two /clears on a lane with force-adherence off. Off means the
+    /// board claims nothing and types nothing; on, the same card dispatches.
+    #[tokio::test]
+    async fn without_force_adherence_the_board_never_steers_the_worker() {
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "WORK-1", "todo", "agent", "code");
+        let off = BoundaryFleet::default();
+        off.adherence.store(false, std::sync::atomic::Ordering::SeqCst);
+        let trace = drive_lane(&state, &off, "lane").await;
+        assert_eq!(trace.reason, "board-adherence-off", "{trace:?}");
+        assert!(off.delivered.lock().unwrap().is_empty());
+        assert_eq!(drive_status(&store, "WORK-1"), "todo", "nothing may be claimed");
+
+        let on = BoundaryFleet::default();
+        let trace = drive_lane(&state, &on, "lane").await;
+        assert_eq!(on.delivered.lock().unwrap().len(), 1, "{trace:?}");
+    }
+
     /// Ethan, 2026-09-24: decomposition is a background job and must not
     /// interrupt the worker. The "is a capture shell" nudge pasted board
     /// bureaucracy into mixpeek-general as a user turn (MG-1918). It reaches a
     /// lane only where the owner turned on force-adherence to the board.
     #[tokio::test]
     async fn a_capture_shell_nudge_reaches_the_lane_only_under_force_adherence() {
-        let home = tempfile::tempdir().unwrap();
-        let _home = crate::api::settings::test_env::set_home(home.path());
-        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
-        std::fs::write(home.path().join("sessions/lane.env"), "CC_DIR=\"/tmp\"\n").unwrap();
         let (_dir, state, store) = drive_state();
         drive_card(&store, "SHELL-1", "doing", "agent", "code");
         store.write(|conn| {
@@ -11285,13 +11327,10 @@ mod tests {
         };
 
         let quiet = BoundaryFleet::default();
+        quiet.adherence.store(false, std::sync::atomic::Ordering::SeqCst);
         let trace = drive_lane(&state, &quiet, "lane").await;
         assert_eq!(shell_nudges(&quiet), 0, "default must not interrupt the worker: {trace:?}");
 
-        std::fs::write(
-            home.path().join("sessions/lane.env"),
-            "CC_DIR=\"/tmp\"\nAMUX_BOARD_FORCE_ADHERENCE=\"1\"\n",
-        ).unwrap();
         let strict = BoundaryFleet::default();
         let trace = drive_lane(&state, &strict, "lane").await;
         assert_eq!(shell_nudges(&strict), 1, "force-adherence keeps the nudge: {trace:?}");
