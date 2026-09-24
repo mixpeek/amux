@@ -11627,7 +11627,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1077';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1078';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13077,8 +13077,12 @@ function _linkifyPaths(safeHtml) {
     // The segment class excludes quotes on purpose — a path containing `'` would
     // break out of the inline onclick below, so such a path is simply not linked
     // rather than linked unsafely.
-    const RE = /(^|[\s(\[>"'`,;=])((?:\.?\/)?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+)?(?![^<]*>)/gm;
-    return String(safeHtml).replace(RE, (m, pre, path, line, offset, whole) => {
+    // An `@` directly before a path is Claude Code's file-mention marker, not
+    // part of the path (Ethan, 2026-09-24: `@/Users/ethan/.amux/uploads/x.png`
+    // opened /Users/ethan/Dev/amux/@/Users/…). Consumed as its own group and
+    // re-emitted as plain text, so the link carries the real path.
+    const RE = /(^|[\s(\[>"'`,;=])(@?)((?:\.?\/)?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+)?(?![^<]*>)/gm;
+    return String(safeHtml).replace(RE, (m, pre, at, path, line, offset, whole) => {
       // A HARD WRAP IS NOT A PATH BOUNDARY (Ethan, 2026-09-09: "these links
       // dont work"). tmux breaks a long line at the pane width mid-token, so
       // `/private/tmp/claude-501/…/_lt.txt` arrives as `/private/tmp/c` +
@@ -13113,7 +13117,7 @@ function _linkifyPaths(safeHtml) {
       if (!p.startsWith('/') && !(typeof peekSessionDir === 'string' && peekSessionDir)) return m;
       const cls = /\.md$/i.test(p) ? 'md-link' : 'file-link';
       const shown = p + (line || '');
-      return pre + '<span class="' + cls + '" title="Open in the file browser: '
+      return pre + at + '<span class="' + cls + '" title="Open in the file browser: '
         + esc(_resolveOutputPath(p)) + '" onclick="event.preventDefault();event.stopPropagation();'
         + "_openPathFromOutput('" + escJs(p) + "')" + '">' + esc(shown) + '</span>'
         + (dot ? '.' : '');
