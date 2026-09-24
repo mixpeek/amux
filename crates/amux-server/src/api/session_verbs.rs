@@ -1987,6 +1987,19 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
             break;
         }
     }
+    // A picker's footer sits ABOVE the prompt line, outside `current_lines`.
+    // When background agents paint "esc to interrupt" on the status bar, the
+    // status-bar check below returns "active" before the picker loop at (2)
+    // ever runs. The picker is the blocking state: the user must answer it
+    // before the main turn continues, regardless of background agents.
+    // Scan the bottom of the FULL frame for the footer.
+    let picker_footer_visible = lines[n.saturating_sub(20)..].iter().any(|l| {
+        let ll = l.to_lowercase();
+        ll.contains("enter to select") && ll.contains("esc to cancel")
+    });
+    if picker_footer_visible {
+        return "waiting".into();
+    }
     if status_bar.is_empty() {
         if current.contains("Resume from summary") && current.contains("Resume full session") {
             return "waiting".into();
@@ -35513,6 +35526,26 @@ CLAUDE-POSTFIX-COMPLETE
         // showed through because nothing recognised the spinner).
         let gemini_working = "\u{2502} \u{22b7}  Shell sleep 15 && echo ROUND2\n \u{2819} Thinking... (esc to cancel, 9s)\n YOLO Ctrl+Y";
         assert_eq!(detect_claude_status(gemini_working), "active");
+    }
+
+    /// An AskUserQuestion picker visible while background agents run: the
+    /// status bar says "esc to interrupt" for the agents, but the main prompt
+    /// is blocked on user input. The picker is the blocking state.
+    /// Captured live 2026-09-24 on gs-3-bucket-objects: the picker footer
+    /// sat ABOVE the prompt line, outside `current_lines`, so the per-line
+    /// "esc to cancel" check never saw it, and "esc to interrupt" in the
+    /// status bar returned "active" first.
+    #[test]
+    fn picker_with_background_agents_is_waiting() {
+        let pane = "  1. Yes promote tenant-tubescience, ack TUBES-1862\n\
+  2. Defer\n\
+  3. Hold platform\n\
+Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} gs-3-bucket-objects \u{2500}\n\
+\u{276f}\n\
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n\
+\u{23f5}\u{23f5} bypass permissions on \u{00b7} 1 shell \u{00b7} esc to interrupt \u{00b7} \u{2190} 5 agents";
+        assert_eq!(detect_claude_status(pane), "waiting");
     }
 
     /// A 5xx / Overloaded banner sitting at the TAIL is its own status

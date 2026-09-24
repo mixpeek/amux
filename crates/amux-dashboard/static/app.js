@@ -3275,6 +3275,13 @@ async function _runSyncBanner(quiet = false) {
     const interaction = _interactionReplay(q);
     try {
       if ((q.attempts || 0) >= 5 && !_outboxUncertainMessage(q)) {
+        if (/\/(delete|stop|archive|clear)$/.test(q.url.split('?')[0])) {
+          await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
+          item.status = 'done';
+          item.label += ' (already gone)';
+          renderBanner();
+          return;
+        }
         q.state = 'blocked';
         throw new Error('Gave up after ' + q.attempts + ' failed attempts');
       }
@@ -11783,7 +11790,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1094';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1095';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
