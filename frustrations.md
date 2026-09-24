@@ -4507,3 +4507,14 @@ CARD: AF-947
 SYMPTOM: POG-17 host validation could not import FastAPI while the worker's login-profile Python could. Verification launched plain sh with launchd PATH instead of the user's provider/tool profile.
 COST: A machine-environment mismatch looked like a candidate defect and consumed model repairs.
 FIX: Discover verification tools through the user login shell, explicitly repin the candidate directory after profile startup, and pass checkout/command as positional arguments. Preserve timeout, process-group cancellation, source-boundary and clean-worktree checks. Give a retained report one checks-only environment retry on a missing-module failure; preserve failed evidence and never grant another model turn through that path.
+
+## Commit attribution selected a focused worker outside tmux
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Unscoped tmux display-message attributed harness commits from this desktop chat to an unrelated project worker despite AMUX_SESSION, TMUX and TMUX_PANE being absent.
+COST: Project audit trails credited worker output that was actually harness maintenance.
+FIX: Require and target this process's actual pane for fallback identity; retain explicit identity and verified process ancestry. Outside-tmux commits use the existing human/unscoped signal rather than a focused peer. Controlled fake-tmux regressions cover both hooks; existing stamp suite passes 18 checks.

@@ -1,6 +1,6 @@
 #!/bin/sh
 # guard-features: interpret-trailers Amux-Committer
-# guard-version: 2
+# guard-version: 3
 # (AF-431 / MR-44. A file declaring guard-features must carry exactly ONE
 #  anchored integer version so staleness is a NUMERIC comparison, not a
 #  substring hunt. Two spellings, per mixpeek-research's dc21a0d489: hooks
@@ -139,20 +139,10 @@ if [ -z "$stamp" ] && [ -n "$_anc_lane" ]; then
   stamp="$_anc_lane"
 fi
 
-# MR-43: before falling all the way to "(human)", try recovering a lane's own
-# identity from the tmux pane it is actually running in — $AMUX_SESSION can go
-# missing IN-PROCESS (spawn always injects it, session_verbs.rs) without the
-# lane having stopped being a lane. Scoped to amux- prefixed panes ONLY, so
-# this cannot touch the human case above: a human's own shell is never in one,
-# so it still falls through to "(human)" exactly as before. Not weakening the
-# exemption, only correcting which of the three causes (paragraph above) this
-# commit actually was.
-#
-# Still reached when the ancestry walk above found nothing: `tmux
-# display-message` resolves through $TMUX rather than the process tree, so it
-# covers a lane whose pane pid the walk could not see.
-if [ -z "$stamp" ]; then
-  _mr43_tname="$(tmux display-message -p '#S' 2>/dev/null)"
+# Recover only this process's actual pane. Without a target, tmux chooses a
+# focused peer even for a completely unrelated shell outside tmux.
+if [ -z "$stamp" ] && [ -n "${TMUX_PANE:-}" ]; then
+  _mr43_tname="$(tmux display-message -t "$TMUX_PANE" -p '#S' 2>/dev/null)"
   case "$_mr43_tname" in
     # Same env-file requirement as the walk above (AMUX-4602): recovering a
     # lane's lost identity is the point; inventing one for a stray tmux session

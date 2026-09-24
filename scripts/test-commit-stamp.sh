@@ -340,5 +340,32 @@ else
 fi
 rm -rf "$_empty_home" "$_t" "$_t2"
 
+# A running, focused peer is not evidence that this process belongs to it.
+mkdir -p "$TMP/tmux-bin"
+printf '' > "$TMP/home/sessions/peer.env"
+cat > "$TMP/tmux-bin/tmux" <<'SH'
+#!/bin/sh
+case "$1" in
+  list-panes) exit 0 ;;
+  display-message)
+    if [ "$2" = -t ] && [ "$3" = %42 ]; then echo amux-peer; exit 0; fi
+    echo amux-peer
+    ;;
+esac
+SH
+chmod +x "$TMP/tmux-bin/tmux"
+printf 'subject\n' > "$TMP/pane-msg"
+PATH="$TMP/tmux-bin:$PATH" AMUX_HOME="$TMP/home" AMUX_SESSION= TMUX_PANE= \
+  sh "$HOOK" "$TMP/pane-msg"
+if grep -q '^Amux-Session: (human)$' "$TMP/pane-msg"; then
+  ok "outside tmux never claims the focused peer"
+else no "outside tmux must not recover a peer"; fi
+printf 'subject\n' > "$TMP/pane-msg"
+PATH="$TMP/tmux-bin:$PATH" AMUX_HOME="$TMP/home" AMUX_SESSION= TMUX_PANE=%42 \
+  sh "$HOOK" "$TMP/pane-msg"
+if grep -q '^Amux-Session: peer$' "$TMP/pane-msg"; then
+  ok "explicit owning pane still recovers the registered lane"
+else no "own pane recovery must remain available"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

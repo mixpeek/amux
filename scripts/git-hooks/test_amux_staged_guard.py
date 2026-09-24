@@ -9,6 +9,8 @@ import importlib.machinery
 import os
 import subprocess
 import sys
+import tempfile
+from unittest.mock import patch
 
 HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "amux-staged-guard")
 mod = importlib.machinery.SourceFileLoader("_asg_test", HOOK).load_module()
@@ -28,37 +30,24 @@ def main():
     failures = []
     real_run = subprocess.run
 
-    # CONTROL FIRST: an amux-prefixed pane name DOES resolve, so a matcher that
-    # silently always returns "" cannot hide behind an all-negative suite.
-    subprocess.run = _fake_run("amux-mixpeek-research\n")
-    got = mod._derive_session_from_tmux()
-    if got != "mixpeek-research":
-        failures.append(
-            f"control: 'amux-mixpeek-research' should derive 'mixpeek-research', got {got!r}")
-
-    # A human's own tmux session (no amux- prefix) must never be claimed as a
-    # lane — the whole point of scoping the fallback to the prefix.
-    subprocess.run = _fake_run("main\n")
-    got = mod._derive_session_from_tmux()
-    if got != "":
-        failures.append(f"a bare tmux session name must not resolve to a session: got {got!r}")
-
-    # Outside tmux entirely (or tmux missing from PATH): fail closed to "",
-    # never raise — this runs inside a git hook, which must not crash a commit.
-    def _raise(*a, **kw):
-        raise FileNotFoundError("no tmux")
-    subprocess.run = _raise
-    try:
-        got = mod._derive_session_from_tmux()
-        raised = None
-    except Exception as e:
-        got, raised = None, e
-    if raised is not None:
-        failures.append(f"must not raise when tmux is unavailable: {raised!r}")
-    elif got != "":
-        failures.append(f"tmux unavailable should derive '', got {got!r}")
-
-    subprocess.run = real_run
+    with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"AMUX_HOME": home}, clear=False):
+        os.makedirs(os.path.join(home, "sessions"))
+        open(os.path.join(home, "sessions", "mixpeek-research.env"), "w").close()
+        with patch.dict(os.environ, {"TMUX_PANE": ""}):
+            with patch.object(subprocess, "run") as run:
+                assert mod._derive_session_from_tmux() == ""
+                run.assert_not_called()  # Never attribute a focused peer to this shell.
+        with patch.dict(os.environ, {"TMUX_PANE": "%42"}):
+            with patch.object(subprocess, "run") as run:
+                run.return_value.stdout = "amux-mixpeek-research\n"
+                assert mod._derive_session_from_tmux() == "mixpeek-research"
+                assert run.call_args.args[0] == ["tmux", "display-message", "-t", "%42", "-p", "#S"]
+                run.return_value.stdout = "main\n"
+                assert mod._derive_session_from_tmux() == ""
+                run.return_value.stdout = "amux-unregistered\n"
+                assert mod._derive_session_from_tmux() == ""
+                run.side_effect = FileNotFoundError("no tmux")
+                assert mod._derive_session_from_tmux() == ""
 
     # GUARD_VERSION must have moved off the pre-fix baseline, or every already-
     # installed copy on this machine reads as current and never re-syncs (the
