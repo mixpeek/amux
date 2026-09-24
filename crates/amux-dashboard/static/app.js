@@ -2459,9 +2459,15 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
 }
 // Single-line prompt on the same chrome. Resolves the string, or null if cancelled.
 async function showPrompt(msg, placeholder = '') {
-  const ok = await showFormModal(msg,
-    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" style="width:100%">',
+  // Focused, and Enter submits: a prompt you must click into and then click
+  // OK on invited pressing OK on an empty box (the bulk-delete "Delete
+  // cancelled" report, 2026-09-24).
+  const shown = showFormModal(msg,
+    '<input id="modal-prompt-input" class="dict-modal-input" placeholder="' + esc(placeholder) + '" style="width:100%"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();_modalClose(true)}">',
     'OK');
+  setTimeout(() => document.getElementById('modal-prompt-input')?.focus(), 30);
+  const ok = await shown;
   if (!ok) return null;
   return (document.getElementById('modal-prompt-input')?.value || '').trim();
 }
@@ -2637,9 +2643,14 @@ async function runVisibleWorkerAction(key) {
   closeBulkActions();
   const list = names.length > 8 ? names.slice(0, 8).join(', ') + ' and ' + (names.length - 8) + ' more' : names.join(', ');
   if (!await showConfirm(a.label + ' ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + '?\n\n' + list, a.label, !!a.danger)) return;
-  if (a.danger) {
-    const typed = await showPrompt('Type ' + names.length + ' to delete ' + names.length + ' worker' + (names.length === 1 ? '' : 's'), String(names.length));
-    if (typed !== String(names.length)) { showToast('Delete cancelled'); return; }
+  // THE TYPED COUNT ONLY FOR A REAL SWEEP, AND NEVER AS A PLACEHOLDER (Ethan,
+  // 2026-09-24: "i try to delete via all shown ... but it says delete
+  // canceled"). The count sat grey inside the box, which reads as prefilled,
+  // so OK submitted an empty box and every delete was refused.
+  if (a.danger && names.length > 3) {
+    const typed = await showPrompt('Type the number ' + names.length + ' to delete ' + names.length + ' workers', '');
+    if (typed === null) { showToast('Delete cancelled'); return; }
+    if (typed !== String(names.length)) { showToast('Nothing deleted: you typed "' + typed + '", expected ' + names.length); return; }
   }
   const failed = []; let done = 0;
   const queue = names.slice();
@@ -11825,7 +11836,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1103';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1104';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
