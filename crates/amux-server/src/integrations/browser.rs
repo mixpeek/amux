@@ -3002,6 +3002,16 @@ fn registry_row_for_port(port: u16) -> Option<(String, String, u32)> {
 
 /// How many times a verb found the registry naming a browser whose PROCESS is
 /// gone (AMUX-3886). Read by `GET /api/browser/status`.
+/// How many times a verb found a browser ALIVE but wedged (its CDP port stopped
+/// answering) and stopped it so the next verb has a clean state (AMUX-5021).
+///
+/// Deliberately NOT folded into `DEAD_BROWSER_RECOVERIES`: that one counts
+/// browsers whose PROCESS was gone, and a wedged browser's process is running.
+/// AMUX-3886 exists to tell those two apart, so one counter for both would
+/// undo it exactly where a reader looks to check.
+pub static WEDGED_BROWSER_RECOVERIES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub static DEAD_BROWSER_RECOVERIES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -3182,16 +3192,71 @@ async fn cdp_list_failure(session: &str, port: u16, e: anyhow::Error) -> DriverE
             DriverError::Cdp(e)
         }
         CdpListVerdict::Wedged { pid, profile } => {
+            // RECOVER IT INSTEAD OF INSTRUCTING A HUMAN TO (AMUX-5021).
+            //
+            // AMUX-3886 got the DIAGNOSIS right and stopped one step short of
+            // the fix. The `Gone` arm below already self-heals: it records the
+            // corpse, clears the registry and answers with the fixable state.
+            // This arm returned a 502 whose body told the operator to run the
+            // two verbs amux itself owns — "POST /api/browser/stop then
+            // /api/browser/start to replace it".
+            //
+            // CLAUDE.md's standing harness rule is explicit about that shape:
+            // "if normal project or worker progress needs a manual override,
+            // restart, retry ... treat that need as an Amux defect. Implement
+            // bounded, logged discovery and recovery."
+            //
+            // Measured: 3 of 872 requests to /api/browser/screenshot (0.34%),
+            // all inside one 90-second window on 2026-09-23. The first waited
+            // 27,491 ms before giving up; the next two failed in 18 ms and
+            // 62 ms. So the caller already tolerates a long wait here, and
+            // `stop_profile_as_reason` is bounded: SIGTERM, then SIGKILL after
+            // an 8s budget.
+            //
+            // SIGTERM FIRST MATTERS and is why this reuses the stop path rather
+            // than killing directly — TERM is the signal Chrome flushes
+            // Cookies and Local Storage on, so a logged-in profile survives the
+            // recovery. SIGKILL is precisely what loses them.
+            //
+            // It does NOT restart. The `Gone` arm does not either, and starting
+            // a browser has side effects (a profile lock, a window) that belong
+            // to whoever asked for one. The caller gets `NotRunning`, which is
+            // the same fixable state a dead browser produces, and `start` is
+            // theirs to call.
             tracing::warn!(
                 session, port, pid, profile, cause = %format!("{e:#}"),
+                verdict = "browser_wedged_recovered",
                 "browser: Chrome is ALIVE but its CDP port did not answer — wedged or refusing, \
-                 not gone; the registry is left intact (AMUX-3886)"
+                 not gone. Stopping it so the next verb has a clean state instead of returning \
+                 a 502 that asks a human to do it (AMUX-5021, was AMUX-3886)"
             );
-            DriverError::Cdp(e.context(format!(
-                "Chrome pid {pid} (profile {profile:?}) is ALIVE but its CDP port {port} did not \
-                 answer /json/list, so the browser is wedged or refusing rather than gone. \
-                 POST /api/browser/stop then /api/browser/start to replace it"
-            )))
+            let report = stop_profile_as_reason(
+                &amux_home(),
+                &profile,
+                "amux:wedged-cdp-recovery",
+                "CDP port stopped answering /json/list while the process was alive",
+            )
+            .await;
+            tracing::info!(
+                session, port, pid, profile,
+                stopped = report.stopped,
+                verdict = "browser_wedged_recovered",
+                measured = true,
+                "browser: wedged Chrome stopped; the caller gets NotRunning and may start a \
+                 replacement"
+            );
+            NATIVE_TARGETS
+                .lock()
+                .expect("native targets poisoned")
+                .remove(session);
+            // A SEPARATE COUNTER, because reusing the existing one would make it
+            // lie. `DEAD_BROWSER_RECOVERIES` is documented as "how many times a
+            // verb found the registry naming a browser whose PROCESS is gone".
+            // A wedged browser's process is emphatically NOT gone — that is the
+            // whole distinction AMUX-3886 drew, and folding the two together
+            // would erase it in the one place someone reads to check.
+            WEDGED_BROWSER_RECOVERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            DriverError::NotRunning
         }
         CdpListVerdict::Gone {
             pid,
@@ -3231,6 +3296,78 @@ async fn cdp_list_failure(session: &str, port: u16, e: anyhow::Error) -> DriverE
 #[cfg(test)]
 mod cdp_list_failure_tests {
     use super::*;
+
+    /// AMUX-5021. A WEDGED browser must be RECOVERED, not reported with
+    /// instructions for a human.
+    ///
+    /// `Gone` already self-heals — records the corpse, clears the registry,
+    /// answers `NotRunning`. `Wedged` returned a 502 whose body said "POST
+    /// /api/browser/stop then /api/browser/start to replace it", two verbs
+    /// amux owns. CLAUDE.md's standing harness rule calls that an amux defect.
+    ///
+    /// A SOURCE GUARD, and the reason is worth stating rather than hiding.
+    /// Driving this end to end needs a registry entry whose pid is ALIVE, and
+    /// the recovery then kills it — so the test would have to spawn a real
+    /// child. That part is fine. What is not: `cdp_list_failure` calls
+    /// `amux_home()` directly, `amux_home` reads process env, and this
+    /// codebase's own config.rs warns that an env-mutating test races every
+    /// other test that reads a home. So the recovery would run against the
+    /// LIVE `~/.amux` and rewrite `browser-running.json` from a unit test.
+    /// The wiring is what regresses here; the decision it depends on
+    /// (`classify_cdp_list_failure`) is pure and tested separately.
+    #[test]
+    fn a_wedged_browser_is_recovered_rather_than_handed_back_as_a_502() {
+        let src = include_str!("browser.rs");
+        let at = src
+            .find("CdpListVerdict::Wedged { pid, profile } =>")
+            .expect("the Wedged arm is gone; this guard has lost its subject");
+        let end = src[at..]
+            .find("CdpListVerdict::Gone {")
+            .map(|i| at + i)
+            .expect("the Gone arm follows Wedged; the match shape changed");
+        let arm = &src[at..end];
+
+        assert!(
+            arm.contains("stop_profile_as_reason("),
+            "the Wedged arm no longer stops the wedged browser, so the caller is \
+             back to being told to do it by hand:\n{arm}"
+        );
+        assert!(
+            arm.contains("DriverError::NotRunning"),
+            "the Wedged arm must answer with the FIXABLE state, the way Gone does, \
+             rather than a 5xx:\n{arm}"
+        );
+        // NEGATIVES SEARCH THE CODE, NOT THE COMMENTS.
+        //
+        // A negative assertion over `include_str!` finds the arm's own prose.
+        // Building the needle with `format!` was my first fix and it is not
+        // enough: the phrase this arm must no longer EMIT is quoted in the
+        // comment explaining why it no longer emits it, so the literal is in
+        // the file whatever the test does. Stripping `//` lines fixes the class
+        // rather than the instance, and every negative below is over `code`.
+        //
+        // Fifth self-matching check in one session. The tell was never care; it
+        // was the result disagreeing with what I expected to have exercised.
+        let code: String = arm
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("libc::kill("),
+            "the Wedged arm kills directly; going through the stop path is what \
+             gives Chrome a TERM to flush cookies on:\n{code}"
+        );
+        assert!(
+            !code.contains("POST /api/browser/stop then"),
+            "the Wedged arm still tells the operator to run the verbs amux just \
+             ran:\n{code}"
+        );
+        // The positives must hold over the CODE too, or stripping comments could
+        // hide a regression where the call survives only in prose.
+        assert!(code.contains("stop_profile_as_reason("), "{code}");
+        assert!(code.contains("DriverError::NotRunning"), "{code}");
+    }
 
     /// THE DEFECT AMUX-3886 IS ABOUT, pinned against a real socket.
     ///

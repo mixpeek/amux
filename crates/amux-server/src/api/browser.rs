@@ -1644,6 +1644,17 @@ async fn status() -> Response {
         "dead_browser_recoveries_note":
             "verbs that found the registry naming a browser whose process was gone, cleared it, \
              and answered 409 rather than 502. In-memory; a server restart resets it to 0.",
+        // AMUX-5021: the SIBLING case, published beside it rather than folded in.
+        // A wedged browser is ALIVE and unresponsive, which is the distinction
+        // AMUX-3886 drew; one counter for both would erase it here, where a
+        // reader goes to check which of the two happened.
+        "wedged_browser_recoveries":
+            chrome::WEDGED_BROWSER_RECOVERIES.load(std::sync::atomic::Ordering::Relaxed),
+        "wedged_browser_recoveries_note":
+            "verbs that found a browser ALIVE but with a dead CDP port, stopped it (SIGTERM \
+             first, so the profile's cookies survive), and answered with the fixable state \
+             rather than a 502 telling the operator to stop and start it themselves. \
+             In-memory; a server restart resets it to 0.",
     }))
     .into_response()
 }
