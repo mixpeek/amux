@@ -13929,8 +13929,10 @@ async function _refreshPeekFrame(liveOnly, request) {
           source: liveOnly ? 'live' : 'history', measured: true, n_considered: 1 });
       }
       _peekFrameSequence = Math.max(_peekFrameSequence, request.sequence);
-      if (liveOnly) _peekLiveEtag = r.headers.get('ETag');
-      else { _peekEtag = r.headers.get('ETag'); _peekLastFullMs = performance.now(); }
+      // A rejected frame must also keep its validator unacknowledged, so
+      // a later 304 cannot pin output that we intentionally did not display.
+      if (liveOnly && !staleLive) _peekLiveEtag = r.headers.get('ETag');
+      else if (!liveOnly) { _peekEtag = r.headers.get('ETag'); _peekLastFullMs = performance.now(); }
       hidePeekLoading();
     };
     // Skip re-render when nothing we'd paint changed — saves ansiToHtml work on every

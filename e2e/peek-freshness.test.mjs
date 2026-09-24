@@ -69,6 +69,11 @@ test('late initial live response cannot rewind a newer full response',async()=>{
   f.calls[1].reply(frame('new output','history\n')); await full;
   f.calls[0].reply(frame('old output')); await live;
   assert.equal(f.body.innerHTML,'history\nnew output');
+  assert.equal(f.ctx._peekLiveEtag,null,'a discarded live frame must not acknowledge its ETag');
+  const retry=f.ctx.refreshPeek(true);
+  assert.equal(f.calls[2].options.headers,undefined,'the next live read must fetch actual bytes');
+  f.calls[2].reply(frame('current confirmed output'));await retry;
+  assert.equal(f.body.innerHTML,'history\ncurrent confirmed output');
 });
 
 test('switching workers aborts pending requests and old cleanup cannot drop new requests',async()=>{
