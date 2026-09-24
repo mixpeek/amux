@@ -11896,7 +11896,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1047';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1048';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24767,10 +24767,103 @@ function acHighlight() {
   items.forEach((el, i) => el.classList.toggle('selected', i === acSelected));
   if (items[acSelected]) items[acSelected].scrollIntoView({ block: 'nearest' });
 }
+
+// Project "Repository" field: SAME suggested/recent/on-disk behavior as the
+// create-worker "Working directory" field above (Ethan 2026-09-23: "make the
+// repository the same default/autocomplete as the working directory"). A
+// separate small instance rather than parameterizing acFetch/acPick, matching
+// this codebase's existing convention for a second directory field (see
+// editAcFetch/editAcPick for the edit-worker modal's own copy) — each field's
+// autocomplete targets one fixed input id and one fixed dropdown id.
+let repoAcTimer = null;
+let repoAcItems = [];
+let repoAcSelected = -1;
+function _repoAcRenderSections(sections) {
+  const el = document.getElementById('project-repo-ac-list');
+  repoAcItems = [];
+  repoAcSelected = -1;
+  let html = '';
+  for (const [label, items] of sections) {
+    if (!items.length) continue;
+    if (label) html += `<div class="ac-section">${esc(label)}</div>`;
+    for (const item of items) {
+      html += `<div class="ac-item" onmousedown="repoAcPick(${repoAcItems.length})">${esc(item)}</div>`;
+      repoAcItems.push(item);
+    }
+  }
+  if (!repoAcItems.length) { el.classList.remove('open'); return; }
+  el.innerHTML = html;
+  el.classList.add('open');
+}
+function repoAcFetch(query) {
+  clearTimeout(repoAcTimer);
+  const el = document.getElementById('project-repo-ac-list');
+  if (!query || query.length < 2) {
+    const recents = _getRecentDirs();
+    const sessionDirs = [...new Set(sessions.map(s => s.dir).filter(Boolean))].filter(d => !recents.includes(d));
+    _repoAcRenderSections([['Recent', recents.slice(0, 8)], ['Workers', sessionDirs.slice(0, 7)]]);
+    return;
+  }
+  const bareName = query.indexOf('/') === -1 && query[0] !== '~';
+  let known = [];
+  if (bareName) {
+    const q = query.toLowerCase();
+    known = _buildSuggestedDirs().filter(d => d.toLowerCase().includes(q));
+    if (known.length) _repoAcRenderSections([['Your directories', known]]);
+    else el.classList.remove('open');
+  } else {
+    el.classList.remove('open');
+  }
+  repoAcTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(API + '/api/autocomplete/dir?q=' + encodeURIComponent(query));
+      const found = await r.json();
+      const fresh = found.filter(d => !known.includes(d) && !known.includes(d.replace(/\/$/, '')));
+      if (bareName) _repoAcRenderSections([['Your directories', known], ['Found on disk', fresh]]);
+      else _repoAcRenderSections([[null, found]]);
+    } catch(e) {}
+  }, 150);
+}
+function repoAcPick(i) {
+  const inp = document.getElementById('project-repository');
+  inp.value = repoAcItems[i];
+  document.getElementById('project-repo-ac-list').classList.remove('open');
+  _projectSettingsDirty();
+  setTimeout(() => repoAcFetch(inp.value), 50);
+}
+function repoAcKeydown(e) {
+  const el = document.getElementById('project-repo-ac-list');
+  if (!el.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    repoAcSelected = Math.min(repoAcSelected + 1, repoAcItems.length - 1);
+    repoAcHighlight();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    repoAcSelected = Math.max(repoAcSelected - 1, 0);
+    repoAcHighlight();
+  } else if (e.key === 'Enter') {
+    if (repoAcSelected >= 0) { e.preventDefault(); repoAcPick(repoAcSelected); }
+    else el.classList.remove('open');
+  } else if (e.key === 'Tab' && repoAcItems.length) {
+    e.preventDefault();
+    repoAcPick(repoAcSelected >= 0 ? repoAcSelected : 0);
+  } else if (e.key === 'Escape') {
+    el.classList.remove('open');
+  }
+}
+function repoAcHighlight() {
+  const items = document.getElementById('project-repo-ac-list').querySelectorAll('.ac-item');
+  items.forEach((el, i) => el.classList.toggle('selected', i === repoAcSelected));
+  if (items[repoAcSelected]) items[repoAcSelected].scrollIntoView({ block: 'nearest' });
+}
+
 // Close autocomplete when clicking outside
 document.addEventListener('click', e => {
   if (!e.target.closest('.ac-wrap')) {
     document.getElementById('ac-list').classList.remove('open');
+    const repoList = document.getElementById('project-repo-ac-list');
+    if (repoList) repoList.classList.remove('open');
   }
   // Close card slash/@ autocomplete
   if (!e.target.closest('.send-row') && _cardAcName) {
@@ -45743,7 +45836,7 @@ async function _projectsLoad() {
   const current=()=>token===_projectsToken && activeView==='projects';
   const root=document.getElementById('projects-view');
   if(!document.getElementById('project-selector')) {
-    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into accountable tasks, a verified candidate, human review and one approved publish.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button><button class="btn project-legacy" id="project-legacy" onclick="switchView(\'orchestrations\')" title="Older boards and orchestration records. Nothing was migrated or removed.">Legacy history</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
+    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into accountable tasks, a verified candidate, human review and one approved publish.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
     _projectsName=_projectStorage('selected');
   }
   try {
@@ -45803,28 +45896,85 @@ function _projectEffortOptions(value) {
 }
 function _projectConfig(project) {
   const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor_full_host_access:false,verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  // A new project's Repository starts with the SAME default the create-worker
+  // form's Working directory field uses (Ethan 2026-09-23) instead of an
+  // empty required field: the last-browsed directory, or /root in cloud mode.
+  if (!project && !p.repository) p.repository = (_filesCwd && _filesCwd !== '/') ? _filesCwd : (window._cloudEmail ? '/root' : '');
   const worktree=p.worktree!==false;
   const coordinatorEffort=p.coordinator.effort || (p.coordinator.provider==='codex'?'low':'');
   const executorEffort=p.executor.effort || (p.executor.provider==='codex'?'low':'');
-  return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()" oninput="_projectSettingsDirty()" onchange="_projectSettingsDirty()"><div class="project-form-grid">'+
+  const hint=t=>'<p class="project-muted">'+t+'</p>';
+  // Only offered while CREATING (an existing project's outcome is already
+  // decomposed into tasks) — one textarea that drafts the fields below via
+  // the same semantic-intake model the board's own create path uses
+  // (POST /api/projects/draft), so the human reviews/edits a filled form
+  // instead of typing every field from a blank one.
+  const draftBlock=project?'':(
+    '<div class="project-draft-box">'+
+      '<label>Describe what you want, and this fills in the fields below<textarea id="project-draft-input" rows="3" placeholder="e.g. Add a /health endpoint that checks the DB connection and returns 503 if it is down, with a test that hits it"></textarea></label>'+
+      hint('Fills in the project name, verification command and acceptance requirement from your description — review everything below before creating. It never guesses the repository path or invents a script that was not implied by the text.')+
+      '<button class="btn" type="button" id="project-draft-btn" onclick="_projectDraftFields()">Fill in the fields</button> <span id="project-draft-state" role="status"></span>'+
+    '</div>'
+  );
+  return '<form id="project-config" onsubmit="event.preventDefault();_projectSave()" oninput="_projectSettingsDirty()" onchange="_projectSettingsDirty()">'+
+    draftBlock+
+    '<div class="project-form-grid">'+
     '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
-    '<label>Repository<input id="project-repository" required placeholder="/absolute/path/to/repository" value="'+esc(p.repository)+'"></label>'+
-    '<label>Executor checkout<select id="project-worktree" onchange="_projectCheckoutChanged()"><option value="1" '+(worktree?'selected':'')+'>Dedicated worktrees (default)</option><option value="0" '+(!worktree?'selected':'')+'>Shared project checkout (single executor)</option></select></label>'+
-    '<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
+    '<label>Repository<span class="ac-wrap" style="display:block"><input id="project-repository" required placeholder="/absolute/path/to/repository" autocomplete="off" autocorrect="off" spellcheck="false" value="'+esc(p.repository)+'" oninput="repoAcFetch(this.value)" onfocus="repoAcFetch(this.value)" onkeydown="repoAcKeydown(event)"><span id="project-repo-ac-list" class="ac-list"></span></span>'+hint('The absolute path to the git checkout this project works in.')+'</label>'+
+    '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('Which AI does the work on each task.')+'</label>'+
+    '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
+    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+hint('Runs after each task. Exit 0 means the task passed — a test suite, a lint+build, or a smoke-test script.')+
+    '</div>'+
+    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label>'+hint('What a task must prove to count as done. This runs independently on the composed, unpublished candidate: a runtime/e2e claim needs a fresh execution receipt, a raw measurement per stage, and retained evidence. Human approval publishes that exact candidate to <code>origin/main</code>.')+
+    '<details class="project-settings"><summary>Advanced settings</summary><div class="project-form-grid">'+
+    '<label>Executor checkout<select id="project-worktree" onchange="_projectCheckoutChanged()"><option value="1" '+(worktree?'selected':'')+'>Dedicated worktrees (default)</option><option value="0" '+(!worktree?'selected':'')+'>Shared project checkout (single executor)</option></select></label>'+hint('Dedicated worktrees let parallel executors work without colliding. Shared checkout uses one directory, so it only supports a single executor.')+
+    '<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('The AI that decomposes your request into tasks, before any executor runs.')+'</label>'+
     '<label>Planning model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label>'+
     '<label>Planning effort<select id="project-coordinator-effort">'+_projectEffortOptions(coordinatorEffort)+'</select></label>'+
-    '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select></label>'+
-    '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
     '<label>Executor effort<select id="project-executor-effort">'+_projectEffortOptions(executorEffort)+'</select></label>'+
-    '<label>Codex executor host tools<select id="project-executor-host-access"><option value="0" '+(!p.executor_full_host_access?'selected':'')+'>Sandboxed (default)</option><option value="1" '+(p.executor_full_host_access?'selected':'')+'>Full host access (for local Docker)</option></select></label>'+
-    '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
-    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+
+    '<label>Codex executor host tools<select id="project-executor-host-access"><option value="0" '+(!p.executor_full_host_access?'selected':'')+'>Sandboxed (default)</option><option value="1" '+(p.executor_full_host_access?'selected':'')+'>Full host access (for local Docker)</option></select></label>'+hint('Codex is sandboxed by default: no access to your host\'s Docker, devices or network beyond the checkout. Choose Full host access only if a task must control local Docker or another host resource directly.')+
+    '<label>Parallel executors<select id="project-capacity">'+[1,2,3].map(n=>'<option '+(n===p.max_executors?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+hint('How many tasks this project works on at the same time.')+
     '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
-    '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+
+    '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+hint('How many times a task retries against the verification command before it is flagged for human review.')+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
-    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label></div>'+
-    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label><p class="project-muted">This contract runs independently on the composed, unpublished project candidate. Runtime and end-to-end claims require a fresh execution receipt, a raw measurement assertion for every stage, and retained evidence. Docker image identity is checked directly with Docker. Human approval publishes that exact candidate to <code>origin/main</code>.</p>'+
-    '<p>Limits stop subsequent work at observed usage. A running provider can exceed them. Missing telemetry stays visible.</p><button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
+    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label>'+hint('amux stops a task and flags it for review once its observed usage crosses either limit — a running provider can exceed them before that check lands. Leave blank for no limit.')+
+    '</div></details>'+
+    '<button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
+}
+// "Describe it, fill in the rest" (Ethan 2026-09-23). Calls the SAME
+// semantic-intake model the board create path already uses server-side
+// (POST /api/projects/draft -> board_intake::model_client), so drafting a
+// project reuses one LLM call site rather than adding a second. Only fills
+// fields the model can actually know from the text: name, verify_command
+// (left empty by the server if it cannot infer one) and the acceptance
+// contract's first requirement. The repository default and every advanced
+// field are untouched — a description has no way to know your filesystem or
+// override defaults you have not looked at yet.
+async function _projectDraftFields() {
+  const input=document.getElementById('project-draft-input'), btn=document.getElementById('project-draft-btn'), state=document.getElementById('project-draft-state');
+  const description=input?input.value.trim():'';
+  if (!description) { if(state) state.textContent='Describe what you want first'; return; }
+  if (btn) btn.disabled=true;
+  if (state) state.textContent='Thinking…';
+  try {
+    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description})});
+    const d=await r.json();
+    if (!r.ok || !d.measured) { if(state) state.textContent=d.why_unmeasured||d.error||'Could not draft from that description'; return; }
+    const nameEl=document.getElementById('project-name');
+    if (nameEl && !nameEl.value.trim() && d.name) nameEl.value=d.name;
+    const verifyEl=document.getElementById('project-verify');
+    if (verifyEl && !verifyEl.value.trim() && d.verify_command) verifyEl.value=d.verify_command;
+    const contractEl=document.getElementById('project-contract');
+    if (contractEl && !contractEl.value.trim() && d.requirement) {
+      contractEl.value=JSON.stringify({criteria:[{id:'requested-outcome',requirement:d.requirement,verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]},null,2);
+    }
+    _projectSettingsDirty();
+    if (state) state.textContent='Filled in from your description — review before creating'+(d.via?' ('+d.via+')':'');
+  } catch(e) {
+    if (state) state.textContent='Error: '+e.message;
+  } finally {
+    if (btn) btn.disabled=false;
+  }
 }
 
 // Unsaved settings edits belong to the project they were typed in and survive
