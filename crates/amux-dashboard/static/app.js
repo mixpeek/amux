@@ -6549,7 +6549,9 @@ function showBranchPopover(name, e) {
   let sessionBranch = sess && sess.branch;
   if (sessionBranch === 'none') sessionBranch = '';
   const displayBranch = sessionBranch || gi.branch || '';
-  const hasBranch = sessionBranch || !_isBranchMain(gi.branch);
+  // A recorded branch of `main` is still main: test the NAME, not whether a
+  // branch string exists, or the popover calls main "Not on main".
+  const hasBranch = !!displayBranch && !_isBranchMain(displayBranch);
   const pop = document.createElement('div');
   pop.className = 'branch-popover';
   pop.onclick = ev => ev.stopPropagation();
@@ -6562,7 +6564,7 @@ function showBranchPopover(name, e) {
     const suggested = 'session/' + name;
     pop.innerHTML = `
       <div style="font-size:0.75rem;color:var(--dim);margin-bottom:8px;font-weight:600;">⎇ Create worker branch</div>
-      <div style="font-size:0.78rem;color:var(--dim);margin-bottom:8px;">Isolate changes from other workers on <strong>${esc(gi.branch || 'main')}</strong></div>
+      <div style="font-size:0.78rem;color:var(--dim);margin-bottom:8px;">Isolate changes from other workers on <strong>${esc(displayBranch || 'main')}</strong></div>
       <input class="search-input" id="bp-input-${name}" value="${esc(suggested)}" style="font-size:0.82rem;margin-bottom:8px;">
       <div class="branch-popover-actions">
         <button class="btn primary" style="flex:1;" onclick="doCreateBranch('${name}')">Create &amp; checkout</button>
@@ -11655,7 +11657,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1079';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1080';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
