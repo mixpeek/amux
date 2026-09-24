@@ -1084,6 +1084,9 @@
     display: none; position: fixed; top: max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)); left: 0; right: 0; bottom: 0; background: rgba(1,4,9,0.92);
     z-index: 200; flex-direction: column;
     padding: 12px; padding-top: max(12px, env(safe-area-inset-top));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    box-sizing: border-box;
+    max-height: var(--dialog-viewport-height, 100dvh);
   }
   .file-overlay.active { display: flex; }
   .file-overlay-header {
