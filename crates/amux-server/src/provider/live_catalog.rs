@@ -140,10 +140,42 @@ pub async fn refresh(home: &Path) {
 
     let mut providers = Vec::with_capacity(HTTP_VENDORS.len());
     for (vendor, provider, env_key) in HTTP_VENDORS {
-        let key = crate::api::settings::effective_env(home, env_key)
-            .filter(|v| !v.trim().is_empty());
-        let configured = key.is_some();
-        let status = match key {
+        // Claude: prefer the subscription OAuth token every Claude Code
+        // install already holds (super::claude::probe_models_raw) — it
+        // answers the public list-models endpoint too, verified live
+        // 2026-09-23, so the common case needs no separate credential at
+        // all. A standalone ANTHROPIC_API_KEY is the fallback, tried only
+        // when the OAuth probe fails. Every other vendor is key-only.
+        let attempt: Option<Result<Vec<String>, String>> = if vendor == "anthropic" {
+            match super::claude::probe_models_raw().await {
+                Ok(ids) => Some(Ok(ids)),
+                Err(oauth_err) => {
+                    let key = crate::api::settings::effective_env(home, env_key)
+                        .filter(|v| !v.trim().is_empty());
+                    match key {
+                        Some(key) => Some(fetch_vendor(vendor, &key).await),
+                        // "no_token" means not logged into Claude Code at all
+                        // — the same "not configured" state a missing key
+                        // means for every other vendor below. Any other
+                        // reason (expired, timeout, http_nnn) means a real
+                        // credential exists and the probe failed, which
+                        // deserves a visible reason rather than reading as
+                        // "nothing is configured".
+                        None if oauth_err == "no_token" => None,
+                        None => Some(Err(oauth_err)),
+                    }
+                }
+            }
+        } else {
+            let key = crate::api::settings::effective_env(home, env_key)
+                .filter(|v| !v.trim().is_empty());
+            match key {
+                Some(key) => Some(fetch_vendor(vendor, &key).await),
+                None => None,
+            }
+        };
+        let configured = attempt.is_some();
+        let status = match attempt {
             None => ProviderStatus {
                 vendor,
                 configured,
@@ -152,42 +184,40 @@ pub async fn refresh(home: &Path) {
                 model_count: None,
                 error: None,
             },
-            Some(key) => match fetch_vendor(vendor, &key).await {
-                Ok(ids) => {
-                    let now = chrono::Utc::now().timestamp();
-                    let count = ids.len();
-                    for id in ids {
-                        let existing = by_id.get(&(provider, id.clone()));
-                        let (model_type, worker_selectable) = classify(existing, &id);
-                        by_id.insert(
-                            (provider, id.clone()),
-                            CatalogEntry {
-                                vendor: vendor.to_string(),
-                                provider: provider.to_string(),
-                                id,
-                                model_type,
-                                worker_selectable,
-                                source: "live",
-                            },
-                        );
-                    }
-                    ProviderStatus {
-                        vendor,
-                        configured,
-                        live: true,
-                        fetched_at: Some(now),
-                        model_count: Some(count),
-                        error: None,
-                    }
+            Some(Ok(ids)) => {
+                let now = chrono::Utc::now().timestamp();
+                let count = ids.len();
+                for id in ids {
+                    let existing = by_id.get(&(provider, id.clone()));
+                    let (model_type, worker_selectable) = classify(existing, &id);
+                    by_id.insert(
+                        (provider, id.clone()),
+                        CatalogEntry {
+                            vendor: vendor.to_string(),
+                            provider: provider.to_string(),
+                            id,
+                            model_type,
+                            worker_selectable,
+                            source: "live",
+                        },
+                    );
                 }
-                Err(reason) => ProviderStatus {
+                ProviderStatus {
                     vendor,
                     configured,
-                    live: false,
-                    fetched_at: None,
-                    model_count: None,
-                    error: Some(reason),
-                },
+                    live: true,
+                    fetched_at: Some(now),
+                    model_count: Some(count),
+                    error: None,
+                }
+            }
+            Some(Err(reason)) => ProviderStatus {
+                vendor,
+                configured,
+                live: false,
+                fetched_at: None,
+                model_count: None,
+                error: Some(reason),
             },
         };
         providers.push(status);
@@ -300,10 +330,13 @@ fn extract_ids(body: &serde_json::Value, list_key: &str, id_key: &str) -> Option
 
 /// `GET https://api.anthropic.com/v1/models` — `x-api-key` + the same
 /// `anthropic-version` header the usage probe already sends. This is the
-/// standalone API-key surface, NOT the subscription OAuth endpoint
-/// `claude.rs` probes for usage; the two credentials are unrelated, which is
-/// why an account with only a Claude Code subscription and no
-/// `ANTHROPIC_API_KEY` simply stays on the static fallback for `claude`.
+/// FALLBACK path only: `refresh` tries `claude::probe_models_raw` (the
+/// subscription OAuth token) first, since that needs no separate credential.
+/// This function only runs when that fails, using a standalone
+/// `ANTHROPIC_API_KEY` — a different, unrelated credential from the OAuth
+/// token, kept as a second way in for an account that has one but not the
+/// other (e.g. OAuth expired, or a server install with no Claude Code login
+/// at all but an API key configured).
 async fn fetch_anthropic(key: &str) -> Result<Vec<String>, String> {
     let resp = http_client()?
         .get("https://api.anthropic.com/v1/models")
