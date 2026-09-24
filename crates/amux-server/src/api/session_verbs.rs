@@ -45259,7 +45259,10 @@ mod amux4770_worktree_isolation_tests {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(code.contains("let conventional = home().join(\"worktrees\").join(name);"));
+        // Current convention first (<repo>/.worktrees/<name>, 8d6d8dc8), then
+        // the pre-move ~/.amux/worktrees/<name> for older workers.
+        assert!(code.contains("std::path::Path::new(cc_dir).join(\".worktrees\").join(name)"));
+        assert!(code.contains("home().join(\"worktrees\").join(name)"));
         assert!(code.contains("if by_convention {"));
     }
 
