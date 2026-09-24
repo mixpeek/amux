@@ -3296,6 +3296,13 @@ async function _runSyncBanner(quiet = false) {
           throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
         }
       }
+      if (r.status === 404 && /\/(delete|stop|archive|clear)$/.test(q.url.split('?')[0])) {
+        await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
+        item.status = 'done';
+        item.label += ' (already gone)';
+        renderBanner();
+        return;
+      }
       if (!r.ok) {
         // 5xx is retryable because a server that FAILED may succeed next time.
         // 501 and 505 are not that: they are the server saying the capability
@@ -11771,7 +11778,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1091';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1092';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
