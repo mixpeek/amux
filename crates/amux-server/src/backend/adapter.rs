@@ -1083,7 +1083,7 @@ fn scan_claude(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
 
 /// Current provider-owned picker, excluding quoted options above a newer
 /// composer. Model names/effort do not determine whether input is required.
-fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
+pub(crate) fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
     let lines = nonempty_trimmed(clean);
     let lines = &lines[lines.len().saturating_sub(12)..];
     let selected = lines.iter().rposition(|line| match provider {
@@ -1103,12 +1103,15 @@ fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
     let tail = lines.join(" ").to_lowercase();
     if provider != "gemini"
         && !tail.contains("press enter to continue")
+        && !tail.contains("press enter to confirm")
         && !tail.contains("enter to select")
         && !tail.contains("esc to cancel")
     {
         return None;
     }
-    Some(if tail.contains("trust") && tail.contains("directory") {
+    Some(if tail.contains("hooks need review") {
+        "hook_trust_prompt"
+    } else if tail.contains("trust") && tail.contains("directory") {
         "trust_prompt"
     } else if tail.contains("allow execution")
         || tail.contains("approve")

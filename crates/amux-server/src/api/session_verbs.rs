@@ -1970,16 +1970,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     if current.contains("\u{276f} 1.") || (current.contains("\u{2502} \u{276f} 1.")) {
         return "waiting".into();
     }
-    // CODEX spells its selector cursor `›` (U+203A), not `❯` (U+276F) — found
-    // live 2026-08-11 (AMUX-2913): a codex lane parked on its trust-directory
-    // picker read `idle`, the exact needs-input-invisible failure AMUX-2834
-    // fixed for Claude Code. Requires the footer hint alongside the cursor so
-    // prose that merely QUOTES a numbered list cannot read as a picker (the
-    // AMUX-2642 self-block class).
-    let lower = current.to_lowercase();
-    if current.contains("\u{203a} 1.")
-        && (lower.contains("press enter to continue") || lower.contains("enter to select"))
-    {
+    if crate::backend::adapter::provider_picker_reason(&current, "codex").is_some() {
         return "waiting".into();
     }
     // GEMINI's picker cursor is `●` (U+25CF) inside a `│`-bordered box —

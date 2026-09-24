@@ -1456,6 +1456,12 @@ impl FleetSignals {
         if !self.shell_only.contains(tmux_name) {
             return true;
         }
+        // A successful process-tree probe plus an empty shell is positive
+        // termination evidence. Hooks cannot report SIGKILL, and a previous
+        // active hook must not resurrect that process for the trust window.
+        if self.provider_children_measured {
+            return false;
+        }
         // AF-82 / D1: a lane that SELF-REPORTED an active agent recently is running,
         // even when the pane scrape reads shell-only — an agent launched as a child
         // of a wrapper shell, or nested a level deeper than the pgrep rescue reaches.
@@ -2265,6 +2271,14 @@ impl FleetSignals {
         {
             status = "active".into();
             decided = "structured_live_children";
+        }
+        // CLI-owned menus (/hooks, /model, approval) can open without a model
+        // turn and therefore without UserPromptSubmit. A current structural
+        // picker is newer evidence than an earlier idle/active hook.
+        if status != "blocked" && self.pane_of(name).is_some_and(|pane|
+            crate::backend::adapter::provider_picker_reason(&crate::backend::adapter::strip_ansi(pane), "codex").is_some()) {
+            status = "waiting".into();
+            decided = "provider_picker";
         }
         // API-ERROR (5xx / Overloaded) is its own status (Ethan 2026-08-18).
         // Claude Code ENDS the turn on a 529 and returns to the prompt, so its
@@ -6114,6 +6128,7 @@ pub(crate) mod tests {
         let tmux = "amux-avetest";
         s.running.insert(tmux.into()); // the tmux session exists
         s.shell_only.insert(tmux.into()); // but the pane scrapes as a bare shell
+        s.provider_children_measured = false; // the process probe is unavailable
         assert!(
             !s.agent_running(tmux),
             "shell scrape + no report reads not-running"
@@ -6126,6 +6141,13 @@ pub(crate) mod tests {
             s.agent_running(tmux),
             "a 57s-old active self-report means an agent is running"
         );
+
+        // A measured empty process tree beats both native and fallback reports.
+        s.provider_children_measured = true;
+        assert!(!s.agent_running(tmux), "a report cannot resurrect a killed provider");
+        s.reports["avetest"]["native_status"] = json!(true);
+        assert!(!s.agent_running(tmux), "native hooks cannot report SIGKILL");
+        s.provider_children_measured = false;
 
         // A PREVIOUS-LIFE report (before the session (re)started) must NOT count.
         s.started.insert("avetest".into(), s.now - 10.0);
@@ -6615,6 +6637,21 @@ Claude usage limit reached. Your limit will reset at 3pm.
         let (status, ex) = s.derive_status_explain("x", false);
         assert_eq!(status, "");
         assert_eq!(ex["decided_by"], json!("not_running"));
+    }
+
+    #[test]
+    fn codex_hook_review_is_waiting_even_after_an_idle_hook() {
+        let frame = "Hooks need review\n10 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)\nPress enter to confirm or esc to go back";
+        assert_eq!(crate::api::session_verbs::detect_claude_status(frame), "waiting");
+        let mut s=signals();
+        s.running.insert("amux-x".into());
+        s.activity.insert("amux-x".into(),s.now as i64);
+        s.panes.insert("x".into(),frame.into());
+        s.reports=json!({"x":{"native_status":true,"state":"idle","ts":s.now-5.0}});
+        let (status,why)=s.derive_status_explain("x",true);
+        assert_eq!(status,"waiting","{why}");
+        assert_eq!(why["decided_by"],"provider_picker");
+        assert_ne!(crate::api::session_verbs::detect_claude_status(&format!("{frame}\n›")),"waiting");
     }
 
     #[test]
