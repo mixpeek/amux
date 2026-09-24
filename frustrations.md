@@ -4881,3 +4881,14 @@ CARD: AF-949
 SYMPTOM: Isolated worker attach input reached tmux within 70 ms but appeared in the open UI about 1.58 s after typing. Idle peek waits 1500 ms. Automatic replay after a real 40-second server outage uses the original click's expired fast-poll window and records no queue-age/attempt timing.
 COST: Native terminal changes visibly lag, and comparing two actual offline/reconnect cycles required an external read-only tmux/database observer to distinguish prompt delivery from model response time.
 FIX: Bound visible healthy idle polling to 500 ms and streaming to 250 ms; retain slower offline polling and hidden-tab suspension. Wake the selected peek at replay attempt/acknowledgement and log identities/timings without prompt text. Verify UI/attach samples and repeated real outages with exact human message counts.
+
+## Delivered message blocks reconnect replay for two minutes after server exits
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-949
+SYMPTOM: Real UI send LAT24-RACE1 reached Codex, then launchctl bootout interrupted the server before receipt/history persistence. Codex answered while Amux was offline. On restart its text hash and authoritative rollout matched, but send_receipt_resolving refused even positive evidence until the reservation was 120 seconds old. Three later queued messages waited behind it.
+COST: A completed owner message and three valid follow-ups stayed pending for roughly two minutes, despite a healthy server and readable acceptance proof.
+FIX: Reconcile exact hash-bound positive transcript evidence immediately when no live send owns the ID. Preserve the age requirement for negative evidence/release, live-send exclusion and unknown reservations; offload transcript reads to the blocking pool and log early recovery.
