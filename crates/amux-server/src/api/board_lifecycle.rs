@@ -1029,7 +1029,7 @@ fn event(row: &bs::IssueRow, created: bool) -> PendingEvent {
         payload: Some(row.snapshot()),
     }
 }
-fn new_issue(session: &str, title: &str, desc: &str, kind: &str) -> bs::NewIssue {
+pub(crate) fn new_issue(session: &str, title: &str, desc: &str, kind: &str) -> bs::NewIssue {
     bs::NewIssue {
         acceptance_criteria: None,
         next_action: None,

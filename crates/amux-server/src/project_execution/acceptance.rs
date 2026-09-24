@@ -954,10 +954,10 @@ fn repair_failed_criteria(conn: &Connection, p: &store::Project, result: &Value)
     let mut out=WriteOutcome{applied:false,events:vec![]};
     if result["state"]!="failed" { return Ok(out); }
     let Some(contract)=p.policy.acceptance.as_ref() else { return Ok(out); };
-    let failures=result["results"].as_array().into_iter().flatten().filter(|r|r["state"]=="failed" && r["criterion"].as_str().and_then(|id|contract.criterion(id)).is_some_and(|c|!c.verifier.is_human())).collect::<Vec<_>>();
+    let failures=result["results"].as_array().into_iter().flatten().filter(|r|r["state"]=="failed" && r["criterion"].as_str().and_then(|id|contract.criterion(id)).is_some_and(|c|!c.verifier.is_human() || r["evidence_error"].is_string())).collect::<Vec<_>>();
     for row in bs::project_issues(conn,&p.name)? {
         let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
-        let owned=failures.iter().filter(|r|r["criterion"].as_str().is_some_and(|id|criteria.contains(&format!("contract:{id}")))).collect::<Vec<_>>();
+        let owned=failures.iter().filter(|r|r["criterion"].as_str().is_some_and(|id|criteria.contains(&format!("{}:{id}",if contract.criterion(id).is_some_and(|c|c.verifier.is_human()) {"review-evidence"} else {"contract"})))).collect::<Vec<_>>();
         if owned.is_empty() { continue; }
         let e=planner::execution(conn,&row.id)?;
         let Some(report)=e.report else { continue; };
@@ -1128,6 +1128,52 @@ pub fn request_rerun(
     Ok(changed(&p.name, "rerun_requested"))
 }
 
+/// Human review has preparable inputs, but approval is never an executor output.
+/// Files produced by automated acceptance belong to that run, not to a worker.
+pub(crate) fn review_inputs(contract: &AcceptanceContract, id: &str) -> Option<Vec<String>> {
+    let criterion=contract.criterion(id)?;
+    if !criterion.verifier.is_human() { return None; }
+    let produced=contract.criteria.iter().filter(|c| !c.verifier.is_human()).flat_map(|c| c.evidence.iter()).collect::<std::collections::HashSet<_>>();
+    Some(criterion.evidence.iter().filter(|path| !produced.contains(path)).cloned().collect())
+}
+
+pub(crate) fn review_preparation(contract: &AcceptanceContract, criteria: &[String]) -> Vec<Value> {
+    criteria.iter().filter_map(|c| c.strip_prefix("review-evidence:")).filter_map(|id| {
+        let paths=review_inputs(contract,id)?; let criterion=contract.criterion(id)?;
+        Some(json!({"criterion":format!("review-evidence:{id}"),"requirement":criterion.requirement,"evidence_required":paths,"scope":"Prepare truthful human-review inputs and retain them as report assets. Implement any report generator needed to reflect fresh acceptance results. Do not fabricate missing measurements, decisions or approvals. Automated run outputs stay owned by project acceptance; this task cannot satisfy human review."}))
+    }).collect()
+}
+
+/// Fill only unowned review-input obligations from an already accepted contract.
+/// This is deterministic board decomposition, not a prompt loop or an approval.
+pub(crate) fn reconcile_review_preparation(conn: &Connection, name: &str) -> anyhow::Result<WriteOutcome> {
+    let unchanged=||WriteOutcome{applied:false,events:vec![]};
+    let Some(p)=store::get(conn,name)? else { return Ok(unchanged()); };
+    if p.policy.paused || !p.policy.enabled { return Ok(unchanged()); }
+    let Some(contract)=p.policy.acceptance.as_ref() else { return Ok(unchanged()); };
+    let rows=bs::project_issues(conn,name)?;
+    if rows.is_empty() || matches!(status(conn,&p)?["state"].as_str(),Some("accepted"|"awaiting_human")) { return Ok(unchanged()); }
+    let pending:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM cmd_history WHERE project_group=?1 AND capture_pending!=0)",[name],|r|r.get(0))?;
+    if pending { return Ok(unchanged()); }
+    // An explicitly archived/deleted owner must not be recreated by discovery.
+    let mut q=conn.prepare("SELECT acceptance_criteria FROM issues WHERE project_group=?1")?;
+    let declared=q.query_map([name],|r|r.get::<_,Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let owned=declared.iter().flat_map(|raw|serde_json::from_str::<Vec<String>>(raw.as_deref().unwrap_or("[]")).unwrap_or_default()).collect::<HashSet<_>>();
+    let missing=contract.criteria.iter().filter(|c| review_inputs(contract,&c.id).is_some_and(|paths|!paths.is_empty()))
+        .map(|c|format!("review-evidence:{}",c.id)).filter(|marker|!owned.contains(marker)).collect::<Vec<_>>();
+    if missing.is_empty() { return Ok(unchanged()); }
+    let inputs=review_preparation(contract,&missing);
+    let mut new=crate::api::board_lifecycle::new_issue(&format!("project:{name}"),"Prepare project acceptance review evidence",&format!("Prepare the human-review inputs required by the project's acceptance contract. Reuse the checked same-project candidates; do not redo their implementation. Preserve unresolved scope and absent authorizations truthfully. Produce a useful, current acceptance report and supporting measurements/generator. Never approve criteria or execute production work awaiting authorization. Exact obligations: {}",json!(inputs)),"doc");
+    new.creator="project-harness".into();new.source=Some("project-review-inputs".into());
+    new.next_action=Some("Inspect checked local candidates and prepare the missing review artifacts; verify and retain each preparable asset without claiming pending runtime results or owner decisions.".into());
+    new.acceptance_criteria=Some(serde_json::to_string(&missing)?);
+    let created=bs::create_issue(conn,&new,chrono::Utc::now().timestamp())?;
+    conn.execute("UPDATE issues SET project_group=?2,session=NULL WHERE id=?1",params![created.id,name])?;
+    let row=bs::get_issue(conn,&created.id)?.ok_or_else(||anyhow::anyhow!("review task missing after creation"))?;
+    tracing::info!(project=name,task=%row.id,measured=true,n_considered=contract.criteria.len(),obligations=missing.len(),verdict="project.review_preparation_reconciled","missing review inputs receive one normal project task; approval and authorization remain unchanged");
+    Ok(WriteOutcome{applied:true,events:vec![PendingEvent{entity_type:EntityType::Task,entity_id:row.id.clone(),mutation:MutationKind::Created,payload:Some(row.snapshot())}]})
+}
+
 /// A task binds itself to approved verifiers with `contract:<id>` acceptance criteria. Its report may
 /// only carry the approved command and required evidence for each, so an executor cannot swap a
 /// check for `true`, invent or repeat a criterion, satisfy a human review, or silently retain the
@@ -1141,14 +1187,21 @@ pub fn contract_binding(
         .iter()
         .filter_map(|c| c.strip_prefix("contract:"))
         .collect();
-    if refs.is_empty() {
-        return Ok(());
-    }
+    let review_refs:Vec<_>=criteria.iter().filter_map(|c|c.strip_prefix("review-evidence:")).collect();
+    if refs.is_empty() && review_refs.is_empty() { return Ok(()); }
     let contract = contract.ok_or_else(|| {
         anyhow::anyhow!(
             "task references contract criteria but the project has no acceptance contract"
         )
     })?;
+    let mut seen = std::collections::HashSet::new();
+    for id in review_refs {
+        anyhow::ensure!(seen.insert(format!("review-evidence:{id}")), "review-evidence:{id} is referenced twice");
+        let paths=review_inputs(contract,id).ok_or_else(||anyhow::anyhow!("review-evidence:{id} must name a human criterion"))?;
+        for path in paths {
+            anyhow::ensure!(report.assets.iter().any(|a|a.path==path), "review-evidence:{id} requires reported asset {path}");
+        }
+    }
     let mut seen = std::collections::HashSet::new();
     for id in refs {
         anyhow::ensure!(seen.insert(id), "contract:{id} is referenced twice");
@@ -1196,6 +1249,11 @@ pub fn contract_binding(
 /// Intake plans may reference approved command criteria only; the planner cannot invent verifiers.
 pub fn check_plan_refs(contract: &AcceptanceContract, tasks: &[Vec<String>]) -> Result<(), String> {
     for criteria in tasks {
+        let mut review_seen=std::collections::HashSet::new();
+        for id in criteria.iter().filter_map(|c|c.strip_prefix("review-evidence:")) {
+            if !review_seen.insert(id) { return Err(format!("review-evidence:{id} is referenced twice by one task")); }
+            if review_inputs(contract,id).is_none() { return Err(format!("review-evidence:{id} must name a human criterion")); }
+        }
         let mut seen = std::collections::HashSet::new();
         for id in criteria.iter().filter_map(|c| c.strip_prefix("contract:")) {
             if !seen.insert(id) {
@@ -1238,10 +1296,14 @@ pub fn catalogue(contract: &AcceptanceContract) -> String {
             format!("contract:{} = {}{}{}", c.id, c.requirement, proof, evidence)
         })
         .collect();
-    if lines.is_empty() {
-        return String::new();
-    }
-    format!("\nApproved project verifiers. When a task must satisfy one, add its exact `contract:<id>` string as one of that task's acceptance_criteria; never invent ids or write your own command for them:\n{}", lines.join("\n"))
+    let review_lines=contract.criteria.iter().filter_map(|c| {
+        let paths=review_inputs(contract,&c.id)?;
+        if paths.is_empty() { return None; }
+        Some(format!("review-evidence:{} = {}; required preparable assets: {}",c.id,c.requirement,paths.join(", ")))
+    }).collect::<Vec<_>>();
+    if lines.is_empty() && review_lines.is_empty() { return String::new(); }
+    tracing::info!(measured=true,n_considered=contract.criteria.len(),preparable_reviews=review_lines.len(),verdict="project.review_inputs_catalogued","intake separates review preparation from approval");
+    format!("\nApproved project verifiers. When a task must satisfy one, add its exact `contract:<id>` string as one of that task's acceptance_criteria; never invent ids or write your own command for them:\n{}\nHuman review input preparation: assign every listed review-evidence:<id> to an existing relevant producer, or one useful acceptance-report task when needed. Combine shared artifact ownership in one task. Include the exact marker as an acceptance criterion and the listed paths in its deliverables. Prepare truthful current reports and generators; preserve pending decisions and failed checks. These markers require retained artifacts, NEVER human approval. Do not run or fabricate project-acceptance receipts to satisfy them:\n{}", lines.join("\n"),review_lines.join("\n"))
 }
 
 async fn retain_evidence(
@@ -1683,12 +1745,16 @@ async fn run(
     let home = crate::config::amux_home();
     let outcome = async {
         let mut results = Vec::new();
-        for c in &contract.criteria {
+        // Human criteria may appear first in the contract, but review consumes
+        // the outputs of automated checks. Preserve their source ownership.
+        let runtime_paths=contract.criteria.iter().filter(|c|matches!(c.verifier,ContractVerifier::Execution{..})).flat_map(|c|c.evidence.iter()).collect::<std::collections::HashSet<_>>();
+        for c in contract.criteria.iter().filter(|c|!c.verifier.is_human()).chain(contract.criteria.iter().filter(|c|c.verifier.is_human())) {
             let (id, command, timeout_secs, execution) = match &c.verifier {
                 ContractVerifier::Command { id, command, timeout_secs } => (id, command, timeout_secs, None),
                 ContractVerifier::Execution { id, command, timeout_secs, receipt, required_stages, assertions } => (id, command, timeout_secs, Some((receipt, required_stages, assertions))),
                 ContractVerifier::Human { .. } => {
-                    match retain_evidence(&home, &candidate, main, &c.evidence, &[]).await {
+                    let generated=c.evidence.iter().filter(|path|runtime_paths.contains(path)).cloned().collect::<Vec<_>>();
+                    match retain_evidence(&home, &candidate, main, &c.evidence, &generated).await {
                         Ok(evidence) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"pending_human","evidence":evidence})),
                         Err(error) => results.push(json!({"criterion":c.id,"verifier":c.verifier.id(),"type":"human","state":"failed","evidence_error":error.to_string()})),
                     }
@@ -2631,7 +2697,7 @@ path.write_text(json.dumps({
         git(&["branch", "-M", "main"]);
         let main = git(&["rev-parse", "HEAD"]);
 
-        let contract = contract(json!({"criteria":[{
+        let contract = contract(json!({"criteria":[{"id":"owner","requirement":"review fresh runtime evidence","verifier":{"type":"human","id":"owner-review","instructions":"inspect the actual receipt and raw measurements"},"evidence":["artifacts/execution.json","artifacts/raw.json"]},{
             "id":"lifecycle",
             "requirement":"Full lifecycle passes in a running image",
             "verifier":{"type":"execution","id":"fresh-run","command":"python3 scripts/prove.py","receipt":"artifacts/execution.json","required_stages":["api-lifecycle"],
@@ -2673,7 +2739,9 @@ path.write_text(json.dumps({
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result["state"], "accepted", "{result:#}");
+        assert_eq!(result["state"], "awaiting_human", "{result:#}");
+        assert_eq!(result["results"][1]["state"],"pending_human");
+        assert_eq!(result["results"][1]["evidence"],result["results"][0]["evidence"],"review reuses the actual fresh evidence rather than requiring it in Git");
         assert_eq!(result["results"][0]["receipt"]["candidate_sha"], main);
         assert_eq!(result["results"][0]["measurements"][0]["observed"], 100);
         assert_eq!(
@@ -3001,6 +3069,59 @@ path.write_text(json.dumps({
         assert!(
             text.contains("contract:unit = unit tests pass") && !text.contains("contract:owner")
         );
+    }
+
+    #[test]
+    fn project_review_preparation_requires_assets_without_claiming_approval_or_runtime() {
+        let mut c=two();
+        c.criteria[0].evidence=vec!["run.json".into()];
+        c.criteria[1].evidence=vec!["review.md".into(),"run.json".into()];
+        let criteria=vec!["review-evidence:owner".into()];
+        assert_eq!(review_inputs(&c,"owner").unwrap(),vec!["review.md"]);
+        assert!(check_plan_refs(&c,std::slice::from_ref(&criteria)).is_ok());
+        assert!(check_plan_refs(&c,&[vec!["review-evidence:unit".into()]]).is_err());
+        assert!(check_plan_refs(&c,&[vec!["review-evidence:ghost".into()]]).is_err());
+        let mut r=report(&[("review-evidence:owner","test -s review.md")]);
+        assert!(contract_binding(&criteria,&r,Some(&c)).unwrap_err().to_string().contains("requires reported asset review.md"));
+        r.assets.push(super::super::assets::Asset{path:"review.md".into(),sha256:"a".repeat(64)});
+        assert!(contract_binding(&criteria,&r,Some(&c)).is_ok());
+        assert!(contract_binding(&["contract:owner".into()],&r,Some(&c)).is_err());
+        let packet=review_preparation(&c,&criteria);
+        assert_eq!(packet[0]["evidence_required"],json!(["review.md"]));
+        assert!(catalogue(&c).contains("review-evidence:owner = owner reviews; required preparable assets: review.md"));
+        let db=crate::db::migrate::test_memdb();let p=project(&db,Some(c));verified(&db,"REVIEW");
+        db.execute("UPDATE issues SET acceptance_criteria='[\"review-evidence:owner\"]' WHERE id='REVIEW'",[]).unwrap();
+        let row=bs::get_issue(&db,"REVIEW").unwrap().unwrap();
+        let e=planner::Execution{stage:"verified".into(),attempt:1,generation:1,worker:"review-worker".into(),input_hash:planner::input_hash(&row),report:Some(r),..Default::default()};
+        planner::save_execution(&db,&row,&e,"fixture").unwrap();
+        let no_error=json!({"state":"failed","results":[{"criterion":"owner","state":"pending_human"}]});
+        assert!(!repair_failed_criteria(&db,&p,&no_error).unwrap().applied);
+        let failed=json!({"state":"failed","fingerprint":"missing-review","candidate":"b".repeat(40),"results":[{"criterion":"owner","state":"failed","evidence_error":"review.md missing"}]});
+        assert!(repair_failed_criteria(&db,&p,&failed).unwrap().applied);
+        assert_eq!(planner::execution(&db,"REVIEW").unwrap().stage,"repair");
+        assert!(events(&db,"p","project.acceptance_approval",None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_review_input_discovery_is_idempotent_and_preserves_operator_control() {
+        let db=crate::db::migrate::test_memdb();let mut contract=two();
+        contract.criteria[1].evidence=vec!["acceptance.md".into()];
+        let mut p=project(&db,Some(contract));
+        assert!(!reconcile_review_preparation(&db,"p").unwrap().applied,"empty project cannot generate work");
+        verified(&db,"IMPL");
+        p.policy.paused=true;store::save(&db,"p",p.revision,&p.policy,"test").unwrap();
+        assert!(!reconcile_review_preparation(&db,"p").unwrap().applied);
+        p=store::get(&db,"p").unwrap().unwrap();p.policy.paused=false;store::save(&db,"p",p.revision,&p.policy,"test").unwrap();
+        db.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,acceptance_criteria) VALUES('FOREIGN','review','backlog','doc','other',1,1,'[\"review-evidence:owner\"]')",[]).unwrap();
+        let out=reconcile_review_preparation(&db,"p").unwrap();assert!(out.applied);
+        let task=bs::get_issue(&db,&out.events[0].entity_id).unwrap().unwrap();
+        assert_eq!(task.project_group.as_deref(),Some("p"));assert!(task.session.is_none());
+        assert_eq!(task.creator,"project-harness");assert!(task.depends_on.is_empty());
+        assert_eq!(task.acceptance_criteria.as_deref(),Some("[\"review-evidence:owner\"]"));
+        assert!(!reconcile_review_preparation(&db,"p").unwrap().applied);
+        db.execute("UPDATE issues SET archived=1 WHERE id=?1",[&task.id]).unwrap();
+        assert!(!reconcile_review_preparation(&db,"p").unwrap().applied,"owner archive is not undone");
+        assert!(events(&db,"p","project.acceptance_approval",None).unwrap().is_empty());
     }
 
     fn project(db: &Connection, contract: Option<AcceptanceContract>) -> store::Project {

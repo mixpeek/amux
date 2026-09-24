@@ -4705,3 +4705,14 @@ CARD: AF-947
 SYMPTOM: POG-20 repeated the 16 workflow dependency repairs already included in checked POG-8. The default task catalog supplied only IDs and titles; reusable local candidate commits and repair summaries were absent.
 COST: Duplicate implementation consumed model turns and created avoidable integration risk.
 FIX: Enrich the existing same-project catalog with current verified candidate SHAs and bounded summaries. No new dependency, wait, fetch, worker, or prompt is created. Tell executors to inspect and reuse local commits while preserving their work and rerunning their checks; distinguish candidate checks from runtime proof and approval. Exclude stale, unverified, archived and foreign candidates; emit project.candidate_catalog_delivered.
+
+## Human review input preparation was omitted from project intake
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The bucket project requires acceptance.md, decisions.md and budget/scale review artifacts, but intake omitted human criteria entirely. Producer reports therefore omitted required review inputs, and missing human evidence was excluded from owner repair.
+COST: A completed implementation could strand acceptance on missing files despite a preserved human approval gate.
+FIX: Separate review-evidence ownership from contract approval. Include preparable paths in the intake catalog and executor packet, exclude automated-run-owned outputs, require exact retained assets, and route missing review evidence to its bounded owning task repair. Neither preparation nor repair records human approval. Regression rejects missing files, unknown/automated review IDs and worker approval, while proving missing review inputs trigger repair. Deterministically create one ordinary evidence-preparation task only for unowned preparable contract inputs; deduplicate on exact markers, defer to pending intake and preserve pauses and explicit archive/delete decisions. Emit project.review_inputs_catalogued and project.review_preparation_reconciled. Evaluate human evidence after automated checks regardless of contract order, and retain runtime-produced review files through the generated-artifact path. A real verifier regression proves fresh receipt/raw files remain reviewable and false raw measurements still fail.

@@ -183,7 +183,7 @@ Task packet:
         e.input_hash,
         p.name,
         row.id,
-        json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"source_documents":crate::api::board_lifecycle::project_task_context(&p.policy.repository,&row.desc,row.acceptance_criteria.as_deref()),"criteria":criteria,"contract_requirements":contract_requirements,"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command,"verification_context":{"cwd":"assigned_checkout_git_root","asset_paths":"checkout_root_relative","contract_commands":"exact_from_checkout_root"}})
+        json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"source_documents":crate::api::board_lifecycle::project_task_context(&p.policy.repository,&row.desc,row.acceptance_criteria.as_deref()),"criteria":criteria,"contract_requirements":contract_requirements,"review_preparation":p.policy.acceptance.as_ref().map(|c|super::acceptance::review_preparation(c,&serde_json::from_value::<Vec<String>>(criteria.clone().unwrap_or(json!([]))).unwrap_or_default())).unwrap_or_default(),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command,"verification_context":{"cwd":"assigned_checkout_git_root","asset_paths":"checkout_root_relative","contract_commands":"exact_from_checkout_root"}})
     )
 }
 
@@ -1127,6 +1127,8 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             let name = name.to_string();
             move |c| {
                 let mut result=crate::api::board_lifecycle::reconcile_project_intake_order(c,&name)?;
+                let reviews=super::acceptance::reconcile_review_preparation(c,&name).map_err(store::sql_error)?;
+                result.applied|=reviews.applied;result.events.extend(reviews.events);
                 let statuses=planner::reconcile_issue_statuses(c,&name).map_err(store::sql_error)?;
                 result.applied|=statuses.applied;result.events.extend(statuses.events);Ok(result)
             }
