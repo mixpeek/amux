@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2141,
+  "n_considered": 2143,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1234,12 +1234,6 @@
     },
     "_handleDeeplink": {
       "kind": "command._handleDeeplink",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_hideCachedWorkers": {
-      "kind": "command._hideCachedWorkers",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2570,12 +2564,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_showCachedWorkers": {
-      "kind": "command._showCachedWorkers",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_showExploreMenu": {
       "kind": "command._showExploreMenu",
       "feedback_required": true,
@@ -3718,6 +3706,12 @@
     },
     "runSyncBanner": {
       "kind": "command.runSyncBanner",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "runVisibleWorkerAction": {
+      "kind": "command.runVisibleWorkerAction",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
