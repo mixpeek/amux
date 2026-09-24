@@ -28,6 +28,13 @@ RAW = os.environ.get("FAKE_CLAUDE_RAW_LOG")
 # stays in the composer. This reproduces the "unsubmitted text" incidents.
 BUSY_S = float(os.environ.get("FAKE_CLAUDE_BUSY_S") or 0)
 busy_until = 0.0
+# Optional: the FIRST Enter on a given message clears the box, records nothing,
+# and puts the text back this many seconds later (Claude Code restoring input it
+# did not accept, seen live 2026-09-24 on trailing @-mention messages). The next
+# Enter on the same text submits normally.
+RESTORE_S = float(os.environ.get("FAKE_CLAUDE_RESTORE_S") or 0)
+restored_once = set()
+pending_restore = None   # (due_time, text)
 if not LOG:
     sys.stderr.write("FAKE_CLAUDE_LOG is required\n")
     sys.exit(2)
@@ -88,6 +95,11 @@ def main():
         while True:
             # Wake periodically so the frame changes when a busy turn ends.
             if not select.select([fd], [], [], 0.2)[0]:
+                global pending_restore
+                if pending_restore and time.time() >= pending_restore[0]:
+                    buf[:] = list(pending_restore[1])
+                    pending_restore = None
+                    draw()
                 now_busy = time.time() < busy_until
                 if was_busy and not now_busy:
                     draw()
@@ -122,6 +134,13 @@ def main():
             if b in (0x0d, 0x0a):          # Enter submits the composer
                 if time.time() < busy_until:
                     continue               # mid-turn: this Enter is dropped
+                text = "".join(buf).strip()
+                if RESTORE_S and text and text not in restored_once:
+                    restored_once.add(text)
+                    pending_restore = (time.time() + RESTORE_S, text)
+                    buf.clear()            # looks accepted ... then comes back
+                    draw()
+                    continue
                 submit()
             elif b in (0x7f, 0x08):        # Backspace
                 if buf:
