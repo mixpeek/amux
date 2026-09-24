@@ -8811,7 +8811,67 @@ fn jsonl_submission_since(name: &str, text: &str, since: f64) -> bool {
     let Some(path) = session_jsonl_path(name) else {
         return false;
     };
-    submission_records_have(&iter_jsonl_tail(&path, 262_144), text, since)
+    let records = iter_jsonl_tail(&path, 262_144);
+    // AMUX-5018's regression check. One send that lands TWICE is invisible to
+    // every existing signal: `submission_records_have` answers "did it land",
+    // which is `true` for one copy and `true` for three, and the sender's
+    // receipt says "sent" either way.
+    //
+    // The 2026-09-23 specimen was one stored row and three arrivals, spliced
+    // identically each time. It no longer reproduces on three probes across
+    // both the direct and queued paths, and "no longer reproduces" is not a
+    // check. This is.
+    let landed = submission_delivery_count(&records, text, since);
+    if landed > 1 {
+        tracing::warn!(
+            session = name,
+            landed,
+            measured = true,
+            n_considered = records.len(),
+            verdict = "message_redelivered",
+            "one stored message reached the transcript more than once — the \
+             sender was told 'sent' once (AMUX-5018)"
+        );
+    }
+    landed > 0 || submission_records_have(&records, text, since)
+}
+
+/// How MANY times one submitted text appears among the records since the send.
+///
+/// Split from `submission_records_have` rather than folded into it, because the
+/// two questions have different right answers: acceptance wants "at least one"
+/// and must stay cheap and early-returning, while re-delivery only exists as a
+/// COUNT. A bool cannot express it, which is why three arrivals were reported
+/// as one delivery for as long as they were.
+fn submission_delivery_count(records: &[Value], text: &str, since: f64) -> usize {
+    let needle = text.trim();
+    if needle.is_empty() {
+        return 0;
+    }
+    records
+        .iter()
+        .filter(|rec| {
+            let msg = &rec["message"];
+            let role = msg["role"]
+                .as_str()
+                .or_else(|| rec["type"].as_str())
+                .unwrap_or("");
+            if role != "user" {
+                return false;
+            }
+            let hit = match &msg["content"] {
+                Value::String(s) => s.contains(needle),
+                Value::Array(items) => items
+                    .iter()
+                    .any(|c| c["text"].as_str().is_some_and(|t| t.contains(needle))),
+                _ => false,
+            };
+            hit && rec["timestamp"]
+                .as_str()
+                .and_then(parse_iso8601)
+                .is_some_and(|ts| ts >= since - 2.0)
+        })
+        .count()
 }
 
 fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
@@ -22537,6 +22597,30 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             if let Some(id) = queue_id.as_deref() {
                 link_queued_message(state, name, row_id, id).await;
             }
+        } else if !origin.is_empty() && origin == name {
+            // A LANE SENDING TO ITSELF IS STILL A MESSAGE (AMUX-5030).
+            //
+            // The peer arm below reads `origin != name` to avoid attributing a
+            // lane's own text as a peer's. That is right about the ATTRIBUTION
+            // and wrong about the RECORD: with no arm for the equal case,
+            // neither branch ran and the send left no `cmd_history` row at all.
+            // Measured 2026-09-23: `amux send amux` from this lane, answered
+            // "sent (queued while generating)", delivered to the pane verbatim,
+            // and absent from cmd_history and from every other table carrying
+            // the text. The Messages ledger had no record it ever existed,
+            // which is the exact shape of "it says sent but it was never sent".
+            //
+            // Recorded as `session` with the origin equal to the lane, so the
+            // row says what it is: not a human prompt, and from itself. A new
+            // type would render "Unclassified" until both the server allowlist
+            // and `_msgKind` learned it.
+            let row_id = cmd_hist_record_with_id(
+                state, name, &orig_text, "session", &origin, skip_board, meta,
+            )
+            .await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
         } else if !origin.is_empty() && origin != name {
             // skip_board, not `false` (AMUX-4555). This is the DELIVERED peer
             // branch and the one the 37 reported cards came through.
@@ -22598,6 +22682,14 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                 let author = member_actor.as_deref().unwrap_or(email);
                 cmd_hist_record_full(state, name, &orig_text, "user", author, skip_board, meta)
                     .await;
+            } else if !origin.is_empty() && origin == name {
+                // Same gap on the failure side (AMUX-5030): a self-send that
+                // did NOT submit also left no row, so there was nothing to find
+                // afterwards on either outcome.
+                cmd_hist_record_full(
+                    state, name, &orig_text, "session", &origin, skip_board, meta,
+                )
+                .await;
             } else if !origin.is_empty() && origin != name {
                 // skip_board, not `false` (AMUX-4555). A PEER send is the shape
                 // this bug was reported from: mixpeek-orchestrator's every-4h
@@ -39132,7 +39224,68 @@ mod submission_gate_tests {
         assert_eq!(submit_verdict_of(""), None);
     }
 
-    #[test]
+    /// AMUX-5018's regression check: ONE stored message reaching a pane more than
+/// once must be detectable.
+///
+/// The specimen was one `cmd_history` row and three arrivals, the first
+/// truncated at a fixed offset and the other two complete. Nothing saw it: the
+/// acceptance predicate answers "did this land", which is `true` for one copy
+/// and `true` for three, and the sender's receipt said "sent" either way. It no
+/// longer reproduces across three probes on both the direct and queued paths,
+/// and a non-reproduction is not a check.
+///
+/// A COUNT is the thing a bool could not express, so both are asserted here
+/// over the same records.
+#[test]
+fn one_message_landing_more_than_once_is_counted_not_flattened_to_landed() {
+    let sent_at = 100.0;
+    let say = |text: &str, at: &str| {
+        json!({
+            "type": "user",
+            "message": {"role": "user", "content": text},
+            "timestamp": at,
+        })
+    };
+    // 1970-01-01T00:01:41Z is 101.0, i.e. after `sent_at`.
+    let once = vec![say("rebuild the shared plane", "1970-01-01T00:01:41Z")];
+    let thrice = vec![
+        say("rebuild the shared pl", "1970-01-01T00:01:41Z"), // the truncated copy
+        say("rebuild the shared plane", "1970-01-01T00:01:42Z"),
+        say("rebuild the shared plane", "1970-01-01T00:01:43Z"),
+    ];
+
+    assert_eq!(
+        submission_delivery_count(&once, "rebuild the shared plane", sent_at),
+        1,
+        "a single delivery must count as one"
+    );
+    assert_eq!(
+        submission_delivery_count(&thrice, "rebuild the shared plane", sent_at),
+        2,
+        "the two COMPLETE copies are what the count is for; the spliced partial \
+         does not contain the full text and is a separate symptom"
+    );
+
+    // THE POINT: the existing predicate cannot tell these apart. Asserted so
+    // nobody deletes the count as a duplicate of the bool.
+    assert!(submission_records_have(&once, "rebuild the shared plane", sent_at));
+    assert!(submission_records_have(&thrice, "rebuild the shared plane", sent_at));
+
+    // And the count must be able to read ZERO, or a >1 test proves nothing
+    // about whether the function looks at its input at all.
+    assert_eq!(
+        submission_delivery_count(&once, "a phrase nobody sent", sent_at),
+        0
+    );
+    // Records older than the send are not this send's deliveries.
+    assert_eq!(
+        submission_delivery_count(&once, "rebuild the shared plane", 1_000.0),
+        0,
+        "an identical message from before the send must not count as a re-delivery"
+    );
+}
+
+#[test]
     fn native_queue_acceptance_requires_exact_new_provider_receipt() {
         let receipt = json!({"type":"queue-operation","operation":"enqueue",
             "timestamp":"1970-01-01T00:02:00Z","content":GHOST});
