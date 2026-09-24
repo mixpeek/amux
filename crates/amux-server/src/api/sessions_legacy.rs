@@ -3885,6 +3885,42 @@ pub async fn create_session_legacy(
     // TTL, and SSE never corrected it (this handler emits no revision
     // event, a residual noted on the card).
     invalidate_sessions_cache();
+    // CREATING A WORKER STARTS IT (Ethan 2026-09-24: "creating a worker should
+    // start it automatically"). Only the dashboard's Create modal followed its
+    // create with a /start; the CLI, the API and any other client left a
+    // stopped worker behind. Default on for every caller. A client that must
+    // configure before launch (the modal sets branch and YOLO first, and
+    // starts with the prompt itself) passes "start": false. An iTerm2 pane is
+    // attached, never launched.
+    // A throwaway AMUX_HOME (a test) would be refused deep inside start after
+    // git and tmux work has begun (AMUX-4724), so ask the same guard first and
+    // leave the worker stopped, saying why.
+    let requested = body.get("start").and_then(serde_json::Value::as_bool).unwrap_or(true)
+        && provider != "iterm2";
+    let autostart = requested
+        && match crate::backend::tmux_health::spawn_allowed_here() {
+            Ok(()) => true,
+            Err(why) => {
+                tracing::info!(session = %name, %why, measured = true, n_considered = 1,
+                    verdict = "created_worker_autostart_skipped", "not starting the created worker");
+                false
+            }
+        };
+    if autostart {
+        let st = _state.clone();
+        let n = name.clone();
+        tokio::spawn(async move {
+            let (ok, detail) = crate::api::session_verbs::start_session(&st, &n, "", false).await;
+            if ok {
+                tracing::info!(session = %n, measured = true, n_considered = 1,
+                    verdict = "created_worker_autostarted", "worker started on create");
+            } else {
+                tracing::warn!(session = %n, detail = %detail, measured = true, n_considered = 1,
+                    verdict = "created_worker_autostart_failed",
+                    "worker was created but could not start; it stays stopped with this reason");
+            }
+        });
+    }
     (
         StatusCode::CREATED,
         Json(json!({
@@ -3894,6 +3930,7 @@ pub async fn create_session_legacy(
             "provider": provider,
             "creator": creator,
             "running": false,
+            "starting": autostart,
             "archived": false,
             // Echo what was actually stored so a dropped or defaulted field is
             // visible in the create response, not only via a later GET

@@ -3325,7 +3325,7 @@ async function _syncOneDraft(draft) {
   if (!draft.synced_create) {
     const created = await _boundedMutationFetch(API + '/api/sessions', {
       method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
-      body:JSON.stringify({name:draft.name, dir:draft.dir}),
+      body:JSON.stringify({name:draft.name, dir:draft.dir, start:false}),
     });
     if (!created.ok) throw new Error('Create worker: ' + await _apiErrText(created));
     draft.synced_create = true; saveDrafts();
@@ -11685,7 +11685,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1086';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1087';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24437,7 +24437,9 @@ async function submitCreate() {
   // Online: create immediately, optionally queue prompt. Direct fetch (not
   // apiCall) so a name clash (409) shows a clear message and keeps the dialog
   // open to fix — apiCall would pop a generic "Error: 409" with the form gone.
-  const createBody = { name, dir, creator: _getDeviceName() };
+  // start:false: this dialog configures branch and YOLO, then starts with the
+  // prompt itself. Every other create starts on the server.
+  const createBody = { name, dir, creator: _getDeviceName(), start: false };
   if (_createProvider !== 'claude') createBody.provider = _createProvider;
   const _modelSel = document.getElementById('create-model');
   const _modelCustom = document.getElementById('create-model-custom');
