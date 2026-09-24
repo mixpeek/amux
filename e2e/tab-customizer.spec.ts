@@ -6,7 +6,7 @@ import { test, expect } from '@playwright/test';
 // each project now gets, happens right where these tests call page.evaluate.
 // The result was "Execution context was destroyed, most likely because of a
 // navigation" on a spec about CSS geometry: a red that says nothing about the
-// menu it is guarding. sw-fail-bar.spec.ts owns the worker's real behaviour.
+// menu it is guarding. sw-offline-notice.spec.ts owns the worker's real behaviour.
 test.use({ serviceWorkers: 'block' });
 
 // Ethan, 2026-08-13: "I still can't view the tabs when I click the box which was

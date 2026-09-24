@@ -198,7 +198,7 @@ export default defineConfig({
     // This was fixed three times per-spec (tab-customizer, system-jobs,
     // peek-tab-menu-anchor) and then omitted from the next three specs I wrote,
     // which is how it reached CI. A per-file convention that must be REMEMBERED
-    // is the thing that failed; the default has to carry it. sw-fail-bar.spec.ts
+    // is the thing that failed; the default has to carry it. sw-offline-notice.spec.ts
     // — the one spec that actually tests the worker — opts back in with
     // test.use({ serviceWorkers: 'allow' }).
     serviceWorkers: 'block',

@@ -7228,3 +7228,9 @@ select.input { height:var(--control-height); }
 .peek-board-policy{gap:16px;flex-wrap:wrap;padding:0 10px 8px;font-size:0.8rem;color:var(--dim);}
 .peek-board-policy label{display:flex;align-items:center;gap:6px;min-height:44px;cursor:pointer;}
 .peek-board-policy input{width:18px;height:18px;margin:0;}
+
+/* Offline mode (service worker) unavailable: a dot on the connection badge, and
+   the full reason inside the Connection modal. Replaces the fixed red bar. */
+.conn-status.no-offline::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 5px; border-radius: 50%; background: var(--yellow, #d29922); vertical-align: middle; }
+.conn-sw-notice { margin: 8px 0; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem; line-height: 1.45; background: rgba(210,153,34,0.1); color: var(--text); }
+.conn-sw-notice .btn { margin-left: 6px; min-height: 44px; }
