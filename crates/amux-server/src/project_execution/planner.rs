@@ -216,7 +216,8 @@ fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
         && (matches!(
             reason,
             "executor_returned_without_result" | "executor_stopped_before_result"
-        ) || ((prelaunch_failure(reason) || report_failure_reason(reason)) && e.report.is_none())
+        ) || prelaunch_failure(reason)
+            || (report_failure_reason(reason) && e.report.is_none())
             || (e.report.is_some()
             && e.verification_retries.is_empty()
             && e.waiting.as_deref() == Some(reason)))
@@ -260,6 +261,7 @@ fn worker_name(project: &str, task: &str) -> String {
 
 const AUTO_REPAIR_GRANT_PREFIX: &str = "auto-repair:";
 const AUTO_REPAIR_GRANT_LIMIT: usize = 3;
+const PRELAUNCH_REPAIR_GRANT_LIMIT: usize = 2;
 
 fn auto_repairable_wait(e: &Execution, max_attempts: u32) -> bool {
     e.stage == "waiting"
@@ -281,15 +283,29 @@ fn auto_repair_grants(e: &Execution) -> usize {
         .count()
 }
 
-/// After the first recovery, another turn requires a new candidate and a new
-/// independently observed verification failure. Repeating the same failure or
-/// merely changing a report cannot buy an unbounded retry loop.
+/// Candidate verification retries require independently observed progress.
+/// Infrastructure failures before a worker turn get their own small allowance;
+/// a prior candidate report may still be retained for review at that point.
 pub(crate) fn auto_repair_grantable_wait(e: &Execution, max_attempts: u32) -> bool {
+    let prelaunch = e.waiting.as_deref().is_some_and(prelaunch_failure);
+    let prior_prelaunch_grants = e
+        .retry_grants
+        .iter()
+        .filter(|g| {
+            g.request
+                .idempotency_key
+                .starts_with(AUTO_REPAIR_GRANT_PREFIX)
+                && g.previous_result["waiting"]
+                    .as_str()
+                    .is_some_and(prelaunch_failure)
+        })
+        .count();
     e.stage == "waiting"
         && !e.suspended
         && e.attempt >= e.attempt_limit(max_attempts)
         && auto_repair_grants(e) < AUTO_REPAIR_GRANT_LIMIT
-        && (auto_repair_grants(e)==0 || e.report.as_ref().is_some_and(|report| {
+        && ((prelaunch && prior_prelaunch_grants < PRELAUNCH_REPAIR_GRANT_LIMIT)
+            || auto_repair_grants(e)==0 || e.report.as_ref().is_some_and(|report| {
             e.waiting.as_deref().is_some_and(|reason|reason.starts_with("verification failed (")
                 && e.retry_grants.iter().filter(|g|g.request.idempotency_key.starts_with(AUTO_REPAIR_GRANT_PREFIX)).all(|g| {
                     g.previous_result.get("waiting").is_some()
@@ -1405,6 +1421,39 @@ mod tests {
         assert!(!prelaunch_failure("error: unable to create file customers/a/screenshot.png: Permission denied"));
         assert!(!prelaunch_failure("existing workspace belongs to a different repository; preserved"));
         assert!(!prelaunch_failure("workspace has uncommitted user changes"));
+    }
+
+    #[test]
+    fn checkout_failure_can_repair_after_an_earlier_model_repair_grant() {
+        let grant = |generation, reason: &str| super::super::task_retry::Grant {
+            request: super::super::task_retry::Request {
+                idempotency_key: format!("auto-repair:sample:A:{generation}"),
+                expect_generation: generation,
+                expect_revision: generation,
+                input_hash: "input".into(),
+            },
+            allowed_through: 4,
+            previous_result: json!({"waiting": reason}),
+        };
+        let checkout = "Preparing worktree (checking out 'amux/project/sample')\nerror: unable to create file evidence/a.png: No such file or directory";
+        let mut e = Execution {
+            stage: "waiting".into(),
+            attempt: 4,
+            waiting: Some(checkout.into()),
+            report: Some(Report {
+                head: "a".repeat(40),
+                summary: "Earlier candidate retained for review".into(),
+                assets: vec![],
+                checks: vec![],
+            }),
+            retry_grants: vec![grant(1, "verification failed (gate): old candidate")],
+            ..Default::default()
+        };
+        assert!(auto_repair_grantable_wait(&e, 3));
+        e.retry_grants.push(grant(2, checkout));
+        assert!(auto_repair_grantable_wait(&e, 3));
+        e.retry_grants.push(grant(3, checkout));
+        assert!(!auto_repair_grantable_wait(&e, 3));
     }
 
     #[test]
