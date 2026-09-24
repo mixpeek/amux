@@ -13014,6 +13014,61 @@ function stripAnsi(text) {
     .replace(/^─{10,}\n?/gm, '');
 }
 
+// Links in worker output: URLs, bare domains on real TLDs, absolute and ./ ~/
+// paths, and repo-relative paths (a/b/c.md, crates/x/y.rs:12). Returns sorted,
+// non-overlapping {start,end,type,value} over the PLAIN text.
+const _LINK_TLDS = 'com|org|net|io|ai|app|dev|co|so|us|me|xyz|cloud|tech|run|site|page|info|biz|tv|gg|ly|build|tools|systems';
+function _detectTextLinks(plain) {
+  const out = [];
+  const add = (start, end, type, value) => {
+    if (out.some(x => start < x.end && end > x.start)) return;
+    out.push({ start, end, type, value });
+  };
+  const trim = v => v.replace(/[.,;:!?)\]}'"`]+$/, '');
+  let m;
+  const url = /https?:\/\/[^\s<>\]\)'"`,;-]+/g;
+  while ((m = url.exec(plain))) { const v = trim(m[0]); add(m.index, m.index + v.length, 'url', v); }
+  // `@` before a path is Claude Code's file-mention marker, not part of the path.
+  const abs = /(^|[\s(`'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?)/g;
+  while ((m = abs.exec(plain))) { const st = m.index + m[1].length; add(st, st + m[2].length, 'file', m[2]); }
+  // A relative path means something only against the worker's directory; with
+  // none known it stays plain text rather than a link that does nothing.
+  const cwdKnown = typeof peekSessionDir === 'string' && !!peekSessionDir;
+  const rel = /(^|[\s(`'"=\[@])((?:[\w+-][\w.@+-]*\/)+[\w.@+-]*\w\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?)(?![\w\/])/g;
+  while (cwdKnown && (m = rel.exec(plain))) {
+    const st = m.index + m[1].length;
+    // A hard wrap is not a path boundary: at a line start, if the previous
+    // line's last token starts a path and has no extension, this is its tail.
+    if (st === 0 || plain[st - 1] === '\n') {
+      const prev = plain.slice(plain.lastIndexOf('\n', st - 2) + 1, Math.max(0, st - 1));
+      const tok = prev.trim().split(/[\s(\[>"'`,;=]+/).pop() || '';
+      if (/^\.?\//.test(tok) && !/\.[A-Za-z0-9]{1,8}$/.test(tok)) continue;
+    }
+    add(st, st + m[2].length, 'file', m[2]);
+  }
+  const dom = new RegExp('(^|[^\\w@/.:-])((?:[a-z0-9-]+\\.)+(?:' + _LINK_TLDS + ')(?:/[^\\s<>"\'`)\\]]*)?)(?![\\w.-]*\\w)', 'gi');
+  while ((m = dom.exec(plain))) {
+    const st = m.index + m[1].length, v = trim(m[2]);
+    add(st, st + v.length, 'url', 'https://' + v);
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+function _linkWrap(L, htmlText) {
+  const ea = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  if (L.type === 'url')
+    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer">' + htmlText + '</a>';
+  const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
+  const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
+  return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
+}
+// Open a path from worker output through the one resolver every output link
+// uses (_openPathFromOutput: server-side resolve against the worker's cwd).
+function _openLinkedPath(el, ev) {
+  if (window.getSelection && String(window.getSelection()) !== '') return;
+  ev.preventDefault(); ev.stopPropagation();
+  const p = (el.dataset.path || '').replace(/(?::\d+){1,2}$/, '');
+  if (p) _openPathFromOutput(p);
+}
 function ansiToHtml(text) {
   // Convert ANSI SGR color codes to HTML spans. Also HTML-escapes and linkifies text.
   const C16 = ['#1c1c1c','#cc0000','#4e9a06','#c4a000','#3465a4','#75507b','#06989a','#d3d7cf',
@@ -13069,22 +13124,25 @@ function ansiToHtml(text) {
     if(!s.length)return ''; spanOpen=true; return `<span style="${s.join(';')}">`;
   };
   const eh=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // LINKS ARE FOUND ON THE PLAIN TEXT, THEN MAPPED ONTO THE COLOURED SPANS.
+  // Detecting per SGR chunk broke as soon as text was syntax-coloured
+  // (6cc350e5): a URL or path split across colour codes was in no single chunk,
+  // so nothing linked (tubescience-parity, 2026-09-24). A link that crosses a
+  // colour boundary is emitted as adjacent anchors to the same target.
+  const _plain=t.split(/(\x1b\[[0-9;]*m)/).filter(x=>!(x.startsWith('\x1b[')&&x.endsWith('m'))).join('');
+  const _links=_detectTextLinks(_plain);
+  let _pos=0,_li=0;
   const linkChunk=raw=>{
-    const urlRe=/https?:\/\/[^\s<>\]\)'"`,;]+/g;
-    const fileRe=/(?:^|[\s(])((\/[\w./-]+(?:\.\w+)(?::[\d]+)?)|(\.\/[\w./-]+(?:\.\w+)(?::[\d]+)?))/gm;
-    const mx=[]; let m;
-    while((m=urlRe.exec(raw))!==null){const u=m[0].replace(/[.,;:!?)]+$/,'');mx.push({start:m.index,end:m.index+u.length,type:'url',value:u});}
-    while((m=fileRe.exec(raw))!==null){const p=m[1],ps=m.index+m[0].indexOf(p),pe=ps+p.length;if(!mx.some(x=>ps<x.end&&pe>x.start))mx.push({start:ps,end:pe,type:'file',value:p});}
-    mx.sort((a,b)=>a.start-b.start);
-    let out='',last=0;
-    for(const x of mx){
-      if(x.start>last)out+=eh(raw.slice(last,x.start));
-      if(x.type==='url'){out+=`<a href="${eh(x.value)}" target="_blank" rel="noopener noreferrer">${eh(x.value)}</a>`;}
-      else{const rp=x.value.replace(/:[\d]+$/,'');const cls=/\.md$/i.test(rp)?'md-link':'file-link';out+=`<span class="${cls}" onclick="if(window.getSelection().toString())return;event.preventDefault();event.stopPropagation();openFilePreview('${eh(rp)}')">${eh(x.value)}</span>`;}
-      last=x.end;
+    let o='',i=0;
+    while(i<raw.length){
+      const g=_pos+i;
+      while(_li<_links.length&&_links[_li].end<=g)_li++;
+      const L=_links[_li];
+      if(L&&L.start<=g){const e=Math.min(raw.length,L.end-_pos);o+=_linkWrap(L,eh(raw.slice(i,e)));i=e;}
+      else{const e=L?Math.min(raw.length,L.start-_pos):raw.length;o+=eh(raw.slice(i,e));i=e;}
     }
-    if(last<raw.length)out+=eh(raw.slice(last));
-    return rewriteLocalhostUrls(out);
+    _pos+=raw.length;
+    return o;
   };
   const parts=t.split(/(\x1b\[[0-9;]*m)/);
   let out='';
@@ -13118,11 +13176,13 @@ function ansiToHtml(text) {
       }
       out+=openSpan();
     } else if(p){
-      out += p.split('\n').map((line, index) =>
-        (index ? closeSpan() + '\n' + openSpan() : '') + linkChunk(line)).join('');
+      out += p.split('\n').map((line, index) => {
+        if (index) _pos += 1;   // the newline is one plain character
+        return (index ? closeSpan() + '\n' + openSpan() : '') + linkChunk(line);
+      }).join('');
     }
   }
-  return _osc8Resolve(out+closeSpan(), _osc8);
+  return _osc8Resolve(rewriteLocalhostUrls(out+closeSpan()), _osc8);
 }
 
 // Turn the parked OSC-8 sentinels into real anchors (AMUX-2636).
@@ -13311,6 +13371,9 @@ function _linkifyPaths(safeHtml) {
     // re-emitted as plain text, so the link carries the real path.
     const RE = /(^|[\s(\[>"'`,;=])(@?)((?:\.?\/)?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+)?(?![^<]*>)/gm;
     return String(safeHtml).replace(RE, (m, pre, at, path, line, offset, whole) => {
+      // Already a link: ansiToHtml now links paths on the plain text (so a path
+      // split by syntax colours still links). Do not wrap it a second time.
+      if (/<(?:a\s|span class="(?:file|md)-link")[^>]*>[^<]*$/.test(String(whole).slice(0, offset + pre.length))) return m;
       // A HARD WRAP IS NOT A PATH BOUNDARY (Ethan, 2026-09-09: "these links
       // dont work"). tmux breaks a long line at the pane width mid-token, so
       // `/private/tmp/claude-501/…/_lt.txt` arrives as `/private/tmp/c` +
