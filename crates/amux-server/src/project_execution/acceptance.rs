@@ -34,7 +34,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Operational failures (git, timeout, process) retry this many times per fingerprint, then hold
-/// until the operator asks for a rerun. Semantic outcomes never retry on their own.
+/// until the operator asks for a rerun. Semantic failures return to their owning task
+/// for bounded repair; an unchanged failed candidate is never re-run in a tight loop.
 const MAX_OPERATIONAL_ATTEMPTS: usize = 4;
 const OBSERVE_EVERY: Duration = Duration::from_secs(30);
 
@@ -400,6 +401,13 @@ fn verified_heads(conn: &Connection, project: &str) -> anyhow::Result<Vec<(Strin
     Ok(heads)
 }
 
+#[derive(Debug)]
+struct CompositionFailure { task: String, head: String, partial: String, error: String }
+impl std::fmt::Display for CompositionFailure {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { write!(f,"task {} cannot be composed into the project candidate: {}",self.task,self.error) }
+}
+impl std::error::Error for CompositionFailure {}
+
 async fn assemble_candidate(
     p: &store::Project,
     base_main: &str,
@@ -417,7 +425,14 @@ async fn assemble_candidate(
     .await
     .map_err(anyhow::Error::msg)?;
     let outcome = async {
+        // A repair may already include several previous task heads. Merge only
+        // maximal heads so superseded divergent tips cannot conflict first.
+        let mut args=vec!["merge-base","--independent"];
+        args.extend(heads.iter().map(|(_,head)|head.as_str()));
+        let independent=workspace::git(repo,&args).await.map_err(anyhow::Error::msg)?;
+        let independent=independent.lines().collect::<HashSet<_>>();
         for (task, head) in heads {
+            if !independent.contains(head.as_str()) { continue; }
             workspace::git(repo, &["cat-file", "-e", &format!("{head}^{{commit}}")])
                 .await
                 .map_err(|error| {
@@ -429,13 +444,11 @@ async fn assemble_candidate(
             {
                 continue;
             }
-            workspace::git(&candidate, &["merge", "--no-ff", "--no-edit", head])
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
-                        "task {task} cannot be composed into the project candidate: {error}"
-                    )
-                })?;
+            if let Err(error)=workspace::git(&candidate, &["merge", "--no-ff", "--no-edit", head]).await {
+                let partial=workspace::git(&candidate,&["rev-parse","HEAD"]).await.map_err(anyhow::Error::msg)?;
+                workspace::git(repo,&["update-ref",&format!("refs/amux/projects/{}/repair/{}",sha(&p.name),sha(task)),&partial]).await.map_err(anyhow::Error::msg)?;
+                return Err(anyhow::Error::new(CompositionFailure{task:task.clone(),head:head.clone(),partial,error}));
+            }
         }
         let head = workspace::git(&candidate, &["rev-parse", "HEAD"])
             .await
@@ -871,6 +884,55 @@ pub fn observe(
     Ok(changed(&p.name, "observed"))
 }
 
+/// Reopen the existing owner of failed integrated behavior. Keep every earlier
+/// report/evaluation and use the normal claim, concurrency, budget and delivery
+/// path. This is implementation work, never approval of a failed artifact.
+fn repair_owner(conn: &Connection, p: &store::Project, task: &str, expected_head: &str, context: &Value) -> anyhow::Result<WriteOutcome> {
+    let no_change=||WriteOutcome{applied:false,events:vec![]};
+    if !p.policy.enabled || p.policy.paused || super::usage::waiting(conn,p)?.is_some() { return Ok(no_change()); }
+    let Some(row)=bs::get_issue(conn,task)? else { return Ok(no_change()); };
+    let mut e=planner::execution(conn,task)?;
+    if row.project_group.as_deref()!=Some(&p.name) || row.archived!=0 || row.status!="verified" || e.stage!="verified" || e.suspended
+        || super::outputs::authorization_hold(conn,&row)? || e.input_hash!=planner::input_hash(&row)
+        || e.report.as_ref().is_none_or(|r|r.head!=expected_head) { return Ok(no_change()); }
+    let revision=p.policy.acceptance.as_ref().map_or(0,|c|c.revision);
+    let prefix=format!("acceptance-repair:{revision}:{}:",&e.input_hash[..12.min(e.input_hash.len())]);
+    let attempts=e.retry_grants.iter().filter(|g|g.request.idempotency_key.starts_with(&prefix)).count();
+    if attempts>=2 {
+        tracing::warn!(project=%p.name,task,measured=true,n_considered=attempts,verdict="project.acceptance_repair_exhausted","integrated repair limit reached; failed evidence remains visible");
+        return Ok(no_change());
+    }
+    let key=format!("{prefix}{}",e.generation);
+    let request=super::task_retry::Request{idempotency_key:key,expect_generation:e.generation,expect_revision:row.rev,input_hash:e.input_hash.clone()};
+    e.retry_grants.push(super::task_retry::Grant{request,allowed_through:e.attempt.saturating_add(1),previous_result:json!({"report":e.report,"retained_assets":e.retained_assets,"acceptance_failure":context})});
+    e.stage="repair".into();e.wait_category=None;e.output_wait=None;
+    e.waiting=Some(format!("Independent whole-project verification requires repair in this task's existing checkout. Compose the supplied local candidate commit if present, preserve other tasks' changes, repair the measured failure, and submit a new committed report. Do not approve artifacts or weaken the acceptance contract. Failure context: {}",context));
+    let out=planner::save_execution(conn,&row,&e,"project.acceptance_repair_scheduled")?;
+    // An epic cannot keep claiming all children verified after a repair opens.
+    while conn.execute("UPDATE issues SET status='backlog',evidence=NULL,rev=rev+1,version=version+1 WHERE project_group=?1 AND type='epic' AND status='verified' AND EXISTS(SELECT 1 FROM json_each(issues.depends_on) d JOIN issues child ON child.id=d.value WHERE child.status!='verified')",[&p.name])?>0 {}
+    insert(conn,&p.name,"project.acceptance_repair",&json!({"task":task,"generation":e.generation,"context":context,"previous_head":expected_head}),"harness")?;
+    Ok(out)
+}
+
+fn repair_failed_criteria(conn: &Connection, p: &store::Project, result: &Value) -> anyhow::Result<WriteOutcome> {
+    let mut out=WriteOutcome{applied:false,events:vec![]};
+    if result["state"]!="failed" { return Ok(out); }
+    let Some(contract)=p.policy.acceptance.as_ref() else { return Ok(out); };
+    let failures=result["results"].as_array().into_iter().flatten().filter(|r|r["state"]=="failed" && r["criterion"].as_str().and_then(|id|contract.criterion(id)).is_some_and(|c|!c.verifier.is_human())).collect::<Vec<_>>();
+    for row in bs::project_issues(conn,&p.name)? {
+        let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+        let owned=failures.iter().filter(|r|r["criterion"].as_str().is_some_and(|id|criteria.contains(&format!("contract:{id}")))).collect::<Vec<_>>();
+        if owned.is_empty() { continue; }
+        let e=planner::execution(conn,&row.id)?;
+        let Some(report)=e.report else { continue; };
+        let failures=owned.iter().map(|r|json!({"criterion":r["criterion"],"command":r["command"],"state":r["state"],"exit":r["exit"],"output":tail(r["output"].as_str().unwrap_or(""),4000),"evidence_error":r["evidence_error"],"evidence":r["evidence"]})).collect::<Vec<_>>();
+        let context=json!({"fingerprint":result["fingerprint"],"candidate":result["candidate"],"failures":failures});
+        let changed=repair_owner(conn,p,&row.id,&report.head,&context)?;
+        out.applied|=changed.applied;out.events.extend(changed.events);
+    }
+    Ok(out)
+}
+
 /// Compare-and-write: a result is recorded only if the contract and the intent it was computed for
 /// are still current. A stale result is discarded and logged; the newer inputs are evaluated instead.
 pub fn record(
@@ -907,7 +969,12 @@ pub fn record(
     });
     tracing::info!(project, state, failing, main = %result["main"], contract_revision = %result["contract_revision"], measured = true,
         n_considered = result["results"].as_array().map_or(0, Vec::len), verdict = "project.acceptance_recorded", "project acceptance recorded");
-    Ok(changed(project, state))
+    let mut out=changed(project,state);
+    if let Some(current)=current.as_ref() {
+        let repairs=repair_failed_criteria(conn,current,result)?;
+        out.events.extend(repairs.events);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1824,7 +1891,21 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
                         && o["contract_revision"] == json!(contract.revision)
                 });
                 if !unchanged {
-                    let candidate = assemble_candidate(p, &base_main, &heads).await?;
+                    let candidate = match assemble_candidate(p, &base_main, &heads).await {
+                        Ok(candidate)=>candidate,
+                        Err(error)=> {
+                            if let Some(failure)=error.downcast_ref::<CompositionFailure>() {
+                                let (project,task,head,context)=(p.clone(),failure.task.clone(),failure.head.clone(),json!({"candidate":failure.partial,"composition_error":failure.error,"task_heads":heads}));
+                                state.store.write_async(move|c| {
+                                    let current=store::get(c,&project.name).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                                    if current.revision!=project.revision { return Ok(WriteOutcome{applied:false,events:vec![]}); }
+                                    repair_owner(c,&current,&task,&head,&context).map_err(store::sql_error)
+                                }).await?;
+                                return Ok(());
+                            }
+                            return Err(error);
+                        }
+                    };
                     let (project, base, composed, task_heads) =
                         (p.clone(), base_main, candidate, heads.clone());
                     state
@@ -2418,6 +2499,25 @@ mod tests {
         }
         assert_eq!(git(&["show", &format!("{candidate}:a.txt")]), "a");
         assert_eq!(git(&["show", &format!("{candidate}:b.txt")]), "b");
+        git(&["checkout","-q","-b","conflict-left","main"]);
+        std::fs::write(repo.join("README.md"),"left\n").unwrap();git(&["commit","-am","left"]);
+        let left=git(&["rev-parse","HEAD"]);
+        git(&["checkout","-q","-b","conflict-right","main"]);
+        std::fs::write(repo.join("README.md"),"right\n").unwrap();git(&["commit","-am","right"]);
+        let right=git(&["rev-parse","HEAD"]);git(&["checkout","-q","main"]);
+        let error=assemble_candidate(&project,&base,&[("C-1".into(),left.clone()),("C-2".into(),right.clone())]).await.unwrap_err();
+        let failure=error.downcast_ref::<CompositionFailure>().unwrap();
+        assert_eq!(failure.task,"C-2");assert_eq!(failure.head,right);
+        assert!(git(&["merge-base","--is-ancestor",&left,&failure.partial]).is_empty());
+        // Simulate the owner's committed resolution, including both heads.
+        git(&["checkout","-q","conflict-right"]);
+        git(&["merge","--no-ff","-s","ours","--no-edit",&left]);
+        std::fs::write(repo.join("README.md"),"resolved left and right\n").unwrap();git(&["commit","-am","resolved"]);
+        let resolved=git(&["rev-parse","HEAD"]);git(&["checkout","-q","main"]);
+        let candidate=assemble_candidate(&project,&base,&[("C-1".into(),left),("C-2".into(),right),("C-3".into(),resolved)]).await.unwrap();
+        assert_eq!(git(&["show",&format!("{candidate}:README.md")]),"resolved left and right");
+        assert_eq!(git(&["rev-parse","main"]),base);
+
     }
 
     #[tokio::test]
@@ -2860,6 +2960,39 @@ path.write_text(json.dumps({
     fn verified(db: &Connection, id: &str) {
         db.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES(?1,?1,'verified','doc','p',1,1,'do it','[\"x\"]')", [id]).unwrap();
     }
+    #[test]
+    fn acceptance_failure_repairs_the_owner_preserves_receipts_and_respects_limits() {
+        let c=crate::db::migrate::test_memdb();
+        let mut p=project(&c,Some(two()));
+        verified(&c,"T-1");verified(&c,"T-2");
+        c.execute("UPDATE issues SET acceptance_criteria='[\"contract:unit\"]' WHERE id='T-1'",[]).unwrap();
+        c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated,depends_on) VALUES('EP','parent','verified','epic','p',1,1,'[\"T-1\",\"T-2\"]')",[]).unwrap();
+        let row=bs::get_issue(&c,"T-1").unwrap().unwrap();
+        let mut e=planner::Execution{stage:"verified".into(),attempt:2,generation:2,worker:"owned-worker".into(),input_hash:planner::input_hash(&row),report:Some(report(&[("contract:unit","cargo test")])),..Default::default()};
+        e.report.as_mut().unwrap().head="a".repeat(40);
+        planner::save_execution(&c,&row,&e,"fixture").unwrap();
+        let failure=json!({"state":"failed","fingerprint":"failure-1","candidate":"b".repeat(40),"results":[{"criterion":"unit","state":"failed","output":"real integration failed","exit":1},{"criterion":"owner","state":"failed","evidence_error":"missing approval"}]});
+        p.policy.paused=true;assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied);p.policy.paused=false;
+        let mut held=e.clone();held.suspended=true;planner::save_execution(&c,&row,&held,"fixture").unwrap();
+        assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied);
+        planner::save_execution(&c,&row,&e,"fixture").unwrap();
+        assert!(!repair_owner(&c,&p,"T-1","wrong-head",&failure).unwrap().applied);
+        assert!(repair_failed_criteria(&c,&p,&failure).unwrap().applied);
+        let mut next=planner::execution(&c,"T-1").unwrap();
+        assert_eq!(next.stage,"repair");assert_eq!(next.worker,"owned-worker");assert_eq!(next.attempt_limit(2),3);
+        assert_eq!(next.retry_grants[0].previous_result["report"]["head"],"a".repeat(40));
+        assert!(next.waiting.as_ref().unwrap().contains("real integration failed"));
+        assert_eq!(bs::get_issue(&c,"EP").unwrap().unwrap().status,"backlog");
+        assert_eq!(bs::get_issue(&c,"T-2").unwrap().unwrap().status,"verified");
+        assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied,"unchanged failed run cannot queue another turn");
+        next.stage="verified".into();next.attempt=3;next.generation=3;planner::save_execution(&c,&row,&next,"fixture").unwrap();
+        assert!(repair_failed_criteria(&c,&p,&failure).unwrap().applied);
+        let mut next=planner::execution(&c,"T-1").unwrap();next.stage="verified".into();next.attempt=4;next.generation=4;
+        planner::save_execution(&c,&row,&next,"fixture").unwrap();
+        assert!(!repair_failed_criteria(&c,&p,&failure).unwrap().applied,"bounded integrated repairs conserve tokens");
+        assert_eq!(events(&c,"p","project.acceptance_repair",None).unwrap().len(),2);
+    }
+
     #[tokio::test]
     async fn empty_project_waits_without_trying_to_compose_candidate_heads() {
         let dir = tempfile::tempdir().unwrap();

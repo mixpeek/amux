@@ -225,14 +225,17 @@ fn verification_commands<'a>(
     report: &'a planner::Report,
     contract: Option<&amux_core::project::AcceptanceContract>,
 ) -> Vec<&'a str> {
-    workspace::distinct_verification_commands(
-        std::iter::once(gate).chain(report.checks.iter().filter_map(|check| {
-            let deferred = check.criterion.strip_prefix("contract:")
-                .and_then(|id| contract?.criterion(id))
-                .is_some_and(|criterion| matches!(criterion.verifier, amux_core::project::ContractVerifier::Execution { .. }));
-            (!deferred).then_some(check.command.as_str())
-        })),
-    )
+    let deferred=report.checks.iter().filter_map(|check| {
+        let criterion=check.criterion.strip_prefix("contract:").and_then(|id|contract?.criterion(id))?;
+        match &criterion.verifier {
+            amux_core::project::ContractVerifier::Execution{command,..} if command.trim()==check.command.trim()=>Some(command.trim()),
+            _=>None,
+        }
+    }).collect::<std::collections::HashSet<_>>();
+    // One approved runtime command can satisfy several prose criteria. It is
+    // still one whole-project run, not a second image build per repeated label.
+    workspace::distinct_verification_commands(std::iter::once(gate).chain(report.checks.iter()
+        .filter(|check|!deferred.contains(check.command.trim())).map(|check|check.command.as_str())))
 }
 
 /// One source-path policy, applied to the entire set before any shell command.
@@ -1121,7 +1124,11 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         .store
         .write_async({
             let name = name.to_string();
-            move |c| planner::reconcile_issue_statuses(c, &name).map_err(store::sql_error)
+            move |c| {
+                let mut result=crate::api::board_lifecycle::reconcile_project_intake_order(c,&name)?;
+                let statuses=planner::reconcile_issue_statuses(c,&name).map_err(store::sql_error)?;
+                result.applied|=statuses.applied;result.events.extend(statuses.events);Ok(result)
+            }
         })
         .await?;
     reconcile_corrected_candidate(state, &p).await?;
@@ -2795,6 +2802,7 @@ mod command_tests {
             checks: vec![
                 planner::Check { criterion: "contract:image".into(), command: "python3 scripts/run_image.py".into() },
                 planner::Check { criterion: "static".into(), command: "python3 scripts/check_source.py".into() },
+                planner::Check { criterion: "Build and test the image".into(), command: "python3 scripts/run_image.py".into() },
             ],
         };
         assert_eq!(

@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1067';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1068';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45122,7 +45122,7 @@ function _projectAssets(data) {
   });
   return assets;
 }
-function _projectTaskDisplay(card) {
+function _projectTaskDisplay(card, acceptance=(typeof _projectsData==='undefined'?null:_projectsData?.acceptance)) {
   const plan=card?.execution_plan || {}, e=plan.execution || {};
   const phase=card?.phase || card?.status || 'unknown';
   if(plan.waiting_label || plan.waiting_reason) return {label:plan.waiting_label || 'Waiting', cls:'waiting', detail:plan.waiting_reason || ''};
@@ -45131,7 +45131,11 @@ function _projectTaskDisplay(card) {
   if(e.stage==='reported' || e.stage==='verifying' || phase==='verifying') return {label:'Verifying', cls:'verifying', detail:e.waiting || ''};
   if(e.stage==='reserved') return {label:'Queued to worker', cls:'working', detail:''};
   if(e.stage==='working') return {label:'Working now', cls:'working', detail:''};
-  if(phase==='verified') return {label:'Verified', cls:'verified', detail:''};
+  if(phase==='verified') {
+    const refs=Array.isArray(card?.acceptance_criteria)?card.acceptance_criteria:[];
+    const pendingRuntime=(acceptance?.criteria||[]).some(c=>refs.includes('contract:'+c.id) && c.verifier?.type==='execution' && c.result?.state!=='passed');
+    return {label:pendingRuntime?'Candidate ready':'Verified', cls:'verified', detail:pendingRuntime?'Integrated runtime verification pending':''};
+  }
   if(phase==='closed') return {label:'Closed', cls:'closed', detail:''};
   if(card?.retry_available===true) return {label:'Needs repair', cls:'waiting', detail:e.waiting || e.last_failure || ''};
   if(card?.verification_retry_available===true) return {label:'Verification failed', cls:'waiting', detail:e.waiting || e.last_failure || ''};
@@ -45661,7 +45665,7 @@ function _projectRender(data) {
     if(board.dataset.sig!==empty) {board.dataset.sig=empty;board.innerHTML=empty;}
   } else {
     if(board.dataset.sig && board.dataset.sig.startsWith('<p')) {board.innerHTML='';board.dataset.sig='';}
-    const columns=_projectPhaseList.map(([phase,label])=>({phase,label,rows:data.cards.filter(c=>c.phase===phase)})).filter(col=>col.rows.length);
+    const columns=_projectPhaseList.map(([phase,label])=>({phase,label:phase==='verified' && data.cards.some(c=>c.phase==='verified' && _projectTaskDisplay(c).label==='Candidate ready')?'Checked candidates':label,rows:data.cards.filter(c=>c.phase===phase)})).filter(col=>col.rows.length);
     _projectPatch(board,columns.map(col=>({key:col.phase,sig:col.label+col.rows.length,html:'<section class="project-column" role="group" aria-label="'+esc(col.label)+' tasks"><h3>'+esc(col.label)+' <span>'+col.rows.length+'</span></h3><div class="project-column-cards"></div></section>'})));
     columns.forEach(col=>{
       const holder=board.querySelector(':scope > [data-key="'+col.phase+'"] .project-column-cards');

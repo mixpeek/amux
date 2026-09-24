@@ -87,3 +87,18 @@ test('task review artifacts retain task identity rather than implying project ac
  assert.equal(assets[1].card.title,'Project acceptance');
  assert.equal(assets[0].acceptance,true);
 });
+
+
+test('a checked task candidate cannot imply its integrated runtime goal is verified',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(source.slice(source.indexOf('function _projectTaskDisplay('),source.indexOf('function _projectOutcomeVerdict(')),ctx);
+ const card={phase:'verified',acceptance_criteria:['contract:image'],execution_plan:{execution:{stage:'verified'}}};
+ const acceptance={criteria:[{id:'image',verifier:{type:'execution'},result:null}]};
+ assert.equal(ctx._projectTaskDisplay(card,acceptance).label,'Candidate ready');
+ assert.match(ctx._projectTaskDisplay(card,acceptance).detail,/runtime verification pending/);
+ acceptance.criteria[0].result={state:'failed'};
+ assert.equal(ctx._projectTaskDisplay(card,acceptance).label,'Candidate ready');
+ acceptance.criteria[0].result={state:'passed'};
+ assert.equal(ctx._projectTaskDisplay(card,acceptance).label,'Verified');
+ assert.equal(ctx._projectTaskDisplay({...card,phase:'working',execution_plan:{execution:{stage:'working'}}},acceptance).label,'Working now');
+});

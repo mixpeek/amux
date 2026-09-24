@@ -4518,3 +4518,47 @@ CARD: AF-947
 SYMPTOM: Unscoped tmux display-message attributed harness commits from this desktop chat to an unrelated project worker despite AMUX_SESSION, TMUX and TMUX_PANE being absent.
 COST: Project audit trails credited worker output that was actually harness maintenance.
 FIX: Require and target this process's actual pane for fallback identity; retain explicit identity and verified process ancestry. Outside-tmux commits use the existing human/unscoped signal rather than a focused peer. Controlled fake-tmux regressions cover both hooks; existing stamp suite passes 18 checks.
+
+## Sequential card insertion reversed project decomposition
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The goal-03 planner emitted T1 through T23, but each single-card create prepended the card. The driver therefore ran T23 first and left the storage contract and invariant tasks last.
+COST: Downstream work repeatedly rediscovered missing foundational outputs and consumed repairs before foundational tasks were attempted.
+FIX: Preserve decomposition order for each new project batch; reconcile only the exact untouched reverse-insertion pattern from a durable all-new intake receipt. Keep explicit manual ordering and mixed existing-task updates unchanged. Log project.intake_order_preserved and test order, idempotency, and manual-order protection.
+
+## Operational retry retained a stale wait category
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-22 and POG-24 finished their third attempt with matching durable report files, yet stayed working for more than 15 minutes. Claim cleared waiting but retained wait_category=operational, so every report-ingestion guard refused them.
+COST: Both executor slots remained occupied by finished workers and the project stopped draining.
+FIX: A newly claimed attempt clears its previous wait category while retaining failure history. Reconcile already-active attempts with no wait and stale operational classification without replaying their prompts. Move authorization and suspended holds ahead of stale-requirement recovery; test that changed requirements cannot bypass spend approval.
+
+## Failed integrated acceptance had no implementation recovery path
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Whole-project semantic failures were recorded but never returned to a task owner; a candidate merge conflict only retried the same merge indefinitely.
+COST: All task candidates could pass while the requested integrated outcome remained permanently failed.
+FIX: Route failed non-human contract criteria back to their existing owner and compose conflicts back to the exact conflicting task. Preserve failed receipts, previous heads, artifacts and partial integration refs; allow two bounded repairs per task input/contract revision through normal claims. Reopen parent epics, honor pause/budget/authorization, require fresh verification, and merge only independent heads so a committed resolution supersedes its conflicting ancestors. Human review is never auto-approved.
+
+## A repeated runtime command escaped project-phase deduplication
+AREA: efficiency
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-24 mapped its approved image lifecycle command to both the contract marker and two prose criteria. Only the contract-labelled copy was deferred, so the image would build once on a partial task branch and again on the integrated project candidate.
+COST: Redundant expensive runtime checks on incomplete project code.
+FIX: Defer byte-equivalent commands already bound to an approved execution criterion together, while retaining all criterion mappings and always running the explicit task gate. Whole-project acceptance still runs the full fresh runtime proof. Regression includes repeated prose and contract labels. The project UI now calls such tasks Candidate ready while integrated runtime verification is pending, and keeps the whole-project verdict separate.

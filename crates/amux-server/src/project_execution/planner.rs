@@ -451,6 +451,10 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             Some("project_disabled".into())
         } else if project.policy.paused {
             Some("project_paused".into())
+        } else if super::outputs::authorization_hold(conn,row)? {
+            Some("authorization_required".into())
+        } else if state.suspended {
+            Some("executor_suspended".into())
         } else if spawn_refused {
             if crate::backend::tmux_health::spawn_allowed_here().is_err() {
                 state.waiting.clone()
@@ -588,7 +592,16 @@ pub(crate) fn reconcile_issue_statuses(
     let rows = bs::project_issues(conn, project)?;
     let mut changed = 0usize;
     for row in rows {
-        let state = execution(conn, &row.id)?;
+        let mut state = execution(conn, &row.id)?;
+        // A claimed operational retry is a new attempt, not an active hold.
+        // Recover attempts already claimed by older code without replaying input.
+        if matches!(state.stage.as_str(),"working"|"reserved") && state.waiting.is_none()
+            && state.wait_category.as_deref()==Some("operational") && !state.suspended
+            && row.ask_type.is_none() {
+            state.wait_category=None;
+            save_execution(conn,&row,&state,"project.stale_wait_category_cleared")?;
+            changed+=1;
+        }
         let Some(status) = issue_status_for_execution(&state) else {
             continue;
         };
@@ -756,6 +769,7 @@ pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<Write
     }
     state.delivery_id = format!("project:{}:{}:{}", project.name, id, state.generation);
     state.last_failure = state.waiting.take().or(state.last_failure);
+    state.wait_category = None;
     state.report = None;
     state.verification_retry_pending = false;
     conn.execute("UPDATE issues SET status='doing',session=?2,lease_owner=?2,lease_generation=?3,lease_acquired_at=?4,lease_heartbeat_at=?4,lease_expires_at=?5 WHERE id=?1 AND project_group=?6",params![id,state.worker,state.generation,chrono::Utc::now().timestamp(),chrono::Utc::now().timestamp()+300,project.name])?;
@@ -966,6 +980,33 @@ mod tests {
         }).unwrap();
         (dir, db)
     }
+    #[test]
+    fn operational_retry_drops_previous_hold_but_real_authorization_blocks_claims() {
+        let (_dir,db)=fixture();
+        db.write(|c| {
+            claim(c,"sample","A").unwrap();
+            let row=bs::get_issue(c,"A")?.unwrap();
+            let mut e=execution(c,"A").unwrap();
+            e.stage="waiting".into();e.wait_category=Some("operational".into());e.waiting=Some("operational: owned verifier missing".into());
+            save_execution(c,&row,&e,"fixture").unwrap();
+            let current=execution(c,"A").unwrap();
+            grant_preparation(c,"sample","A",&current,"Implement owned verifier").unwrap();
+            claim(c,"sample","A").unwrap();
+            let mut next=execution(c,"A").unwrap();
+            assert_eq!(next.wait_category,None);assert!(next.waiting.is_none());assert_eq!(next.generation,2);
+            // Already-claimed attempts recover without resending their delivery.
+            next.stage="working".into();next.wait_category=Some("operational".into());
+            save_execution(c,&row,&next,"fixture").unwrap();
+            assert!(reconcile_issue_statuses(c,"sample").unwrap().applied);
+            let recovered=execution(c,"A").unwrap();assert_eq!(recovered.wait_category,None);assert_eq!(recovered.delivery_id,next.delivery_id);assert_eq!(recovered.generation,2);
+            next.stage="waiting".into();next.wait_category=Some("spend".into());next.waiting=Some("spend: approval needed".into());next.input_hash="stale".into();
+            save_execution(c,&row,&next,"fixture").unwrap();
+            assert!(!claim(c,"sample","A").unwrap().applied,"changed requirements do not bypass spend approval");
+            assert_eq!(execution(c,"A").unwrap().wait_category.as_deref(),Some("spend"));
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
+
     #[test]
     fn operational_recovery_uses_own_contract_outputs_and_keeps_real_holds() {
         let (_dir,db)=fixture();let c=db.read().unwrap();

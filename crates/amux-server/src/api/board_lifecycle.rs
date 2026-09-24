@@ -1058,6 +1058,38 @@ fn new_issue(session: &str, title: &str, desc: &str, kind: &str) -> bs::NewIssue
     }
 }
 /// One SQLite writer transaction commits the entire graph and its message link.
+/// Batch intake must preserve the planner's order. The board's single-card
+/// create primitive prepends, so sequential calls otherwise reverse the plan.
+fn preserve_created_order(conn: &Connection, project: &str, ids: &[String]) -> rusqlite::Result<usize> {
+    let rows=ids.iter().map(|id|bs::get_issue(conn,id)).collect::<rusqlite::Result<Vec<_>>>()?;
+    let Some(rows)=rows.into_iter().collect::<Option<Vec<_>>>() else { return Ok(0); };
+    if rows.len()<2 || rows.iter().any(|r|r.project_group.as_deref()!=Some(project))
+        || !rows.windows(2).all(|pair|pair[0].created==pair[1].created && pair[0].pos-pair[1].pos==1024.0) { return Ok(0); }
+    let positions=rows.iter().rev().map(|r|r.pos).collect::<Vec<_>>();
+    for (row,pos) in rows.iter().zip(positions) {
+        conn.execute("UPDATE issues SET pos=?2,rev=rev+1,version=version+1 WHERE id=?1",rusqlite::params![row.id,pos])?;
+    }
+    tracing::info!(project,measured=true,n_considered=rows.len(),verdict="project.intake_order_preserved","project tasks ordered by their decomposition rather than reversed single-card insertion");
+    Ok(rows.len())
+}
+
+/// Repair only the exact untouched reversed-create pattern from a durable
+/// all-new intake receipt. Manual ordering and mixed updates are not rewritten.
+pub(crate) fn reconcile_project_intake_order(conn: &Connection, project: &str) -> rusqlite::Result<WriteOutcome> {
+    let mut q=conn.prepare("SELECT intake_result FROM cmd_history WHERE project_group=?1 AND capture_pending=0 AND json_extract(intake_result,'$.state')='committed'")?;
+    let receipts=q.query_map([project],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut changed=0;
+    for raw in receipts {
+        let Ok(value)=serde_json::from_str::<Value>(&raw) else { continue; };
+        let Some(tasks)=value["decision"]["tasks"].as_array() else { continue; };
+        let Some(ids)=value["task_ids"].as_array() else { continue; };
+        if tasks.len()!=ids.len() || !tasks.iter().all(|t|t["action"]=="create" && t["existing_id"].is_null()) { continue; }
+        let Some(ids)=ids.iter().map(|id|id.as_str().map(str::to_string)).collect::<Option<Vec<_>>>() else { continue; };
+        changed+=preserve_created_order(conn,project,&ids)?;
+    }
+    Ok(WriteOutcome{applied:changed>0,events:if changed>0 { vec![PendingEvent{entity_type:EntityType::Other("project".into()),entity_id:project.into(),mutation:MutationKind::Updated,payload:None}] } else {vec![]}})
+}
+
 fn apply(
     conn: &Connection,
     message_id: i64,
@@ -1129,6 +1161,7 @@ fn apply(
     let mut events = vec![];
     let mut ids: BTreeMap<String, String> = BTreeMap::new();
     let mut children = vec![];
+    let mut newly_created = vec![];
     let parent_ids: BTreeSet<String> = d
         .tasks
         .iter()
@@ -1350,7 +1383,11 @@ fn apply(
             }
         }
         ids.insert(task.key.clone(), row.id.clone());
+        if created { newly_created.push(row.id.clone()); }
         children.push(row.id);
+    }
+    if let Some(project) = project.as_deref() {
+        preserve_created_order(conn, project, &newly_created)?;
     }
     // Reused tasks can already belong to a different epic. The root tracks all
     // required canonical outcomes, independent of the one-parent display link.
@@ -3033,6 +3070,28 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
         preserve_project_runtime_gates(&mut decision, "Build and run a Docker image e2e");
         assert_eq!(decision.tasks[0].acceptance_criteria.len(), 2);
     }
+    #[test]
+    fn project_batch_order_survives_intake_and_only_reversed_creation_is_repaired() {
+        let c=crate::db::migrate::test_memdb();
+        receipt(&c,1,"Build fixture reports");
+        c.execute("UPDATE cmd_history SET project_group='sample' WHERE id=1",[]).unwrap();
+        apply(&c,1,"project:sample","Build fixture reports",&plan(),&[],&json!({})).unwrap();
+        let raw:String=c.query_row("SELECT intake_result FROM cmd_history WHERE id=1",[],|r|r.get(0)).unwrap();
+        let receipt:Value=serde_json::from_str(&raw).unwrap();
+        let ids=receipt["task_ids"].as_array().unwrap().iter().map(|v|v.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let positions=||ids.iter().map(|id|bs::get_issue(&c,id).unwrap().unwrap().pos).collect::<Vec<_>>();
+        assert!(positions().windows(2).all(|p|p[0]<p[1]));
+        assert!(!reconcile_project_intake_order(&c,"sample").unwrap().applied);
+        for (i,id) in ids.iter().enumerate() { c.execute("UPDATE issues SET pos=?2 WHERE id=?1",rusqlite::params![id,-1024.0*(i+1) as f64]).unwrap(); }
+        assert!(reconcile_project_intake_order(&c,"sample").unwrap().applied);
+        assert!(positions().windows(2).all(|p|p[0]<p[1]));
+        assert!(!reconcile_project_intake_order(&c,"sample").unwrap().applied);
+        c.execute("UPDATE issues SET pos=17 WHERE id=?1",[&ids[1]]).unwrap();
+        let manual=positions();
+        assert!(!reconcile_project_intake_order(&c,"sample").unwrap().applied);
+        assert_eq!(positions(),manual,"manual ordering remains authoritative");
+    }
+
     #[test]
     fn receipt_commits_all_outcomes_and_retries_do_not_duplicate() {
         let c = crate::db::migrate::test_memdb();
