@@ -821,7 +821,20 @@ pub(crate) fn load_meta(name: &str) -> Map<String, Value> {
 
 pub(crate) fn save_meta(name: &str, meta: &Map<String, Value>) {
     let _ = std::fs::create_dir_all(sessions_dir());
-    let _ = std::fs::write(meta_path(name), Value::Object(meta.clone()).to_string());
+    // Write-then-rename. A plain write truncates first, and `load_meta` maps
+    // an unparsable (half-written) file to an EMPTY map, so a concurrent
+    // update_meta could read nothing and save only its own keys, wiping the
+    // rest (conversation id included). rename(2) is atomic on one filesystem.
+    let path = meta_path(name);
+    let tmp = path.with_extension(format!("json.{}.tmp", ulid::Ulid::new()));
+    let body = Value::Object(meta.clone()).to_string();
+    if std::fs::write(&tmp, &body).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(&tmp);
+    tracing::warn!(session = %name, measured = true, n_considered = 1,
+        verdict = "meta_atomic_write_fallback", "atomic meta write failed; writing in place");
+    let _ = std::fs::write(&path, body);
 }
 
 pub(crate) fn update_meta(name: &str, updates: &[(&str, Value)]) {

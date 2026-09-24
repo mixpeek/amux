@@ -3932,15 +3932,19 @@ pub async fn create_session_legacy(
     // leave the worker stopped, saying why.
     let requested = body.get("start").and_then(serde_json::Value::as_bool).unwrap_or(true)
         && provider != "iterm2";
+    // The spawn guard protects the tmux server; a type that runs no terminal
+    // has nothing for it to protect.
+    let needs_terminal =
+        descriptor.terminal != amux_core::worker_type::Requirement::Unsupported;
     let autostart = requested
-        && match crate::backend::tmux_health::spawn_allowed_here() {
+        && (!needs_terminal || match crate::backend::tmux_health::spawn_allowed_here() {
             Ok(()) => true,
             Err(why) => {
                 tracing::info!(session = %name, %why, measured = true, n_considered = 1,
                     verdict = "created_worker_autostart_skipped", "not starting the created worker");
                 false
             }
-        };
+        });
     if autostart {
         let st = _state.clone();
         let n = name.clone();

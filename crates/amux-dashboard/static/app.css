@@ -568,6 +568,35 @@
   .badge.yolo { background: rgba(210,153,34,0.2); color: var(--yellow); }
   .badge.worktree { background: rgba(45,212,191,0.15); color: #2dd4bf; border: 1px dashed rgba(45,212,191,0.4); }
   .badge.ephemeral { background: rgba(251,146,60,0.15); color: #fb923c; }
+  .badge.worker-type { background: rgba(88,166,255,0.14); color: var(--accent); }
+  /* Chat renderer (ACW-7): the peek body shows a transcript, not a terminal. */
+  #peek-body.peek-chat {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    white-space: normal; font-size: 0.92rem; line-height: 1.5;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  }
+  .chat-log { display: flex; flex-direction: column; gap: 12px; max-width: 860px; margin: 0 auto; }
+  .chat-msg { display: flex; flex-direction: column; max-width: 88%; min-width: 0; }
+  .chat-msg.chat-user { align-self: flex-end; align-items: flex-end; }
+  .chat-msg.chat-assistant { align-self: flex-start; }
+  .chat-bubble {
+    padding: 8px 12px; border-radius: 12px; overflow-wrap: anywhere; min-width: 0; max-width: 100%;
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+  }
+  .chat-user .chat-bubble { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .chat-bubble p { margin: 0 0 8px; } .chat-bubble p:last-child { margin-bottom: 0; }
+  .chat-bubble pre { overflow-x: auto; max-width: 100%; white-space: pre; }
+  .chat-meta { font-size: 0.7rem; color: var(--dim); margin-top: 3px; padding: 0 4px; }
+  .chat-msg.is-error .chat-bubble { border-color: var(--red, #f85149); }
+  .chat-error { display: block; color: var(--red, #f85149); font-weight: 600; margin-bottom: 4px; white-space: pre-wrap; }
+  .chat-tool { font-size: 0.75rem; color: var(--dim); margin-top: 6px; font-style: italic; }
+  .chat-empty, .chat-queued { text-align: center; color: var(--dim); font-size: 0.85rem; padding: 16px 8px; }
+  .chat-queued { padding: 4px; font-size: 0.75rem; }
+  .chat-typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+  .chat-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: chat-dot 1.2s infinite ease-in-out; }
+  .chat-typing i:nth-child(2) { animation-delay: 0.15s; } .chat-typing i:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes chat-dot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+  @media (max-width: 600px) { .chat-msg { max-width: 94%; } #peek-body.peek-chat { padding: 10px 8px; } }
   /* Mobile hit area: expanded to ~32px, NOT the 44px the css-mobile rule asks
      for, and that is a deliberate deviation rather than an oversight. 44px-tall
      pills would push the task label and preview below the fold on a 375px card,

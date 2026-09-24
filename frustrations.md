@@ -4920,3 +4920,14 @@ FIX: One project-owned checkout and branch, serialized claims and direct starts,
 - **Verification:** exact-session/shared-cwd, ambiguous identity, cwd mismatch, historical token preservation and idempotent recovery regressions; full live project proof remains in progress.
 
 - **Checked:** 132 focused project, ownership, and recovery tests passed (one real-Docker fixture explicitly ignored); status-hook durability suite passed. Repository path aliases resolve through the existing repository-identity helper; unrelated per-worker aliases remain ambiguous.
+
+## A project worktree and the main checkout overwrite each other's crates in the one shared cargo target
+AREA: gates
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: amux-chat-worker
+CARD: AF-791
+SYMPTOM: In `.worktrees/amux-chat-worker`, `cargo test` with the mandated `CARGO_TARGET_DIR=~/.amux/rust-build-target` failed with `no field worker_type on WorkerConfig` right after the same command had compiled it clean. The pre-commit hook then refused the commit, naming five of my files as broken. `cargo -v` showed why: rustc is invoked on `crates/amux-core/src/lib.rs` (workspace-relative) with `-C metadata=4725de00443ab6cf`, and a workspace member's metadata hash does not include the checkout's absolute path. So `libamux_core-164022c04585c70a.rlib` is ONE file for every checkout of this repo. The main-checkout builder and a worktree build take turns overwriting it with different sources.
+COST: ~20 minutes and one refused commit. Nothing in the error names another checkout. It reads as your own broken change, and this is the same shape as AF-791's three phantom errors.
+FIX: A per-checkout target for any checkout that is not the main one (the hook already setdefaults CARGO_TARGET_DIR, so exporting e.g. `~/.amux/rust-build-target-<worktree>` works today). Or have safe-cargo.sh derive the target from `git rev-parse --show-toplevel` when it is not the main checkout, and print which target it chose.

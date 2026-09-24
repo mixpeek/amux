@@ -6106,7 +6106,8 @@ function render() {
           `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral) ? `<div class="badges">
+      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding')) ? `<div class="badges">
+        ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
         ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
         ${isYolo ? '<span class="badge yolo">YOLO</span>' : ''}
@@ -7204,6 +7205,13 @@ function _savePeekTabPrefs() {
 function _applyPeekTabVisibility() {
   const bar = document.querySelector('.peek-tabs');
   if (!bar) return;
+  // The primary tab names the worker type's renderer (Terminal / Chat).
+  const _primaryRenderer = peekSession ? _workerRenderer(peekSession) : 'terminal';
+  const _primaryLbl = document.querySelector('#peek-tab-terminal .tab-lbl');
+  if (_primaryLbl) _primaryLbl.textContent = _primaryRenderer === 'chat' ? 'Chat' : 'Terminal';
+  const _primaryIco = document.querySelector('#peek-tab-terminal .tab-ico');
+  if (_primaryIco) _primaryIco.textContent = _primaryRenderer === 'chat' ? '💬' : '⮞';
+  const _peekType = _workerTypeInfo((sessions.find(s => s.name === peekSession) || {}).worker_type);
   // Reorder AFTER terminal (which stays first), BEFORE the customize button.
   const custBtn = document.getElementById('peek-tab-customize');
   peekTabOrder.forEach(id => {
@@ -7217,7 +7225,9 @@ function _applyPeekTabVisibility() {
       // Board is always shown, isolated workers included: it only views the
       // worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
       const alwaysShown = PEEK_REQUIRED_TABS.has(t.id);
-      el.style.display = !alwaysShown && (peekHiddenTabs.has(t.id) || (raw && t.id === 'schedules')) ? 'none' : '';
+      // A type with no worktree has no Worktree tab to show.
+      const typeHides = t.id === 'git' && _peekType.worktree === 'unsupported';
+      el.style.display = !alwaysShown && (peekHiddenTabs.has(t.id) || (raw && t.id === 'schedules') || typeHides) ? 'none' : '';
     }
   });
 }
@@ -9686,9 +9696,15 @@ function _workerPrimaryConfigurationsHTML(name) {
     _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
   ];
+  const wtype = _workerTypeInfo(s.worker_type);
+  const typeButtons = _workerTypes.map(t => '<button class="btn' + (t.id === wtype.id ? ' primary' : '') + '"'
+    + ' style="font-size:0.68rem;min-height:32px;padding:4px 8px;" title="' + esc(t.description || '') + '"'
+    + (t.id === wtype.id ? ' aria-pressed="true"' : ' aria-pressed="false"')
+    + ' onclick="event.stopPropagation();_workerTypeSet(\'' + q + '\',\'' + escJs(t.id) + '\')">' + esc(t.label) + '</button>').join(' ');
   const runtime = [
+    _workerConfigurationRow('worker_type', 'Worker type', wtype.label, 'Selects how turns run and how output is shown. Board, messages, groups, schedules and memory are unchanged; a running worker restarts on the new type.', typeButtons),
     _workerConfigurationRow('directory', 'Working directory', s.worktree_active && s.worktree_path ? s.worktree_path + ' (worktree)' : (s.dir || ''), 'Changing it restarts a running worker in the new directory.', edit('dir', s.dir || '')),
-    _workerConfigurationRow('branch', 'Git branch', s.branch || '', 'Blank follows the detected branch; “none” explicitly uses the main checkout.', edit('branch', s.branch || '')),
+    wtype.worktree === 'unsupported' ? '' : _workerConfigurationRow('branch', 'Git branch', s.branch || '', 'Blank follows the detected branch; “none” explicitly uses the main checkout.', edit('branch', s.branch || '')),
     _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), s.isolated ? 'Changes the CLI provider without injecting harness context.' : 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
     _workerConfigurationRow('model', 'Model version', model || 'Provider default', s.isolated ? 'Uses the native CLI conversation; no board context is added on restart.' : 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),
     _workerConfigurationRow('effort', 'Reasoning effort', effort || 'Provider default', provider === 'claude' ? 'Can be changed independently or together with the model.' : 'Configured by this provider’s CLI flags.', provider === 'claude' ? edit('effort', effort || '', provider) : ''),
@@ -9711,6 +9727,24 @@ function _workerPrimaryConfigurationsHTML(name) {
     + _workerConfigurationSection('permissions', 'Permissions & communication', s.isolated ? 'Native CLI tool permissions and isolation.' : 'Standing authority for tools, peers, and external email.', permissions)
     + _workerConfigurationSection('advanced', 'Display & advanced', 'Presentation and lower-level environment controls.', advanced)
     + '</div>';
+}
+
+async function _workerTypeSet(name, id) {
+  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+    method: 'PATCH', headers: _authHeaders({'Content-Type': 'application/json'}),
+    body: JSON.stringify({ worker_type: id }),
+  }).catch(() => null);
+  let d = {}; try { d = r ? await r.json() : {}; } catch (e) {}
+  if (!r || !r.ok) { showToast('Type not changed: ' + (d.error || (r ? 'error ' + r.status : 'server unreachable'))); return; }
+  showToast(d.message || ('Worker type set to ' + id));
+  await fetchSessions();
+  if (peekSession === name) {
+    _chatUnmount();
+    _applyPeekTabVisibility();
+    if (_peekTab === 'scope') _scopeLoad({ level: 'worker', name: name }, 'peek-scope-body');
+    lastPeekHTML = ''; _lastLiveHTML = '';
+    refreshPeek(false);
+  }
 }
 
 function _workerEmailPermissionControls(name, s) {
@@ -11790,7 +11824,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1095';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1096';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12042,8 +12076,208 @@ function _paintCachedPeek(cached) {
   if (st) st.textContent = 'Cached ' + (ago < 1 ? 'just now' : ago + 'm ago');
   return true;
 }
+// ── Worker types and the chat renderer (ACW-5/7) ──
+// A worker type picks an execution adapter and a primary OUTPUT RENDERER. The
+// peek overlay, every tab, the composer and the send path are shared by all
+// types; only the primary panel's body differs. 'terminal' is the existing
+// pipeline and stays untouched. The type list comes from GET /api/worker-types
+// so a new type needs a renderer entry here, not a new screen.
+let _workerTypes = [
+  {id:'coding', label:'Coding', renderer:'terminal', worktree:'optional', project_dir:'required', providers:[],
+   description:'Terminal coding agent in a repo or worktree.'},
+  {id:'chat', label:'Chat', renderer:'chat', worktree:'unsupported', project_dir:'optional', providers:['claude','codex'],
+   description:'Conversational agent with a persistent chat. No terminal or worktree.'},
+];
+fetch(API + '/api/worker-types').then(r => r.ok ? r.json() : null)
+  .then(d => { if (d && Array.isArray(d.types) && d.types.length) _workerTypes = d.types; })
+  .catch(() => {});
+function _workerTypeInfo(id) {
+  return _workerTypes.find(t => t.id === (id || 'coding')) || _workerTypes[0];
+}
+function _workerRenderer(name) {
+  const s = sessions.find(x => x.name === name);
+  return (s && s.renderer) || _workerTypeInfo(s && s.worker_type).renderer || 'terminal';
+}
+
+// Chat view state. One mounted view at a time, the one in the peek overlay.
+const _chat = { name: null, es: null, messages: [], streaming: null, loadedAt: 0, busy: false, queued: 0, gen: 0 };
+
+function _chatUnmount() {
+  if (_chat.es) { try { _chat.es.close(); } catch (e) {} }
+  _chat.es = null; _chat.name = null; _chat.messages = []; _chat.streaming = null; _chat.gen++;
+  const body = document.getElementById('peek-body');
+  if (body) body.classList.remove('peek-chat');
+}
+
+async function _chatLoad(name) {
+  const gen = _chat.gen;
+  let d;
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/chat?limit=200');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    d = await r.json();
+  } catch (e) {
+    if (gen === _chat.gen && _chat.name === name) _chatRender('Could not load the chat: ' + e.message);
+    return;
+  }
+  if (gen !== _chat.gen || _chat.name !== name) return;
+  _chat.messages = d.messages || [];
+  _chat.busy = !!d.busy; _chat.queued = d.queued || 0;
+  _chat.streaming = d.streaming && d.streaming.turn_id ? { turn_id: d.streaming.turn_id, text: d.streaming.text || '' } : null;
+  _chat.loadedAt = Date.now();
+  _chatRender();
+}
+
+function _chatConnect(name) {
+  if (_chat.es) { try { _chat.es.close(); } catch (e) {} }
+  const es = new EventSource(_authUrl(API + '/api/sessions/' + encodeURIComponent(name) + '/chat/stream'));
+  _chat.es = es;
+  es.onmessage = (ev) => {
+    if (_chat.es !== es || _chat.name !== name) return;
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'user') {
+      if (!_chat.messages.some(x => x.turn_id === m.turn_id && x.role === 'user'))
+        _chat.messages.push({ role: 'user', text: m.text, turn_id: m.turn_id, origin: m.origin, ts: m.ts });
+      _chat.streaming = { turn_id: m.turn_id, text: '' };
+      _chat.busy = true;
+    } else if (m.type === 'delta') {
+      if (!_chat.streaming || _chat.streaming.turn_id !== m.turn_id) _chat.streaming = { turn_id: m.turn_id, text: '' };
+      _chat.streaming.text += m.text || '';
+    } else if (m.type === 'tool') {
+      if (_chat.streaming) _chat.streaming.tool = m.name;
+    } else if (m.type === 'done') {
+      if (m.message) _chat.messages.push(Object.assign({ ts: Date.now() / 1000 }, m.message));
+      _chat.streaming = null;
+      _chat.busy = false;
+    } else if (m.type === 'queued') {
+      _chat.queued = m.ahead || 0;
+    } else if (m.type === 'stopped') {
+      _chat.streaming = null; _chat.busy = false; _chat.queued = 0;
+    } else if (m.type === 'lagged') {
+      _chatLoad(name);   // missed events: the event stream is the truth, refetch it
+      return;
+    } else {
+      return;   // hello / ping
+    }
+    _chatRender();
+  };
+  // EventSource reconnects by itself; a reconnect may have missed a 'done', so
+  // resync from the persisted history when it comes back.
+  es.onopen = () => { if (_chat.name === name && _chat.loadedAt) _chatLoad(name); };
+}
+
+function _chatMount(name) {
+  if (_chat.name === name && _chat.es) return;
+  _chatUnmount();
+  _chat.name = name;
+  const body = document.getElementById('peek-body');
+  if (body) { body.classList.add('peek-chat'); body.innerHTML = '<div class="peek-loading"><div class="peek-spin-lg"></div><span>Loading chat…</span></div>'; }
+  _chatConnect(name);
+  _chatLoad(name);
+}
+
+// The peek poller calls this in place of the terminal frame fetch. The stream
+// carries live updates; the poll only re-syncs a view that has gone quiet.
+function _chatRefresh(name) {
+  if (_chat.name !== name || !_chat.es) { _chatMount(name); return Promise.resolve(); }
+  if (Date.now() - _chat.loadedAt > 15000 && !_chat.streaming) return _chatLoad(name);
+  return Promise.resolve();
+}
+
+function _chatBubble(role, html, meta, cls) {
+  return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '">'
+    + '<div class="chat-bubble">' + html + '</div>'
+    + (meta ? '<div class="chat-meta">' + meta + '</div>' : '') + '</div>';
+}
+
+function _chatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function _chatRender(errorText) {
+  const body = document.getElementById('peek-body');
+  if (!body || peekSession !== _chat.name) return;
+  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  const s = sessions.find(x => x.name === _chat.name) || {};
+  let html = '';
+  if (errorText) html += '<div class="chat-empty">' + esc(errorText) + '</div>';
+  if (!_chat.messages.length && !_chat.streaming && !errorText) {
+    html += '<div class="chat-empty">' + (s.running
+      ? 'No messages yet. Say something below.'
+      : 'This chat worker is stopped. Sending a message starts it.') + '</div>';
+  }
+  for (const m of _chat.messages) {
+    if (m.role === 'user') {
+      const who = m.origin === 'automation' ? 'amux' : 'you';
+      // The send-time stamp stays in what the model received (the shared send
+      // contract); the bubble's meta line already shows the time.
+      const shown = _hasSendTimeStamp(m.text) ? (m.text || '').replace(/^\[[^\]]*\]\s/, '') : (m.text || '');
+      html += _chatBubble('user', esc(shown).replace(/\n/g, '<br>'), esc(who) + ' · ' + _chatTime(m.ts));
+    } else if (m.error) {
+      html += _chatBubble('assistant', '<span class="chat-error">' + esc(m.error) + '</span>'
+        + (m.text ? renderMarkdown(m.text) : ''), 'failed · ' + _chatTime(m.ts), 'is-error');
+    } else {
+      const bits = [_chatTime(m.ts)];
+      if (m.tools && m.tools.length) bits.push(m.tools.length + ' tool call' + (m.tools.length > 1 ? 's' : ''));
+      if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
+      html += _chatBubble('assistant', renderMarkdown(m.text || ''), esc(bits.filter(Boolean).join(' · ')));
+    }
+  }
+  if (_chat.streaming) {
+    const t = _chat.streaming.text;
+    const tool = _chat.streaming.tool ? '<div class="chat-tool">using ' + esc(_chat.streaming.tool) + '…</div>' : '';
+    html += _chatBubble('assistant', (t ? renderMarkdown(t) : '<span class="chat-typing"><i></i><i></i><i></i></span>') + tool,
+      'responding…', 'is-streaming');
+  }
+  if (_chat.queued > 0) html += '<div class="chat-queued">' + _chat.queued + ' message' + (_chat.queued > 1 ? 's' : '') + ' queued</div>';
+  body.innerHTML = '<div class="chat-log">' + html + '</div>';
+  if (nearBottom || _chat.streaming) body.scrollTop = body.scrollHeight;
+}
+
+// Create modal: the type row, rendered from the registry.
+let _createWorkerType = 'coding';
+function _renderCreateTypeRow() {
+  const row = document.getElementById('create-type-row');
+  if (!row) return;
+  row.innerHTML = _workerTypes.map(t =>
+    '<button type="button" class="btn provider-btn' + (t.id === _createWorkerType ? ' selected' : '') + '"'
+    + ' data-worker-type="' + esc(t.id) + '" title="' + esc(t.description || '') + '"'
+    + ' onclick="_selectWorkerType(\'' + escJs(t.id) + '\')">' + esc(t.label) + '</button>').join('');
+  const hint = document.getElementById('create-type-hint');
+  if (hint) hint.textContent = _workerTypeInfo(_createWorkerType).description || '';
+}
+// Requirements come from the descriptor, so the form cannot offer something
+// the server will refuse (a worktree for a type that has none, a provider its
+// adapter cannot drive).
+function _selectWorkerType(id) {
+  _createWorkerType = id;
+  const t = _workerTypeInfo(id);
+  _renderCreateTypeRow();
+  const allowed = p => !t.providers || !t.providers.length || t.providers.includes(p);
+  ['claude', 'codex', 'gemini', 'ollama', 'muse'].forEach(p => {
+    const b = document.getElementById('create-provider-' + p);
+    if (b) { b.disabled = !allowed(p); b.style.opacity = allowed(p) ? '' : '0.4'; }
+  });
+  if (!allowed(_createProvider)) _selectProvider('claude');
+  else _selectProvider(_createProvider);   // re-applies the provider's field visibility
+  const noWorktree = t.worktree === 'unsupported';
+  if (noWorktree) {
+    document.getElementById('create-branch-enabled').checked = false;
+    document.getElementById('create-worktree-enabled').checked = false;
+    document.getElementById('create-branch-enabled').closest('.field-group').style.display = 'none';
+    document.getElementById('create-worktree-field').style.display = 'none';
+  }
+  const dirLabel = document.getElementById('create-dir-label');
+  if (dirLabel) dirLabel.innerHTML = 'Working directory' + (t.project_dir === 'required' ? '' : ' <span class="field-optional">(optional)</span>');
+  const prompt = document.getElementById('create-prompt');
+  if (prompt) prompt.placeholder = t.renderer === 'chat' ? 'First message (optional)' : 'What should Claude work on first?';
+}
+
 function openPeek(name, opts) {
   _peekAgentsReset();
+  if (_chat.name && _chat.name !== name) _chatUnmount();
   _bindPeekScrollAffordance();
   requestAnimationFrame(_peekScrollAffordance);
   // AMUX-5025. Fired once per open, two frames in, so the overlay has been laid
@@ -12365,6 +12599,7 @@ function copyPeekContent() {
 }
 
 function closePeek() {
+  _chatUnmount();
   _peekFollowBottom = false;
   _peekStopBottomWatch();
   _peekAgentsReset();
@@ -14029,6 +14264,8 @@ function refreshPeek(liveOnly) {
 async function _refreshPeekFrame(liveOnly, request) {
   if (_peekAgents.selected) return _peekAgentRefresh();
   const name = peekSession;
+  // The primary panel is the worker type's renderer; only 'terminal' reads frames.
+  if (name && _workerRenderer(name) === 'chat') return _chatRefresh(name);
   const identity = _peekIdentity(name);
   if (!name) return;
   if (peekSelecting) return;
@@ -15656,7 +15893,11 @@ async function sendPeekCmd() {
   const original = inp.value;
   const text = original.trim();
   const files = peekFiles.filter(f => f.path);
-  if (!text && !files.length) { _submitSuggestion(session, true, 'Enter'); return; }
+  if (!text && !files.length) {
+    // No terminal composer to press Enter in: an empty chat send does nothing.
+    if (_workerRenderer(session) !== 'terminal') return;
+    _submitSuggestion(session, true, 'Enter'); return;
+  }
   let message = text;
   if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
   const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
@@ -24284,8 +24525,9 @@ function _selectProvider(p) {
   if (_museBtn) _museBtn.classList.toggle('selected', p === 'muse');
   // Hide branch/template/session-name options for non-Claude providers since they use different mechanics
   const isClaude = p === 'claude';
-  document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude ? '' : 'none';
-  document.getElementById('create-worktree-field').style.display = isClaude && _createDirIsGit ? '' : 'none';
+  const _typeHasWorktree = _workerTypeInfo(_createWorkerType).worktree !== 'unsupported';
+  document.getElementById('create-branch-enabled').closest('.field-group').style.display = isClaude && _typeHasWorktree ? '' : 'none';
+  document.getElementById('create-worktree-field').style.display = isClaude && _createDirIsGit && _typeHasWorktree ? '' : 'none';
   document.getElementById('create-template-field').style.display = isClaude ? '' : 'none';
   // Every provider uses the same model surface. Blank delegates to that CLI's
   // own default; custom keeps tomorrow's model usable before this catalog is
@@ -24312,6 +24554,7 @@ function _loadModelsForCreate(provider) {
 }
 function openCreate() {
   _createProvider = 'claude';
+  _createWorkerType = 'coding';
   document.getElementById('create-provider-claude').classList.add('selected');
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
@@ -24349,6 +24592,7 @@ function openCreate() {
   document.getElementById('tmpl-section-chev').style.transform = '';
   document.getElementById('tmpl-selected-badge').style.display = 'none';
   document.getElementById('tmpl-selected-wrap').style.display = 'none';
+  _selectWorkerType('coding');
   document.getElementById('create-overlay').classList.add('active');
   // Check git for default dir
   const defaultDir = document.getElementById('create-dir').value;
@@ -24591,6 +24835,9 @@ async function submitCreate() {
   // start:false: this dialog configures branch and YOLO, then starts with the
   // prompt itself. Every other create starts on the server.
   const createBody = { name, dir, creator: _getDeviceName(), start: false };
+  // Absent = coding, exactly what older clients send.
+  if (_createWorkerType !== 'coding') createBody.worker_type = _createWorkerType;
+  const _createType = _workerTypeInfo(_createWorkerType);
   if (_createProvider !== 'claude') createBody.provider = _createProvider;
   const _modelSel = document.getElementById('create-model');
   const _modelCustom = document.getElementById('create-model-custom');
@@ -24647,14 +24894,17 @@ async function submitCreate() {
   if (r && r.ok) {
     if (dir) _addRecentDir(dir);
     // Apply template if selected (creates dirs + writes CLAUDE.md before session starts)
-    if (_selectedTemplate && dir) {
+    if (_selectedTemplate && dir && _createType.renderer === 'terminal') {
       await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/apply-template', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ template_id: _selectedTemplate.id, dir }),
       }).catch(() => {});
     }
-    // Save branch preference: custom name, auto (default), or none
-    if (branch && dir) {
+    // Save branch preference: custom name, auto (default), or none. A type
+    // with no worktree has no branch to manage.
+    if (_createType.worktree === 'unsupported') {
+      // nothing to configure
+    } else if (branch && dir) {
       // Custom branch name — create it and save to config. With a worktree the
       // branch is created INSIDE the worktree at start; checking it out here
       // would switch the main (possibly shared) checkout's branch.

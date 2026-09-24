@@ -204,13 +204,28 @@ async fn coding_and_chat_workers_share_every_generic_operation() {
     assert!(lines[1].contains(&format!("--resume {conv}")), "{log}");
     assert!(!log.contains("hello chat"), "the prompt goes on stdin, never argv: {log}");
 
+    // Terminal-lane conversation management writes `cc_conversation_id`
+    // (adoption, takeover, reset). An outside write there must not start a new
+    // chat conversation: the adapter resumes from its own key and restores
+    // the mirror.
+    let meta_path = home.join("sessions/chat-lane.meta.json");
+    let mut meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    meta["cc_conversation_id"] = json!("");
+    std::fs::write(&meta_path, meta.to_string()).unwrap();
+    call(&app, "POST", "/api/sessions/chat-lane/send", Some(json!({"text": "third", "record_history": true}))).await;
+    wait_for_reply(&app, "chat-lane", 3).await;
+    let log = std::fs::read_to_string(&args_log).unwrap();
+    assert!(log.lines().nth(2).unwrap().contains(&format!("--resume {conv}")), "{log}");
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    assert_eq!(meta["cc_conversation_id"], json!(conv), "mirror restored for transcript readers");
+
     // --- canonical event stream: ONE source of truth ------------------------
     {
         let conn = store.read().unwrap();
         let chat_events: i64 = conn.query_row(
             "SELECT COUNT(*) FROM session_events WHERE session='chat-lane' AND type='chat.message'",
             [], |r| r.get(0)).unwrap();
-        assert_eq!(chat_events, 4, "every chat message is a canonical session event");
+        assert_eq!(chat_events, 6, "every chat message is a canonical session event");
         let ledger: i64 = conn.query_row(
             "SELECT COUNT(*) FROM cmd_history WHERE session='chat-lane'", [], |r| r.get(0)).unwrap();
         assert!(ledger >= 2, "inbound sends land in the same message ledger as coding workers");
@@ -224,7 +239,7 @@ async fn coding_and_chat_workers_share_every_generic_operation() {
     let (st, peek) = call(&app, "GET", "/api/sessions/chat-lane/peek", None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(peek["renderer"], "chat");
-    assert!(peek["output"].as_str().unwrap().contains("echo: again"), "{peek}");
+    assert!(peek["output"].as_str().unwrap().contains("echo: third"), "{peek}");
 
     // --- edit: type is editable; identity (name, board, env) survives -------
     let (st, r) = call(&app, "PATCH", "/api/sessions/code-lane/config", Some(json!({"worker_type":"chat"}))).await;
@@ -249,7 +264,7 @@ async fn coding_and_chat_workers_share_every_generic_operation() {
     assert_eq!(row(&list, "chat-lane")["running"], false);
     // History survives a stop (persistence), served from the event stream.
     let (_, h3) = call(&app, "GET", "/api/sessions/chat-lane/chat", None).await;
-    assert_eq!(h3["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(h3["messages"].as_array().unwrap().len(), 6);
 
     // --- store-backed workers carry the same field --------------------------
     let (st, w) = call(&app, "POST", "/api/workers",

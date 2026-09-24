@@ -2097,6 +2097,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         oninput="_createNameChanged(this.value)"
         onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('create-dir').focus({preventScroll:true});}">
     </div>
+    <div class="field-group" id="create-type-field">
+      <label class="field-label">Type</label>
+      <div id="create-type-row" style="display:flex;gap:6px;"></div>
+      <div id="create-type-hint" class="field-optional" style="margin-top:4px;font-size:0.75rem;"></div>
+    </div>
     <div class="field-group">
       <label class="field-label">Provider</label>
       <div style="display:flex;gap:6px;">
@@ -2113,7 +2118,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <input id="create-model-custom" type="text" placeholder="Exact model ID" autocomplete="off" autocorrect="off" style="display:none;margin-top:6px;">
     </div>
     <div class="field-group">
-      <label class="field-label">Working directory</label>
+      <label class="field-label" id="create-dir-label">Working directory</label>
       <div class="ac-wrap">
         <input id="create-dir" type="text" placeholder="/path/to/project" autocomplete="off" autocorrect="off"
           oninput="acFetch(this.value);_branchesLoaded='';clearTimeout(_gitCheckTimer);_gitCheckTimer=setTimeout(()=>_checkDirGit(this.value),500)" onfocus="acFetch(this.value)"

@@ -479,6 +479,12 @@ fn turn_args(provider: &str, flags: &str, cc_model: &str, conv: &str, fresh: boo
     if let Some(m) = model {
         a.extend(["--model".into(), m]);
     }
+    // A headless turn cannot answer a permission prompt, so without this a
+    // non-YOLO chat worker is refused the amux CLI and cannot take part in
+    // boards, messages or memory (seen live: `amux board add` refused while
+    // answering the accountability nudge). Only the harness CLI is allowed;
+    // every other tool keeps the worker's own permission setting.
+    a.extend(["--allowedTools".into(), "Bash(amux:*)".into()]);
     for f in ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"] {
         if flags.split_whitespace().any(|t| t == f) {
             a.push(f.into());
@@ -529,20 +535,31 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
         tracing::warn!(session = %name, verdict = "chat_conversation_reset",
             reason = out.error.as_deref().unwrap_or(""),
             "chat worker's stored conversation could not be resumed; starting a new one");
-        update_meta(name, &[("cc_conversation_id", json!("")), ("chat_codex_thread", json!(""))]);
+        update_meta(
+            name,
+            &[
+                ("chat_conversation_id", json!("")),
+                ("cc_conversation_id", json!("")),
+                ("chat_codex_thread", json!("")),
+            ],
+        );
         out = execute(name, &provider, &q.text, lane, &turn_id, true).await;
     }
     if !out.conversation_id.is_empty() {
-        let key = if provider == "codex" {
-            "chat_codex_thread"
-        } else {
-            "cc_conversation_id"
-        };
         let turns = meta_i64(&load_meta(name), "chat_turns");
-        update_meta(
-            name,
-            &[(key, json!(out.conversation_id)), ("chat_turns", json!(turns + 1))],
-        );
+        let id = json!(out.conversation_id);
+        if provider == "codex" {
+            update_meta(name, &[("chat_codex_thread", id), ("chat_turns", json!(turns + 1))]);
+        } else {
+            update_meta(
+                name,
+                &[
+                    ("chat_conversation_id", id.clone()),
+                    ("cc_conversation_id", id),
+                    ("chat_turns", json!(turns + 1)),
+                ],
+            );
+        }
     }
     let duration_ms = started.elapsed().as_millis() as u64;
     let msg = json!({
@@ -603,8 +620,22 @@ async fn execute(
         let t = meta_str(&meta, "chat_codex_thread");
         (if force_fresh { String::new() } else { t }, false)
     } else {
-        let c = meta_str(&meta, "cc_conversation_id");
+        // The adapter's own key is authoritative. `cc_conversation_id` is only
+        // a mirror for the transcript readers, and terminal-lane conversation
+        // management (adoption, takeover, reset) writes that key, so resuming
+        // from it let an outside write start a new conversation mid-chat (seen
+        // live: turn 2 minted a fresh id with chat_turns=1).
+        let owned = meta_str(&meta, "chat_conversation_id");
+        let mirror = meta_str(&meta, "cc_conversation_id");
         let has_turns = meta_i64(&meta, "chat_turns") > 0;
+        // A chat worker from before the adapter owned this key: adopt once.
+        let c = if owned.is_empty() && has_turns { mirror.clone() } else { owned };
+        if !c.is_empty() && mirror != c {
+            tracing::warn!(session = %name, owned = %c, mirror = %mirror, measured = true,
+                n_considered = 1, verdict = "chat_conversation_mirror_repaired",
+                "a chat worker's cc_conversation_id mirror was changed outside the chat adapter; restoring it");
+            update_meta(name, &[("cc_conversation_id", json!(c))]);
+        }
         if force_fresh || c.is_empty() || !has_turns {
             let id = if !force_fresh && !c.is_empty() {
                 c
@@ -619,7 +650,10 @@ async fn execute(
     if provider != "codex" && fresh {
         // Recorded BEFORE the turn: the transcript readers resolve the
         // conversation file from this id while the turn is still running.
-        update_meta(name, &[("cc_conversation_id", json!(conv))]);
+        update_meta(
+            name,
+            &[("chat_conversation_id", json!(conv)), ("cc_conversation_id", json!(conv))],
+        );
     }
     let args = turn_args(provider, &flags, &cc_model, &conv, fresh);
     let prelude = super::session_verbs::headless_turn_prelude(name, provider, &work_dir);
@@ -809,7 +843,7 @@ pub(crate) async fn history_route(
         "busy": lane.busy.load(Ordering::SeqCst),
         "queued": queued,
         "streaming": if turn.is_empty() { Value::Null } else { json!({"turn_id": turn, "text": partial}) },
-        "conversation_id": meta_str(&load_meta(&name), "cc_conversation_id"),
+        "conversation_id": meta_str(&load_meta(&name), "chat_conversation_id"),
         "messages": messages,
         "has_more": has_more,
         "measured": true,
@@ -927,6 +961,10 @@ mod tests {
         assert!(fresh.windows(2).any(|w| w == ["--session-id", "c-1"]));
         assert!(fresh.windows(2).any(|w| w == ["--model", "claude-haiku-4-5"]));
         assert!(fresh.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(
+            fresh.windows(2).any(|w| w == ["--allowedTools", "Bash(amux:*)"]),
+            "the harness CLI must be usable from a headless turn"
+        );
         let resumed = turn_args("claude", "", "", "c-1", false);
         assert!(resumed.windows(2).any(|w| w == ["--resume", "c-1"]));
         let codex = turn_args("codex", "--model gpt-5", "", "th-1", false);

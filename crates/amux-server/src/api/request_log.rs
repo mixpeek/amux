@@ -2445,6 +2445,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/iterm2/sessions",
         methods: &["GET"],
     },
+    // -- worker types + chat renderer (api/worker_exec.rs, ACW-1)
+    RouteEntry {
+        path: "/api/worker-types",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/sessions/{name}/chat",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/sessions/{name}/chat/stream",
+        methods: &["GET"],
+    },
     // -- saved messages / habits / token-baseline reset (AMUX-2871)
     RouteEntry {
         path: "/api/saved-messages",
