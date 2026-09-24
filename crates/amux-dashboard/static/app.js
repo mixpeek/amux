@@ -11623,7 +11623,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1055';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1056';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -15487,6 +15487,9 @@ async function peekQuickKeys(keys) {
   return result;
 }
 async function _submitSuggestion(name, isPeek, fallbackKeys) {
+  if (sessions.find(s => s.name === name)?.isolated) {
+    return isPeek ? peekQuickKeys(fallbackKeys || 'Enter') : doKeys(name, fallbackKeys || 'Enter');
+  }
   showSendingIndicator();
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
@@ -16403,12 +16406,6 @@ function _chipAction(chip, sessionName, isPeek) {
     if (isPeek) peekQuickSend(chip.value);
     else doSend(sessionName, chip.value);
   } else if (chip.action === 'keys') {
-    // Enter → always try suggestion extraction first; fall back to raw Enter if none found
-    if (chip.value === 'Enter') {
-      const name = isPeek ? peekSession : sessionName;
-      _submitSuggestion(name, isPeek, 'Enter');
-      return;
-    }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {

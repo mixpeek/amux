@@ -9491,6 +9491,11 @@ async fn queue_boot_prompt(
     text: &str,
     origin: SendOrigin,
 ) -> (bool, String) {
+    // Empty input is a control probe, never future model work. In particular,
+    // a startup picker cannot consume a suggested prompt that does not exist.
+    if text.trim().is_empty() {
+        return (true, "no suggestion found".into());
+    }
     use sha2::Digest;
     let start = meta_i64(&load_meta(name), "last_started");
     let identity = hex::encode(sha2::Sha256::digest(text.as_bytes()));
@@ -37492,6 +37497,18 @@ mod steer_boundary_tests {
             },
             dir,
         )
+    }
+
+    #[tokio::test]
+    async fn empty_control_probe_never_becomes_queued_boot_work() {
+        let (state, _tmp) = tstate();
+        for text in ["", " "] {
+            assert_eq!(queue_boot_prompt(&state, "empty-hook-test", text, SendOrigin::Owner).await,
+                (true, "no suggestion found".into()));
+        }
+        let conn=state.store.read().unwrap();
+        ensure_fleet_tables(&conn).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM steering_queue", [], |r|r.get::<_,i64>(0)).unwrap(),0);
     }
 
     async fn set_report(state: &AppState, name: &str, st: &str) {

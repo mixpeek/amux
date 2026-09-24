@@ -4173,3 +4173,14 @@ CARD: AF-946
 SYMPTOM: Main-state reports had no launch identity or ordering and replaced observation time with receipt time. Older Codex rollout boundaries could override newer reports; isolated workers lacked a passive hook channel.
 COST: Delayed reports and missed permission/interrupt boundaries made worker badges disagree with their CLI and required manual inspection.
 FIX: Passive Codex/Claude hooks with per-launch ordered events, durable local delivery/replay, original observation timestamps and inspectable native history. Process absence and fresher fallback evidence still override stale claims. Producer privacy/concurrency/install tests, Rust replay/ordering/precedence regressions and dashboard lifecycle tests pass. Live proof is retained in ~/.amux/test-artifacts/native-status-20260923. Hook trust and launch identity are required; missing hooks remain explicitly identified as fallback.
+
+## Enter on a provider picker queued an empty message instead of pressing a key
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed (live UI validation pending)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Clicking Enter on status-hooks-luna's Codex hook review screen produced message.queued(chars=0) and a boot-delivery queue row, leaving the picker unchanged. The shortcut first called suggestion extraction; the startup gate queued the empty probe before checking whether any suggestion existed.
+COST: The worker appeared stuck on input even after using its Enter control; one empty test queue row required cancellation.
+FIX: Key chips send literal keys; isolated empty Send is also literal Enter and never invokes suggestion extraction. Empty startup probes return no_effect and cannot enter the durable queue. Four dashboard regressions and the empty_control_probe Rust regression pass. The exact test-only empty queue row was cancelled through the standard queue API.

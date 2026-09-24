@@ -21,3 +21,16 @@ test('every observed runtime state exposes inspectable status evidence',()=>{
    assert.match(html,/_openStatusDetail/);
  }
 });
+test('Enter sends a key directly; it cannot enqueue an empty suggested prompt',()=>{
+ const calls=[];const ctx=vm.createContext({peekQuickKeys:k=>calls.push(['peek-key',k]),doKeys:(n,k)=>calls.push([n,k]),_submitSuggestion:()=>assert.fail('Enter must not extract a prompt')});
+ vm.runInContext(source.slice(source.indexOf('function _chipAction('),source.indexOf('function renderChips(')),ctx);
+ ctx._chipAction({action:'keys',value:'Enter'},'raw',false);
+ ctx._chipAction({action:'keys',value:'Enter'},'',true);
+ assert.deepEqual(calls,[['raw','Enter'],['peek-key','Enter']]);
+});
+test('raw empty Send remains a literal key without suggestion extraction',async()=>{
+ const calls=[];const ctx=vm.createContext({sessions:[{name:'raw',isolated:true}],peekQuickKeys:k=>calls.push(k),doKeys:(n,k)=>calls.push(n+':'+k)});
+ vm.runInContext(source.slice(source.indexOf('async function _submitSuggestion('),source.indexOf('function _showSteerPrompt(')),ctx);
+ await ctx._submitSuggestion('raw',false);
+ assert.deepEqual(calls,['raw:Enter']);
+});
