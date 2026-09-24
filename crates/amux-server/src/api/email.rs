@@ -188,7 +188,7 @@ fn email_err_with(e: &str, extra: Value) -> Response {
 /// Python `_hdr_worker`: X-Amux-Worker is canonical, X-Amux-Session still
 /// works. `None` (not "") when unattributed so the ledger's `session` field
 /// round-trips as Python's `null`.
-fn hdr_worker(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn hdr_worker(headers: &HeaderMap) -> Option<String> {
     for name in ["x-amux-worker", "x-amux-session"] {
         if let Some(v) = headers
             .get(name)

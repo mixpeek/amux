@@ -2,6 +2,37 @@
 
 Status: proposed (AMUX-3101). Owner: `amux`. Captured from Ethan's 2026-08-14 vision, block 3.
 
+> **2026-09-24 update (APM-2), found stale while implementing this doc's build order:**
+> - **Step 2 (scope resolution at launch) is DONE**, not the "one real gap" the text
+>   below still calls it. `session_verbs.rs`'s `start_session` sources
+>   `scope_env_layers` (global -> group -> worker) into the launched shell, with a
+>   comment naming this doc directly (AMUX-3106). A connector scoped below global now
+>   has somewhere to land.
+> - **Step 5 (write-safety guard) is DONE for the one connector that actually writes
+>   today (Gmail), but under a DIFFERENT and stricter mechanism than this doc
+>   describes.** `email_approval.rs` (AMUX-3510) freezes ANY worker-originated send to
+>   a non-internal recipient for human approval by default — not the
+>   `write`/`deny_recipients`/`allow_recipients` policy-driven auto-send this doc
+>   specifies. Stricter is fine (default-deny-then-approve beats a deny-list an
+>   operator has to keep current), but it means the `write`/`deny_*` scope fields
+>   below were never actually built for email and should not be assumed present by
+>   a future writing connector without checking `email_approval.rs` first.
+> - **The gap that WAS still live: `POST /api/connectors/{id}/token` handed back a
+>   real, usable bearer to ANY caller, with no check against the `connectors` scope
+>   value at all** — `enabled`/`account` were UI-only. A worker not scoped to a
+>   connector anywhere could still mint that connector's live token for any
+>   connected account. Fixed in `connectors.rs` (`connector_entitlement_check`,
+>   built on the new `scope::effective_connectors` merge-by-key resolver) — same
+>   fail-open-if-never-scoped philosophy as `email::gmail_scope_check`, fail-closed
+>   once a layer names the connector. See board card APM-2.
+> - **Not touched: `/api/browser/start` has the same shape of gap for named
+>   browser profiles** — 83% of calls carry no `X-Amux-Session` at all
+>   (`api/browser.rs:550`), and any caller can request any saved profile by name,
+>   so a worker can drive an authenticated session it was never scoped to. Out of
+>   scope for APM-2 (browser.rs is a larger, contention-sensitive shared surface —
+>   AMUX-3063 already tracks its collision problem); worth its own card before
+>   calling connector-style entitlement "done" across both credential paths.
+
 > **2026-08-20 update (AMUX-3418/AMUX-3192):** build-order step 4 — the OAuth broker —
 > is LIVE in `api/connectors.rs`: `auth` (state + PKCE + pending), the public
 > `callback` (code→token exchange, per-account store at

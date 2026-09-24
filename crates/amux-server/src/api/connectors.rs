@@ -44,7 +44,7 @@ use crate::integrations::email::{
     base64url_nopad, connected_accounts_in, html_escape, HttpTransport, ReqwestTransport,
     DEFAULT_TOKEN_URI,
 };
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -2281,6 +2281,86 @@ async fn test_connection(
     }
 }
 
+/// Which account (if any) `lane` may mint a token for, on connector
+/// `connector_id`, through the generic OAuth broker (APM-2).
+///
+/// Mirrors `email::gmail_scope_check` (AMUX-3103), generalized to every
+/// provider and built on the `connectors` scope capability
+/// ([`super::scope::effective_connectors`]) rather than a per-provider env
+/// var, since one route here serves every family.
+///
+/// ABSENT MEANS UNRESTRICTED — same reasoning as `gmail_scope_check`: a
+/// worker/group/global layer that never mentions this connector at all
+/// keeps today's behavior, so shipping this cannot silently break a lane
+/// nobody scoped. A layer that DOES mention the connector is the explicit
+/// switch: `enabled: false` (or absent) refuses outright, and a scoped
+/// `account` pins which account — a worker scoped to one account cannot
+/// mint a DIFFERENT account's live bearer by asking for it explicitly,
+/// which is exactly the gap this closes: before this check, `enabled` and
+/// `account` were UI-only, and every worker could mint every connected
+/// account's token regardless of what the scope tab showed.
+pub(crate) fn connector_entitlement_check(
+    conn: Option<&rusqlite::Connection>,
+    home: &std::path::Path,
+    lane: &str,
+    connector_id: &str,
+    requested_account: Option<&str>,
+) -> Result<Option<String>, Value> {
+    let effective = super::scope::effective_connectors(conn, home, lane);
+    connector_entitlement_decision(&effective, lane, connector_id, requested_account)
+}
+
+/// The pure decision half of [`connector_entitlement_check`], split out so
+/// the policy logic (fail-open-if-unscoped, fail-closed-if-disabled,
+/// account-pinning) is testable against a hand-built map without a DB or a
+/// worker env file fixture — the merge itself is exercised where it lives,
+/// in `scope::effective_connectors_merges_global_group_worker_by_key`.
+fn connector_entitlement_decision(
+    effective: &Map<String, Value>,
+    lane: &str,
+    connector_id: &str,
+    requested_account: Option<&str>,
+) -> Result<Option<String>, Value> {
+    let Some(cfg) = effective.get(connector_id) else {
+        return Ok(None); // never scoped anywhere for this lane: unrestricted
+    };
+    let enabled = cfg.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+    if !enabled {
+        return Err(json!({
+            "error": format!(
+                "worker '{lane}' is not entitled to connector '{connector_id}'"
+            ),
+            "blocked": "connector_scope",
+            "connector": connector_id,
+            "worker": lane,
+            "how_to_change": format!(
+                "PUT /api/scope capability=connectors to enable '{connector_id}' \
+                 for this worker/group/global"
+            ),
+        }));
+    }
+    let scoped_account = cfg
+        .get("account")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let (Some(req), Some(allowed)) = (requested_account, scoped_account.as_deref()) {
+        if !req.eq_ignore_ascii_case(allowed) {
+            return Err(json!({
+                "error": format!(
+                    "worker '{lane}' is scoped to '{connector_id}' account \
+                     '{allowed}', not '{req}'"
+                ),
+                "blocked": "connector_scope",
+                "connector": connector_id,
+                "worker": lane,
+                "requested": req,
+                "allowed": allowed,
+            }));
+        }
+    }
+    Ok(scoped_account)
+}
+
 /// POST /api/connectors/{id}/token — hand the caller a ready-to-use bearer for a
 /// Google connector, so a SESSION never has to know a key path exists (nissan,
 /// AMUX-3362). The token is minted through the service-account domain-wide
@@ -2316,6 +2396,7 @@ pub(crate) fn delegation_refusal(err: &str) -> bool {
 /// Google's own error (e.g. `unauthorized_client`), which names the Admin-console
 /// fix — the same honest-error path `test_connection` uses.
 async fn mint_connector_token(
+    State(state): State<AppState>,
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -2328,6 +2409,30 @@ async fn mint_connector_token(
         )
             .into_response();
     };
+    // ENTITLEMENT (APM-2): a live bearer is the actual secret — mint it only
+    // for a worker the `connectors` scope actually names. No X-Amux-Session
+    // header means the caller is the dashboard/human, not a worker, so the
+    // check does not apply (matches gmail_scope_check's shape in email.rs).
+    if let Some(lane) = super::email::hdr_worker(&headers) {
+        let req_account = q
+            .get("account")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let conn = state.store.read().ok();
+        if let Err(denial) = connector_entitlement_check(
+            conn.as_deref(),
+            &ctx.home,
+            &lane,
+            &id,
+            req_account.as_deref(),
+        ) {
+            tracing::warn!(
+                worker = %lane, connector = %id,
+                "[connectors] token mint refused: not entitled (APM-2)"
+            );
+            return (StatusCode::FORBIDDEN, Json(denial)).into_response();
+        }
+    }
     // LoginPassword's mint has nothing in common with the Google-SA-impersonation
     // machinery the rest of this function is built around (no scopes, no
     // impersonation subject) — resolved and returned here directly rather than
@@ -3411,6 +3516,78 @@ mod tests {
     }
 
     use super::*;
+
+    /// APM-2: a lane never mentioned in ANY layer must stay unrestricted —
+    /// shipping this check cannot retroactively lock out every worker that
+    /// was minting tokens before entitlement existed at all.
+    #[test]
+    fn entitlement_is_unrestricted_when_the_connector_is_never_scoped() {
+        let effective = Map::new();
+        assert_eq!(
+            connector_entitlement_decision(&effective, "w1", "gmail", None),
+            Ok(None)
+        );
+    }
+
+    /// A layer that names the connector but never sets `enabled: true` is
+    /// the explicit off switch — fail closed, not fail open, once someone
+    /// has said anything about this connector for this lane.
+    #[test]
+    fn entitlement_fails_closed_when_disabled_or_unset() {
+        let effective: Map<String, Value> =
+            json!({"gmail": {"account": "ethan@mixpeek.com"}})
+                .as_object()
+                .unwrap()
+                .clone();
+        let denial = connector_entitlement_decision(&effective, "w1", "gmail", None)
+            .expect_err("no `enabled: true` must deny");
+        assert_eq!(denial["blocked"], "connector_scope");
+        assert_eq!(denial["connector"], "gmail");
+    }
+
+    /// A worker scoped to one account cannot mint a DIFFERENT account's
+    /// token by asking for it explicitly — the actual gap this closes.
+    #[test]
+    fn entitlement_pins_the_scoped_account() {
+        let effective: Map<String, Value> = json!({
+            "gmail": {"enabled": true, "account": "ethan@mixpeek.com"}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            connector_entitlement_decision(&effective, "w1", "gmail", None),
+            Ok(Some("ethan@mixpeek.com".to_string())),
+            "no explicit request: the scoped account is handed back as the default"
+        );
+        assert_eq!(
+            connector_entitlement_decision(
+                &effective, "w1", "gmail", Some("ethan@mixpeek.com")
+            ),
+            Ok(Some("ethan@mixpeek.com".to_string())),
+            "matching request: allowed"
+        );
+        let denial = connector_entitlement_decision(
+            &effective, "w1", "gmail", Some("someone-else@mixpeek.com"),
+        )
+        .expect_err("a DIFFERENT explicit account must be denied");
+        assert_eq!(denial["blocked"], "connector_scope");
+        assert_eq!(denial["requested"], "someone-else@mixpeek.com");
+        assert_eq!(denial["allowed"], "ethan@mixpeek.com");
+    }
+
+    /// Entitled but with no `account` field pinned (e.g. a bot-scoped Slack
+    /// connector) means any account name in the request passes through —
+    /// there is nothing to pin against, so this must not falsely deny.
+    #[test]
+    fn entitlement_with_no_pinned_account_allows_any_requested_account() {
+        let effective: Map<String, Value> =
+            json!({"slack": {"enabled": true}}).as_object().unwrap().clone();
+        assert_eq!(
+            connector_entitlement_decision(&effective, "w1", "slack", Some("T999")),
+            Ok(None)
+        );
+    }
 
     #[test]
     fn registry_ids_are_unique_and_have_env_keys() {

@@ -478,6 +478,45 @@ fn read_cap_value(
     }
 }
 
+/// The RESOLVED `connectors` scope for a lane: global, then each of the
+/// lane's groups (from its own `CC_TAGS`, the same source `lane_groups`
+/// reads), then the worker layer — merged BY CONNECTOR KEY, worker winning
+/// last. This is the "launch-time connector resolver" `read_cap_value`'s
+/// `connectors` arm already names as a consumer of `connectors_pref_key`,
+/// but nothing actually composed the three layers until now (APM-2): the
+/// Connectors/Scope tab could mark a worker entitled to one connector and
+/// not another, and `POST /api/connectors/{id}/token` never asked, so
+/// EVERY worker could mint EVERY connected account's live bearer token
+/// regardless of what the scope UI showed. `merge-by-key` (not whole-object
+/// replace) mirrors `skin`'s semantics: a worker enabling one connector
+/// must not have to redeclare every other connector a group already turned
+/// on for it.
+pub(crate) fn effective_connectors(
+    conn: Option<&rusqlite::Connection>,
+    home: &Path,
+    lane: &str,
+) -> Map<String, Value> {
+    let Some(conn) = conn else {
+        return Map::new();
+    };
+    let mut merged = Map::new();
+    let mut apply = |level: &str, name: &str| {
+        if let Ok((v, _set)) = read_cap_value(Some(conn), home, level, name, "connectors") {
+            if let Some(obj) = v.get("connectors").and_then(Value::as_object) {
+                for (k, val) in obj {
+                    merged.insert(k.clone(), val.clone());
+                }
+            }
+        }
+    };
+    apply("global", "");
+    for g in crate::api::session_verbs::lane_groups(lane) {
+        apply("group", &g);
+    }
+    apply("worker", lane);
+    merged
+}
+
 /// session_gates key convention: `group:<name>` for groups, the bare name
 /// for workers (py:16147 / py:16290).
 /// Where a skin lives in `prefs`. One key shape for all three levels so a
@@ -1981,6 +2020,62 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_eq!(v["set_here"], false, "an empty object clears the layer");
+    }
+
+    /// APM-2: `effective_connectors` composes global -> group -> worker BY
+    /// CONNECTOR KEY, worker winning, exactly mirroring `scope_env_layers`'
+    /// precedence — this is the resolver `connector_entitlement_check`
+    /// (connectors.rs) is built on, so a worker/group/global grant actually
+    /// reaches the token-mint endpoint instead of being UI-only.
+    #[tokio::test]
+    async fn effective_connectors_merges_global_group_worker_by_key() {
+        let home = tempfile::tempdir().unwrap();
+        fleet(home.path(), &[("w1", "alpha", false)]);
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let st = state();
+        let app = app(&st);
+
+        // global: gmail as info@ ; worker never mentions slack, so the
+        // group's grant must still reach it.
+        call(
+            &app, "PUT", "/api/scope",
+            Some(json!({"level": "global", "capability": "connectors",
+                        "value": {"gmail": {"enabled": true, "account": "info@mixpeek.com"}}})),
+            None,
+        ).await;
+        call(
+            &app, "PUT", "/api/scope",
+            Some(json!({"level": "group", "name": "alpha", "capability": "connectors",
+                        "value": {"slack": {"enabled": true, "account": "T1"}}})),
+            None,
+        ).await;
+        // worker overrides the SAME key (gmail) global set — worker must win.
+        call(
+            &app, "PUT", "/api/scope",
+            Some(json!({"level": "worker", "name": "w1", "capability": "connectors",
+                        "value": {"gmail": {"enabled": true, "account": "ethan@mixpeek.com"}}})),
+            None,
+        ).await;
+
+        let conn = st.store.read().unwrap();
+        let merged = effective_connectors(Some(&conn), home.path(), "w1");
+        assert_eq!(
+            merged["gmail"]["account"], "ethan@mixpeek.com",
+            "worker layer must win over global for the SAME key: {merged:?}"
+        );
+        assert_eq!(
+            merged["slack"]["account"], "T1",
+            "the group's grant must reach a worker that never mentions slack itself: {merged:?}"
+        );
+
+        // A worker not in group alpha at all sees only the global layer.
+        fleet(home.path(), &[("w2", "beta", false)]);
+        let merged2 = effective_connectors(Some(&conn), home.path(), "w2");
+        assert_eq!(merged2["gmail"]["account"], "info@mixpeek.com");
+        assert!(
+            merged2.get("slack").is_none(),
+            "a different worker/group must not see alpha's slack grant: {merged2:?}"
+        );
     }
 
     #[tokio::test]
