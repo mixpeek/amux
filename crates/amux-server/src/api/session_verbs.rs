@@ -8735,7 +8735,8 @@ fn project_execution_composer_owns_text(raw: &str, text: &str) -> bool {
         return false;
     };
     let tail = send_tail_squashed(text);
-    !tail.is_empty() && pending.contains(&tail)
+    let pending_sq: String = pending.split_whitespace().collect();
+    !tail.is_empty() && pending_sq.contains(&tail)
 }
 
 /// Codex's model/path line is footer chrome, not a continuation of the input.
@@ -9417,10 +9418,10 @@ fn submission_delivery_count(records: &[Value], text: &str, since: f64) -> usize
                 return false;
             }
             let hit = match &msg["content"] {
-                Value::String(s) => s.contains(needle),
+                Value::String(s) => jsonl_content_matches(s, needle),
                 Value::Array(items) => items
                     .iter()
-                    .any(|c| c["text"].as_str().is_some_and(|t| t.contains(needle))),
+                    .any(|c| c["text"].as_str().is_some_and(|t| jsonl_content_matches(t, needle))),
                 _ => false,
             };
             hit && rec["timestamp"]
@@ -9503,6 +9504,18 @@ pub(crate) fn muse_intent_in_tail(tail: &str, needle: &str) -> bool {
     })
 }
 
+/// Whether a JSONL content string matches the sent needle.
+///
+/// The dashboard stamps non-slash messages as `[HH:MM author] original_text`,
+/// so the JSONL content is the needle plus a prefix of ~20-60 chars. Plain
+/// `contains` would false-positive if message A is a substring of a completely
+/// different, much longer message B sent within the same 2-second window.
+/// Guarding with a length bound prevents that: 200 chars of overhead covers
+/// any plausible timestamp/author prefix while rejecting unrelated messages.
+pub(crate) fn jsonl_content_matches(content: &str, needle: &str) -> bool {
+    content.contains(needle) && content.len() <= needle.len() + 200
+}
+
 /// The evidence scan itself, over already-parsed records — pure so it can be
 /// tested against a planted transcript rather than a mock of the file reader.
 pub(crate) fn jsonl_records_have(recs: &[Value], needle: &str, since: f64) -> bool {
@@ -9520,11 +9533,11 @@ pub(crate) fn jsonl_records_have(recs: &[Value], needle: &str, since: f64) -> bo
             continue;
         }
         let hit = match &msg["content"] {
-            Value::String(s) => s.contains(needle),
+            Value::String(s) => jsonl_content_matches(s, needle),
             Value::Array(items) => items.iter().any(|c| {
                 c["text"]
                     .as_str()
-                    .map(|t| t.contains(needle))
+                    .map(|t| jsonl_content_matches(t, needle))
                     .unwrap_or(false)
             }),
             _ => false,
@@ -9673,7 +9686,10 @@ pub(crate) fn read_frame(raw: &str, tail_sq: &str) -> FrameRead {
     // repeat our text is not our message sitting unsent — and treating it as
     // one would make the verifier press Escape+Enter and re-submit a message
     // that already landed.
-    let still_there = state.typed().map(|p| p.contains(tail_sq)).unwrap_or(false);
+    let still_there = state.typed().map(|p| {
+        let p_sq: String = p.split_whitespace().collect();
+        p_sq.contains(tail_sq)
+    }).unwrap_or(false);
     if !still_there {
         return FrameRead::Cleared;
     }
@@ -9918,29 +9934,43 @@ async fn verify_submitted(
                 // frame reads say Cleared but the JSONL has no record, something
                 // accepted the Enter and then unwound it.
                 if confirmed {
-                    // Cool-off: one more frame read to catch a restoration.
+                    // Cool-off: two more frame reads to catch restorations
+                    // up to ~900ms (200-800ms measured range).
                     sleep_ms(300).await;
                     let raw2 = tmux_capture(name, 25).await;
                     let frame2 = read_frame(&raw2, &tail_sq);
                     if final_frame_confirms(frame2) {
-                        // CORROBORATE WITH JSONL when the cool-off confirms.
-                        // Three consecutive Cleared reads is strong frame
-                        // evidence. If the JSONL also has the message, this
-                        // is a real submission. If it does not, the JSONL may
-                        // simply be lagging (Claude writes it after accepting
-                        // the prompt, not before), so still trust the frame,
-                        // but log it for sweep visibility.
                         let jsonl_ok = sent_at > 0.0
                             && (jsonl_submission_since(name, text, sent_at)
                                 || muse_user_intent_since(name, text, sent_at));
-                        if !jsonl_ok && sent_at > 0.0 {
-                            tracing::info!(
-                                session = %name,
-                                verdict = "confirmed_frame_only",
-                                "three Cleared reads confirm submission; JSONL has no \
-                                 record yet (lag or session without transcript)"
-                            );
+                        if jsonl_ok {
+                            return (Submission::Confirmed, retried);
                         }
+                        // Frame says Cleared but JSONL has no record yet.
+                        // One more read at the tail of the measured window
+                        // before trusting the frame alone.
+                        sleep_ms(300).await;
+                        let raw3 = tmux_capture(name, 25).await;
+                        let frame3 = read_frame(&raw3, &tail_sq);
+                        if !final_frame_confirms(frame3) {
+                            tracing::warn!(
+                                session = %name,
+                                cool_off_frame = ?frame3,
+                                verdict = "cleared_then_restored_late",
+                                "three Cleared reads followed by late text \
+                                 restoration (>600ms); JSONL had no record (AMUX-5090)"
+                            );
+                            cleared_once = false;
+                            continue;
+                        }
+                        // Four Cleared reads with no JSONL: trust the frame,
+                        // but WARN so sweeps can detect patterns.
+                        tracing::warn!(
+                            session = %name,
+                            verdict = "confirmed_frame_only",
+                            "four Cleared reads confirm submission; JSONL has no \
+                             record yet (lag or session without transcript)"
+                        );
                         return (Submission::Confirmed, retried);
                     }
                     // The composer has text again: the submission was rolled
@@ -10040,19 +10070,44 @@ async fn verify_submitted(
     }
     let raw = tmux_capture(name, 25).await;
     if observe_submission_frame(read_frame(&raw, &tail_sq), &mut cleared_once) {
-        // Same cool-off as the in-loop Cleared path (AMUX-5090).
+        // Same two-read cool-off as the in-loop Cleared path (AMUX-5090).
         sleep_ms(300).await;
         let raw2 = tmux_capture(name, 25).await;
         let frame2 = read_frame(&raw2, &tail_sq);
         if final_frame_confirms(frame2) {
-            return (Submission::Confirmed, retried);
+            let jsonl_ok = sent_at > 0.0
+                && (jsonl_submission_since(name, text, sent_at)
+                    || muse_user_intent_since(name, text, sent_at));
+            if !jsonl_ok && sent_at > 0.0 {
+                sleep_ms(300).await;
+                let raw3 = tmux_capture(name, 25).await;
+                let frame3 = read_frame(&raw3, &tail_sq);
+                if !final_frame_confirms(frame3) {
+                    tracing::warn!(
+                        session = %name,
+                        cool_off_frame = ?frame3,
+                        verdict = "cleared_then_restored_post_loop_late",
+                        "post-loop: late text restoration after >600ms (AMUX-5090)"
+                    );
+                } else {
+                    tracing::warn!(
+                        session = %name,
+                        verdict = "confirmed_frame_only_post_loop",
+                        "four Cleared reads confirm post-loop; JSONL has no record yet"
+                    );
+                    return (Submission::Confirmed, retried);
+                }
+            } else {
+                return (Submission::Confirmed, retried);
+            }
+        } else {
+            tracing::warn!(
+                session = %name,
+                cool_off_frame = ?frame2,
+                verdict = "cleared_then_restored_post_loop",
+                "post-loop Cleared reads followed by text restoration (AMUX-5090)"
+            );
         }
-        tracing::warn!(
-            session = %name,
-            cool_off_frame = ?frame2,
-            verdict = "cleared_then_restored_post_loop",
-            "post-loop Cleared reads followed by text restoration (AMUX-5090)"
-        );
     }
     // Last resort before reporting a failure (which makes callers re-send):
     // trust the durable JSONL record over a possibly-torn final frame.
@@ -41057,6 +41112,33 @@ mod submission_gate_tests {
             packet
         ));
     }
+
+    #[test]
+    fn read_frame_detects_text_with_spaces_still_in_composer() {
+        let msg = "this is a test message with spaces";
+        let t = tail_sq(msg);
+        assert_eq!(t, "sagewithspaces");
+        let frame = frame_stuck_idle(msg);
+        assert_eq!(read_frame(&frame, &t), FrameRead::StillThereIdle);
+        assert_eq!(
+            read_frame(&frame_cleared(), &t),
+            FrameRead::Cleared
+        );
+    }
+
+    #[test]
+    fn composer_owns_text_with_spaces() {
+        let msg = "deploy the new version to staging now";
+        assert!(project_execution_composer_owns_text(
+            &frame_stuck_idle(msg),
+            msg
+        ));
+        assert!(!project_execution_composer_owns_text(
+            &frame_cleared(),
+            msg
+        ));
+    }
+
     /// A successful submit: composer drawn and empty.
     fn frame_cleared() -> String {
         "\u{2500}\u{2500}\u{2500}\u{2500} amux-rust \u{2500}\u{2500}\n\u{276f} \n\u{2500}\u{2500}\u{2500}\u{2500}\n\u{23f5}\u{23f5} bypass permissions on\n".into()
@@ -41573,6 +41655,31 @@ with open(sys.argv[3],'ab',buffering=0) as log:
             jsonl_records_have(&with_it, GHOST, sent_at),
             "post-send user message IS evidence"
         );
+    }
+
+    #[test]
+    fn jsonl_content_matches_rejects_substring_of_unrelated_message() {
+        assert!(jsonl_content_matches("hello world", "hello world"));
+        assert!(jsonl_content_matches("[12:30 PM ethan] hello world", "hello world"));
+        assert!(
+            !jsonl_content_matches(
+                &"x".repeat(300),
+                "hello"
+            ),
+            "a 5-char needle inside a 300-char content is a different message"
+        );
+        assert!(jsonl_content_matches(
+            &format!("{}{}", "x".repeat(195), "hello"),
+            "hello"
+        ), "200 chars of overhead is allowed (timestamp + author)");
+        assert!(
+            !jsonl_content_matches(
+                &format!("{}{}", "x".repeat(201), "hello"),
+                "hello"
+            ),
+            "201 chars of overhead exceeds the bound"
+        );
+        assert!(!jsonl_content_matches("no match at all", "hello world"));
     }
 
     #[test]
