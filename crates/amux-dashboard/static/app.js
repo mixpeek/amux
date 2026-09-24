@@ -8660,8 +8660,11 @@ async function doRestart(name) {
     } catch (e) {}
     if (sessionGone) { showToast('Worker no longer exists'); return; }
     if (alreadyStopped) { await fetchSessions(); await doStart(name); return; }
-    const stopResp = await apiCall(STOP_URL, { method: 'POST' });
-    if (!stopResp) return;
+    // Stop is durably queued: apiCall returns null until delivery is confirmed.
+    // Observe the actual process state before starting; a queue acknowledgement
+    // must not abandon the second half of the owner's restart request.
+    await apiCall(STOP_URL, { method: 'POST' });
+    amuxTrack('worker_restart_waiting_for_stop', {session:name});
     await new Promise(r => setTimeout(r, 1000));
     let stopped = false;
     const deadline = Date.now() + 30000;
@@ -11603,7 +11606,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1052';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1053';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

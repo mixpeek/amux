@@ -4151,3 +4151,14 @@ CARD: AMUX-5034
 SYMPTOM: SCHED-410 recorded `status=error` with a Python traceback in `note` on every 30-minute fire. Nothing counted it and nothing surfaced it; I found it by accident while chasing an unrelated invariant. All three routes to its owner were closed at once: `amux send coaching` -> "worker 'coaching' is not running"; `POST /api/board` on their board -> 403 `cross_board_create_forbidden`; `amux board request coaching` -> `cross_board_delegation_forbidden`.
 COST: A scheduled job produced nothing for an unknown number of days while reporting faithfully into a table nobody reads. The refusals are correct policy, so the gap is that a RECORDED failure with a named owner has no route when that owner is absent, and recording is treated as sufficient.
 FIX: The policy's own answer is "implement it yourself", and I did (Vault/Leadership 8895ce4; SCHED-410 now records `ok` on two consecutive runs). The remaining fix is surfacing: queue an `amux send` for a stopped lane's next start, or let the finder file on ITS OWN board naming the owner, or carry schedules erroring for N consecutive fires in the digest.
+
+## Restart abandoned its start after durable queued stop
+AREA: worker lifecycle
+SEVERITY: blocks
+STATUS: fixed (live validation pending)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: The isolated raw-pass-luna restart on main/8824 stopped the provider and left it stopped. All Stop requests now enter the durable outbox, while doRestart treated apiCall's null queued response as a failure and returned before observing termination or starting again.
+COST: Restart behaved as Stop, requiring manual recovery despite a successful durable delivery.
+FIX: Restart continues observing authoritative process state after queued stop acceptance and starts only after termination is confirmed. A worker_restart_waiting_for_stop beacon identifies the transition. Regression cases cover delayed queued stop, already-stopped workers and stop timeouts.
