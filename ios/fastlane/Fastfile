@@ -113,6 +113,33 @@ platform :ios do
       latest_testflight_build_number(api_key: api_key, version: version) : ENV["BUILD_NUMBER"]
     UI.message("Submitting #{version} (#{build}) for review")
 
+    # CANCEL_PENDING=1: take a submission that is waiting for review back out
+    # first. App Store Connect locks screenshots and metadata while a version
+    # waits for review ("Failed verification of all screenshots deleted"), so
+    # replacing them means cancel, edit, resubmit. Opt-in only.
+    if ENV["CANCEL_PENDING"] == "1"
+      Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+      bundle_id = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+      app = Spaceship::ConnectAPI::App.find(bundle_id)
+      UI.user_error!("app #{bundle_id} not found on App Store Connect") unless app
+      pending = app.get_review_submissions(filter: { state: "WAITING_FOR_REVIEW,READY_FOR_REVIEW,UNRESOLVED_ISSUES" })
+      UI.message("#{pending.size} pending review submission(s)")
+      pending.each do |sub|
+        UI.important("Cancelling review submission #{sub.id} (#{sub.state}) so the listing can be edited")
+        sub.cancel_submission
+      end
+      editable = %w[PREPARE_FOR_SUBMISSION DEVELOPER_REJECTED REJECTED METADATA_REJECTED]
+      state = nil
+      18.times do
+        v = app.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+        state = v && v.app_store_state
+        UI.message("version #{v && v.version_string} state: #{state}")
+        break if editable.include?(state)
+        sleep 10
+      end
+      UI.user_error!("version never became editable (state #{state})") unless editable.include?(state)
+    end
+
     deliver(
       api_key: api_key,
       app_version: version,
