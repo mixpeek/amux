@@ -5779,8 +5779,8 @@ function _workerActionDefinitions(s) {
     { key: 'archive', icon: '&#x1F4E6;', label: 'Archive',
       run: "archiveSession('" + name + "')" },
     { separator: true },
-    { key: 'delete', icon: '&#x2716;', label: 'Delete', danger: true,
-      run: "deleteSession('" + name + "')" },
+    !s.project ? { key: 'delete', icon: '&#x2716;', label: 'Delete', danger: true,
+      run: "deleteSession('" + name + "')" } : null,
   ].filter(Boolean);
 }
 
@@ -7930,7 +7930,7 @@ function _renderArchivedSection() {
           <span class="archived-card-spacer"></span>
           <div class="archived-card-actions">
             <button class="archived-wake-btn" onclick="wakeSession('${esc(s.name)}')">Wake</button>
-            <button class="archived-del-btn" onclick="deleteSession('${esc(s.name)}')">&#x2715;</button>
+            ${s.project ? '' : `<button class="archived-del-btn" onclick="deleteSession('${esc(s.name)}')">&#x2715;</button>`}
           </div>
         </div>
         ${meta.length ? `<div class="archived-card-meta">${meta.join('<span style="opacity:0.4;">&middot;</span>')}</div>` : ''}
