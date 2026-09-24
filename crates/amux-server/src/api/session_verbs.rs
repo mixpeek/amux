@@ -9895,8 +9895,56 @@ async fn verify_submitted(
                 // text can render into the box AFTER our first look (keystrokes
                 // buffered through boot), so one clear look is not proof.
                 // Require two.
+                //
+                // TWO IS NOT ENOUGH EITHER (AMUX-5090, 2026-09-24, primis
+                // MSG-68747). Claude Code can ACCEPT Enter, CLEAR the composer,
+                // fail internally (model not ready after a /model swap, or @-path
+                // file reference error), and RESTORE the text to the composer.
+                // The round-trip takes 200-800ms. Two clear reads 300ms apart
+                // fit inside that window and both see the empty composer while
+                // the restoration is in flight. The third read, 300ms later,
+                // catches it if it happened.
+                //
+                // Corroborate with the durable JSONL: a real submission writes
+                // the user message there before the first tool call. If two
+                // frame reads say Cleared but the JSONL has no record, something
+                // accepted the Enter and then unwound it.
                 if confirmed {
-                    return (Submission::Confirmed, retried);
+                    // Cool-off: one more frame read to catch a restoration.
+                    sleep_ms(300).await;
+                    let raw2 = tmux_capture(name, 25).await;
+                    let frame2 = read_frame(&raw2, &tail_sq);
+                    if final_frame_confirms(frame2) {
+                        // CORROBORATE WITH JSONL when the cool-off confirms.
+                        // Three consecutive Cleared reads is strong frame
+                        // evidence. If the JSONL also has the message, this
+                        // is a real submission. If it does not, the JSONL may
+                        // simply be lagging (Claude writes it after accepting
+                        // the prompt, not before), so still trust the frame,
+                        // but log it for sweep visibility.
+                        let jsonl_ok = sent_at > 0.0
+                            && (jsonl_submission_since(name, text, sent_at)
+                                || muse_user_intent_since(name, text, sent_at));
+                        if !jsonl_ok && sent_at > 0.0 {
+                            tracing::info!(
+                                session = %name,
+                                verdict = "confirmed_frame_only",
+                                "three Cleared reads confirm submission; JSONL has no \
+                                 record yet (lag or session without transcript)"
+                            );
+                        }
+                        return (Submission::Confirmed, retried);
+                    }
+                    // The composer has text again: the submission was rolled
+                    // back. Fall through to the stuck path.
+                    tracing::warn!(
+                        session = %name,
+                        cool_off_frame = ?frame2,
+                        verdict = "cleared_then_restored",
+                        "two Cleared reads followed by text restoration; \
+                         the Enter was accepted and then unwound (AMUX-5090)"
+                    );
+                    cleared_once = false;
                 }
                 continue;
             }
@@ -9966,7 +10014,19 @@ async fn verify_submitted(
     }
     let raw = tmux_capture(name, 25).await;
     if observe_submission_frame(read_frame(&raw, &tail_sq), &mut cleared_once) {
-        return (Submission::Confirmed, retried);
+        // Same cool-off as the in-loop Cleared path (AMUX-5090).
+        sleep_ms(300).await;
+        let raw2 = tmux_capture(name, 25).await;
+        let frame2 = read_frame(&raw2, &tail_sq);
+        if final_frame_confirms(frame2) {
+            return (Submission::Confirmed, retried);
+        }
+        tracing::warn!(
+            session = %name,
+            cool_off_frame = ?frame2,
+            verdict = "cleared_then_restored_post_loop",
+            "post-loop Cleared reads followed by text restoration (AMUX-5090)"
+        );
     }
     // Last resort before reporting a failure (which makes callers re-send):
     // trust the durable JSONL record over a possibly-torn final frame.
@@ -11557,6 +11617,32 @@ async fn send_text_inner_bound(
     }
     send_key(name, "C-u").await;
     sleep_ms(40).await;
+    // VERIFY THE COMPOSER IS ACTUALLY EMPTY AFTER C-u (chaos-test finding,
+    // 2026-09-24). C-u is a readline binding that clears the input line, but
+    // it does nothing when a picker, modal, or the background-conversation
+    // manager is open. If it fails, the paste below APPENDS to whatever was
+    // already there, creating a garbled concatenation that verify_submitted
+    // may still confirm (the tail of the NEW text matches). One re-check
+    // adds 40ms to every send but prevents silent message corruption.
+    {
+        let post_clear = tmux_capture(name, 15).await;
+        if composer_state(&post_clear).typed().is_some() {
+            send_key(name, "C-u").await;
+            sleep_ms(60).await;
+            let retry_clear = tmux_capture(name, 15).await;
+            if composer_state(&retry_clear).typed().is_some() {
+                tracing::warn!(
+                    session = %name,
+                    verdict = "composer_not_cleared_after_ctrl_u",
+                    "C-u failed to clear the composer twice; aborting to prevent concatenation"
+                );
+                return (
+                    false,
+                    "composer could not be cleared before pasting (C-u ineffective)".into(),
+                );
+            }
+        }
+    }
     // A TRAILING @-MENTION OPENS THE FILE PICKER EVEN THROUGH A PASTE (Ethan,
     // 2026-09-24, MSG-68711 "i dont see it @/Users/.../x.png"): the cursor ends
     // on the mention, Claude Code offers the completion, and the Enter below
