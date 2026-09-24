@@ -261,7 +261,12 @@ impl ExecutionAdapter for ChatAdapter {
             let n = name.to_string();
             tokio::spawn(async move { pump(st, n).await });
         }
-        let _ = lane.tx.send(json!({"type": "queued", "ahead": ahead, "busy": turn_running}));
+        // `waiting` = messages queued behind the running turn, which is what
+        // the view shows; `ahead` alone read 0 for the first queued message.
+        let waiting = if turn_running { ahead + 1 } else { 0 };
+        let _ = lane
+            .tx
+            .send(json!({"type": "queued", "ahead": ahead, "waiting": waiting, "busy": turn_running}));
         Dispatch::Handled((
             true,
             if turn_running {
@@ -515,9 +520,10 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
         SOURCE,
     )
     .await;
+    let waiting = lane.queue.lock().unwrap().len();
     let _ = lane.tx.send(json!({
         "type": "user", "turn_id": turn_id, "text": q.text, "origin": q.origin,
-        "ts": crate::config::now_f64(),
+        "ts": crate::config::now_f64(), "waiting": waiting,
     }));
     *lane.partial.lock().unwrap() = (turn_id.clone(), String::new());
     report_state(state, name, "active", "UserPromptSubmit", &turn_id).await;

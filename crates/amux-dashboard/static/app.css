@@ -570,8 +570,6 @@
   .badge.ephemeral { background: rgba(251,146,60,0.15); color: #fb923c; }
   .badge.worker-type { background: rgba(88,166,255,0.14); color: var(--accent); }
   /* Chat renderer (ACW-7): the peek body shows a transcript, not a terminal. */
-  /* Keystrokes go to a terminal; a chat worker has none. */
-  #peek-overlay.renderer-chat .chip[data-chip-action="keys"] { display: none; }
   #peek-body.peek-chat {
     background: var(--bg) !important; color: var(--text) !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

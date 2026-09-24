@@ -5675,13 +5675,14 @@ function _workerActionDefinitions(s) {
   const provider = sessionProvider(s);
   const model = sessionConfiguredModel(s);
   const effort = provider === 'claude' ? flagValue(s.flags || '', '--effort') : '';
+  const terminal = _workerRenderer(s.name) === 'terminal';
   return [
     { key: 'task-label', icon: '&#x270F;', label: 'Task label' + (s.task_override ? '' : ' (none)'),
       run: "editField('" + name + "','task','" + escJs(s.task_override || '') + "')" },
     { separator: true },
     !s.isolated ? { key: 'task-queue', icon: '&#x2637;', label: 'Task queue',
       run: "closeAllMenus();_openWorkQueue('" + name + "')" } : null,
-    { key: 'peek-terminal', icon: '&#x1F4BB;', label: 'Peek terminal',
+    { key: 'peek-terminal', icon: terminal ? '&#x1F4BB;' : '&#x1F4AC;', label: terminal ? 'Peek terminal' : 'Open chat',
       run: "closeAllMenus();openPeek('" + name + "')" },
     { key: 'read-latest', icon: '&#x1F50A;', label: 'Read latest message',
       run: "closeAllMenus();_readLatestMessage('" + name + "')" },
@@ -5727,7 +5728,7 @@ function _workerActionDefinitions(s) {
       run: "closeAllMenus();doRestart('" + name + "')" } : null,
     s.running ? { key: 'stop', icon: '&#x23F9;', label: 'Stop',
       run: "closeAllMenus();doStop('" + name + "')" } : null,
-    s.running ? { key: 'clear-scrollback', icon: '&#x239A;', label: 'Clear scrollback',
+    s.running && terminal ? { key: 'clear-scrollback', icon: '&#x239A;', label: 'Clear scrollback',
       run: "clearScrollback('" + name + "')" } : null,
     { key: 'duplicate', icon: '&#x2398;', label: 'Duplicate',
       run: "duplicateSession('" + name + "')" },
@@ -7207,11 +7208,11 @@ function _applyPeekTabVisibility() {
   if (!bar) return;
   // The primary tab names the worker type's renderer (Terminal / Chat).
   const _primaryRenderer = peekSession ? _workerRenderer(peekSession) : 'terminal';
-  // Terminal-only controls (keystroke chips) key off this class in app.css.
-  const _peekOv = document.getElementById('peek-overlay');
-  if (_peekOv) _peekOv.classList.toggle('renderer-chat', _primaryRenderer === 'chat');
   const _primaryLbl = document.querySelector('#peek-tab-terminal .tab-lbl');
   if (_primaryLbl) _primaryLbl.textContent = _primaryRenderer === 'chat' ? 'Chat' : 'Terminal';
+  // The window's chip bar is shared across workers; redraw it for this one.
+  const _peekChips = document.getElementById('peek-chips');
+  if (_peekChips) renderChips(_peekChips, '', true);
   const _primaryIco = document.querySelector('#peek-tab-terminal .tab-ico');
   if (_primaryIco) _primaryIco.textContent = _primaryRenderer === 'chat' ? '💬' : '⮞';
   const _peekType = _workerTypeInfo((sessions.find(s => s.name === peekSession) || {}).worker_type);
@@ -11827,7 +11828,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1097';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1100';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11987,7 +11988,8 @@ function _linkIsCheap() {
 // Priority: what you'd actually want offline, in order — sessions doing work
 // now, then ones you recently looked at, then the rest.
 function _prefetchOrder() {
-  const running = (sessions || []).filter(s => s.running);
+  // Only terminal-rendered workers have a peek frame worth saving offline.
+  const running = (sessions || []).filter(s => s.running && _workerRenderer(s.name) === 'terminal');
   const recent = new Set([peekSession, _lastPeekedSession].filter(Boolean));
   const rank = s => (s.status === 'active' || s.status === 'waiting' ? 0 : recent.has(s.name) ? 1 : 2);
   return running.sort((a, b) => rank(a) - rank(b) || (b.last_activity || 0) - (a.last_activity || 0));
@@ -12069,6 +12071,10 @@ function _offlineCacheInfo() {
 
 function _paintCachedPeek(cached) {
   if (!cached || (!cached.output && !cached.history)) return false;
+  // A saved TERMINAL frame. The chat renderer keeps its own history, and it
+  // never sets lastPeekHTML, so without this the 30ms open-time cache paint
+  // won the race often enough to replace a chat with its terminal snapshot.
+  if (peekSession && _workerRenderer(peekSession) !== 'terminal') return false;
   _peekHistoryRaw = cached.history || '';
   _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
   _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
@@ -12144,6 +12150,7 @@ function _chatConnect(name) {
         _chat.messages.push({ role: 'user', text: m.text, turn_id: m.turn_id, origin: m.origin, ts: m.ts });
       _chat.streaming = { turn_id: m.turn_id, text: '' };
       _chat.busy = true;
+      _chat.queued = m.waiting || 0;
     } else if (m.type === 'delta') {
       if (!_chat.streaming || _chat.streaming.turn_id !== m.turn_id) _chat.streaming = { turn_id: m.turn_id, text: '' };
       _chat.streaming.text += m.text || '';
@@ -12154,7 +12161,7 @@ function _chatConnect(name) {
       _chat.streaming = null;
       _chat.busy = false;
     } else if (m.type === 'queued') {
-      _chat.queued = m.ahead || 0;
+      _chat.queued = m.waiting || 0;
     } else if (m.type === 'stopped') {
       _chat.streaming = null; _chat.busy = false; _chat.queued = 0;
     } else if (m.type === 'lagged') {
@@ -15897,11 +15904,7 @@ async function sendPeekCmd() {
   const original = inp.value;
   const text = original.trim();
   const files = peekFiles.filter(f => f.path);
-  if (!text && !files.length) {
-    // No terminal composer to press Enter in: an empty chat send does nothing.
-    if (_workerRenderer(session) !== 'terminal') return;
-    _submitSuggestion(session, true, 'Enter'); return;
-  }
+  if (!text && !files.length) { _submitSuggestion(session, true, 'Enter'); return; }
   let message = text;
   if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
   const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
@@ -16013,6 +16016,9 @@ async function peekQuickKeys(keys) {
 // lanes used to skip straight to a bare Enter, so their suggestion could never
 // be sent (2026-09-24). With nothing to submit, fall back to the literal key.
 async function _submitSuggestion(name, isPeek, fallbackKeys) {
+  // A suggestion and an Enter key live in a terminal composer. A worker whose
+  // renderer is not a terminal has neither, so an empty send is a no-op.
+  if (_workerRenderer(name) !== 'terminal') return;
   fallbackKeys = fallbackKeys || 'Enter';
   showSendingIndicator();
   try {
@@ -16960,8 +16966,13 @@ function _chipAction(chip, sessionName, isPeek) {
 
 function renderChips(container, sessionName, isPeek) {
   const chips = _getChips();
+  // Keystroke chips drive a terminal; a worker whose renderer is not a
+  // terminal (chat) has nothing for them to press. Indexes stay the originals.
+  const who = sessionName || (isPeek ? peekSession : '');
+  const noKeys = !!who && _workerRenderer(who) !== 'terminal';
   let html = '';
   chips.forEach((chip, i) => {
+    if (noKeys && chip.action === 'keys') return;
     const cls = chip.danger ? 'chip danger' : 'chip';
     const drag = _chipEditing ? 'draggable="true"' : '';
     html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
