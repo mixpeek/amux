@@ -7983,39 +7983,35 @@ async fn autofix_tick_with_inputs(
     // the detector match. Cheap either way: 233 lanes, 3.0 MB of meta, 12 ms.
     let stuck_lanes = crate::api::session_verbs::composer_stuck_lanes().await;
 
-    let (findings, suppressed, on) = {
-        let conn = match state.store.read() {
-            Ok(c) => c,
-            Err(e) => {
-                rep.errors.push(format!("store read: {e}"));
-                rep.took_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                *last_report_cell().write().unwrap() = Some(rep.clone());
-                return rep;
-            }
-        };
-        let on = enabled(&conn);
-        let mut findings = system_job_findings(system_issues, now);
+    // The measured detector pass scans hundreds of thousands of request rows.
+    // Keep its SQLite/CPU work off the async runtime just like the disk probe.
+    let detector_home = home.to_path_buf();
+    let detector_runs = ci_runs.to_vec();
+    let system_findings = system_job_findings(system_issues, now);
+    let detected = state.store.read_async(move |conn| {
+        let on = enabled(conn);
+        let mut findings = system_findings;
         let mut suppressed = ci_sup;
         for kind in DetectorKind::all() {
             let (f, s) = match kind {
-                DetectorKind::Http5xx => detect_5xx(&conn, now),
-                DetectorKind::Latency => detect_latency(&conn, now),
-                DetectorKind::DeadRoute => detect_dead_routes(&conn, now),
+                DetectorKind::Http5xx => detect_5xx(conn, now),
+                DetectorKind::Latency => detect_latency(conn, now),
+                DetectorKind::DeadRoute => detect_dead_routes(conn, now),
                 DetectorKind::SilentSubsystem => detect_silent(
-                    &conn,
+                    conn,
                     now,
                     &steer_blocked,
                     &steer_resets,
                     &steer_kinds,
                     &steer_skips_snap,
                 ),
-                DetectorKind::InvariantBreach => detect_invariants(&conn, now),
-                DetectorKind::BuildDeploy => detect_build(&conn, now, home),
+                DetectorKind::InvariantBreach => detect_invariants(conn, now),
+                DetectorKind::BuildDeploy => detect_build(conn, now, &detector_home),
                 // Computed above, off-runtime and outside this lock (AF-97).
                 DetectorKind::DiskPressure => {
                     (std::mem::take(&mut disk_f), std::mem::take(&mut disk_s))
                 }
-                DetectorKind::CiFailure => ci_findings(ci_runs, now),
+                DetectorKind::CiFailure => ci_findings(&detector_runs, now),
                 DetectorKind::FdPressure => detect_fd(now),
                 // Computed above, off-runtime and outside this lock, like disk.
                 DetectorKind::ConnectorAuth => (
@@ -8027,7 +8023,16 @@ async fn autofix_tick_with_inputs(
             findings.extend(f);
             suppressed.extend(s);
         }
-        (findings, suppressed, on)
+        Ok((findings, suppressed, on))
+    }).await;
+    let (findings, suppressed, on) = match detected {
+        Ok(result) => result,
+        Err(error) => {
+            rep.errors.push(format!("detector read: {error}"));
+            rep.took_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            *last_report_cell().write().unwrap() = Some(rep.clone());
+            return rep;
+        }
     };
     rep.enabled = on;
 

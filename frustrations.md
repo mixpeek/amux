@@ -4859,3 +4859,14 @@ CARD: AF-948
 SYMPTOM: Live validation of 2f85a3ab fixed the read-only maintenance failure but exposed full VACUUM monopolizing the writer on a 4.8 GB database. Health temporarily degraded and queued write wait reached 125411 ms; the queue subsequently drained without intervention.
 COST: About two minutes of delayed writes during automatic compaction. Small temporary-database tests did not represent this live size.
 FIX: Bound automatic full rewrites to 64 MiB by default, expose AMUX_VACUUM_MAX_DB_BYTES, and defer unknown or larger databases without stamping successful vacuum. Retention and WAL checkpoint continue; freed SQLite pages remain reusable. Validate the size refusal, unchanged revision/integrity and absent success marker before publishing.
+
+## Error detector holds the async runtime while scanning retained request rows
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-948
+SYMPTOM: The post-deploy five-minute sample still measured autofix async polls lasting 6.3–8.6 seconds. Its database detector pass runs synchronous request-log scans directly inside the async tick; only disk/connector probes had been moved off-runtime.
+COST: The monitor can delay the maintenance jobs it is diagnosing while scanning up to 400000 retained request rows.
+FIX: Use the existing read_async primitive for the detector pass, preserving measured findings/suppressions, pause controls, filing deduplication and error reporting. A failed scan remains an error, never a healthy empty result.
