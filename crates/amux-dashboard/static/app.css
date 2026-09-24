@@ -7285,3 +7285,8 @@ select.input { height:var(--control-height); }
 @media (max-width: 600px) { .tag-filter.bulk-visible-btn { min-height: 44px; } }
 /* The bulk button's 44px touch height must not stretch the group pills. */
 .tag-filters { align-items: center; }
+
+/* Hanging indent for wrapped peek lines: continuation lines sit under the
+   text, not at the left edge, as they do in the terminal (see _hangIndent). */
+.pk-hang { display: inline-block; max-width: 100%; box-sizing: border-box; vertical-align: top;
+  padding-left: var(--h); text-indent: calc(-1 * var(--h)); }

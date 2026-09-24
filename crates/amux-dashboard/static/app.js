@@ -11818,7 +11818,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1098';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1099';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13350,7 +13350,27 @@ function _linkifyPaths(safeHtml) {
 // adding a stage meant finding all of them — which is how the path linkifier
 // would have been half-wired.
 function _peekHtml(raw) {
-  return wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))));
+  return _hangIndent(wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw))))));
+}
+// FORMAT FOR THE SCREEN LIKE A TERMINAL (Ethan, 2026-09-24: "make peek look
+// like the underlying terminal but format for the screen"). The browser wraps
+// long lines at the viewport, and a wrapped list item restarted at the left
+// edge ("...field under / Working directory.") where Claude Code lines it up
+// under its text. Each indented or bulleted line gets a hanging indent equal
+// to its own visible prefix. Box blocks keep their own horizontal scroller and
+// are left alone; so are lines carrying block markup.
+function _hangIndent(html) {
+  let inBox = false;
+  return String(html).split('\n').map(line => {
+    if (inBox) { if (line.includes('</div>')) inBox = false; return line; }
+    if (line.startsWith('<div class="peek-box">')) { if (!line.includes('</div>')) inBox = true; return line; }
+    if (line.includes('<div') || line.includes('</div')) return line;
+    const text = line.replace(/<[^>]*>/g, '').replace(/&(?:[a-z]+|#\d+);/gi, 'x');
+    const m = text.match(/^\s*(?:(?:[-*\u2022\u25cf\u23fa\u23bf]|\d{1,3}[.)])\s+)?/);
+    const n = m ? m[0].length : 0;
+    if (n < 2 || n > 24 || n >= text.length) return line;
+    return '<span class="pk-hang" style="--h:' + n + 'ch">' + line + '</span>';
+  }).join('\n');
 }
 // True when a terminal ❯ draft is really a steering message shown elsewhere:
 // the provider's "Press up to edit queued messages" hint, or the text of a
