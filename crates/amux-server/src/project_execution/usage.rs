@@ -28,10 +28,13 @@ fn executor_owners(conn: &Connection, name: &str) -> anyhow::Result<Vec<String>>
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut owners = Vec::new();
     for worker in workers {
-        if !validated
-            .get(&worker)
-            .is_some_and(|path| path_counts.get(&canonical(path)) == Some(&1))
-        {
+        // Sharing is intentional only for the registered project checkout.
+        // Accidental aliases of individual worker checkouts stay ambiguous.
+        let project_owned = crate::fanout_workspace::load(&home, &worker)
+            .is_some_and(|w| super::checkout::belongs_to(&home, name, &w));
+        if !validated.get(&worker).is_some_and(|path| {
+            project_owned || path_counts.get(&canonical(path)) == Some(&1)
+        }) {
             continue;
         }
         let path = home.join("sessions").join(format!("{worker}.env"));

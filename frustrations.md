@@ -4903,3 +4903,20 @@ CARD: AF-951
 SYMPTOM: bucket-objects-gs3 has 25 clean worker worktrees and 24 independent tips. Project dispatch creates a new checkout per task, and UI labels advertise plural worktrees.
 COST: Review and integration span 25 directories rather than one project result; independent task heads require later composition and conflict repair.
 FIX: One project-owned checkout and branch, serialized claims and direct starts, preserved original commit/receipt imports, and review-gated project cleanup. Verification in progress.
+
+### 2026-09-24 — external Claude hooks delayed a Codex project dispatch (AF-951)
+
+- **Symptom:** the single-checkout UI lifecycle probe queued PCE-2 for 172 seconds while its CLI was visibly idle.
+- **Root cause:** hook-report.sh recovered an absent worker identity with an untargeted tmux query, which named the last selected unrelated project worker. Its false active report held delivery until freshness recovery expired it.
+- **Fix:** recover identity only from a present TMUX_PANE and target that exact pane, including rename recovery. The existing status decision event records source, age, application, and the eventual delivery delay.
+- **Verification:** scripts/test-status-hooks.sh includes an external-helper fixture that must never query tmux or emit a status report. Live project lifecycle validation is retained with AF-951.
+- **Status:** fixed; live lifecycle validation in progress.
+
+### 2026-09-24 — shared project checkout lost Codex usage ownership (AF-951)
+
+- **Symptom:** the live one-checkout probe showed 2,282,982 tokens from Claude despite using a Codex Luna worker. Its real Codex rollout was unattributed.
+- **Root cause:** the old ledger recognized only per-worker workspace paths; cwd-only ownership cannot distinguish workers sharing a project. An unrelated Claude helper hook also adopted foreign conversation IDs before native ownership checks.
+- **Fix:** validate project workspace aliases, bind usage to native CLI SessionStart identity plus cwd, and retain ownership after worker retirement. Provider-labelled hooks are refused before conversation adoption on a mismatch. Bounded recovery unbinds only proven foreign-transcript Claude rows inside a Codex project launch, preserving token totals, older history, and a durable ownership-repair event.
+- **Verification:** exact-session/shared-cwd, ambiguous identity, cwd mismatch, historical token preservation and idempotent recovery regressions; full live project proof remains in progress.
+
+- **Checked:** 132 focused project, ownership, and recovery tests passed (one real-Docker fixture explicitly ignored); status-hook durability suite passed. Repository path aliases resolve through the existing repository-identity helper; unrelated per-worker aliases remain ambiguous.

@@ -2842,6 +2842,10 @@ pub(crate) fn conversation_claims() -> std::collections::BTreeMap<String, String
             let Some(lane) = p.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
+            // Claude conversation claims cannot identify a different provider's run.
+            if provider_of(&parse_env(lane)) != "claude" {
+                continue;
+            }
             let cid = meta_str(&load_meta(lane), "cc_conversation_id");
             if !cid.is_empty() {
                 map.insert(cid, lane.to_string());
@@ -26484,6 +26488,17 @@ pub(crate) async fn report_post(
     if body["native_status"].as_bool() == Some(true) {
         return super::native_status::post(state, name, body).await;
     }
+    let report_provider = body_str(body, "provider");
+    let configured_provider = provider_of(&parse_env(name));
+    if !report_provider.is_empty() && report_provider != configured_provider {
+        tracing::warn!(session=name, reported_provider=%report_provider,
+            expected_provider=%configured_provider, verdict="report_provider_mismatch",
+            "refused foreign provider status and conversation ownership");
+        return jresp(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"error":"report provider does not match worker"}),
+        );
+    }
     // SELF-REPORTED CONVERSATION ID (AMUX-2936). Handled here, above the
     // subagent early-return, so EVERY report shape carries it — a lane that only
     // ever fires SubagentStart would otherwise never heal.
@@ -39060,6 +39075,24 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     /// four unclaimed transcripts in a shared project dir so no fallback can
     /// resolve it, and therefore blind to the staged guard on all 304 of its
     /// warnings. Case 1 below is that lane.
+    #[tokio::test]
+    async fn foreign_provider_report_cannot_adopt_conversation_or_change_status() {
+        use rusqlite::OptionalExtension;
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state.clone());
+        std::fs::write(env_path("codex-project"), "CC_PROVIDER=codex\n").unwrap();
+        let (status, _) = call(&app, "POST", "/api/sessions/codex-project/report",
+            Some(json!({"state":"active","provider":"claude","session_id":"bfee1ec0-f9fa-4c1b-9a77-0d1e2f3a4b5c"}))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(meta_str(&load_meta("codex-project"), "cc_conversation_id").is_empty());
+        let conn = state.store.read().unwrap();
+        let reports: Option<String> = conn.query_row("SELECT value FROM prefs WHERE key='session_reports'", [], |r|r.get(0)).optional().unwrap();
+        assert!(reports.is_none_or(|raw| serde_json::from_str::<Value>(&raw).unwrap()["codex-project"].is_null()));
+    }
+
     #[tokio::test]
     async fn a_lane_reporting_its_own_conv_id_heals_blindness_and_refuses_cross_links() {
         let home = tempfile::tempdir().unwrap();
