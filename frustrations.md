@@ -4364,3 +4364,14 @@ CARD: AF-947
 SYMPTOM: Goal 03 intake recovered all 23 tasks, then workers on the shared database were simultaneously prepared by servers on 8824 and an old manual 8823 process. Each reported an empty index while another finished the same checkout; launch scripts raced too. The existing database ownership lock only warned and deliberately allowed both schedulers.
 COST: Several healthy completed checkouts were held as interrupted, worker launches failed, and task attempts were consumed before any provider work.
 FIX: Pause the affected project through UI and stop the obsolete duplicate process without touching its workers/files. Refuse a second database runtime before migrations or scheduling when ownership cannot be established; test rejection, owner identity, and recovery after release. Serialize project workspace preparation with the worker operation lock already used by startup/adoption. Treat the two known incomplete-checkout diagnostics as bounded prelaunch retries, preserving files and refusing wrong repositories or dirty-workspace shortcuts.
+
+## Dead endpoint owner prevented the canonical server from adopting its fix
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: After stopping the obsolete 8823 runtime, endpoint.json still named that dead process. The production builder repeatedly queried its dead URL and refused adoption even though 8824 was healthy.
+COST: The duplicate-runtime repair could not deploy autonomously.
+FIX: Builder endpoint discovery checks the recorded owner. A measured dead owner falls back to the configured server port and logs ENDPOINT OWNER EXITED; a live owner or explicit URL remains authoritative. Hermetic activation tests exercise both dead and live ownership. No endpoint receipt is manually rewritten.

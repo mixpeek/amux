@@ -180,5 +180,16 @@ expect test "$(grep -c '^build ' "$TRACE")" = 2
 expect grep -q "$ELECTED" "$INSTALL"
 expect test "$(cat "$STAMP")" = "$ELECTED"
 
+# A retired duplicate may leave endpoint.json naming its dead process. The
+# builder must resolve the configured server without editing that receipt.
+printf '{"canonical_url":"https://localhost:8823","pid":2147483647}\n' > "$FAKE_HOME/.amux/endpoint.json"
+run_builder "$AUTH"
+expect grep -q 'https://localhost:8824/api/board/overlap/deployment-permit' "$CURL_TRACE"
+expect grep -q 'ENDPOINT OWNER EXITED.*action=use_configured_server' "$LOG"
+# A live owner remains authoritative, including a nondefault port.
+printf '{"canonical_url":"https://localhost:18824","pid":%s}\n' "$$" > "$FAKE_HOME/.amux/endpoint.json"
+run_builder "$AUTH"
+expect grep -q 'https://localhost:18824/api/board/overlap/deployment-permit' "$CURL_TRACE"
+
 echo "test-build-activation-authority: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

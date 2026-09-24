@@ -75,17 +75,27 @@ server_api_base() {
   local api
   api="${AMUX_URL:-}"
   if [ -z "$api" ] && [ -r "$HOME/.amux/endpoint.json" ]; then
-    api=$(python3 - "$HOME/.amux/endpoint.json" <<'PY' 2>/dev/null || true
-import json,sys
+    api=$(python3 - "$HOME/.amux/endpoint.json" "$LOG" <<'PY' 2>/dev/null || true
+import json,os,sys
 try:
     d=json.load(open(sys.argv[1]))
+    pid=d.get('pid')
+    if isinstance(pid,int) and pid > 0:
+        try:
+            os.kill(pid,0)
+        except ProcessLookupError:
+            with open(sys.argv[2],'a') as log:
+                log.write(f"== ENDPOINT OWNER EXITED pid={pid} measured=true action=use_configured_server\n")
+            raise SystemExit(0)
+        except PermissionError:
+            pass  # Alive, but owned by another account.
     print(d.get('canonical_url') or d.get('url') or d.get('endpoint') or '')
 except Exception:
     pass
 PY
 )
   fi
-  printf '%s\n' "${api:-https://localhost:8824}"
+  printf '%s\n' "${api:-https://localhost:${AMUX_RS_PORT:-8824}}"
 }
 
 # One measurement owns both the decision and its receipt. A later successful
