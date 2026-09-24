@@ -476,6 +476,35 @@ const LONG_BY_DESIGN: &[(&str, f64)] = &[
     // to pin even one capture at its limit clears this budget and still files,
     // which is the one latency story on this route that IS wrong.
     ("/api/workers/{id}/resume", 22_350.0),
+    // POST /api/sessions/{name}/steer (AMUX-5024). The filed row was 10,104 ms
+    // against a 10,000 ms floor — BELOW this route's own p95. Measured over the
+    // whole retained request log, n=226:
+    //
+    //     p50 114 ms | p90 7006 | p95 11091 | p99 14480 | max 17094
+    //     15 requests (6.64%) already exceed 10s; 32 (14.16%) exceed 5s
+    //
+    // So the flat floor sits between this route's normal (114 ms) and its design
+    // bound, which is exactly the threshold-below-baseline defect the detector's
+    // own verdict text names.
+    //
+    // THE BUDGET IS ADDED UP FROM THIS ROUTE'S OWN TIMEOUTS, not guessed:
+    //   - `verify_submitted` polls the pane `for _ in 0..5 { sleep_ms(300) }`,
+    //     and the retry path runs a second such loop -> 3,000 ms
+    //   - the delivered prompt is auto-captured as a ledger card, which calls
+    //     `board_intake::plan` -> the semantic classifier, whose own deadline is
+    //     `intake_model_timeout_ms()`, default 20,000 ms. That is the dominant
+    //     term and it is a MODEL CALL on the request path
+    //   - `board_intake::lock(&cap_session, "agent")` serialises concurrent
+    //     captures for the same session behind each other
+    // 20,000 + 3,000 = 23,000. Observed max is 17,094 ms, inside it.
+    //
+    // Still reportable: past 23s the classifier's own 20s deadline has failed to
+    // bound the call, which is the one latency story on this route that IS
+    // wrong. Raising the classifier's timeout without raising this entry would
+    // silently re-arm the same false filing, so the two numbers are tied by the
+    // comment rather than by code — `intake_model_timeout_ms` reads an env var
+    // this table cannot see.
+    ("/api/sessions/{name}/steer", 23_000.0),
 ];
 
 /// WARN/ERROR lines the server logged INSIDE one request's own window.
@@ -14605,6 +14634,81 @@ mod tests {
     /// baseline defect per-endpoint; a run PAST the design budget still
     /// files, because that means the endpoint's own timeout failed to bound
     /// the call, which is the one latency story there that IS wrong.
+    #[tokio::test]
+    /// AMUX-5024. The steer route's ordinary tail must stop filing, and a
+    /// request past its own bound must still file.
+    ///
+    /// Measured over the whole retained request log, n=226: p50 114 ms,
+    /// p90 7006, p95 11091, p99 14480, max 17094, with 15 requests (6.64%)
+    /// already over the 10s floor. The card that prompted this was 10,104 ms,
+    /// BELOW this route's own p95.
+    ///
+    /// The budget is added up from the route's own timeouts: `verify_submitted`
+    /// polls the pane twice at 5 x 300 ms (3,000 ms) and the auto-captured
+    /// ledger card calls `board_intake::plan`, whose classifier deadline is
+    /// `intake_model_timeout_ms()`, default 20,000 ms.
+    async fn the_steer_routes_ordinary_tail_is_budgeted_not_filed() {
+        let (st, _d) = state();
+        let now = unix_now();
+        // Four rows over the 10s floor and inside the 23s budget — the shape
+        // the live distribution actually has.
+        for (i, ms) in [10_104.0, 11_500.0, 14_480.0, 17_094.0].iter().enumerate() {
+            log_row(
+                &st,
+                Row {
+                    ts: now - 500.0 + i as f64,
+                    method: "POST",
+                    path: "/api/sessions/amux/steer",
+                    family: "/api/sessions",
+                    status: 200,
+                    body: "",
+                    worker: "",
+                    ua: "curl/8",
+                    ms: *ms,
+                },
+            );
+        }
+        let (f, _) = detect_latency(&st.store.read().unwrap(), now);
+        assert!(
+            !f.iter().any(|x| x.signature.contains("/api/sessions/{name}/steer")),
+            "an ordinary tail inside the 23s budget must not file: {:?}",
+            f.iter().map(|x| x.signature.clone()).collect::<Vec<_>>()
+        );
+
+        // Past the budget the classifier's own 20s deadline has failed to bound
+        // the call, which is the one latency story on this route that IS wrong.
+        log_row(
+            &st,
+            Row {
+                ts: now - 100.0,
+                method: "POST",
+                path: "/api/sessions/amux/steer",
+                family: "/api/sessions",
+                status: 200,
+                body: "",
+                worker: "",
+                ua: "curl/8",
+                ms: 31_000.0,
+            },
+        );
+        let (f2, _) = detect_latency(&st.store.read().unwrap(), now);
+        let card = f2
+            .iter()
+            .find(|x| x.signature.contains("/api/sessions/{name}/steer"))
+            .expect("a request past the 23s budget must still file");
+        let ev: BTreeMap<_, _> = card.evidence.iter().cloned().collect();
+        assert_eq!(ev["threshold_ms"], "23000", "the decision must use the budget");
+        assert!(
+            ev["verdict"].starts_with("1 request(s)"),
+            "the count must be over the BUDGET, not the floor: {}",
+            ev["verdict"]
+        );
+        assert_eq!(
+            ev["n_over_floor"], "5",
+            "the floor count stays available, just not as THE count"
+        );
+    }
+
     #[tokio::test]
     async fn a_budgeted_route_counts_breaches_against_its_own_bound() {
         let (st, _d) = state();
