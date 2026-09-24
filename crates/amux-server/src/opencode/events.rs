@@ -560,11 +560,13 @@ fn strip_context_wrapper(text: &str) -> String {
     let mut t = remove_tag_block(text, "environment_context");
     t = remove_tag_block(&t, "user_instructions");
     let t = t.trim();
-    // Strip a single leading "[..]" time stamp, e.g. "[05:41 PM] do X".
-    if let Some(rest) = t.strip_prefix('[') {
-        if let Some(idx) = rest.find(']') {
-            return rest[idx + 1..].trim().to_string();
-        }
+    // Only a clock stamp is presentation metadata. Arbitrary bracketed owner
+    // text (e.g. [no-board] or [priority]) must survive the transcript view.
+    static STAMP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let stamp =
+        STAMP.get_or_init(|| regex::Regex::new(r"^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*").unwrap());
+    if let Some(prefix) = stamp.find(t) {
+        return t[prefix.end()..].to_string();
     }
     t.to_string()
 }
@@ -783,6 +785,21 @@ pub fn codex_rollout_transcript(lines: &[Value]) -> Vec<TranscriptEvent> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn raw_owner_bracketed_text_survives_transcript_projection() {
+        for text in [
+            "[no-board] Literal owner input",
+            "[priority] Keep this text",
+            "[1,2,3] example",
+        ] {
+            assert_eq!(super::strip_context_wrapper(text), text);
+        }
+        assert_eq!(
+            super::strip_context_wrapper("[05:41 PM] visible input"),
+            "visible input"
+        );
+    }
+
     // pub(crate): structured.rs's conformance tests replay these REAL
     // captured lines through the full spawn->read->translate path, so the
     // same fixture certifies both the translator and the protocol.

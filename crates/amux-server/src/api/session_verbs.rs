@@ -11942,7 +11942,7 @@ pub(crate) async fn start_session(
                 opts += " --sandbox workspace-write";
             }
             let logs = logs_dir().to_string_lossy().into_owned();
-            if !opts.contains(&logs) {
+            if !isolated && !opts.contains(&logs) {
                 opts += &format!(" --add-dir {}", sh_quote(&logs));
             }
             for path in codex_repository_write_dirs(&work_dir).await {

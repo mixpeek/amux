@@ -5640,13 +5640,13 @@ function _workerActionDefinitions(s) {
     // the label as the field name once made Save silently do nothing.
     { key: 'groups', icon: '&#x1F3F7;', label: 'Groups',
       run: "editField('" + name + "','tags','" + escJs((s.tags || []).join(', ')) + "')" },
-    { key: 'auto-drain', icon: s.auto_drain_backlog ? '&#x2611;' : '&#x2610;', label: 'Auto-drain backlog',
+    !s.isolated ? { key: 'auto-drain', icon: s.auto_drain_backlog ? '&#x2611;' : '&#x2610;', label: 'Auto-drain backlog',
       title: 'When this worker runs out of todo cards, pull its oldest eligible backlog card into todo automatically. Human, trigger, and dependency blocks stay parked.',
-      run: "toggleAutoDrain('" + name + "')" },
-    { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
+      run: "toggleAutoDrain('" + name + "')" } : null,
+    !s.isolated ? { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
       labelHtml: 'Spans groups' + _spansLabel(s),
       title: 'Let this worker message workers in other groups according to its resolved cross-group configuration.',
-      run: "toggleSpansGroups('" + name + "')" },
+      run: "toggleSpansGroups('" + name + "')" } : null,
     { key: 'directory', icon: '&#x1F4C1;', label: 'Change directory',
       run: "editField('" + name + "','dir','" + escJs(s.dir || '') + "')" },
     s.dir ? { key: 'copy-directory-link', icon: '&#x1F517;', label: 'Copy directory link',
@@ -11603,7 +11603,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1051';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1052';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11877,6 +11877,7 @@ function openPeek(name, opts) {
     _peekFilesRestore(name);
   }
   peekSession = name;
+  _applyPeekTabVisibility();
   _syncComposerPending();
   const identityOverlay = document.getElementById('peek-overlay');
   if (identityOverlay) {
