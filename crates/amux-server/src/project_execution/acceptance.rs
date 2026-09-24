@@ -36,6 +36,34 @@ use std::time::{Duration, Instant};
 /// Operational failures (git, timeout, process) retry this many times per fingerprint, then hold
 /// until the operator asks for a rerun. Semantic failures return to their owning task
 /// for bounded repair; an unchanged failed candidate is never re-run in a tight loop.
+const EXECUTION_RECEIPT_SCHEMA: &str = "amux.execution_receipt.v1";
+
+/// The producer receives the same wire version the independent consumer checks.
+/// This describes proof transport; it never generates or certifies observations.
+pub(crate) fn execution_receipt_protocol() -> Value {
+    json!({
+        "schema":EXECUTION_RECEIPT_SCHEMA,
+        "environment":{
+            "run_id":"AMUX_ACCEPTANCE_RUN_ID",
+            "candidate_sha":"AMUX_ACCEPTANCE_MAIN",
+            "receipt_path":"AMUX_ACCEPTANCE_RECEIPT",
+            "checkout_path":"AMUX_ACCEPTANCE_CANDIDATE"
+        },
+        "receipt_fields":{
+            "schema":EXECUTION_RECEIPT_SCHEMA,
+            "run_id":"copy the supplied run_id environment value",
+            "candidate_sha":"copy the supplied candidate_sha environment value (SHA, not checkout path)",
+            "state":"passed only if every actual check passed; failed otherwise; operational_failure only for unavailable infrastructure",
+            "started_at":"numeric Unix seconds measured when this invocation begins",
+            "finished_at":"numeric Unix seconds measured when this invocation finishes",
+            "subject":{"kind":"actual tested system kind; docker_image for Docker verification","id":"actual tested system identity; immutable sha256 image ID for Docker"},
+            "stages":"array of {id, state, evidence}; each required stage exactly once, evidence a nonempty array of measured JSON objects, never claimed or hardcoded success"
+        },
+        "raw_evidence":"Write every runtime_evidence_required path and assertion artifact fresh at host execution, relative to the candidate root. Keep raw measurements/logs separate from the invocation receipt. Do not commit generated runtime evidence or reuse historical files. Retain failed measurements and exit nonzero on failure.",
+        "docker_witness":"For Docker use subject.kind=docker_image, subject.id=inspected immutable ID, subject.tag=the built tag, environment.docker_context=the actual context. Build with org.amux.candidate equal to AMUX_ACCEPTANCE_MAIN. Keep the image until Amux independently inspects it after the command exits; do not remove it in verifier cleanup."
+    })
+}
+
 const MAX_OPERATIONAL_ATTEMPTS: usize = 4;
 const OBSERVE_EVERY: Duration = Duration::from_secs(30);
 
@@ -1309,7 +1337,7 @@ fn validate_execution_receipt(
     let receipt: Value = serde_json::from_slice(&bytes)
         .map_err(|e| anyhow::anyhow!("execution receipt is not valid JSON: {e}"))?;
     anyhow::ensure!(
-        receipt["schema"] == "amux.execution_receipt.v1",
+        receipt["schema"] == EXECUTION_RECEIPT_SCHEMA,
         "execution receipt schema must be amux.execution_receipt.v1"
     );
     anyhow::ensure!(
@@ -1538,7 +1566,7 @@ fn declared_operational_failure(path: &std::path::Path, run_id: &str, candidate:
     let Ok(receipt) = serde_json::from_slice::<Value>(&bytes) else {
         return false;
     };
-    receipt["schema"] == "amux.execution_receipt.v1"
+    receipt["schema"] == EXECUTION_RECEIPT_SCHEMA
         && receipt["state"] == "operational_failure"
         && receipt["run_id"] == run_id
         && receipt["candidate_sha"] == candidate

@@ -4683,3 +4683,14 @@ CARD: AF-947
 SYMPTOM: POG-16 fixed a missing root verifier, committed a new candidate, and reached an independently measured OpenAPI assertion failure. Its sole repair grant had already been spent on the missing entry point, so it stopped despite new actionable evidence.
 COST: Measurable implementation progress still required a manual retry.
 FIX: Permit at most three automatic recovery grants; after the first, require both a changed candidate SHA and a distinct verifier failure not seen in the retained recovery history. Unchanged failures, missing reports, exhausted bounds, explicit holds, pauses and budget stops remain blocked. Recheck eligibility under the writer and emit project.measured_repair_granted. Regression covers progression, repeat failure, same head, suspension, spend and cap exhaustion.
+
+## Runtime task packets omitted the receipt producer protocol
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The standalone task submitted a verifier that writes build metadata without the Amux execution schema, run identity or timestamps, and deletes its image before independent attestation. The task packet supplied stage names and assertions but omitted the exact receipt protocol and complete runtime evidence paths.
+COST: Workers had to guess an undocumented interface, guaranteeing avoidable integrated-verification failures and repair calls.
+FIX: Attach the consumer-owned wire schema, environment mapping, required receipt fields, fresh raw-evidence rules and Docker witness contract to execution task packets. Carry all runtime evidence paths separately from task-produced assets. Do not run privileged checks early, synthesize proof, waive validation or auto-approve. Packet regression confirms that unasserted text logs as well as receipt/JSON paths reach the worker.

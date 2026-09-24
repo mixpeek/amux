@@ -153,7 +153,7 @@ pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
                     ..
                 } => (
                     command.clone(),
-                    json!({"type":"fresh_execution_receipt","receipt":receipt,"required_stages":required_stages,"assertions":assertions}),
+                    json!({"type":"fresh_execution_receipt","receipt":receipt,"required_stages":required_stages,"assertions":assertions,"protocol":super::acceptance::execution_receipt_protocol()}),
                 ),
                 amux_core::project::ContractVerifier::Human { .. } => return None,
             };
@@ -165,6 +165,7 @@ pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
                 "proof": proof,
                 "evidence_required": if project_execution { Vec::<String>::new() } else { criterion.evidence.clone() },
                 "evidence_produced_by": if project_execution { "project_acceptance" } else { "task" },
+                "runtime_evidence_required": if project_execution { criterion.evidence.clone() } else { Vec::<String>::new() },
             }))
         })
         .collect::<Vec<_>>();
@@ -2386,6 +2387,20 @@ mod command_tests {
             home.path().to_str().unwrap()
         ));
         assert!(!workspace::same_repository("/missing-one", "/missing-two"));
+    }
+
+    #[test]
+    fn project_executor_receives_runtime_receipt_protocol_and_every_evidence_path() {
+        use super::*;
+        let (_dir,db,_)=super::super::outputs::tests::fixture();let c=db.read().unwrap();let mut p=store::get(&c,"sample").unwrap().unwrap();let mut row=bs::get_issue(&c,"A").unwrap().unwrap();let e=planner::execution(&c,"A").unwrap();
+        p.policy.acceptance=Some(serde_json::from_value(json!({"revision":1,"criteria":[{"id":"runtime","requirement":"Run the real system","verifier":{"type":"execution","id":"runtime-run","command":"python3 run.py","receipt":"proof/receipt.json","required_stages":["lifecycle"]},"evidence":["proof/receipt.json","proof/raw.json","proof/raw.txt"]}]})).unwrap());
+        row.acceptance_criteria=Some("[\"contract:runtime\"]".into());
+        let text=packet(&p,&row,&e);let value:Value=serde_json::from_str(text.split("Task packet:\n").nth(1).unwrap()).unwrap();let requirement=&value["contract_requirements"][0];
+        assert_eq!(requirement["evidence_required"],json!([]));
+        assert_eq!(requirement["runtime_evidence_required"],json!(["proof/receipt.json","proof/raw.json","proof/raw.txt"]));
+        assert_eq!(requirement["proof"]["protocol"]["environment"]["candidate_sha"],"AMUX_ACCEPTANCE_MAIN");
+        assert_eq!(requirement["proof"]["protocol"]["schema"],"amux.execution_receipt.v1");
+        assert!(requirement["proof"]["protocol"]["docker_witness"].as_str().unwrap().contains("Keep the image"));
     }
 
     #[test]
