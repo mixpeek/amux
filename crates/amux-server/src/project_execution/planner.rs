@@ -846,7 +846,9 @@ pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Re
     super::assets::validate_manifest(&report.assets)?;
     anyhow::ensure!(
         !criteria.is_empty()
-            && report.checks.len() == criteria.len()
+            && report.checks.iter().all(|check| !check.criterion.trim().is_empty() && !check.command.trim().is_empty()
+                && (!check.criterion.starts_with("contract:") || criteria.contains(&check.criterion)))
+            && report.checks.iter().map(|check| &check.criterion).collect::<std::collections::HashSet<_>>().len() == report.checks.len()
             && criteria.iter().all(|c| report
                 .checks
                 .iter()
@@ -860,7 +862,8 @@ pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Re
 
 pub(crate) fn report_correction_allowed(e: &Execution, report: &Report) -> bool {
     e.stage=="waiting" && !e.suspended && e.wait_category.is_none() && e.waiting.is_some()
-        && e.report.as_ref().is_some_and(|old|old.head!=report.head)
+        && (e.report.as_ref().is_some_and(|old|old.head!=report.head)
+            || (e.report.is_none() && e.waiting.as_deref()==Some("each current criterion needs exactly one executable check")))
 }
 
 pub fn record_report(
@@ -1403,6 +1406,17 @@ mod tests {
         assert!(validate_report(&row,&canonical_report(&row,&report,"git diff --check").unwrap()).is_err());
         report.checks.remove(0);report.checks[0].criterion="invented criterion".into();
         assert!(validate_report(&row,&canonical_report(&row,&report,"git diff --check").unwrap()).is_err());
+    }
+
+    #[test]
+    fn project_supplemental_checks_preserve_required_coverage_and_conflict_rejection() {
+        let (_dir,db)=fixture();let c=db.read().unwrap();let row=bs::get_issue(&c,"A").unwrap().unwrap();
+        let criterion:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap()).unwrap();
+        let mut report=Report{head:"a".repeat(40),assets:vec![fixture_asset()],summary:"tested".into(),checks:criterion.iter().map(|criterion|Check{criterion:criterion.clone(),command:"true".into()}).collect()};
+        report.checks.push(Check{criterion:"Supplemental failure-path test".into(),command:"false".into()});
+        assert!(validate_report(&row,&report).is_ok());
+        let original=report.checks.remove(0);assert!(validate_report(&row,&report).is_err());
+        report.checks.push(original.clone());report.checks.push(Check{criterion:original.criterion,command:"false".into()});assert!(validate_report(&row,&report).is_err());
     }
 
     #[test]

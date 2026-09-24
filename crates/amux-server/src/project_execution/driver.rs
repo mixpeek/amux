@@ -741,7 +741,7 @@ async fn ingest_matching_report_file(
         let Some(w)=workspace::load(&crate::config::amux_home(),&expected.worker) else { return Ok(false) };
         if workspace::project_clean_status(&w.path).await.as_deref()!=Ok("")
             || workspace::git(&w.path,&["rev-parse","HEAD"]).await.as_deref()!=Ok(file.report.head.as_str())
-            || workspace::git(&w.path,&["merge-base","--is-ancestor",&expected.report.as_ref().unwrap().head,&file.report.head]).await.is_err() {
+            || if let Some(old)=&expected.report { workspace::git(&w.path,&["merge-base","--is-ancestor",&old.head,&file.report.head]).await.is_err() } else { false } {
             return Ok(false);
         }
     }
@@ -769,7 +769,7 @@ async fn ingest_matching_report_file(
                 || (current.waiting.is_some() && !correction)
                 || current.wait_category.is_some()
                 || row.project_group.as_deref() != Some(project.as_str())
-                || (row.status != "doing" && !(correction && row.status == "review"))
+                || (row.status != "doing" && !(correction && matches!(row.status.as_str(), "review" | "blocked")))
                 || row.archived != 0
                 || !p.policy.enabled
                 || p.policy.paused
@@ -1136,9 +1136,9 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
     // candidate. Consume only current-attempt clean descendants; no new model turn.
     let reports={let c=state.store.read()?;bs::project_issues(&c,name)?.into_iter().filter_map(|row| {
         let e=planner::execution(&c,&row.id).ok()?;
-        if e.stage!="waiting" || e.report.is_none() { return None; }
+        if e.stage!="waiting" { return None; }
         let file=read_project_report_file(&e.worker).ok().flatten()?;
-        (planner::report_correction_allowed(&e,&file.report) && report_file_matches_execution(&file,&e)).then_some((row.id,e,file))
+        (planner::report_correction_allowed(&e,&file.report) && report_file_matches_execution(&file,&e) && planner::validate_report(&row,&file.report).is_ok()).then_some((row.id,e,file))
     }).collect::<Vec<_>>()};
     for (id,e,file) in reports {
         if ingest_matching_report_file(state,name,&id,&e,file).await? {
@@ -1515,6 +1515,16 @@ mod observation_tests {
             assert!(ingest_matching_report_file(&state,"sample","A",&expected,file).await.unwrap());
         });
         let now=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(now.stage,"reported");assert_eq!(now.report.unwrap().head,head);assert_eq!(now.attempt,expected.attempt);assert_eq!(now.generation,expected.generation);
+        // A structural refusal kept no report. Reconsider the exact same durable
+        // receipt after validation is repaired, without consuming a model attempt.
+        let accepted=planner::execution(&state.store.read().unwrap(),"A").unwrap().report.unwrap();
+        state.store.write(|c| {let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="waiting".into();e.report=None;e.waiting=Some("each current criterion needs exactly one executable check".into());c.execute("UPDATE issues SET status='blocked' WHERE id='A'",[])?;planner::save_execution(c,&row,&e,"test.structural_refusal").map_err(store::sql_error)}).unwrap();
+        let rejected=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        let file=ProjectReportFile{generation:rejected.generation,input_hash:rejected.input_hash.clone(),report:accepted};
+        let mut suspended=rejected.clone();suspended.suspended=true;assert!(!planner::report_correction_allowed(&suspended,&file.report));
+        let mut authorized=rejected.clone();authorized.wait_category=Some("spend".into());assert!(!planner::report_correction_allowed(&authorized,&file.report));
+        assert!(tokio::runtime::Runtime::new().unwrap().block_on(ingest_matching_report_file(&state,"sample","A",&rejected,file)).unwrap());
+        assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().attempt,expected.attempt);
     }
 
     fn write_report(c: &rusqlite::Connection, worker: &str, ts: f64) {

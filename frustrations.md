@@ -4650,3 +4650,14 @@ CARD: AF-947
 SYMPTOM: The project publish preflight passed a candidate SHA to git push --dry-run but ran Git from the main checkout. Mixpeek's installed pre-push hook includes worktree-reading checks, so ref-correct input did not guarantee candidate-correct file reads.
 COST: A preflight could validate unrelated main files or fail on a defect already repaired by the project.
 FIX: Run the unchanged repository pre-push hook from a disposable checkout of the exact candidate. Remove that checkout on success/failure; no remote ref is created and main is untouched. Version the gate signature to invalidate prior checkout-ambiguous receipts. Test with a hook that requires candidate-only file content, then a real rejecting gate, and assert main/remote/worktree cleanup.
+
+## Supplemental checks rejected complete task coverage
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-14 supplied both required checks plus two additional checks; exact report length rejected valid coverage and stranded the retained receipt.
+COST: A complete candidate needed another model turn solely to remove useful checks.
+FIX: Require every declared criterion exactly once and unique nonempty supplemental checks, then run all commands through the existing validator and verifier. Supplemental checks never replace required coverage. Reconsider structurally valid rejected receipts from the exact current generation and clean HEAD without another executor turn; preserve stale/authorization/suspension protections and log the recovered receipt.
