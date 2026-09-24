@@ -4,7 +4,7 @@
 
 Please report security issues **privately** — do not open a public issue.
 
-Email **security@mixpeek.com** (or open a [GitHub security advisory](https://github.com/mixpeek/amux/security/advisories/new)) with:
+Email **info@mixpeek.com** (or open a [GitHub security advisory](https://github.com/mixpeek/amux/security/advisories/new)) with:
 
 - what the issue is and where (file / endpoint),
 - steps to reproduce or a proof of concept,
