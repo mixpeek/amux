@@ -4207,6 +4207,17 @@ SYMPTOM: Receipt recovery became permanently blocked after ten minutes or an una
 COST: Four recovery gaps reproduced in regression tests; users were asked to resend without knowing whether the first message reached the worker.
 FIX: Keep bounded receipt polling alive; restore previously blocked uncertain messages; explicitly release absent reservations; retain durable identities; reference-count concurrent sends. Codex rollout evidence can positively reconcile exact recent user text without interpreting absence as permission to resend. TCP outage/reload/lost-ACK/restart/flapping regression and live cheap Codex transport test retain their evidence in docs and the local message-chaos test artifacts.
 
+## Explicit isolated steering created board tasks after delivery
+AREA: board
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: The status-hooks-luna connection chaos test delivered two owner steering messages literally, but the queue delivery tick minted SHL-1 and SHL-2 afterward. Enqueue-time history already suppressed intake for isolated workers; the independent delivery-time capture bypassed that guard.
+COST: Final live board audit caught two unexpected cards after the transport tests passed; required another deployment and live steering check.
+FIX: Extract delivery-time board intake into a tested function that returns before any planning, card lookup or capture when isolated. Retain normal message delivery receipts and history. Archive the two disposable test cards, and verify subsequent owner queue delivery creates none.
+
 ## A worker committing to main had no session record, so every discovery path said it did not exist
 AREA: attribution
 SEVERITY: slows
