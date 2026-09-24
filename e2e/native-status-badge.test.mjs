@@ -34,3 +34,14 @@ test('raw empty Send remains a literal key without suggestion extraction',async(
  await ctx._submitSuggestion('raw',false);
  assert.deepEqual(calls,['raw:Enter']);
 });
+test('the worker-details header pill is the status-evidence button, with no separate info icon',()=>{
+ const ctx=vm.createContext({esc:String,escJs:String,_agentsChip:()=>'',_waitingTitle:()=>'',_waitingLabel:()=> 'needs input',_idleMovedTitle:()=>'',_idleMovedSuffix:()=>''});
+ vm.runInContext(code,ctx);
+ const header=ctx._workerExecutionBadge({name:'test-worker',running:true,status:'idle'},{},{inspect:false});
+ assert.doesNotMatch(header,/ⓘ/);
+ assert.match(badge({running:true,status:'idle'}),/ⓘ/);
+ const peek=source.slice(source.indexOf('function updatePeekStatus()'),source.indexOf('function shellWords('));
+ assert.match(peek,/_workerExecutionBadge\(s, runtimeBoard, \{ inspect: false \}\)/);
+ assert.match(peek,/el\.onclick = \(\) => _openStatusDetail\(s\.name\)/);
+ assert.match(peek,/el\.setAttribute\('role', 'button'\)/);
+});

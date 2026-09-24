@@ -5168,7 +5168,7 @@ const _workerLifecyclePending = new Map();
 function _workerLifecycleInactive(s) {
   return !!(s && (s.archived || ['paused','review','archived','expired'].includes(s.lifecycle)));
 }
-function _workerExecutionBadge(s, runtimeBoard) {
+function _workerExecutionBadge(s, runtimeBoard, opts) {
   const pending = _workerLifecyclePending.get(s.name);
   if (pending) return '<span class="status-badge idle">' + pending + '…</span>';
   if (s.lifecycle === 'review') return '<span class="status-badge review" title="Completed executor retained for human artifact review">review</span>';
@@ -5190,6 +5190,9 @@ function _workerExecutionBadge(s, runtimeBoard) {
   else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
   else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
 
+  // The worker-details header makes the pill itself the entry to this
+  // evidence (updatePeekStatus), so it asks for no separate ⓘ button.
+  if (opts && opts.inspect === false) return badge;
   return badge + '<button type="button" class="status-badge" aria-label="Status evidence for ' + esc(s.name) + '" title="Inspect live status evidence" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">ⓘ</button>';
 }
 
@@ -5222,13 +5225,23 @@ function updatePeekStatus() {
   // the same output live, so this was a lossy 60-char summary of something
   // already on screen. amux is mobile-first — when the phone and a nice-to-have
   // trade off, the phone wins.
-  badge = _workerExecutionBadge(s, runtimeBoard);
+  badge = _workerExecutionBadge(s, runtimeBoard, { inspect: false });
   if (s.running && s.status === 'idle') badge += _stalledChip(s);
   if (s.running && s.rate_limited_until) {
     const _lbl = s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until';
     badge += `<span class="status-badge rate-limited" style="margin-left:6px;">${_lbl} ${_fmtResetTime(s.rate_limited_until)}</span>`;
   }
   el.innerHTML = badge;
+  // The status pill IS the button (Ethan, 2026-09-24: "make the status pill
+  // clickable and remove the info icon"). Buttons inside it (error/blocked)
+  // already stopPropagation and open the same panel.
+  el.setAttribute('role', 'button');
+  el.tabIndex = 0;
+  el.title = 'Inspect live status evidence';
+  el.setAttribute('aria-label', 'Status evidence for ' + s.name);
+  el.style.cursor = 'pointer';
+  el.onclick = () => _openStatusDetail(s.name);
+  el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openStatusDetail(s.name); } };
   // Update input placeholder based on session state
   const cmdInp = document.getElementById('peek-cmd-input');
   if (cmdInp) {
@@ -6801,7 +6814,9 @@ document.addEventListener('click', e => {
 const RETIRED_TABS = new Set(['orchestrations']);
 document.querySelectorAll('.tab-bar button[id^="tab-"]').forEach(b => { if (RETIRED_TABS.has(b.id.slice(4))) b.remove(); });
 const ALL_TABS = (function _discoverNavTabs() {
-  const REQUIRED = new Set(['sessions']);
+  // Board is required (Ethan, 2026-09-24: "make sure it's present global and
+  // worker details"): a stale saved hidden list must not remove it.
+  const REQUIRED = new Set(['sessions', 'board']);
   const out = [];
   document.querySelectorAll('.tab-bar button[id^="tab-"]').forEach(b => {
     const id = b.id.slice(4);   // strip 'tab-'
@@ -6876,7 +6891,7 @@ function _applyTabVisibility() {
   // Apply visibility
   ALL_TABS.forEach(t => {
     const el = document.getElementById('tab-' + t.id);
-    if (el) el.style.display = hiddenTabs.has(t.id) ? 'none' : '';
+    if (el) el.style.display = hiddenTabs.has(t.id) && !t.required ? 'none' : '';
   });
 }
 
@@ -7025,6 +7040,7 @@ const PEEK_TABS = (function _discoverPeekTabs() {
   });
   return out.length ? out : [{ id: 'simple', label: 'Translate' }];
 })();
+const PEEK_REQUIRED_TABS = new Set(['issues']);
 let peekHiddenTabs = (function() {
   try { const v = localStorage.getItem('amux_peek_hidden_tabs'); if (v !== null) return new Set(JSON.parse(v)); } catch(e) {}
   return new Set(['dictation', 'commits', 'git']);   // sensible default
@@ -7096,7 +7112,10 @@ function _applyPeekTabVisibility() {
     const el = document.getElementById('peek-tab-' + t.id);
     if (el) {
       const raw = sessions.find(s => s.name === peekSession)?.isolated;
-      el.style.display = peekHiddenTabs.has(t.id) || (raw && ['issues', 'schedules'].includes(t.id)) ? 'none' : '';
+      // Board is always shown, isolated workers included: it only views the
+      // worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
+      const alwaysShown = PEEK_REQUIRED_TABS.has(t.id);
+      el.style.display = !alwaysShown && (peekHiddenTabs.has(t.id) || (raw && t.id === 'schedules')) ? 'none' : '';
     }
   });
 }
@@ -7257,10 +7276,11 @@ function _renderPeekTabCustomizer() {
   let html = '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
     + '<span style="padding:0 4px 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
   html += ordered.map(t => {
-    const checked = !peekHiddenTabs.has(t.id);
-    return '<label class="tab-customizer-item" data-ptab-id="' + t.id + '" onclick="event.stopPropagation()">'
+    const req = PEEK_REQUIRED_TABS.has(t.id);
+    const checked = req || !peekHiddenTabs.has(t.id);
+    return '<label class="tab-customizer-item' + (req ? ' required' : '') + '" data-ptab-id="' + t.id + '" onclick="event.stopPropagation()">'
       + '<span class="tab-drag-handle" style="cursor:grab;color:var(--dim);padding:0 4px 0 0;font-size:0.8rem;">\u2807</span>'
-      + '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
+      + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
   menu.innerHTML = html;
   if (window.Sortable) {
@@ -7270,6 +7290,7 @@ function _renderPeekTabCustomizer() {
   }
 }
 function togglePeekTabVisibility(id, show) {
+  if (PEEK_REQUIRED_TABS.has(id)) show = true;
   if (show) peekHiddenTabs.delete(id);
   else { if (_peekTab === id) setPeekTab('terminal'); peekHiddenTabs.add(id); }
   _savePeekTabPrefs(); _applyPeekTabVisibility();
@@ -11630,7 +11651,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1074';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1075';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

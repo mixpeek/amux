@@ -710,7 +710,7 @@ fn only_the_explicitly_claimed_card_is_live_without_a_synthetic_unclaimed_state(
     // Execution badges are shared with worker details; verify the call above
     // and its implementation rather than demanding the old inline expression.
     let badge_start = app
-        .find("function _workerExecutionBadge(s, runtimeBoard)")
+        .find("function _workerExecutionBadge(s, runtimeBoard, opts)")
         .unwrap();
     let badge_tail = &app[badge_start..];
     let badge = &badge_tail[..badge_tail.find("function updatePeekStatus()").unwrap()];
