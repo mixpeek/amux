@@ -69,7 +69,8 @@ def submit():
 
 def main():
     with open(LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"event": "launch", "cwd": os.getcwd(), "pid": os.getpid(),
+        f.write(json.dumps({"event": "launch", "bin": os.path.basename(sys.argv[0]),
+                            "cwd": os.getcwd(), "pid": os.getpid(),
                             "argv": sys.argv[1:], "t": time.time()}) + "\n")
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
