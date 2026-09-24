@@ -133,6 +133,7 @@ fn inventory(
             env.get("CC_MODEL").map(String::as_str).unwrap_or(""), env.get("CC_FLAGS").map(String::as_str).unwrap_or(""));
         let parent = env.get("CC_PARENT").filter(|p| !p.is_empty() && allowed.is_none_or(|scope|scope.contains(*p)));
         Some(json!({"name":name,"ephemeral":ephemeral,"orchestrator":orchestrator,"lifecycle":lifecycle,
+            "project":env.get("CC_PROJECT").map(String::as_str).unwrap_or(""),
             "role":if orchestrator || parents.contains(name) {"orchestrator"} else {"fan-out"},
             "ephemeral_parent":parent,"profile":{"measured":true,"provider":provider,"model":model},
             "running":if *retired {json!(false)} else {Value::Null},
@@ -277,7 +278,7 @@ mod tests {
             ),
             (
                 "px-retired.env.reaped",
-                "CC_EPHEMERAL=1\nCC_PARENT=project-coordinator\n",
+                "CC_EPHEMERAL=1\nCC_PARENT=project-coordinator\nCC_PROJECT=sample\n",
             ),
             ("retired.env.reaped", "CC_EPHEMERAL=1\nCC_PARENT=parent\n"),
             (
@@ -294,6 +295,7 @@ mod tests {
         assert_eq!(rows.len(), 6);
         assert!(rows.iter().all(|w| w["name"] != "ordinary"));
         let find = |name: &str| rows.iter().find(|w| w["name"] == name).unwrap();
+        assert_eq!(find("px-retired")["project"], "sample");
         assert_eq!(find("parent")["role"], "orchestrator");
         assert_eq!(find("parent")["orchestrator"], false); // ordinary parent's unrelated board stays out
         assert_eq!(find("parent")["profile"]["model"], "gpt-5");
