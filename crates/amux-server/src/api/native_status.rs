@@ -33,6 +33,19 @@ pub(crate) fn begin_launch(name: &str, provider: &str) -> std::io::Result<(Strin
     std::fs::rename(temp, dir.join("current.json"))?;
     Ok((run, ts))
 }
+fn start_from_generation(launch: &Value, fallback: f64) -> f64 {
+    launch["started"]
+        .as_f64()
+        .filter(|ts| ts.is_finite() && *ts > 0.0)
+        .unwrap_or(fallback)
+}
+
+/// SessionStart occurs before the server finishes confirming startup. The
+/// receipt's timestamp is not the beginning of the provider's lifetime.
+pub(crate) fn launch_started_at(name: &str, fallback: f64) -> f64 {
+    start_from_generation(&generation(name), fallback)
+}
+
 pub(crate) fn owns_report(name: &str, report: &Value) -> bool {
     report["native_status"].as_bool() == Some(true)
         && report["run_id"] == generation(name)["run_id"]
@@ -327,6 +340,19 @@ mod tests {
             .unwrap(),
             4
         );
+    }
+
+    #[test]
+    fn native_start_edge_precedes_start_confirmation_without_becoming_stale() {
+        let start = start_from_generation(&json!({"started":100.0}), 104.0);
+        assert_eq!(start, 100.0);
+        assert!(super::super::sessions_legacy::report_applies(
+            "idle", 101.0, start, 105.0
+        ));
+        assert_eq!(start_from_generation(&Value::Null, 104.0), 104.0);
+        assert!(!super::super::sessions_legacy::report_applies(
+            "idle", 99.0, start, 105.0
+        ));
     }
 
     #[test]

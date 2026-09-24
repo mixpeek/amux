@@ -12573,13 +12573,25 @@ pub(crate) async fn start_session(
                 None
             }
         }
-    } else { None };
+    } else {
+        None
+    };
     let observer_prefix = if let Some((run, _)) = &status_launch {
-        format!("AMUX_STATUS_WORKER={} AMUX_STATUS_RUN_ID={} AMUX_STATUS_HOME={} AMUX_STATUS_URL={} ",
-            sh_quote(name), sh_quote(run), sh_quote(&home().to_string_lossy()),
-            sh_quote(&format!("https://localhost:{}", crate::config::canonical_port())))
-    } else { String::new() };
-    let cmd = provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated);
+        format!(
+            "AMUX_STATUS_WORKER={} AMUX_STATUS_RUN_ID={} AMUX_STATUS_HOME={} AMUX_STATUS_URL={} ",
+            sh_quote(name),
+            sh_quote(run),
+            sh_quote(&home().to_string_lossy()),
+            sh_quote(&format!(
+                "https://localhost:{}",
+                crate::config::canonical_port()
+            ))
+        )
+    } else {
+        String::new()
+    };
+    let cmd =
+        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated);
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -12704,7 +12716,10 @@ pub(crate) async fn start_session(
             let fresh_flag = format!("--name {}", sh_quote(name));
             let cmd_fresh = provider_command_in_workspace(
                 &work_dir,
-                &format!("{observer_prefix}{}", build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)),
+                &format!(
+                    "{observer_prefix}{}",
+                    build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
+                ),
                 isolated,
             );
             shell_step!(&cmd_fresh, true);
@@ -12814,7 +12829,13 @@ pub(crate) async fn start_session(
         "boot_fresh_launch".into(),
         json!(launch_was_childless && launched && pane_has_live_child(name).await == Some(true)),
     );
-    meta.insert("last_started".into(), json!(status_launch.as_ref().map(|(_, ts)| *ts as i64).unwrap_or_else(now_i64)));
+    meta.insert(
+        "last_started".into(),
+        json!(status_launch
+            .as_ref()
+            .map(|(_, ts)| *ts as i64)
+            .unwrap_or_else(now_i64)),
+    );
     // The launch directory is runtime identity, including when a saved active
     // task overrides the worker's general configured checkout.
     meta.insert("cc_cwd".into(), json!(work_dir));
@@ -16575,6 +16596,7 @@ pub(crate) fn lane_report(state: &AppState, name: &str) -> Option<LaneReport> {
         .ok()
         .flatten()
         .unwrap_or(0.0);
+    let started = super::native_status::launch_started_at(name, started);
     let now = crate::config::now_f64();
     let applies = crate::api::sessions_legacy::report_applies(&st, ts, started, now);
     if !applies {
@@ -37503,12 +37525,19 @@ mod steer_boundary_tests {
     async fn empty_control_probe_never_becomes_queued_boot_work() {
         let (state, _tmp) = tstate();
         for text in ["", " "] {
-            assert_eq!(queue_boot_prompt(&state, "empty-hook-test", text, SendOrigin::Owner).await,
-                (true, "no suggestion found".into()));
+            assert_eq!(
+                queue_boot_prompt(&state, "empty-hook-test", text, SendOrigin::Owner).await,
+                (true, "no suggestion found".into())
+            );
         }
-        let conn=state.store.read().unwrap();
+        let conn = state.store.read().unwrap();
         ensure_fleet_tables(&conn).unwrap();
-        assert_eq!(conn.query_row("SELECT count(*) FROM steering_queue", [], |r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM steering_queue", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     async fn set_report(state: &AppState, name: &str, st: &str) {
@@ -39257,67 +39286,75 @@ mod submission_gate_tests {
     }
 
     /// AMUX-5018's regression check: ONE stored message reaching a pane more than
-/// once must be detectable.
-///
-/// The specimen was one `cmd_history` row and three arrivals, the first
-/// truncated at a fixed offset and the other two complete. Nothing saw it: the
-/// acceptance predicate answers "did this land", which is `true` for one copy
-/// and `true` for three, and the sender's receipt said "sent" either way. It no
-/// longer reproduces across three probes on both the direct and queued paths,
-/// and a non-reproduction is not a check.
-///
-/// A COUNT is the thing a bool could not express, so both are asserted here
-/// over the same records.
-#[test]
-fn one_message_landing_more_than_once_is_counted_not_flattened_to_landed() {
-    let sent_at = 100.0;
-    let say = |text: &str, at: &str| {
-        json!({
-            "type": "user",
-            "message": {"role": "user", "content": text},
-            "timestamp": at,
-        })
-    };
-    // 1970-01-01T00:01:41Z is 101.0, i.e. after `sent_at`.
-    let once = vec![say("rebuild the shared plane", "1970-01-01T00:01:41Z")];
-    let thrice = vec![
-        say("rebuild the shared pl", "1970-01-01T00:01:41Z"), // the truncated copy
-        say("rebuild the shared plane", "1970-01-01T00:01:42Z"),
-        say("rebuild the shared plane", "1970-01-01T00:01:43Z"),
-    ];
+    /// once must be detectable.
+    ///
+    /// The specimen was one `cmd_history` row and three arrivals, the first
+    /// truncated at a fixed offset and the other two complete. Nothing saw it: the
+    /// acceptance predicate answers "did this land", which is `true` for one copy
+    /// and `true` for three, and the sender's receipt said "sent" either way. It no
+    /// longer reproduces across three probes on both the direct and queued paths,
+    /// and a non-reproduction is not a check.
+    ///
+    /// A COUNT is the thing a bool could not express, so both are asserted here
+    /// over the same records.
+    #[test]
+    fn one_message_landing_more_than_once_is_counted_not_flattened_to_landed() {
+        let sent_at = 100.0;
+        let say = |text: &str, at: &str| {
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": text},
+                "timestamp": at,
+            })
+        };
+        // 1970-01-01T00:01:41Z is 101.0, i.e. after `sent_at`.
+        let once = vec![say("rebuild the shared plane", "1970-01-01T00:01:41Z")];
+        let thrice = vec![
+            say("rebuild the shared pl", "1970-01-01T00:01:41Z"), // the truncated copy
+            say("rebuild the shared plane", "1970-01-01T00:01:42Z"),
+            say("rebuild the shared plane", "1970-01-01T00:01:43Z"),
+        ];
 
-    assert_eq!(
-        submission_delivery_count(&once, "rebuild the shared plane", sent_at),
-        1,
-        "a single delivery must count as one"
-    );
-    assert_eq!(
-        submission_delivery_count(&thrice, "rebuild the shared plane", sent_at),
-        2,
-        "the two COMPLETE copies are what the count is for; the spliced partial \
+        assert_eq!(
+            submission_delivery_count(&once, "rebuild the shared plane", sent_at),
+            1,
+            "a single delivery must count as one"
+        );
+        assert_eq!(
+            submission_delivery_count(&thrice, "rebuild the shared plane", sent_at),
+            2,
+            "the two COMPLETE copies are what the count is for; the spliced partial \
          does not contain the full text and is a separate symptom"
-    );
+        );
 
-    // THE POINT: the existing predicate cannot tell these apart. Asserted so
-    // nobody deletes the count as a duplicate of the bool.
-    assert!(submission_records_have(&once, "rebuild the shared plane", sent_at));
-    assert!(submission_records_have(&thrice, "rebuild the shared plane", sent_at));
+        // THE POINT: the existing predicate cannot tell these apart. Asserted so
+        // nobody deletes the count as a duplicate of the bool.
+        assert!(submission_records_have(
+            &once,
+            "rebuild the shared plane",
+            sent_at
+        ));
+        assert!(submission_records_have(
+            &thrice,
+            "rebuild the shared plane",
+            sent_at
+        ));
 
-    // And the count must be able to read ZERO, or a >1 test proves nothing
-    // about whether the function looks at its input at all.
-    assert_eq!(
-        submission_delivery_count(&once, "a phrase nobody sent", sent_at),
-        0
-    );
-    // Records older than the send are not this send's deliveries.
-    assert_eq!(
-        submission_delivery_count(&once, "rebuild the shared plane", 1_000.0),
-        0,
-        "an identical message from before the send must not count as a re-delivery"
-    );
-}
+        // And the count must be able to read ZERO, or a >1 test proves nothing
+        // about whether the function looks at its input at all.
+        assert_eq!(
+            submission_delivery_count(&once, "a phrase nobody sent", sent_at),
+            0
+        );
+        // Records older than the send are not this send's deliveries.
+        assert_eq!(
+            submission_delivery_count(&once, "rebuild the shared plane", 1_000.0),
+            0,
+            "an identical message from before the send must not count as a re-delivery"
+        );
+    }
 
-#[test]
+    #[test]
     fn native_queue_acceptance_requires_exact_new_provider_receipt() {
         let receipt = json!({"type":"queue-operation","operation":"enqueue",
             "timestamp":"1970-01-01T00:02:00Z","content":GHOST});
