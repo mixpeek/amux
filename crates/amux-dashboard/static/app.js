@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1073';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1074';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45550,6 +45550,8 @@ async function _projectSave() {
   }
   try {
     await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy,...(initial?{initial_command:initial}:{})});
+    const error=document.getElementById('project-error');if(error) error.textContent='';
+    console.info('project_settings_saved',{project:name});
     _projectStorage(pendingKey,'');_projectStorage(_projectSettingsKey(),'');_projectChoose(name);
   } catch(e){_projectError(e);}
 }

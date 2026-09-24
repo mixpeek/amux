@@ -560,12 +560,15 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
         } else if !stale_requirements && state.stage=="waiting" && !state.suspended && state.wait_category.is_none() && state.report.is_some() && state.verification_retries.is_empty() && state.waiting.as_deref().is_some_and(|r|r.contains("ModuleNotFoundError: No module named")) {
             if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="recover_verification_environment"; None }
         } else if stale_requirements || auto_repairable_wait(&state, project.policy.max_attempts) {
+            let reserved_slot=stale_requirements && matches!(state.stage.as_str(),"reserved"|"working"|"reported"|"verifying");
             if let Some(reason) = &budget_wait {
                 Some(reason.clone())
-            } else if available == 0 {
+            } else if let Some(blocker)=super::graph::readiness(conn,row)?.blocker() {
+                Some(blocker)
+            } else if available == 0 && !reserved_slot {
                 Some("executor_capacity".into())
             } else {
-                available -= 1;
+                if !reserved_slot { available -= 1; }
                 action = "claim";
                 None
             }

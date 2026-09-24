@@ -4749,3 +4749,14 @@ CARD: AF-947
 SYMPTOM: POG-20 stopped on a missing disposable test credential after a separate source-deliverable recovery had already consumed its preparation retry. Its approved contract requires nonzero API fixture readbacks.
 COST: An implementable local setup investigation was never attempted; completing a source check could not prove the runtime gate.
 FIX: Make reproducible local fixture setup explicit in every executor packet. For an owned executable fixture contract with an operational missing-credential diagnostic, admit one distinct fixture-preparation attempt per input through existing retry admission and budget/authorization guards. Preserve history and the exact command/assertions; forbid production-secret discovery, permission changes, mock runtime proof and implicit verifier downgrades. Log project.fixture_preparation_granted. Regression covers a prior source repair, one-shot exhaustion, stale generation, paused project, suspended worker, unknown contract and authorization holds. This is a bounded repair opportunity, not proof that an environment has been provisioned or that the original runtime gate passed.
+
+## Edited project criteria did not refresh their owned worker packets
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Changing api_deploy_gate from a static command to a fresh execution contract revised project acceptance but left its existing task input valid. The worker could finish using the prior packet and never learn the new receipt requirements. The Settings UI also retained a prior validation error after the corrected save succeeded.
+COST: A normal user refinement needed an extra manual worker instruction, and the successful save appeared to have failed.
+FIX: On a changed contract criterion, invalidate only its bound task inputs through the existing stale-requirements path, retaining old reports, worker identity and authorization/suspension holds. Reclaim at the normal worker boundary with a fresh generation, never mutate the running provider or claim old evidence satisfies new criteria. Emit project.contract_task_invalidated and retain project.contract_requirements_changed events. Clear the settings error only after a successful save, with project_settings_saved signal. Regressions cover active and checked bindings, unchanged/unrelated tasks, preserved spend holds, no duplicate invalidation on unchanged saves, and failure-then-success UI acknowledgement.

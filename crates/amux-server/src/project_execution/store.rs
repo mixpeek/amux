@@ -140,6 +140,7 @@ pub fn save(
     }
     conn.execute("INSERT INTO group_config(name,execution_policy,execution_rev,updated) VALUES(?1,?2,?3,?4) ON CONFLICT(name) DO UPDATE SET execution_policy=excluded.execution_policy,execution_rev=excluded.execution_rev,updated=excluded.updated",
         params![name,serde_json::to_string(policy)?,revision+1,chrono::Utc::now().timestamp()])?;
+    invalidate_changed_contract_tasks(conn, name, current.as_ref().and_then(|p|p.policy.acceptance.as_ref()), policy.acceptance.as_ref())?;
     let project = Project {
         name: name.into(),
         revision: revision + 1,
@@ -156,6 +157,36 @@ pub fn save(
             payload: Some(json!(project)),
         }],
     })
+}
+
+/// Reuse ordinary stale-requirement reconciliation. Only tasks bound to a
+/// changed criterion are invalidated; their old reports remain in history and
+/// active providers settle at a boundary before a refreshed packet is claimed.
+fn invalidate_changed_contract_tasks(conn: &Connection, name: &str, old: Option<&amux_core::project::AcceptanceContract>, new: Option<&amux_core::project::AcceptanceContract>) -> anyhow::Result<()> {
+    let Some(old)=old else { return Ok(()) };
+    let changed:std::collections::HashSet<_>=old.criteria.iter().filter(|c|new.and_then(|n|n.criterion(&c.id))!=Some(*c)).map(|c|c.id.as_str()).collect();
+    if changed.is_empty() { return Ok(()) }
+    for row in bs::project_issues(conn,name)? {
+        if row.archived!=0 || matches!(row.status.as_str(),"discarded"|"deleted") { continue; }
+        let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+        if !criteria.iter().any(|criterion|criterion.strip_prefix("contract:").or_else(||criterion.strip_prefix("review-evidence:")).is_some_and(|id|changed.contains(id))) { continue; }
+        let mut state=super::planner::execution(conn,&row.id)?;
+        if state.stage.is_empty() { continue; }
+        // Clearing identity rejects old receipts and takes the existing
+        // requirements-changed path. It does not approve a held task or retry
+        // unchanged policy. Explicit authorization and suspension survive.
+        state.input_hash.clear();
+        let reserved_slot=matches!(state.stage.as_str(),"reserved"|"working"|"reported"|"verifying");
+        if !reserved_slot { state.stage="waiting".into(); }
+        state.last_failure=state.waiting.clone().or(state.last_failure);
+        if !super::outputs::authorization_hold(conn,&row)? && state.wait_category.as_deref()!=Some("required_outputs") {
+            state.waiting=Some("requirements_changed: bound project acceptance criterion changed; refresh the same task against the new contract".into());
+        }
+        super::planner::save_execution(conn,&row,&state,"project.contract_requirements_changed")?;
+        if !reserved_slot { conn.execute("UPDATE issues SET status='blocked' WHERE id=?1 AND status<>'needsyou'",[&row.id])?; }
+        tracing::info!(project=name,task=%row.id,measured=true,n_considered=1,verdict="project.contract_task_invalidated","changed acceptance criterion invalidated its task input; old receipts and authorization holds retained");
+    }
+    Ok(())
 }
 
 fn phase_workspace_priority(phase: Phase) -> u8 {
@@ -590,6 +621,38 @@ mod tests {
     fn policy() -> ExecutionPolicy {
         serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"claude","model":"haiku"},"executor":{"provider":"claude","model":"sonnet"},"verify_command":"./verify.sh"})).unwrap()
     }
+    #[test]
+    fn project_contract_edit_refreshes_only_bound_tasks_and_preserves_holds() {
+        let dir=tempfile::tempdir().unwrap();let db=Store::open(&dir.path().join("db")).unwrap();
+        db.write(|c| {
+            let mut p=policy();p.enabled=true;p.max_executors=1;p.acceptance=Some(serde_json::from_value(json!({"revision":1,"criteria":[
+                {"id":"api","requirement":"Fixture API checks","verifier":{"type":"command","id":"api","command":"python3 api.py"},"evidence":["api.json"]},
+                {"id":"docs","requirement":"Review docs","verifier":{"type":"human","id":"docs","instructions":"Read docs"},"evidence":["docs.md"]}]})).unwrap());
+            save(c,"example",0,&p,"test").unwrap();
+            for (id,criterion,stage,category) in [("active","contract:api","working",None),("checked","contract:api","verified",None),("held","contract:api","waiting",Some("spend")),("unrelated","review-evidence:docs","verified",None)] {
+                c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES(?1,'Output','Concrete outcome',?2,'code','example',1,1,'Verify output',?3)",params![id,if stage=="verified"{"verified"}else{"doing"},json!([criterion]).to_string()])?;
+                let row=bs::get_issue(c,id)?.unwrap();let e=super::super::planner::Execution{stage:stage.into(),generation:3,worker:format!("worker-{id}"),input_hash:super::super::planner::input_hash(&row),wait_category:category.map(str::to_owned),waiting:category.map(|_|"spend: approval required".into()),..Default::default()};
+                super::super::planner::save_execution(c,&row,&e,"test.setup").unwrap();
+            }
+            p.acceptance.as_mut().unwrap().criteria[0].requirement.push_str(" with nonzero readbacks");
+            save(c,"example",1,&p,"test").unwrap();
+            let live=get(c,"example").unwrap().unwrap();
+            let plans=super::super::planner::plan(c,&live).unwrap();
+            for id in ["active","checked"] {
+                let e=super::super::planner::execution(c,id).unwrap();assert_eq!(e.stage,if id=="active"{"working"}else{"waiting"});assert!(e.input_hash.is_empty());assert_eq!(e.generation,3);
+                assert_eq!(bs::get_issue(c,id)?.unwrap().status,if id=="active"{"doing"}else{"blocked"});
+            }
+            assert_eq!(plans.iter().find(|p|p.id=="active").unwrap().action,"claim","the existing slot can refresh at capacity one");
+            assert_ne!(plans.iter().find(|p|p.id=="checked").unwrap().action,"claim","a still-settling provider retains its concurrency slot");
+            let held=super::super::planner::execution(c,"held").unwrap();assert_eq!(held.wait_category.as_deref(),Some("spend"));assert_eq!(held.waiting.as_deref(),Some("spend: approval required"));
+            assert_eq!(plans.iter().find(|p|p.id=="held").unwrap().waiting_reason.as_deref(),Some("authorization_required"));
+            assert_eq!(super::super::planner::execution(c,"unrelated").unwrap().stage,"verified");
+            assert!(!save(c,"example",2,&p,"test").unwrap().applied);
+            let count:i64=c.query_row("SELECT COUNT(*) FROM session_events WHERE type='project.contract_requirements_changed'",[],|r|r.get(0))?;assert_eq!(count,3);
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
+
     #[test]
     fn project_policy_is_revisioned_durable_and_does_not_replace_group_fields() {
         let dir = tempfile::tempdir().unwrap();
