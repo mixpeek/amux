@@ -1751,6 +1751,15 @@ pub fn queue_parked_max_s() -> f64 {
 /// inside it. That check answers "did the reaper fail?" and the answer here is
 /// no — the reaper is doing exactly what it should. Two questions, two
 /// verdicts; folding them would make one of the answers wrong.
+/// The one sanctioned way to drain a queue this check has just called unhealthy.
+///
+/// Named as a const and asserted against `request_log::ROUTE_TABLE` rather than
+/// written into the prose, because a remedy the reader cannot reach is the same
+/// as no remedy (ethos rule 1) and a remedy that USED to exist is worse: it
+/// reads as an instruction and answers 404. The test below fails if this path
+/// leaves the table, so the sentence cannot outlive the route it names.
+pub(crate) const PARKED_QUEUE_REMEDY_ROUTE: &str = "/api/workers/{id}/steer";
+
 pub fn queue_parked_behind_hold(
     items: &[QueuedItem],
     now: f64,
@@ -1802,8 +1811,15 @@ pub fn queue_parked_behind_hold(
                 format!(
                     "{count} message(s) parked for '{lane}' behind '{reason}', oldest {:.1}h. \
                      Nothing is being dropped and nothing will deliver until the hold clears; \
-                     the sender has been told via steering.undelivered and cannot act on it.",
-                    age / 3600.0
+                     the sender has been told via steering.undelivered and cannot act on it. \
+                     On resume each row arrives stamped with its age (AMUX-5013), so a \
+                     nine-day-old request is not read as current. Clearing it is a human's \
+                     call: resume '{lane}', or DELETE {} with {{\"include_system\":true}}. \
+                     The flag is not optional here: rows parked behind a hold are amux's \
+                     own (task callbacks, board pushes), and a clear-all without it spares \
+                     every one of them and answers cleared:0.",
+                    age / 3600.0,
+                    PARKED_QUEUE_REMEDY_ROUTE.replace("{id}", lane),
                 ),
             )
             .entity(lane),
@@ -6807,6 +6823,79 @@ mod negative_controls {
         assert!(
             queue_parked_behind_hold(&reapable, 0.0, bound).is_empty(),
             "archived rows belong to the reaper and to queue.has_live_consumer"
+        );
+    }
+
+    /// A REPORT THAT NAMES NO ACTION IS A REPORT NOBODY CAN CLOSE.
+    ///
+    /// `queue_parked_behind_hold` is permanently red by design: 61 of this
+    /// fleet's 168 lanes are paused on purpose, nothing drains a queue on
+    /// resume, and AMUX-5006 argued correctly that the fleet must stop calling
+    /// that healthy. What the verdict was missing is the other half of ethos
+    /// rule 3 — the state is not the LANE's to fix, so the line has to say
+    /// whose it is and what they would run. Both remedies are named because
+    /// they do different things: resuming delivers the messages, draining
+    /// discards them.
+    ///
+    /// The route half is the part that can rot without anyone noticing, which
+    /// is why it is asserted against the inventory instead of eyeballed.
+    #[test]
+    fn a_parked_queue_verdict_names_a_remedy_that_still_exists() {
+        let bound = 72.0 * 3600.0;
+        let deep = vec![QueuedItem {
+            queue: "steering".into(),
+            target: "ts-gke".into(),
+            queued_at: 0.0 - 9.1 * 86_400.0,
+            target_idle: false,
+            block_reason: Some("paused".into()),
+            idle_since: None,
+            target_selector_wait: false,
+            queued_count: 21,
+        }];
+        let rs = queue_parked_behind_hold(&deep, 0.0, bound);
+        assert_eq!(rs.len(), 1);
+        let observed = &rs[0].observed;
+
+        // The CONCRETE path, with the lane substituted. A reader must be able
+        // to paste it, not derive it.
+        assert!(
+            observed.contains("/api/workers/ts-gke/steer"),
+            "the verdict must name the drain route for THIS lane: {observed}"
+        );
+        assert!(
+            !observed.contains("{id}"),
+            "the placeholder leaked into the reader's copy: {observed}"
+        );
+        // Resuming is the other remedy and it is the one that DELIVERS, so it
+        // has to be there too or the verdict reads as "discard or live with it".
+        assert!(
+            observed.contains("resume"),
+            "resuming is the remedy that delivers rather than discards: {observed}"
+        );
+        // THE FLAG IS THE WHOLE REMEDY FOR THIS POPULATION. Measured on the
+        // live DB 2026-09-23: all 61 rows parked behind a hold carry a system
+        // guard (54 task-callback, 6 board-drive, 1 staged-guard, 1
+        // deferred-automation), and the clear-all path spares system rows by
+        // design. A verdict naming the bare DELETE sends the reader to a call
+        // that answers cleared:0 and looks broken.
+        assert!(
+            observed.contains("include_system"),
+            "without the flag the drain removes nothing from a parked queue: {observed}"
+        );
+
+        // THE ROUTE MUST STILL BE MOUNTED. Remove the entry from ROUTE_TABLE
+        // and this reddens, so the sentence cannot outlive the route.
+        let entry = crate::api::request_log::ROUTE_TABLE
+            .iter()
+            .find(|e| e.path == PARKED_QUEUE_REMEDY_ROUTE)
+            .unwrap_or_else(|| {
+                panic!("{PARKED_QUEUE_REMEDY_ROUTE} is not in ROUTE_TABLE, so the verdict is \
+                        telling every reader to call a route the inventory does not declare")
+            });
+        assert!(
+            entry.methods.contains(&"*") || entry.methods.contains(&"DELETE"),
+            "the verdict says DELETE, the inventory allows {:?}",
+            entry.methods
         );
     }
 
