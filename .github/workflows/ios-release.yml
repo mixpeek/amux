@@ -30,6 +30,10 @@ jobs:
       # word is the second signal, and the job refuses without it rather than
       # trusting that whoever pressed the button meant this one.
       - name: The confirmation must be typed
+        # Runs BEFORE checkout, so the job's default `working-directory: ios`
+        # does not exist yet and bash cannot even start (first dispatch,
+        # 2026-09-24, run 36007973875). The temp dir always exists.
+        working-directory: ${{ runner.temp }}
         run: |
           if [ "${{ inputs.confirm }}" != "SUBMIT" ]; then
             echo "::error::confirm was '${{ inputs.confirm }}', not SUBMIT — refusing to submit to Apple review"
