@@ -10,6 +10,7 @@
     "test:lifecycle:browser": "python3 scripts/lifecycle/run.py browser",
     "test:lifecycle:plan": "python3 scripts/lifecycle/run.py plan",
     "lint:spa": "bash scripts/spa-lint.sh",
+    "test:project-setup": "node --test e2e/project-setup-intent.test.mjs",
     "test:project-ui": "python3 e2e/project-lifecycle/run.py"
   },
   "devDependencies": {

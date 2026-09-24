@@ -4813,6 +4813,15 @@ function fetchSessions() {
   });
   return _sessionFetchInFlight;
 }
+function _scheduleSessionInvalidation() {
+  // A busy fleet can emit faster than 400ms indefinitely. Debouncing by
+  // resetting this timer starved status/queue reads while SSE looked healthy.
+  if (_invSessTimer) return;
+  _invSessTimer = setTimeout(() => {
+    _invSessTimer = null;
+    fetchSessions();
+  }, 400);
+}
 async function _fetchSessionsOnce() {
   const snapshotEpoch = _sessionsSnapshotEpoch;
   try {
@@ -11621,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1060';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1061';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -35087,8 +35096,7 @@ function connectSSE() {
             _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
           }
           if (key === 'sessions') {
-            clearTimeout(_invSessTimer);
-            _invSessTimer = setTimeout(fetchSessions, 400);
+            _scheduleSessionInvalidation();
           }
           if (key === 'messages') {
             clearTimeout(_invMessagesTimer);
@@ -45392,7 +45400,7 @@ function _projectConfig(project) {
   const draftBlock=project?'':(
     '<div class="project-draft-box">'+
       '<label>Describe what you want, and this fills in the fields below<textarea id="project-draft-input" rows="3" placeholder="e.g. Add a /health endpoint that checks the DB connection and returns 503 if it is down, with a test that hits it"></textarea></label>'+
-      hint('Fills in the project name, verification command and acceptance requirement from your description — review everything below before creating. It never guesses the repository path or invents a script that was not implied by the text.')+
+      hint('Fills in the project name, verification command and acceptance requirement from your description — review everything below before creating. Uses your planning model and repository-scoped spec references. Proposed whole-project verifier scripts become deliverables; review their scope before creating.')+
       '<button class="btn" type="button" id="project-draft-btn" onclick="_projectDraftFields()">Fill in the fields</button> <span id="project-draft-state" role="status"></span>'+
     '</div>'
   );
@@ -45403,7 +45411,7 @@ function _projectConfig(project) {
     '<label>Repository<span class="ac-wrap" style="display:block"><input id="project-repository" required placeholder="/absolute/path/to/repository" autocomplete="off" autocorrect="off" spellcheck="false" value="'+esc(p.repository)+'" oninput="repoAcFetch(this.value)" onfocus="repoAcFetch(this.value)" onkeydown="repoAcKeydown(event)"><span id="project-repo-ac-list" class="ac-list"></span></span>'+hint('The absolute path to the git checkout this project works in.')+'</label>'+
     '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('Which AI does the work on each task.')+'</label>'+
     '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
-    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+hint('Runs after each task. Exit 0 means the task passed — a test suite, a lint+build, or a smoke-test script.')+
+    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+hint('Baseline check after each task, in addition to its own acceptance checks. Whole-project runtime proof is defined below.')+
     '</div>'+
     '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" data-default="'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label>'+hint('What a task must prove to count as done. This runs independently on the composed, unpublished candidate: a runtime/e2e claim needs a fresh execution receipt, a raw measurement per stage, and retained evidence. Human approval publishes that exact candidate to <code>origin/main</code>.')+
     '<details class="project-settings"><summary>Advanced settings</summary><div class="project-form-grid">'+
@@ -45421,15 +45429,9 @@ function _projectConfig(project) {
     '</div></details>'+
     '<button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
 }
-// "Describe it, fill in the rest" (Ethan 2026-09-23). Calls the SAME
-// semantic-intake model the board create path already uses server-side
-// (POST /api/projects/draft -> board_intake::model_client), so drafting a
-// project reuses one LLM call site rather than adding a second. Only fills
-// fields the model can actually know from the text: name, verify_command
-// (left empty by the server if it cannot infer one) and the acceptance
-// contract's first requirement. The repository default and every advanced
-// field are untouched — a description has no way to know your filesystem or
-// override defaults you have not looked at yet.
+// Setup and task decomposition use the selected planning profile and the same
+// repository-scoped specification context. Drafting proposes settings only;
+// Create commits the full original request with the reviewed policy.
 async function _projectDraftFields() {
   const input=document.getElementById('project-draft-input'), btn=document.getElementById('project-draft-btn'), state=document.getElementById('project-draft-state');
   const description=input?input.value.trim():'';
@@ -45437,19 +45439,19 @@ async function _projectDraftFields() {
   if (btn) btn.disabled=true;
   if (state) state.textContent='Thinking…';
   try {
-    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description})});
+    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:document.getElementById('project-coordinator-provider').value,model:document.getElementById('project-coordinator').value.trim(),effort:document.getElementById('project-coordinator-effort').value||undefined}}),signal:AbortSignal.timeout(130000)});
     const d=await r.json();
     if (!r.ok || !d.measured) { if(state) state.textContent=d.why_unmeasured||d.error||'Could not draft from that description'; return; }
     const nameEl=document.getElementById('project-name');
     if (nameEl && !nameEl.value.trim() && d.name) nameEl.value=d.name;
     const verifyEl=document.getElementById('project-verify');
-    if (verifyEl && !verifyEl.value.trim() && d.verify_command) verifyEl.value=d.verify_command;
+    if (verifyEl && !verifyEl.value.trim()) verifyEl.value=d.verify_command||'git diff --check';
     const contractEl=document.getElementById('project-contract');
     // The textarea starts PRE-FILLED with the default human-review criterion
     // (not empty), so "only fill an empty field" never fired here. Compare
     // against the default it was actually rendered with instead.
     if (contractEl && contractEl.value===(contractEl.dataset.default||'') && d.requirement) {
-      contractEl.value=JSON.stringify({criteria:[{id:'requested-outcome',requirement:d.requirement,verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]},null,2);
+      contractEl.value=JSON.stringify(d.acceptance||{criteria:[{id:'requested-outcome',requirement:d.requirement,verifier:{type:'human',id:'artifact-review',instructions:'Review retained artifacts against the requested outcome before approving publication.'}}]},null,2);
     }
     _projectSettingsDirty();
     if (state) state.textContent='Filled in from your description — review before creating'+(d.via?' ('+d.via+')':'');
@@ -45462,7 +45464,7 @@ async function _projectDraftFields() {
 
 // Unsaved settings edits belong to the project they were typed in and survive
 // refresh, project switches and reloads until Save or Cancel.
-const _projectSettingIds=['name','repository','worktree','coordinator-provider','coordinator','coordinator-effort','provider','executor','executor-effort','executor-host-access','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
+const _projectSettingIds=['draft-input','name','repository','worktree','coordinator-provider','coordinator','coordinator-effort','provider','executor','executor-effort','executor-host-access','capacity','verify','verification-timeout','attempts','token-budget','cost-budget','contract'];
 function _projectCheckoutChanged() {
   const checkout=document.getElementById('project-worktree'), capacity=document.getElementById('project-capacity');
   if(checkout?.value==='0' && capacity) capacity.value='1';
@@ -45497,7 +45499,18 @@ async function _projectSave() {
   if(value('coordinator-effort')) coordinator.effort=value('coordinator-effort');
   if(value('executor-effort')) executor.effort=value('executor-effort');
   const policy={repository:value('repository'),worktree,coordinator,executor,executor_full_host_access:value('executor-host-access')==='1',verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:Number(value('capacity')),max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
-  try {await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy});_projectStorage(_projectSettingsKey(),'');_projectChoose(name);} catch(e){_projectError(e);}
+  const description=current?'':(document.getElementById('project-draft-input')?.value||'').trim();
+  const pendingKey='create_'+name;
+  let initial;
+  if(description) {
+    try { initial=JSON.parse(_projectStorage(pendingKey)); } catch(_) {}
+    if(!initial || initial.text!==description) initial={text:description,idempotency_key:crypto.randomUUID()};
+    _projectStorage(pendingKey,JSON.stringify(initial));
+  }
+  try {
+    await _projectRequest('/'+encodeURIComponent(name),'PUT',{expect_rev:current?.revision || 0,policy,...(initial?{initial_command:initial}:{})});
+    _projectStorage(pendingKey,'');_projectStorage(_projectSettingsKey(),'');_projectChoose(name);
+  } catch(e){_projectError(e);}
 }
 async function _projectPause() {
   if(!_projectsData) return;

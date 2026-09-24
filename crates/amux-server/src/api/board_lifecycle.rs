@@ -837,6 +837,10 @@ fn path_token(raw: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn project_request_context(repository: &str, text: &str) -> String {
+    request_basis(text, &referenced_files(repository, text))
+}
+
 fn referenced_project_files(
     project: Option<&crate::project_execution::store::Project>,
     text: &str,
@@ -844,7 +848,11 @@ fn referenced_project_files(
     let Some(project) = project else {
         return vec![];
     };
-    let root = PathBuf::from(&project.policy.repository);
+    referenced_files(&project.policy.repository, text)
+}
+
+fn referenced_files(repository: &str, text: &str) -> Vec<ReferencedProjectFile> {
+    let root = PathBuf::from(repository);
     let Ok(root_canon) = std::fs::canonicalize(&root) else {
         return vec![];
     };

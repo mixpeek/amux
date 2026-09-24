@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2128,
+  "n_considered": 2129,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2488,6 +2488,12 @@
     },
     "_schedulePeekPoll": {
       "kind": "command._schedulePeekPoll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_scheduleSessionInvalidation": {
+      "kind": "command._scheduleSessionInvalidation",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

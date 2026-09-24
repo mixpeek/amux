@@ -315,7 +315,7 @@ impl AcceptanceContract {
 /// Runtime claims need provenance that an exit code or prose artifact cannot provide. This bounded
 /// classifier is deliberately conservative: projects can always choose `execution` explicitly,
 /// while these unmistakable phrases may never be represented by a static command.
-fn runtime_claim(requirement: &str, command: &str) -> bool {
+pub fn runtime_claim(requirement: &str, command: &str) -> bool {
     let text = format!("{}\n{}", requirement, command).to_ascii_lowercase();
     [
         "end-to-end",

@@ -4228,3 +4228,25 @@ CARD: AMUX-5041
 SYMPTOM: `codex-amux-project-lifecycle` authored four commits on origin/main between 22:02 and 22:12, including one editing a function I had pushed twelve minutes earlier. Every way I have of finding it says it is not there: `GET /api/sessions/codex-amux-project-lifecycle` returns `{"error":"session ... not found"}`, `/api/sessions` (168 entries) does not contain it, `~/.amux/sessions/` has no env file for it, and `tmux ls` has no such session. The only evidence it exists is the `Amux-Session:` trailer it writes on every commit.
 COST: I posted a wrong claim on AMUX-5040 ("the author's session no longer exists") and had to correct it on the same card. The CLAUDE.md remedy for an unreachable author is the ISOLATED case, which prescribes naming the exemption and pushing anyway; applying it here would have been a misdiagnosis, because an unregistered worker is a different thing from an isolated one and may be perfectly reachable by some channel I cannot see. There is no honest sentence available: "I could not obtain consent" is true, "the author is isolated" is false, and "the author does not exist" is false while looking the most supported.
 FIX: The `Amux-Session:` trailer is already a durable identity every commit carries, and the session registry is the only thing that does not read it. `push-consent.sh` should distinguish three states rather than two: a registered lane you can ask, an ISOLATED lane you cannot, and a trailer naming a session the registry has never heard of. The third needs its own label, because it is the one where silence about the gap reads as a clean verdict. Naming it also answers the question this entry could not: whether such a worker is unreachable or merely undiscovered.
+
+## Project creation discarded the full requested outcome and proposed human-only runtime acceptance
+AREA: board
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-23
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: On 8824, drafting bucket-objects-gs3 from a referenced 23-section spec used global Haiku despite a Codex planner selection, emitted only a human-review criterion for explicit runtime/e2e work, and left verification blank. Create saved policy without submitting the original description to project intake; the description was absent from durable settings drafts.
+COST: Project could not be started through the described outcome alone and risked appearing complete without executable runtime acceptance. Found before creating or falsely verifying the real project.
+FIX: Draft through the selected project model and repository-scoped spec reader; validate runtime execution contracts; atomically retain initial intent with replay-safe creation; persist description in the existing UI draft store. Regression tests and live UI rerun in progress.
+
+## Busy session invalidations could keep an open worker status and queue stale
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-23
+SESSION: codex-project-lifecycle
+CARD: AF-946
+SYMPTOM: The isolated Luna transport test delivered its last two messages exactly once and the server queue was empty, but the open panel still displayed Needs input and 2 queued. Each SSE session invalidation reset a 400ms debounce, so sustained fleet traffic could postpone the authoritative read indefinitely.
+COST: A delivered message appeared unsent despite correct durable receipts, undermining the connection-recovery test's visible result.
+FIX: Coalesce invalidations without resetting the pending deadline; the existing fetch deduplication still limits concurrent reads. Continuous-event regression added; deployment/UI verification pending.
