@@ -17154,6 +17154,218 @@ fn stale_delivery_stamp(
     ))
 }
 
+async fn capture_delivered_steering(
+    state: &AppState,
+    session: String,
+    text: String,
+    guard: String,
+    sender: String,
+    id: String,
+) {
+    if session_is_isolated(&session) {
+        tracing::info!(
+            session,
+            id,
+            measured = true,
+            n_considered = 1,
+            verdict = "isolated_steering_passthrough",
+            "delivered owner queue input without board intake"
+        );
+        return;
+    }
+    // NO SILENT WORK on the QUEUED path (AMUX-3148). The DIRECT send path mints
+    // a ledger card for a human prompt (cmd_hist_record_full, AMUX-3071), but
+    // this steering-queue deliverer never did — so a prompt to a BUSY lane
+    // (which is MOST prompts to an active agent) was delivered and left no
+    // board trace. amux's own session went from 89 capture cards to zero the
+    // week after the cutover for exactly this reason ("none of these have board
+    // items wtf"): its prompts queue while it is mid-turn and drain through
+    // HERE, past the one place that cards. Mirror the direct path's predicate:
+    //   guard == ""    — not a board-drive nudge / auto-pickup / self-describe
+    //   sender is deliberately NOT a gate: a substantive peer request is
+    //                    recipient work and must be managed by this board too.
+    //   title Some     — a real task, not control text / [no-board] / a keypress
+    // Separate write so a capture failure can never roll back the delivery, and
+    // IDEMPOTENT: skip if this exact prompt was already carded (the enqueue path
+    // may have minted at record time), so a queued message is never double-carded.
+    if guard.is_empty()
+        && (sender.trim().is_empty()
+            || crate::db::board_store::board_delegation_allowed(Some(&session)))
+        && amux_core::board::title_from_prompt(&text).is_some()
+        && !amux_core::board::is_informational_query(&text)
+    {
+        let (sess3, text3) = (session.clone(), text.clone());
+        let now_ms = (now_f64() * 1000.0) as i64;
+        let associated: std::sync::Arc<std::sync::Mutex<Option<CaptureAssociation>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let associated_w = associated.clone();
+        let peer_requester = sender.clone();
+        // A non-empty `sender` means a peer worker sent this (a human/schedule
+        // steer has none); the mint gate holds peer messages to a higher bar
+        // (AMUX-4498).
+        let from_peer = !sender.trim().is_empty();
+        let _intake_guard = super::board_intake::lock(&sess3, "agent").await;
+        let intake = super::board_intake::plan(
+            &state.store,
+            &sess3,
+            "agent",
+            &amux_core::board::title_from_prompt(&text3).unwrap_or_default(),
+            &text3,
+        )
+        .await;
+        let res = state
+            .store
+            .write_async(move |conn| {
+                // Already carded (enqueue-time direct mint)? Never double-card.
+                let retry_cutoff_ms = now_ms
+                    - std::env::var("AMUX_CAPTURE_DEDUP_WINDOW_S")
+                        .ok()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(45)
+                        * 1000;
+                let already: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM cmd_history \
+                         WHERE session = ?1 AND text = ?2 AND card_id IS NOT NULL AND ts>?3",
+                        rusqlite::params![sess3, text3, retry_cutoff_ms],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                if already > 0 {
+                    return Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    });
+                }
+                match associate_capture_card(conn, &sess3, &text3, now_ms, &intake, from_peer)? {
+                    Some(mut association) => {
+                        if !peer_requester.trim().is_empty() {
+                            arm_peer_callback(conn, &mut association.row, &peer_requester)?;
+                        }
+                        // Link the most recent uncarded cmd_history row for this
+                        // prompt, if the enqueue recorded one without carding it.
+                        conn.execute(
+                            "UPDATE cmd_history SET card_id = ?1, capture_pending=0 WHERE id = \
+                             (SELECT id FROM cmd_history WHERE session = ?2 AND text = ?3 \
+                              AND card_id IS NULL ORDER BY id DESC LIMIT 1)",
+                            rusqlite::params![association.row.id, sess3, text3],
+                        )?;
+                        let events = vec![crate::db::PendingEvent {
+                            entity_type: amux_core::revision::EntityType::Task,
+                            entity_id: association.row.id.clone(),
+                            mutation: if association.created {
+                                amux_core::revision::MutationKind::Created
+                            } else {
+                                amux_core::revision::MutationKind::Updated
+                            },
+                            payload: Some(association.row.snapshot()),
+                        }];
+                        *associated_w.lock().unwrap() = Some(association);
+                        Ok(crate::db::WriteOutcome {
+                            applied: true,
+                            events,
+                        })
+                    }
+                    None => Ok(crate::db::WriteOutcome {
+                        applied: false,
+                        events: vec![],
+                    }),
+                }
+            })
+            .await;
+        match res {
+            // Positive + failure log signals (two-fixes rule): the queued path now
+            // announces its captures the same way the direct path does, so a
+            // future silent stop is a queryable absence, not an invisible one.
+            Ok(_) => {
+                let association = associated.lock().ok().and_then(|mut value| value.take());
+                if let Some(association) = association {
+                    let created = association.created;
+                    let cid = association.row.id;
+                    let status = association.row.status;
+                    if created {
+                        tracing::info!(session = %session, id = %id, card_id = %cid,
+                            "ledger: auto-captured board card from STEERING-delivered prompt (AMUX-3148)");
+                    } else {
+                        tracing::info!(session = %session, id = %id, card_id = %cid, %status,
+                            measured = true, n_considered = 1,
+                            verdict = "substantive_prompt_linked_existing_card",
+                            "ledger: linked STEERING-delivered prompt to its unique live owned card");
+                    }
+                    let (event, reason, verdict) = match (created, status.as_str()) {
+                        (true, "doing") => (
+                            "task.claimed",
+                            "steering-delivered-owner-prompt",
+                            "capture-claimed",
+                        ),
+                        (true, _) => (
+                            "task.captured",
+                            "steering-delivered-owner-prompt-pending-active-claim",
+                            "capture-pending-active-claim",
+                        ),
+                        (false, "doing") => (
+                            "task.claimed",
+                            "steering-delivered-owner-prompt-existing-card",
+                            "linked-doing-card",
+                        ),
+                        (false, _) => (
+                            "task.attribution_pending",
+                            "steering-delivered-owner-prompt-existing-non-doing-card",
+                            "existing-card-must-be-claimed",
+                        ),
+                    };
+                    emit_event(
+                        state,
+                        &session,
+                        event,
+                        Some(json!({
+                            "issue": cid,
+                            "status": status,
+                            "reason": reason,
+                            "measured": true,
+                            "n_considered": 1,
+                            "verdict": verdict,
+                        })),
+                        Some(format!("prompt-card:{id}")),
+                        "prompt-capture",
+                    )
+                    .await;
+                }
+            }
+            Err(e) => tracing::warn!(session = %session, error = %e,
+                "ledger auto-capture FAILED on steering delivery; prompt delivered without a board card"),
+        }
+    }
+    if guard.is_empty()
+        && (amux_core::board::title_from_prompt(&text).is_none()
+            || amux_core::board::is_informational_query(&text))
+    {
+        let reason = if amux_core::board::is_informational_query(&text) {
+            "informational-query"
+        } else {
+            "control-prompt"
+        };
+        emit_event(
+            state,
+            &session,
+            "task.cardless",
+            Some(json!({"reason": reason})),
+            None,
+            "prompt-capture",
+        )
+        .await;
+        tracing::info!(
+            target: "amux::sessions",
+            session = %session,
+            reason,
+            measured = true,
+            n_considered = 1,
+            verdict = "cardless-allowed",
+            "runtime/board truth: steering-delivered owner prompt is explicitly cardless"
+        );
+    }
+}
+
 pub async fn steer_deliver_tick(state: &AppState) -> usize {
     // Reconcile superseded project packets before liveness/boundary checks:
     // an old unsent packet must not block retirement forever. All proof and
@@ -17806,198 +18018,15 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         delivered += 1;
         delivered_lanes.insert(session.clone());
         steer_skips().lock().unwrap().remove(&session);
-        // NO SILENT WORK on the QUEUED path (AMUX-3148). The DIRECT send path mints
-        // a ledger card for a human prompt (cmd_hist_record_full, AMUX-3071), but
-        // this steering-queue deliverer never did — so a prompt to a BUSY lane
-        // (which is MOST prompts to an active agent) was delivered and left no
-        // board trace. amux's own session went from 89 capture cards to zero the
-        // week after the cutover for exactly this reason ("none of these have board
-        // items wtf"): its prompts queue while it is mid-turn and drain through
-        // HERE, past the one place that cards. Mirror the direct path's predicate:
-        //   guard == ""    — not a board-drive nudge / auto-pickup / self-describe
-        //   sender is deliberately NOT a gate: a substantive peer request is
-        //                    recipient work and must be managed by this board too.
-        //   title Some     — a real task, not control text / [no-board] / a keypress
-        // Separate write so a capture failure can never roll back the delivery, and
-        // IDEMPOTENT: skip if this exact prompt was already carded (the enqueue path
-        // may have minted at record time), so a queued message is never double-carded.
-        if guard.is_empty()
-            && (sender.trim().is_empty()
-                || crate::db::board_store::board_delegation_allowed(Some(&session)))
-            && amux_core::board::title_from_prompt(&text).is_some()
-            && !amux_core::board::is_informational_query(&text)
-        {
-            let (sess3, text3) = (session.clone(), text.clone());
-            let now_ms = (now_f64() * 1000.0) as i64;
-            let associated: std::sync::Arc<std::sync::Mutex<Option<CaptureAssociation>>> =
-                std::sync::Arc::new(std::sync::Mutex::new(None));
-            let associated_w = associated.clone();
-            let peer_requester = sender.clone();
-            // A non-empty `sender` means a peer worker sent this (a human/schedule
-            // steer has none); the mint gate holds peer messages to a higher bar
-            // (AMUX-4498).
-            let from_peer = !sender.trim().is_empty();
-            let _intake_guard = super::board_intake::lock(&sess3, "agent").await;
-            let intake = super::board_intake::plan(
-                &state.store,
-                &sess3,
-                "agent",
-                &amux_core::board::title_from_prompt(&text3).unwrap_or_default(),
-                &text3,
-            )
-            .await;
-            let res = state
-                .store
-                .write_async(move |conn| {
-                    // Already carded (enqueue-time direct mint)? Never double-card.
-                    let retry_cutoff_ms = now_ms
-                        - std::env::var("AMUX_CAPTURE_DEDUP_WINDOW_S")
-                            .ok()
-                            .and_then(|v| v.parse::<i64>().ok())
-                            .unwrap_or(45)
-                            * 1000;
-                    let already: i64 = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM cmd_history \
-                             WHERE session = ?1 AND text = ?2 AND card_id IS NOT NULL AND ts>?3",
-                            rusqlite::params![sess3, text3, retry_cutoff_ms],
-                            |r| r.get(0),
-                        )
-                        .unwrap_or(0);
-                    if already > 0 {
-                        return Ok(crate::db::WriteOutcome {
-                            applied: false,
-                            events: vec![],
-                        });
-                    }
-                    match associate_capture_card(conn, &sess3, &text3, now_ms, &intake, from_peer)?
-                    {
-                        Some(mut association) => {
-                            if !peer_requester.trim().is_empty() {
-                                arm_peer_callback(conn, &mut association.row, &peer_requester)?;
-                            }
-                            // Link the most recent uncarded cmd_history row for this
-                            // prompt, if the enqueue recorded one without carding it.
-                            conn.execute(
-                                "UPDATE cmd_history SET card_id = ?1, capture_pending=0 WHERE id = \
-                                 (SELECT id FROM cmd_history WHERE session = ?2 AND text = ?3 \
-                                  AND card_id IS NULL ORDER BY id DESC LIMIT 1)",
-                                rusqlite::params![association.row.id, sess3, text3],
-                            )?;
-                            let events = vec![crate::db::PendingEvent {
-                                entity_type: amux_core::revision::EntityType::Task,
-                                entity_id: association.row.id.clone(),
-                                mutation: if association.created {
-                                    amux_core::revision::MutationKind::Created
-                                } else {
-                                    amux_core::revision::MutationKind::Updated
-                                },
-                                payload: Some(association.row.snapshot()),
-                            }];
-                            *associated_w.lock().unwrap() = Some(association);
-                            Ok(crate::db::WriteOutcome {
-                                applied: true,
-                                events,
-                            })
-                        }
-                        None => Ok(crate::db::WriteOutcome {
-                            applied: false,
-                            events: vec![],
-                        }),
-                    }
-                })
-                .await;
-            match res {
-                // Positive + failure log signals (two-fixes rule): the queued path now
-                // announces its captures the same way the direct path does, so a
-                // future silent stop is a queryable absence, not an invisible one.
-                Ok(_) => {
-                    let association = associated.lock().ok().and_then(|mut value| value.take());
-                    if let Some(association) = association {
-                        let created = association.created;
-                        let cid = association.row.id;
-                        let status = association.row.status;
-                        if created {
-                            tracing::info!(session = %session, id = %id, card_id = %cid,
-                                "ledger: auto-captured board card from STEERING-delivered prompt (AMUX-3148)");
-                        } else {
-                            tracing::info!(session = %session, id = %id, card_id = %cid, %status,
-                                measured = true, n_considered = 1,
-                                verdict = "substantive_prompt_linked_existing_card",
-                                "ledger: linked STEERING-delivered prompt to its unique live owned card");
-                        }
-                        let (event, reason, verdict) = match (created, status.as_str()) {
-                            (true, "doing") => (
-                                "task.claimed",
-                                "steering-delivered-owner-prompt",
-                                "capture-claimed",
-                            ),
-                            (true, _) => (
-                                "task.captured",
-                                "steering-delivered-owner-prompt-pending-active-claim",
-                                "capture-pending-active-claim",
-                            ),
-                            (false, "doing") => (
-                                "task.claimed",
-                                "steering-delivered-owner-prompt-existing-card",
-                                "linked-doing-card",
-                            ),
-                            (false, _) => (
-                                "task.attribution_pending",
-                                "steering-delivered-owner-prompt-existing-non-doing-card",
-                                "existing-card-must-be-claimed",
-                            ),
-                        };
-                        emit_event(
-                            state,
-                            &session,
-                            event,
-                            Some(json!({
-                                "issue": cid,
-                                "status": status,
-                                "reason": reason,
-                                "measured": true,
-                                "n_considered": 1,
-                                "verdict": verdict,
-                            })),
-                            Some(format!("prompt-card:{id}")),
-                            "prompt-capture",
-                        )
-                        .await;
-                    }
-                }
-                Err(e) => tracing::warn!(session = %session, error = %e,
-                    "ledger auto-capture FAILED on steering delivery; prompt delivered without a board card"),
-            }
-        }
-        if guard.is_empty()
-            && (amux_core::board::title_from_prompt(&text).is_none()
-                || amux_core::board::is_informational_query(&text))
-        {
-            let reason = if amux_core::board::is_informational_query(&text) {
-                "informational-query"
-            } else {
-                "control-prompt"
-            };
-            emit_event(
-                state,
-                &session,
-                "task.cardless",
-                Some(json!({"reason": reason})),
-                None,
-                "prompt-capture",
-            )
-            .await;
-            tracing::info!(
-                target: "amux::sessions",
-                session = %session,
-                reason,
-                measured = true,
-                n_considered = 1,
-                verdict = "cardless-allowed",
-                "runtime/board truth: steering-delivered owner prompt is explicitly cardless"
-            );
-        }
+        capture_delivered_steering(
+            state,
+            session.clone(),
+            text.clone(),
+            guard.clone(),
+            sender.clone(),
+            id.clone(),
+        )
+        .await;
         // The metadata AMUX-2643's "direct vs queued" view needs, recorded on
         // EVERY delivery path: how it was queued, how long it waited, whether
         // it went in at a boundary or mid-turn, and the submission verdict.
@@ -33056,6 +33085,17 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 2, "transport history is retained");
         }
+        // The delivery tick used to bypass the intake isolation guard after
+        // successfully draining explicit owner steering, creating raw cards.
+        capture_delivered_steering(
+            &st,
+            "raw".into(),
+            "Implement parser validation and regression tests".into(),
+            String::new(),
+            String::new(),
+            "isolated-owner-queue".into(),
+        )
+        .await;
         // Replay a receipt accepted before isolation was enabled. No model,
         // qualifier attachment or fallback board capture may run on recovery.
         st.store
