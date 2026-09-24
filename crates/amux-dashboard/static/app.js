@@ -3194,11 +3194,13 @@ async function _runSyncBanner(quiet = false) {
       if (!stillQueued) { item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++; return; }
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
+      let retryableMessageRefusal = false;
       const r = _outboxUncertainMessage(q)
         ? await _outboxConfirmMessage(q, opts) : await _boundedMutationFetch(q.url, opts);
-      if (r.status === 409 && /\/(send|steer)$/.test(q.url.split('?')[0])) {
+      if ([409, 503].includes(r.status) && /\/(send|steer)$/.test(q.url.split('?')[0])) {
         const d = await r.clone().json().catch(() => ({}));
-        if (d.submission === 'uncertain') {
+        retryableMessageRefusal = d.retryable === true && d.submitted === false;
+        if (['uncertain', 'pending'].includes(d.submission)) {
           throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
         }
       }
@@ -3211,8 +3213,8 @@ async function _runSyncBanner(quiet = false) {
         // 845 times at a flat 4/min for over three hours, and generated enough
         // 5xx on its own to trip the route.mounted_routes_answer invariant
         // (AMUX-4900) where it was then filed as a server fault.
-        if (_outboxPermanentRefusal(r.status)
-          || !(r.status >= 500 || [401, 408, 429].includes(r.status))) q.state = 'blocked';
+        if (!retryableMessageRefusal && (_outboxPermanentRefusal(r.status)
+          || !(r.status >= 500 || [401, 408, 429].includes(r.status)))) q.state = 'blocked';
         throw new Error(await _apiErrText(r));
       }
       if (/\/api\/board\/[^/?]+$/.test(q.url) && (q.options.method || '').toUpperCase() === 'PATCH') {
@@ -3356,7 +3358,7 @@ function _outboxMessageId(q) {
 }
 function _outboxUncertainMessage(q) {
   return !!_outboxMessageId(q) && (q.delivery_uncertain === true ||
-    (q.state === 'blocked' && /acceptance is uncertain|delivery unconfirmed/i.test(q.error || '')));
+    (q.state === 'blocked' && /acceptance is uncertain|delivery unconfirmed|confirmation timed out|not confirmed and amux cannot check/i.test(q.error || '')));
 }
 // A 5xx the outbox must NOT retry, because it is a statement about the
 // CAPABILITY rather than about this attempt (AMUX-4910).
@@ -3385,15 +3387,12 @@ function _outboxUncertainMessage(q) {
 function _outboxPermanentRefusal(status) {
   return status === 501 || status === 505;
 }
-// 10 minutes. After this, stop auto-checking and let the user decide.
-const _OUTBOX_CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
 async function _outboxConfirmMessage(q, opts) {
   q.delivery_uncertain = true;
   // Counted from when THIS entry began being re-checked, not from when it was
   // queued: an entry restored after days offline has not been checked for
   // days, and its first read may well confirm it.
   q.checking_since ||= Date.now();
-  const checkingSince = q.checking_since;
   // AMUX-4594: the text lets the server settle a reservation no live send owns
   // from the lane transcript. A steering row has no typed prompt to match.
   let text = '';
@@ -3417,22 +3416,11 @@ async function _outboxConfirmMessage(q, opts) {
     _outboxDiagnostic('acceptance_released', {id:q.id, measured:true, n_considered:1});
     return _boundedMutationFetch(q.url, opts);
   }
+  // A missing transcript can become available after a worker/server restart.
+  // Keep receipt reconciliation alive at the normal capped backoff. Neither an
+  // outage's duration nor missing evidence authorizes another terminal paste.
   if (receipt?.stranded === true && receipt.delivered === 'unknown' && receipt.msg_id === msgId) {
-    // Nothing owns the reservation and amux has no evidence either way, so the
-    // person decides instead of the tab checking forever (AMUX-4594).
-    Object.assign(q, {delivery_uncertain:false, error:''});
     _outboxDiagnostic('acceptance_unknown', {id:q.id, measured:false, n_considered:1});
-    throw Object.assign(new Error('Not confirmed and amux cannot check: look at the worker, then resend or dismiss'), {outboxBlocked:true});
-  }
-  // Still pending. The fallback from ba203699 stands: past the timeout, stop
-  // auto-checking and let the person decide (Ethan 2026-09-14 incident).
-  if (Date.now() - checkingSince > _OUTBOX_CONFIRM_TIMEOUT_MS) {
-    _outboxDiagnostic('acceptance_timed_out', {id:q.id, measured:true, n_considered:1,
-      age_min:Math.round((Date.now() - checkingSince) / 60000)});
-    q.delivery_uncertain = false;
-    throw Object.assign(
-      new Error('Confirmation timed out after ' + Math.round((Date.now() - checkingSince) / 60000) + 'm. Dismiss or retry.'),
-      {outboxBlocked:true});
   }
   throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
 }
@@ -3853,7 +3841,7 @@ function _validateMessageAcknowledgement(receipt, url) {
         receipt.submitted === true || receipt.submission === 'deferred'))) return;
   // An ambiguous HTTP 200 is not a delivery receipt. Keep the intent for
   // explicit review instead of repeatedly injecting text into a live terminal.
-  throw Object.assign(new Error('Message delivery unconfirmed — review the queued message and terminal before retrying'), {outboxUncertain:true});
+  throw Object.assign(new Error('Message delivery unconfirmed — checking automatically'), {outboxUncertain:true});
 }
 function _localMessageRequest(url, init) {
   if ((init?.method || '').toUpperCase() !== 'POST' || !/\/api\/sessions\/[^/]+\/(send|steer)$/.test(url.split('?')[0])) return false;
@@ -11623,7 +11611,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1058';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1059';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

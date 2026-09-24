@@ -4195,3 +4195,14 @@ CARD: AF-946
 SYMPTOM: Live status-hooks-haiku test emitted a permission_prompt notification for AskUserQuestion, then no Stop hook after Escape; the card stayed blocked over a completed cancellation. A separate parent Stop hid its running background shell.
 COST: Two incorrect worker statuses reproduced in UI; three additional bounded test turns and status inspection.
 FIX: Preserve explicit question waiting across notifications, reconcile newer provider transcript interruption boundaries in both display and delivery, and retain working while provider-owned background shell footer remains. Regression tests added; final deployed validation recorded separately.
+
+## Reconnecting messages stopped recovering or lost their live send owner
+AREA: cloud
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Receipt recovery became permanently blocked after ten minutes or an unavailable transcript. A forgotten reservation returned accepted:false forever. Concurrent retries removed the original send's in-flight marker when the retry finished first, and confirmed identities were pruned after 30 days.
+COST: Four recovery gaps reproduced in regression tests; users were asked to resend without knowing whether the first message reached the worker.
+FIX: Keep bounded receipt polling alive; restore previously blocked uncertain messages; explicitly release absent reservations; retain durable identities; reference-count concurrent sends. Codex rollout evidence can positively reconcile exact recent user text without interpreting absence as permission to resend. TCP outage/reload/lost-ACK/restart/flapping regression and live cheap Codex transport test retain their evidence in docs and the local message-chaos test artifacts.

@@ -7513,9 +7513,8 @@ async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<R
     let (session, identity) = (name.to_string(), msg_id.to_string());
     let reply = state.store.write_async(move |conn| {
         ensure_fleet_tables(conn)?;
-        // Keep confirmed receipts across long offline periods. An interrupted
-        // reservation never expires into permission to inject the text again.
-        conn.execute("DELETE FROM send_dedup WHERE receipt_id IS NOT NULL AND ts < ?", [now_i64() - 30 * 86400])?;
+        // Delivery identities are durable. Deleting an old receipt would make
+        // a device returning after a long outage repeat an accepted message.
         let inserted = conn.execute(
             "INSERT INTO send_dedup (session,msg_id,ts) VALUES (?,?,?) ON CONFLICT(session,msg_id) DO NOTHING",
             rusqlite::params![session,identity,now_i64()],
@@ -7593,7 +7592,10 @@ fn send_receipt(state: &AppState, name: &str, msg_id: &str) -> Response {
                 "confirmed durable receipt independently of the original send response");
             j200(json!({"ok":true,"accepted":true,"id":id,"msg_id":msg_id}))
         }
-        Ok(None) | Err(rusqlite::Error::QueryReturnedNoRows) => jresp(
+        Err(rusqlite::Error::QueryReturnedNoRows) => j200(json!({
+            "ok":true,"accepted":false,"released":true,"delivered":false,"msg_id":msg_id
+        })),
+        Ok(None) => jresp(
             StatusCode::ACCEPTED,
             json!({"ok":true,"accepted":false,"msg_id":msg_id}),
         ),
@@ -7705,6 +7707,43 @@ fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64) -
     }
 }
 
+// Codex rollout recovery is positive-only: absence in a bounded/rotated log
+// cannot authorize a second delivery. Ignore assistant/tool text and require a
+// timestamp so an old occurrence cannot confirm a new message.
+fn codex_receipt_evidence(path: &Path, text: &str, since: i64) -> Option<bool> {
+    for v in iter_jsonl_tail(path, 16 * 1024 * 1024) {
+        let at = v["timestamp"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|s| s.timestamp());
+        if !at.is_some_and(|at| at >= since) {
+            continue;
+        }
+        let payload = &v["payload"];
+        let content = if v["type"] == "event_msg" && payload["type"] == "user_message" {
+            payload["message"].as_str().map(str::to_owned)
+        } else if v["type"] == "response_item"
+            && payload["type"] == "message"
+            && payload["role"] == "user"
+        {
+            payload["content"].as_array().map(|parts| {
+                parts
+                    .iter()
+                    .filter(|part| part["type"] == "input_text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        } else {
+            None
+        };
+        if content.as_deref() == Some(text) {
+            return Some(true);
+        }
+    }
+    None
+}
+
 fn stranded_answer(body: Value) -> Response {
     let mut response = j200(body);
     response.headers_mut().insert(
@@ -7764,7 +7803,14 @@ async fn send_receipt_resolving(
         && text_sha
             .as_deref()
             .is_none_or(|sha| sha == text_sha256(text));
-    let evidence = if judgeable {
+    let codex = matches!(provider_of(&parse_env(name)).as_str(), "codex" | "ollama");
+    let evidence = if codex
+        && !text.is_empty()
+        && text.len() <= 2000
+        && text_sha.as_deref() == Some(text_sha256(text).as_str())
+    {
+        codex_rollout_path(name).map(|path| (codex_receipt_evidence(&path, text, ts), path))
+    } else if !codex && judgeable {
         session_jsonl_path(name).map(|path| (transcript_has_prompt_since(&path, text, ts), path))
     } else {
         None
@@ -7802,7 +7848,7 @@ async fn send_receipt_resolving(
             );
             stranded_answer(json!({
                 "ok": true, "accepted": false, "stranded": true, "delivered": "unknown", "msg_id": msg_id,
-                "next": "look at the worker's terminal, then resend or dismiss",
+                "next": "receipt recovery remains pending; retry this receipt read, never a new message identity",
             }))
         }
     }
@@ -22143,9 +22189,10 @@ async fn isolated_peer_refusal(
 /// Message IDs a send task in THIS process is still working on (AMUX-4594).
 /// A reservation outside this set with no receipt belongs to no live send: a
 /// handler dropped before AMUX-4589, or a process that has since restarted.
-fn send_in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
+fn send_in_flight() -> &'static std::sync::Mutex<std::collections::HashMap<(String, String), usize>>
+{
     static IN_FLIGHT: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+        std::sync::Mutex<std::collections::HashMap<(String, String), usize>>,
     > = std::sync::OnceLock::new();
     IN_FLIGHT.get_or_init(Default::default)
 }
@@ -22161,7 +22208,7 @@ impl InFlightSend {
         }
         let key = (name.to_string(), msg_id.to_string());
         if let Ok(mut set) = send_in_flight().lock() {
-            set.insert(key.clone());
+            *set.entry(key.clone()).or_default() += 1;
         }
         Self(Some(key))
     }
@@ -22171,7 +22218,12 @@ impl Drop for InFlightSend {
     fn drop(&mut self) {
         if let Some(key) = self.0.take() {
             if let Ok(mut set) = send_in_flight().lock() {
-                set.remove(&key);
+                if let Some(count) = set.get_mut(&key) {
+                    *count -= 1;
+                    if *count == 0 {
+                        set.remove(&key);
+                    }
+                }
             }
         }
     }
@@ -22181,7 +22233,7 @@ impl Drop for InFlightSend {
 fn send_is_in_flight(name: &str, msg_id: &str) -> bool {
     send_in_flight()
         .lock()
-        .map(|set| set.contains(&(name.to_string(), msg_id.to_string())))
+        .map(|set| set.contains_key(&(name.to_string(), msg_id.to_string())))
         .unwrap_or(true)
 }
 
@@ -22650,7 +22702,13 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             send_dedup_forget(state, name, &msg_id).await;
         }
     } else if ok {
-        send_dedup_accept(state, name, &msg_id, &send_response_id(name, &msg_id)).await;
+        // Typing text is not proof that the provider consumed it. Preserve the
+        // reservation on an unverified paste so receipt polling can reconcile
+        // against provider evidence instead of laundering uncertainty into a
+        // successful duplicate acknowledgement.
+        if message_acceptance_confirmed(ok, &msg) {
+            send_dedup_accept(state, name, &msg_id, &send_response_id(name, &msg_id)).await;
+        }
         update_meta(
             name,
             &[
@@ -22872,6 +22930,9 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     let (submitted, submission) = submission_verdict(ok, &msg);
     resp["submitted"] = submitted.map(Value::from).unwrap_or(Value::Null);
     resp["submission"] = json!(submission);
+    if !ok && transient_send_refusal(&msg) {
+        resp["retryable"] = json!(true);
+    }
     // A retry means the FIRST Enter was dropped. Reported even on success:
     // smoothing it into a plain "sent" is how a degrading delivery path stays
     // invisible until it drops a message for ten minutes (AMUX-2629).
@@ -22888,6 +22949,23 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     // credit-gate state (_session_auto_actions) — process state this origin
     // does not hold; named gap.
     jresp(code, resp)
+}
+
+fn message_acceptance_confirmed(ok: bool, message: &str) -> bool {
+    let (submitted, submission) = submission_verdict(ok, message);
+    ok && (submitted == Some(true) || submission == "deferred")
+}
+
+// Only refusals before text is pasted are safe to repeat automatically.
+// Drafts, selectors, lifecycle holds and uncertain submission are not retries.
+fn transient_send_refusal(message: &str) -> bool {
+    [
+        "worker is still starting",
+        "session started generating",
+        "structured worker state",
+    ]
+    .iter()
+    .any(|prefix| message.starts_with(prefix))
 }
 
 /// `reset` as a callable verb, so the promoted `/api/workers/{id}/reset`
@@ -34960,6 +35038,107 @@ CLAUDE-POSTFIX-COMPLETE
             transcript_evidence("t4788-clod"),
             (Some("claude-opus-5".into()), Some(869_632)),
             "a claude worker still reads its own transcript"
+        );
+    }
+
+    #[test]
+    fn codex_receipt_evidence_requires_recent_exact_user_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let stamp = chrono::DateTime::from_timestamp(200, 0)
+            .unwrap()
+            .to_rfc3339();
+        let row = |kind: &str, role: &str| {
+            json!({"timestamp":stamp,"type":kind,
+            "payload":{"type":"message","role":role,"content":[{"type":"input_text","text":"first\nsecond"}]}}).to_string()
+        };
+        std::fs::write(&path, row("response_item", "assistant")).unwrap();
+        assert_eq!(codex_receipt_evidence(&path, "first\nsecond", 100), None);
+        std::fs::write(&path, row("response_item", "user")).unwrap();
+        assert_eq!(
+            codex_receipt_evidence(&path, "first\nsecond", 100),
+            Some(true)
+        );
+        assert_eq!(codex_receipt_evidence(&path, "first\nsecond", 201), None);
+        assert_eq!(codex_receipt_evidence(&path, "first", 100), None);
+    }
+
+    #[test]
+    fn message_acceptance_unverified_paste_is_not_a_receipt() {
+        assert!(message_acceptance_confirmed(true, "sent"));
+        assert!(message_acceptance_confirmed(true, "queued (steering)"));
+        assert!(!message_acceptance_confirmed(
+            true,
+            "sent (could not be verified)"
+        ));
+        assert!(!message_acceptance_confirmed(false, "not submitted"));
+        assert!(!message_acceptance_confirmed(true, "no suggestion found"));
+    }
+
+    #[test]
+    fn message_acceptance_transient_refusal_excludes_drafts_and_policy_holds() {
+        assert!(transient_send_refusal(
+            "worker is still starting — retry soon"
+        ));
+        assert!(transient_send_refusal("session started generating"));
+        for message in [
+            "not submitted",
+            "composer contains a draft",
+            "session is paused",
+            "session at a selector",
+            "target is an isolated (raw-agent) worker",
+        ] {
+            assert!(!transient_send_refusal(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn concurrent_send_retry_keeps_original_in_flight() {
+        let first = InFlightSend::enter("flight-reference-fixture", "same-id");
+        let retry = InFlightSend::enter("flight-reference-fixture", "same-id");
+        drop(retry);
+        assert!(send_is_in_flight("flight-reference-fixture", "same-id"));
+        drop(first);
+        assert!(!send_is_in_flight("flight-reference-fixture", "same-id"));
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_forgotten_reservation_can_retry_and_old_receipts_survive() {
+        let (state, _dir) = state();
+        let name = "receipt-recovery-fixture";
+        assert!(send_dedup_gate(&state, name, "retry").await.is_none());
+        send_dedup_forget(&state, name, "retry").await;
+        let response = send_receipt_resolving(&state, name, "retry", "hello").await;
+        let value: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value["released"], true,
+            "a safely refused send must not wait forever: {value}"
+        );
+        assert!(send_dedup_gate(&state, name, "accepted").await.is_none());
+        send_dedup_accept(&state, name, "accepted", "receipt-old").await;
+        state
+            .store
+            .write_async(move |conn| {
+                conn.execute(
+                    "UPDATE send_dedup SET ts=? WHERE session=? AND msg_id='accepted'",
+                    rusqlite::params![now_i64() - 40 * 86400, name],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        assert!(send_dedup_gate(&state, name, "another").await.is_none());
+        assert!(
+            send_dedup_gate(&state, name, "accepted").await.is_some(),
+            "a long-offline device must not duplicate accepted text"
         );
     }
 
