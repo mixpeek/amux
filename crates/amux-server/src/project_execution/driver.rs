@@ -165,8 +165,9 @@ pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
         })
         .collect::<Vec<_>>();
     format!(
-        r#"{output_protocol}
- {checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. A contract execution verifier runs later in the harness host during whole-project acceptance; do not run it merely to produce the task report if your sandbox lacks its host capability. Commit your implementation and a human-readable candidate note, then produce a durable receipt before stopping: write the exact report body to `.amux/project-report.json` in this worktree, then optionally POST the same body to `$AMUX_URL/api/projects/{}/tasks/{}/report` with X-Amux-Session set to your worker name. Receipt body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. Every non-contract criterion needs an executable candidate-relative check; checks are static commands, no `$()`, no backticks, no `.amux` receipt files, and no absolute checkout paths. If a check needs dynamic logic, commit a script and report a static command that calls that script, for example `python3 scripts/verify.py`. Include the exact approved command for each contract criterion even when its execution is deferred to project acceptance. report.assets is required for new completed project tasks, and every task-produced `contract_requirements[].evidence_required` path below must be included as an asset when that contract criterion is referenced. Markdown/JSON/text reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after writing the receipt/report. If blocked, write `.amux/project-wait.json` before stopping with {{"generation":{},"input_hash":"{}","reason":"concrete blocker","category":"operational|spend|customer_outbound"}}, then optionally POST the same body to `$AMUX_URL/api/projects/{}/tasks/{}/wait`. Never assert success without artifacts.
+        r#"Your task is to produce the deliverables in this packet. Evidence filenames and verifier scripts are outputs you own: implement them when absent, and reuse existing work only after checking it. They are not prerequisites or evidence of another worker's obligation. Only explicit required_outputs task IDs below are upstream inputs. Never wait for your own deliverables to appear. Complete the implementation and candidate checks, then submit the report; only genuine authorization or unavailable external capabilities warrant a wait.
+ {checkout_instruction} Do not create worker boards, delegate, change task status directly, send customer outbound, or increase spend. The harness controls claims, verification, main integration and retirement. A contract execution verifier runs later in the harness host during whole-project acceptance; a Docker socket denied by your sandbox does not prevent implementing and committing the verifier/candidate note. Do that implementation first, preserve any failed local checks as diagnostics, and submit the contract command for host execution without claiming its runtime result; do not run it merely to produce the task report if your sandbox lacks its host capability. Commit your implementation and a human-readable candidate note, then produce a durable receipt before stopping: write the exact report body to `.amux/project-report.json` in this worktree, then optionally POST the same body to `$AMUX_URL/api/projects/{}/tasks/{}/report` with X-Amux-Session set to your worker name. Receipt body: {{"generation":{},"input_hash":"{}","report":{{"head":"40-character SHA","summary":"output","checks":[{{"criterion":"exact criterion","command":"falsifiable check"}}],"assets":[{{"path":"candidate-relative-report.md","sha256":"lowercase-hex-sha256"}}]}}}}. Every non-contract criterion needs an executable candidate-relative check; checks are static commands, no `$()`, no backticks, no `.amux` receipt files, and no absolute checkout paths. If a check needs dynamic logic, commit a script and report a static command that calls that script, for example `python3 scripts/verify.py`. Include the exact approved command for each contract criterion even when its execution is deferred to project acceptance. report.assets is required for new completed project tasks, and every task-produced `contract_requirements[].evidence_required` path below must be included as an asset when that contract criterion is referenced. Markdown/JSON/text reports must be committed at reported HEAD; PNG/WebM may be ignored candidate-local captures. Only these passive formats are retained and linked; never use prose paths as asset declarations. Stop after writing the receipt/report. If blocked, write `.amux/project-wait.json` before stopping with {{"generation":{},"input_hash":"{}","reason":"concrete blocker","category":"operational|spend|customer_outbound"}}, then optionally POST the same body to `$AMUX_URL/api/projects/{}/tasks/{}/wait`. Never assert success without artifacts.
+{output_protocol}
 Task packet:
 {}"#,
         p.name,
@@ -452,14 +453,27 @@ async fn recover_host_execution(
         bs::get_issue(&c, id).map_err(|e| e.to_string())?.ok_or("task disappeared")?
     };
     let waiting = expected.waiting.as_deref().ok_or("missing operational wait")?;
-    let context = waiting.split("--context ").nth(1)
+    let explicit = waiting.split("--context ").nth(1)
         .and_then(|tail| tail.split_whitespace().next())
-        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
-        .ok_or("Docker context is not identified in the operational wait")?;
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)));
+    let context = if let Some(context) = explicit {
+        context.to_string()
+    } else {
+        let shown = tokio::time::timeout(std::time::Duration::from_secs(10),
+            tokio::process::Command::new("docker").args(["context", "show"]).output())
+            .await.map_err(|_| "Docker context discovery timed out")?
+            .map_err(|e| format!("Docker context discovery failed: {e}"))?;
+        if !shown.status.success() { return Err("Docker context discovery failed".into()); }
+        let context = String::from_utf8_lossy(&shown.stdout).trim().to_string();
+        if context.is_empty() || !context.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) {
+            return Err("Docker returned an invalid context name".into());
+        }
+        context
+    };
     let probe = tokio::time::timeout(
         std::time::Duration::from_secs(20),
         tokio::process::Command::new("docker")
-            .args(["--context", context, "info", "--format", "{{.ServerVersion}}"])
+            .args(["--context", context.as_str(), "info", "--format", "{{.ServerVersion}}"])
             .output(),
     ).await.map_err(|_| "host Docker probe timed out".to_string())?
         .map_err(|e| format!("host Docker probe could not start: {e}"))?;
@@ -475,7 +489,16 @@ async fn recover_host_execution(
     let root = std::fs::canonicalize(&w.path).map_err(|e| e.to_string())?;
     let original_head = workspace::git(&w.path, &["rev-parse", "HEAD"]).await?;
     if original_head == w.base {
-        return Err("worker has no committed candidate to recover".into());
+        // The host can execute the approved runtime contract, but the model
+        // stopped before authoring its candidate. Grant one preparation turn,
+        // preserving the failed attempt and all budget/authorization checks.
+        let project=p.name.clone(); let task=id.to_string(); let expected=expected.clone();
+        let preparation_hint=format!("Host Docker context {context} has now been probed successfully by Amux. Keep sandbox permissions unchanged. Implement and commit the verifier and candidate note; submit the approved execution command for independent host acceptance. Do not fabricate runtime evidence.");
+        state.store.write_async(move |c| {
+            planner::grant_preparation(c,&project,&task,&expected,&preparation_hint).map_err(store::sql_error)
+        }).await.map_err(|e|e.to_string())?;
+        tracing::info!(project=%p.name,task=%id,context,measured=true,n_considered=1,verdict="project.host_preparation_retry","host capability measured; one candidate-preparation retry granted without sandbox expansion");
+        return Ok(());
     }
     let criteria: Vec<String> = serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))
         .map_err(|e| e.to_string())?;
@@ -639,14 +662,10 @@ struct ProjectReportFile {
     generation: i64,
     input_hash: String,
     report: planner::Report,
-    #[serde(default)]
-    mtime_s: f64,
 }
 
 fn report_file_matches_execution(file: &ProjectReportFile, execution: &Execution) -> bool {
-    let _same_attempt =
-        file.generation == execution.generation || file.mtime_s >= execution.observed_at as f64;
-    file.input_hash == execution.input_hash
+    file.generation == execution.generation && file.input_hash == execution.input_hash
 }
 
 fn read_project_report_file(worker: &str) -> Result<Option<ProjectReportFile>, String> {
@@ -659,14 +678,8 @@ fn read_project_report_file(worker: &str) -> Result<Option<ProjectReportFile>, S
     }
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?;
-    let mut file: ProjectReportFile =
+    let file: ProjectReportFile =
         serde_json::from_str(&raw).map_err(|e| format!("invalid {}: {e}", path.display()))?;
-    file.mtime_s = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
     Ok(Some(file))
 }
 
@@ -685,9 +698,7 @@ fn valid_wait_category(category: &str) -> bool {
 }
 
 fn wait_file_matches_execution(file: &ProjectWaitFile, execution: &Execution) -> bool {
-    let _same_attempt =
-        file.generation == execution.generation || file.mtime_s >= execution.observed_at as f64;
-    file.input_hash == execution.input_hash
+    file.generation == execution.generation && file.input_hash == execution.input_hash
 }
 
 fn read_project_wait_file(worker: &str) -> Result<Option<ProjectWaitFile>, String> {
@@ -718,6 +729,15 @@ async fn ingest_matching_report_file(
     expected: &Execution,
     file: ProjectReportFile,
 ) -> anyhow::Result<bool> {
+    let correction=planner::report_correction_allowed(expected,&file.report);
+    if correction {
+        let Some(w)=workspace::load(&crate::config::amux_home(),&expected.worker) else { return Ok(false) };
+        if workspace::project_clean_status(&w.path).await.as_deref()!=Ok("")
+            || workspace::git(&w.path,&["rev-parse","HEAD"]).await.as_deref()!=Ok(file.report.head.as_str())
+            || workspace::git(&w.path,&["merge-base","--is-ancestor",&expected.report.as_ref().unwrap().head,&file.report.head]).await.is_err() {
+            return Ok(false);
+        }
+    }
     let (project, id, expected) = (project.to_string(), id.to_string(), expected.clone());
     let out = state
         .store
@@ -728,8 +748,10 @@ async fn ingest_matching_report_file(
                 .map_err(store::sql_error)?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             if current.generation != expected.generation
-                || current.stage != "working"
-                || current.report.is_some()
+                || current.report != expected.report
+                || current.waiting != expected.waiting
+                || (current.stage != "working" && !correction)
+                || (current.report.is_some() && !correction)
                 || current.worker != expected.worker
                 || current.delivery_id != expected.delivery_id
                 || current.attempt != expected.attempt
@@ -737,10 +759,10 @@ async fn ingest_matching_report_file(
                 || current.input_hash != expected.input_hash
                 || planner::input_hash(&row) != expected.input_hash
                 || current.suspended
-                || current.waiting.is_some()
+                || (current.waiting.is_some() && !correction)
                 || current.wait_category.is_some()
                 || row.project_group.as_deref() != Some(project.as_str())
-                || row.status != "doing"
+                || (row.status != "doing" && !(correction && row.status == "review"))
                 || row.archived != 0
                 || !p.policy.enabled
                 || p.policy.paused
@@ -1073,6 +1095,19 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         })
         .await?;
     reconcile_corrected_candidate(state, &p).await?;
+    // A corrected receipt can arrive after verification rejected the earlier
+    // candidate. Consume only current-attempt clean descendants; no new model turn.
+    let reports={let c=state.store.read()?;bs::project_issues(&c,name)?.into_iter().filter_map(|row| {
+        let e=planner::execution(&c,&row.id).ok()?;
+        if e.stage!="waiting" || e.report.is_none() { return None; }
+        let file=read_project_report_file(&e.worker).ok().flatten()?;
+        (planner::report_correction_allowed(&e,&file.report) && report_file_matches_execution(&file,&e)).then_some((row.id,e,file))
+    }).collect::<Vec<_>>()};
+    for (id,e,file) in reports {
+        if ingest_matching_report_file(state,name,&id,&e,file).await? {
+            tracing::info!(project=name,task=%id,measured=true,n_considered=1,verdict="project.corrected_receipt_recovered","current-attempt corrected candidate returned to independent verification without model retry");
+        }
+    }
     let plans = {
         let c = state.store.read()?;
         planner::plan(&c, &p)?
@@ -1130,6 +1165,12 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                     })
                     .await?;
                 Ok(())
+            }
+            "prepare_owned_outputs" => {
+                let project=name.to_string();let task=id.clone();let expected=e.clone();
+                let granted=state.store.write_async(move |c|planner::grant_preparation(c,&project,&task,&expected,"The missing evidence paths are this task's owned deliverables, not upstream inputs. Implement the missing verifier and artifacts, inspect the existing source, run falsifiable checks, commit the candidate and submit the report. Do not wait for another worker to produce your files or claim runtime proof without execution.").map_err(store::sql_error)).await.map_err(|e|e.to_string());
+                if granted.is_ok() { tracing::info!(project=name,task=%id,measured=true,n_considered=1,verdict="project.owned_output_preparation_retry","owned deliverables were mistaken for prerequisites; one bounded preparation retry granted"); }
+                granted.map(|_|())
             }
             "recover_host_execution" => {
                 if fleet.is_running(&e.worker).await && !fleet.at_boundary(&e.worker).await {
@@ -1352,6 +1393,32 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    #[test]
+    fn exact_attempt_receipts_recover_clean_corrections_without_model_retry() {
+        let home=tempfile::tempdir().unwrap();
+        let _home=crate::api::settings::test_env::set_home(home.path());
+        let (_dir,db,_)=super::super::outputs::tests::fixture();
+        let e=planner::execution(&db.read().unwrap(),"A").unwrap();
+        planner::register_test_workspace(&e.worker,"/repo");
+        let root=home.path().join("worktrees").join(&e.worker);std::fs::create_dir_all(&root).unwrap();
+        let git=|args:&[&str]| { let out=std::process::Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));String::from_utf8_lossy(&out.stdout).trim().to_string() };
+        git(&["init","-q"]);git(&["config","user.name","test"]);git(&["config","user.email","test@example.com"]);
+        std::fs::write(root.join("verify.sh"),"#!/bin/sh\nexit 0\n").unwrap();std::fs::write(root.join("report.md"),"candidate one").unwrap();git(&["add","."]);git(&["commit","-qm","first"]);let old=git(&["rev-parse","HEAD"]);
+        std::fs::write(root.join("report.md"),"candidate two").unwrap();git(&["add","."]);git(&["commit","-qm","correction"]);let head=git(&["rev-parse","HEAD"]);
+        db.write(move|c|{let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="waiting".into();e.wait_category=None;e.waiting=Some("worktree has uncommitted changes".into());e.suspended=false;e.report=Some(planner::Report{head:old,summary:"old".into(),checks:vec![planner::Check{criterion:"Output passes".into(),command:"./verify.sh".into()}],assets:vec![super::super::assets::Asset{path:"report.md".into(),sha256:"0".repeat(64)}]});c.execute("UPDATE issues SET status='review' WHERE id='A'",[])?;planner::save_execution(c,&row,&e,"test.failed").map_err(store::sql_error)}).unwrap();
+        let state=AppState{store:Arc::new(db),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))};
+        let expected=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        let mut file=ProjectReportFile{generation:expected.generation,input_hash:expected.input_hash.clone(),report:expected.report.clone().unwrap()};file.report.head=head.clone();file.report.assets[0].sha256=hex::encode(Sha256::digest(b"candidate two"));
+        assert!(report_file_matches_execution(&file,&expected));file.generation-=1;assert!(!report_file_matches_execution(&file,&expected));file.generation+=1;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            std::fs::write(root.join("unfinished.txt"),"user work").unwrap();
+            assert!(!ingest_matching_report_file(&state,"sample","A",&expected,file.clone()).await.unwrap());
+            std::fs::remove_file(root.join("unfinished.txt")).unwrap();
+            assert!(ingest_matching_report_file(&state,"sample","A",&expected,file).await.unwrap());
+        });
+        let now=planner::execution(&state.store.read().unwrap(),"A").unwrap();assert_eq!(now.stage,"reported");assert_eq!(now.report.unwrap().head,head);assert_eq!(now.attempt,expected.attempt);assert_eq!(now.generation,expected.generation);
+    }
+
     fn write_report(c: &rusqlite::Connection, worker: &str, ts: f64) {
         c.execute("INSERT INTO prefs(key,value) VALUES('session_reports',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!({worker:{"state":"idle","source":"stop-hook","ts":ts}}).to_string()]).unwrap();
     }

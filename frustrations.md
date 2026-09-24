@@ -4430,3 +4430,47 @@ CARD: AF-947
 SYMPTOM: Clicking the project worker checkout opened the correct worktree breadcrumb, but Files showed the parent repository's .git directory, credentials and node_modules. The actual worktree has a .git file and different entries.
 COST: A user could inspect or act on files believing they belonged to another checkout.
 FIX: Give shared directory navigation a generation token. Superseded network, error and offline-cache responses cannot repaint the current directory; delayed initial preferences cannot replace an explicitly navigated path. Regression resolves old network and cache requests after newer navigation and checks the displayed path/data remain current.
+
+## Host-capable Docker execution stalled on sandbox wording and absent candidate
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-24 reported Docker socket permission denied without the exact word "sandbox" or a --context argument, then stopped before committing a candidate. The host's configured colima-gs7-e context answered Docker info successfully, but the existing recovery only recognized the older specific wording and required a commit.
+COST: A host-resolvable limitation became a permanent wait while implementation could still proceed in the sandbox.
+FIX: Recognize Docker socket/daemon permission failures only for operational waits bound to an execution contract. Discover the configured context when absent and probe it before acting. When a candidate is missing, grant one budget-checked preparation retry per input identity with the measured host capability and explicit instruction to author the verifier without claiming runtime success. Preserve sandbox permissions, original failure receipt, and all human/spend gates. Committed candidates still flow to independent host execution.
+
+## Task-owned evidence was mistaken for an upstream prerequisite
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-22 waited because its own docs.json, decisions.md and docs.txt deliverables had no accepted receipt yet, and its verifier script was absent. The packet led with an unavailable-output protocol before describing ownership.
+COST: Implementation tasks could stop at the absence of the very files they were assigned to produce.
+FIX: Lead packets with owned deliverables and explicit upstream task IDs; move exceptional wait handling after the normal execution/report path. Recognize operational waits naming missing evidence declared by that task's contract and grant one preparation retry per input identity with corrected ownership guidance. Share the bounded, authorization-checked preparation grant with host-capability recovery; no cross-project dependencies or false verification.
+
+## Old-attempt report raced the worker's correction and stranded its newer receipt
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-23 attempt 3 consumed its previous attempt's report while the worker was correcting the failing Ray import. The receipt matcher calculated _same_attempt but discarded it and checked only input_hash. Verification saw transient edits and held; the later clean corrected generation-3 receipt was never consumed in waiting state.
+COST: Finished candidate improvements were stranded and more model attempts could be spent on already corrected work.
+FIX: Require exact generation plus requirement hash for receipt ingestion. Poll failed-review corrections and accept only current-attempt, clean descendant heads with validated criteria/assets; rerun independent verification without another model turn. Keep old report/failure events, refuse authorization/paused/suspended holds, and retain final runtime acceptance gates.
+
+## Task candidate evidence was labelled as project acceptance
+AREA: ux
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Evidence displayed POG-19 as Project acceptance although the retained report explicitly covered static candidate checks and deferred browser execution.
+COST: A task result could be mistaken for whole-project proof.
+FIX: Retain the owning task title for task artifacts; reserve Project acceptance for project-level assets. Standard viewer and retained artifact identity remain unchanged. Regression covers both labels.

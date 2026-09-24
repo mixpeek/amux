@@ -286,10 +286,11 @@ fn host_execution_recoverable(row: &bs::IssueRow, e: &Execution, project: &store
     if e.stage != "waiting" || e.suspended || e.report.is_some()
         || e.wait_category.as_deref() != Some("operational") || !project.policy.worktree
         || !e.waiting.as_deref().is_some_and(|reason| {
+            let reason = reason.to_ascii_lowercase();
             reason.starts_with("operational:")
-                && reason.contains("Docker")
-                && reason.contains("socket")
-                && reason.contains("sandbox")
+                && reason.contains("docker")
+                && (reason.contains("socket") || reason.contains("daemon"))
+                && (reason.contains("sandbox") || reason.contains("permission denied"))
         }) {
         return false;
     }
@@ -300,6 +301,32 @@ fn host_execution_recoverable(row: &bs::IssueRow, e: &Execution, project: &store
                 .and_then(|id| project.policy.acceptance.as_ref()?.criterion(id))
                 .is_some_and(|c| matches!(c.verifier, amux_core::project::ContractVerifier::Execution { .. }))
         }))
+}
+
+fn owned_output_recoverable(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> bool {
+    if e.stage!="waiting" || e.suspended || e.report.is_some() || e.wait_category.as_deref()!=Some("operational") { return false; }
+    let reason=e.waiting.as_deref().unwrap_or("").to_ascii_lowercase();
+    if !["absent","missing","unavailable","not available","no accepted receipt"].iter().any(|term|reason.contains(term)) { return false; }
+    let no_inputs=row.depends_on.is_empty();
+    let mistaken_receipt=no_inputs && reason.contains("accepted") && ["outputs","receipt","integration evidence"].iter().any(|term|reason.contains(term));
+    row.acceptance_criteria.as_deref().and_then(|s|serde_json::from_str::<Vec<String>>(s).ok()).is_some_and(|criteria|criteria.iter().any(|criterion| {
+        criterion.strip_prefix("contract:").and_then(|id|project.policy.acceptance.as_ref()?.criterion(id)).is_some_and(|contract| {
+            mistaken_receipt || contract.evidence.iter().any(|path|path.len()>4 && reason.contains(&path.to_ascii_lowercase()))
+        })
+    }))
+}
+
+pub(crate) fn grant_preparation(c: &Connection, project: &str, task: &str, expected: &Execution, hint: &str) -> anyhow::Result<WriteOutcome> {
+    let row=bs::get_issue(c,task)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
+    let current=execution(c,task)?;
+    anyhow::ensure!(current.generation==expected.generation && current.input_hash==expected.input_hash && current.waiting==expected.waiting,"host recovery claim changed");
+    let key=format!("implementation-prepare:{project}:{task}:{}", &current.input_hash[..12.min(current.input_hash.len())]);
+    anyhow::ensure!(!current.retry_grants.iter().any(|g|g.request.idempotency_key==key),"implementation preparation already retried; candidate still missing");
+    let request=super::task_retry::Request{idempotency_key:key,expect_generation:current.generation,expect_revision:row.rev,input_hash:current.input_hash};
+    super::task_retry::grant(c,project,task,&request)?;
+    let mut next=execution(c,task)?;
+    next.waiting=Some(format!("{} {}",expected.waiting.as_deref().unwrap_or(""),hint));
+    save_execution(c,&row,&next,"project.implementation_preparation_retry")
 }
 
 pub(crate) fn auto_repair_idempotency_key(project: &str, task: &str, e: &Execution) -> String {
@@ -445,6 +472,8 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "grant_repair";
                 None
             }
+        } else if owned_output_recoverable(row, &state, project) {
+            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_owned_outputs"; None }
         } else if host_execution_recoverable(row, &state, project) {
             action = "recover_host_execution";
             None
@@ -745,6 +774,11 @@ pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Re
     Ok(())
 }
 
+pub(crate) fn report_correction_allowed(e: &Execution, report: &Report) -> bool {
+    e.stage=="waiting" && !e.suspended && e.wait_category.is_none() && e.waiting.is_some()
+        && e.report.as_ref().is_some_and(|old|old.head!=report.head)
+}
+
 pub fn record_report(
     conn: &Connection,
     project: &str,
@@ -774,7 +808,7 @@ pub fn record_report(
         });
     }
     anyhow::ensure!(
-        matches!(state.stage.as_str(), "reserved" | "working"),
+        matches!(state.stage.as_str(), "reserved" | "working") || report_correction_allowed(&state, report),
         "claim no longer accepts reports"
     );
     if let Err(error) = validate_report(&row, report) {
@@ -920,6 +954,46 @@ mod tests {
         }).unwrap();
         (dir, db)
     }
+    #[test]
+    fn operational_recovery_uses_own_contract_outputs_and_keeps_real_holds() {
+        let (_dir,db)=fixture();let c=db.read().unwrap();
+        let mut p=store::get(&c,"sample").unwrap().unwrap();
+        p.policy.acceptance=Some(serde_json::from_value(json!({"revision":1,"criteria":[{"id":"docs","requirement":"produce docs","verifier":{"type":"execution","id":"runtime","command":"python3 check.py","receipt":"receipt.json","required_stages":["runtime"]},"evidence":["docs.json"]}]})).unwrap());
+        let mut row=bs::get_issue(&c,"A").unwrap().unwrap();row.acceptance_criteria=Some("[\"contract:docs\"]".into());
+        let mut e=Execution{stage:"waiting".into(),wait_category:Some("operational".into()),waiting:Some("operational: docs.json has no accepted receipt; verifier absent".into()),..Default::default()};
+        assert!(owned_output_recoverable(&row,&e,&p));
+        e.waiting=Some("operational: Accepted T19 spec and verifier outputs are missing".into());assert!(owned_output_recoverable(&row,&e,&p));
+        row.depends_on=vec!["upstream".into()];assert!(!owned_output_recoverable(&row,&e,&p));row.depends_on.clear();
+        e.waiting=Some("operational: another-project.json missing".into());assert!(!owned_output_recoverable(&row,&e,&p));
+        e.waiting=Some("operational: Docker daemon socket permission denied".into());assert!(host_execution_recoverable(&row,&e,&p));
+        e.wait_category=Some("spend".into());assert!(!host_execution_recoverable(&row,&e,&p));
+        e.waiting=Some("docs.json missing".into());assert!(!owned_output_recoverable(&row,&e,&p));
+    }
+
+    #[test]
+    fn host_preparation_retry_is_bounded_preserves_failure_and_respects_authorization() {
+        for category in ["operational","spend","customer_outbound"] {
+            let (_dir,db)=fixture();
+            db.write(move |c| {
+                claim(c,"sample","A").unwrap();
+                let row=bs::get_issue(c,"A")?.unwrap();
+                let mut e=execution(c,"A").unwrap();
+                e.stage="waiting".into();e.waiting=Some("operational: Docker socket permission denied".into());e.wait_category=Some(category.into());
+                save_execution(c,&row,&e,"test.wait").unwrap();
+                let result=grant_preparation(c,"sample","A",&e,"Keep sandbox permissions unchanged; prepare owned deliverables");
+                if category=="operational" {
+                    result.unwrap();
+                    let next=execution(c,"A").unwrap();
+                    assert_eq!(next.stage,"repair");assert_eq!(next.retry_grants.len(),1);
+                    assert_eq!(next.retry_grants[0].previous_result["waiting"],e.waiting.unwrap());
+                    assert!(next.waiting.as_deref().unwrap().contains("Keep sandbox permissions unchanged"));
+                    assert!(grant_preparation(c,"sample","A",&next,"prepare").is_err());
+                } else { assert!(result.is_err()); assert!(execution(c,"A").unwrap().retry_grants.is_empty()); }
+                Ok(WriteOutcome{applied:true,events:vec![]})
+            }).unwrap();
+        }
+    }
+
     #[test]
     fn project_superseded_packet_reconciliation_preserves_identity_and_guards() {
         for case in [

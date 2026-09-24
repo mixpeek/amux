@@ -77,3 +77,13 @@ test('directory viewer ignores older network and offline cache responses after n
  cache[0]({type:'dir',data:{entries:['stale cached']},ts:1});await offline;
  assert.deepEqual(renders.map(r=>r.path),['/repo/.worktrees/task','/new']);
 });
+
+
+test('task review artifacts retain task identity rather than implying project acceptance',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(source.slice(source.indexOf('function _projectAssets('),source.indexOf('function _projectTaskDisplay(')),ctx);
+ const assets=ctx._projectAssets({cards:[{id:'TASK-1',title:'Verify collection views'}],acceptance:{review_assets:[{task:'TASK-1',asset:{path:'candidate.md'}},{asset:{path:'acceptance.md'}}]}});
+ assert.equal(assets[0].card.title,'Verify collection views');
+ assert.equal(assets[1].card.title,'Project acceptance');
+ assert.equal(assets[0].acceptance,true);
+});

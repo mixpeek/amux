@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1066';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1067';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45111,7 +45111,10 @@ function _projectAssets(data) {
   };
   const reviewAssets=data.acceptance?.review_assets||[];
   if(reviewAssets.length) {
-    reviewAssets.forEach((entry,index)=>add({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:'Project acceptance'}}));
+    reviewAssets.forEach((entry,index)=>{
+      const task=(data.cards||[]).find(card=>card.id===entry.task);
+      add({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:task?.title || (entry.task?'Task candidate evidence':'Project acceptance')}});
+    });
     return assets;
   }
   (data.cards||[]).forEach(card=>{
