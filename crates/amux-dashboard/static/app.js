@@ -9530,11 +9530,16 @@ function _workerConfigurationSection(key, title, note, rows) {
 // reachable here. The raw Environment editor remains the escape hatch for
 // open-ended startup keys such as CC_BACKEND/CC_CREATOR/CC_FLAGS — it is part
 // of this same tab, not a hidden file-editing workflow.
+function _visibleScopeCapabilities(level, isolated, capabilities) {
+  const keys = level === 'worker' ? (isolated ? ['env', 'skin'] : null) : ['memory', 'gates', 'env'];
+  return keys ? capabilities.filter(c => keys.includes(c.key)) : capabilities;
+}
+
 function _workerPrimaryConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   const provider = sessionProvider(s);
   const model = sessionConfiguredModel(s);
-  const effort = flagValue(s.flags || '', '--effort');
+  const effort = flagValue(s.flags || '', '--effort') || ((s.flags || '').match(/model_reasoning_effort=["']?([a-z]+)/) || [])[1] || '';
   const q = escJs(name);
   const edit = (field, current, extra) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
@@ -9544,24 +9549,24 @@ function _workerPrimaryConfigurationsHTML(name) {
     + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')" aria-label="' + esc(label) + '">'
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
-    _workerConfigurationRow('name', 'Name', s.name || name, 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
-    _workerConfigurationRow('description', 'Description', s.desc || '', 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
-    _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
+    _workerConfigurationRow('name', 'Name', s.name || name, s.isolated ? 'Renaming preserves messages and worker identity.' : 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
+    _workerConfigurationRow('description', 'Description', s.desc || '', s.isolated ? 'Description for the owner; isolated workers are hidden from peers.' : 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
+    _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
   ];
   const runtime = [
     _workerConfigurationRow('directory', 'Working directory', s.worktree_active ? '~/.amux/worktrees/' + name + ' (worktree)' : (s.dir || ''), 'Changing it restarts a running worker in the new directory.', edit('dir', s.dir || '')),
     _workerConfigurationRow('branch', 'Git branch', s.branch || '', 'Blank follows the detected branch; “none” explicitly uses the main checkout.', edit('branch', s.branch || '')),
-    _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
-    _workerConfigurationRow('model', 'Model version', model || 'Provider default', 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),
-    _workerConfigurationRow('effort', 'Reasoning effort', effort || 'Provider default', provider === 'claude' ? 'Can be changed independently or together with the model.' : 'This provider does not expose the effort picker.', provider === 'claude' ? edit('effort', effort || '', provider) : ''),
-    _workerConfigurationRow('mcp', 'Browser tooling', s.mcp === 'chrome' ? 'Chrome enabled' : 'Disabled', 'Applied on the next worker start.', edit('mcp', s.mcp || '')),
+    _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), s.isolated ? 'Changes the CLI provider without injecting harness context.' : 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
+    _workerConfigurationRow('model', 'Model version', model || 'Provider default', s.isolated ? 'Uses the native CLI conversation; no board context is added on restart.' : 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),
+    _workerConfigurationRow('effort', 'Reasoning effort', effort || 'Provider default', provider === 'claude' ? 'Can be changed independently or together with the model.' : 'Configured by this provider’s CLI flags.', provider === 'claude' ? edit('effort', effort || '', provider) : ''),
+    s.isolated ? '' : _workerConfigurationRow('mcp', 'Browser tooling', s.mcp === 'chrome' ? 'Chrome enabled' : 'Disabled', 'Applied on the next worker start.', edit('mcp', s.mcp || '')),
   ];
   const permissions = [
     _workerConfigurationRow('yolo', 'Model tool approval bypass (YOLO)', s.yolo ? 'Enabled' : 'Disabled', 'Uses the selected provider’s native tool-permission flag.', sw(!!s.yolo, 'toggleYolo', 'Toggle model tool approval bypass')),
     _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'Direct CLI messages; no boards, task intake, prompts, hooks, MCP config, or peer discovery. Restart to remove an already-loaded harness.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
-    _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
-    _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
+    s.isolated ? '' : _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
+    s.isolated ? '' : _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
   ];
   const advanced = [
     _workerConfigurationRow('pinned', 'Pinned in worker list', s.pinned ? 'Pinned' : 'Not pinned', 'Presentation preference; does not change execution priority.', sw(!!s.pinned, 'togglePin', 'Toggle pinned state')),
@@ -9571,7 +9576,7 @@ function _workerPrimaryConfigurationsHTML(name) {
     + '<div class="worker-config-grid">'
     + _workerConfigurationSection('identity', 'Identity & organization', 'How this worker is named, described, and grouped.', identity)
     + _workerConfigurationSection('runtime', 'Runtime & model', 'Where it runs and which model/tooling it uses.', runtime)
-    + _workerConfigurationSection('permissions', 'Permissions & communication', 'Standing authority for tools, peers, and external email.', permissions)
+    + _workerConfigurationSection('permissions', 'Permissions & communication', s.isolated ? 'Native CLI tool permissions and isolation.' : 'Standing authority for tools, peers, and external email.', permissions)
     + _workerConfigurationSection('advanced', 'Display & advanced', 'Presentation and lower-level environment controls.', advanced)
     + '</div>';
 }
@@ -9731,8 +9736,7 @@ async function _scopeLoad(scope, targetId) {
     // capability removal: _SCOPE_CAPS, GET/PUT /api/scope and the worker peek
     // Configurations tab still carries rules and status_mode — "for now" means the panel,
     // and hiding a tile must not silently delete the API behind it.
-    const _visCaps = (lvl === 'worker') ? d.capabilities
-      : d.capabilities.filter(c => ['memory', 'gates', 'env'].includes(c.key));
+    const _visCaps = _visibleScopeCapabilities(lvl, sessions.find(s => s.name === w)?.isolated, d.capabilities);
     _visCaps.forEach((c, i) => {
       const here = c.set_here, gset = G[c.key] && G[c.key].set_here;
       const grpHit = Gr.map((m, j) => (m[c.key] && m[c.key].set_here) ? groups[j] : null).filter(Boolean);
@@ -11606,7 +11610,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1053';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1054';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
