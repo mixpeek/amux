@@ -1959,7 +1959,7 @@
     background: var(--card); border: 1px solid var(--border);
     border-radius: 10px; min-width: 260px; z-index: 60;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4); overflow-x: hidden; overflow-y: auto;
-    max-height: calc(100dvh - 80px);
+    max-height: calc(var(--dialog-viewport-height, 100dvh) - 80px);
     /* CAP THE WIDTH OR THE MENU GROWS OFF THE LEFT EDGE (Ethan, 2026-08-26,
        "fix this on mobile"). Measured at 375px: the menu was 490px wide at
        left:-146, so 146px of it — every row LABEL — was off-screen, while the
@@ -1989,7 +1989,7 @@
       top: var(--mobile-header-bottom, calc(max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) + 60px));
       right: 8px; left: auto;
       max-width: calc(100vw - 16px);
-      max-height: calc(100dvh - var(--mobile-header-bottom, 60px) - 12px);
+      max-height: calc(var(--dialog-viewport-height, 100dvh) - var(--mobile-header-bottom, 60px) - 12px - env(safe-area-inset-bottom, 0px));
       z-index: 6000;
     }
   }
