@@ -1101,6 +1101,14 @@ fn scan_claude(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
 /// composer. Model names/effort do not determine whether input is required.
 pub(crate) fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
     let lines = nonempty_trimmed(clean);
+    if matches!(provider, "codex" | "ollama")
+        && lines.last().is_some_and(|line| {
+            *line == "Press t to trust all; enter to review hooks; esc to close"
+        })
+        && lines.contains(&"Lifecycle hooks from config and enabled plugins.")
+    {
+        return Some("hook_trust_prompt");
+    }
     let lines = &lines[lines.len().saturating_sub(12)..];
     let selected = lines.iter().rposition(|line| match provider {
         "codex" | "ollama" => codex_picker_option(line),
@@ -1620,6 +1628,16 @@ gemini-2.5-pro";
         let out = strip_ansi(raw);
         assert_eq!(out, "✻ Beaming… redplainlinkdone");
         assert!(!out.contains('\x1b'));
+    }
+
+    #[test]
+    fn native_hook_review_table_is_an_input_boundary_until_closed() {
+        let pane = "Hooks\nLifecycle hooks from config and enabled plugins.\n⚠ 10 hooks need review before they can run.\nPreToolUse 1 0 1 Before a tool executes\nPress t to trust all; enter to review hooks; esc to close";
+        assert_eq!(
+            provider_picker_reason(pane, "codex"),
+            Some("hook_trust_prompt")
+        );
+        assert_eq!(provider_picker_reason(&format!("{pane}\n›"), "codex"), None);
     }
 
     #[test]
