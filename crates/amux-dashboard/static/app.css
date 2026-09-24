@@ -7255,12 +7255,14 @@ select.input { height:var(--control-height); }
 .project-path-link{appearance:none;border:0;background:transparent;color:var(--accent);font:inherit;text-align:left;padding:0;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:baseline}
 .project-path-link:hover{text-decoration:underline}.project-path-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}.project-card-path{display:block;min-width:0}.project-card-path .project-path-link{display:block}
 
-.peek-board-policy{gap:16px;flex-wrap:wrap;padding:0 10px 8px;font-size:0.8rem;color:var(--dim);}
-.peek-board-policy label{display:flex;align-items:center;gap:6px;min-height:44px;cursor:pointer;}
-.peek-board-policy input{width:18px;height:18px;margin:0;}
-
-.peek-board-policy-note { flex-basis: 100%; font-size: 0.78rem; color: var(--dim); }
-.peek-board-policy label:has(input:disabled) { opacity: 0.6; }
+.peek-board-config{display:flex;flex-wrap:wrap;gap:4px 16px;padding:4px 10px 8px;font-size:0.78rem;color:var(--dim);}
+.pbc-row{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;cursor:pointer;flex:1 1 calc(50% - 16px);min-width:180px;}
+.pbc-row input{width:18px;height:18px;margin:0;flex:0 0 auto;}
+.pbc-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pbc-own{font-size:0.6rem;color:var(--accent);vertical-align:middle;}
+.pbc-disabled{opacity:0.5;pointer-events:none;}
+.pbc-note{flex-basis:100%;font-size:0.72rem;color:var(--dim);padding:2px 0;}
+@media(max-width:600px){.pbc-row{flex-basis:100%;min-width:0;}}
 
 /* Offline mode (service worker) unavailable: a dot on the connection badge, and
    the full reason inside the Connection modal. Replaces the fixed red bar. */

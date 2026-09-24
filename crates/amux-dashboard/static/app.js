@@ -9853,7 +9853,7 @@ async function _scopeLoad(scope, targetId) {
     // group thing should be horizontal above the workers below the pills"), and
     // stack on a phone. The wrapper classes carry that; the tile row itself was
     // already horizontal.
-    let h = (lvl === 'worker' ? _workerPrimaryConfigurationsHTML(w) + _workerBoardConfigurationsHTML(w) : '')
+    let h = (lvl === 'worker' ? _workerPrimaryConfigurationsHTML(w) : '')
           + '<div class="grp-scope-row">'
           + '<div class="grp-scope-ident" style="color:var(--text);font-size:0.86rem;">'
           + '<b>' + esc(lvl === 'global' ? 'Global' : w) + '</b>'
@@ -11081,29 +11081,51 @@ function renderPeekIssues() {
   const list = document.getElementById('peek-issues-list');
   if (list) _renderBoardActivity(list, _peekIssuesAllSessions ? '' : peekSession);
 }
-// Worker board policy toggles (Ethan, 2026-09-24): "decompose onto board"
-// (background, default on) and "force board adherence" (default off). They
-// show the RESOLVED value from /api/sessions, so a group/global layer reads true.
+// All board configuration toggles live in the Board tab (Ethan, 2026-09-24:
+// "auto drain backlog should be a toggle on the board page and all board
+// configurations should be toggles on the worker details board tab contents").
+// Renders both the message-routing policy (decompose, force adherence) and the
+// task lifecycle automation (_WORKER_BOARD_CONFIGS) as toggle rows.
+const _PEEK_BOARD_ALL_CONFIGS = [
+  { field: 'auto_drain_backlog', value: 'auto_drain_backlog', own: 'auto_drain_backlog_own',
+    label: 'Auto-drain backlog', note: 'Pull the oldest eligible backlog card when To Do is empty.' },
+  { field: 'board_auto_pickup', value: 'auto_pickup', own: 'auto_pickup_own',
+    label: 'Auto-pickup', note: 'Claim the next To Do card when idle.' },
+  { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
+    label: 'Continue non-terminal', note: 'Re-check actionable blocked work.' },
+  { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
+    label: 'Pickup / continue master', note: 'Master switch for pickup and continuation.' },
+  { field: 'board_decompose', value: 'board_decompose', own: null,
+    label: 'Decompose onto board', note: 'Messages are planned onto the board in the background.' },
+  { field: 'board_force_adherence', value: 'board_force_adherence', own: null,
+    label: 'Force board adherence', note: 'Board drives this worker; messages become cards.' },
+];
 function _peekBoardPolicySync() {
-  const row = document.getElementById('peek-board-policy');
-  if (!row) return;
+  const el = document.getElementById('peek-board-config');
+  if (!el) return;
   const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
-  // Shown on EVERY worker (Ethan, 2026-09-24: "i dont see the board toggle
-  // stuff", on an isolated worker where the row was hidden). An isolated
-  // worker gets no board automation, so the switches are shown off and
-  // disabled with the reason beside them rather than vanishing.
   const show = !!s && typeof s.board_decompose === 'boolean';
-  row.style.display = show ? 'flex' : 'none';
-  if (!show) return;
+  el.style.display = show ? '' : 'none';
+  if (!show) { el.innerHTML = ''; return; }
   const iso = !!s.isolated;
-  const d = document.getElementById('peek-board-decompose'), f = document.getElementById('peek-board-force');
-  if (d) { d.checked = !iso && !!s.board_decompose; d.disabled = iso; }
-  if (f) { f.checked = !iso && !!s.board_force_adherence; f.disabled = iso; }
-  const note = document.getElementById('peek-board-policy-note');
-  if (note) {
-    note.textContent = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.' : '';
-    note.style.display = iso ? '' : 'none';
+  const q = escJs(peekSession);
+  let h = '';
+  if (iso) {
+    h += '<div class="pbc-note">Isolated worker: board automation is off. Turn off isolation to use these.</div>';
   }
+  for (const c of _PEEK_BOARD_ALL_CONFIGS) {
+    const on = !iso && s[c.value] !== false;
+    const own = c.own ? !!s[c.own] : false;
+    const dis = iso ? ' disabled' : '';
+    h += '<label class="pbc-row' + (iso ? ' pbc-disabled' : '') + '">'
+      + '<span class="pbc-label">' + esc(c.label)
+      + (own ? ' <span class="pbc-own">override</span>' : '')
+      + '</span>'
+      + '<input type="checkbox"' + (on ? ' checked' : '') + dis
+      + ' onchange="togglePeekBoardPolicy(\'' + escJs(c.field) + '\',this.checked)">'
+      + '</label>';
+  }
+  el.innerHTML = h;
 }
 async function togglePeekBoardPolicy(field, on) {
   const name = peekSession;
@@ -11790,7 +11812,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1096';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1097';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
