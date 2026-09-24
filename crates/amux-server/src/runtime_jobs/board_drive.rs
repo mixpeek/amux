@@ -6918,6 +6918,15 @@ fn publish_lane(trace: LaneTrace) {
     }
 }
 
+/// Whether board-drive may ask a lane to hand-decompose its own capture
+/// shells. Decomposition is the background planner's job (Ethan, 2026-09-24:
+/// "this should be a background/async thing so doesnt impact worker"), so the
+/// nudge wakes a lane for a whole turn to do work the planner already owns.
+/// It stays on only where the owner switched on force-adherence to the board.
+pub(crate) fn decompose_nudge_wanted(lane: &str) -> bool {
+    crate::api::board_lifecycle::force_adherence(lane)
+}
+
 fn nudge_delivery_failed(lane: &str, target: &str, card: &str, error: &str) -> LaneTrace {
     tracing::warn!(session = lane, target_worker = target, card, error,
         verdict = "board_nudge_enqueue_failed",
@@ -7161,10 +7170,17 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     ) || matches!(
                         select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
                         Advance::Nudge {
-                            kind: "advance-nudged" | "decompose-asked",
+                            kind: "advance-nudged",
                             ..
                         }
-                    ) || (eligible == 0
+                    ) || (decompose_nudge_wanted(lane)
+                        && matches!(
+                            select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
+                            Advance::Nudge {
+                                kind: "decompose-asked",
+                                ..
+                            }
+                        )) || (eligible == 0
                         && open_execution_count(&conn, lane).ok() == Some(0)
                         && !verify_batch_pending(&conn, lane, now_f64())
                         && !done_verify_candidates(&conn, lane).is_empty())
@@ -7523,6 +7539,15 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             kind,
         } = advance
         {
+            if kind == "decompose-asked" && !decompose_nudge_wanted(&target) {
+                tracing::info!(
+                    event = "decompose_nudge_suppressed",
+                    lane = %target,
+                    card = %card,
+                    "capture shell left to the background planner; force-adherence is off"
+                );
+                break 'reminder;
+            }
             // A NUDGE IS ABOUT A CARD, so it carries that card's revision and the
             // delivery loop drops it if the card moves first (AMUX-3659). Read
             // here, at compute time, because that is the state the text describes.
@@ -7871,6 +7896,17 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             }
         }
         Pickup::Decompose { ids, text } => {
+            if !decompose_nudge_wanted(lane) {
+                return LaneTrace::skip(
+                    lane,
+                    "decompose-planner-owned",
+                    format!(
+                        "only capture shells queued ({}); the background planner owns them while force-adherence is off",
+                        ids.join(", ")
+                    ),
+                )
+                .with_counts(eligible, open);
+            }
             // DURABLE cooldown (py:14627): the in-memory dict was wiped by the
             // very first reload after shipping and the dispatch re-fired at the
             // same lane within minutes.
@@ -11192,6 +11228,41 @@ mod tests {
             )
             .unwrap()
     }
+    /// Ethan, 2026-09-24: decomposition is a background job and must not
+    /// interrupt the worker. The "is a capture shell" nudge pasted board
+    /// bureaucracy into mixpeek-general as a user turn (MG-1918). It reaches a
+    /// lane only where the owner turned on force-adherence to the board.
+    #[tokio::test]
+    async fn a_capture_shell_nudge_reaches_the_lane_only_under_force_adherence() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/lane.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "SHELL-1", "doing", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET source='capture', creator='amux', next_action=NULL, \
+                desc='**Prompt:** what is in my inbox?' WHERE id='SHELL-1'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let shell_nudges = |fleet: &BoundaryFleet| {
+            fleet.delivered.lock().unwrap().iter()
+                .filter(|(_, t)| t.contains("is a capture shell")).count()
+        };
+
+        let quiet = BoundaryFleet::default();
+        let trace = drive_lane(&state, &quiet, "lane").await;
+        assert_eq!(shell_nudges(&quiet), 0, "default must not interrupt the worker: {trace:?}");
+
+        std::fs::write(
+            home.path().join("sessions/lane.env"),
+            "CC_DIR=\"/tmp\"\nAMUX_BOARD_FORCE_ADHERENCE=\"1\"\n",
+        ).unwrap();
+        let strict = BoundaryFleet::default();
+        let trace = drive_lane(&state, &strict, "lane").await;
+        assert_eq!(shell_nudges(&strict), 1, "force-adherence keeps the nudge: {trace:?}");
+    }
+
     fn drive_claim(store: &std::sync::Arc<crate::db::Store>, id: &str) {
         let id = id.to_string();
         store.write(move |conn| {
