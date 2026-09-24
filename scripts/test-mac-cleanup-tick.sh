@@ -198,6 +198,27 @@ out=$(AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRES
 case "$out" in *"largest family"*"under the"*) echo "  ok   under both thresholds it reports without firing" ;;
   *) echo "  FAIL no under-threshold family line: $(printf '%s' "$out" | tail -3)"; fails=$((fails+1)) ;; esac
 
+echo "7d. the stale-process arm parses 08 and 09 in elapsed times (bash reads them as octal)"
+# 2026-09-24: SCHED-465 printed "value too great for base" because this arm did its
+# own bash arithmetic on fields like 08 and 09, then reported found=0. Fixture times
+# below all contain one, and two are past the 6h floor.
+cat > "$FIX/fake-ps.sh" <<'FPS'
+#!/bin/bash
+echo "12345 08:09:07 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-1.sh"
+echo "12346 1-09:08:09 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-2.sh"
+echo "12347 00:09 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-3.sh"
+FPS
+chmod +x "$FIX/fake-ps.sh"
+out=$(AMUX_CLEANUP_STALE_PS_CMD="$FIX/fake-ps.sh" AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 \
+      AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 AMUX_CLEANUP_AGENTS="" \
+      AMUX_CLEANUP_REPORT_GB=99999 "$TICK" --dry-run 2>&1)
+check "no octal error on 08/09 fields" "0" "$(printf '%s\n' "$out" | grep -c 'value too great')"
+check "both stale times are found, the 9-second one is not" "2" \
+  "$(printf '%s\n' "$out" | sed -n 's/.*shell-snapshots found=\([0-9]*\) .*/\1/p')"
+case "$out" in *"pid=12345 age=08:09:07"*"pid=12346 age=1-09:08:09"*) echo "  ok   each stale process is named with its age" ;;
+  *) echo "  FAIL stale processes not named with their ages: $(printf '%s' "$out" | grep -E 'stale shell|shell-snapshots' | head -3)"; fails=$((fails+1)) ;; esac
+check "dry run killed nothing" "0" "$(printf '%s\n' "$out" | sed -n 's/.*shell-snapshots found=[0-9]* killed=\([0-9]*\) .*/\1/p')"
+
 echo "8. end to end: an agent restart goes through the knob, and only past the floor"
 AREC="$FIX/restart-calls"
 cat > "$FIX/fake-restart.sh" <<EOF

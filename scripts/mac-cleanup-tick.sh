@@ -81,6 +81,9 @@ RESTART_CMD=${AMUX_CLEANUP_RESTART_CMD:-launchctl kickstart -k gui/UID/LABEL}
 # waiting for builds, dev servers, CI watchers. One of them held a tight
 # busy-loop (`until [ -s /dev/null ]`) at 100% CPU for 21 hours (2026-09-19).
 STALE_SHELL_SNAPSHOT_H=${AMUX_CLEANUP_STALE_SHELL_SNAPSHOT_H:-6}
+# Seam: the test points this at a fixture so the arm can be fed elapsed times
+# without a real process. The default is what the scheduler actually runs.
+STALE_PS_CMD=${AMUX_CLEANUP_STALE_PS_CMD:-ps -eo pid=,etime=,args=}
 
 # ── pure decisions (no side effects, so the tests can exercise them) ──────────
 
@@ -288,20 +291,15 @@ while IFS= read -r line; do
   [ -n "$line" ] || continue
   pid=$(printf '%s' "$line" | awk '{print $1}')
   elapsed_raw=$(printf '%s' "$line" | awk '{print $2}')
-  # Parse elapsed (DD-HH:MM:SS or HH:MM:SS or MM:SS)
-  elapsed_s=0
-  case "$elapsed_raw" in
-    *-*)
-      days=${elapsed_raw%%-*}; rest=${elapsed_raw#*-}
-      elapsed_s=$((days * 86400))
-      ;;
-    *) rest=$elapsed_raw ;;
-  esac
-  IFS=: read -r f1 f2 f3 <<< "$rest"
-  case "$rest" in
-    *:*:*) elapsed_s=$((elapsed_s + f1*3600 + f2*60 + f3)) ;;
-    *:*)   elapsed_s=$((elapsed_s + f1*60 + f2)) ;;
-  esac
+  # Reuse etime_secs, the parser the family scan already trusts and tests. This
+  # arm used to carry its OWN bash-arithmetic copy, and bash reads a leading-zero
+  # field such as 08 or 09 as invalid octal: SCHED-465 printed "line 303: 09:
+  # value too great for base" at 17:21 and 17:51 on 2026-09-24, then reported
+  # found=0 while it could not have counted the very processes it exists for.
+  # Two parsers for one format is how one of them stays broken. An unparseable
+  # time is skipped and never guessed, since this arm KILLS what it matches.
+  elapsed_s=$(etime_secs "$elapsed_raw")
+  case "$elapsed_s" in ''|*[!0-9]*) continue ;; esac
   [ "$elapsed_s" -ge "$stale_cutoff_s" ] || continue
   stale_found=$((stale_found+1))
   cpu=$(ps -o pcpu= -p "$pid" 2>/dev/null | tr -d ' ')
@@ -312,7 +310,7 @@ while IFS= read -r line; do
     echo "mac-cleanup: killed stale shell-snapshot pid=$pid age=${elapsed_raw} cpu=${cpu}%"
   fi
 done <<EOF
-$(ps -eo pid=,etime=,args= 2>/dev/null | grep 'shell-snapshots/snapshot-bash' | grep -v grep)
+$($STALE_PS_CMD 2>/dev/null | grep 'shell-snapshots/snapshot-bash' | grep -v grep)
 EOF
 echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} (floor ${STALE_SHELL_SNAPSHOT_H}h)"
 
