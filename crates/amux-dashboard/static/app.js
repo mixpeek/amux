@@ -10348,6 +10348,7 @@ function _steeringRender() {
         <div style="font-size:0.85rem;color:${m.system ? 'var(--dim)' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;">${esc(m.text)}</div>
         ${m.blocked_reason ? `<p class="steering-held">Held: ${esc(m.blocked_reason)}. Input stays queued until an authorized working claim can receive it.</p>` : ''}
         <div style="font-size:0.75rem;color:var(--dim);margin-top:4px;">Queued ${ago}</div>
+        ${m.waiting_for ? `<div class="steer-waiting" style="font-size:0.75rem;color:var(--yellow,#d29922);margin-top:2px;">Waiting for ${esc(m.waiting_for)}</div>` : ''}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;">
         ${m.guard === 'project-steering' ? '<span class="steering-next-turn" style="font-size:0.75rem;color:var(--dim);">Automatic next turn</span>' : `<button class="btn primary" ${dis} onclick="_steeringSendNow('${m.id}')">Send now</button>`}
@@ -11863,7 +11864,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1106';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1107';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

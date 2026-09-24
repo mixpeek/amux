@@ -24739,7 +24739,29 @@ pub(crate) async fn steer_history_verb(
     let blocked = lane_block_reason(name).await;
     let max_age = steer_max_age_s();
     let now = now_f64();
+    // WHAT THE QUEUE IS WAITING FOR (MSG-68866, 2026-09-24: "this message
+    // disappeared from queued, it was never sent either"). The row said
+    // deliverable=true, blocked_reason=None while the drain held it behind a
+    // 53-minute turn with 5 background agents, so nothing distinguished waiting
+    // from lost. Ask the drain's own decision, once, with the oldest row's age.
+    let oldest_age = out
+        .iter()
+        .filter_map(|r| r["queued_at"].as_f64())
+        .map(|q| now - q)
+        .fold(0.0_f64, f64::max);
+    let waiting_for = if out.is_empty() || blocked.is_some() {
+        None
+    } else {
+        match steer_delivery_for(state, name, oldest_age).await {
+            SteerDelivery::Hold => Some(
+                "the worker's current turn to end: queued messages are delivered at its next idle point \
+                 (a turn with live background agents waits for them too). Send now delivers it immediately.",
+            ),
+            _ => None,
+        }
+    };
     for row in out.iter_mut() {
+        row["waiting_for"] = json!(waiting_for);
         let age = now - row["queued_at"].as_f64().unwrap_or(now);
         row["age_s"] = json!(age as i64);
         row["overdue"] = json!(age >= max_age);
