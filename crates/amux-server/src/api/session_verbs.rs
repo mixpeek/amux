@@ -1591,17 +1591,57 @@ pub(crate) struct ClaudeLimitObservation {
     pub reset_at: i64,
 }
 
+/// The provider's own record of a limit: the conversation ended on Claude
+/// Code's synthetic 429 (`error: "rate_limit"`, `isApiErrorMessage`,
+/// `quotaLimits.status: "rejected"`). Returns the reset epoch (0 when absent).
+///
+/// WHY (Ethan, 2026-09-24: mvs-infra hit "You've hit your session limit" and
+/// read `idle`, so "continue all limited" skipped it). The screen check only
+/// sees the last 8 lines, and a "Remote Control disconnected" notice printed
+/// under the limit message pushed it out of that window. The transcript says
+/// it structurally, whatever else the pane prints. A later user message (the
+/// owner's "continue") or any other assistant turn ends it.
+pub(crate) fn transcript_rate_limit(records: &[Value]) -> Option<i64> {
+    let last = records.iter().rev().find(|r| {
+        matches!(r.get("type").and_then(Value::as_str), Some("user" | "assistant"))
+            && !r.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
+            && !r.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
+    })?;
+    let limited = last.get("type").and_then(Value::as_str) == Some("assistant")
+        && last.get("error").and_then(Value::as_str) == Some("rate_limit")
+        && last.pointer("/quotaLimits/status").and_then(Value::as_str) == Some("rejected");
+    limited.then(|| last.pointer("/quotaLimits/resetsAt").and_then(Value::as_i64).unwrap_or(0))
+}
+
+/// Screen-only observation; production passes the transcript through
+/// `observe_claude_limit_with`.
+#[cfg(test)]
 pub(crate) fn observe_claude_limit(
     pane: &str,
     recorded_reset: i64,
     now: chrono::DateTime<chrono::Local>,
+) -> Option<ClaudeLimitObservation> {
+    observe_claude_limit_with(pane, recorded_reset, now, None)
+}
+
+/// `observe_claude_limit` plus the transcript's structured limit record.
+pub(crate) fn observe_claude_limit_with(
+    pane: &str,
+    recorded_reset: i64,
+    now: chrono::DateTime<chrono::Local>,
+    transcript_reset: Option<i64>,
 ) -> Option<ClaudeLimitObservation> {
     let menu = is_rate_limit_menu(pane);
     let auto_resume = crate::backend::adapter::claude_auto_resume_banner(pane);
     let lines: Vec<_> = pane.lines().collect();
     let footer = lines[lines.len().saturating_sub(8)..].join("\n");
     if !menu && auto_resume.is_none() && !is_rate_limited_credit_banner(&footer) {
-        return None;
+        let reset = transcript_reset?;
+        return Some(ClaudeLimitObservation {
+            menu: false,
+            kind: "transcript",
+            reset_at: effective_rate_limit_reset(recorded_reset, reset, now.timestamp()),
+        });
     }
     let kind = if menu {
         "menu"
@@ -20401,10 +20441,16 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             }
         }
 
-        let observation = observe_claude_limit(
+        let transcript_reset = if provider_of(&cfg) == "claude" {
+            session_jsonl_path(name).and_then(|p| transcript_rate_limit(&iter_jsonl_tail(&p, 256 * 1024)))
+        } else {
+            None
+        };
+        let observation = observe_claude_limit_with(
             &pane,
             meta_i64(&load_meta(name), "rate_limited_until"),
             chrono::Local::now(),
+            transcript_reset,
         );
         let Some(observation) = observation else {
             // Neither the menu nor the credit banner is on screen: clear the stamp.
@@ -36229,6 +36275,29 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     /// `detect_claude_status(pane) == "waiting" && !is_rate_limit_menu(pane)`;
     /// this asserts the discriminator directly against real picker shapes, so a
     /// regression that reclassifies a selector cannot pass green.
+    #[test]
+    fn a_limit_recorded_in_the_transcript_is_seen_when_the_banner_scrolled_away() {
+        // mvs-infra, 2026-09-24 18:39Z, shape copied from its transcript.
+        let limit = json!({"type":"assistant","isSidechain":false,"error":"rate_limit",
+            "isApiErrorMessage":true,"apiErrorStatus":429,
+            "quotaLimits":{"status":"rejected","resetsAt":1790280600,"rateLimitType":"five_hour"},
+            "message":{"role":"assistant","content":[{"type":"text",
+                "text":"You've hit your session limit \u{00b7} resets 4:10pm (America/New_York)"}]}});
+        let tool = json!({"type":"assistant","message":{"role":"assistant","content":[]}});
+        let owner = json!({"type":"user","message":{"role":"user","content":"continue"}});
+        let meta = json!({"type":"user","isMeta":true,"message":{"role":"user","content":"x"}});
+        let system = json!({"type":"system","content":"Remote Control disconnected"});
+        assert_eq!(transcript_rate_limit(&[tool.clone(), limit.clone(), system.clone(), meta]), Some(1790280600));
+        assert_eq!(transcript_rate_limit(&[limit.clone(), owner]), None, "the owner's continue ends it");
+        assert_eq!(transcript_rate_limit(&[limit.clone(), tool]), None, "a later turn ends it");
+        // The pane shows only the ordinary idle footer, 12+ lines under the banner.
+        let pane = "\u{276f} \n\u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)";
+        let now = chrono::Local::now();
+        assert!(observe_claude_limit(pane, 0, now).is_none(), "the screen alone cannot see it");
+        let seen = observe_claude_limit_with(pane, 0, now, Some(1790280600)).expect("transcript sees it");
+        assert_eq!((seen.kind, seen.reset_at, seen.menu), ("transcript", 1790280600, false));
+    }
+
     #[test]
     fn empty_send_at_a_selector_takes_the_enter_path() {
         // Predicate under test: the exact gate shipped in send_text_inner.
