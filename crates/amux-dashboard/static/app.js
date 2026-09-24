@@ -11771,7 +11771,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1090';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1091';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12526,7 +12526,7 @@ async function _psfViewFile(filePath) {
     if (data.is_image) {
       content.className = 'file-overlay-body file-image';
       const img = document.createElement('img');
-      img.src = data.data_url || _authUrl(API + (data.raw_url || ''));
+      img.src = data.data_url || (data.blob ? URL.createObjectURL(data.blob) : _authUrl(API + (data.raw_url || '')));
       img.style.cssText = 'max-width:100%;height:auto;border-radius:4px;display:block;margin:auto;';
       content.appendChild(img);
     } else if (data.is_markdown) {
@@ -20610,7 +20610,7 @@ function _renderFileBody(data, mode) {
     const img = document.createElement('img');
     // data_url for small images, streamed raw_url for large ones (AMUX-2344).
     // Reading only data_url is what made a >5MB photo render as a broken image.
-    img.src = data.data_url || _authUrl(API + (data.raw_url || ''));
+    img.src = data.data_url || (data.blob ? URL.createObjectURL(data.blob) : _authUrl(API + (data.raw_url || '')));
     img.alt = data.path ? data.path.split('/').pop() : '';
     img.className = 'img-zoomable';
     wrap.appendChild(img);
@@ -20996,6 +20996,19 @@ function _xlsxShowSheet(i) {
   document.querySelectorAll('.xlsx-tab').forEach((el, idx) => { el.classList.toggle('active', idx === i); });
 }
 
+async function _cacheStreamedImage(path, data) {
+  try {
+    const r = await fetch(_authUrl(API + data.raw_url));
+    if (!r.ok) return;
+    const blob = await r.blob();
+    if (!blob.size || blob.size > _FILE_CACHE_MAX) {
+      console.log('[files] streamed image not saved for offline: ' + blob.size + ' bytes (cap ' + _FILE_CACHE_MAX + ')');
+      return;
+    }
+    await _idb.setFile(path, { type: 'file', data: Object.assign({}, data, { blob, blob_bytes: blob.size }) });
+    _offlineBudgetEnforce();
+  } catch (e) { console.warn('[files] could not save streamed image for offline', path, e); }
+}
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
@@ -21112,6 +21125,14 @@ async function openFilePreview(path, options = {}) {
     if (_payload > 0 && _payload <= _FILE_CACHE_MAX) {
       await _idb.setFile(path, { type: 'file', data });
       _offlineBudgetEnforce();     // throttled FIFO trim to the server-saved cap
+    } else if (data.is_image && !data.data_url && data.raw_url) {
+      // A STREAMED IMAGE WAS NEVER SAVED, so it could not open offline (Ethan
+      // 2026-09-24: "if i want to view a file offline, i should be able to.
+      // once i view it, it'll be stored"). Images over the server's inline
+      // limit arrive by URL. Fetch the same bytes once more in the background
+      // (the browser usually answers from its HTTP cache) and store them as a
+      // Blob, which IndexedDB holds natively, under the same per-file cap.
+      _cacheStreamedImage(path, data);
     }
   } catch(e) {
     if (options.readOnly) {document.getElementById('file-body').textContent='Retained asset unavailable.';return;}
@@ -23544,7 +23565,8 @@ const _FILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // evict files not opened
 function _idbEntryBytes(r) {
   const d = (r && r.data) || {};
   return (d.data_url ? d.data_url.length : 0) + (d.content ? d.content.length : 0)
-       + (d.entries ? JSON.stringify(d.entries).length : 0);
+       + (d.entries ? JSON.stringify(d.entries).length : 0)
+       + (d.blob ? (d.blob.size || d.blob_bytes || 0) : 0);   // streamed images saved as Blobs
 }
 // Total offline storage budget, saved SERVER-side so it follows you across
 // devices. Default 200MB: generous on a phone, far under the ~1GB a PWA can
