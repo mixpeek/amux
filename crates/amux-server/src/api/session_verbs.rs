@@ -19937,6 +19937,15 @@ fn pipe_writer_marker_path() -> PathBuf {
 /// those would spray shell noise into per-worker logs for lanes that have no
 /// worker; 10 of the 11 unpiped panes measured were exactly that (disposable
 /// smprobe*/zz-* test lanes) and only ONE was a live agent.
+/// Does this server's home own the lane behind an `amux-<name>` pane?
+fn pane_is_owned(name: &str) -> bool {
+    pane_is_owned_in(&sessions_dir(), name)
+}
+
+fn pane_is_owned_in(sessions: &Path, name: &str) -> bool {
+    sessions.join(format!("{name}.env")).is_file()
+}
+
 fn should_rearm_pipe(pane_pipe: i64, children: usize, writer_changed: bool) -> bool {
     children > 0 && (pane_pipe == 0 || writer_changed)
 }
@@ -19966,6 +19975,7 @@ pub async fn pipe_reconcile_tick() -> usize {
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let mut rearmed = 0usize;
     let mut failed = false;
+    let mut foreign = 0usize;
     for line in text.lines() {
         let mut f = line.split_whitespace();
         let (Some(sess), Some(pipe), Some(pid)) = (f.next(), f.next(), f.next()) else {
@@ -19974,6 +19984,15 @@ pub async fn pipe_reconcile_tick() -> usize {
         let Some(name) = sess.strip_prefix("amux-") else {
             continue;
         };
+        // Only panes THIS server owns. tmux is shared by every amux server on
+        // the machine (a second server with its own AMUX_HOME, a test rig),
+        // and that server's marker starts empty, so it read every live pane as
+        // "writer changed" and re-pointed 20 real lanes' logs into its own
+        // home (2026-09-24). A lane is ours iff our sessions dir has its env.
+        if !pane_is_owned(name) {
+            foreign += 1;
+            continue;
+        }
         let pipe: i64 = pipe.parse().unwrap_or(1); // unparsable -> assume piped, never re-arm blind
         let children = tokio::process::Command::new("pgrep")
             .args(["-P", pid])
@@ -19998,6 +20017,10 @@ pub async fn pipe_reconcile_tick() -> usize {
                 tracing::error!(session = %name, children, writer_changed, "failed to re-arm pipe-pane");
             }
         }
+    }
+    if foreign > 0 {
+        tracing::debug!(foreign, measured = true, verdict = "pipe_reconcile_foreign_panes_skipped",
+            "amux-* panes with no env file in this server's home were left to their owner");
     }
     // Mark the fleet current only after every eligible pane accepted the new
     // writer. A partial failure deliberately retries the migration next tick.
@@ -43637,7 +43660,21 @@ mod gate_agreement_tests {
 
 #[cfg(test)]
 mod pipe_reconcile_tests {
-    use super::should_rearm_pipe;
+    use super::{pane_is_owned_in, should_rearm_pipe};
+
+    /// A second amux server shares the machine's tmux server. Its reconciler
+    /// must leave panes it does not own alone: on 2026-09-24 a test server
+    /// with its own AMUX_HOME re-pointed 20 live lanes' pane logs into its
+    /// scratch home, because every foreign pane read as "writer changed".
+    #[test]
+    fn only_panes_with_an_env_file_in_this_home_are_reconciled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mine.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        assert!(pane_is_owned_in(dir.path(), "mine"));
+        assert!(!pane_is_owned_in(dir.path(), "someone-elses-lane"));
+        std::fs::create_dir(dir.path().join("dir.env")).unwrap();
+        assert!(!pane_is_owned_in(dir.path(), "dir"), "a directory is not a lane");
+    }
 
     /// THE POSITIVE CASE: the incident that motivated this — rec-gov, a live
     /// `node` agent with 1 child and pane_pipe=0, logging nothing.

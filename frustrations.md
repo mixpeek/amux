@@ -4931,3 +4931,14 @@ CARD: AF-791
 SYMPTOM: In `.worktrees/amux-chat-worker`, `cargo test` with the mandated `CARGO_TARGET_DIR=~/.amux/rust-build-target` failed with `no field worker_type on WorkerConfig` right after the same command had compiled it clean. The pre-commit hook then refused the commit, naming five of my files as broken. `cargo -v` showed why: rustc is invoked on `crates/amux-core/src/lib.rs` (workspace-relative) with `-C metadata=4725de00443ab6cf`, and a workspace member's metadata hash does not include the checkout's absolute path. So `libamux_core-164022c04585c70a.rlib` is ONE file for every checkout of this repo. The main-checkout builder and a worktree build take turns overwriting it with different sources.
 COST: ~20 minutes and one refused commit. Nothing in the error names another checkout. It reads as your own broken change, and this is the same shape as AF-791's three phantom errors.
 FIX: A per-checkout target for any checkout that is not the main one (the hook already setdefaults CARGO_TARGET_DIR, so exporting e.g. `~/.amux/rust-build-target-<worktree>` works today). Or have safe-cargo.sh derive the target from `git rev-parse --show-toplevel` when it is not the main checkout, and print which target it chose.
+
+## A second amux server on the same machine re-points every live lane's pane log into its own home
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-24
+SESSION: amux-chat-worker
+CARD: ACW-1
+SYMPTOM: I ran a test server from a worktree with its own AMUX_HOME and port (TMUX_TMPDIR set, but $TMUX from my pane still pointed at the real tmux server). Its first `pipe_reconcile_tick` logged `re-armed pipe-pane session=<lane> writer_changed=true` for 20 real fleet lanes: its `.pipe-writer-version` marker did not exist yet, so every `amux-*` pane on the machine looked like it needed the new writer. For ~2 hours those lanes' pane output went to the test home's logs dir. The live server never noticed, because its own marker was current.
+COST: ~2 hours of pane logs for 20 lanes written to a scratch dir (recovered to ~/.amux/logs/recovered-acw-2026-09-24/), and 30 minutes to find and restore. Nothing in the live server's view showed it: pane_pipe stayed 1.
+FIX: pipe_reconcile_tick now skips any `amux-<name>` pane with no `<name>.env` in its own sessions dir and counts them (`pipe_reconcile_foreign_panes_skipped`). Restoring was the server's own path: move `.pipe-writer-version` aside so the live reconciler re-arms. Branch feature/worker-type.
