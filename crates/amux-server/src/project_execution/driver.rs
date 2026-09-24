@@ -1260,8 +1260,9 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                 };
                 match prepare(state, &p, &row, &e).await {
                     Ok(()) => {
-                      let catalog={let c=state.store.read()?;bs::project_issues(&c,name)?.iter().map(|r|json!({"id":r.id,"title":r.title})).collect::<Vec<_>>()};
-                      let text=format!("{}\nSame-project task identity catalog (not prerequisites; use only concrete unavailable inputs): {}",packet(&p,&row,&e),json!(catalog));
+                      let catalog={let c=state.store.read()?;super::outputs::candidate_catalog(&c,name)?};
+                      tracing::info!(project=name,task=%id,measured=true,n_considered=catalog.len(),available=catalog.iter().filter(|row|!row["candidate"].is_null()).count(),verdict="project.candidate_catalog_delivered","current same-project candidates supplied for local reuse without dependency edges");
+                      let text=format!("{}\nSame-project candidate catalog (optional reusable work, not prerequisites): {}. Candidate heads are already in the shared local Git object store. Inspect relevant changes and reuse fixes without fetching origin or resetting your work; rerun your own checks. Checked candidate code is not integrated runtime proof or human approval. Declare required outputs only for a concrete unavailable input, never merely because another task exists.",packet(&p,&row,&e),json!(catalog));
                       match sv::steer_enqueue_idempotent_report(
                         state,
                         &e.worker,

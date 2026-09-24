@@ -26,6 +26,18 @@ pub struct OutputWait {
     pub available: Vec<Value>,
 }
 
+/// Reuse current, checked local commits without turning discovery into an edge.
+/// A candidate is not a whole-project runtime or human-approval receipt.
+pub(crate) fn candidate_catalog(conn: &Connection, project: &str) -> anyhow::Result<Vec<Value>> {
+    bs::project_issues(conn,project)?.into_iter().filter(|row|row.archived==0).map(|row| {
+        let e=planner::execution(conn,&row.id)?;
+        let candidate=if row.status=="verified" && e.stage=="verified" && e.input_hash==planner::input_hash(&row) {
+            e.report.as_ref().map(|report|json!({"head":report.head,"summary":crate::api::board::chars_elide_middle(&report.summary,240,80),"verification":"task_candidate_only"}))
+        } else { None };
+        Ok(json!({"id":row.id,"title":row.title,"candidate":candidate}))
+    }).collect()
+}
+
 pub(crate) fn authorization_hold(conn: &Connection, row: &bs::IssueRow) -> anyhow::Result<bool> {
     let e = planner::execution(conn, &row.id)?;
     let category_hold = matches!(
@@ -285,6 +297,22 @@ pub(crate) fn usage_windows(
 pub(crate) mod tests {
     use super::*;
     use crate::db::{attempts, Store};
+    #[test]
+    fn project_candidate_catalog_shares_only_current_checked_local_heads() {
+        let (_dir,db,_)=fixture();
+        db.write(|c| {
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="verified".into();e.waiting=None;e.wait_category=None;e.report=Some(planner::Report{head:"a".repeat(40),summary:"Existing repository gate repaired".into(),checks:vec![],assets:vec![]});
+            c.execute("UPDATE issues SET status='verified' WHERE id='A'",[])?;planner::save_execution(c,&row,&e,"test.verified").map_err(store::sql_error)?;
+            c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated) VALUES('FOREIGN','other project','verified','code','other',1,1)",[])?;
+            let catalog=candidate_catalog(c,"sample").unwrap();assert!(!catalog.iter().any(|r|r["id"]=="FOREIGN"));
+            assert_eq!(catalog.iter().find(|r|r["id"]=="A").unwrap()["candidate"]["head"],"a".repeat(40));
+            assert!(catalog.iter().find(|r|r["id"]=="B").unwrap()["candidate"].is_null());
+            c.execute("UPDATE issues SET title='Changed requirements' WHERE id='A'",[])?;
+            assert!(candidate_catalog(c,"sample").unwrap().iter().find(|r|r["id"]=="A").unwrap()["candidate"].is_null());
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
+    }
+
     pub(crate) fn fixture() -> (tempfile::TempDir, Store, Request) {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(&dir.path().join("db")).unwrap();

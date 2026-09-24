@@ -4694,3 +4694,14 @@ CARD: AF-947
 SYMPTOM: The standalone task submitted a verifier that writes build metadata without the Amux execution schema, run identity or timestamps, and deletes its image before independent attestation. The task packet supplied stage names and assertions but omitted the exact receipt protocol and complete runtime evidence paths.
 COST: Workers had to guess an undocumented interface, guaranteeing avoidable integrated-verification failures and repair calls.
 FIX: Attach the consumer-owned wire schema, environment mapping, required receipt fields, fresh raw-evidence rules and Docker witness contract to execution task packets. Carry all runtime evidence paths separately from task-produced assets. Do not run privileged checks early, synthesize proof, waive validation or auto-approve. Packet regression confirms that unasserted text logs as well as receipt/JSON paths reach the worker.
+
+## Workers repeated repairs already checked in the same project
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-20 repeated the 16 workflow dependency repairs already included in checked POG-8. The default task catalog supplied only IDs and titles; reusable local candidate commits and repair summaries were absent.
+COST: Duplicate implementation consumed model turns and created avoidable integration risk.
+FIX: Enrich the existing same-project catalog with current verified candidate SHAs and bounded summaries. No new dependency, wait, fetch, worker, or prompt is created. Tell executors to inspect and reuse local commits while preserving their work and rerunning their checks; distinguish candidate checks from runtime proof and approval. Exclude stale, unverified, archived and foreign candidates; emit project.candidate_catalog_delivered.
