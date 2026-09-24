@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2121,
+  "n_considered": 2127,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2026,6 +2026,12 @@
     },
     "_projectCloseout": {
       "kind": "command._projectCloseout",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_projectDraftFields": {
+      "kind": "command._projectDraftFields",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
