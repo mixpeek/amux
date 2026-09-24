@@ -4331,3 +4331,14 @@ CARD: AF-947
 SYMPTOM: Live Goal 03 intake rejected a complete 23-task draft because Ray appeared only in a cross-project context paragraph. Its next attempt rejected the requested equivalence-contract task because its next action said to commit the document. Both paid attempts were exhausted with no board items.
 COST: Scope creep on retry and a stalled project despite an otherwise useful retained decomposition.
 FIX: For indexed specs, enforce technology keywords against the requested sections and operator command, not unrelated background; keep full context for reasoning. Detect administrative-only tasks by their outcome title, allowing normal commit/report instructions inside producing tasks. Revalidate retained exhausted responses once per harness validation revision with no paid retry; invalid responses remain bounded and cannot starve later requests. Log project_intake_revalidate and command_plan_recovered. Regression tests cover real requested artifacts, background-only technologies, actual missing scope, and valid/invalid exhausted-response recovery.
+
+## Intake recovery hid its current rejection and required literal Docker wording
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: After 8ca24c26 revalidated the retained goal plan without another model call, it still rejected "Build and run standalone Docker image lifecycle verification" as missing Docker run verification. The discarded Result left the earlier commit-task error on screen.
+COST: A legitimate runtime task stalled on wording, and stale diagnostics hid the remaining check.
+FIX: Accept equivalent standalone run wording, match named services as complete words (arrays is not Ray), and persist/log the current rejected recovery reason. Increment the validator revision so existing retained plans recover once automatically with no additional paid attempt. Regression covers positive and genuinely missing runtime work and refreshed rejection details.

@@ -385,7 +385,12 @@ mod tests {
             assert_eq!(fake.calls.load(std::sync::atomic::Ordering::SeqCst),0);
             assert!(pending_receipts(&c,chrono::Utc::now().timestamp()).unwrap().is_empty());
             assert_eq!(bs::project_issues(&c,"sample").unwrap().len(),usize::from(valid));
-            assert_eq!(receipts(&c,"sample").unwrap()[0]["pending"],!valid);
+            let receipt=receipts(&c,"sample").unwrap().remove(0);
+            assert_eq!(receipt["pending"],!valid);
+            if !valid {
+                assert_ne!(receipt["result"]["error"], "previous validator rejected this");
+                assert_eq!(receipt["result"]["validation_revision"],board_lifecycle::INTAKE_VALIDATION_REVISION);
+            }
         }
     }
 

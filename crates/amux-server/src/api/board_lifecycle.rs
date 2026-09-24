@@ -366,7 +366,7 @@ fn validate(d: &Decision, rows: &[Candidate], session: &str) -> Result<(), Strin
     validate_for_request(d, rows, session, "", "")
 }
 
-pub(crate) const INTAKE_VALIDATION_REVISION: i64 = 2;
+pub(crate) const INTAKE_VALIDATION_REVISION: i64 = 3;
 
 fn validate_for_request(
     d: &Decision,
@@ -621,7 +621,7 @@ fn project_scope_errors(d: &Decision, command: &str, request_basis: &str) -> Res
             &mut errors,
             &plan,
             "Docker run verification",
-            &["docker run", "run the image", "container runs"],
+            &["docker run", "run the image", "container runs", "run standalone docker image", "run the standalone image"],
         );
     }
     if contains_any(&source, &["full lifecycle", "end-to-end", "e2e"]) {
@@ -632,9 +632,11 @@ fn project_scope_errors(d: &Decision, command: &str, request_basis: &str) -> Res
             &["full lifecycle", "end-to-end", "e2e", "lifecycle"],
         );
     }
+    let source_words = words(&source);
+    let plan_words = words(&plan);
     for term in ["mongo", "ray", "mvs", "redis"] {
-        if source.contains(term) {
-            require_plan_mentions(&mut errors, &plan, term, &[term]);
+        if source_words.contains(term) && !plan_words.contains(term) {
+            errors.push(format!("missing {term}"));
         }
     }
     if source.contains("lightweight embedding") || source.contains("embedding model") {
@@ -1542,6 +1544,7 @@ pub(crate) async fn capture_inner(
         }
         return Ok(());
     }
+    let mut retained_error = None;
     let prepared = saved
         .as_deref()
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
@@ -1558,7 +1561,9 @@ pub(crate) async fn capture_inner(
             }
             let raw = v["response"].as_str()?;
             let mut decision: Decision =
-                serde_json::from_str(board_intake::extract_json_object(raw)?).ok()?;
+                serde_json::from_str(board_intake::extract_json_object(raw)?).map_err(|error| {
+                    retained_error = Some(format!("retained plan JSON is invalid: {error}"));
+                }).ok()?;
             let candidates: Vec<Candidate> =
                 serde_json::from_value(v["candidates"].clone()).ok()?;
             normalize_for_request(&mut decision, &candidates, session);
@@ -1566,7 +1571,9 @@ pub(crate) async fn capture_inner(
             if project.is_some() {
                 preserve_project_runtime_gates(&mut decision, &basis);
             }
-            validate_for_request(&decision, &candidates, session, &text, &basis).ok()?;
+            validate_for_request(&decision, &candidates, session, &text, &basis).map_err(|error| {
+                retained_error = Some(error);
+            }).ok()?;
             Some(Prepared {
                 decision,
                 candidates,
@@ -1576,8 +1583,11 @@ pub(crate) async fn capture_inner(
     if revalidate_saved && prepared.is_none() {
         // Stamp only a completed rejection. A restart before a valid plan is
         // committed must still recover it on the next sweep.
+        let error = retained_error.unwrap_or_else(|| "retained plan or candidate snapshot is incomplete".into());
+        tracing::warn!(message_id=id, %error, model_calls=0, measured=true,n_considered=1,
+            verdict="project_intake_revalidation_rejected", "retained plan still invalid under current rules");
         state.store.write_async(move |c| {
-            c.execute("UPDATE cmd_history SET intake_result=json_set(intake_result,'$.validation_revision',?2) WHERE id=?1 AND capture_pending!=0", rusqlite::params![id,INTAKE_VALIDATION_REVISION])?;
+            c.execute("UPDATE cmd_history SET intake_result=json_set(intake_result,'$.validation_revision',?2,'$.error',?3) WHERE id=?1 AND capture_pending!=0", rusqlite::params![id,INTAKE_VALIDATION_REVISION,error])?;
             Ok(WriteOutcome{applied:true,events:vec![]})
         }).await?;
     }
@@ -2786,6 +2796,21 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
             &basis,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn standalone_build_and_run_is_concrete_runtime_work() {
+        let mut d = Decision {kind:"tasks".into(),reason:"runtime requested".into(),confidence:1.0,tasks:vec![step("a")]};
+        d.tasks[0].title="Build and run standalone Docker image lifecycle verification".into();
+        d.tasks[0].description="Run full lifecycle e2e with arrays of fixtures and retained evidence".into();
+        d.tasks[0].next_action="Execute Docker build and runtime scenarios".into();
+        d.tasks[0].acceptance_criteria=vec!["[spec:T1] Fresh build and runtime evidence pass".into()];
+        let basis="### T1. Standalone Docker image\nRun end-to-end verification with arrays of fixtures.\nREQUIRED_SPEC_SECTION [spec:T1] Standalone Docker image";
+        preserve_project_runtime_gates(&mut d,basis);
+        project_scope_errors(&d,"Implement standalone Docker image lifecycle",basis).unwrap();
+        d.tasks[0].title="Build standalone Docker image".into();
+        d.tasks[0].next_action="Execute Docker build checks".into();
+        assert!(project_scope_errors(&d,"Implement standalone Docker image lifecycle",basis).unwrap_err().contains("Docker run"));
     }
 
     #[test]

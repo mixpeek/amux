@@ -67,3 +67,10 @@ while the model still sees the complete document. Admin checks inspect outcome
 titles instead of punishing normal producing-task instructions. A validator
 revision rechecks exhausted retained responses once without another model call;
 invalid responses remain bounded and a restart cannot consume valid recovery.
+
+Live recovery on 8ca24c26 spent no model calls but exposed a later wording
+rejection: "build and run standalone Docker image" was not among the accepted
+Docker run phrases. A local replay reproduced the exact failure. Equivalent run
+wording is now accepted, named-service checks use words (not substrings inside
+"arrays"), and rejected retained-plan revalidation persists the new diagnostic
+rather than showing an old error. Validator revision 3 rechecks saved plans once.
