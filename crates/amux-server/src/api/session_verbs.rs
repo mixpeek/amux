@@ -20158,8 +20158,9 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         }
 
         if let (Some(project), Some(repo)) = (cfg.get("CC_PROJECT"), cfg.get("CC_DIR")) {
-            let checkout = crate::project_execution::checkout::load(Path::new(repo), project);
-            if let Some(key) = checkout.as_ref().and_then(|w| project_checkout_directory_key(&cfg, &pane, Path::new(&w.path))) {
+            let checkout = crate::project_execution::checkout::load(&home(), project);
+            if let Some(key) = checkout.as_ref().filter(|w| crate::fanout_workspace::same_repository(&w.repo, repo))
+                .and_then(|w| project_checkout_directory_key(&cfg, &pane, Path::new(&w.path))) {
                 let permitted = state.store.read().ok().is_some_and(|c|
                     crate::project_execution::checkout::start_permit(&c, project, name).is_ok());
                 if permitted {
