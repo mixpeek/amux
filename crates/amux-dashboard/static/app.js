@@ -11863,7 +11863,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1105';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1106';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13055,7 +13055,7 @@ function stripAnsi(text) {
 // Links in worker output: URLs, bare domains on real TLDs, absolute and ./ ~/
 // paths, and repo-relative paths (a/b/c.md, crates/x/y.rs:12). Returns sorted,
 // non-overlapping {start,end,type,value} over the PLAIN text.
-const _LINK_TLDS = 'com|org|net|io|ai|app|dev|co|so|us|me|xyz|cloud|tech|run|site|page|info|biz|tv|gg|ly|build|tools|systems';
+const _LINK_TLDS = 'com|org|net|io|ai|app|dev|co|so|us|me|xyz|cloud|tech|site|page|info|biz|tv|gg|ly|build|tools|systems';
 function _detectTextLinks(plain) {
   const out = [];
   const add = (start, end, type, value) => {
@@ -13063,18 +13063,29 @@ function _detectTextLinks(plain) {
     out.push({ start, end, type, value });
   };
   const trim = v => v.replace(/[.,;:!?)\]}'"`]+$/, '');
+  // Rules below were each earned by a false link in tubescience-parity's real
+  // output (click test, 2026-09-24): Mozilla/5.0, Chrome/153.0.8010.54,
+  // git/2.39.0 (a version is not an extension), 70s/json.loads( (a call is not
+  // a file), Chrome.app / asyncio.run / s.tech (not domains), 127.0.0.1:$PORT\.
+  const fileEnd = String.raw`\.(?=[A-Za-z0-9]{0,7}[A-Za-z])[A-Za-z0-9]{1,8}`;   // an extension with a letter in it
+  const notCall = p => plain[p] !== '(';
   let m;
-  const url = /https?:\/\/[^\s<>\]\)'"`,;-]+/g;
-  while ((m = url.exec(plain))) { const v = trim(m[0]); add(m.index, m.index + v.length, 'url', v); }
+  const url = /https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:[\/?#][^\s<>\]\)'"`,;\\$-]*)?/g;
+  while ((m = url.exec(plain))) {
+    const v = trim(m[0]);
+    if (/[:${]/.test(plain[m.index + m[0].length] || '')) continue;   // a template like 127.0.0.1:$PORT
+    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.slice(8))) add(m.index, m.index + v.length, 'url', v);
+  }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
-  const abs = /(^|[\s(`'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?)/g;
-  while ((m = abs.exec(plain))) { const st = m.index + m[1].length; add(st, st + m[2].length, 'file', m[2]); }
+  const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
+  while ((m = abs.exec(plain))) { const st = m.index + m[1].length, en = st + m[2].length; if (notCall(en)) add(st, en, 'file', m[2]); }
   // A relative path means something only against the worker's directory; with
   // none known it stays plain text rather than a link that does nothing.
   const cwdKnown = typeof peekSessionDir === 'string' && !!peekSessionDir;
-  const rel = /(^|[\s(`'"=\[@])((?:[\w+-][\w.@+-]*\/)+[\w.@+-]*\w\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?)(?![\w\/])/g;
+  const rel = new RegExp(String.raw`(^|[\s(\x60'"=\[@])((?:(?:\.\.\.|…|[\w+-][\w.@+-]*)\/)+[\w.@+…-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
   while (cwdKnown && (m = rel.exec(plain))) {
-    const st = m.index + m[1].length;
+    const st = m.index + m[1].length, en = st + m[2].length;
+    if (!notCall(en)) continue;
     // A hard wrap is not a path boundary: at a line start, if the previous
     // line's last token starts a path and has no extension, this is its tail.
     if (st === 0 || plain[st - 1] === '\n') {
@@ -13082,11 +13093,20 @@ function _detectTextLinks(plain) {
       const tok = prev.trim().split(/[\s(\[>"'`,;=]+/).pop() || '';
       if (/^\.?\//.test(tok) && !/\.[A-Za-z0-9]{1,8}$/.test(tok)) continue;
     }
-    add(st, st + m[2].length, 'file', m[2]);
+    add(st, en, 'file', m[2]);
   }
-  const dom = new RegExp('(^|[^\\w@/.:-])((?:[a-z0-9-]+\\.)+(?:' + _LINK_TLDS + ')(?:/[^\\s<>"\'`)\\]]*)?)(?![\\w.-]*\\w)', 'gi');
+  // Bare domains: lowercase only; a one-label host (x.com) only on the common
+  // TLDs, anything else needs two labels (flawless-footage.ts.app).
+  const dom = new RegExp('(^|[^\\w@/.:-])((?:[a-z0-9-]+\\.)+(?:' + _LINK_TLDS + ')(?:/[^\\s<>"\'`)\\]]*)?)(?![\\w.-]*\\w)', 'g');
   while ((m = dom.exec(plain))) {
     const st = m.index + m[1].length, v = trim(m[2]);
+    const host = v.split('/')[0], labels = host.split('.');
+    const common = /^(com|org|net|io|ai|dev)$/.test(labels[labels.length - 1]);
+    if (!common && labels.length < 3) continue;
+    if (st === 0 || plain[st - 1] === '\n') {
+      const prev = plain.slice(plain.lastIndexOf('\n', st - 2) + 1, Math.max(0, st - 1));
+      if (/https?:\/\/\S*$/.test(prev)) continue;   // the tail of a wrapped URL
+    }
     add(st, st + v.length, 'url', 'https://' + v);
   }
   return out.sort((a, b) => a.start - b.start);

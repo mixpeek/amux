@@ -367,7 +367,7 @@ async fn resolve_rel(method: Method, RawQuery(q): RawQuery) -> Response {
             .unwrap_or_default()
     };
     let cwd = get("cwd");
-    let rel = get("rel");
+    let rel = normalize_printed_rel(&get("rel"), std::env::var("HOME").ok().as_deref());
     if cwd.trim().is_empty() || rel.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -400,7 +400,44 @@ async fn resolve_rel(method: Method, RawQuery(q): RawQuery) -> Response {
                 return Json(json!({ "resolved": resolved, "exists": false, "elided": true,
                     "ambiguous": c, "tried": tried })).into_response();
             }
-            _ => {}
+            _ => {
+                // Not under the cwd or an ancestor: the elided path may start
+                // BELOW the cwd (`ff-capture/...FLOW-MAP.md` from
+                // customers/tubescience, where ff-capture is under parity/).
+                // Bounded breadth-first with resolve_rel_descend's skip list
+                // and limits.
+                let mut frontier = vec![PathBuf::from(cwd.trim_end_matches('/'))];
+                let mut visited = 0usize;
+                let mut found: Option<PathBuf> = None;
+                'outer: for _ in 0..DESCEND_MAX_DEPTH {
+                    let mut next = Vec::new();
+                    for dir in frontier {
+                        for child in real_list_dirs(&dir) {
+                            let name = child.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if DESCEND_SKIP.contains(&name) || !is_path_allowed(&child) {
+                                continue;
+                            }
+                            visited += 1;
+                            if visited > DESCEND_MAX_DIRS {
+                                break 'outer;
+                            }
+                            if let Ok(Some(f)) = resolve_rel_elided_at(&child.display().to_string(), &rel, &names, &allowed_exists, false) {
+                                found = Some(f);
+                                break 'outer;
+                            }
+                            next.push(child);
+                        }
+                    }
+                    frontier = next;
+                }
+                if let Some(f) = found.filter(|f| is_path_allowed(f)) {
+                    let s = f.display().to_string();
+                    tracing::info!(rel = %rel, resolved = %s, measured = true, n_considered = visited,
+                        verdict = "fs_resolve_elided_match", "resolved an elided path below the cwd");
+                    tried.push(s.clone());
+                    return Json(json!({ "resolved": s, "exists": true, "elided": true, "tried": tried })).into_response();
+                }
+            }
         }
     }
     // AMUX-4661 (Ethan's screenshots, jobs.py "does not exist here"): the
@@ -628,6 +665,18 @@ pub(crate) fn resolve_rel_elided(
     list_names: &dyn Fn(&Path) -> Vec<String>,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Result<Option<PathBuf>, Vec<PathBuf>> {
+    resolve_rel_elided_at(cwd, rel, list_names, exists, true)
+}
+
+/// `climb`: also try the cwd's ancestors. The descend fallback calls this per
+/// directory with `climb = false`.
+pub(crate) fn resolve_rel_elided_at(
+    cwd: &str,
+    rel: &str,
+    list_names: &dyn Fn(&Path) -> Vec<String>,
+    exists: &dyn Fn(&Path) -> bool,
+    climb: bool,
+) -> Result<Option<PathBuf>, Vec<PathBuf>> {
     let rel = rel.trim().trim_start_matches("./").trim_start_matches('/');
     let segs: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
     if !segs.iter().any(|s| segment_is_elided(s)) {
@@ -664,11 +713,28 @@ pub(crate) fn resolve_rel_elided(
             1 => return Ok(frontier.pop()),
             _ => return Err(frontier),
         }
-        if !base.pop() {
+        if !climb || !base.pop() {
             break;
         }
     }
     Ok(None)
+}
+
+/// Normalise what a worker printed before resolving it (tubescience-parity's
+/// click test, 2026-09-24): `~/x` is the owner's home, and a LEADING pure
+/// ellipsis segment (`.../2026-09-24-FLOW-MAP.md`) means "somewhere below",
+/// so it is dropped and the rest is found by the ancestor walk and descent.
+pub(crate) fn normalize_printed_rel(rel: &str, home: Option<&str>) -> String {
+    let rel = rel.trim();
+    if let (Some(rest), Some(h)) = (rel.strip_prefix("~/"), home) {
+        return format!("{}/{}", h.trim_end_matches('/'), rest);
+    }
+    for lead in ["...", "\u{2026}"] {
+        if let Some(rest) = rel.strip_prefix(lead).and_then(|r| r.strip_prefix('/')) {
+            return rest.to_string();
+        }
+    }
+    rel.to_string()
 }
 
 pub(crate) fn real_list_names(dir: &Path) -> Vec<String> {
@@ -2653,6 +2719,15 @@ async fn delete_path(req: Request) -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn printed_paths_are_normalised_before_resolving() {
+        assert_eq!(normalize_printed_rel("~/.amux/x.sh", Some("/Users/e")), "/Users/e/.amux/x.sh");
+        assert_eq!(normalize_printed_rel(".../2026-FLOW-MAP.md", Some("/Users/e")), "2026-FLOW-MAP.md");
+        assert_eq!(normalize_printed_rel("\u{2026}/parity/x.py", None), "parity/x.py");
+        assert_eq!(normalize_printed_rel("../x.md", None), "../x.md");
+        assert_eq!(normalize_printed_rel("a/b.md", None), "a/b.md");
+    }
+
     #[test]
     fn an_elided_path_resolves_to_its_one_file_from_a_repo_ancestor() {
         let tree: std::collections::HashMap<&str, Vec<&str>> = [

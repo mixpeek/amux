@@ -55,6 +55,18 @@ test('no false links', () => {
   assert.deepEqual(hrefs(h), []);
   assert.deepEqual(paths(h), []);
 });
+test('no false links from real tubescience-parity output (click test 2026-09-24)', () => {
+  const h = html('UA Mozilla/5.0 Chrome/153.0.8010.54 via /usr/local/Cellar/git/2.39.0 and /Users/ethan/.nvm/versions/node/v22.22.0 took 70s/json.loads(raw) in Google Chrome.app/Contents asyncio.run(main()) and http://127.0.0.1:$PORT\\');
+  assert.deepEqual(paths(h), [], JSON.stringify(paths(h)));
+  assert.deepEqual(hrefs(h), [], JSON.stringify(hrefs(h)));
+});
+test('elided and home paths still link', () => {
+  assert.deepEqual(paths(html('see ff-capture/...FLOW-MAP.md and .../2026-09-24-FLAWLESS-FOOTAGE-FLOW-MAP.md and ~/.amux/github-app/get-token.sh')),
+    ['ff-capture/...FLOW-MAP.md', '.../2026-09-24-FLAWLESS-FOOTAGE-FLOW-MAP.md', '~/.amux/github-app/get-token.sh']);
+});
+test('a wrapped URL tail is not a separate domain', () => {
+  assert.deepEqual(hrefs(html('https://api.flawles\ns.tech/rest/v1/x')), ['https://api.flawles']);
+});
 test('text and escaping are preserved', () => {
   const h = html('a <b> & https://x.com/?q=<1>');
   assert.equal(h.replace(/<[^>]+>/g, ''), 'a &lt;b&gt; &amp; https://x.com/?q=&lt;1&gt;'.replace('&lt;1&gt;', '&lt;1&gt;'));

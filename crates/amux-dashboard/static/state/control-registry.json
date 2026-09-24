@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2158,
+  "n_considered": 2159,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -550,6 +550,12 @@
     },
     "_connDelete": {
       "kind": "command._connDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connPillClick": {
+      "kind": "command._connPillClick",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
