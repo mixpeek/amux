@@ -13139,6 +13139,19 @@ function _peekLiveHtml(raw) {
 // reading amux's own label rather than guessing at prose.
 const _NON_HUMAN_PROMPT_MARKS = [
   ['[amux-origin:', 'session'],     // a peer worker, server-verified origin
+  // CLAUDE CODE'S OWN PEER ENVELOPE (Ethan, 2026-09-23, on a screenshot of a
+  // peek pane: "we still have shit not working or presenting accurately"). A
+  // message from another Claude session arrives as this literal sentence
+  // followed by `<cross-session-message from="uds:/tmp/cc-socks/....sock"
+  // from-name="<lane>" ...>`. amux never sees it as a send, so no Messages row
+  // exists to match against, and it fell all the way through to
+  // "Unclassified" beside a block that names its sender in an attribute.
+  //
+  // Matching the sentence rather than the tag because the sentence is what the
+  // prompt STARTS with; the tag is on the next line and `startsWith` would
+  // miss it.
+  ['Another Claude session sent a message:', 'session'],
+  ['<cross-session-message', 'session'],   // same delivery, tag-first shape
   ['[UNVERIFIED INJECTION:', 'unstamped'], // raw-tmux fallback when server was unreachable
   ['[Request interrupted by user]', 'amux'], // Claude Code system chrome
   ['[amux auto-pickup]', 'amux'],
@@ -42387,9 +42400,23 @@ async function _bwLoadProfiles() {
       // show; the directory name stays alongside because it is what the API and
       // AMUX_PROFILE take.
       const lbl = (p.label || '').trim();
-      o.textContent = icon + ' ' + (lbl ? lbl + ' (' + p.name + ')' : p.name)
-                    + (doms ? ' — ' + doms : '');
-      if (doms) o.title = doms;
+      // A REGISTERED PROFILE WHOSE DIRECTORY IS GONE still carries its saved
+      // domains, so without this it renders as a normal signed-in profile and
+      // picking it silently starts an empty one (AMUX-5020). `on_disk` is the
+      // server's own measurement; an older server omits it, and `!== false`
+      // keeps those listings unchanged rather than marking everything missing.
+      const missing = p.on_disk === false;
+      o.textContent = (missing ? '⚠' : icon) + ' '
+                    + (lbl ? lbl + ' (' + p.name + ')' : p.name)
+                    + (missing ? ' — no profile directory, starts logged out'
+                               : (doms ? ' — ' + doms : ''));
+      if (missing) {
+        o.title = 'Saved for ' + (doms || 'no recorded domains')
+                + ', but the directory is gone. Starting it creates an empty '
+                + 'profile and you will not be signed in.';
+      } else if (doms) {
+        o.title = doms;
+      }
       return o;
     };
     saved.forEach(p => sel.appendChild(opt(p, '⭐')));
