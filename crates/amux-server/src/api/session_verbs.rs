@@ -8789,9 +8789,12 @@ mod composer_absorbs_non_composer_lines {
 pub(crate) enum EmptySendPlan {
     /// Real typed input is waiting: the Enter key submits it.
     PressEnter,
-    /// A dim suggestion, an empty box, or no composer: look for a suggested
-    /// prompt to submit as text (a bare Enter does nothing to a suggestion).
+    /// A dim suggestion: submit it as text (a bare Enter does nothing to it).
     ExtractSuggestion,
+    /// An empty box, or no composer: there is nothing to submit. NOT a cue to
+    /// hunt the frame for text, which found the owner's previous message in
+    /// scrollback and sent it again (MSG-68712 delivered twice, 2026-09-24).
+    Nothing,
     /// Keystrokes would land somewhere other than this worker's composer.
     Refuse(&'static str),
 }
@@ -8803,7 +8806,8 @@ pub(crate) fn empty_send_plan(raw_frame: &str) -> EmptySendPlan {
         ComposerState::BackgroundManager => EmptySendPlan::Refuse(
             "the background-task manager is open over this worker; close it before sending",
         ),
-        _ => EmptySendPlan::ExtractSuggestion,
+        ComposerState::Placeholder(_) => EmptySendPlan::ExtractSuggestion,
+        ComposerState::Empty | ComposerState::NotVisible => EmptySendPlan::Nothing,
     }
 }
 
@@ -10985,6 +10989,14 @@ async fn send_text_inner_bound(
                 );
             }
             EmptySendPlan::Refuse(why) => return (false, why.into()),
+            EmptySendPlan::Nothing => {
+                tracing::info!(
+                    session = %name, measured = true, n_considered = 1,
+                    verdict = "empty_send_nothing_to_submit",
+                    "empty send: the composer is empty; nothing submitted"
+                );
+                return (true, "no suggestion found".into());
+            }
             EmptySendPlan::ExtractSuggestion => {}
         }
         let nonblank: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -10999,11 +11011,18 @@ async fn send_text_inner_bound(
         }) {
             return (true, "no suggestion found".into());
         }
-        for line in clean.lines().rev() {
+        // THE COMPOSER LINE ONLY: the last prompt-glyph line, the same one
+        // composer_state classified. Walking further up reads submitted turns,
+        // which Claude Code also draws behind a glyph.
+        let composer_line = clean
+            .lines()
+            .rev()
+            .find(|l| matches!(l.trim().chars().next(), Some('\u{276f}') | Some('\u{203a}') | Some('>')));
+        for line in composer_line.into_iter() {
             let line = line.trim();
-            if line.starts_with('\u{276f}') || line.starts_with('>') {
+            if line.starts_with('\u{276f}') || line.starts_with('\u{203a}') || line.starts_with('>') {
                 let suggested = line
-                    .trim_start_matches(['\u{276f}', '>', '\u{a0}', ' '])
+                    .trim_start_matches(['\u{276f}', '\u{203a}', '>', '\u{a0}', ' '])
                     .trim();
                 if !suggested.is_empty() {
                     // A NUMBERED OPTION IS A PICKER, NOT A SUGGESTION
@@ -41294,6 +41313,18 @@ mod composer_state_tests {
             empty_send_plan(&strip_ansi(LIVE_PLACEHOLDER)),
             EmptySendPlan::PressEnter
         );
+    }
+
+    #[test]
+    fn an_empty_composer_never_resubmits_a_turn_from_scrollback() {
+        // MSG-68712: the owner's message was submitted, rendered in history as a
+        // prompt-glyph line, and the next Enter on the now-empty composer sent it
+        // again, twice.
+        let frame = "\u{276f} i sent this and it doesnt appear to have been sent\n\n\u{23fa} Working on it.\n\n\
+                     \u{2500}\u{2500}\u{2500}\n\u{276f}\u{a0}\n\u{2500}\u{2500}\u{2500}\n  ? for shortcuts\n";
+        assert_eq!(empty_send_plan(frame), EmptySendPlan::Nothing);
+        let src = include_str!("session_verbs.rs");
+        assert!(src.contains("for line in composer_line.into_iter()"), "extraction must read the composer line only");
     }
 
     #[test]
