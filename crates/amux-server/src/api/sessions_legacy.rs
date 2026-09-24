@@ -4129,7 +4129,15 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         );
         let worktree_path = crate::fanout_workspace::load(&home, &name)
             .map(|workspace| std::path::PathBuf::from(workspace.path))
-            .unwrap_or_else(|| home.join("worktrees").join(&name));
+            .unwrap_or_else(|| {
+                let dir = env.get("CC_DIR").map(|s| s.as_str()).unwrap_or("");
+                let new_loc = std::path::Path::new(dir).join(".worktrees").join(&name);
+                if new_loc.exists() {
+                    new_loc
+                } else {
+                    home.join("worktrees").join(&name)
+                }
+            });
         out.push(json!({
             "status_evidence": {
                 "source": status_evidence["decided_by"],

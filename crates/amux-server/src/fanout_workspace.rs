@@ -1033,7 +1033,10 @@ pub async fn adopt_at_boundary(state: &crate::api::AppState, name: &str) {
     if crate::config::now_f64() - prior["at"].as_f64().unwrap_or(0.0) < 300.0 {
         return;
     }
-    let path = home.join("worktrees").join(name);
+    let path = {
+        let new_loc = std::path::Path::new(env.get_or("CC_DIR", "")).join(".worktrees").join(name);
+        if new_loc.join(".git").exists() { new_loc } else { home.join("worktrees").join(name) }
+    };
     let result = if path.join(".git").exists() {
         ensure(&home, name, env.get_or("CC_DIR", ""))
             .await

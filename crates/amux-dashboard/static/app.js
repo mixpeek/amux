@@ -6050,7 +6050,7 @@ function render() {
           ${!online ? '<span class="cached-badge">cached</span>' : ''}
         </div>` : ''}
       </div>
-      ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.worktree_active ? '~/.amux/worktrees/' + s.name : s.dir)}">${esc(s.worktree_active ? '~/.amux/worktrees/' + s.name : s.dir)}</span></div>` : ''}
+      ${s.dir ? `<div class="card-dir"><span class="card-dir-path" title="${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}">${esc(s.worktree_active && s.worktree_path ? s.worktree_path : s.dir)}</span></div>` : ''}
       ${s.creator ? `<div class="card-dir" style="font-size:0.72rem;">${esc(s.creator)}</div>` : ''}
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
@@ -7552,7 +7552,7 @@ function _renderReviewSection() {
     html += '<div class="review-body">';
     (q ? review : allReview).forEach(s => {
       const ago = s.last_activity ? timeAgo(s.last_activity) : '';
-      const rawDir = s.worktree_active ? '~/.amux/worktrees/' + s.name : (s.dir || '');
+      const rawDir = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir.replace(/^\/Users\/[^/]+/, '~');
       const model = s.active_model || sessionConfiguredModel(s) || '';
       const body = esc(s.task_name || s.preview || s.desc || '');
@@ -7606,7 +7606,7 @@ function _renderPausedSection() {
     html += '<div class="paused-body">';
     (q ? paused : allPaused).forEach(s => {
       const ago = s.last_activity ? timeAgo(s.last_activity) : '';
-      const rawDir = s.worktree_active ? '~/.amux/worktrees/' + s.name : (s.dir || '');
+      const rawDir = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir.replace(/^\/Users\/[^/]+/, '~');
       const model = s.active_model || sessionConfiguredModel(s) || '';
       const body = esc(s.task_name || s.preview || s.desc || '');
@@ -7791,7 +7791,7 @@ function _renderArchivedSection() {
     (q ? archived : allArchived).forEach(s => {
       const ago = s.last_activity ? timeAgo(s.last_activity) : '';
       const created = s.session_created ? new Date(s.session_created * 1000).toLocaleDateString([], {month:'short', day:'numeric', year:'2-digit'}) : '';
-      const rawDir2 = s.worktree_active ? '~/.amux/worktrees/' + s.name : (s.dir || '');
+      const rawDir2 = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir2.replace(/^\/Users\/[^/]+/, '~');
       const provider = s.provider && s.provider !== 'claude' ? s.provider : '';
       const model = s.active_model || '';
@@ -9624,7 +9624,7 @@ function _workerPrimaryConfigurationsHTML(name) {
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
   ];
   const runtime = [
-    _workerConfigurationRow('directory', 'Working directory', s.worktree_active ? '~/.amux/worktrees/' + name + ' (worktree)' : (s.dir || ''), 'Changing it restarts a running worker in the new directory.', edit('dir', s.dir || '')),
+    _workerConfigurationRow('directory', 'Working directory', s.worktree_active && s.worktree_path ? s.worktree_path + ' (worktree)' : (s.dir || ''), 'Changing it restarts a running worker in the new directory.', edit('dir', s.dir || '')),
     _workerConfigurationRow('branch', 'Git branch', s.branch || '', 'Blank follows the detected branch; “none” explicitly uses the main checkout.', edit('branch', s.branch || '')),
     _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), s.isolated ? 'Changes the CLI provider without injecting harness context.' : 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
     _workerConfigurationRow('model', 'Model version', model || 'Provider default', s.isolated ? 'Uses the native CLI conversation; no board context is added on restart.' : 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),

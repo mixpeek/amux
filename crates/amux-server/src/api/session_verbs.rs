@@ -12356,7 +12356,7 @@ pub(crate) async fn start_session(
             }
         }
     } else if worktree_enabled {
-        let wt_dir = home().join("worktrees").join(name);
+        let wt_dir = std::path::Path::new(&work_dir).join(".worktrees").join(name);
         let wt_path = wt_dir.to_string_lossy().into_owned();
         // Clean up stale worktree from a previous run.
         //
@@ -25072,12 +25072,20 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         // Reading the record first also repairs workers ALREADY created
         // without the variable, which setting it at creation cannot do.
         let record = crate::fanout_workspace::load(&home(), name);
-        // THIRD SOURCE: start's own convention (Ethan, 2026-09-24, testing the
-        // create modal's "Use worktree"). A worker created from the dashboard has
-        // neither a workspace record nor CC_WORKTREE_REPO: CC_DIR is the REPO and
-        // start cut the worktree at ~/.amux/worktrees/<name>. Without this, every
-        // such delete logged worktree_reclaim_unresolved and leaked the worktree.
-        let conventional = home().join("worktrees").join(name);
+        // THIRD SOURCE: start's own convention. A worker created from the
+        // dashboard has neither a workspace record nor CC_WORKTREE_REPO: CC_DIR
+        // is the REPO and start cut the worktree at <repo>/.worktrees/<name>.
+        // Check the current convention first, fall back to the old
+        // ~/.amux/worktrees/<name> for workers created before the move.
+        let cc_dir = cfg.get_or("CC_DIR", "");
+        let conventional = {
+            let new_loc = std::path::Path::new(cc_dir).join(".worktrees").join(name);
+            if new_loc.exists() {
+                new_loc
+            } else {
+                home().join("worktrees").join(name)
+            }
+        };
         let by_convention = record.is_none()
             && cfg.get_or("CC_WORKTREE_REPO", "").is_empty()
             && conventional.exists();
