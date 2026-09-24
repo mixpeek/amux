@@ -12022,7 +12022,9 @@ const ALLOWED_TMUX_KEYS: [&str; 47] = [
 ];
 // "1": the resume-mode auto-answer selects BY DIGIT (see resume_mode_action —
 // Enter would take whatever is highlighted, including "Don't ask me again").
-const ALLOWED_TMUX_CHAR_KEYS: [&str; 6] = ["y", "n", "q", "x", "1", "3"];
+// "2": the exact registered project-checkout picker selects the current
+// directory without persisting a provider preference.
+const ALLOWED_TMUX_CHAR_KEYS: [&str; 7] = ["y", "n", "q", "x", "1", "2", "3"];
 
 async fn send_keys_op(name: &str, keys: &str) -> (bool, String) {
     if !is_running(name).await {
@@ -20174,7 +20176,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 });
                 if permitted {
                     let (ok, msg) = send_keys_op(name, key).await;
-                    tracing::warn!(session=%name,project=%project,ok,detail=%msg,measured=true,n_considered=1,verdict="registered_project_checkout_selected","resolved project checkout selector");
+                    tracing::warn!(session=%name,project=%project,ok,detail=%msg,measured=true,n_considered=1,verdict=if ok {"registered_project_checkout_selected"} else {"registered_project_checkout_choice_failed"},"attempted registered project checkout choice");
                     emit_event(state,name,"project.checkout_selector_resolved",Some(json!({"key":key,"ok":ok,"detail":msg})),None,"status").await;
                     if ok { continue; }
                 } else {
@@ -47276,6 +47278,7 @@ mod project_hook_review_tests {
         let pane="› 1. Use session directory (/repo/.worktrees/old)\n  2. Use current directory (/repo/.worktrees/project-demo)\n  3. Always use session directory\n  4. Always use current directory\n  Press enter to continue";
         let checkout=Path::new("/repo/.worktrees/project-demo");
         assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),Some("2"));
+        assert!(ALLOWED_TMUX_CHAR_KEYS.contains(&project_checkout_directory_key(&cfg,pane,checkout).unwrap()), "the exact checkout choice must be sendable");
         assert_eq!(project_checkout_directory_key(&cfg,&pane.replace("› 1.","  1.").replace("  2.","› 2."),checkout),Some("Enter"));
         assert_eq!(project_checkout_directory_key(&cfg,pane,Path::new("/repo/.worktrees/other")),None);
         assert_eq!(project_checkout_directory_key(&cfg,&pane.replace("2. Use current directory", "2. Trust this directory"),checkout),None);
