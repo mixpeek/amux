@@ -116,6 +116,21 @@ trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 for _ in $(seq 1 100); do [ -s "$PORT_FILE" ] && break; sleep .02; done
 URL="http://127.0.0.1:$(cat "$PORT_FILE")"
 
+# An external helper has no owning pane. The old fallback would select an
+# unrelated project worker and emit a false active hook against it.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/tmux" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOOK_TMUX_CALLS"
+printf '%s\n' amux-unrelated-project-worker
+SH
+chmod +x "$TMP/bin/tmux"
+HOME="$TMP/home" PATH="$TMP/bin:$PATH" AMUX_URL="$URL" AMUX_SESSION= TMUX_PANE= \
+  HOOK_TMUX_CALLS="$TMP/tmux-calls" bash scripts/hooks/hook-report.sh active prompt-hook <<<'{}'
+test ! -e "$TMP/tmux-calls"
+test ! -e "$CAPTURE"
+echo "ok   external helper hook cannot adopt the selected project worker"
+
 wait_for() {
   local expr="$1"
   for _ in $(seq 1 300); do

@@ -13,13 +13,9 @@
 //! `info.total_token_usage` (cumulative). This reads the DELTA, keyed by the
 //! event's own `ordinal`, so a re-read cannot double-bill.
 //!
-//! Attribution is by working directory and only when it is unambiguous. Codex
-//! records `cwd` in its `session_meta`; a lane records the same path. When two
-//! lanes share one directory the row is left unattributed (`session = ''`),
-//! which the ledger already means as "counts toward fleet totals, owned by
-//! nobody". Charging a guess to a named lane is worse than charging nobody:
-//! the ledger is what the cost view bills, and AMUX-2612 already records what
-//! a wrong owner costs to unpick.
+//! Attribution prefers a validated native CLI session ID plus its recorded cwd.
+//! Directory-only fallback is allowed only when one worker owns the directory.
+//! Project workers share a checkout, so its path alone cannot identify a turn.
 use crate::db::SharedStore;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -91,15 +87,12 @@ pub(crate) fn conversation_key(path: &Path) -> String {
 }
 
 /// The `cwd` a rollout file was opened in, from its `session_meta` first line.
-pub(crate) fn rollout_cwd(path: &Path) -> Option<String> {
+fn rollout_identity(path: &Path) -> Option<serde_json::Value> {
     let f = std::fs::File::open(path).ok()?;
     let mut first = String::new();
     BufReader::new(f).read_line(&mut first).ok()?;
     let v: serde_json::Value = serde_json::from_str(&first).ok()?;
-    v.pointer("/payload/cwd")
-        .and_then(serde_json::Value::as_str)
-        .map(|s| s.trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
+    v.get("payload").cloned()
 }
 
 /// Parse `token_count` deltas after `offset`.
@@ -232,12 +225,19 @@ pub(crate) fn workspace_workdirs(
                 env.with_extension("env.reaped")
             };
             let settings = crate::config::parse_env_file(&env);
-            if w.path != crate::fanout_workspace::expected_path(&w.repo, name).to_string_lossy()
-                || w.branch != format!("amux/fanout/{name}")
+            let project_owned = settings.get("CC_PROJECT").is_some_and(|project| {
+                crate::project_execution::checkout::belongs_to(home, project, &w)
+            });
+            let worker_owned = w.path
+                == crate::fanout_workspace::expected_path(&w.repo, name).to_string_lossy()
+                && w.branch == format!("amux/fanout/{name}");
+            if !(project_owned || worker_owned)
                 || !Path::new(&w.repo).is_absolute()
                 || w.base.len() != 40
                 || !w.base.bytes().all(|b| b.is_ascii_hexdigit())
-                || settings.get("CC_DIR") != Some(&w.repo)
+                || !settings.get("CC_DIR").is_some_and(|repo| {
+                    crate::fanout_workspace::same_repository(repo, &w.repo)
+                })
             {
                 continue;
             }
@@ -245,6 +245,54 @@ pub(crate) fn workspace_workdirs(
         }
     }
     dirs
+}
+
+/// Native events have already passed launch nonce, provider and sequence checks.
+/// Keep contradictory claims as None so a cwd fallback cannot override them.
+fn native_owners(c: &rusqlite::Connection) -> rusqlite::Result<HashMap<String, Option<String>>> {
+    let mut q = c.prepare("SELECT DISTINCT session,json_extract(data,'$.session_id') FROM session_events WHERE type='session.native_status' AND json_valid(data) AND json_extract(data,'$.provider')='codex' AND json_extract(data,'$.event')='SessionStart' AND json_extract(data,'$.session_id')<>''")?;
+    let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut owners = HashMap::<String, Option<String>>::new();
+    for row in rows {
+        let (worker, id) = row?;
+        owners
+            .entry(id)
+            .and_modify(|prior| {
+                if prior.as_deref() != Some(&worker) {
+                    *prior = None;
+                }
+            })
+            .or_insert(Some(worker));
+    }
+    Ok(owners)
+}
+
+fn rollout_owner(
+    path: &Path,
+    native: &HashMap<String, Option<String>>,
+    workdirs: &BTreeMap<String, String>,
+    directories: &HashMap<String, String>,
+) -> String {
+    let Some(meta) = rollout_identity(path) else {
+        return String::new();
+    };
+    let cwd = meta["cwd"].as_str().unwrap_or("").trim_end_matches('/');
+    let id = meta["id"]
+        .as_str()
+        .or_else(|| meta["session_id"].as_str())
+        .unwrap_or("");
+    if let Some(owner) = native.get(id) {
+        return owner
+            .as_ref()
+            .filter(|worker| {
+                workdirs
+                    .get(*worker)
+                    .is_some_and(|dir| dir.trim_end_matches('/') == cwd)
+            })
+            .cloned()
+            .unwrap_or_default();
+    }
+    directories.get(cwd).cloned().unwrap_or_default()
 }
 
 /// Read through the existing session index once; write only bounded exact row IDs.
@@ -308,6 +356,10 @@ pub async fn index_once_at(
     }
     let table = token_ledger::prices(home);
     let owners = unambiguous_owners(workdirs);
+    let native = {
+        let conn = store.read()?;
+        native_owners(&conn)?
+    };
     let cursors = token_ledger::read_cursors(store)?;
 
     let mut batches: Vec<LedgerFileBatch> = Vec::new();
@@ -317,9 +369,7 @@ pub async fn index_once_at(
         let Ok(meta) = path.metadata() else { continue };
         let size = meta.len();
         let offset = cursors.get(&conversation).copied().unwrap_or(0);
-        let lane = rollout_cwd(&path)
-            .and_then(|cwd| owners.get(&cwd).cloned())
-            .unwrap_or_default();
+        let lane = rollout_owner(&path, &native, workdirs, &owners);
         if !lane.is_empty() {
             repairs.push((conversation.clone(), lane.clone()));
         }
@@ -394,7 +444,12 @@ pub async fn index_once_at(
             })
             .await?;
     }
-    if inserted > 0 || repaired.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+    let recovered = repaired.load(std::sync::atomic::Ordering::Relaxed);
+    if recovered > 0 {
+        tracing::info!(verdict="codex_usage_owner_recovered", rows=recovered,
+            "bound previously unowned usage to validated CLI sessions");
+    }
+    if inserted > 0 || recovered > 0 {
         token_ledger::attribute_tasks(store).await?;
     }
     Ok(inserted)
@@ -609,6 +664,52 @@ mod tests {
         assert_eq!(session, "", "unowned, not dropped and not guessed");
         assert_eq!(input, 500);
     }
+    #[tokio::test]
+    async fn shared_checkout_usage_uses_native_identity_and_recovers_unowned_rows() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = tempfile::tempdir().unwrap();
+        let st = store();
+        let dirs = BTreeMap::from([
+            ("first".into(), "/project/checkout".into()),
+            ("second".into(), "/project/checkout".into()),
+        ]);
+        let p = rollout(
+            sessions.path(),
+            "/project/checkout",
+            &format!(
+                "{}\n",
+                token_count(2, "2026-09-15T10:00:02.000Z", 500, 0, 0, 10)
+            ),
+        );
+        index_once_at(&st, home.path(), sessions.path(), &dirs)
+            .await
+            .unwrap();
+        st.write(|c| {
+            c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(1,'first','session.native_status',?1,'native-hook')",
+                [serde_json::json!({"provider":"codex","event":"SessionStart","session_id":"019a4580-abd6-7153-993c-217e6941ea1d"}).to_string()])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        index_once_at(&st, home.path(), sessions.path(), &dirs)
+            .await
+            .unwrap();
+        let c = st.read().unwrap();
+        let (owner, count, tokens): (String, i64, i64) = c
+            .query_row(
+                "SELECT session,count(*),sum(input+output) FROM token_ledger",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((owner, count, tokens), ("first".into(), 1, 510));
+        let mut native = native_owners(&c).unwrap();
+        let directories = unambiguous_owners(&dirs);
+        assert_eq!(rollout_owner(&p, &native, &dirs, &directories), "first");
+        let wrong_dirs = BTreeMap::from([("first".into(), "/foreign".into())]);
+        assert_eq!(rollout_owner(&p, &native, &wrong_dirs, &directories), "");
+        native.insert("019a4580-abd6-7153-993c-217e6941ea1d".into(), None);
+        assert_eq!(rollout_owner(&p, &native, &dirs, &directories), "");
+    }
+
     #[tokio::test]
     async fn project_workspace_owners_survive_retirement_and_recover_exact_unowned_rows() {
         let home = tempfile::tempdir().unwrap();
