@@ -550,6 +550,18 @@ async fn async_main() {
             tracing::info!(resumed = n, measured = true, "interrupted-start resume pass complete");
         });
     }
+    // Chat workers have no tmux to outlive this exec(): report turns it cut
+    // off and resume their queued messages (api/chat_worker.rs).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let (workers, interrupted, resumed) =
+                crate::api::chat_worker::recover_all(&state).await;
+            tracing::info!(workers, interrupted, resumed, measured = true, n_considered = workers,
+                verdict = "chat_recovery_pass", "chat worker restart recovery complete");
+        });
+    }
     // Project lifecycle driver. Projects have their own contract, retained
     // evidence, verifier and main-integration gates; tying this to the legacy
     // board sweeper meant a preview server could either stay reachable with

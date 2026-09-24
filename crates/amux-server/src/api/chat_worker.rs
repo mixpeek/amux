@@ -54,9 +54,51 @@ const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
 
 pub(crate) struct ChatAdapter;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Queued {
     text: String,
-    origin: &'static str,
+    origin: String,
+}
+
+// ---------------------------------------------------------------------------
+// Durability across server restarts. The builder exec()s this process on every
+// commit; a tmux-hosted coding worker survives that because tmux holds the
+// process, a chat turn does not. Measured 2026-09-24: a restart mid-turn left a
+// user message recorded with no reply and no error, and a queued message was
+// gone without a trace. So the queue lives on disk and the running turn is
+// marked, and boot recovery (`recover_all`) resumes the one and reports the
+// other.
+// ---------------------------------------------------------------------------
+
+fn state_dir() -> std::path::PathBuf {
+    home().join("chat-state")
+}
+
+fn queue_path(name: &str) -> std::path::PathBuf {
+    state_dir().join(format!("{name}.queue.json"))
+}
+
+fn persist_queue(name: &str, q: &VecDeque<Queued>) {
+    let path = queue_path(name);
+    if q.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let _ = std::fs::create_dir_all(state_dir());
+    let tmp = path.with_extension(format!("json.{}.tmp", ulid::Ulid::new()));
+    let body = serde_json::to_string(&q.iter().collect::<Vec<_>>()).unwrap_or_default();
+    if std::fs::write(&tmp, body).is_err() || std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(session = %name, measured = true, n_considered = q.len(),
+            verdict = "chat_queue_persist_failed", "chat queue could not be written; a restart would drop it");
+    }
+}
+
+fn load_queue(name: &str) -> Vec<Queued> {
+    std::fs::read_to_string(queue_path(name))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 /// In-memory runtime of one chat worker. Nothing here is durable state: the
@@ -203,6 +245,7 @@ impl ExecutionAdapter for ChatAdapter {
             let mut q = lane.queue.lock().unwrap();
             let n = q.len();
             q.clear();
+            persist_queue(name, &q);
             n
         };
         let pid = *lane.pid.lock().unwrap();
@@ -251,8 +294,10 @@ impl ExecutionAdapter for ChatAdapter {
                 origin: match origin {
                     SendOrigin::Owner => "owner",
                     SendOrigin::Automation => "automation",
-                },
+                }
+                .to_string(),
             });
+            persist_queue(name, &q);
             q.len() - 1
         };
         let turn_running = lane.busy.swap(true, Ordering::SeqCst);
@@ -313,7 +358,12 @@ impl ExecutionAdapter for ChatAdapter {
 async fn pump(state: AppState, name: String) {
     let lane = lane(&name);
     loop {
-        let next = lane.queue.lock().unwrap().pop_front();
+        let next = {
+            let mut q = lane.queue.lock().unwrap();
+            let item = q.pop_front();
+            persist_queue(&name, &q);
+            item
+        };
         match next {
             Some(q) => run_turn(&state, &name, &lane, q).await,
             None => {
@@ -526,6 +576,7 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
         "ts": crate::config::now_f64(), "waiting": waiting,
     }));
     *lane.partial.lock().unwrap() = (turn_id.clone(), String::new());
+    update_meta(name, &[("chat_inflight_turn", json!(turn_id))]);
     report_state(state, name, "active", "UserPromptSubmit", &turn_id).await;
     update_meta(name, &[("last_send", json!(crate::config::now_f64() as i64))]);
 
@@ -589,6 +640,7 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
         SOURCE,
     )
     .await;
+    update_meta(name, &[("chat_inflight_turn", json!(""))]);
     *lane.partial.lock().unwrap() = (String::new(), String::new());
     let _ = lane.tx.send(json!({"type": "done", "turn_id": turn_id, "message": msg}));
     match &out.error {
@@ -746,6 +798,90 @@ async fn execute(
         });
     }
     out
+}
+
+/// Boot recovery for one chat worker (see the durability note above).
+///
+/// A turn marked in flight by a previous process is NOT re-run: its tools may
+/// already have acted. It gets an assistant message carrying an explicit
+/// error, so the transcript says what happened instead of ending on an
+/// unanswered question. Queued messages were never started, so they run.
+/// Returns (interrupted turns reported, queued messages resumed).
+pub async fn recover(state: &AppState, name: &str) -> (usize, usize) {
+    let meta = load_meta(name);
+    let mut interrupted = 0;
+    let turn = meta_str(&meta, "chat_inflight_turn");
+    if !turn.is_empty() {
+        let msg = json!({
+            "role": "assistant",
+            "text": "",
+            "turn_id": turn,
+            "provider": provider_of(name),
+            "error": "The amux server restarted during this turn, so the reply was lost. \
+                      Send the message again to retry.",
+            "interrupted": true,
+        });
+        emit_event(state, name, CHAT_EVENT, Some(msg), Some(format!("chat:{turn}:assistant")), SOURCE)
+            .await;
+        update_meta(name, &[("chat_inflight_turn", json!(""))]);
+        report_state(state, name, "idle", "StopFailure", &turn).await;
+        tracing::warn!(session = %name, turn = %turn, measured = true, n_considered = 1,
+            verdict = "chat_turn_interrupted",
+            "a chat turn was cut off by a server restart; recorded as failed, not re-run");
+        interrupted = 1;
+    }
+    let pending = load_queue(name);
+    let resumed = pending.len();
+    if resumed > 0 {
+        if running(name) {
+            let lane = lane(name);
+            {
+                let mut q = lane.queue.lock().unwrap();
+                for item in pending.into_iter().rev() {
+                    q.push_front(item);
+                }
+                persist_queue(name, &q);
+            }
+            if !lane.busy.swap(true, Ordering::SeqCst) {
+                let st = state.clone();
+                let n = name.to_string();
+                tokio::spawn(async move { pump(st, n).await });
+            }
+            tracing::warn!(session = %name, measured = true, n_considered = resumed,
+                verdict = "chat_queue_recovered", "resumed chat messages queued before a restart");
+        } else {
+            tracing::warn!(session = %name, measured = true, n_considered = resumed,
+                verdict = "chat_queue_held_stopped",
+                "chat messages queued before a restart are kept; the worker is stopped");
+        }
+    }
+    (interrupted, if running(name) { resumed } else { 0 })
+}
+
+/// Recover every chat worker on this server (called once at boot).
+pub async fn recover_all(state: &AppState) -> (usize, usize, usize) {
+    let dir = home().join("sessions");
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return (0, 0, 0);
+    };
+    let (mut workers, mut interrupted, mut resumed) = (0, 0, 0);
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("env") {
+            continue;
+        }
+        let Some(name) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            continue;
+        };
+        if super::worker_exec::worker_type_of(&name).as_str() != WorkerTypeId::CHAT {
+            continue;
+        }
+        workers += 1;
+        let (i, r) = recover(state, &name).await;
+        interrupted += i;
+        resumed += r;
+    }
+    (workers, interrupted, resumed)
 }
 
 // ---------------------------------------------------------------------------
