@@ -9971,6 +9971,16 @@ async fn verify_submitted(
                             "four Cleared reads confirm submission; JSONL has no \
                              record yet (lag or session without transcript)"
                         );
+                        // AND KEEP WATCHING (Ethan 2026-09-24 12:26, amux-helper:
+                        // "i just sent something ... and its in unsubmitted text").
+                        // Every trailing-@-mention send that day ended here, and
+                        // Claude Code put the text back AFTER these reads, so the
+                        // message sat unsubmitted while amux had said "sent".
+                        // Widening the window chases timing; instead, for 90s,
+                        // confirm by the transcript or, if the exact message is
+                        // back in the box at idle, press Enter again (the manual
+                        // Enter that fixed the morning's incidents).
+                        spawn_direct_draft_idle_submit(name, text, sent_at, 90.0);
                         return (Submission::Confirmed, retried);
                     }
                     // The composer has text again: the submission was rolled
@@ -11867,7 +11877,7 @@ async fn send_text_inner_bound(
             // (submit_own_steering_draft); the direct path returned "not
             // submitted" and nobody ever pressed Enter, so the text sat until a
             // human noticed. Now it gets the same treatment, bounded and logged.
-            spawn_direct_draft_idle_submit(name, &text);
+            spawn_direct_draft_idle_submit(name, &text, sent_at, 0.0);
             return (
                 true,
                 "queued (held in the input box; submitted automatically when this turn ends)".into(),
@@ -11889,7 +11899,10 @@ fn direct_draft_watches() -> &'static std::sync::Mutex<std::collections::HashSet
 /// idle boundary, if and only if the composer still holds exactly that
 /// message. A human who edited or cleared it wins; the watch stops. Bounded to
 /// 30 minutes; every exit is a counted verdict.
-fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
+/// `grace_s`: for this long an EMPTY box does not end the watch (Claude Code
+/// can clear the box and restore the text a second or more later); only the
+/// transcript recording the message, or the grace running out, does.
+fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s: f64) {
     let key = format!("{name}\u{0}{}", text.split_whitespace().collect::<String>());
     if let Ok(mut w) = direct_draft_watches().lock() {
         if !w.insert(key.clone()) {
@@ -11898,11 +11911,18 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
     }
     let (name, text) = (name.to_string(), text.to_string());
     tokio::spawn(async move {
-        let deadline = now_f64() + 1800.0;
+        let started = now_f64();
+        let deadline = started + 1800.0;
         let verdict: &'static str = loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if now_f64() > deadline {
                 break "direct_draft_idle_submit_gave_up";
+            }
+            if sent_at > 0.0
+                && (jsonl_submission_since(&name, &text, sent_at)
+                    || muse_user_intent_since(&name, &text, sent_at))
+            {
+                break "direct_draft_confirmed_by_transcript";
             }
             if !is_running(&name).await {
                 break "direct_draft_lane_stopped";
@@ -11917,6 +11937,9 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
                     }
                 }
                 ComposerState::Empty | ComposerState::Placeholder(_) => {
+                    if now_f64() < started + grace_s {
+                        continue; // a restoration may still be on its way
+                    }
                     break "direct_draft_left_composer";
                 }
                 // A full-screen view or the background manager: keep waiting.
@@ -11939,7 +11962,7 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
             w.remove(&key);
         }
         let preview = chars_truncate(&text, 80);
-        if verdict == "direct_draft_submitted_at_idle" || verdict == "direct_draft_left_composer" {
+        if matches!(verdict, "direct_draft_submitted_at_idle" | "direct_draft_left_composer" | "direct_draft_confirmed_by_transcript") {
             tracing::info!(session = %name, %preview, measured = true, n_considered = 1, verdict,
                 "held direct message resolved");
         } else {
