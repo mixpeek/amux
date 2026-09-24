@@ -323,7 +323,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(&dir.path().join("db")).unwrap();
         db.write(|c| {
-            let policy=serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":"./verify.sh","max_executors":2,"enabled":true})).unwrap();
+            let policy=serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"codex","model":"gpt-6-astra"},"executor":{"provider":"codex","model":"gpt-6-astra"},"verify_command":"./verify.sh","max_executors":1,"enabled":true})).unwrap();
             store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
             for id in ["A","B","C"] {
                 c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES(?1,'Output','Build output','todo','code','sample',1,1,'Implement and test','[\"Output passes\"]')",[id])?;
@@ -594,9 +594,10 @@ pub(crate) mod tests {
             let p=store::get(c,"sample").unwrap().unwrap();
             for field in ["paused","enabled","max_executors","token_budget"] {
                 let mut policy=p.policy.clone();
-                match field {"paused"=>policy.paused=true,"enabled"=>policy.enabled=false,"max_executors"=>{policy.max_executors=1;planner::claim(c,"sample","C").unwrap();},_=>{policy.token_budget=Some(1);c.execute("INSERT INTO cmd_history(text,type,session,ts,project_group,intake_attempts) VALUES('unmeasured','user','project:sample',1,'sample',1)",[])?;}}
+                match field {"paused"=>policy.paused=true,"enabled"=>policy.enabled=false,"max_executors"=>{let row=bs::get_issue(c,"C")?.unwrap();let mut active=planner::execution(c,"C").unwrap();active.stage="working".into();active.worker="prior-checkout-owner".into();planner::save_execution(c,&row,&active,"test.prior_claim").unwrap();},_=>{policy.token_budget=Some(1);c.execute("INSERT INTO cmd_history(text,type,session,ts,project_group,intake_attempts) VALUES('unmeasured','user','project:sample',1,'sample',1)",[])?;}}
                 c.execute("UPDATE group_config SET execution_policy=?1 WHERE name='sample'",[serde_json::to_string(&policy).unwrap()])?;
                 assert!(!resume(c,"sample","A").unwrap().applied,"{field}");
+                if field=="max_executors" {current_verified(c,"C");}
                 c.execute("UPDATE group_config SET execution_policy=?1 WHERE name='sample'",[serde_json::to_string(&p.policy).unwrap()])?;
             }
             c.execute("UPDATE issues SET title='changed requirements' WHERE id='A'",[])?;

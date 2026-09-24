@@ -507,7 +507,7 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
             )
         })
         .count();
-    let mut available = project.policy.max_executors.saturating_sub(used);
+    let mut available = 1usize.saturating_sub(used);
     let mut result = Vec::new();
     for (row, state) in rows.iter().zip(states) {
         let phase =
@@ -978,7 +978,7 @@ pub fn record_report(
             .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
         anyhow::ensure!(
             crate::fanout_workspace::same_repository(&workspace.repo, &policy.policy.repository)
-                && workspace.branch == format!("amux/fanout/{worker}"),
+                && super::checkout::assignment_matches(&crate::config::amux_home(), project, worker, &workspace),
             "registered workspace does not match project executor"
         );
         workspace
@@ -1036,17 +1036,14 @@ pub fn delivery_current(
 #[cfg(test)]
 pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
     let home = crate::config::amux_home();
-    crate::fanout_workspace::save(
-        &home,
-        worker,
-        &crate::fanout_workspace::Workspace {
-            repo: repo.into(),
-            path: home.join("worktrees").join(worker).to_string_lossy().into(),
-            branch: format!("amux/fanout/{worker}"),
-            base: "a".repeat(40),
-        },
-    )
-    .unwrap();
+    let w = crate::fanout_workspace::Workspace {
+        repo: repo.into(),
+        path: home.join("worktrees").join(worker).to_string_lossy().into(),
+        branch: super::checkout::branch(&home, "sample"),
+        base: "a".repeat(40),
+    };
+    crate::fanout_workspace::save(&home, &super::checkout::owner(&home, "sample"), &w).unwrap();
+    crate::fanout_workspace::save(&home, worker, &w).unwrap();
 }
 
 #[cfg(test)]
@@ -1089,7 +1086,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::Store::open(&dir.path().join("db")).unwrap();
         db.write(|c| {
-            let policy=serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"claude","model":"haiku"},"executor":{"provider":"codex","model":"gpt-configured"},"verify_command":"./verify.sh","enabled":true,"max_executors":2})).unwrap();
+            let policy=serde_json::from_value(json!({"repository":"/repo","coordinator":{"provider":"claude","model":"haiku"},"executor":{"provider":"codex","model":"gpt-configured"},"verify_command":"./verify.sh","enabled":true,"max_executors":1})).unwrap();
             store::save(c,"sample",0,&policy,"test").map_err(store::sql_error)?;
             for (id,deps) in [("A","[]"),("B","[]"),("C","[\"A\"]")] {
                 c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria,depends_on) VALUES(?1,'Specific output','Implement a concrete output','todo','code','sample',1,1,'Implement and test output','[\"Output passes its test\"]',?2)",params![id,deps])?;
@@ -1480,7 +1477,7 @@ mod tests {
         let c = db.read().unwrap();
         let p = store::get(&c, "sample").unwrap().unwrap();
         let plans = plan(&c, &p).unwrap();
-        assert_eq!(plans.iter().filter(|p| p.action == "deliver").count(), 2);
+        assert_eq!(plans.iter().filter(|p| p.action == "deliver").count(), 1);
         assert_eq!(execution(&c, "A").unwrap().attempt, 1);
         let claims: Vec<(String, String)> = c.prepare(
             "SELECT session,json_extract(data,'$.issue') FROM session_events WHERE type='task.claimed' ORDER BY id"
@@ -1488,8 +1485,7 @@ mod tests {
         assert_eq!(
             claims,
             vec![
-                (execution(&c, "A").unwrap().worker, "A".into()),
-                (execution(&c, "B").unwrap().worker, "B".into())
+                (execution(&c, "A").unwrap().worker, "A".into())
             ]
         );
 

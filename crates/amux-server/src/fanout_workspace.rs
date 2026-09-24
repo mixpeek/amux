@@ -113,6 +113,11 @@ async fn adopted_base(repo: &str, path: &str) -> Result<String, String> {
 /// Called under the worker operation lock, before its provider is launched.
 /// Existing files/index/commits are retained even after an interrupted start.
 pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Workspace, String> {
+    ensure_named(home, name, configured_repo, &format!("amux/fanout/{name}")).await
+}
+
+/// A project owns its branch independently of worker attempt identities.
+pub(crate) async fn ensure_named(home: &Path, name: &str, configured_repo: &str, branch: &str) -> Result<Workspace, String> {
     if !crate::api::session_verbs::valid_session_name(name) {
         return Err("invalid worker name".into());
     }
@@ -123,7 +128,7 @@ pub async fn ensure(home: &Path, name: &str, configured_repo: &str) -> Result<Wo
         .unwrap_or(configured_repo);
     let repo = git(repo, &["rev-parse", "--show-toplevel"]).await?;
     let path = expected_path(&repo, name).to_string_lossy().into_owned();
-    let branch = format!("amux/fanout/{name}");
+    let branch = branch.to_string();
     let existing = Path::new(&path).join(".git").exists();
     // THE RECORDED BASE IS THE ANCESTRY GUARD'S ONLY ANCHOR (AMUX-4921), so an
     // empty one disables that guard for the life of the workspace and blocks
@@ -829,7 +834,8 @@ pub(crate) async fn verification_ready(name: &str) -> Result<(), String> {
 
 fn ready_board(state: &crate::api::AppState, name: &str) -> Result<(String, String, i64), String> {
     let env = crate::api::session_verbs::parse_env(name);
-    if env.get("CC_EPHEMERAL") != Some("1")
+    if env.get("CC_PROJECT").is_some()
+        || env.get("CC_EPHEMERAL") != Some("1")
         || env.get("CC_PAUSED") == Some("1")
         || env.get("CC_ARCHIVED") == Some("1")
         || env.get("CC_ISOLATED") == Some("1")
@@ -1020,7 +1026,8 @@ pub async fn adopt_at_boundary(state: &crate::api::AppState, name: &str) {
     let _op = lock.lock().await;
     let home = crate::config::amux_home();
     let env = crate::api::session_verbs::parse_env(name);
-    if env.get("CC_EPHEMERAL") != Some("1")
+    if env.get("CC_PROJECT").is_some()
+        || env.get("CC_EPHEMERAL") != Some("1")
         || env.get("CC_PAUSED") == Some("1")
         || env.get("CC_ARCHIVED") == Some("1")
         || env.get("CC_ISOLATED") == Some("1")

@@ -21,6 +21,13 @@ The Python server was deleted at `792ce1f`. Do not resurrect it.
 Gut-check every feature against `.claude/rules/ethos.md` (8 rules). The core question:
 when the next model is better, does this feature get better with it, or become the ceiling?
 
+## Project checkout ownership
+
+A project owns one worktree and branch under its repository’s `.worktrees` directory.
+All project workers use that checkout; workers and retries must not create their own.
+Serialize task writes and retain task evidence independently. Publish the reviewed
+project result once, then expire its workers and remove only the published checkout.
+
 ## Isolated workers
 
 Isolated means direct owner-to-CLI transport: no board capture or attribution,
