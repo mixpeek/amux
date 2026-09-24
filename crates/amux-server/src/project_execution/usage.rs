@@ -5,11 +5,14 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 // Disjoint indexed branches preserve task ownership without scanning the ledger.
-const EXECUTION_USAGE_SQL: &str = "SELECT model,count(*),sum(input),sum(cache_read),sum(cache_write),sum(output),sum(outside),sum(CASE WHEN outside=1 THEN input+cache_read+cache_write+output ELSE 0 END) FROM (
+const EXECUTION_USAGE_SQL: &str = "WITH ownership AS (
+ SELECT session AS worker,min(ts) AS since FROM session_events INDEXED BY idx_sev_session
+ WHERE session IN (SELECT value FROM json_each(?2)) AND type='project.claimed' AND json_extract(data,'$.project_group')=?1 GROUP BY session
+) SELECT model,count(*),sum(input),sum(cache_read),sum(cache_write),sum(output),sum(outside),sum(CASE WHEN outside=1 THEN input+cache_read+cache_write+output ELSE 0 END) FROM (
  SELECT l.model,l.input,l.cache_read,l.cache_write,l.output,0 AS outside
  FROM issues i CROSS JOIN token_ledger l INDEXED BY idx_ledger_task ON l.task=i.id WHERE i.project_group=?1
  UNION ALL
- SELECT model,input,cache_read,cache_write,output,1 AS outside FROM token_ledger INDEXED BY idx_ledger_session WHERE session IN (SELECT value FROM json_each(?2)) AND task=''
+ SELECT model,input,cache_read,cache_write,output,1 AS outside FROM ownership CROSS JOIN token_ledger INDEXED BY idx_ledger_session ON session=ownership.worker WHERE task='' AND ts>=ownership.since
 ) GROUP BY model";
 
 /// Dedicated workspace identity supplements project accounting, never task claims.
@@ -63,6 +66,13 @@ pub fn summary(conn: &Connection, name: &str) -> anyhow::Result<Value> {
     let rates = token_ledger::prices(&crate::config::amux_home());
     let owners = executor_owners(conn, name)?;
     let owned = serde_json::to_string(&owners)?;
+    if !owners.is_empty() && crate::log_dedupe::first_this_bucket(
+        &format!("project-usage-scope:{name}"),
+        crate::log_dedupe::hour_bucket(crate::config::now_f64()),
+    ) {
+        tracing::info!(project=name, executors=owners.len(), verdict="project_usage_assignment_scoped",
+            "project usage excludes executor history before its first project assignment");
+    }
     let mut q = conn.prepare(EXECUTION_USAGE_SQL)?;
     let rows = q.query_map(params![name, owned], |r| {
         Ok((
@@ -332,6 +342,8 @@ mod tests {
             c.execute("INSERT INTO issues(id,title,status,project_group,created,updated) VALUES('F','Foreign','todo','other',1,1)",[])?;
             let (receipt,_)=super::super::intake::receive(c,"coverage","original","One outcome").unwrap();
             c.execute("UPDATE cmd_history SET capture_pending=0,card_id='A' WHERE id=?1",[receipt])?;
+            c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(1,'executor','project.claimed',?1,'project')",[json!({"project_group":"coverage"}).to_string()])?;
+            c.execute("INSERT INTO token_ledger(ts,session,conversation,task,model,input,cost_usd) VALUES(0,'executor','before-project','','claude-opus',9000,0)",[])?;
             for (session,task,tokens) in [("executor","A",100),("executor","",200),("foreign","",900),("","",900),("executor","F",900)] {
                 c.execute("INSERT INTO token_ledger(ts,session,conversation,task,model,input,cost_usd) VALUES(1,?1,'coverage-fixture',?2,'gpt-6-astra',?3,0)",params![session,task,tokens])?;
             }
@@ -367,7 +379,7 @@ mod tests {
             }
             c.execute("UPDATE issues SET execution_state=?1 WHERE id='F'",[serde_json::to_string(&execution).unwrap()])?;
             assert_eq!(summary(c,"coverage").unwrap()["tokens"],100,"ambiguous executor ownership excluded");
-            assert_eq!(c.query_row("SELECT COUNT(*) FROM token_ledger WHERE task=''",[],|r|r.get::<_,i64>(0))?,3,"claim-window attribution remains untouched");
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM token_ledger WHERE task=''",[],|r|r.get::<_,i64>(0))?,4,"claim-window attribution and older worker history remain untouched");
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
     }

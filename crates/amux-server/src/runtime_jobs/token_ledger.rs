@@ -514,18 +514,37 @@ async fn repair_foreign_project_owners(
                 };
                 let mut cwds = Vec::new();
                 for dir in dirs.flatten() {
-                    let path = dir.path().join(format!("{conversation}.jsonl"));
-                    let Ok(f) = std::fs::File::open(path) else {
-                        continue;
-                    };
-                    for line in BufReader::new(f).lines().take(32).flatten() {
-                        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    let mut paths = vec![dir.path().join(format!("{conversation}.jsonl"))];
+                    // The indexer charges delegated transcripts to their parent.
+                    // Repair must use that same parent identity, not miss children.
+                    if conversation.starts_with("agent-") {
+                        if let Ok(parents) = std::fs::read_dir(dir.path()) {
+                            for parent in parents.flatten() {
+                                if parent
+                                    .path()
+                                    .join("subagents")
+                                    .join(format!("{conversation}.jsonl"))
+                                    .is_file()
+                                {
+                                    paths.push(parent.path().with_extension("jsonl"));
+                                }
+                            }
+                        }
+                    }
+                    for path in paths {
+                        let Ok(f) = std::fs::File::open(path) else {
                             continue;
                         };
-                        if let Some(cwd) = v["cwd"].as_str().filter(|s| Path::new(s).is_absolute())
-                        {
-                            cwds.push(PathBuf::from(cwd));
-                            break;
+                        for line in BufReader::new(f).lines().take(32).flatten() {
+                            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                                continue;
+                            };
+                            if let Some(cwd) =
+                                v["cwd"].as_str().filter(|s| Path::new(s).is_absolute())
+                            {
+                                cwds.push(PathBuf::from(cwd));
+                                break;
+                            }
                         }
                     }
                 }
@@ -1465,14 +1484,6 @@ mod tests {
         std::sync::Arc::new(st)
     }
 
-    /// AMUX-4581: the two misattributions the token audit measured, reproduced
-    /// as fixtures and then required NOT to happen.
-    ///
-    /// Both were caused by a window that never closed being read as
-    /// `COALESCE(left_doing, now)`: AMUX-1808 (entered_doing 2026-07-21, no
-    /// session) absorbed $2,680 of ownerless conversations in 7 days, and
-    /// AMUX-2598 (session `amux`) absorbed $1,618 of every amux turn. Both
-    /// stale rows are seeded here in the shape the live DB actually holds.
     #[tokio::test]
     async fn foreign_hook_usage_recovery_preserves_tokens_history_and_audit() {
         let home = tempfile::tempdir().unwrap();
@@ -1502,9 +1513,17 @@ mod tests {
             "{\"cwd\":\"/project/repo/subdir\"}\n",
         )
         .unwrap();
+        std::fs::create_dir_all(projects.path().join("foreign/foreign/subagents")).unwrap();
+        std::fs::write(
+            projects
+                .path()
+                .join("foreign/foreign/subagents/agent-child.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
         store.write(|c| {
             c.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(101,'worker','session.native_status',?1,'native-hook')", [r#"{"provider":"codex","run_id":"run"}"#])?;
-            for (ts, conversation) in [(99,"foreign"),(101,"foreign"),(101,"local"),(101,"unknown")] {
+            for (ts, conversation) in [(99,"foreign"),(101,"foreign"),(101,"local"),(101,"unknown"),(101,"agent-child")] {
                 c.execute("INSERT INTO token_ledger(ts,session,conversation,model,input,task) VALUES(?1,'worker',?2,'claude-opus',10,'task')", rusqlite::params![ts,conversation])?;
             }
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
@@ -1516,7 +1535,7 @@ mod tests {
         }
         let c = store.read().unwrap();
         let totals: (i64,i64,i64) = c.query_row("SELECT count(*),sum(input),sum(CASE WHEN session='' AND task='' THEN 1 ELSE 0 END) FROM token_ledger", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
-        assert_eq!(totals, (4, 40, 1));
+        assert_eq!(totals, (5, 50, 2));
         assert_eq!(
             c.query_row(
                 "SELECT count(*) FROM session_events WHERE type='usage.ownership_repaired'",
@@ -1524,7 +1543,7 @@ mod tests {
                 |r| r.get::<_, i64>(0)
             )
             .unwrap(),
-            1
+            2
         );
         drop(c);
         store.write(|c| {
@@ -1542,11 +1561,19 @@ mod tests {
                 |r| r.get::<_, i64>(0)
             )
             .unwrap(),
-            2,
+            3,
             "the first launch also recovers misattribution between allocation and launch"
         );
     }
 
+    /// AMUX-4581: the two misattributions the token audit measured, reproduced
+    /// as fixtures and then required NOT to happen.
+    ///
+    /// Both were caused by a window that never closed being read as
+    /// `COALESCE(left_doing, now)`: AMUX-1808 (entered_doing 2026-07-21, no
+    /// session) absorbed $2,680 of ownerless conversations in 7 days, and
+    /// AMUX-2598 (session `amux`) absorbed $1,618 of every amux turn. Both
+    /// stale rows are seeded here in the shape the live DB actually holds.
     #[tokio::test]
     async fn a_stale_open_window_stops_absorbing_every_later_turn() {
         let st = store();

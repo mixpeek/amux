@@ -4920,3 +4920,11 @@ FIX: One project-owned checkout and branch, serialized claims and direct starts,
 - **Verification:** exact-session/shared-cwd, ambiguous identity, cwd mismatch, historical token preservation and idempotent recovery regressions; full live project proof remains in progress.
 
 - **Checked:** 132 focused project, ownership, and recovery tests passed (one real-Docker fixture explicitly ignored); status-hook durability suite passed. Repository path aliases resolve through the existing repository-identity helper; unrelated per-worker aliases remain ambiguous.
+
+### 2026-09-24 — pre-project conversation history inflated project budgets (AF-951)
+
+- **Symptom:** after correctly recovering shared-checkout usage, the live probe inherited 8.15 million unrelated historical tokens outside task windows.
+- **Root cause:** project accounting included every unclaimed ledger row ever named for an executor, including conversation history from before its first project assignment.
+- **Fix:** keep task-claimed usage and scope additional executor usage to its first durable project claim. Retain the original ledger history. The `project_usage_assignment_scoped` log records the boundary policy without exposing messages.
+- **Verification:** add pre-project Claude history to the real project-budget regression; it must remain in the ledger without changing the project total.
+- **Additional case:** delegated Claude transcripts inherit their parent's identity. Recovery now follows that same parent mapping, including subagent records, rather than leaving foreign child usage on the project.

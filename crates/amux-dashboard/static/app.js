@@ -24332,6 +24332,10 @@ function _loadModelsForCreate(provider) {
   _fillWorkerModelSelect(sel, provider, '', 'Default (provider decides)', true)
     .then(_createModelChanged);
 }
+// "backend, api " -> ['backend','api']; lowercased like CC_TAGS, deduplicated.
+function _createGroupsFrom(raw) {
+  return [...new Set(String(raw || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean))];
+}
 function openCreate() {
   _createProvider = 'claude';
   document.getElementById('create-provider-claude').classList.add('selected');
@@ -24349,6 +24353,14 @@ function openCreate() {
   document.getElementById('create-name').value = '';
   document.getElementById('create-dir').value = (_filesCwd && _filesCwd !== '/') ? _filesCwd : (window._cloudEmail ? '/root' : '');
   document.getElementById('create-prompt').value = '';
+  // GROUP ON CREATE (Ethan, 2026-09-24: "make sure i can define a group if i
+  // want when i create a worker"). Prefilled with the group pill in view, and
+  // offered every existing group; typing a new name makes a new group.
+  const _grpEl = document.getElementById('create-group');
+  if (_grpEl) _grpEl.value = (typeof activeTag === 'string' && activeTag) ? activeTag : '';
+  const _grpList = document.getElementById('create-group-list');
+  if (_grpList) _grpList.innerHTML = [...new Set((sessions || []).flatMap(s => s.tags || []))].sort()
+    .map(t => '<option value="' + esc(t) + '"></option>').join('');
   document.getElementById('create-branch').value = '';
   document.getElementById('create-branch-enabled').checked = false;
   document.getElementById('create-branch-wrap').style.display = 'none';
@@ -24658,6 +24670,8 @@ async function submitCreate() {
     : ((_modelSel && _modelSel.value) || '').trim();
   if (_model) createBody.model = _model;
   if (worktreeEnabled) createBody.worktree = true;
+  const _groups = _createGroupsFrom((document.getElementById('create-group') || {}).value);
+  if (_groups.length) createBody.tags = _groups;
   // ISOLATED (Ethan, 2026-08-27). Sent only when true: the server writes
   // CC_ISOLATED=1 and absence already means "not isolated" to every reader, so
   // an explicit false would be a second spelling of the default.

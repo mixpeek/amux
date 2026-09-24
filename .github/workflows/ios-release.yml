@@ -18,6 +18,10 @@ on:
         description: 'Type SUBMIT to send the current TestFlight build to Apple review'
         required: true
         default: ''
+      cancel_pending:
+        description: 'yes = cancel a submission waiting for review first (needed to replace screenshots)'
+        required: false
+        default: 'no'
 
 jobs:
   release:
@@ -62,4 +66,5 @@ jobs:
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          CANCEL_PENDING: ${{ inputs.cancel_pending == 'yes' && '1' || '' }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
