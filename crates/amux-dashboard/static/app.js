@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1070';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1071';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45019,10 +45019,11 @@ function _projectPrimaryWorkspace(data) {
   const workers=_projectWorkers(data);
   const score=w=>{
     const tasks=w.tasks||[];
-    if(tasks.some(t=>['working','waiting','verifying'].includes(t.phase))) return 0;
+    if(tasks.some(t=>['working','verifying'].includes(t.phase))) return 0;
     if(tasks.some(t=>['ready','intake'].includes(t.phase))) return 1;
-    if(tasks.some(t=>t.phase==='verified')) return 2;
-    return 3;
+    if(tasks.some(t=>t.phase==='waiting')) return 2;
+    if(tasks.some(t=>t.phase==='verified')) return 3;
+    return 4;
   };
   return workers
     .filter(w=>w?.workspace?.path && w.workspace_available===true)

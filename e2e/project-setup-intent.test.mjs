@@ -140,3 +140,13 @@ test('normal executor capacity queues do not make the project outcome failed',()
  data.acceptance.state='failed';data.cards[1].execution_plan.waiting_reason='executor_capacity';
  assert.equal(ctx._projectOutcomeVerdict(data).tone,'failed');
 });
+
+
+test('project checkout navigation follows active work before an alphabetically earlier idle owner',()=>{
+ const ctx=vm.createContext({_projectWorkers:data=>data.workers});
+ vm.runInContext(source.slice(source.indexOf('function _projectPrimaryWorkspace('),source.indexOf('function _projectInventoryState(')),ctx);
+ const data={workers:[{name:'a-idle',workspace_available:true,workspace:{path:'/repo/.worktrees/idle'},tasks:[{phase:'waiting'}]},{name:'z-working',workspace_available:true,workspace:{path:'/repo/.worktrees/active'},tasks:[{phase:'working'}]}]};
+ assert.equal(ctx._projectPrimaryWorkspace(data).path,'/repo/.worktrees/active');
+ data.workers[1].workspace_available=false;
+ assert.equal(ctx._projectPrimaryWorkspace(data).path,'/repo/.worktrees/idle');
+});

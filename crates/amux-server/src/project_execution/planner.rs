@@ -344,6 +344,26 @@ fn owned_output_recoverable(row: &bs::IssueRow, e: &Execution, project: &store::
     }))
 }
 
+/// One bounded implementation-preparation path for failures the task can fix
+/// locally. Classification does not approve access or erase failed evidence.
+pub(crate) fn implementation_preparation_hint(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> Option<&'static str> {
+    let key=format!("implementation-prepare:{}:{}:{}",project.name,row.id,&e.input_hash[..12.min(e.input_hash.len())]);
+    if e.retry_grants.iter().any(|g|g.request.idempotency_key==key) { return None; }
+    if premature_runtime_check(row,e,project) {
+        return Some("A prose-criterion check invoked the runtime API with credential flags before the integrated acceptance phase. Do not search for production credentials or weaken any gate. Commit the approved root-relative runtime entry point, make it prepare its authorized local fixture at host execution, and map matching runtime criteria to the exact approved contract command without extra flags/cwd changes, or provide a genuine local unit check. Preserve the failed run as diagnostic evidence and submit a corrected committed report; no runtime success is implied.");
+    }
+    if owned_output_recoverable(row,e,project) {
+        return Some("The missing evidence paths are this task's owned deliverables, not upstream inputs. Implement the missing verifier and artifacts, inspect the existing source, run falsifiable checks, commit the candidate and submit the report. Do not wait for another worker to produce your files or claim runtime proof without execution.");
+    }
+    let reason=e.waiting.as_deref().unwrap_or("").to_ascii_lowercase();
+    if e.stage=="waiting" && !e.suspended && e.report.is_none() && e.wait_category.as_deref()==Some("operational")
+        && reason.starts_with("operational:") && reason.contains("commit") && reason.contains("hook")
+        && (reason.contains("pre-commit") || reason.contains("precommit")) && (reason.contains("fail") || reason.contains("blocked")) {
+        return Some("Repository validation is part of completing this task, including an existing failing commit gate. Diagnose the exact failing check in your own checkout, make the smallest correct source/configuration fix, retain before/after evidence and rerun the original gate and task checks. Do not disable hooks, set SKIP, change core.hooksPath, weaken assertions, or broaden permissions. Do not wait for another worker. Commit the repair with the task candidate and report its scope; if the check genuinely requires new spend, customer outbound or access authorization, preserve that specific hold.");
+    }
+    None
+}
+
 pub(crate) fn grant_preparation(c: &Connection, project: &str, task: &str, expected: &Execution, hint: &str) -> anyhow::Result<WriteOutcome> {
     let row=bs::get_issue(c,task)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
     let current=execution(c,task)?;
@@ -506,12 +526,11 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "grant_repair";
                 None
             }
-        } else if premature_runtime_check(row, &state, project) {
-            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_runtime_checks"; None }
+        } else if implementation_preparation_hint(row, &state, project).is_some() {
+            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_implementation"; None }
         } else if provider_launch_recoverable(&state, project) {
             if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="recover_provider_launch"; None }
-        } else if owned_output_recoverable(row, &state, project) {
-            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_owned_outputs"; None }
+
         } else if host_execution_recoverable(row, &state, project) {
             action = "recover_host_execution";
             None
@@ -1077,6 +1096,22 @@ mod tests {
         e.waiting=Some("verification failed (python3 runtime.py): provide API_KEY".into());assert!(!premature_runtime_check(&row,&e,&p));
         e.waiting=Some("verification failed (python3 local.py): provide API_KEY".into());p.policy.verify_command="python3 local.py".into();assert!(!premature_runtime_check(&row,&e,&p));
         p.policy.verify_command="git diff --check".into();p.policy.acceptance=None;assert!(!premature_runtime_check(&row,&e,&p));
+    }
+
+    #[test]
+    fn project_commit_gate_recovery_preserves_validation_and_stops_after_one_preparation() {
+        let (_dir,db)=fixture();
+        db.write(|c| {
+            claim(c,"sample","A").unwrap();let p=store::get(c,"sample").unwrap().unwrap();
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=execution(c,"A").unwrap();
+            e.stage="waiting".into();e.wait_category=Some("operational".into());e.waiting=Some("operational: Commit is blocked by the repository pre-commit hook, which fails on existing dependency claims".into());
+            let hint=implementation_preparation_hint(&row,&e,&p).unwrap();assert!(hint.contains("Do not disable hooks"));
+            save_execution(c,&row,&e,"test.wait").unwrap();grant_preparation(c,"sample","A",&e,hint).unwrap();
+            let mut retried=execution(c,"A").unwrap();retried.stage="waiting".into();assert!(implementation_preparation_hint(&row,&retried,&p).is_none());
+            e.wait_category=Some("spend".into());assert!(implementation_preparation_hint(&row,&e,&p).is_none());e.wait_category=Some("operational".into());
+            e.waiting=Some("operational: repository access requires approval".into());assert!(implementation_preparation_hint(&row,&e,&p).is_none());
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
     }
 
     #[test]

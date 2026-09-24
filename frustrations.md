@@ -4617,3 +4617,25 @@ CARD: AF-947
 SYMPTOM: POG-4 reported its approved runtime command plus a prose-criterion variation with cd server and a private-token flag. The variation ran early and exhausted generic retries on missing API credentials despite its report explicitly deferring runtime proof.
 COST: An owned local-fixture implementation became an unnecessary credential hold.
 FIX: Keep exact commands mandatory. For this measured missing-credential failure on a non-contract candidate check bound to an execution contract, grant one preparation retry through the existing bounded, budgeted path. Explain exact runtime-command reuse or genuine local unit checks and root entry points. Never supply production credentials, waive checks, broaden access, or reclassify assertion failures. Human authorization holds remain untouched.
+
+## Project checkout link preferred an idle task over current work
+AREA: ux
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The bucket-objects project card linked to waiting POG-16 while POG-4 and POG-6 were actively running. Waiting and Working shared the same workspace priority, leaving alphabetic worker order to choose the primary checkout.
+COST: Opening the project directory showed unrelated idle work instead of its current implementation.
+FIX: Rank Working/Verifying, then Ready/Intake, then Waiting, then retained Verified work consistently in the server inventory and client context. Keep worker-specific links to every historical checkout. Cover active-versus-waiting priority and unavailable-checkout fallback.
+
+## Existing repository hook failures stranded otherwise repairable work
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-8 stopped on a pre-commit workflow dependency check; other workers bypassed it. A read-only rerun independently confirmed 16 unmet PyYAML claims across 174 workflows and 225 resolved script invocations.
+COST: A repository-local prerequisite became a permanent operational hold, or validation was bypassed.
+FIX: Consolidate owned-output, premature-runtime-check and repository-gate preparation into one bounded path. An operational commit-hook failure gets one ordinary repair turn with explicit instructions to repair the check/source, retain before/after evidence and rerun the unchanged gate. Forbid SKIP/core.hooksPath bypass in every task packet. Preserve real authorization and budget holds; exhausted preparation produces no repeated grants or model calls.

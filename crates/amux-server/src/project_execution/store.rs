@@ -160,10 +160,11 @@ pub fn save(
 
 fn phase_workspace_priority(phase: Phase) -> u8 {
     match phase {
-        Phase::Working | Phase::Waiting | Phase::Verifying => 0,
+        Phase::Working | Phase::Verifying => 0,
         Phase::Ready | Phase::Intake => 1,
-        Phase::Verified => 2,
-        Phase::Closed | Phase::Unrecognized => 3,
+        Phase::Waiting => 2,
+        Phase::Verified => 3,
+        Phase::Closed | Phase::Unrecognized => 4,
     }
 }
 
@@ -887,6 +888,13 @@ CC_DIR=/tmp/spawn-blocked
             .unwrap()
             .starts_with("refusing to spawn"));
         assert_eq!(worker["tasks"][0]["waiting_label"], "Spawn blocked");
+    }
+
+    #[test]
+    fn project_workspace_prefers_current_work_over_waiting_and_retained_candidates() {
+        assert!(phase_workspace_priority(Phase::Working)<phase_workspace_priority(Phase::Waiting));
+        assert!(phase_workspace_priority(Phase::Verifying)<phase_workspace_priority(Phase::Waiting));
+        assert!(phase_workspace_priority(Phase::Waiting)<phase_workspace_priority(Phase::Verified));
     }
 
     #[test]
