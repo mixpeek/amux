@@ -111,9 +111,14 @@ def simple_shell_argv(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
-    argv = list(lexer)
-    if any(token and all(ch in "|&;<>" for ch in token) for token in argv):
-        return []
+    argv = []
+    for token in lexer:
+        # Stop at the first shell operator. shlex is not a heredoc parser:
+        # lexing its body can mistake ordinary prose apostrophes for an
+        # unterminated shell string and emit probe_failed on valid commands.
+        if token and all(ch in "|&;<>" for ch in token):
+            return []
+        argv.append(token)
     while argv and "=" in argv[0] and argv[0].split("=", 1)[0].isidentifier():
         argv.pop(0)
     if argv and Path(argv[0]).name == "env":

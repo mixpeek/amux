@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2132,
+  "n_considered": 2134,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -4102,6 +4102,12 @@
     },
     "toggleModelFilter": {
       "kind": "command.toggleModelFilter",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "togglePeekBoardPolicy": {
+      "kind": "command.togglePeekBoardPolicy",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

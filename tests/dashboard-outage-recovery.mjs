@@ -811,3 +811,25 @@ test('project output waits remain in progress while real operational failures ar
   child.execution_plan = {waiting_reason:'executor_returned_without_result',waiting_label:'Missing report after attempt'};
   assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'failed');
 });
+
+test('local settings never probe the gateway-only billing route', async () => {
+  const nodes = new Map(['settings-billing-section','settings-billing-info','settings-billing-sep'].map(id=>[id,{style:{display:''}}]));
+  const calls=[];
+  const ctx=vm.createContext({_cloudEmail:'',document:{getElementById:id=>nodes.get(id)},fetch:async url=>{calls.push(url);return {ok:true,json:async()=>({stripe_configured:false})};}});
+  for(const name of ['_loadCloudPlan','loadBillingSection'])vm.runInContext(code(name),ctx);
+  await ctx._loadCloudPlan();await ctx.loadBillingSection();
+  assert.deepEqual(calls,[]);assert.equal(nodes.get('settings-billing-section').style.display,'none');
+  ctx._cloudEmail='owner@example.test';
+  await ctx._loadCloudPlan();await ctx.loadBillingSection();
+  assert.deepEqual(calls,['/api/stripe/status','/api/stripe/status'],'managed accounts still load their billing capability');
+});
+
+test('identity arriving after settings opened refreshes billing without another click',async()=>{
+  const calls=[];
+  const ctx=vm.createContext({_cloudEmail:'',location:{hostname:'example.test'},document:{getElementById:id=>id==='settings-menu'?{classList:{contains:()=>true}}:null},
+    fetch:async()=>({ok:true,status:200,json:async()=>({is_cloud:true,email:'owner@example.test',has_api_key:true})}),
+    _applyIdentityToSettings(){},loadTeamSection(){},_loadGatewayOrgs(){},
+    _loadCloudPlan(){calls.push('plan')},loadBillingSection(){calls.push('billing')}});
+  vm.runInContext(code('_initIdentity'),ctx);await ctx._initIdentity();
+  assert.deepEqual(calls,['plan','billing']);assert.equal(ctx._cloudEmail,'owner@example.test');
+});

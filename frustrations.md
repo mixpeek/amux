@@ -4804,3 +4804,47 @@ CARD: AF-947
 SYMPTOM: GS3 POG-13 stopped before producing a local implementation because production backfill requires spend approval. The project had 23 checked task candidates but no whole-project acceptance; its remaining implementation was parked with the production action. Ordinary model-interpreted task refinement could also clear execution.stage and thereby accidentally erase a spend hold.
 COST: Safe local code/tests did not advance; the only apparent escape was manual retry or weakening authorization.
 FIX: Discover one independent local-preparation task for an approval-held code task with no candidate. Preserve the original task/hold/criteria, use the existing bounded project executor and verification path, and never create human messages. Discovery respects project pause, budget, pending intake, suspension, terminal tasks and archived/deleted preparation; preparation cannot recursively create preparation. Log project.authorization_preparation_created with both task identities. Decomposition/executor instructions separate safe local preparation from gated rollout; normal refinement preserves authorization. Local evidence never substitutes for production parity or whole-project acceptance. The inspector now exposes the full authorization cause instead of the scheduler token; unfinished task counts no longer imply execution.
+
+## Board census and settled project review discovery slow unrelated requests
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-948
+SYMPTOM: Retained logs repeatedly measured board-drive async polls above two seconds and project reconciliation occupying the sole writer for 250–526 ms, including unchanged review discovery.
+COST: Scheduler and mutation capacity is consumed by repeated read work, delaying sends and state updates.
+FIX: Move board census/candidate reads through the existing blocking read primitive; retain writer-side predicate checks. Short-circuit owned review inputs before rebuilding acceptance history. Log slow lane census duration and preserve real gate decisions.
+
+## Storage maintenance attempts VACUUM on an enforced query-only connection
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-948
+SYMPTOM: 167 retained storage sweep warnings reported VACUUM failing with attempt to write a readonly database. Maintenance used read_async after reader connections became query-only.
+COST: Database reclamation cannot complete, while retries keep emitting the same failure.
+FIX: Serialize fixed checkpoint/VACUUM operations on the sole writer outside transactions. Check checkpoint busy result, retain success-only vacuum markers and query-only readers. Real temporary WAL database regressions verify contention, revision preservation and subsequent writes.
+
+## Retired job and local billing calls manufacture recurring errors
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-948
+SYMPTOM: The live runtime catalog expects retired commit-nudge although nothing spawns it; local Settings calls gateway-only stripe/status, producing 43 recent 404 errors.
+COST: False alarms obscure actionable failures.
+FIX: Remove the retired job declaration; use resolved identity to request billing only where available, including delayed identity after Settings opens. Preserve genuine failures.
+
+## Large-read guard parses heredoc prose as shell quotations
+AREA: cli
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-948
+SYMPTOM: Read-delegation diagnostics contain No closing quotation on valid compound commands whose heredoc body contains apostrophes.
+COST: Valid commands generate hook failure noise instead of the intended direct-command check.
+FIX: Stop tokenizing once an operator identifies a compound command. Keep simple quoted paths and oversized direct reads enforced; regression includes heredoc apostrophes and malformed direct shell text.

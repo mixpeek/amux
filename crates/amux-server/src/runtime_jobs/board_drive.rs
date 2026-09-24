@@ -2353,8 +2353,8 @@ fn blocked_card_is_releasable(conn: &Connection, row: &bs::IssueRow) -> bool {
 /// Move every releasable `blocked` card to `todo`, re-checking the same
 /// predicate under the writer. Returns how many moved.
 pub(crate) async fn unblock_resolved_blocked(state: &AppState) -> usize {
-    let candidates = match state.store.read() {
-        Ok(conn) => blocked_dep_unblocks(&conn),
+    let candidates = match state.store.read_async(|conn| Ok(blocked_dep_unblocks(conn))).await {
+        Ok(candidates) => candidates,
         Err(_) => return 0,
     };
     let mut moved = 0usize;
@@ -2710,8 +2710,8 @@ fn backlog_dep_promotions(conn: &Connection, now: i64) -> (Vec<(String, Vec<Stri
 /// self-announcing).
 pub(crate) async fn promote_ready_backlog(state: &AppState) -> (usize, usize) {
     let now = crate::runtime_jobs::registry::unix_now() as i64;
-    let (candidates, held_on_trigger) = match state.store.read() {
-        Ok(conn) => backlog_dep_promotions(&conn, now),
+    let (candidates, held_on_trigger) = match state.store.read_async(move |conn| Ok(backlog_dep_promotions(conn, now))).await {
+        Ok(candidates) => candidates,
         Err(_) => return (0, 0),
     };
     let mut promoted = 0;
@@ -2818,8 +2818,8 @@ fn epic_completion_candidates_at(
 /// message's task chip report the state of the whole command rather than the
 /// state of whichever leaf happened to be created first.
 pub(crate) async fn complete_finished_epics(state: &AppState) -> usize {
-    let candidates = match state.store.read() {
-        Ok(conn) => epic_completion_candidates(&conn),
+    let candidates = match state.store.read_async(|conn| Ok(epic_completion_candidates(conn))).await {
+        Ok(candidates) => candidates,
         Err(_) => return 0,
     };
     let mut completed = 0;
@@ -6663,8 +6663,7 @@ pub async fn drive_tick<F: Fleet>(state: &AppState, fleet: &F) -> DriveReport {
     // INFO always (a clean pass must be distinguishable from a census that
     // measured nothing), WARN only when a LARGE board has almost nothing
     // workable — the state where the fleet looks busy and is not.
-    if let Ok(conn) = state.store.read() {
-        let shape = fleet_queue_shape(&conn);
+    if let Ok(shape) = state.store.read_async(|conn| Ok(fleet_queue_shape(conn))).await {
         let (open, pct) = (
             shape["open_total"].as_i64().unwrap_or(0),
             shape["dispatchable_pct"].as_f64().unwrap_or(0.0),
@@ -7092,11 +7091,22 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     // this lane sitting on, and why did it not get any", and half of that
     // answer was reported as zero. Every trace row now carries the true depth,
     // whatever stopped the lane.
-    let (eligible, open) = match state.store.read() {
-        Ok(conn) => (
-            eligible_todo_count(&conn, lane, crate::config::now_f64()),
-            open_card_count(&conn, lane),
-        ),
+    // A fleet full of gated lanes used to run every census in one async poll
+    // (measured >2s thread CPU), starving steering and other maintenance jobs.
+    // Use the shared read primitive; claim predicates still recheck in writes.
+    let census_lane = lane.to_owned();
+    let census_started = std::time::Instant::now();
+    let counts = state.store.read_async(move |conn| Ok((
+        eligible_todo_count(conn, &census_lane, crate::config::now_f64()),
+        open_card_count(conn, &census_lane),
+    ))).await;
+    if census_started.elapsed() >= std::time::Duration::from_millis(250) {
+        tracing::warn!(session=lane,elapsed_ms=census_started.elapsed().as_millis() as u64,
+            measured=counts.is_ok(),n_considered=1,verdict="board_census_slow",
+            "lane census ran off the async thread; inspect DB query cost or read-pool contention");
+    }
+    let (eligible, open) = match counts {
+        Ok(counts) => counts,
         Err(_) => {
             return LaneTrace::skip(
                 lane,

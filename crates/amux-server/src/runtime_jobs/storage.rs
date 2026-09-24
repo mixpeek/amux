@@ -558,7 +558,8 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
         Err(e) => return SweepResult::Error(format!("guard {}: {e}", spec.table)),
     };
     if kept == 0 {
-        tracing::error!(
+        tracing::warn!(
+            verdict = "storage_retention_empty_hold",
             table = spec.table,
             column = spec.ts_col,
             unit = ?spec.unit,
@@ -566,7 +567,7 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
             total,
             knob = spec.env,
             "storage retention REFUSED: cutoff would delete every row — this is a \
-             timestamp-unit mismatch, not an old table. Nothing deleted."
+             possible timestamp-unit mismatch or entirely aged table. Nothing deleted."
         );
         return SweepResult::Refused { total, cutoff };
     }
@@ -1152,23 +1153,9 @@ async fn checkpoint_wal(store: &crate::db::SharedStore, home: &Path) -> (Option<
     let size = |p: &Path| std::fs::metadata(p).ok().map(|m| m.len());
     let before = size(&wal);
     let t0 = std::time::Instant::now();
-    // `read_async`, NOT `write_async`, and that is the whole fix.
-    //
-    // Every write_async closure runs inside an Immediate transaction
-    // (db/mod.rs:612), and SQLite refuses a checkpoint inside one. The first
-    // version of this function used write_async and the log said so on the
-    // very first tick: `wal_checkpoint(TRUNCATE) failed error=database table
-    // is locked`. read_async hands out a POOLED connection that is not in a
-    // transaction, and those are opened read-write
-    // (SqliteConnectionManager::file with no read-only flag), so the pragma
-    // can actually do its work. The "read-only" in that pool's docstring is a
-    // convention about intent, not an enforced flag.
-    let res = store
-        .read_async(move |conn| {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-            Ok(())
-        })
-        .await;
+    // Fixed maintenance goes through the sole writer without its usual
+    // transaction. Read-pool connections are intentionally query-only.
+    let res = store.maintenance_async(crate::db::Maintenance::Checkpoint).await;
     let after = size(&wal);
     match res {
         Ok(_) => {
@@ -1218,20 +1205,7 @@ async fn maybe_vacuum(store: &crate::db::SharedStore, home: &Path) -> bool {
         }
     }
     let t0 = std::time::Instant::now();
-    // Same correction as checkpoint_wal above (AMUX-4811): VACUUM, like a
-    // checkpoint, cannot run inside a transaction, and write_async wraps every
-    // closure in an Immediate one (db/mod.rs:612). This path has therefore been
-    // failing for as long as it has existed. Nobody saw it because the marker
-    // below was written whether or not the work succeeded, so the next attempt
-    // was suppressed for another 24 hours and the log line said "VACUUM
-    // completed" only on a branch that never ran.
-    let res = store
-        .read_async(move |conn| {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-            conn.execute_batch("VACUUM;")?;
-            Ok(())
-        })
-        .await;
+    let res = store.maintenance_async(crate::db::Maintenance::Vacuum).await;
     // ONLY on success. Writing it unconditionally turned a failure into a
     // 24-hour silence, which is how a 4.16 GB database ended up carrying a
     // 143 MB WAL with nothing in the log to explain it.
@@ -2338,7 +2312,7 @@ mod tests {
     /// words "write_async" while explaining why not to use it, and a naive grep
     /// would fail on the corrected code.
     #[test]
-    fn the_maintenance_paths_call_read_async_not_write_async() {
+    fn maintenance_paths_use_the_serialized_nontransactional_writer() {
         let src = include_str!("storage.rs");
         for func in ["async fn checkpoint_wal", "async fn maybe_vacuum"] {
             let start = src.find(func).unwrap_or_else(|| panic!("{func} not found"));
@@ -2356,8 +2330,8 @@ mod tests {
                  VACUUM inside one. The failure is silent unless someone reads the WARN."
             );
             assert!(
-                code.contains(".read_async("),
-                "{func} should take a pooled, non-transactional connection via read_async"
+                code.contains(".maintenance_async("),
+                "{func} must use fixed maintenance on the sole writer, never a pooled reader"
             );
         }
     }

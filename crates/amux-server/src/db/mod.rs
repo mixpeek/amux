@@ -89,8 +89,21 @@ pub struct PendingEvent {
 
 type WriteFn = Box<dyn FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + Send>;
 
+/// Only these fixed maintenance operations may use the serialized writer
+/// outside a transaction. Pooled readers stay query-only.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Maintenance {
+    Checkpoint,
+    Vacuum,
+}
+
+enum WriteWork {
+    Mutation(WriteFn),
+    Maintenance(Maintenance),
+}
+
 struct WriteRequest {
-    work: WriteFn,
+    work: WriteWork,
     origin: &'static str,
     /// AMUX-4781: WHERE the write was issued, not just which function.
     /// `origin` is `type_name::<F>()`, and every closure inside one function
@@ -471,6 +484,21 @@ impl Store {
     where
         F: FnOnce(&Connection) -> rusqlite::Result<WriteOutcome> + Send + 'static,
     {
+        self.submit_write(
+            WriteWork::Mutation(Box::new(f)),
+            std::any::type_name::<F>(),
+            site,
+            interaction_id,
+        )
+    }
+
+    fn submit_write(
+        &self,
+        work: WriteWork,
+        origin: &'static str,
+        site: &'static std::panic::Location<'static>,
+        interaction_id: Option<String>,
+    ) -> anyhow::Result<WriteReply> {
         use std::sync::atomic::Ordering;
         let (reply_tx, reply_rx) = mpsc::channel();
         self.write_inflight.fetch_add(1, Ordering::Relaxed);
@@ -478,8 +506,8 @@ impl Store {
         let sent = self
             .write_tx
             .send(WriteRequest {
-                work: Box::new(f),
-                origin: std::any::type_name::<F>(),
+                work,
+                origin,
                 site,
                 queued_at: std::time::Instant::now(),
                 interaction_id,
@@ -607,6 +635,28 @@ impl Store {
     /// `connection_timeout` so the warning arrives BEFORE the failures do, which
     /// is the difference between a signal and a post-mortem.
     const SLOW_ACQUIRE: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// Submit fixed SQLite maintenance to the same writer as mutations. It
+    /// cannot run in an Immediate transaction and must never relax query_only
+    /// on a pooled reader. No domain revision or event is fabricated.
+    pub(crate) async fn maintenance_async(&self, operation: Maintenance) -> anyhow::Result<()> {
+        let store = self.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            store.submit_write(
+                WriteWork::Maintenance(operation),
+                "storage-maintenance",
+                std::panic::Location::caller(),
+                None,
+            )
+        }).await?;
+        match &result {
+            Ok(_) => tracing::info!(?operation, measured=true, n_considered=1,
+                verdict="storage_maintenance_completed", "serialized maintenance completed outside a transaction"),
+            Err(error) => tracing::warn!(?operation, %error, measured=true, n_considered=1,
+                verdict="storage_maintenance_failed", "maintenance failed; readers remain query-only"),
+        }
+        result.map(|_| ())
+    }
 
     /// Borrow a read-only connection from the pool.
     ///
@@ -829,7 +879,10 @@ fn writer_loop(
         // A panicking caller must not kill the sole writer and strand every
         // later mutation. The transaction guard rolls back during unwinding.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply_write(&conn, req.work, &events_tx, req.interaction_id.as_deref())
+            match req.work {
+                WriteWork::Mutation(work) => apply_write(&conn, work, &events_tx, req.interaction_id.as_deref()),
+                WriteWork::Maintenance(operation) => apply_maintenance(&conn, operation),
+            }
         }))
         .unwrap_or_else(|_| {
             tracing::error!(target: "store", verdict = "writer_mutation_panicked",
@@ -906,6 +959,22 @@ static LAST_COMMIT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// than a thread-local, because `writer_loop` owns the connection and a
 /// thread-local reads 0 forever from a test's own thread.
 static LAST_BEGIN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn apply_maintenance(conn: &Connection, operation: Maintenance) -> rusqlite::Result<WriteReply> {
+    // Checkpoint reports contention in its result row, not as a SQL error.
+    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    if busy != 0 {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("checkpoint deferred by an active reader; maintenance not completed".into()),
+        ));
+    }
+    if matches!(operation, Maintenance::Vacuum) {
+        conn.execute_batch("VACUUM;")?;
+    }
+    let rev = conn.query_row("SELECT rev FROM _amux_rev WHERE id=1", [], |row| row.get(0))?;
+    Ok(WriteReply { applied:false, rev:StateRevision(rev), events:vec![] })
+}
 
 fn apply_write(
     conn: &Connection,
@@ -1893,5 +1962,103 @@ mod read_pool_sizing_tests {
             );
         }
         std::env::remove_var("AMUX_READ_POOL_SIZE");
+    }
+}
+
+#[cfg(test)]
+mod storage_maintenance_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn maintenance_uses_writer_without_weakening_readers_or_creating_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("maintenance.db")).unwrap();
+        store.write_async(|c| {
+            c.execute_batch("CREATE TABLE maintenance_fixture(id INTEGER PRIMARY KEY, body BLOB); INSERT INTO maintenance_fixture VALUES(1,zeroblob(16384));")?;
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).await.unwrap();
+        let rev = store.current_rev().unwrap();
+        assert!(
+            store
+                .read_async(|c| {
+                    c.execute_batch("VACUUM")?;
+                    Ok(())
+                })
+                .await
+                .is_err(),
+            "negative control: readers must remain query-only"
+        );
+        store
+            .maintenance_async(Maintenance::Checkpoint)
+            .await
+            .unwrap();
+        store.maintenance_async(Maintenance::Vacuum).await.unwrap();
+        assert_eq!(
+            store.current_rev().unwrap(),
+            rev,
+            "maintenance is not a domain mutation"
+        );
+        store
+            .read_async(|c| {
+                assert_eq!(
+                    c.query_row("PRAGMA query_only", [], |r| r.get::<_, i64>(0))?,
+                    1
+                );
+                assert_eq!(
+                    c.query_row(
+                        "SELECT length(body) FROM maintenance_fixture WHERE id=1",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )?,
+                    16384
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        store
+            .write_async(|c| {
+                c.execute(
+                    "INSERT INTO maintenance_fixture VALUES(2,'after maintenance')",
+                    [],
+                )?;
+                Ok(WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        assert!(
+            store.current_rev().unwrap().0 > rev.0,
+            "subsequent ordinary writes still commit"
+        );
+    }
+
+    #[test]
+    fn maintenance_checkpoint_contention_is_not_reported_as_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("busy.db");
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; CREATE TABLE example(n); INSERT INTO example VALUES(1);",
+            )
+            .unwrap();
+        writer
+            .busy_timeout(std::time::Duration::from_millis(1))
+            .unwrap();
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT * FROM example;")
+            .unwrap();
+        writer.execute("INSERT INTO example VALUES(2)", []).unwrap();
+        let error = match apply_maintenance(&writer, Maintenance::Checkpoint) {
+            Err(error) => error,
+            Ok(_) => panic!("active snapshot should defer checkpoint"),
+        };
+        assert!(error.to_string().contains("checkpoint deferred"), "{error}");
+        assert!(writer.is_autocommit());
+        reader.execute_batch("ROLLBACK").unwrap();
     }
 }

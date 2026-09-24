@@ -501,8 +501,9 @@ function _showUpgradeModal(d) {
 }
 
 // Cloud plan card in Settings. /api/stripe/status only exists on the cloud
-// gateway, so a failed fetch (self-hosted) simply leaves the card hidden.
+// gateway. Identity discovers that capability before requesting billing.
 async function _loadCloudPlan() {
+  if (!_cloudEmail) return;
   try {
     const r = await fetch('/api/stripe/status');
     if (!r.ok) return;
@@ -1414,6 +1415,8 @@ async function _initIdentity() {
     // controls from that brief pre-identity render.
     if (document.getElementById('settings-menu')?.classList.contains('open')) {
       loadTeamSection();
+      _loadCloudPlan();
+      loadBillingSection();
     }
     if (_cloudEmail) {
       const lb = document.getElementById('logout-btn');
@@ -11657,7 +11660,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1080';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1081';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -37454,6 +37457,7 @@ async function loadBillingSection() {
   const sep = document.getElementById('settings-billing-sep');
   const info = document.getElementById('settings-billing-info');
   if (!sec || !info) return;
+  if (!_cloudEmail) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; return; }
   try {
     const r = await fetch('/api/stripe/status');
     if (!r.ok) { sec.style.display = 'none'; if (sep) sep.style.display = 'none'; return; }
