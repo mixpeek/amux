@@ -2904,6 +2904,9 @@
     background: rgba(88,166,255,0.2); color: var(--accent);
     border-color: var(--accent);
   }
+  .tag-filter.hidden-tag {
+    opacity: 0.55; text-decoration: line-through; border-style: dashed;
+  }
 
   /* ── Filters button + modal + preview chips ── */
   .filters-btn { position: relative; }

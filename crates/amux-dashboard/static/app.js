@@ -625,6 +625,55 @@ function _sessStatusKey(s) {
   return 'idle';
 }
 let filterModels = new Set();      // typed model family/capability from /api/models
+// Group pills HIDE as well as filter (Ethan, 2026-09-24: "press a pill/group
+// and that will hide them from the list"). A tap cycles neutral -> only this
+// group -> hidden -> neutral, so the existing one-tap filter is unchanged.
+let hiddenTags = new Set();
+// The list view survives closing the app, per client (same request: "whatever
+// views i have on the list page like filters, clicking a group etc are saved
+// for that client"). One record, written from render() so any mutator that
+// re-renders is covered, including ones added later.
+const _LIST_VIEW_KEY = 'amux_list_view_v1';
+let _listViewSaved = '';
+function _listViewSnapshot() {
+  return JSON.stringify({ tag: activeTag || '', hidden: [...hiddenTags].sort(),
+    providers: [...filterProviders].sort(), models: [...filterModels].sort(),
+    statuses: [...filterStatuses].sort(), q: searchQuery || '', logs: !!logSearchMode });
+}
+function _restoreListView() {
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(_LIST_VIEW_KEY) || 'null'); } catch (e) { v = null; }
+  if (!v || typeof v !== 'object') return;
+  const arr = x => Array.isArray(x) ? x.filter(y => typeof y === 'string') : [];
+  activeTag = typeof v.tag === 'string' ? v.tag : '';
+  hiddenTags = new Set(arr(v.hidden));
+  filterProviders = new Set(arr(v.providers));
+  filterModels = new Set(arr(v.models));
+  filterStatuses = new Set(arr(v.statuses));
+  searchQuery = typeof v.q === 'string' ? v.q : '';
+  logSearchMode = !!v.logs;
+  _listViewSaved = _listViewSnapshot();
+}
+function _saveListView() {
+  const snap = _listViewSnapshot();
+  if (snap === _listViewSaved) return;
+  _listViewSaved = snap;
+  try { localStorage.setItem(_LIST_VIEW_KEY, snap); } catch (e) {}
+}
+// The search box is in the static shell; fill it once the DOM exists.
+function _applyRestoredSearchInput() {
+  const inp = document.getElementById('search-input');
+  if (!inp || !searchQuery || inp.value) return;
+  inp.value = searchQuery;
+  const wrap = document.getElementById('search-wrap');
+  if (wrap) wrap.classList.add('has-value');
+  if (logSearchMode) inp.placeholder = 'Search worker logs...';
+}
+_restoreListView();
+if (typeof document !== 'undefined' && document.addEventListener) {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _applyRestoredSearchInput);
+  else _applyRestoredSearchInput();
+}
 let _modelCatalog = [];
 let _modelCatalogLoad = null;
 
@@ -5756,6 +5805,7 @@ function render() {
   // inside `#cards`. The peek header is a different subtree with no menu in it,
   // so it was never what the guard was protecting.
   updatePeekStatus();
+  _saveListView();
   if (peekSession) {
     _steeringUpdateBadge();
     if (_peekTab === 'steering') _steeringRender();
@@ -5776,8 +5826,12 @@ function render() {
   renderActiveFilters();
   // Build tag filter bar
   const tagEl = document.getElementById('tag-filters');
-  const allTags = [...new Set(sessions.filter(s => !s.archived && !_workerLifecycleInactive(s)).flatMap(s => s.tags || []))].sort();
-  if (activeTag && !allTags.includes(activeTag)) activeTag = null;
+  const liveTags = new Set(sessions.filter(s => !s.archived && !_workerLifecycleInactive(s)).flatMap(s => s.tags || []));
+  // A hidden group keeps its pill even with no live workers, or it could never
+  // be un-hidden. Pruning a vanished group waits for real data: a restored
+  // view must not be wiped by the empty list that precedes the first fetch.
+  const allTags = [...new Set([...liveTags, ...hiddenTags])].sort();
+  if (activeTag && !_initialLoad && sessions.length && !liveTags.has(activeTag)) activeTag = '';
   // Pills FILTER the worker list. Nothing more.
   //
   // The "\u25c9 Global" pill and the group-scope band that used to sit under this
@@ -5790,7 +5844,9 @@ function render() {
   // derivation), so this is a removal, not a reimplementation.
   if (allTags.length) {
     tagEl.innerHTML = allTags.map(t =>
-      `<span class="tag-filter${activeTag === t ? ' active' : ''}" onclick="toggleTagFilter('${escJs(t)}')">${esc(t)}</span>`
+      `<span class="tag-filter${activeTag === t ? ' active' : ''}${hiddenTags.has(t) ? ' hidden-tag' : ''}" `
+      + `title="${activeTag === t ? 'Showing only this group. Tap to hide it' : hiddenTags.has(t) ? 'Hidden. Tap to show it again' : 'Tap to show only this group'}" `
+      + `onclick="toggleTagFilter('${escJs(t)}')">${hiddenTags.has(t) ? '\u2298 ' : ''}${esc(t)}</span>`
     ).join('');
   } else {
     tagEl.innerHTML = '';
@@ -5866,6 +5922,7 @@ function render() {
 
   // Filter by tag (exclude archived from main view)
   let list = (activeTag ? sessions.filter(s => (s.tags || []).includes(activeTag)) : sessions).filter(s => !s.archived && !_workerLifecycleInactive(s));
+  if (hiddenTags.size) list = list.filter(s => _workerVisibleWithHiddenTags(s.tags || [], activeTag, hiddenTags));
   // Filter by search query
   const q = searchQuery.toLowerCase().trim();
   let filtered = q ? list.filter(s =>
@@ -5879,7 +5936,7 @@ function render() {
   if (filterProviders.size) filtered = filtered.filter(s => filterProviders.has(sessionProvider(s)));
   if (filterModels.size) filtered = filtered.filter(s => filterModels.has(_modelClass(sessionConfiguredModel(s))));
   if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
-  if ((q || activeTag || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
+  if ((q || activeTag || hiddenTags.size || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching workers.</div>';
     _renderReviewSection();
     _renderPausedSection();
@@ -11657,7 +11714,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1081';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1082';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -19729,8 +19786,21 @@ function cardSlashAcHighlight(name) {
 }
 
 // ── Search clear helpers ──
+// neutral -> only -> hidden -> neutral.
+function _nextTagState(tag, active, hidden) {
+  if (active === tag) { const h = new Set(hidden); h.add(tag); return { active: '', hidden: h }; }
+  if (hidden.has(tag)) { const h = new Set(hidden); h.delete(tag); return { active, hidden: h }; }
+  return { active: tag, hidden };
+}
+// A worker in a hidden group stays visible only when it also belongs to the
+// group the owner explicitly narrowed to.
+function _workerVisibleWithHiddenTags(tags, active, hidden) {
+  if (active && tags.includes(active)) return true;
+  return !tags.some(t => hidden.has(t));
+}
 function toggleTagFilter(tag) {
-  activeTag = (activeTag === tag) ? '' : tag;
+  const next = _nextTagState(tag, activeTag, hiddenTags);
+  activeTag = next.active; hiddenTags = next.hidden;
   render();
 }
 
