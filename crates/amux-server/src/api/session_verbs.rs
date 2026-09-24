@@ -9973,7 +9973,25 @@ async fn verify_submitted(
             // send lock is held from paste through verify, and we pasted
             // seconds ago. `ghost_rescue` cannot make that claim and correctly
             // does not try.
-            FrameRead::CollapsedPaste => {}
+            //
+            // COLLAPSED PASTE GETS A LONGER JSONL WAIT (chaos-test finding,
+            // 2026-09-24). The frame hides the actual text, so `read_frame`
+            // can never return Cleared for a collapsed paste that was accepted
+            // (it transitions directly from CollapsedPaste to NoUi/Cleared as
+            // Claude processes the turn). If JSONL writing lags by >~1.5s (the
+            // normal stuck_looks window), the code would retry Enter on a
+            // message the agent already accepted. Give JSONL 3 extra seconds
+            // when the dominant signal is CollapsedPaste.
+            FrameRead::CollapsedPaste => {
+                if sent_at > 0.0 {
+                    sleep_ms(500).await;
+                    if jsonl_submission_since(name, text, sent_at)
+                        || muse_user_intent_since(name, text, sent_at)
+                    {
+                        return (Submission::Confirmed, retried);
+                    }
+                }
+            }
         }
         // ONE stuck look is not proof either: for ~1s after a successful submit
         // the pane still shows the echoed text and no spinner yet (worse during
@@ -20113,7 +20131,14 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         let agents_live = sub_activity
             .get(name)
             .is_some_and(|m| now_f64() - m < 180.0);
-        let typed_pending = (!is_rate_limit_menu(&pane)
+        // A send in flight has pasted text into the composer but not yet
+        // pressed Enter or completed verification. Reading that text as
+        // "stuck" stamps composer_stuck_since, the dashboard shows
+        // "unsubmitted text", and a human may intervene mid-choreography.
+        // Skip the stuck check entirely when lane_send_lock is held.
+        let send_in_flight = lane_send_lock(name).try_lock().is_err();
+        let typed_pending = (!send_in_flight
+            && !is_rate_limit_menu(&pane)
             && !selector_now
             && !pane_bar_says_generating(&pane)
             && detect_claude_status(&pane) != "active"
