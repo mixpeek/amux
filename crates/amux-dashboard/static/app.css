@@ -4119,6 +4119,9 @@
   .board-card-live-label .board-live-dot { flex:0 0 auto; }
   @keyframes boardLivePulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
   .board-card-live .board-card-session { color: var(--green,#3fb950); border-color: rgba(63,185,80,0.4); }
+  .board-card-llm-task { display:block; font-size:0.72rem; color:var(--dim); padding:2px 0 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  .card-task-board-ctx { margin-top:1px; }
+  .card-task-desc { margin-top:1px; }
   .board-activity { display:flex; align-items:flex-start; gap:8px; overflow-x:auto; max-width:100%; padding:8px 2px; margin-bottom:8px; }
   .board-activity[hidden] { display:none; }
   .board-activity-item { display:flex; align-items:flex-start; gap:10px; flex:0 0 min(420px,92%); padding:10px 12px; border:1px solid rgba(63,185,80,0.45); border-radius:10px; background:var(--surface,var(--bg)); font-size:0.8rem; }

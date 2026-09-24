@@ -6068,7 +6068,17 @@ function render() {
       ${s.dir ? _renderBranchBadge(s.name, s.branch) : ''}
       ${isExp && s.desc ? `<div class="card-desc">${esc(s.desc)}</div>` : ''}
 
-      ${!isExp && displayTaskName ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}" style="font-weight:600;color:var(--text);">${displayTaskBoardId ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
+      ${!isExp && (displayTaskName || s.task_override) ? (() => {
+        const llmTask = s.task_override || '';
+        const hasBoard = !!displayTaskBoardId;
+        const showLlm = llmTask && llmTask !== displayTaskName;
+        return (showLlm
+          ? `<div class="card-preview" style="font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(llmTask)}</div>`
+          : '')
+        + (displayTaskName
+          ? `<div class="card-preview${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" style="${showLlm ? 'font-size:0.78rem;font-weight:400;' : 'font-weight:600;color:var(--text);'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : esc(displayTaskName)}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+          : '');
+      })() : ''}
       ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
       ${logSearchMode && _logMatches[s.name] ? (() => {
         const hits = _logMatches[s.name];
@@ -6091,7 +6101,20 @@ function render() {
         <button class="btn primary" style="width:100%;" onclick="doStart('${s.name}')">&#x25B6; Start</button>
       </div>` : ''}
       <div class="panel" onclick="event.stopPropagation()">
-        ${isExp && displayTaskName ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}" title="Open the active board card" style="font-weight:600;">${displayTaskBoardId ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : `<span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>`}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>` : ''}
+        ${isExp && (displayTaskName || s.task_override) ? (() => {
+          const llmTask = s.task_override || '';
+          const hasBoard = !!displayTaskBoardId;
+          const showLlm = llmTask && llmTask !== displayTaskName;
+          const doingCard = hasBoard ? _cardDoingItem(s.name) : null;
+          const cardDesc = doingCard && doingCard.desc ? doingCard.desc.split('\n')[0].slice(0, 120) : '';
+          return (showLlm
+            ? `<div class="card-task-name" style="font-weight:600;">${esc(llmTask)}</div>`
+            : '')
+          + (displayTaskName
+            ? `<div class="card-task-name${taskDim || taskIsDesc ? ' task-stale' : ''}${showLlm ? ' card-task-board-ctx' : ''}" title="Open the active board card" style="${showLlm ? 'font-size:0.82rem;font-weight:400;' : 'font-weight:600;'}">${hasBoard ? _activeTaskLink(s.name, displayTaskBoardId, displayTaskName) : `<span onclick="event.stopPropagation();editField('${s.name}','task','${escJs(s.task_override || '')}')" style="cursor:pointer;">${esc(displayTaskName)}</span>`}${taskStale ? ` <span class="task-stale-badge">&middot; board ${taskStale}</span>` : ''}${taskIsDesc ? ` <span class="task-stale-badge">&middot; no active card</span>` : ''}</div>`
+            : '')
+          + (cardDesc && !showLlm ? `<div class="card-task-desc" style="font-size:0.75rem;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 0 0;">${esc(cardDesc)}</div>` : '');
+        })() : ''}
         ${isExp && s.running ? `<div class="card-timing">
           ${s.session_created ? `<div class="timing-item"><span class="timing-label">Worker</span><span class="timing-value">${fmtDuration(Math.floor(Date.now()/1000) - s.session_created)}</span></div>` : ''}
           ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
@@ -6354,11 +6377,19 @@ function _bindPeekTaskIdentity(s, identity) {
   if (!row || !label || !_peekIdentityCurrent(identity) || !s || s.name !== identity.name) return;
   const runtime = _runtimeBoardPresentation(s);
   const cardId = runtime.cardId || '';
-  const title = runtime.syncing
+  const llmTask = s.task_override || '';
+  const boardTitle = runtime.syncing
     ? 'Synchronizing runtime/board truth…'
     : (s.task_name || cardId || '');
-  row.style.display = title ? 'flex' : 'none';
-  label.textContent = title;
+  const showBoth = llmTask && boardTitle && llmTask !== boardTitle;
+  row.style.display = (llmTask || boardTitle) ? 'flex' : 'none';
+  if (showBoth) {
+    label.innerHTML = esc(llmTask) + '<br><span style="font-size:0.82rem;color:var(--dim);font-weight:400;">'
+      + (cardId ? esc(boardTitle) + ' <span class="task-id-chip" style="font-size:0.7rem;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 6px;">' + esc(cardId) + '</span>' : esc(boardTitle))
+      + '</span>';
+  } else {
+    label.textContent = boardTitle || llmTask;
+  }
   label.dataset.worker = s.name;
   label.dataset.card = cardId;
   label.title = cardId ? 'Open active board card ' + cardId : 'Edit task label';
@@ -11740,7 +11771,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1090';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1091';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12495,7 +12526,7 @@ async function _psfViewFile(filePath) {
     if (data.is_image) {
       content.className = 'file-overlay-body file-image';
       const img = document.createElement('img');
-      img.src = data.data_url || _authUrl(API + (data.raw_url || ''));
+      img.src = data.data_url || (data.blob ? URL.createObjectURL(data.blob) : _authUrl(API + (data.raw_url || '')));
       img.style.cssText = 'max-width:100%;height:auto;border-radius:4px;display:block;margin:auto;';
       content.appendChild(img);
     } else if (data.is_markdown) {
@@ -20579,7 +20610,7 @@ function _renderFileBody(data, mode) {
     const img = document.createElement('img');
     // data_url for small images, streamed raw_url for large ones (AMUX-2344).
     // Reading only data_url is what made a >5MB photo render as a broken image.
-    img.src = data.data_url || _authUrl(API + (data.raw_url || ''));
+    img.src = data.data_url || (data.blob ? URL.createObjectURL(data.blob) : _authUrl(API + (data.raw_url || '')));
     img.alt = data.path ? data.path.split('/').pop() : '';
     img.className = 'img-zoomable';
     wrap.appendChild(img);
@@ -20965,6 +20996,19 @@ function _xlsxShowSheet(i) {
   document.querySelectorAll('.xlsx-tab').forEach((el, idx) => { el.classList.toggle('active', idx === i); });
 }
 
+async function _cacheStreamedImage(path, data) {
+  try {
+    const r = await fetch(_authUrl(API + data.raw_url));
+    if (!r.ok) return;
+    const blob = await r.blob();
+    if (!blob.size || blob.size > _FILE_CACHE_MAX) {
+      console.log('[files] streamed image not saved for offline: ' + blob.size + ' bytes (cap ' + _FILE_CACHE_MAX + ')');
+      return;
+    }
+    await _idb.setFile(path, { type: 'file', data: Object.assign({}, data, { blob, blob_bytes: blob.size }) });
+    _offlineBudgetEnforce();
+  } catch (e) { console.warn('[files] could not save streamed image for offline', path, e); }
+}
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
@@ -21081,6 +21125,14 @@ async function openFilePreview(path, options = {}) {
     if (_payload > 0 && _payload <= _FILE_CACHE_MAX) {
       await _idb.setFile(path, { type: 'file', data });
       _offlineBudgetEnforce();     // throttled FIFO trim to the server-saved cap
+    } else if (data.is_image && !data.data_url && data.raw_url) {
+      // A STREAMED IMAGE WAS NEVER SAVED, so it could not open offline (Ethan
+      // 2026-09-24: "if i want to view a file offline, i should be able to.
+      // once i view it, it'll be stored"). Images over the server's inline
+      // limit arrive by URL. Fetch the same bytes once more in the background
+      // (the browser usually answers from its HTTP cache) and store them as a
+      // Blob, which IndexedDB holds natively, under the same per-file cap.
+      _cacheStreamedImage(path, data);
     }
   } catch(e) {
     if (options.readOnly) {document.getElementById('file-body').textContent='Retained asset unavailable.';return;}
@@ -23513,7 +23565,8 @@ const _FILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // evict files not opened
 function _idbEntryBytes(r) {
   const d = (r && r.data) || {};
   return (d.data_url ? d.data_url.length : 0) + (d.content ? d.content.length : 0)
-       + (d.entries ? JSON.stringify(d.entries).length : 0);
+       + (d.entries ? JSON.stringify(d.entries).length : 0)
+       + (d.blob ? (d.blob.size || d.blob_bytes || 0) : 0);   // streamed images saved as Blobs
 }
 // Total offline storage budget, saved SERVER-side so it follows you across
 // devices. Default 200MB: generous on a phone, far under the ~1GB a PWA can
@@ -30841,7 +30894,7 @@ function _renderBoardCard(item) {
   h += '<button class="board-pin-btn' + (pinned ? ' active' : '') + '" onclick="event.stopPropagation();_togglePin(\'' + item.id + '\')" title="' + (pinned ? 'Unpin' : 'Pin to top') + '">&#x1F4CC;</button>';
   const _bq = typeof boardSearchQuery !== 'undefined' ? boardSearchQuery : '';
   h += '<div class="board-card-key">' + _hlSearch(esc(item.id), _bq)
-    + (_liveNow ? '<span class="board-card-live-label"><span class="board-live-dot"></span>Working now</span>' : '')
+    + (_liveNow ? '<span class="board-card-live-label"><span class="board-live-dot"></span>Working now</span>' + (() => { const _ws = (sessions || []).find(_x => _x.name === item.session); const _to = _ws && _ws.task_override; return _to ? '<span class="board-card-llm-task" title="LLM-reported task">' + esc(_to) + '</span>' : ''; })() : '')
     + (_observedNow ? '<span class="board-card-live-label">Last linked · out of date</span>' : '')
     + '</div>';
   if (item.doing_rot) h += '<div class="board-card-rot" title="Rotting: ' + item.doing_rot_days + 'd in doing with no board update and no commit/PR evidence. Evidence it forward or demote it.">&#x26A0; ' + Math.round(item.doing_rot_days) + 'd no evidence</div>';
