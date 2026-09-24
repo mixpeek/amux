@@ -90,13 +90,36 @@ platform :ios do
       is_key_content_base64: true
     )
 
+    # NAME THE VERSION AND THE BUILD (first real run, 2026-09-24, run
+    # 36008794593). Without app_version deliver edited the stale "1.0.1"
+    # App Store entry, which has no build, while TestFlight held 1.1.0 (6261).
+    # The version is the one the app is built with (project.yml
+    # MARKETING_VERSION); the build is the newest TestFlight build of it.
+    # Fastfile Ruby runs in ios/fastlane, actions in ios; accept either.
+    spec = ["../project.yml", "project.yml"].find { |p| File.exist?(p) }
+    UI.user_error!("project.yml not found from #{Dir.pwd}") unless spec
+    version = ENV["APP_VERSION"] ||
+      File.read(spec, encoding: "UTF-8")[/MARKETING_VERSION:\s*"([^"]+)"/, 1]
+    UI.user_error!("no MARKETING_VERSION in project.yml") if version.to_s.empty?
+    build = ENV["BUILD_NUMBER"].to_s.empty? ?
+      latest_testflight_build_number(api_key: api_key, version: version) : ENV["BUILD_NUMBER"]
+    UI.message("Submitting #{version} (#{build}) for review")
+
     deliver(
       api_key: api_key,
+      app_version: version,
+      build_number: build.to_s,
+      skip_binary_upload: true,
       submit_for_review: true,
       automatic_release: true,
       force: true,
       skip_screenshots: false,
-      skip_metadata: false
+      overwrite_screenshots: true,
+      skip_metadata: false,
+      # Precheck cannot inspect in-app purchases with an API key and fails the
+      # whole submit on that alone. The rest of precheck still runs.
+      precheck_include_in_app_purchases: false,
+      submission_information: { add_id_info_uses_idfa: false }
     )
   end
 
