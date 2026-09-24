@@ -24,6 +24,11 @@ test('LC-SYNC-PROGRESS: reconnect checks off only acknowledged changes and keeps
     expect(await queue()).toHaveLength(3);
     await context.setOffline(false); await page.evaluate(()=>window.dispatchEvent(new Event('online')));
     await expect.poll(()=>Boolean(releases[0])).toBe(true);
+    // The checklist no longer pops up by itself; the pill carries the progress
+    // and a tap on it opens the list (Ethan, 2026-09-24).
+    await expect(page.locator('#conn-status')).toHaveText(/Syncing 0\/3/);
+    await expect(page.locator('#sync-banner')).not.toHaveClass(/active/);
+    await page.locator('#conn-status').click();
     await expect(page.locator('#sync-banner')).toHaveClass(/active/);
     await expect(page.locator('#toast')).not.toHaveClass(/visible/);
     await expect(page.locator('#sync-items .running')).toHaveCount(1);

@@ -167,7 +167,9 @@ test('LC-OFFLINE-ROUNDTRIP: cold offline reload preserves edits and messages; re
     expect(rows.map((r: any) => r.text)).toEqual(durable.filter((q:any) => q.url.endsWith('/steer')).map((q:any) => JSON.parse(q.options.body).text));
     expect(rows.every((r: any) => !r.delivered_at)).toBe(true); // stopped worker: synced does not mean consumed
     await expect(page.locator('#toast')).not.toHaveClass(/visible/);
-    await expect(page.locator('#sync-banner')).toHaveClass(/active/);
+    // Settled replay: nothing pops up and the pill is back to its normal state.
+    await expect(page.locator('#sync-banner')).not.toHaveClass(/active/);
+    await expect(page.locator('#conn-status')).not.toHaveText(/Syncing/);
     await checkpoint(page, info, 'all-seven-acknowledgements');
     // A second online event/reload must not resurrect the settled outbox.
     await page.reload();
