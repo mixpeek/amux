@@ -417,10 +417,10 @@
   {
     "id": "LC-43",
     "surface": "Service worker and PWA",
-    "actions": "Install/open PWA, offline launch, cached-version upgrade, failure bar dismissal, save below banner.",
+    "actions": "Install/open PWA, offline launch, cached-version upgrade, offline-mode-off marker on the connection badge, modal actions uncovered.",
     "expected": "Upgrade does not lose drafts; failure explains offline limits; Save stays tappable on phone.",
     "sources": [
-      "e2e/sw-fail-bar.spec.ts"
+      "e2e/sw-offline-notice.spec.ts"
     ]
   },
   {

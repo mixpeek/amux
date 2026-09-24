@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 const source=fs.readFileSync(process.env.AMUX_OUTBOX_SOURCE || 'crates/amux-dashboard/static/app.js','utf8');
 function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);assert(a>=0 && b>a, start);return source.slice(a,b);}
-const run=section('async function _runSyncBanner(', 'async function _syncOneDraft(');
+const run=section('function _outboxMessageProgress(', 'async function _syncOneDraft(');
 const helpers=source.includes('function _outboxMessageId(') ? section('function _outboxMessageId(', '// Queue modal') : '';
 const reviewAction=section('const _outboxManualAction =', '\n');
 // AMUX-4844. THE SANDBOX IS HAND-MAINTAINED, SO MAKE ITS GAPS SAY SO.
@@ -53,9 +53,9 @@ function installMissingStubs(src,ctx){
  return missing;
 }
 function harness(queue,replies,transport=null){
- const requests=[],patches=[],signals=[],timers=[],beacons=[];
+ const requests=[],patches=[],signals=[],timers=[],beacons=[],peekNudges=[];
  const element={classList:{add(){},remove(){},contains(){return false;}},textContent:'',innerHTML:''};
- const ctx=vm.createContext({Date,Set,console,Response,JSON,navigator:{onLine:true},_upqList:async()=>[],_uploadSyncPending:false,_syncChecklist:[],_clearSyncTransientToast(){},_syncBannerBeacon:(phase,items)=>beacons.push({phase,n:(items||[]).length}),encodeURIComponent,decodeURIComponent,document:{getElementById:()=>element},drafts:[],offlineQueue:queue,_outboxActive:new Set(),describeOp:()=> 'test send',esc:s=>s,
+ const ctx=vm.createContext({peekSession:'test-worker',_peekKickFast:()=>peekNudges.push(Date.now()),Date,Set,console,Response,JSON,navigator:{onLine:true},_upqList:async()=>[],_uploadSyncPending:false,_syncChecklist:[],_clearSyncTransientToast(){},_syncBannerBeacon:(phase,items)=>beacons.push({phase,n:(items||[]).length}),encodeURIComponent,decodeURIComponent,document:{getElementById:()=>element},drafts:[],offlineQueue:queue,_outboxActive:new Set(),describeOp:()=> 'test send',esc:s=>s,
   _outboxLock:async(_,f)=>f(),_readQueue:()=>queue,_interactionReplay:()=>({id:'int-test'}),_outboxQueueable:()=>true,_mutateQueue:async f=>f(queue),_authHeaders:h=>h,
   _boundedMutationFetch:async(url,opts)=>{requests.push({url,opts});if(transport)return transport(url,opts);const r=replies.shift();assert(r,'unexpected request');if(r instanceof Error)throw r;return new Response(JSON.stringify(r.body),{status:r.status});},
   _apiErrText:async r=>(await r.json()).error,_interactionSet:(_,v)=>patches.push(v),_interactionAcknowledge:async()=>{},
@@ -63,7 +63,7 @@ function harness(queue,replies,transport=null){
  const evaluated=reviewAction+'\n'+section('function _validateMessageAcknowledgement(', 'function _localMessageRequest(')+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
  installMissingStubs(evaluated,ctx);
  vm.runInContext(evaluated,ctx);
- return {queue,requests,patches,signals,timers,beacons,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};
+ return {queue,requests,patches,signals,timers,beacons,peekNudges,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};
 }
 function pending(extra={}) {return {id:'q1',url:'/api/sessions/test-worker/send',options:{method:'POST',headers:{},body:JSON.stringify({text:'continue',msg_id:'same-identity'})},timestamp:Date.now(),...extra};}
 const waiting={status:202,body:{accepted:false,msg_id:'same-identity'}};
@@ -228,4 +228,28 @@ test('worker startup races retry automatically, but authorization refusals do no
 test('retained project draft and approval operations never replay automatically',async()=>{
  const h=harness([pending({url:'/api/projects/draft'}),pending({id:'approve',url:'/api/projects/sample/acceptance/approve'})],[]);
  await h.drain();assert.equal(h.requests.length,0);assert.equal(h.queue.length,2);
+});
+
+
+test('reconnect replay wakes the visible terminal and measures acknowledged delivery without prompt content',async()=>{
+ const q=pending({timestamp:Date.now()-60000,attempts:2});
+ const h=harness([q],[{status:200,body:{ok:true,submitted:true}}]);
+ await h.drain();
+ assert.equal(h.queue.length,0);
+ assert.equal(h.peekNudges.length,2,'wake on dispatch and acknowledgement, after old input burst expired');
+ const delivered=h.signals.find(s=>s.kind==='message_delivery_acknowledged');
+ assert.equal(delivered.msg_id,'same-identity');assert.equal(delivered.worker,'test-worker');
+ assert(delivered.queued_ms>=60000);assert(delivered.attempt_ms>=0);assert.equal(delivered.attempts,3);
+ assert(!JSON.stringify(h.signals).includes('continue'),'prompt text is not telemetry');
+});
+
+test('an offline failure retains every send in order and only acknowledges them after recovery',async()=>{
+ const q1=pending();const q2=pending({id:'q2',options:{method:'POST',body:JSON.stringify({text:'second',msg_id:'second-id'})}});
+ const h=harness([q1,q2],[new Error('offline')]);await h.drain();
+ assert.equal(h.queue.length,2);assert.equal(h.requests.length,1,'same worker stays ordered after failure');
+ assert(!h.signals.some(s=>s.kind==='message_delivery_acknowledged'));
+ const restored=harness(JSON.parse(JSON.stringify(h.queue)),[{status:200,body:{ok:true,submitted:true}},{status:200,body:{ok:true,submitted:true}}]);
+ await restored.drain();assert.equal(restored.queue.length,0);
+ assert.deepEqual(restored.requests.map(r=>JSON.parse(r.opts.body).msg_id),['same-identity','second-id']);
+ assert.equal(restored.signals.filter(s=>s.kind==='message_delivery_acknowledged').length,2);
 });

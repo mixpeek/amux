@@ -214,14 +214,15 @@ test('golden_offline_queue_and_replay', async ({ page, request }, testInfo) => {
       timeout: 10_000,
     });
   }
-  // Failed reads outrank the pending count in the pill; the offline banner
-  // always carries the exact queue count. Neither legitimate state says Live.
+  // Failed reads outrank the pending count in the pill. Neither legitimate
+  // state says Live. Offline with nothing FAILED takes no banner: the pill is
+  // the whole indicator (Ethan 2026-09-24, real estate).
   await expect(page.locator('#conn-status').first()).toHaveText(/^(3 pending|Sync error)$/);
-  await expect(page.locator('#offline-banner')).toHaveClass(/active/);
+  await expect(page.locator('#offline-banner')).not.toHaveClass(/active/);
   const offlineEvidence = {
     kind: 'golden-offline-replay', verdict: 'offline_queue_inspected', measured: true,
     n_considered: titles.length, queued: queued.length,
-    banner: await page.locator('#offline-banner-title').innerText(),
+    badge: await page.locator('#conn-status').first().innerText(),
     operations: queued.map(op => ({ method: op.options?.method, url: op.url })),
   };
   console.log('[golden offline evidence]', JSON.stringify(offlineEvidence));
@@ -230,7 +231,6 @@ test('golden_offline_queue_and_replay', async ({ page, request }, testInfo) => {
     headers: authHeaders(token), data: offlineEvidence,
   });
   expect(diagnostic.ok(), 'offline queue measurement reaches amux logs').toBe(true);
-  await expect(page.locator('#offline-banner-title')).toContainText('3 queued, will send on reconnect');
 
   // The queue really is local: nothing reached the server yet.
   const during = await serverTitles(request, token);

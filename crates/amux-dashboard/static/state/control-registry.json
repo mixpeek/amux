@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2134,
+  "n_considered": 2141,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1690,6 +1690,12 @@
     },
     "_outboxFetch": {
       "kind": "command._outboxFetch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outboxMessageProgress": {
+      "kind": "command._outboxMessageProgress",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

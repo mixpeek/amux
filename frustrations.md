@@ -4870,3 +4870,14 @@ CARD: AF-948
 SYMPTOM: The post-deploy five-minute sample still measured autofix async polls lasting 6.3–8.6 seconds. Its database detector pass runs synchronous request-log scans directly inside the async tick; only disk/connector probes had been moved off-runtime.
 COST: The monitor can delay the maintenance jobs it is diagnosing while scanning up to 400000 retained request rows.
 FIX: Use the existing read_async primitive for the detector pass, preserving measured findings/suppressions, pause controls, filing deduplication and error reporting. A failed scan remains an error, never a healthy empty result.
+
+## Native attach input waits for idle peek polling; replay has no timing evidence
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-949
+SYMPTOM: Isolated worker attach input reached tmux within 70 ms but appeared in the open UI about 1.58 s after typing. Idle peek waits 1500 ms. Automatic replay after a real 40-second server outage uses the original click's expired fast-poll window and records no queue-age/attempt timing.
+COST: Native terminal changes visibly lag, and comparing two actual offline/reconnect cycles required an external read-only tmux/database observer to distinguish prompt delivery from model response time.
+FIX: Bound visible healthy idle polling to 500 ms and streaming to 250 ms; retain slower offline polling and hidden-tab suspension. Wake the selected peek at replay attempt/acknowledgement and log identities/timings without prompt text. Verify UI/attach samples and repeated real outages with exact human message counts.

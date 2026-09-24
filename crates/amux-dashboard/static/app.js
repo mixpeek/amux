@@ -844,21 +844,12 @@ let _peekPollInFlight = false, _peekPollAgain = false;
 let _peekUrgentUntil = 0;    // bounded low-latency window after local input
 let _peekLastChangeMs = 0;   // performance.now() of the last time the live frame ACTUALLY changed
 function _peekPollInterval() {
+  // Only the visible terminal polls. Offline requests stay restrained, but an
+  // idle CLI can receive input through `amux attach` with no browser send or
+  // status hook to wake us: keep that path within the same half-second budget.
+  if (!online) return 1500;
   if (performance.now() < _peekUrgentUntil) return 100;
-  const s = (typeof sessions !== 'undefined' && sessions.find) ? sessions.find(x => x.name === peekSession) : null;
-  const st = s && s.status;
-  // CHANGE-DRIVEN cadence. A live=1 poll is ~650B (trimmed frame) / ~33ms server
-  // / a 304 when unchanged, so polling fast is cheap. While the terminal is
-  // actively producing output we poll near-instant; as it goes quiet we relax.
-  // This is deliberately independent of the SSE-fed status — that status lags
-  // ~2s behind a turn starting, so keying the cadence off *observed output
-  // change* makes streaming feel real-time without waiting for the status flip.
-  const sinceChange = performance.now() - _peekLastChangeMs;
-  if (sinceChange < 2500) return 350;    // actively streaming → near-instant updates
-  if (sinceChange < 6000) return 650;    // just settled → still brisk
-  if (st === 'active') return 900;       // model working, no visible output yet
-  if (st === 'waiting') return 1500;
-  return 1500;   // idle ticks remain lightweight conditional requests
+  return performance.now() - _peekLastChangeMs < 2500 ? 250 : 500;
 }
 // After a send/keystroke, treat the session as "just changed" and re-arm the poll
 // loop immediately so the streaming RESPONSE is picked up at the fast cadence —
@@ -1414,7 +1405,7 @@ function showConnHistory() {
     + '<div class="conn-hist-head"><b id="conn-modal-title" class="conn-hist-title">Connection</b>'
     + '<span id="conn-modal-status" class="conn-hist-status" style="color:' + stateColor + ';">' + stateLabel + '</span><button class="btn conn-hist-close" id="conn-modal-close" aria-label="Close connection history" onclick="this.closest(\'#conn-hist-modal\').remove()">&#x2715;</button></div>'
     + '<div class="conn-hist-subtitle">Connection interruptions on this device (this browser)</div>'
-    + _pingWidgetHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div><div id="conn-modal-write-notice">' + _localWriteNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
+    + _pingWidgetHtml() + _swOfflineNoticeHtml() + '<div id="conn-modal-read-notice">' + _sessionReadNotice() + '</div><div id="conn-modal-write-notice">' + _localWriteNotice() + '</div>' + rows + blipHtml + pendingHtml + clearHtml + '</div>';
   document.body.appendChild(modal);
   modal.querySelector('#conn-modal-read-notice')._noticeHTML = _sessionReadNotice();
 }
@@ -2765,6 +2756,10 @@ function _outboxAgeLabel(q) {
   return h < 24 ? h + 'h ' + (m % 60) + 'm' : Math.floor(h / 24) + 'd';
 }
 // Connection status
+// Set when the service worker cannot install (see _swOfferGoodOrigin). Declared
+// up here because updateConnectionStatus runs during startup, long before the
+// SW code further down: a `let` beside that code would be in its dead zone.
+let _swOfflineNotice = null;
 function updateConnectionStatus() {
   // Log the state transition (for the click-to-view disconnection history).
   // _writeError is a failed offline-queue op, not a connectivity issue.
@@ -2782,9 +2777,9 @@ function updateConnectionStatus() {
       el.className = 'conn-status offline';
       const total = offlineQueue.length + drafts.length;
       el.textContent = total ? total + ' pending' : 'Offline';
-    } else if (offlineQueue.some(_outboxNeedsAttention)) {
+    } else if (offlineQueue.some(_outboxNeedsAttention) || drafts.length) {
       el.className = 'conn-status polling';
-      el.textContent = offlineQueue.length + ' pending';
+      el.textContent = (offlineQueue.length + drafts.length) + ' pending';
     } else if (_liveSSE) {
       el.className = 'conn-status online';
       el.textContent = 'Live';
@@ -2792,8 +2787,11 @@ function updateConnectionStatus() {
       el.className = 'conn-status polling';
       el.textContent = 'Polling';
     }
-    el.setAttribute('aria-label', el.textContent + ' — connection details');
-    if (el.id === 'conn-status') el.title = el.textContent + ' — connection details';
+    // A marker, not more words: the text stays the connection state.
+    el.classList.toggle('no-offline', !!_swOfflineNotice);
+    const offNote = _swOfflineNotice ? ' · offline mode off' : '';
+    el.setAttribute('aria-label', el.textContent + offNote + ' — connection details');
+    if (el.id === 'conn-status') el.title = el.textContent + offNote + ' — connection details';
   });
   const notice = document.getElementById('session-read-notice');
   if (notice && notice.innerHTML) { notice.innerHTML = ''; notice._noticeHTML = ''; }
@@ -2814,72 +2812,24 @@ function updateConnectionStatus() {
   const ops = document.getElementById('offline-ops');
   const title = document.getElementById('offline-banner-title');
   if (!banner) return;
-  const hasPending = offlineQueue.length || drafts.length;
-  // A QUEUED MESSAGE IS NORMAL. ONLY A STUCK ONE IS NEWS.
-  //
-  // This raised a warning banner the instant anything entered the queue, so
-  // the ordinary path — type, queue, send 300ms later — flashed "Unsaved
-  // changes" every single time (Ethan: "unsaved changes is too much"). The
-  // queue is the transport, not an incident.
-  //
-  // Announce only what the user can actually act on: we are offline, an op
-  // failed, or an op has been waiting long enough that it is no longer "about
-  // to send". Anything younger is in flight and stays silent.
-  //
-  // Items that are only "awaiting confirmation" (uncertain delivery) are not
-  // actionable from the banner. They belong in the connection badge and
-  // the connection modal, not in a persistent banner that eats screen space
-  // (Ethan 2026-09-14: "takes up too much real estate, should be in the
-  // pending modal"). Exclude them from the stuck count that triggers the banner.
-  const stuck = offlineQueue.filter(q => _outboxNeedsAttention(q) && !_outboxUncertainMessage(q));
-  const worthShowing = !online || stuck.length || drafts.length;
-  if (!hasPending || !worthShowing) {
+  // ONLY A DECISION EARNS SCREEN SPACE (Ethan 2026-09-24: "i don't need that
+  // big old message ... we already have a status thing in the top left").
+  // Offline, queued, sending, stalled and drafts are all states the top-left
+  // badge already names ("Offline", "N pending") and its modal lists. The
+  // banner is for the one thing the badge cannot resolve: an op that FAILED
+  // and needs review or dismissal. One line, failed rows only.
+  const blockedOps = offlineQueue.filter(q => q.state === 'blocked' && !_outboxUncertainMessage(q));
+  if (!blockedOps.length) {
     banner.classList.remove('active');
+    ops.innerHTML = '';
     return;
   }
   banner.classList.add('active');
-  const blockedOps = offlineQueue.filter(q => q.state === 'blocked' && !_outboxUncertainMessage(q));
-  const pendingOps = offlineQueue.filter(q => q.state !== 'blocked' || _outboxUncertainMessage(q));
-  if (blockedOps.length && !pendingOps.length && !drafts.length) {
-    title.innerHTML = '&#x26A0; ' + (online ? '' : 'Offline &mdash; ') + blockedOps.length + ' failed op' + (blockedOps.length === 1 ? '' : 's') +
-      ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
-      ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
-  } else if (online) {
-    const confirmingOps = pendingOps.filter(_outboxUncertainMessage);
-    const stalledOps = pendingOps.filter(q => !_outboxUncertainMessage(q) && _outboxIsStalled(q));
-    const movingOps = pendingOps.filter(q => !_outboxUncertainMessage(q) && !_outboxIsStalled(q));
-    const parts = [];
-    if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
-    if (movingOps.length) parts.push(movingOps.length + ' sending');
-    if (confirmingOps.length) parts.push(confirmingOps.length + ' awaiting confirmation · checking automatically');
-    // Named by how long it has been stuck, because "sending" for 3.5 hours is
-    // the claim that stopped anyone acting on it.
-    if (stalledOps.length) {
-      const oldest = stalledOps.reduce((a, b) => (_outboxAgeMs(a) > _outboxAgeMs(b) ? a : b));
-      parts.push(stalledOps.length + ' stalled ' + _outboxAgeLabel(oldest));
-    }
-    if (blockedOps.length) parts.push(blockedOps.length + ' failed');
-    const needsDecision = stalledOps.length || blockedOps.length;
-    title.innerHTML = (needsDecision ? '&#x26A0; ' : '&#x21BB; ') + parts.join(', ')
-      + (needsDecision
-          ? ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>'
-            + (blockedOps.length ? ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss failed</a>' : '')
-          : '');
-  } else {
-    const parts = [];
-    if (drafts.length) parts.push(drafts.length + ' draft' + (drafts.length === 1 ? '' : 's'));
-    if (pendingOps.length) parts.push(pendingOps.length + ' queued, will send on reconnect');
-    if (blockedOps.length) parts.push(blockedOps.length + ' failed');
-    title.innerHTML = '&#x26A0; Offline &mdash; ' + parts.join(' &middot; ');
-  }
+  title.innerHTML = '&#x26A0; ' + blockedOps.length + ' failed op' + (blockedOps.length === 1 ? '' : 's') +
+    ' <a href="#" onclick="event.preventDefault();showQueueModal();" style="color:inherit;text-decoration:underline;">review</a>' +
+    ' or <a href="#" onclick="event.preventDefault();_clearBlockedOps();" style="color:inherit;text-decoration:underline;">dismiss</a>';
   const rows = [];
-  drafts.forEach(d => {
-    rows.push('<div class="offline-op">' +
-      '<span class="op-action">Create &amp; start ' + esc(d.name) + (d.prompt ? ' + prompt' : '') + '</span>' +
-      '<span class="op-time" style="color:var(--yellow)">draft</span>' +
-    '</div>');
-  });
-  offlineQueue.forEach(item => {
+  blockedOps.forEach(item => {
     const age = Math.floor((Date.now() - item.timestamp) / 60000);
     const timeStr = age < 1 ? 'just now' : age + 'm ago';
     const isBlocked = item.state === 'blocked' && !_outboxUncertainMessage(item);
@@ -3143,6 +3093,21 @@ function _clearSyncTransientToast() {
   toast.classList.remove('visible');
 }
 let _syncChecklist = [];
+// Delivery diagnostics contain identities/timing, never prompt text. The
+// replay may happen long after the original click's fast-peek window expired.
+function _outboxMessageProgress(q, phase, startedAt) {
+  const target = q.url.split('?')[0].match(/\/api\/sessions\/([^/]+)\/(send|steer)$/);
+  if (!target) return;
+  const worker = decodeURIComponent(target[1]);
+  const now = Date.now();
+  _outboxDiagnostic('message_delivery_' + phase, {
+    id:q.id, msg_id:_outboxMessageId(q), worker,
+    queued_ms:Math.max(0, now - (q.timestamp || now)),
+    attempt_ms:Math.max(0, now - startedAt), attempts:(q.attempts || 0) + 1,
+  });
+  if (typeof peekSession !== 'undefined' && peekSession === worker) _peekKickFast();
+}
+
 async function _runSyncBanner(quiet = false) {
   // A real browser offline switch cannot deliver anything. Keep work durable
   // without painting a failed checklist over the editor on each timer tick.
@@ -3251,6 +3216,8 @@ async function _runSyncBanner(quiet = false) {
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
       let retryableMessageRefusal = false;
+      const attemptStarted = Date.now();
+      _outboxMessageProgress(q, 'attempt', attemptStarted);
       const r = _outboxUncertainMessage(q)
         ? await _outboxConfirmMessage(q, opts) : await _boundedMutationFetch(q.url, opts);
       if ([409, 503].includes(r.status) && /\/(send|steer)$/.test(q.url.split('?')[0])) {
@@ -3280,6 +3247,7 @@ async function _runSyncBanner(quiet = false) {
       }
       if (/\/(send|steer)$/.test(q.url.split('?')[0])) {
         _validateMessageAcknowledgement(await r.clone().json(), q.url);
+        _outboxMessageProgress(q, 'acknowledged', attemptStarted);
       }
       await _interactionAcknowledge(interaction.id, r);
       await _mutateQueue(current => { const at = current.findIndex(entry => entry.id === q.id); if (at >= 0) current.splice(at, 1); });
@@ -3357,7 +3325,7 @@ async function _syncOneDraft(draft) {
   if (!draft.synced_create) {
     const created = await _boundedMutationFetch(API + '/api/sessions', {
       method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
-      body:JSON.stringify({name:draft.name, dir:draft.dir}),
+      body:JSON.stringify({name:draft.name, dir:draft.dir, start:false}),
     });
     if (!created.ok) throw new Error('Create worker: ' + await _apiErrText(created));
     draft.synced_create = true; saveDrafts();
@@ -11722,7 +11690,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1086';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1088';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24474,7 +24442,9 @@ async function submitCreate() {
   // Online: create immediately, optionally queue prompt. Direct fetch (not
   // apiCall) so a name clash (409) shows a clear message and keeps the dialog
   // open to fix — apiCall would pop a generic "Error: 409" with the form gone.
-  const createBody = { name, dir, creator: _getDeviceName() };
+  // start:false: this dialog configures branch and YOLO, then starts with the
+  // prompt itself. Every other create starts on the server.
+  const createBody = { name, dir, creator: _getDeviceName(), start: false };
   if (_createProvider !== 'claude') createBody.provider = _createProvider;
   const _modelSel = document.getElementById('create-model');
   const _modelCustom = document.getElementById('create-model-custom');
@@ -35575,51 +35545,29 @@ async function _swOfferGoodOrigin() {
                  + 'certificate trust is unmeasured:', info.why);
     return;
   }
-  const bar = document.createElement('div');
-  bar.id = 'sw-fail-bar';
-  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;'
-    + 'background:#7a2d2d;color:#fff;font-size:0.78rem;line-height:1.45;'
-    + 'padding:12px 14px calc(12px + env(safe-area-inset-bottom));'
-    + 'display:flex;gap:10px;align-items:flex-start;';
-  const msg = 'Offline mode is OFF — the service worker could not install. '
-    + (info && info.why ? esc(info.why) : 'Open Connection &amp; security for repair actions.')
-    + (good && good !== here ? ' A loaded Tailscale certificate is available at '+esc(good)+'. Browser trust must still be checked.' : '');
-  bar.innerHTML = '<div style="flex:1;min-width:0;">' + msg + '</div>'
-    + (good && good !== here
-        ? '<button onclick="location.href=' + JSON.stringify(good) + '" style="flex-shrink:0;min-height:44px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.5);background:transparent;color:#fff;font-weight:600;cursor:pointer;">Open</button>'
-        : '')
-    + '<button onclick="window._swFailDismiss&&window._swFailDismiss()" style="flex-shrink:0;min-height:44px;min-width:44px;border:none;background:transparent;color:#fff;font-size:1.1rem;cursor:pointer;">&#215;</button>';
-  // PUBLISH THE BAR'S HEIGHT so overlays can clear it (AMUX-2584).
-  //
-  // The bar is position:fixed bottom:0 at z-index 9999; .board-edit-overlay is
-  // 600. So it lands ON TOP of the modal, and the modal's Save/Cancel row is
-  // `position:sticky; bottom:0` INSIDE the box — i.e. pinned to exactly the
-  // strip the bar occupies. At 375px the bar wraps to three or four lines and
-  // swallows the whole action row: the modal opens, looks fine, and Save cannot
-  // be tapped. Raising the modal's z-index would be wrong — the bar says
-  // offline mode is off, which the user needs to keep seeing.
-  //
-  // A CSS variable rather than a fixed offset because the height is not
-  // knowable up front: it depends on which of the two messages is shown, on
-  // whether the Open button is present, on the wrap at this width, and on
-  // env(safe-area-inset-bottom). Measured after attach, so it is the real one.
-  const publishHeight = () => {
-    const h = bar.offsetHeight || 0;
-    document.documentElement.style.setProperty('--sw-fail-h', h + 'px');
+  // THE BADGE CARRIES IT, NOT A FIXED BAR (Ethan 2026-09-24: "we already have
+  // a status thing in the top left. we need to be more conservative about real
+  // estate"). This used to append a red position:fixed bar at z-index 9999,
+  // three or four lines tall at phone width, ABOVE every modal. AMUX-2584 padded
+  // one overlay to clear it; the Create Worker modal was never padded, and the
+  // bar sat on its Create button (found by e2e/chaos/worktree-create.mjs).
+  // Now the connection badge gets a marker and the Connection modal gives the
+  // full reason and the Open action. Nothing overlays anything.
+  _swOfflineNotice = {
+    why: (info && info.why) || '',
+    good: good && good !== here ? good : '',
   };
-  window._swFailDismiss = () => {
-    bar.remove();
-    document.documentElement.style.setProperty('--sw-fail-h', '0px');
-  };
-  const attach = () => {
-    if (!document.body) return;
-    document.body.appendChild(bar);
-    publishHeight();
-    // Re-measure on rotate/resize: the message re-wraps and the height changes.
-    if (window.ResizeObserver) new ResizeObserver(publishHeight).observe(bar);
-    else window.addEventListener('resize', publishHeight);
-  };
-  if (document.body) attach(); else document.addEventListener('DOMContentLoaded', attach);
+  updateConnectionStatus();
+}
+function _swOfflineNoticeHtml() {
+  if (!_swOfflineNotice) return '';
+  const n = _swOfflineNotice;
+  return '<div class="conn-sw-notice" role="status"><b>Offline mode is off on this device.</b> '
+    + 'The service worker could not install, so files and pages are not cached for offline use. '
+    + (n.why ? esc(n.why) + ' ' : '')
+    + (n.good ? 'A trusted certificate is available at ' + esc(n.good) + '.'
+        + ' <button class="btn compact" onclick="location.href=_swOfflineNotice.good">Open</button>' : '')
+    + '</div>';
 }
 
 // Ask for durable storage as early as possible. The localStorage HTML fallback

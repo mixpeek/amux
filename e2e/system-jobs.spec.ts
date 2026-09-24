@@ -35,7 +35,7 @@ import type { Page } from '@playwright/test';
 //
 // The SW also reloads the page on `controllerchange` (app.js:24253) the moment
 // it takes control, which on a FRESH profile lands mid-test and kills the
-// execution context. That is real product behaviour and sw-fail-bar.spec.ts is
+// execution context. That is real product behaviour and sw-offline-notice.spec.ts is
 // where it belongs; here it is just a reload nobody asked for.
 test.use({ serviceWorkers: 'block' });
 
