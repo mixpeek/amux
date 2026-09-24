@@ -4881,6 +4881,111 @@ pub fn detect_silent(
     (out, suppressed)
 }
 
+/// ONE card for a pool-wide stall, built from the jobs that were unhealthy in
+/// the SAME evaluation pass.
+///
+/// The verdict line is COMPUTED, not written: it reports the observed spread of
+/// `last_tick_age_s` across the group. A tight spread means every job stopped
+/// at the same moment, which is a runtime-pool fault; a wide one means the jobs
+/// failed independently and the reader should not be sent looking for one
+/// cause. A sentence that said "they stalled together" unconditionally could
+/// not be wrong, so it would not be evidence.
+fn system_job_rollup(
+    issues: &[crate::runtime_jobs::registry::HealthIssue],
+    now: f64,
+) -> Finding {
+    let n = issues.len();
+    let mut ids: Vec<String> = issues.iter().map(|i| i.id.clone()).collect();
+    ids.sort();
+
+    let ages: Vec<f64> = issues.iter().filter_map(|i| i.last_tick_age_s).collect();
+    let worst = ages.iter().copied().fold(0.0f64, f64::max);
+    let spread = match (
+        ages.iter().copied().fold(f64::INFINITY, f64::min),
+        ages.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    ) {
+        (lo, hi) if lo.is_finite() && hi.is_finite() => Some(hi - lo),
+        _ => None,
+    };
+    let together = match spread {
+        Some(sp) if ages.len() >= 2 => format!(
+            "{n} job(s) with a last-tick age spread of {sp:.1}s across {} measured age(s). \
+             A spread far SMALLER than the ages themselves (worst {worst:.1}s) means every \
+             job stopped ticking in the same window, which is a runtime-pool fault rather \
+             than N independent jobs; a spread comparable to the ages means they failed \
+             separately and there is no single cause to look for.",
+            ages.len()
+        ),
+        _ => format!(
+            "{n} job(s) unhealthy, but fewer than 2 reported a last-tick age, so whether \
+             they stopped together is UNMEASURED here. Read GET /api/system-jobs directly."
+        ),
+    };
+
+    tracing::warn!(
+        jobs = %ids.join(","),
+        n,
+        worst_age_s = worst,
+        spread_s = spread.unwrap_or(f64::NAN),
+        measured = !ages.is_empty(),
+        n_considered = n,
+        verdict = "system_jobs_stalled_together",
+        "several system jobs are unhealthy in one pass; filed as ONE card (AMUX-5031)"
+    );
+
+    let rows: Vec<String> = issues
+        .iter()
+        .map(|i| {
+            format!(
+                "{} ({}) status={} interval={} last_tick_age_s={}",
+                i.id,
+                i.name,
+                i.status,
+                i.interval_s
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "unmeasured".into()),
+                i.last_tick_age_s
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "never".into()),
+            )
+        })
+        .collect();
+
+    Finding {
+        kind: DetectorKind::SilentSubsystem,
+        signature: format!("silent|system-job|ROLLUP|{}", ids.join(",")),
+        title: format!("{n} system jobs unhealthy at once — one fault, not {n} tasks"),
+        evidence: vec![
+            ("verdict".into(), format!(
+                "{n} DIFFERENT system jobs were unhealthy in the SAME evaluation pass. \
+                 Filed as ONE card on purpose: per-job cards each name a job that is \
+                 probably not the fault, and of the 23 such cards ever filed, 20 were \
+                 discarded as noise. These jobs share the runtime's threads, so one job \
+                 holding a thread without yielding stops all of them. Check \
+                 `runtime_job_blocking_poll` and `tick_section_slow` in \
+                 ~/.amux/logs/server-rs.log, and GET /api/debug/invariants, BEFORE \
+                 investigating any single job."
+            )),
+            ("stopped_together".into(), together),
+            ("jobs".into(), format!("\n  {}", rows.join("\n  "))),
+            ("worst_last_tick_age_s".into(), format!("{worst:.1}")),
+            ("last_seen".into(), rl::local_when(now)),
+            (
+                "verdict_source".into(),
+                "The same runtime registry facts and classify_observed predicate shown by \
+                 GET /api/system-jobs; autofix does not re-derive health. The GROUPING is \
+                 autofix's: these rows arrived in one pass."
+                    .into(),
+            ),
+        ],
+        recheck: "curl -sk \"$AMUX_URL/api/system-jobs\" | jq '[.jobs[] | select(.status!=\"ok\")] | map({id,status,interval_s,last_tick_age_s})'".into(),
+        owner: None,
+        count: n as u64,
+        last_ts: now,
+        parked_until: None,
+    }
+}
+
 /// Turn the System Jobs registry's own unhealthy rows into durable, deduped
 /// work. This function deliberately does not classify jobs itself: the
 /// Scheduler UI and autofix must consume the same verdict, including `slow`.
@@ -4888,6 +4993,36 @@ fn system_job_findings(
     issues: &[crate::runtime_jobs::registry::HealthIssue],
     now: f64,
 ) -> Vec<Finding> {
+    // SEVERAL JOBS UNHEALTHY AT ONCE IS ONE FAULT, NOT N TASKS (AMUX-5031).
+    //
+    // Every job in this pool shares the runtime's threads, so one job that
+    // holds a thread without yielding stops all of them. Measured in the
+    // server log at 23:28:00.679, a SINGLE instant:
+    //
+    //   steer-deliver        age 34.7s  (interval 5s)
+    //   project-execution    age 42.6s  (interval 10s)
+    //   cdc-poller           age 34.0s  (interval 0.2s)
+    //   orchestrator-runtime age 36.2s  (interval 3s)
+    //   event-processors     age 34.2s  (interval 2s)
+    //   session-bootstrap    age 34.1s  (interval 2s)
+    //
+    // Six jobs, six intervals spanning 0.2s to 10s, and every age inside one
+    // 34-to-43 second band. That is not six stalls. It is one ~34-second
+    // window in which nothing ticked, and `runtime_job_blocking_poll` fired
+    // 14145 times over this log with orchestrator-runtime (6148) and
+    // board-drive (5715) at the top, which is the shape that produces it.
+    //
+    // Filing one card per job names the VICTIM. The board's own history says
+    // so louder than any argument here: of 23 `System job ... is ...` cards
+    // ever filed, 20 are `discarded`. People have been throwing these away as
+    // noise for three weeks.
+    //
+    // Same rollup the latency detector already uses, and the same keying: on
+    // the JOB SET, so a different collapse is different news while the same
+    // one stays idempotent.
+    if issues.len() > 1 {
+        return vec![system_job_rollup(issues, now)];
+    }
     issues
         .iter()
         .map(|issue| {
@@ -9603,6 +9738,123 @@ mod tests {
         assert_eq!(f[0].signature, "silent|system-job|scheduler");
         assert_eq!(f[0].title, "System job scheduler is hung");
         assert!(f[0].recheck.contains("/api/system-jobs"));
+    }
+
+    /// AMUX-5031. Several jobs unhealthy in ONE pass is ONE fault.
+    ///
+    /// The real specimen, from the server log at a single instant 23:28:00.679:
+    /// six jobs whose intervals span 0.2s to 10s, every last-tick age inside one
+    /// 34-to-43 second band. They share the runtime's threads, so one job holding
+    /// a thread stops all of them. Per-job cards name the victim: of 23 such
+    /// cards ever filed, 20 were discarded as noise.
+    #[test]
+    fn several_unhealthy_jobs_in_one_pass_become_one_card_not_n() {
+        let mk = |id: &str, interval: f64, age: f64| {
+            crate::runtime_jobs::registry::HealthIssue {
+                id: id.into(),
+                name: id.into(),
+                status: "stalled",
+                interval_s: Some(interval),
+                ticks: 10,
+                last_tick_age_s: Some(age),
+                last_tick_ms: Some(0.4),
+                in_flight_age_s: None,
+                documented: true,
+            }
+        };
+        // The measured specimen's own numbers.
+        let issues = vec![
+            mk("steer-deliver", 5.0, 34.7),
+            mk("project-execution", 10.0, 42.6),
+            mk("cdc-poller", 0.2, 34.0),
+            mk("orchestrator-runtime", 3.0, 36.2),
+            mk("event-processors", 2.0, 34.2),
+            mk("session-bootstrap", 2.0, 34.1),
+        ];
+        let f = super::system_job_findings(&issues, 1_788_000_000.0);
+        assert_eq!(f.len(), 1, "six unhealthy jobs must not become six cards");
+        assert_eq!(f[0].count, 6);
+        assert_eq!(
+            f[0].title,
+            "6 system jobs unhealthy at once — one fault, not 6 tasks"
+        );
+
+        // Keyed on the SORTED job set, so the same collapse is idempotent and a
+        // different one is different news. Order of the input must not matter.
+        let mut shuffled = issues.clone();
+        shuffled.reverse();
+        assert_eq!(
+            f[0].signature,
+            super::system_job_findings(&shuffled, 1_788_000_000.0)[0].signature,
+            "the signature must not depend on the order the registry returned them"
+        );
+        assert!(f[0].signature.starts_with("silent|system-job|ROLLUP|"));
+
+        let ev = |k: &str| {
+            f[0].evidence
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        // Every job is still NAMED. A rollup that hides which jobs were affected
+        // trades noise for a card nobody can act on.
+        for id in ["steer-deliver", "project-execution", "cdc-poller"] {
+            assert!(ev("jobs").contains(id), "{id} missing from the rollup: {}", ev("jobs"));
+        }
+        // THE SPREAD IS COMPUTED. 42.6 - 34.0 = 8.6 against a worst of 42.6.
+        let together = ev("stopped_together");
+        assert!(together.contains("8.6s"), "spread not computed: {together}");
+        assert!(together.contains("42.6"), "worst age not carried: {together}");
+    }
+
+    /// The rollup must not fire on ONE job, or a genuine single-job stall loses
+    /// the job's name from its own title.
+    #[test]
+    fn one_unhealthy_job_still_gets_its_own_named_card() {
+        let issue = crate::runtime_jobs::registry::HealthIssue {
+            id: "project-execution".into(),
+            name: "Project execution".into(),
+            status: "stalled",
+            interval_s: Some(10.0),
+            ticks: 23,
+            last_tick_age_s: Some(42.6),
+            last_tick_ms: Some(0.4),
+            in_flight_age_s: None,
+            documented: true,
+        };
+        let f = super::system_job_findings(&[issue], 1_788_000_000.0);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].signature, "silent|system-job|project-execution");
+        assert_eq!(f[0].title, "System job project-execution is stalled");
+    }
+
+    /// A group where nothing reported an age must SAY the togetherness is
+    /// unmeasured rather than printing a spread of zero, which would read as
+    /// "they all stopped at the same instant" — the strongest possible claim,
+    /// from no data at all.
+    #[test]
+    fn a_rollup_with_no_measured_ages_says_unmeasured_not_zero_spread() {
+        let mk = |id: &str| crate::runtime_jobs::registry::HealthIssue {
+            id: id.into(),
+            name: id.into(),
+            status: "not_spawned",
+            interval_s: None,
+            ticks: 0,
+            last_tick_age_s: None,
+            last_tick_ms: None,
+            in_flight_age_s: None,
+            documented: true,
+        };
+        let f = super::system_job_findings(&[mk("a"), mk("b")], 1_788_000_000.0);
+        let together = f[0]
+            .evidence
+            .iter()
+            .find(|(n, _)| n == "stopped_together")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        assert!(together.contains("UNMEASURED"), "{together}");
+        assert!(!together.contains("0.0s"), "a zero spread from no ages: {together}");
     }
 
     // ── AMUX-3885: the stuck-composer detector ──────────────────────────────
