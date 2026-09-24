@@ -4250,3 +4250,14 @@ CARD: AF-946
 SYMPTOM: The isolated Luna transport test delivered its last two messages exactly once and the server queue was empty, but the open panel still displayed Needs input and 2 queued. Each SSE session invalidation reset a 400ms debounce, so sustained fleet traffic could postpone the authoritative read indefinitely.
 COST: A delivered message appeared unsent despite correct durable receipts, undermining the connection-recovery test's visible result.
 FIX: Coalesce invalidations without resetting the pending deadline; the existing fetch deduplication still limits concurrent reads. Continuous-event regression added; deployment/UI verification pending.
+
+## A "report wins inside the window" fix shipped with its own control reversed
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-23
+SESSION: amux
+CARD: AH-181
+SYMPTOM: `cargo test -p amux-server --lib api::sessions_legacy::tests::a_report_from_before_the_last_restart_is_a_previous_life` fails deterministically (reproduced in isolation, not contention): `derive_status("x", true)` returns `"waiting"` where the test's own CONTROL case asserts `"idle"` (sessions_legacy.rs:6317) for a fresh idle report (inside the contradiction window) over a waiting picker on the pane. Introduced by 8116a29d ("fix(status): a picker on the pane contradicts a stale idle report", part of AMUX-2952) — that commit's own message says the fresh-report control should still assert `idle` ("report wins" inside the window), so the shipped implementation and its own test disagree about where the window boundary falls.
+COST: A red `cargo test -p amux-server --lib` for anyone on this checkout who runs the full suite, with no indication it is pre-existing rather than theirs — exactly the "is a red build mine" question this repo's own CLAUDE.md exists to answer, except here the answer requires reading the failing commit's own message to see it contradicts its own test.
+FIX: amux to reconcile 8116a29d's window-boundary check against its own stated intent (fresh report inside the window should still win) — either the test's fresh-report timestamp or the implementation's window comparison is off by the wrong side of the boundary. Reported directly; not attempted here.

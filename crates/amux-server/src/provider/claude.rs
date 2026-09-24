@@ -18,6 +18,11 @@
 //! probe itself is factored out as [`probe_usage_raw`] and returns a
 //! DISCRIMINATING [`UsageProbe`]. Two consumers, one probe:
 //!
+//! The same OAuth token also answers the PUBLIC list-models endpoint
+//! ([`probe_models_raw`]) — a separate fact from the usage endpoint above,
+//! and the reason `provider::live_catalog` needs no `ANTHROPIC_API_KEY` to
+//! keep the Claude model catalog live for an ordinary subscription.
+//!
 //! - [`ProviderAdapter::usage`] maps `Ok(body)` to windows and every other
 //!   variant to `unknown` — Invariant 20 unchanged;
 //! - `api/usage.rs` turns each variant into its own reason string and passes
@@ -106,12 +111,13 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     async fn models(&self) -> Vec<String> {
-        // Subscription OAuth has no listing endpoint, but a configured
-        // ANTHROPIC_API_KEY does (a separate credential — see
-        // live_catalog's fetch_anthropic doc). live_catalog::worker_model_ids
-        // reads whatever the periodic refresh last cached and falls back to
-        // the same typed, dated static list this used to call directly when
-        // no key is configured or the last probe failed.
+        // The subscription OAuth token DOES list models (probe_models_raw,
+        // corrected 2026-09-23 — this comment used to claim otherwise); a
+        // configured ANTHROPIC_API_KEY is an equally valid fallback credential
+        // when it doesn't. live_catalog::worker_model_ids reads whatever the
+        // periodic refresh last cached and falls back to the same typed,
+        // dated static list this used to call directly when neither
+        // credential is available or the last probe failed.
         crate::provider::live_catalog::worker_model_ids("claude")
     }
 
@@ -258,6 +264,65 @@ async fn fetch_usage(token: &OauthToken) -> (UsageProbe, Option<u64>) {
         Ok(body) if !map_usage_response(&body).is_empty() => (UsageProbe::Ok(body), None),
         _ => (UsageProbe::BadShape, None),
     }
+}
+
+const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
+
+/// One read-only GET of the PUBLIC list-models endpoint, using the SAME
+/// subscription OAuth token [`probe_usage_raw`] already reads. This is a
+/// separate, undocumented fact from what the module doc above claims
+/// ("Subscription OAuth has no listing endpoint") — that claim was checked
+/// against the OAuth *usage* endpoint only. Verified live 2026-09-23: the
+/// bearer token this crate already holds for every Claude Code subscription
+/// answers HTTP 200 here too, and included `claude-opus-5-5` ("Claude Opus
+/// 5.5") the same day it shipped. `live_catalog` prefers this over a
+/// standalone `ANTHROPIC_API_KEY` for exactly that reason: it needs no setup
+/// beyond the subscription every user already has.
+///
+/// Same SECRET DISCIPLINE as [`fetch_usage`]: the token goes into one header
+/// and is dropped; every error is a fixed word or a status code, never a
+/// body or a `reqwest::Error`'s `Display`.
+pub(crate) async fn probe_models_raw() -> Result<Vec<String>, String> {
+    let Some(token) = oauth_token().await else {
+        return Err("no_token".to_string());
+    };
+    if token.expires_at_ms > 0 && chrono::Utc::now().timestamp_millis() > token.expires_at_ms {
+        return Err("expired".to_string());
+    }
+    let Ok(client) = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() else {
+        return Err("client".to_string());
+    };
+    let resp = client
+        .get(MODELS_URL)
+        .header("Authorization", format!("Bearer {}", token.access_token))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => return Err("timeout".to_string()),
+        Err(e) if e.is_connect() => return Err("connect".to_string()),
+        Err(_) => return Err("request".to_string()),
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("http_{}", status.as_u16()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| "bad_shape".to_string())?;
+    let ids: Vec<String> = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                .collect()
+        })
+        .ok_or("bad_shape".to_string())?;
+    if ids.is_empty() {
+        return Err("empty".to_string());
+    }
+    Ok(ids)
 }
 
 // ---------------------------------------------------------------------------
