@@ -11657,7 +11657,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1080';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1081';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -18063,7 +18063,18 @@ function _msgDeliveryChip(e) {
     //
     // Ethan hit exactly this on MSG-68459: the row read `direct?`, he read that
     // as sent, and concluded the message had vanished. It had become AMUX-5008.
-    label = 'board'; color = '#a371f7'; bg = 'rgba(163,113,247,0.16)';
+    // The visible label has to carry the fact, not only the tooltip: Ethan
+    // read the purple "board" chip as sent (MSG-68617/68625, 2026-09-24).
+    // A later conversational hand-off stamps delivered_at, so say that too.
+    if (Number(e.delivered_at) > 0) {
+      label = 'delivered via board'; color = '#a371f7'; bg = 'rgba(163,113,247,0.16)';
+      title = 'amux routed this through the board first, then handed the text to the worker.';
+      return '<span title="' + title + '" style="display:inline-block;font-size:0.66rem;font-weight:600;'
+           + 'padding:1px 6px;border-radius:3px;background:' + bg + ';color:' + color + ';margin-right:6px;">'
+           + label + '</span>';
+    }
+    label = 'not sent' + (e.card_id ? ' \u2192 ' + e.card_id : ' \u2192 board');
+    color = '#f85149'; bg = 'rgba(248,81,73,0.16)';
     title = 'NOT delivered as text. amux read this as a work request and routed it to the board'
           + (e.card_id ? ' — it became ' + e.card_id + '.' : '.')
           + ' The lane sees the resulting card, not this message.';
