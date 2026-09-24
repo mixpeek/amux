@@ -4848,3 +4848,14 @@ CARD: AF-948
 SYMPTOM: Read-delegation diagnostics contain No closing quotation on valid compound commands whose heredoc body contains apostrophes.
 COST: Valid commands generate hook failure noise instead of the intended direct-command check.
 FIX: Stop tokenizing once an operator identifies a compound command. Keep simple quoted paths and oversized direct reads enforced; regression includes heredoc apostrophes and malformed direct shell text.
+
+## Unblocked full VACUUM delays live writes for two minutes
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-948
+SYMPTOM: Live validation of 2f85a3ab fixed the read-only maintenance failure but exposed full VACUUM monopolizing the writer on a 4.8 GB database. Health temporarily degraded and queued write wait reached 125411 ms; the queue subsequently drained without intervention.
+COST: About two minutes of delayed writes during automatic compaction. Small temporary-database tests did not represent this live size.
+FIX: Bound automatic full rewrites to 64 MiB by default, expose AMUX_VACUUM_MAX_DB_BYTES, and defer unknown or larger databases without stamping successful vacuum. Retention and WAL checkpoint continue; freed SQLite pages remain reusable. Validate the size refusal, unchanged revision/integrity and absent success marker before publishing.

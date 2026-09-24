@@ -1114,20 +1114,11 @@ pub fn rotate_session_logs(logs_dir: &Path) -> (usize, u64) {
 // Periodic VACUUM
 // ---------------------------------------------------------------------------
 
-/// VACUUM at most once per day, when the storage sweep actually deleted rows.
-/// Returns true if a VACUUM ran.
-///
-/// SQLite DELETE frees pages internally but does not shrink the file. Without
-/// VACUUM, the DB file on disk grows monotonically even while the retention
-/// sweep dutifully removes aged rows. Measured 2026-09-09: 2.8 GB on disk,
-/// ~2.1 GB of live data, 82 free pages (essentially zero reclaimable space
-/// because the freelist is continuously reused for new writes). The gap
-/// between the two numbers is what VACUUM recovers.
-///
-/// Full VACUUM rewrites the entire file, so it is expensive. Once per day is a
-/// compromise: frequent enough that a single day's deletions are reclaimed
-/// before the next day's writes fill the freed pages, infrequent enough that
-/// the ~3 GB rewrite cost is negligible.
+// Full VACUUM rewrites every live page and monopolizes the writer. Retention
+// already leaves freed pages reusable by ordinary SQLite writes; large live
+// databases must not be rewritten merely because an age threshold elapsed.
+const AUTO_VACUUM_MAX_DB_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Truncate the WAL on EVERY tick, independent of VACUUM (AMUX-4811).
 ///
 /// The only `wal_checkpoint(TRUNCATE)` used to live inside `maybe_vacuum`,
@@ -1188,6 +1179,24 @@ async fn checkpoint_wal(store: &crate::db::SharedStore, home: &Path) -> (Option<
 }
 
 async fn maybe_vacuum(store: &crate::db::SharedStore, home: &Path) -> bool {
+    maybe_vacuum_bounded(store, home, env_u64("AMUX_VACUUM_MAX_DB_BYTES", AUTO_VACUUM_MAX_DB_BYTES)).await
+}
+
+async fn maybe_vacuum_bounded(store: &crate::db::SharedStore, home: &Path, max_bytes: u64) -> bool {
+    let db_bytes = match std::fs::metadata(home.join("amux.db")) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            tracing::warn!(%error, measured=false, n_considered=1,
+                verdict="storage_vacuum_size_unavailable", "automatic vacuum deferred; database size is unknown");
+            return false;
+        }
+    };
+    if db_bytes > max_bytes {
+        tracing::info!(db_bytes, max_bytes, measured=true, n_considered=1,
+            verdict="storage_vacuum_size_deferred",
+            "automatic full rewrite deferred to preserve live writes; freed pages remain reusable");
+        return false;
+    }
     let marker = home.join(".last-vacuum");
     let min_interval = env_u64("AMUX_VACUUM_INTERVAL_SECS", 86_400);
     if min_interval == 0 {
@@ -1544,6 +1553,7 @@ pub async fn debug_storage() -> axum::Json<Value> {
         "rotated_log_retain_days": env_u64("AMUX_ROTATED_LOG_RETAIN_DAYS", 3),
         "run_log_retain_days": env_u64("AMUX_RUN_LOG_RETAIN_DAYS", 30),
         "sweep_secs": env_u64("AMUX_STORAGE_SWEEP_SECS", STORAGE_TICK_SECS),
+        "vacuum_max_db_bytes": env_u64("AMUX_VACUUM_MAX_DB_BYTES", AUTO_VACUUM_MAX_DB_BYTES),
         "dir_pruning": AGE_PRUNED_SUBDIRS.iter().map(|(name, env, default)| json!({
             "dir": name, "env": env, "retain_days": env_u64(env, *default),
         })).collect::<Vec<_>>(),
@@ -2302,6 +2312,19 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn automatic_vacuum_size_guard_preserves_database_and_success_marker() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("amux.db")).unwrap());
+        let rev = store.current_rev().unwrap();
+        assert!(!maybe_vacuum_bounded(&store, home.path(), 1).await);
+        assert!(!home.path().join(".last-vacuum").exists());
+        assert_eq!(store.current_rev().unwrap(), rev);
+        assert_eq!(store.read().unwrap().query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0)).unwrap(), "ok");
+        assert!(!maybe_vacuum_bounded(&store, &home.path().join("missing"), u64::MAX).await,
+            "unknown size must not authorize an unbounded rewrite");
+    }
+
     /// The test above proves SQLITE's rule. It does NOT prove this module obeys
     /// it: both functions could be moved back under `write_async` and it would
     /// still pass, because it never touches our call sites. That gap is the
@@ -2314,7 +2337,7 @@ mod tests {
     #[test]
     fn maintenance_paths_use_the_serialized_nontransactional_writer() {
         let src = include_str!("storage.rs");
-        for func in ["async fn checkpoint_wal", "async fn maybe_vacuum"] {
+        for func in ["async fn checkpoint_wal", "async fn maybe_vacuum_bounded"] {
             let start = src.find(func).unwrap_or_else(|| panic!("{func} not found"));
             let body = &src[start..];
             let end = body.find("\n}\n").map(|i| i + 2).unwrap_or(body.len());
