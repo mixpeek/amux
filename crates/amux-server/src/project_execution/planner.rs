@@ -355,6 +355,41 @@ fn owned_output_recoverable(row: &bs::IssueRow, e: &Execution, project: &store::
     }))
 }
 
+/// Missing disposable test setup is owned implementation work, not permission
+/// to borrow production credentials. One attempt per input, independent of an
+/// earlier source/commit repair; the original contract still has to pass.
+pub(crate) fn fixture_preparation_hint(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> Option<&'static str> {
+    if e.stage != "waiting" || e.suspended || e.wait_category.as_deref() != Some("operational")
+        || !project.policy.worktree || row.archived != 0 || row.ask_type.is_some()
+        || e.retry_grants.iter().any(|g| g.request.idempotency_key == preparation_key("fixture-prepare", &project.name, &row.id, e)) {
+        return None;
+    }
+    let reason=e.waiting.as_deref().unwrap_or("").to_ascii_lowercase();
+    let missing=["missing", "not supplied", "neither", "unavailable", "required", "without"].iter().any(|s|reason.contains(s));
+    let credential=["credential", "api_key", "api key", "private_token"].iter().any(|s|reason.contains(s));
+    let authorization=["requires approval", "requires authorization", "permission denied", "not authorized"].iter().any(|s|reason.contains(s));
+    let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let fixture_owned=criteria.iter().any(|criterion|criterion.strip_prefix("contract:")
+        .and_then(|id|project.policy.acceptance.as_ref()?.criterion(id))
+        .is_some_and(|c|c.requirement.to_ascii_lowercase().contains("fixture")
+            && matches!(c.verifier,amux_core::project::ContractVerifier::Command{..}|amux_core::project::ContractVerifier::Execution{..})));
+    (missing && credential && !authorization && fixture_owned).then_some("The contract's disposable fixture setup is owned implementation work. Inspect existing repository test/bootstrap tooling and checked same-project candidates, then implement reproducible local fixture setup using existing local test capabilities. Do not search for production secrets, request staging credentials, grant access, disable authentication, increase spend, or change sandbox permissions. Keep the exact contract command and assertions; use real API readbacks with nonzero fixtures, never a mock or static result as runtime proof. If host execution is required, implement its setup and report that concrete capability requirement honestly; do not silently downgrade a Command verifier to deferred execution. Preserve failed diagnostics. If no authorized local setup exists, retain the concrete operational hold rather than retrying indefinitely.")
+}
+
+fn preparation_key(kind: &str, project: &str, task: &str, e: &Execution) -> String {
+    format!("{kind}:{project}:{task}:{}", &e.input_hash[..12.min(e.input_hash.len())])
+}
+
+pub(crate) fn grant_fixture_preparation(c: &Connection, project: &str, task: &str, expected: &Execution) -> anyhow::Result<WriteOutcome> {
+    let row=bs::get_issue(c,task)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
+    let policy=store::get(c,project)?.ok_or_else(||anyhow::anyhow!("project missing"))?;
+    let current=execution(c,task)?;
+    let hint=fixture_preparation_hint(&row,&current,&policy).ok_or_else(||anyhow::anyhow!("fixture preparation not eligible"))?;
+    let outcome=grant_preparation_kind(c,project,task,expected,"fixture-prepare",hint)?;
+    tracing::info!(project,task,measured=true,n_considered=1,verdict="project.fixture_preparation_granted","one local setup repair granted; original verification and authorization gates preserved");
+    Ok(outcome)
+}
+
 /// One bounded implementation-preparation path for failures the task can fix
 /// locally. Classification does not approve access or erase failed evidence.
 pub(crate) fn implementation_preparation_hint(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> Option<&'static str> {
@@ -376,10 +411,14 @@ pub(crate) fn implementation_preparation_hint(row: &bs::IssueRow, e: &Execution,
 }
 
 pub(crate) fn grant_preparation(c: &Connection, project: &str, task: &str, expected: &Execution, hint: &str) -> anyhow::Result<WriteOutcome> {
+    grant_preparation_kind(c,project,task,expected,"implementation-prepare",hint)
+}
+
+fn grant_preparation_kind(c: &Connection, project: &str, task: &str, expected: &Execution, kind: &str, hint: &str) -> anyhow::Result<WriteOutcome> {
     let row=bs::get_issue(c,task)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
     let current=execution(c,task)?;
     anyhow::ensure!(current.generation==expected.generation && current.input_hash==expected.input_hash && current.waiting==expected.waiting,"host recovery claim changed");
-    let key=format!("implementation-prepare:{project}:{task}:{}", &current.input_hash[..12.min(current.input_hash.len())]);
+    let key=preparation_key(kind,project,task,&current);
     anyhow::ensure!(!current.retry_grants.iter().any(|g|g.request.idempotency_key==key),"implementation preparation already retried; candidate still missing");
     let request=super::task_retry::Request{idempotency_key:key,expect_generation:current.generation,expect_revision:row.rev,input_hash:current.input_hash};
     super::task_retry::grant(c,project,task,&request)?;
@@ -537,6 +576,8 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "grant_repair";
                 None
             }
+        } else if fixture_preparation_hint(row, &state, project).is_some() {
+            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_fixture"; None }
         } else if implementation_preparation_hint(row, &state, project).is_some() {
             if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_implementation"; None }
         } else if provider_launch_recoverable(&state, project) {
@@ -1110,6 +1151,49 @@ mod tests {
         e.waiting=Some("verification failed (python3 runtime.py): provide API_KEY".into());assert!(!premature_runtime_check(&row,&e,&p));
         e.waiting=Some("verification failed (python3 local.py): provide API_KEY".into());p.policy.verify_command="python3 local.py".into();assert!(!premature_runtime_check(&row,&e,&p));
         p.policy.verify_command="git diff --check".into();p.policy.acceptance=None;assert!(!premature_runtime_check(&row,&e,&p));
+    }
+
+    #[test]
+    fn project_fixture_setup_repair_is_owned_bounded_and_preserves_guards() {
+        let (_dir,db)=fixture();
+        db.write(|c| {
+            let mut p=store::get(c,"sample").unwrap().unwrap();
+            p.policy.acceptance=Some(serde_json::from_value(json!({"revision":1,"criteria":[{"id":"api","requirement":"Read real API results from nonzero fixtures","verifier":{"type":"command","id":"gate","command":"python3 gate.py"},"evidence":["gate.json"]}]})).unwrap());
+            store::save(c,&p.name,store::get(c,&p.name).unwrap().unwrap().revision,&p.policy,"test").unwrap();
+            c.execute("UPDATE issues SET acceptance_criteria='[\"contract:api\"]' WHERE id='A'",[])?;
+            claim(c,"sample","A").unwrap();
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=execution(c,"A").unwrap();
+            e.stage="waiting".into();e.wait_category=Some("operational".into());
+            e.waiting=Some("operational: Neither API_KEY nor PRIVATE_TOKEN supplied; disposable fixture credential required".into());
+            save_execution(c,&row,&e,"test.wait").unwrap();
+            // A previous source/setup repair must not suppress a distinct fixture repair.
+            grant_preparation(c,"sample","A",&e,"Prepare source").unwrap();
+            let original_wait=e.waiting.clone();e=execution(c,"A").unwrap();e.stage="waiting".into();e.waiting=original_wait;
+            save_execution(c,&row,&e,"test.wait").unwrap();
+            assert!(fixture_preparation_hint(&row,&e,&p).unwrap().contains("never a mock"));
+            assert_eq!(plan(c,&p).unwrap().into_iter().find(|v|v.id=="A").unwrap().action,"prepare_fixture");
+            for category in ["spend","customer_outbound","required_outputs"] {
+                let mut held=e.clone();held.wait_category=Some(category.into());
+                assert!(fixture_preparation_hint(&row,&held,&p).is_none());
+            }
+            let mut held=e.clone();held.suspended=true;assert!(fixture_preparation_hint(&row,&held,&p).is_none());
+            held=e.clone();held.waiting=Some("operational: fixture credential requires approval".into());assert!(fixture_preparation_hint(&row,&held,&p).is_none());
+            let mut outside=row.clone();outside.acceptance_criteria=Some("[\"contract:unknown\"]".into());assert!(fixture_preparation_hint(&outside,&e,&p).is_none());
+            let mut stale=e.clone();stale.generation+=1;assert!(grant_fixture_preparation(c,"sample","A",&stale).is_err());
+            grant_fixture_preparation(c,"sample","A",&e).unwrap();
+            let mut next=execution(c,"A").unwrap();assert_eq!(next.stage,"repair");assert_eq!(next.retry_grants.len(),2);
+            assert_eq!(next.retry_grants[1].previous_result["waiting"],e.waiting.clone().unwrap());
+            assert!(next.waiting.as_deref().unwrap().contains("Keep the exact contract command"));
+            next.stage="waiting".into();next.waiting=Some("operational: API_KEY unavailable again for a fixture".into());
+            save_execution(c,&row,&next,"test.repeated").unwrap();
+            assert!(fixture_preparation_hint(&row,&next,&p).is_none());
+            assert!(grant_fixture_preparation(c,"sample","A",&next).is_err());
+            // Preserve pause admission even when the fixture classifier would allow repair.
+            save_execution(c,&row,&e,"test.wait").unwrap();
+            let mut paused=p.clone();paused.policy.paused=true;store::save(c,&p.name,store::get(c,&p.name).unwrap().unwrap().revision,&paused.policy,"test").unwrap();
+            assert!(grant_fixture_preparation(c,"sample","A",&e).is_err());
+            Ok(WriteOutcome{applied:true,events:vec![]})
+        }).unwrap();
     }
 
     #[test]

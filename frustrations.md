@@ -4738,3 +4738,14 @@ CARD: AF-947
 SYMPTOM: POG-25's review report marked T20 unavailable and shifted multiple Tn mappings, although POG-21 owns spec T20 and has a checked SDK/MCP candidate. The harness candidate catalog omitted acceptance criteria and source section markers.
 COST: Human-facing review material misrepresented coverage even while correctly withholding runtime and production approval.
 FIX: Include exact criteria, parsed source_sections, board status, execution stage and checked report commands/assets in the existing candidate catalog. Explicitly forbid deriving spec IDs from board numbers or ordering. Extend the catalog regression with a deliberately unrelated board ID and T20 marker. The existing project.candidate_catalog_delivered event covers this packet; correctness is rechecked through normal project review feedback rather than editing produced artifacts or marking them approved.
+
+## Disposable API fixture setup became a permanent credential dependency
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-20 stopped on a missing disposable test credential after a separate source-deliverable recovery had already consumed its preparation retry. Its approved contract requires nonzero API fixture readbacks.
+COST: An implementable local setup investigation was never attempted; completing a source check could not prove the runtime gate.
+FIX: Make reproducible local fixture setup explicit in every executor packet. For an owned executable fixture contract with an operational missing-credential diagnostic, admit one distinct fixture-preparation attempt per input through existing retry admission and budget/authorization guards. Preserve history and the exact command/assertions; forbid production-secret discovery, permission changes, mock runtime proof and implicit verifier downgrades. Log project.fixture_preparation_granted. Regression covers a prior source repair, one-shot exhaustion, stale generation, paused project, suspended worker, unknown contract and authorization holds. This is a bounded repair opportunity, not proof that an environment has been provisioned or that the original runtime gate passed.
