@@ -14147,10 +14147,16 @@ pub(crate) async fn reclaim_worktree(repo: &str, wt_path: &str) -> bool {
         OP_TIMEOUT,
     )
     .await;
+    // THE ADD'S BUDGET, NOT OP_TIMEOUT (2026-09-24, deleting a mixpeek worktree
+    // worker). Removing ~49k files takes far longer than 5s, so the remove was
+    // killed half way, the prune below ran while the directory still existed
+    // (and so pruned nothing), and remove_dir_all then deleted it: the worktree
+    // stayed registered as `prunable` and every delete logged
+    // worktree_reclaim_failed.
     let _ = run_cmd(
         "git",
         &["-C", repo, "worktree", "remove", "--force", wt_path],
-        OP_TIMEOUT,
+        WORKTREE_ADD_TIMEOUT,
     )
     .await;
     // PRUNE TOO, not just remove (Ethan, 2026-09-18: "the ephemeral worker was
@@ -14168,6 +14174,9 @@ pub(crate) async fn reclaim_worktree(repo: &str, wt_path: &str) -> bool {
     let _ = run_cmd("git", &["-C", repo, "worktree", "prune"], OP_TIMEOUT).await;
     if dir.exists() {
         let _ = tokio::fs::remove_dir_all(dir).await;
+        // Prune AGAIN once the directory is gone: only then does git see the
+        // registration as prunable.
+        let _ = run_cmd("git", &["-C", repo, "worktree", "prune"], OP_TIMEOUT).await;
     }
     !dir.exists() && !worktree_is_registered(repo, wt_path).await
 }
@@ -45145,6 +45154,21 @@ mod amux4770_worktree_isolation_tests {
     /// Teardown runs on every delete, including workers that never had a
     /// worktree, and a false alarm there would train readers to ignore the
     /// warn that matters.
+    /// A large worktree (mixpeek, ~49k files) outlived a 5s remove, and the only
+    /// prune ran while its directory still existed, so the registration
+    /// survived every delete. Pinned at source: reproducing needs a remove that
+    /// is killed half way.
+    #[test]
+    fn reclaim_gives_remove_the_add_budget_and_prunes_after_the_directory_goes() {
+        let src = include_str!("session_verbs.rs");
+        let body = src.split_once("pub(crate) async fn reclaim_worktree(").unwrap().1;
+        let body = body.split_once("\n}\n").unwrap().0;
+        let remove = body.find("\"remove\", \"--force\"").expect("remove");
+        assert!(body[remove..remove + 120].contains("WORKTREE_ADD_TIMEOUT"));
+        let rm_all = body.find("remove_dir_all(dir)").expect("remove_dir_all");
+        assert!(body[rm_all..].contains("\"worktree\", \"prune\""), "prune must follow the directory removal");
+    }
+
     #[tokio::test]
     async fn reclaiming_a_path_that_was_never_a_worktree_is_success() {
         let tmp = tempfile::tempdir().unwrap();
