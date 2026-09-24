@@ -3744,6 +3744,27 @@ fn md_to_ansi(text: &str) -> String {
             i = j;
             continue;
         }
+        // A FENCED CODE BLOCK, syntax-coloured like Claude Code's terminal.
+        // The fences stay (dimmed) and every code line is printed.
+        if let Some(lang) = ln.trim_start().strip_prefix("```") {
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].trim_start().starts_with("```") {
+                j += 1;
+            }
+            let code = &lines[i + 1..j];
+            out.push(format!("\x1b[38;5;240m{ln}\x1b[39m"));
+            match crate::highlight::syntax_for_token(lang)
+                .and_then(|s| crate::highlight::highlight_block(code, s))
+            {
+                Some(col) => out.extend(col.into_iter().map(|c| format!("{c}\x1b[39m"))),
+                None => out.extend(code.iter().map(|c| format!("\x1b[38;5;153m{c}\x1b[39m"))),
+            }
+            if j < lines.len() {
+                out.push(format!("\x1b[38;5;240m{}\x1b[39m", lines[j]));
+            }
+            i = j + 1;
+            continue;
+        }
         if let Some(c) = header_re.captures(ln) {
             out.push(format!("\x1b[1m{}\x1b[22m", md_inline(&c[2])));
             i += 1;
@@ -3867,9 +3888,33 @@ fn render_session_transcript(name: &str, max_chars: usize) -> String {
 /// Synchronous on purpose: the width lives in a thread-local, which is only
 /// sound when nothing awaits between setting and restoring it.
 fn render_session_transcript_at(name: &str, max_chars: usize, cols: usize) -> String {
-    let prev = MD_TABLE_COLS.with(|c| c.replace(cols.clamp(24, 400)));
+    // MEMOISED PER TRANSCRIPT VERSION. Rendering now includes syntax colouring,
+    // so repeat reads of an unchanged transcript (every open, every refresh)
+    // reuse the last result. The key is the file's identity and size/mtime
+    // plus the requested width, so any append or a different screen re-renders.
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Key = (std::path::PathBuf, u64, std::time::SystemTime, usize, usize);
+    static MEMO: OnceLock<Mutex<HashMap<String, (Key, String)>>> = OnceLock::new();
+    let cols = cols.clamp(24, 400);
+    let key: Option<Key> = session_jsonl_path(name).and_then(|p| {
+        let m = std::fs::metadata(&p).ok()?;
+        Some((p, m.len(), m.modified().ok()?, max_chars, cols))
+    });
+    let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(k) = &key {
+        if let Some((mk, text)) = memo.lock().ok().and_then(|m| m.get(name).cloned()) {
+            if &mk == k {
+                return text;
+            }
+        }
+    }
+    let prev = MD_TABLE_COLS.with(|c| c.replace(cols));
     let out = render_session_transcript_inner(name, max_chars);
     MD_TABLE_COLS.with(|c| c.set(prev));
+    if let (Some(k), Ok(mut m)) = (key, memo.lock()) {
+        m.insert(name.to_string(), (k, out.clone()));
+    }
     out
 }
 
@@ -4003,6 +4048,20 @@ mod peek_history_is_verbatim {
         let out = render(vec![json!({"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "image", "source": {}}]}})]);
         assert!(out.contains("[image]"), "an unknown block vanished:\n{out}");
+    }
+
+    /// Timing on a real transcript: AMUX_BENCH_JSONL=<path> cargo test ... -- --ignored
+    #[test]
+    #[ignore]
+    fn bench_render_real_transcript() {
+        let Ok(p) = std::env::var("AMUX_BENCH_JSONL") else { return };
+        let path = std::path::PathBuf::from(p);
+        for pass in 0..3 {
+            let t = std::time::Instant::now();
+            let out = super::render_transcript_records(super::iter_jsonl_tail(&path, 5_000_000), 120_000, false);
+            let colored = out.matches("\x1b[38;2;").count();
+            eprintln!("pass {pass}: {:?} chars={} coloured_spans={colored}", t.elapsed(), out.chars().count());
+        }
     }
 
     #[test]
@@ -4177,6 +4236,26 @@ fn render_transcript_records(
                     ));
                 }
                 "tool_result" => {
+                    // AN EDIT IS SHOWN AS ITS DIFF, the way Claude Code draws it
+                    // (Ethan 2026-09-24, with a screenshot of numbered red/green
+                    // rows). The transcript records every Edit's exact hunks in
+                    // `toolUseResult.structuredPatch`, and a Write's content, so
+                    // this is the same information the terminal had, coloured by
+                    // the file's syntax. A failed call keeps its raw error text.
+                    let tur = &o["toolUseResult"];
+                    if b["is_error"].as_bool() != Some(true) {
+                        let fp = tur["filePath"].as_str().unwrap_or("");
+                        if let Some(lines) = crate::highlight::render_structured_patch(fp, &tur["structuredPatch"]) {
+                            out.extend(lines);
+                            continue;
+                        }
+                        if tur["type"].as_str() == Some("create") {
+                            if let Some(content) = tur["content"].as_str() {
+                                out.extend(crate::highlight::render_written_file(fp, content));
+                                continue;
+                            }
+                        }
+                    }
                     let raw = tool_result_text(&b["content"]);
                     let mut rlines: Vec<&str> = raw.split('\n').map(|l| l.trim_end()).collect();
                     while rlines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {

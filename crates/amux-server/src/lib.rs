@@ -4,6 +4,7 @@
 //! Module layout mirrors docs/rust-rebuild-plan.md §Crate structure. Modules
 //! land phase by phase; each `pub mod` line appears when its RR item starts.
 
+pub mod highlight;
 pub mod api;
 pub mod backend;
 mod cargo_target_guard;
