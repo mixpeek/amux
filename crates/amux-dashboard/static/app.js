@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1063';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1064';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45590,12 +45590,23 @@ function _projectPatch(parent, items) {
   existing.forEach(n=>n.remove());
   if(focusKey && document.activeElement!==active) parent.querySelector('[data-focus="'+focusKey+'"]')?.focus({preventScroll:true});
 }
+function _projectIntakeState(data) {
+  const pending=(data.commands||[]).filter(c=>c.pending);
+  if(!pending.length) return null;
+  const held=pending.some(c=>c.waiting_reason);
+  return {label:held?'Intake held — inspect request reason':'Preparing board tasks',
+    message:held?'Your outcome is saved. Intake is held; see the request details in Overview. Do not resubmit it.':'Your outcome is saved. The planning model is preparing its board tasks; no new submission is needed.'};
+}
+function _projectEmptyTasksHtml(data) {
+  const intake=_projectIntakeState(data);
+  return '<p class="project-empty" role="status">'+esc(intake?.message || 'No tasks yet. Submit an outcome and the planning model will break it into tasks.')+(intake?' <button type="button" class="btn" onclick="_projectSetTab(\'overview\')">View request</button>':'')+'</p>';
+}
 function _projectRender(data) {
   const p=data.project,u=data.usage;
   const retirement=data.acceptance?.executor_retirement;
   const openCards=data.cards.filter(c=>!['verified','closed'].includes(c.phase));
   const allHeld=openCards.length>0 && openCards.every(c=>c.phase==='waiting');
-  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':'Driving project outcomes';
+  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':(!openCards.length && _projectIntakeState(data)?.label)||'Driving project outcomes';
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   const setText=(id,text)=>{const el=document.getElementById(id);if(el && el.textContent!==text) el.textContent=text;};
@@ -45636,7 +45647,7 @@ function _projectRender(data) {
   const board=document.getElementById('project-cards');
   const selected=_projectStorage('task_'+p.name);
   if(!data.cards.length) {
-    const empty='<p class="project-empty" role="status">No tasks yet. Submit an outcome and the planning model will break it into tasks.</p>';
+    const empty=_projectEmptyTasksHtml(data);
     if(board.dataset.sig!==empty) {board.dataset.sig=empty;board.innerHTML=empty;}
   } else {
     if(board.dataset.sig && board.dataset.sig.startsWith('<p')) {board.innerHTML='';board.dataset.sig='';}

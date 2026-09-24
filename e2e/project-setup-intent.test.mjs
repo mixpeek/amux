@@ -35,3 +35,18 @@ test('model drafting bypasses mutation outbox while real project commands remain
  assert.equal(ctx._outboxQueueable('/api/projects/example/commands',{method:'POST',body:'{}'}),true);
  assert.equal(ctx._outboxQueueable('/api/projects/example',{method:'PUT',body:'{}'}),true);
 });
+
+test('empty project board distinguishes retained intake from a missing outcome',()=>{
+ const ctx=vm.createContext({esc:s=>s});
+ vm.runInContext(source.slice(source.indexOf('function _projectIntakeState('),source.indexOf('function _projectRender(data)')),ctx);
+ assert.match(ctx._projectEmptyTasksHtml({commands:[]}),/Submit an outcome/);
+ const queued={commands:[{pending:true}]};
+ assert.equal(ctx._projectIntakeState(queued).label,'Preparing board tasks');
+ assert.match(ctx._projectEmptyTasksHtml(queued),/outcome is saved/);
+ assert.doesNotMatch(ctx._projectEmptyTasksHtml(queued),/Submit an outcome/);
+ const held={commands:[{pending:true,waiting_reason:'intake_attempts_exhausted'}]};
+ assert.match(ctx._projectIntakeState(held).label,/Intake held/);
+ assert.match(ctx._projectEmptyTasksHtml(held),/View request/);
+ assert.match(ctx._projectEmptyTasksHtml(held),/Do not resubmit/);
+ assert.equal(ctx._projectIntakeState({commands:[{pending:false}]}),null);
+});

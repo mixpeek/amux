@@ -4342,3 +4342,14 @@ CARD: AF-947
 SYMPTOM: After 8ca24c26 revalidated the retained goal plan without another model call, it still rejected "Build and run standalone Docker image lifecycle verification" as missing Docker run verification. The discarded Result left the earlier commit-task error on screen.
 COST: A legitimate runtime task stalled on wording, and stale diagnostics hid the remaining check.
 FIX: Accept equivalent standalone run wording, match named services as complete words (arrays is not Ray), and persist/log the current rejected recovery reason. Increment the validator revision so existing retained plans recover once automatically with no additional paid attempt. Regression covers positive and genuinely missing runtime work and refreshed rejection details.
+
+## Empty project board invited duplicate submissions while intake was held
+AREA: ux
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Goal 03 Tasks said "Submit an outcome" even though request 68596 was retained and intake exhausted. Overview still said "Driving project outcomes" with no executable tasks.
+COST: Users could submit duplicate commands or mistake stalled planning for active execution.
+FIX: Derive empty-board and no-active-task state from pending receipts. Show preparing versus held intake, confirm the outcome is saved, and link directly to request details. Test empty, interpreting, held, and completed request states.
