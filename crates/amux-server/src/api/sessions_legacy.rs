@@ -4368,6 +4368,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "provider": configured_provider,
             "model": env.get("CC_MODEL").cloned().unwrap_or_default(),
             "dir": env.get("CC_DIR").cloned().unwrap_or_default(),
+            "project": env.get("CC_PROJECT").cloned().unwrap_or_default(),
             "preview": "",
             "task_name": "",
             "desc": env.get("CC_DESC").cloned().unwrap_or_default(),

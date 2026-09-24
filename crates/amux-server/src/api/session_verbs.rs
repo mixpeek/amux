@@ -14286,32 +14286,94 @@ pub(crate) async fn start_for_board_dispatch(state: &AppState, name: &str) -> Re
     if parse_env(name).get("CC_REVIEW_HELD") == Some("1") {
         return Err("review-held workers are excluded from board automation".into());
     }
-    let (started, detail) = start_session(state, name, "", false).await;
-    if !started {
-        return Err(detail);
-    }
-    // Process creation and the provider reaching the PTY are separate events.
-    // Slow shell/profile startup must not strand an already reserved board task.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !is_running(name).await {
-        if lane_is_paused(name) || session_is_isolated(name) {
-            return Err("worker protected during provider startup".into());
+    let cfg = parse_env(name);
+    let codex_project = cfg.get("CC_PROJECT").is_some() && provider_of(&cfg) == "codex";
+    let failed_before_launch = codex_project
+        && cfg.get("CC_BOARD_CARD").is_some_and(|card| {
+            state.store.read().ok()
+                .and_then(|c| crate::project_execution::planner::execution(&c, card).ok())
+                .and_then(|e| e.last_failure)
+                .as_deref()
+                .is_some_and(crate::project_execution::planner::prelaunch_failure)
+        });
+    let mut fresh_retry = false;
+    loop {
+        // A failed Codex resume can exit to the shell with this exact error.
+        // Reusing its recorded conversation ID would recreate the same error
+        // forever. This is only for a claimed project executor; start_session
+        // rechecks the exclusive task permit before touching its checkout.
+        let stale_resume = codex_project
+            && codex_resume_config_failure(&tmux_capture(name, 25).await);
+        let fresh = fresh_retry || stale_resume || failed_before_launch;
+        if fresh {
+            let mut meta = load_meta(name);
+            meta.remove("codex_session_id");
+            meta.remove("pending_structured_resume_context");
+            meta.remove("pending_structured_resume_token");
+            save_meta(name, &meta);
         }
-        if tokio::time::Instant::now() >= deadline {
-            tracing::warn!(
-                session = name,
-                verdict = "board_provider_start_timeout",
-                measured = true,
-                n_considered = 1,
-                "provider did not become live after process startup"
-            );
-            return Err(format!(
-                "start reported '{detail}', but no live provider process remains after 30s"
-            ));
+        let (started, detail) = start_session(state, name, "", fresh).await;
+        if !started {
+            return Err(detail);
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        // Process creation and the provider reaching the PTY are separate
+        // events. Check that it stays live long enough to avoid delivering a
+        // task packet to a shell after an immediate Codex resume failure.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !is_running(name).await {
+            if lane_is_paused(name) || session_is_isolated(name) {
+                return Err("worker protected during provider startup".into());
+            }
+            if codex_project && !fresh
+                && codex_resume_config_failure(&tmux_capture(name, 25).await)
+            {
+                fresh_retry = true;
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(session=name,measured=true,n_considered=1,
+                    verdict="board_provider_start_timeout",
+                    "provider did not become live after process startup");
+                return Err(format!(
+                    "start reported '{detail}', but no live provider process remains after 30s"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        if fresh_retry && !fresh {
+            continue;
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        if is_running(name).await {
+            return Ok(());
+        }
+        if codex_project && !fresh
+            && codex_resume_config_failure(&tmux_capture(name, 25).await)
+        {
+            fresh_retry = true;
+            continue;
+        }
+        return Err(format!(
+            "start reported '{detail}', but provider exited before task delivery"
+        ));
     }
-    Ok(())
+}
+
+fn codex_resume_config_failure(pane: &str) -> bool {
+    pane.contains("Failed to rebuild configuration for resume:")
+        && pane.contains("Failed to rebuild config for cwd ")
+}
+
+#[cfg(test)]
+mod codex_project_resume_tests {
+    use super::codex_resume_config_failure;
+
+    #[test]
+    fn only_exact_failed_resume_configuration_restarts_fresh() {
+        assert!(codex_resume_config_failure("Failed to rebuild configuration for resume:\nFailed to rebuild config for cwd /repo/.worktrees/project-demo"));
+        assert!(!codex_resume_config_failure("Failed to rebuild config for cwd /repo while applying user changes"));
+        assert!(!codex_resume_config_failure("This conversation is open in another app"));
+    }
 }
 
 #[cfg(unix)]
@@ -25793,6 +25855,16 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         );
     }
     let cfg = parse_env(name);
+    if cfg.get("CC_PROJECT").is_some() {
+        // A project owns one checkout shared by all of its task executors.
+        // Deleting one executor used to reclaim that *shared* checkout while
+        // another task was checking out or writing it. Keep worker history for
+        // review; project approval handles eventual retirement and cleanup.
+        return jresp(
+            StatusCode::CONFLICT,
+            json!({"error":"project workers are retained for review; finish and approve the project to expire its workers and remove its checkout"}),
+        );
+    }
     if cfg.get("CC_PINNED") == Some("1") && !is_session_blocked(name) {
         return jresp(
             StatusCode::FORBIDDEN,
@@ -39083,6 +39155,14 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             Some(json!({"toggle_pin": true})),
         )
         .await;
+        let mut project_env = EnvFile::load(&env_path("probe"));
+        project_env.set("CC_PROJECT", "sample");
+        project_env.write(&env_path("probe")).unwrap();
+        let (st, v) = call(&app, "POST", "/api/sessions/probe/delete", None).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{v}");
+        assert!(env_path("probe").exists(), "project worker history must survive");
+        project_env.remove("CC_PROJECT");
+        project_env.write(&env_path("probe")).unwrap();
         let (st, v) = call(&app, "POST", "/api/sessions/probe/delete", None).await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert!(!env_path("probe").exists());

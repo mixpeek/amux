@@ -226,8 +226,16 @@ pub(crate) fn report_failure_reason(reason: &str) -> bool {
     ["report", "criterion", "check", "asset"].iter().any(|part| reason.contains(part))
 }
 
-fn prelaunch_failure(reason: &str) -> bool {
+pub(crate) fn prelaunch_failure(reason: &str) -> bool {
     workspace_name_collision(reason)
+        // Git can abort a large checkout while materializing files (for
+        // example when the server restarts during worktree add). No provider
+        // turn was delivered, so this is an operational startup failure, not
+        // evidence that the task exhausted its model attempts. The workspace
+        // ensure path still rejects dirty/incomplete checkouts on retry.
+        || (reason.contains("Preparing worktree")
+            && reason.contains("error: unable to create file ")
+            && reason.contains("No such file or directory"))
         || reason == "tmux not found or timed out"
         || reason == "provider launch ended without a live process or confirmed UI"
         || reason == "workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"
@@ -1393,6 +1401,8 @@ mod tests {
         assert!(prelaunch_failure("provider launch ended without a live process or confirmed UI"));
         assert!(prelaunch_failure("workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"));
         assert!(prelaunch_failure("new workspace did not materialize cleanly; preserved for recovery"));
+        assert!(prelaunch_failure("Preparing worktree (checking out 'amux/project/demo')\nUpdating files: 12%\nerror: unable to create file customers/a/screenshot.png: No such file or directory"));
+        assert!(!prelaunch_failure("error: unable to create file customers/a/screenshot.png: Permission denied"));
         assert!(!prelaunch_failure("existing workspace belongs to a different repository; preserved"));
         assert!(!prelaunch_failure("workspace has uncommitted user changes"));
     }
