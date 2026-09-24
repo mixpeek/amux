@@ -495,8 +495,20 @@ pub fn route_callers_have_routes_with(
                 InvariantResult::fail(
                     ID,
                     format!("{} allowed on {}", c.method, c.path),
+                    // SAY WHICH SOURCE DISAGREES (AMUX-5035). `mounted` is
+                    // `request_log::ROUTE_TABLE`, a hand-maintained inventory,
+                    // NOT the live axum router. So "would 405" is a prediction
+                    // this check cannot make: measured 2026-09-23, a4e721cd
+                    // registered `.route("/draft", post(draft))` and its client
+                    // call in one commit and did not update ROUTE_TABLE. A real
+                    // POST matched and served; the inventory was stale, and the
+                    // card said the caller would 405. Both facts matter and
+                    // they are different faults, so the line names the one it
+                    // actually measured.
                     format!(
-                        "route exists but allows only {allowed:?} — {} would 405",
+                        "the declared route inventory lists only {allowed:?} for this path, \
+                         so {} is either unrouted or missing from ROUTE_TABLE — check the \
+                         router before assuming a 405",
                         c.method
                     ),
                 )
