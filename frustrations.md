@@ -4584,3 +4584,25 @@ CARD: AF-947
 SYMPTOM: POG-2 included its exact required criterion check and an additional git diff --check entry. Strict report length validation rejected it and consumed another worker turn even though the additional check was the independently enforced project gate.
 COST: Model tokens spent correcting redundant receipt formatting instead of implementation.
 FIX: Canonicalize exact repeated criterion/command pairs and a redundant independently-run gate entry before validation and idempotency comparison. Every actual criterion still needs exactly one check; conflicting commands, invented criteria, missing coverage, stale identity, source boundaries and contract bindings remain rejected. Log project.report_redundancy_normalized.
+
+## Package-relative verifier commands did not match host execution
+AREA: efficiency
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-4 and POG-5 produced server/scripts/verify_bucket_objects.py while the approved command was python3 scripts/verify_bucket_objects.py. POG-5 claimed the command passed from server/; the host correctly rejected it at the checkout root and issued a repair.
+COST: Avoidable worker retries and deferred runtime failures caused by an unstated working-directory contract.
+FIX: State the Git-root execution and asset-path contract in every packet and its structured verification_context. Require approved entry points at their exact relative paths, allowing a root wrapper to delegate into a package. Remind workers to repin cwd after login profiles. Preserve exact host commands and failing diagnostics; do not rewrite checks or accept execution from a different directory.
+
+## Normal project capacity queues appeared as a failed outcome
+AREA: ux
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The bucket-objects project overview said Failed / Work is held before verification while its two worker slots were actively making progress; the reason was only executor_capacity on the next queued task.
+COST: Normal bounded concurrency looked like a stalled or failed project.
+FIX: Exclude executor_capacity, like same-project output waits, from the outcome hold summary. Preserve actual authorization holds and acceptance failures. Regression covers running capacity queues, authorization, and a real acceptance failure.

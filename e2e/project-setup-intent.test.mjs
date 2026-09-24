@@ -128,3 +128,15 @@ test('worker task rows preserve the same integrated-verification label as the bo
  assert.equal(ctx._projectWorkers(data)[0].tasks[0].display_label,'Verified');
  assert.equal(data.workers[0].tasks[0].display_label,undefined);
 });
+
+
+test('normal executor capacity queues do not make the project outcome failed',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(source.slice(source.indexOf('function _projectOutcomeVerdict('),source.indexOf('function _projectOutcomeCard(')),ctx);
+ const data={acceptance:{state:'pending',criteria:[{id:'runtime',verifier:{type:'execution'}}]},cards:[{phase:'working'},{phase:'waiting',execution_plan:{waiting_reason:'executor_capacity',waiting_label:'Waiting for executor capacity'}},{phase:'waiting',execution_plan:{waiting_reason:'required_output:T1'}}]};
+ assert.equal(ctx._projectOutcomeVerdict(data).tone,'running');
+ data.cards[1].execution_plan.waiting_reason='authorization_required';
+ assert.equal(ctx._projectOutcomeVerdict(data).tone,'failed');
+ data.acceptance.state='failed';data.cards[1].execution_plan.waiting_reason='executor_capacity';
+ assert.equal(ctx._projectOutcomeVerdict(data).tone,'failed');
+});

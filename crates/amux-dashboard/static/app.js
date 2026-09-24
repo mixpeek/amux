@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1069';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1070';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45154,7 +45154,10 @@ function _projectOutcomeVerdict(data) {
   const pending=automated.length-passed-failed;
   const cards=Array.isArray(data?.cards)?data.cards:[];
   const active=cards.filter(c=>!['verified','closed'].includes(c.phase)).length;
-  const held=cards.filter(c=>c.phase==='waiting' && !String(c.execution_plan?.waiting_reason||'').startsWith('required_output:'));
+  const held=cards.filter(c=>{
+    const reason=String(c.execution_plan?.waiting_reason||'');
+    return c.phase==='waiting' && reason!=='executor_capacity' && !reason.startsWith('required_output:');
+  });
   const budget=Number(data?.project?.policy?.token_budget||0);
   const spent=Number(data?.usage?.tokens||0);
   let tone='pending',title='Outcome not proven yet',summary='This project has not produced a complete, independently checked result.';
