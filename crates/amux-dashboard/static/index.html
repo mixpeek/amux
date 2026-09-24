@@ -2121,6 +2121,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div id="ac-list" class="ac-list"></div>
       </div>
     </div>
+    <div class="field-group">
+      <label class="field-label" for="create-group">Group <span class="field-optional">(optional)</span></label>
+      <input id="create-group" class="input" type="text" list="create-group-list" placeholder="e.g. backend, or several: backend, api"
+        autocomplete="off" autocorrect="off" autocapitalize="off" style="min-height:44px;">
+      <datalist id="create-group-list"></datalist>
+    </div>
     <div class="field-group" id="create-template-field">
       <div class="field-label" onclick="_toggleTmplSection()" style="cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;">
         <span id="tmpl-section-chev" style="font-size:0.7rem;color:var(--dim);transition:transform 0.15s;">&#x25B6;</span>
