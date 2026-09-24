@@ -787,6 +787,43 @@ fn meta_str(meta: &Map<String, Value>, key: &str) -> String {
         .to_string()
 }
 
+/// Every lane currently holding unsubmitted text, with the epoch second it
+/// started. The detector's only input (AMUX-5057).
+///
+/// THE STAMP IS THE PREDICATE, and this function exists so nobody re-derives
+/// it. `rate_limit_sweep` writes `composer_stuck_since` from
+/// `composer_state(&pane).typed()` with the live-turn and agents-live arms
+/// already applied; a reader that walked panes itself would answer a different
+/// question while looking like the same one (ethos rule 1: a view must share
+/// the predicate of the mechanism it describes).
+///
+/// Reading is cheap enough to do inline: 233 lanes on this box, 3.0 MB of meta
+/// total, 12 ms in Python and less in Rust. Measured rather than assumed,
+/// because the detector pass holds a lock and the two slow detectors beside it
+/// (disk, connectors) are computed outside it for exactly that reason.
+///
+/// `since > 0` for every returned lane, by construction.
+pub(crate) fn composer_stuck_lanes() -> Vec<(String, i64)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(sessions_dir()) else {
+        return out;
+    };
+    for ent in rd.flatten() {
+        let fname = ent.file_name();
+        let Some(fname) = fname.to_str() else { continue };
+        let Some(name) = fname.strip_suffix(".meta.json") else {
+            continue;
+        };
+        let since = meta_i64(&load_meta(name), "composer_stuck_since");
+        if since > 0 {
+            out.push((name.to_string(), since));
+        }
+    }
+    // Stable order so a card's evidence does not reshuffle between passes.
+    out.sort();
+    out
+}
+
 /// Read an integer out of a session's meta.
 ///
 /// ALWAYS reach for this instead of `load_meta(name)["key"]`. `load_meta`
