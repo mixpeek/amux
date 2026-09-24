@@ -3853,7 +3853,7 @@ fn render_session_transcript(name: &str, max_chars: usize) -> String {
         return String::new();
     };
     let max_read = std::cmp::max(max_chars * 5, 5_000_000) as u64;
-    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, true)
+    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, false)
 }
 
 /// Emit one line for a run of consecutive tool calls, the way Claude Code's own
@@ -3920,6 +3920,78 @@ fn strip_harness_envelopes(text: &str) -> String {
     out.trim().to_string()
 }
 
+#[cfg(test)]
+mod peek_history_is_verbatim {
+    //! Ethan, 2026-09-24: "i dont want all the text parsing of output i want
+    //! amux to display everything". Peek's history is a re-render of the
+    //! provider transcript, and it was dropping or synthesizing content in six
+    //! places. Measured across 12 recent transcripts before this change:
+    //! 21,793 `thinking` blocks dropped, every `tool_result` dropped under
+    //! peek's collapse (29,306), tool output clipped to 6 lines of 200 chars,
+    //! and every visible system notice ("Conversation compacted") dropped.
+    //!
+    //! Rule: never drop conversation, never synthesize it, only classify it.
+    use serde_json::json;
+
+    fn render(records: Vec<serde_json::Value>) -> String {
+        crate::backend::adapter::strip_ansi(&super::render_transcript_records(
+            records, usize::MAX, false,
+        ))
+    }
+
+    #[test]
+    fn a_long_tool_result_arrives_whole_not_clipped_to_six_lines() {
+        let body: Vec<String> = (1..=20).map(|n| format!("line {n:02} {}", "x".repeat(300))).collect();
+        let out = render(vec![json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": body.join("\n")}]}})]);
+        for n in 1..=20 {
+            assert!(out.contains(&format!("line {n:02}")), "line {n} of 20 was dropped:\n{out}");
+        }
+        assert!(!out.contains("more line"), "the `+N more lines` clip is back:\n{out}");
+        assert!(out.contains(&"x".repeat(300)), "a 300-char line was clipped to 200");
+    }
+
+    #[test]
+    fn thinking_is_shown_and_classified_rather_than_dropped() {
+        let out = render(vec![json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "the reasoning that used to vanish"}]}})]);
+        assert!(out.contains("the reasoning that used to vanish"), "thinking dropped:\n{out}");
+        assert!(out.contains('\u{2234}'), "thinking must carry its own classification mark:\n{out}");
+    }
+
+    #[test]
+    fn a_system_notice_with_text_is_shown_and_a_metric_without_text_is_not() {
+        let out = render(vec![
+            json!({"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted"}),
+            json!({"type": "system", "subtype": "turn_duration", "durationMs": 885627}),
+            json!({"type": "mode", "mode": "default"}),
+        ]);
+        assert!(out.contains("Conversation compacted"), "a visible system notice was dropped:\n{out}");
+        // THE NEGATIVE HALF IS LOAD-BEARING: without it, rendering everything,
+        // including ~90k bookkeeping records, would pass the assertion above.
+        assert!(!out.contains("885627"), "a metric record leaked into the conversation:\n{out}");
+        assert!(!out.contains("default"), "Claude Code state bookkeeping leaked in:\n{out}");
+    }
+
+    #[test]
+    fn an_unknown_block_type_is_named_rather_than_disappearing() {
+        let out = render(vec![json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "image", "source": {}}]}})]);
+        assert!(out.contains("[image]"), "an unknown block vanished:\n{out}");
+    }
+
+    #[test]
+    fn peeks_own_entry_point_does_not_collapse_tool_runs() {
+        let src = include_str!("session_verbs.rs");
+        let i = src.find("fn render_session_transcript(").expect("entry point");
+        let body = &src[i..i + 400];
+        assert!(
+            body.contains("max_chars, false)"),
+            "peek's history must not collapse tool runs, which also dropped every tool_result:\n{body}"
+        );
+    }
+}
+
 fn render_transcript_records(
     records: Vec<Value>,
     max_chars: usize,
@@ -3951,6 +4023,25 @@ fn render_transcript_records(
             }
             continue;
         }
+        // SYSTEM NOTICES ARE CONVERSATION WHEN THEY HAVE TEXT. Measured across
+        // 12 recent transcripts: `compact_boundary` ("Conversation compacted"),
+        // `informational`, `scheduled_task_fire`, `local_command` and
+        // `model_refusal_fallback` all carry a human-readable `content` that the
+        // terminal shows, and this renderer dropped every one. `turn_duration`
+        // and `stop_hook_summary` are metrics with no `content`. So the rule is
+        // the presence of text, not a list of subtypes that will go stale.
+        if t == "system" {
+            if let Some(text) = o["content"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                flush_tool_run(&mut out, &mut tool_run, &mut tool_names);
+                out.push(format!("\x1b[38;5;180m\u{2139} {}\x1b[0m", text.replace('\n', "\n  ")));
+                out.push(String::new());
+            }
+            continue;
+        }
+        // Everything else (`mode`, `last-prompt`, `atis-latch`, `queue-operation`,
+        // `file-history-*`, `cost-state` ...) is Claude Code's own state
+        // bookkeeping. None of it is conversation and none of it reaches the
+        // terminal, so rendering it would bury the conversation, not reveal it.
         if t != "user" && t != "assistant" {
             continue;
         }
@@ -4001,7 +4092,7 @@ fn render_transcript_records(
                             if let Some(mo) = &m_out {
                                 let body = mo[1].trim();
                                 if !body.is_empty() {
-                                    for (k, ln) in body.split('\n').take(6).enumerate() {
+                                    for (k, ln) in body.split('\n').enumerate() {
                                         let prefix = if k == 0 { "  \u{23bf}  " } else { "     " };
                                         out.push(format!(
                                             "\x1b[38;5;246m{}{}\x1b[0m",
@@ -4067,29 +4158,34 @@ fn render_transcript_records(
                     while rlines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
                         rlines.pop();
                     }
-                    if !rlines.is_empty() {
-                        const MAXL: usize = 6;
-                        const MAXW: usize = 200;
-                        for (k, ln) in rlines.iter().take(MAXL).enumerate() {
-                            let mut ln = (*ln).to_string();
-                            if ln.chars().count() > MAXW {
-                                ln = format!("{}\u{2026}", chars_truncate(&ln, MAXW));
-                            }
-                            let prefix = if k == 0 { "  \u{23bf}  " } else { "     " };
-                            out.push(format!("\x1b[38;5;246m{prefix}{ln}\x1b[0m"));
-                        }
-                        if rlines.len() > MAXL {
-                            let extra = rlines.len() - MAXL;
-                            let word = if extra != 1 {
-                                " more lines"
-                            } else {
-                                " more line"
-                            };
-                            out.push(format!("\x1b[38;5;246m     \u{2026} +{extra}{word}\x1b[0m"));
-                        }
+                    // EVERY LINE, FULL WIDTH. This used to keep six lines of at
+                    // most 200 characters and print `… +N more lines`, so peek
+                    // showed less than the tool produced. Verbatim history
+                    // (Ethan, 2026-09-24) means nothing is dropped.
+                    for (k, ln) in rlines.iter().enumerate() {
+                        let prefix = if k == 0 { "  \u{23bf}  " } else { "     " };
+                        out.push(format!("\x1b[38;5;246m{prefix}{ln}\x1b[0m"));
                     }
                 }
-                _ => {}
+                // THINKING WAS THE LARGEST SILENT LOSS: 21,793 blocks across
+                // 12 recent transcripts, dropped by the `_ => {}` arm that used
+                // to be here. Classified and dimmed so it reads as reasoning,
+                // never as something the assistant said.
+                "thinking" => {
+                    let th = b["thinking"].as_str().unwrap_or("").trim();
+                    if !th.is_empty() {
+                        flush_tool_run(&mut out, &mut tool_run, &mut tool_names);
+                        out.push(format!("\x1b[2;3m\u{2234} {}\x1b[0m", th.replace('\n', "\n  ")));
+                        out.push(String::new());
+                    }
+                }
+                // Any other block type is NAMED rather than dropped, so a new
+                // one surfaces instead of disappearing (image, fallback, ...).
+                other => {
+                    if !other.is_empty() {
+                        out.push(format!("\x1b[38;5;246m[{other}]\x1b[0m"));
+                    }
+                }
             }
         }
     }
