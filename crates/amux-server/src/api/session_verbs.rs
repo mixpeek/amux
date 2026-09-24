@@ -4654,6 +4654,10 @@ fn provider_yolo_flag(provider: &str) -> &'static str {
     }
 }
 
+pub(crate) fn provider_yolo_flag_pub(provider: &str) -> &'static str {
+    provider_yolo_flag(provider)
+}
+
 fn strip_provider_yolo_flags(flags: &str) -> String {
     if flags.is_empty() {
         return String::new();
@@ -10140,6 +10144,15 @@ async fn queue_boot_prompt(
         }
         Err(error) => (false, error.into()),
     }
+}
+
+pub(crate) async fn queue_boot_prompt_pub(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    origin: SendOrigin,
+) -> (bool, String) {
+    queue_boot_prompt(state, name, text, origin).await
 }
 
 async fn queue_start_prompt(state: AppState, name: String, text: String, origin: SendOrigin) {

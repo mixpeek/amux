@@ -2142,6 +2142,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <label class="field-label">Initial prompt <span class="field-optional">(optional)</span></label>
       <textarea id="create-prompt" rows="3" placeholder="What should Claude work on first?"></textarea>
     </div>
+    <div class="field-group" id="create-groups-field">
+      <label class="field-label">Groups <span class="field-optional">(optional)</span></label>
+      <input id="create-groups" type="text" placeholder="ops, gtm" autocomplete="off" autocorrect="off"
+        onfocus="_showGroupSuggestions()" oninput="_filterGroupSuggestions(this.value)">
+      <div id="create-groups-suggestions" class="ac-list" style="position:relative;"></div>
+    </div>
     <div class="field-group">
       <label class="field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
         <input type="checkbox" id="create-branch-enabled" onchange="_toggleCreateBranch(this.checked)" style="width:auto;margin:0;">

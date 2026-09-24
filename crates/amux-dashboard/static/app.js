@@ -11790,7 +11790,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1095';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1096';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24335,6 +24335,10 @@ function openCreate() {
   document.getElementById('create-branch-existing').style.display = 'none';
   document.getElementById('create-branch-existing').innerHTML = '';
   _branchesLoaded = '';
+  const _groupsInput = document.getElementById('create-groups');
+  if (_groupsInput) _groupsInput.value = '';
+  const _groupsSugg = document.getElementById('create-groups-suggestions');
+  if (_groupsSugg) { _groupsSugg.innerHTML = ''; _groupsSugg.classList.remove('open'); }
   document.getElementById('ac-list').innerHTML = '';
   document.getElementById('ac-list').classList.remove('open');
   _createBranchEdited = false;
@@ -24366,6 +24370,34 @@ function openCreate() {
 function closeCreate() {
   document.getElementById('create-overlay').classList.remove('active');
   document.getElementById('ac-list').classList.remove('open');
+  const gs = document.getElementById('create-groups-suggestions');
+  if (gs) gs.classList.remove('open');
+}
+
+function _showGroupSuggestions() {
+  const el = document.getElementById('create-groups-suggestions');
+  if (!el) return;
+  const existing = [...new Set(sessions.flatMap(s => s.tags || []))].filter(Boolean).sort();
+  if (!existing.length) { el.classList.remove('open'); return; }
+  const current = (document.getElementById('create-groups').value || '').split(',').map(g => g.trim().toLowerCase()).filter(Boolean);
+  const available = existing.filter(g => !current.includes(g.toLowerCase()));
+  if (!available.length) { el.classList.remove('open'); return; }
+  el.innerHTML = available.map(g =>
+    '<div class="ac-item" onmousedown="_pickGroupSuggestion(\'' + g.replace(/'/g, "\\'") + '\')">' + g + '</div>'
+  ).join('');
+  el.classList.add('open');
+}
+function _filterGroupSuggestions(val) {
+  _showGroupSuggestions();
+}
+function _pickGroupSuggestion(group) {
+  const inp = document.getElementById('create-groups');
+  if (!inp) return;
+  const parts = inp.value.split(',').map(g => g.trim()).filter(Boolean);
+  if (!parts.includes(group)) parts.push(group);
+  inp.value = parts.join(', ');
+  const el = document.getElementById('create-groups-suggestions');
+  if (el) el.classList.remove('open');
 }
 
 // ── Templates ──
@@ -24585,12 +24617,17 @@ async function submitCreate() {
     return;
   }
 
-  // Online: create immediately, optionally queue prompt. Direct fetch (not
-  // apiCall) so a name clash (409) shows a clear message and keeps the dialog
-  // open to fix — apiCall would pop a generic "Error: 409" with the form gone.
-  // start:false: this dialog configures branch and YOLO, then starts with the
-  // prompt itself. Every other create starts on the server.
-  const createBody = { name, dir, creator: _getDeviceName(), start: false };
+  // Online: create immediately. Direct fetch (not apiCall) so a name clash
+  // (409) shows a clear message and keeps the dialog open to fix.
+  // The server auto-starts the worker (default start:true) and handles YOLO,
+  // prompt, and groups in the same create call.
+  const createBody = { name, dir, creator: _getDeviceName() };
+  if (prompt) createBody.prompt = prompt;
+  const _yoloOn = !!_yoloDefault;
+  if (_yoloOn) createBody.yolo = true;
+  const _groupsVal = (document.getElementById('create-groups') || {}).value || '';
+  const _tags = _groupsVal.split(',').map(g => g.trim()).filter(Boolean);
+  if (_tags.length) createBody.tags = _tags;
   if (_createProvider !== 'claude') createBody.provider = _createProvider;
   const _modelSel = document.getElementById('create-model');
   const _modelCustom = document.getElementById('create-model-custom');
@@ -24675,18 +24712,9 @@ async function submitCreate() {
         body: JSON.stringify({branch: 'none'}),
       }).catch(() => {});
     }
-    // If YOLO-by-default is on, enable it BEFORE start so the worker launches in
-    // YOLO mode (adds the flag to CC_FLAGS; keeps the resolved --model).
-    await _applyYoloDefault(name);
-    // Start session — pass prompt to server so it waits for Claude to be ready
-    const startBody = prompt ? { prompt } : {};
-    await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/start', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(startBody)
-    });
   }
+  showToast('Starting ' + name + '...');
   await fetchSessions();
-  // Scroll to the newly created session card
   const newCard = document.querySelector('[data-session="' + CSS.escape(name) + '"]');
   if (newCard) newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
