@@ -9092,6 +9092,19 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
         ),
         ("session at a selector", "a prompt is open in the pane — answer it, then retry"),
         ("session started generating", "retry at the next turn boundary, or POST with deliver_now"),
+        // DEFERRED, NOT FAILED, AND MUST NOT BE RESENT (5d8edd55 added the
+        // outcome; this arm classifies it). The text is already in the lane's
+        // composer and amux submits it itself at the next idle boundary. As an
+        // unclassified literal it answered 500, so a client read a message that
+        // was in flight as a failed send, which is the "these messages are just
+        // not appearing to have been sent" report. The hint says "do not
+        // resend" because a resend would paste the same text a second time.
+        // Safe as a 409: the client auto-retries only rows flagged `retryable`,
+        // which `transient_send_refusal` sets for three other prefixes, not this.
+        (
+            "this message is already pasted in the composer",
+            "nothing to do: the text is already pasted and amux submits it at the next idle boundary; do not resend, or it will be pasted twice",
+        ),
         ("structured worker state", "retry when the worker's structured state confirms an idle boundary"),
         ("started, but durable resume context", "repair the worker's durable task/directory context before resuming"),
         ("saved resume context", "reconcile the worker identity and active card before restarting"),
