@@ -776,6 +776,23 @@ pub fn claim(conn: &Connection, project: &str, id: &str) -> anyhow::Result<Write
     save_execution(conn, &row, &state, "project.claimed")
 }
 
+/// Canonicalize exact repetition, never infer coverage or accept new criteria.
+/// The project gate is run independently, so repeating it under its own command
+/// label is transport noise unless that label is itself a task criterion.
+fn canonical_report(row: &bs::IssueRow, report: &Report, gate: &str) -> anyhow::Result<Report> {
+    let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    let mut canonical=report.clone();let mut seen=std::collections::HashSet::new();
+    canonical.checks.retain(|check| {
+        let repeated_gate=!gate.trim().is_empty() && check.criterion.trim()==gate.trim()
+            && check.command.trim()==gate.trim() && !criteria.contains(&check.criterion);
+        !repeated_gate && seen.insert((check.criterion.clone(),check.command.clone()))
+    });
+    if canonical.checks.len()!=report.checks.len() {
+        tracing::info!(task=%row.id,measured=true,n_considered=report.checks.len(),retained=canonical.checks.len(),verdict="project.report_redundancy_normalized","exact repeated checks normalized; declared criteria and independent project gate remain required");
+    }
+    Ok(canonical)
+}
+
 pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Result<()> {
     let criteria: Vec<String> =
         serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
@@ -819,6 +836,9 @@ pub fn record_report(
         row.project_group.as_deref() == Some(project),
         "outside project"
     );
+    let policy = store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project missing"))?;
+    let canonical=canonical_report(&row,report,&policy.policy.verify_command)?;
+    let report=&canonical;
     let mut state = execution(conn, id)?;
     anyhow::ensure!(
         state.worker == worker
@@ -851,7 +871,6 @@ pub fn record_report(
         );
         return Err(error);
     }
-    let policy = store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project missing"))?;
     let criteria: Vec<String> =
         serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
     super::acceptance::contract_binding(&criteria, report, policy.policy.acceptance.as_ref())?;
@@ -1302,6 +1321,19 @@ mod tests {
         );
     }
     #[test]
+    fn report_normalization_does_not_remove_required_or_conflicting_checks() {
+        let (_dir,db)=fixture();let c=db.read().unwrap();let mut row=bs::get_issue(&c,"A").unwrap().unwrap();
+        row.acceptance_criteria=Some("[\"git diff --check\"]".into());
+        let mut report=Report{head:"a".repeat(40),assets:vec![fixture_asset()],summary:"tested".into(),checks:vec![Check{criterion:"git diff --check".into(),command:"git diff --check".into()}]};
+        let normalized=canonical_report(&row,&report,"git diff --check").unwrap();
+        assert_eq!(normalized.checks.len(),1);assert!(validate_report(&row,&normalized).is_ok());
+        report.checks.push(Check{criterion:"git diff --check".into(),command:"false".into()});
+        assert!(validate_report(&row,&canonical_report(&row,&report,"git diff --check").unwrap()).is_err());
+        report.checks.remove(0);report.checks[0].criterion="invented criterion".into();
+        assert!(validate_report(&row,&canonical_report(&row,&report,"git diff --check").unwrap()).is_err());
+    }
+
+    #[test]
     fn project_result_settles_only_its_exact_delivery_even_after_sender_restart() {
         let (_dir, db) = fixture();
         let _home = crate::api::settings::test_env::set_home(_dir.path());
@@ -1311,10 +1343,13 @@ mod tests {
             register_test_workspace(&e.worker,"/repo");
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES(?1,?2,'Task packet API_KEY=fixture-secret',1,'project-execution',2)",params![e.delivery_id,e.worker])?;
             c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard) VALUES('unrelated',?1,'Owner input',1,'')",[&e.worker])?;
-            let report=Report{assets:vec![fixture_asset()],head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
+            let mut report=Report{assets:vec![fixture_asset()],head:"a".repeat(40),summary:"Measured output".into(),checks:vec![Check{criterion:"Output passes its test".into(),command:"./check-output.sh".into()}]};
+            report.checks.push(report.checks[0].clone());
+            report.checks.push(Check{criterion:"./verify.sh".into(),command:"./verify.sh".into()});
             assert!(record_report(c,"sample","A",&e.worker,e.generation+1,&e.input_hash,&report).is_err());
             assert_eq!(c.query_row("SELECT count(*) FROM steering_queue",[],|r|r.get::<_,i64>(0))?,2);
             record_report(c,"sample","A",&e.worker,e.generation,&e.input_hash,&report).map_err(store::sql_error)?;
+            assert_eq!(execution(c,"A").unwrap().report.unwrap().checks.len(),1);
             assert_eq!(c.query_row("SELECT outcome FROM steering_history WHERE id=?1",[&e.delivery_id],|r|r.get::<_,String>(0))?,"sent:project-result");
             assert_eq!(c.query_row("SELECT text FROM steering_history WHERE id=?1",[&e.delivery_id],|r|r.get::<_,String>(0))?,"Task packet API_KEY=REDACTED");
             assert_eq!(c.query_row("SELECT id FROM steering_queue",[],|r|r.get::<_,String>(0))?,"unrelated");

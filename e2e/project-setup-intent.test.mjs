@@ -102,3 +102,29 @@ test('a checked task candidate cannot imply its integrated runtime goal is verif
  assert.equal(ctx._projectTaskDisplay(card,acceptance).label,'Verified');
  assert.equal(ctx._projectTaskDisplay({...card,phase:'working',execution_plan:{execution:{stage:'working'}}},acceptance).label,'Working now');
 });
+
+
+test('a reserved worker is preparing, not expired evidence or a stopped executor',()=>{
+ const ctx=vm.createContext({sessions:[],_expiredWorkerInventory:new Map()});
+ vm.runInContext(source.slice(source.indexOf('function _projectWorkerRuntime('),source.indexOf('async function _projectResumeWorker(')),ctx);
+ const worker={name:'new-worker',lifecycle:'missing',tasks:[{stage:'reserved'}]};
+ assert.equal(ctx._projectWorkerRuntime(worker).label,'Preparing worker');
+ assert.equal(ctx._projectWorkerRuntime({...worker,tasks:[{stage:'verified'}]}).label,'Evidence only');
+ ctx.sessions.push({name:'new-worker',lifecycle:'active',status:'stopped',running:false});
+ assert.equal(ctx._projectWorkerRuntime(worker).label,'Preparing worker');
+ ctx.sessions[0].lifecycle='paused';assert.equal(ctx._projectWorkerRuntime(worker).label,'Paused');
+ ctx.sessions[0].lifecycle='active';ctx.sessions[0].running=true;ctx.sessions[0].status='active';
+ assert.equal(ctx._projectWorkerRuntime(worker).label,'Working');
+});
+
+
+test('worker task rows preserve the same integrated-verification label as the board',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(source.slice(source.indexOf('function _projectTaskDisplay('),source.indexOf('function _projectOutcomeVerdict(')),ctx);
+ vm.runInContext(source.slice(source.indexOf('function _projectWorkers('),source.indexOf('function _projectWorkerRuntime(')),ctx);
+ const data={workers:[{name:'runtime-worker',tasks:[{id:'T1',stage:'verified'}]}],cards:[{id:'T1',phase:'verified',acceptance_criteria:['contract:image'],execution_plan:{execution:{stage:'verified'}}}],acceptance:{criteria:[{id:'image',verifier:{type:'execution'},result:null}]}};
+ assert.equal(ctx._projectWorkers(data)[0].tasks[0].display_label,'Candidate ready');
+ data.acceptance.criteria[0].result={state:'passed'};
+ assert.equal(ctx._projectWorkers(data)[0].tasks[0].display_label,'Verified');
+ assert.equal(data.workers[0].tasks[0].display_label,undefined);
+});

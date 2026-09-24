@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1068';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1069';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45262,7 +45262,10 @@ function _projectRenderDependencyPanel(data) {
 
 function _projectWorkers(data) {
   const provided=Array.isArray(data?.workers)?data.workers:[];
-  if(provided.length) return provided;
+  if(provided.length) return provided.map(worker=>({...worker,tasks:(worker.tasks||[]).map(task=>{
+    const card=(data.cards||[]).find(card=>card.id===task.id);
+    return card?{...task,display_label:_projectTaskDisplay(card,data.acceptance).label}:task;
+  })}));
   const by=new Map();
   (data?.cards||[]).forEach(card=>{
     const e=card.execution_plan?.execution||{},name=String(e.worker||'').trim();
@@ -45284,8 +45287,10 @@ function _projectWorkerRuntime(worker) {
   else if(inv && (!lifecycle || lifecycle==='missing')) lifecycle='expired';
   const running=!!reg && reg.running!==false && reg.status!=='stopped';
   const liveLabel=({active:'Working',working:'Working',idle:'Idle',waiting:'Needs input',starting:'Starting',error:'Error',rate_limited:'Rate limited'})[reg?.status] || 'Running';
-  const label=lifecycle==='active'?(running?liveLabel:'Stopped'):lifecycle==='review'?'Retained for review':lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
-  return {reg,inv,lifecycle,running,label};
+  const preparing=!running && !['paused','archived','expired','review'].includes(lifecycle) && (worker?.tasks||[]).some(t=>t.stage==='reserved');
+  if(preparing) lifecycle='preparing';
+  const label=preparing?'Preparing worker':lifecycle==='active'?(running?liveLabel:'Stopped'):lifecycle==='review'?'Retained for review':lifecycle==='paused'?'Paused':lifecycle==='archived'?'Archived':lifecycle==='expired'?'Expired':lifecycle==='missing'?'Evidence only':lifecycle;
+  return {reg,inv,lifecycle,running,label,preparing};
 }
 async function _projectResumeWorker(name) {
   if(!name) return;
@@ -45296,6 +45301,7 @@ function _projectWorkerAction(worker,runtime) {
   const name=worker?.name||'';
   if(!name) return '';
   if(runtime.lifecycle==='expired' || worker?.resumable) return `<button class="btn" onclick="_projectResumeWorker('${escJs(name)}')">Resume and open</button>`;
+  if(runtime.preparing) return '<span class="project-muted">Worker and checkout are being prepared automatically.</span>';
   if(runtime.lifecycle==='missing') return '<span class="project-muted">No worker env remains; retained task evidence is still listed.</span>';
   const hold=worker?.blocked_reason || (worker?.tasks||[]).find(t=>t.waiting_reason)?.waiting_reason || '';
   if(worker?.openable===false) {
@@ -45317,11 +45323,12 @@ function _projectRenderWorkersPanel(data) {
   const rows=workers.map(worker=>{
     const runtime=_projectWorkerRuntime(worker);
     const env=worker.env||{},workspace=worker.workspace||{},integration=worker.integration&&typeof worker.integration==='object'?worker.integration:null;
-    const model=[env.provider,env.model,env.effort].filter(Boolean).join(' · ');
+    const configured=data.project?.policy?.executor || {};
+    const model=[env.provider,env.model,env.effort].filter(Boolean).join(' · ') || (runtime.preparing?'Planned · '+[configured.provider,configured.model,configured.effort].filter(Boolean).join(' · '):'Not recorded');
     const checkout=worker.workspace_available===true ? workspace.path : '';
     const tasks=(worker.tasks||[]).slice().sort((a,b)=>Number(b.updated||0)-Number(a.updated||0)).map(t=>`<li><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(t.id)}'),0)">${esc(t.id)}</button><span>${esc(_projectClip(t.title||'',72))}</span><small>${esc(t.display_label||t.phase||t.status||'')}${t.stage?' · '+esc(t.stage):''}</small></li>`).join('');
-    const checkoutHtml=checkout?_projectCheckoutPathButton(checkout):integration?.status==='integrated'?'Removed after publish · '+_projectCheckoutPathButton(workspace.repo||env.dir,'Open repository'):'Checkout unavailable';
-    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+checkoutHtml+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||'Not recorded')+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
+    const checkoutHtml=checkout?_projectCheckoutPathButton(checkout):integration?.status==='integrated'?'Removed after publish · '+_projectCheckoutPathButton(workspace.repo||env.dir,'Open repository'):runtime.preparing?'Preparing checkout':'Checkout unavailable';
+    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+checkoutHtml+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||(runtime.preparing?'Not assigned yet':'Not recorded'))+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
     return '<article class="project-overview-card project-worker-card"><div class="project-card-heading"><h3>'+esc(worker.name||'worker')+'</h3>'+_projectWorkerAction(worker,runtime)+'</div>'+facts+'<div class="project-card-heading"><h3>Tasks</h3><span class="project-muted">'+esc(String(worker.retained_assets||0))+' retained assets</span></div><ul class="project-run-list">'+(tasks||'<li><span>No project tasks recorded for this worker</span></li>')+'</ul></article>';
   }).join('') || '<p class="project-empty" role="status">No workers have been assigned to this project yet. Workers appear here after project tasks are claimed, and remain listed after pause, archive or expiration.</p>';
   const html=closeout+rows;

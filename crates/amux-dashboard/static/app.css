@@ -7196,6 +7196,10 @@ select.input { height:var(--control-height); }
 .project-error-box{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.project-legacy{margin-left:auto}#project-settings-state{color:var(--muted);font-size:13px}
 .launch-legacy-note{font-size:.8rem;color:var(--dim);margin:0 0 8px}
 @media(max-width:600px){.project-workspace{grid-template-columns:1fr}.project-inspector{position:static;max-height:none}.project-card-select,.project-legacy{min-height:44px}.project-facts{grid-template-columns:1fr}}
+/* The project selector already provides navigation on narrow screens. Avoid
+   repeating the full sidebar above the actual project work. */
+@media(max-width:600px){.project-list{display:none}.project-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:14px}.project-hero>div{grid-column:1/-1}.project-hero p{display:none}.project-hero .project-select-control{min-width:0}.project-hero select{width:100%;max-width:100%}.project-hero>.btn{align-self:end;min-height:44px}}
+
 .board-legacy-badge{font-size:.6em;font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:999px;color:var(--muted);vertical-align:middle}
 .project-diagnostic{max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px}.project-cause{overflow-wrap:anywhere}
 

@@ -4562,3 +4562,25 @@ CARD: AF-947
 SYMPTOM: POG-24 mapped its approved image lifecycle command to both the contract marker and two prose criteria. Only the contract-labelled copy was deferred, so the image would build once on a partial task branch and again on the integrated project candidate.
 COST: Redundant expensive runtime checks on incomplete project code.
 FIX: Defer byte-equivalent commands already bound to an approved execution criterion together, while retaining all criterion mappings and always running the explicit task gate. Whole-project acceptance still runs the full fresh runtime proof. Regression includes repeated prose and contract labels. The project UI now calls such tasks Candidate ready while integrated runtime verification is pending, and keeps the whole-project verdict separate.
+
+## Reserved project executors looked like missing historical workers
+AREA: ux
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: After autonomous recovery on 8824, newly reserved POG-2/3 workers briefly showed Evidence only, No worker env remains, or Stopped while their checkouts and providers were still being created. Worker task rows also bypassed the candidate/runtime distinction shown on the board. On mobile the duplicate project sidebar pushed the task view below 585px.
+COST: Normal launch progress looked like premature deletion or another failed launch; mobile users saw project navigation twice before their work.
+FIX: Project workers show Preparing worker for a reserved, not-yet-running executor, preserving paused/archived/expired truth. Mark the configured model as Planned until observed and use the shared task display for provided worker rows. On narrow screens use the existing project selector and compact header instead of repeating the full sidebar. Validate the state transitions and inspect the mobile layout on 8824.
+
+## Redundant gate check caused a needless paid report repair
+AREA: efficiency
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-2 included its exact required criterion check and an additional git diff --check entry. Strict report length validation rejected it and consumed another worker turn even though the additional check was the independently enforced project gate.
+COST: Model tokens spent correcting redundant receipt formatting instead of implementation.
+FIX: Canonicalize exact repeated criterion/command pairs and a redundant independently-run gate entry before validation and idempotency comparison. Every actual criterion still needs exactly one check; conflicting commands, invented criteria, missing coverage, stale identity, source boundaries and contract bindings remain rejected. Log project.report_redundancy_normalized.
