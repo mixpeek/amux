@@ -247,7 +247,7 @@ fn worker_name(project: &str, task: &str) -> String {
 }
 
 const AUTO_REPAIR_GRANT_PREFIX: &str = "auto-repair:";
-const AUTO_REPAIR_GRANT_LIMIT: usize = 1;
+const AUTO_REPAIR_GRANT_LIMIT: usize = 3;
 
 fn auto_repairable_wait(e: &Execution, max_attempts: u32) -> bool {
     e.stage == "waiting"
@@ -269,11 +269,22 @@ fn auto_repair_grants(e: &Execution) -> usize {
         .count()
 }
 
-fn auto_repair_grantable_wait(e: &Execution, max_attempts: u32) -> bool {
+/// After the first recovery, another turn requires a new candidate and a new
+/// independently observed verification failure. Repeating the same failure or
+/// merely changing a report cannot buy an unbounded retry loop.
+pub(crate) fn auto_repair_grantable_wait(e: &Execution, max_attempts: u32) -> bool {
     e.stage == "waiting"
         && !e.suspended
         && e.attempt >= e.attempt_limit(max_attempts)
         && auto_repair_grants(e) < AUTO_REPAIR_GRANT_LIMIT
+        && (auto_repair_grants(e)==0 || e.report.as_ref().is_some_and(|report| {
+            e.waiting.as_deref().is_some_and(|reason|reason.starts_with("verification failed (")
+                && e.retry_grants.iter().filter(|g|g.request.idempotency_key.starts_with(AUTO_REPAIR_GRANT_PREFIX)).all(|g| {
+                    g.previous_result.get("waiting").is_some()
+                        && g.previous_result["waiting"].as_str()!=Some(reason)
+                        && g.previous_result["report"]["head"].as_str()!=Some(&report.head)
+                }))
+        }))
         && e.waiting
             .as_deref()
             .is_some_and(|reason| repairable_wait_reason(reason, e))
@@ -1356,6 +1367,20 @@ mod tests {
             })
         })
         .unwrap();
+    }
+
+    #[test]
+    fn project_repair_continues_measured_progress_but_bounds_repeated_and_changed_failures() {
+        let report=|head:&str|Report{head:head.repeat(40),summary:"candidate".into(),assets:vec![fixture_asset()],checks:vec![Check{criterion:"Output passes".into(),command:"./verify.sh".into()}]};
+        let grant=|index:i64,head:&str,reason:&str|super::super::task_retry::Grant{request:super::super::task_retry::Request{idempotency_key:format!("auto-repair:sample:A:{index}"),expect_generation:index,expect_revision:index,input_hash:"input".into()},allowed_through:(index+2) as u32,previous_result:json!({"report":report(head),"waiting":reason})};
+        let mut e=Execution{stage:"waiting".into(),attempt:3,report:Some(report("b")),waiting:Some("verification failed (check): schema mismatch".into()),retry_grants:vec![grant(1,"a","verification failed (check): script missing")],..Default::default()};
+        assert!(auto_repair_grantable_wait(&e,2));
+        e.report=Some(report("a"));assert!(!auto_repair_grantable_wait(&e,2));e.report=Some(report("b"));
+        e.waiting=Some("verification failed (check): script missing".into());assert!(!auto_repair_grantable_wait(&e,2));e.waiting=Some("verification failed (check): schema mismatch".into());
+        e.suspended=true;assert!(!auto_repair_grantable_wait(&e,2));e.suspended=false;
+        e.wait_category=Some("spend".into());assert!(!auto_repair_grantable_wait(&e,2));e.wait_category=None;
+        e.retry_grants.push(grant(2,"b","verification failed (check): schema mismatch"));e.attempt=4;e.report=Some(report("c"));e.waiting=Some("verification failed (check): negative case missing".into());assert!(auto_repair_grantable_wait(&e,2));
+        e.retry_grants.push(grant(3,"c","verification failed (check): negative case missing"));e.attempt=5;e.report=Some(report("d"));e.waiting=Some("verification failed (check): another failure".into());assert!(!auto_repair_grantable_wait(&e,2));
     }
 
     #[test]

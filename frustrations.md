@@ -4672,3 +4672,14 @@ CARD: AF-947
 SYMPTOM: The live board repeated executor_capacity and authorization_required under already readable labels; the production spend cause was hidden.
 COST: Users could not tell what actually needed approval and routine capacity waits looked broken.
 FIX: Show the retained authorization cause, omit redundant scheduler tokens beside their labels, and preserve concrete verification errors. Tests distinguish a current capacity queue from a stale previous failure. The underlying planner reason and diagnostics remain retained.
+
+## A repaired prerequisite exhausted the only task repair before actual validation
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-16 fixed a missing root verifier, committed a new candidate, and reached an independently measured OpenAPI assertion failure. Its sole repair grant had already been spent on the missing entry point, so it stopped despite new actionable evidence.
+COST: Measurable implementation progress still required a manual retry.
+FIX: Permit at most three automatic recovery grants; after the first, require both a changed candidate SHA and a distinct verifier failure not seen in the retained recovery history. Unchanged failures, missing reports, exhausted bounds, explicit holds, pauses and budget stops remain blocked. Recheck eligibility under the writer and emit project.measured_repair_granted. Regression covers progression, repeat failure, same head, suspension, spend and cap exhaustion.

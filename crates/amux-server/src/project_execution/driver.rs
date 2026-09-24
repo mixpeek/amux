@@ -1198,6 +1198,11 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
                         let row =
                             bs::get_issue(c, &task)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
                         let current = planner::execution(c, &task).map_err(store::sql_error)?;
+                        let policy=store::get(c,&project).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                        if !planner::auto_repair_grantable_wait(&current,policy.policy.max_attempts) {
+                            return Ok(WriteOutcome{applied:false,events:vec![]});
+                        }
+                        tracing::info!(project=%project,task=%task,attempt=current.attempt,measured=true,n_considered=current.retry_grants.len(),verdict="project.measured_repair_granted","bounded recovery admitted; subsequent repairs require changed candidate and verification failure");
                         let request = super::task_retry::Request {
                             idempotency_key: planner::auto_repair_idempotency_key(
                                 &project, &task, &current,
