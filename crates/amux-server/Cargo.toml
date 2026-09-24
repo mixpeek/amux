@@ -27,6 +27,10 @@ ulid.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 regex.workspace = true
+# Peek syntax highlighting (diffs and fenced code) rendered server-side to
+# ANSI: zero client JS, and cached with the transcript. Pure-Rust regex engine,
+# no C dependency.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy", "parsing"] }
 rcgen.workspace = true
 reqwest.workspace = true
 cron.workspace = true

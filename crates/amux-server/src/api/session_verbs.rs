@@ -3757,6 +3757,27 @@ fn md_to_ansi(text: &str) -> String {
             i = j;
             continue;
         }
+        // A FENCED CODE BLOCK, syntax-coloured like Claude Code's terminal.
+        // The fences stay (dimmed) and every code line is printed.
+        if let Some(lang) = ln.trim_start().strip_prefix("```") {
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].trim_start().starts_with("```") {
+                j += 1;
+            }
+            let code = &lines[i + 1..j];
+            out.push(format!("\x1b[38;5;240m{ln}\x1b[39m"));
+            match crate::highlight::syntax_for_token(lang)
+                .and_then(|s| crate::highlight::highlight_block(code, s))
+            {
+                Some(col) => out.extend(col.into_iter().map(|c| format!("{c}\x1b[39m"))),
+                None => out.extend(code.iter().map(|c| format!("\x1b[38;5;153m{c}\x1b[39m"))),
+            }
+            if j < lines.len() {
+                out.push(format!("\x1b[38;5;240m{}\x1b[39m", lines[j]));
+            }
+            i = j + 1;
+            continue;
+        }
         if let Some(c) = header_re.captures(ln) {
             out.push(format!("\x1b[1m{}\x1b[22m", md_inline(&c[2])));
             i += 1;
@@ -3880,9 +3901,33 @@ fn render_session_transcript(name: &str, max_chars: usize) -> String {
 /// Synchronous on purpose: the width lives in a thread-local, which is only
 /// sound when nothing awaits between setting and restoring it.
 fn render_session_transcript_at(name: &str, max_chars: usize, cols: usize) -> String {
-    let prev = MD_TABLE_COLS.with(|c| c.replace(cols.clamp(24, 400)));
+    // MEMOISED PER TRANSCRIPT VERSION. Rendering now includes syntax colouring,
+    // so repeat reads of an unchanged transcript (every open, every refresh)
+    // reuse the last result. The key is the file's identity and size/mtime
+    // plus the requested width, so any append or a different screen re-renders.
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Key = (std::path::PathBuf, u64, std::time::SystemTime, usize, usize);
+    static MEMO: OnceLock<Mutex<HashMap<String, (Key, String)>>> = OnceLock::new();
+    let cols = cols.clamp(24, 400);
+    let key: Option<Key> = session_jsonl_path(name).and_then(|p| {
+        let m = std::fs::metadata(&p).ok()?;
+        Some((p, m.len(), m.modified().ok()?, max_chars, cols))
+    });
+    let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(k) = &key {
+        if let Some((mk, text)) = memo.lock().ok().and_then(|m| m.get(name).cloned()) {
+            if &mk == k {
+                return text;
+            }
+        }
+    }
+    let prev = MD_TABLE_COLS.with(|c| c.replace(cols));
     let out = render_session_transcript_inner(name, max_chars);
     MD_TABLE_COLS.with(|c| c.set(prev));
+    if let (Some(k), Ok(mut m)) = (key, memo.lock()) {
+        m.insert(name.to_string(), (k, out.clone()));
+    }
     out
 }
 
@@ -4016,6 +4061,20 @@ mod peek_history_is_verbatim {
         let out = render(vec![json!({"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "image", "source": {}}]}})]);
         assert!(out.contains("[image]"), "an unknown block vanished:\n{out}");
+    }
+
+    /// Timing on a real transcript: AMUX_BENCH_JSONL=<path> cargo test ... -- --ignored
+    #[test]
+    #[ignore]
+    fn bench_render_real_transcript() {
+        let Ok(p) = std::env::var("AMUX_BENCH_JSONL") else { return };
+        let path = std::path::PathBuf::from(p);
+        for pass in 0..3 {
+            let t = std::time::Instant::now();
+            let out = super::render_transcript_records(super::iter_jsonl_tail(&path, 5_000_000), 120_000, false);
+            let colored = out.matches("\x1b[38;2;").count();
+            eprintln!("pass {pass}: {:?} chars={} coloured_spans={colored}", t.elapsed(), out.chars().count());
+        }
     }
 
     #[test]
@@ -4190,6 +4249,26 @@ fn render_transcript_records(
                     ));
                 }
                 "tool_result" => {
+                    // AN EDIT IS SHOWN AS ITS DIFF, the way Claude Code draws it
+                    // (Ethan 2026-09-24, with a screenshot of numbered red/green
+                    // rows). The transcript records every Edit's exact hunks in
+                    // `toolUseResult.structuredPatch`, and a Write's content, so
+                    // this is the same information the terminal had, coloured by
+                    // the file's syntax. A failed call keeps its raw error text.
+                    let tur = &o["toolUseResult"];
+                    if b["is_error"].as_bool() != Some(true) {
+                        let fp = tur["filePath"].as_str().unwrap_or("");
+                        if let Some(lines) = crate::highlight::render_structured_patch(fp, &tur["structuredPatch"]) {
+                            out.extend(lines);
+                            continue;
+                        }
+                        if tur["type"].as_str() == Some("create") {
+                            if let Some(content) = tur["content"].as_str() {
+                                out.extend(crate::highlight::render_written_file(fp, content));
+                                continue;
+                            }
+                        }
+                    }
                     let raw = tool_result_text(&b["content"]);
                     let mut rlines: Vec<&str> = raw.split('\n').map(|l| l.trim_end()).collect();
                     while rlines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
@@ -11603,9 +11682,95 @@ async fn send_text_inner_bound(
         );
         send_key(name, "Enter").await;
         let (second, _) = verify_submitted(name, &text, sent_at, false).await;
+        if second == Submission::Stuck {
+            // THE ROOT OF "UNSUBMITTED TEXT" (Ethan 2026-09-24: "figure out why
+            // we so often have this unsubmitted text status"). Of the stamps in
+            // 36h of log, 7 of 9 were the owner's own direct messages, pasted
+            // while the worker was mid-turn, whose Enter Claude Code did not
+            // take. Steering re-submits its own paste at the next idle boundary
+            // (submit_own_steering_draft); the direct path returned "not
+            // submitted" and nobody ever pressed Enter, so the text sat until a
+            // human noticed. Now it gets the same treatment, bounded and logged.
+            spawn_direct_draft_idle_submit(name, &text);
+            return (
+                true,
+                "queued (held in the input box; submitted automatically when this turn ends)".into(),
+            );
+        }
         return send_outcome(second, generating, true);
     }
     send_outcome(first, generating, retried)
+}
+
+/// Lanes with a direct message waiting in the composer for its idle Enter.
+fn direct_draft_watches() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    W.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Press Enter on a direct message amux pasted mid-turn, at the lane's next
+/// idle boundary, if and only if the composer still holds exactly that
+/// message. A human who edited or cleared it wins; the watch stops. Bounded to
+/// 30 minutes; every exit is a counted verdict.
+fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
+    let key = format!("{name}\u{0}{}", text.split_whitespace().collect::<String>());
+    if let Ok(mut w) = direct_draft_watches().lock() {
+        if !w.insert(key.clone()) {
+            return; // already watching this exact message on this lane
+        }
+    }
+    let (name, text) = (name.to_string(), text.to_string());
+    tokio::spawn(async move {
+        let deadline = now_f64() + 1800.0;
+        let verdict: &'static str = loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if now_f64() > deadline {
+                break "direct_draft_idle_submit_gave_up";
+            }
+            if !is_running(&name).await {
+                break "direct_draft_lane_stopped";
+            }
+            let send_lock = session_send_lock(&name);
+            let _guard = send_lock.lock().await;
+            let raw = tmux_capture(&name, 25).await;
+            match composer_state(&raw) {
+                ComposerState::Typed(draft) => {
+                    if !composer_holds_this_delivery(&draft, &text) {
+                        break "direct_draft_changed_by_human";
+                    }
+                }
+                ComposerState::Empty | ComposerState::Placeholder(_) => {
+                    break "direct_draft_left_composer";
+                }
+                // A full-screen view or the background manager: keep waiting.
+                ComposerState::NotVisible | ComposerState::BackgroundManager => continue,
+            }
+            if detect_claude_status(&raw) == "active" || pane_bar_says_generating(&raw) {
+                continue;
+            }
+            let sent_at = now_f64();
+            send_key(&name, "Enter").await;
+            let (sub, _) = verify_submitted(&name, &text, sent_at, true).await;
+            if sub == Submission::Confirmed {
+                break "direct_draft_submitted_at_idle";
+            }
+            tracing::warn!(session = %name, submission = ?sub, measured = true, n_considered = 1,
+                verdict = "direct_draft_idle_enter_not_confirmed",
+                "idle Enter on the held direct message was not confirmed; will retry while it is still there");
+        };
+        if let Ok(mut w) = direct_draft_watches().lock() {
+            w.remove(&key);
+        }
+        let preview = chars_truncate(&text, 80);
+        if verdict == "direct_draft_submitted_at_idle" || verdict == "direct_draft_left_composer" {
+            tracing::info!(session = %name, %preview, measured = true, n_considered = 1, verdict,
+                "held direct message resolved");
+        } else {
+            tracing::warn!(session = %name, %preview, measured = true, n_considered = 1, verdict,
+                "held direct message was not submitted by amux");
+        }
+    });
 }
 
 /// py:25815 send_keys — allowed control keys only.
@@ -14081,10 +14246,16 @@ pub(crate) async fn reclaim_worktree(repo: &str, wt_path: &str) -> bool {
         OP_TIMEOUT,
     )
     .await;
+    // THE ADD'S BUDGET, NOT OP_TIMEOUT (2026-09-24, deleting a mixpeek worktree
+    // worker). Removing ~49k files takes far longer than 5s, so the remove was
+    // killed half way, the prune below ran while the directory still existed
+    // (and so pruned nothing), and remove_dir_all then deleted it: the worktree
+    // stayed registered as `prunable` and every delete logged
+    // worktree_reclaim_failed.
     let _ = run_cmd(
         "git",
         &["-C", repo, "worktree", "remove", "--force", wt_path],
-        OP_TIMEOUT,
+        WORKTREE_ADD_TIMEOUT,
     )
     .await;
     // PRUNE TOO, not just remove (Ethan, 2026-09-18: "the ephemeral worker was
@@ -14102,6 +14273,9 @@ pub(crate) async fn reclaim_worktree(repo: &str, wt_path: &str) -> bool {
     let _ = run_cmd("git", &["-C", repo, "worktree", "prune"], OP_TIMEOUT).await;
     if dir.exists() {
         let _ = tokio::fs::remove_dir_all(dir).await;
+        // Prune AGAIN once the directory is gone: only then does git see the
+        // registration as prunable.
+        let _ = run_cmd("git", &["-C", repo, "worktree", "prune"], OP_TIMEOUT).await;
     }
     !dir.exists() && !worktree_is_registered(repo, wt_path).await
 }
@@ -45099,6 +45273,21 @@ mod amux4770_worktree_isolation_tests {
     /// Teardown runs on every delete, including workers that never had a
     /// worktree, and a false alarm there would train readers to ignore the
     /// warn that matters.
+    /// A large worktree (mixpeek, ~49k files) outlived a 5s remove, and the only
+    /// prune ran while its directory still existed, so the registration
+    /// survived every delete. Pinned at source: reproducing needs a remove that
+    /// is killed half way.
+    #[test]
+    fn reclaim_gives_remove_the_add_budget_and_prunes_after_the_directory_goes() {
+        let src = include_str!("session_verbs.rs");
+        let body = src.split_once("pub(crate) async fn reclaim_worktree(").unwrap().1;
+        let body = body.split_once("\n}\n").unwrap().0;
+        let remove = body.find("\"remove\", \"--force\"").expect("remove");
+        assert!(body[remove..remove + 120].contains("WORKTREE_ADD_TIMEOUT"));
+        let rm_all = body.find("remove_dir_all(dir)").expect("remove_dir_all");
+        assert!(body[rm_all..].contains("\"worktree\", \"prune\""), "prune must follow the directory removal");
+    }
+
     #[tokio::test]
     async fn reclaiming_a_path_that_was_never_a_worktree_is_success() {
         let tmp = tempfile::tempdir().unwrap();

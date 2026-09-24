@@ -17,11 +17,17 @@ It ignores every argument amux passes (--model, --resume, ...), because the
 point is to exercise amux's paste, Enter and submission-verification path,
 not the model.
 """
-import json, os, sys, time, termios, tty
+import json, os, select, sys, time, termios, tty
 
 LOG = os.environ.get("FAKE_CLAUDE_LOG")
 # Optional: every raw input byte, for diagnosing what the harness actually typed.
 RAW = os.environ.get("FAKE_CLAUDE_RAW_LOG")
+# Optional: after each submission, stay "mid-turn" this many seconds. While busy
+# the footer says "esc to interrupt" (what amux reads as generating) and Enter
+# is IGNORED, the way Claude Code sometimes drops a mid-turn Enter. Typed text
+# stays in the composer. This reproduces the "unsubmitted text" incidents.
+BUSY_S = float(os.environ.get("FAKE_CLAUDE_BUSY_S") or 0)
+busy_until = 0.0
 if not LOG:
     sys.stderr.write("FAKE_CLAUDE_LOG is required\n")
     sys.exit(2)
@@ -41,11 +47,14 @@ def draw():
     out.write(RULE + " fake-claude " + RULE + "\r\n")
     out.write("❯ " + "".join(buf) + "\r\n")
     out.write(RULE + RULE + "\r\n")
-    out.write("⏵⏵ bypass permissions on (shift+tab to cycle)\r\n")
+    if time.time() < busy_until:
+        out.write("⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\r\n")
+    else:
+        out.write("⏵⏵ bypass permissions on (shift+tab to cycle)\r\n")
     out.flush()
 
 def submit():
-    global seq
+    global seq, busy_until
     text = "".join(buf).strip()
     buf.clear()
     if text:
@@ -55,6 +64,8 @@ def submit():
             f.write(json.dumps({"seq": seq, "text": text, "pid": os.getpid(), "t": time.time()}) + "\n")
             f.flush()
             os.fsync(f.fileno())
+        if BUSY_S:
+            busy_until = time.time() + BUSY_S
 
 def main():
     with open(LOG, "a", encoding="utf-8") as f:
@@ -72,7 +83,15 @@ def main():
         # earlier version treated that ESC as a sequence and ate the first
         # letter of every message.)
         state = None      # None | "esc" | "csi" | "ss3"
+        was_busy = False
         while True:
+            # Wake periodically so the frame changes when a busy turn ends.
+            if not select.select([fd], [], [], 0.2)[0]:
+                now_busy = time.time() < busy_until
+                if was_busy and not now_busy:
+                    draw()
+                was_busy = now_busy
+                continue
             ch = os.read(fd, 1)
             if not ch:
                 break
@@ -100,6 +119,8 @@ def main():
                 state = "esc"
                 continue
             if b in (0x0d, 0x0a):          # Enter submits the composer
+                if time.time() < busy_until:
+                    continue               # mid-turn: this Enter is dropped
                 submit()
             elif b in (0x7f, 0x08):        # Backspace
                 if buf:

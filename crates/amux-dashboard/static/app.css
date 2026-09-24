@@ -7272,9 +7272,9 @@ select.input { height:var(--control-height); }
 .cards.workers-stale .status-badge { filter: grayscale(1); opacity: 0.55; }
 
 /* "All shown (N)": acts on every worker the list is currently showing. */
-.tag-filter.bulk-visible-btn { font: inherit; font-size: 0.72rem; cursor: pointer; margin-left: auto; min-height: 32px; border-style: dashed;
-  /* The row scrolls sideways on a phone; keep this reachable at its right edge. */
-  position: sticky; right: 0; background: var(--bg, #0d1117); box-shadow: -8px 0 8px var(--bg, #0d1117); }
+/* Just after the last group pill, scrolling with the row (Ethan, 2026-09-24:
+   "it should just be after the right most one"), not pinned to the edge. */
+.tag-filter.bulk-visible-btn { font: inherit; font-size: 0.72rem; cursor: pointer; min-height: 32px; border-style: dashed; }
 .tag-filter.bulk-visible-btn:disabled { opacity: 0.5; cursor: default; }
 .bulk-visible-names { display: flex; flex-wrap: wrap; gap: 4px; max-height: 160px; overflow-y: auto; margin-bottom: 14px; }
 .bulk-visible-names span { font-size: 0.78rem; padding: 2px 8px; border-radius: 6px; background: rgba(127,127,127,0.12); }
