@@ -511,14 +511,14 @@ test('post-input terminal polling is lightweight, serial and bounded', async () 
   const {ctx,timers,timerDelays}=fixture(['_peekPollInterval','_stopPeekPoll','_schedulePeekPoll','_peekKickFast','_refreshPeekSoon','_peekPollNow']);
   let now=1000;const refreshes=[];let requestMs=0;let duringRequest=null;
   Object.assign(ctx,{performance:{now:()=>now},peekSession:'lane',peekTimer:null,_peekUrgentUntil:0,_peekLastChangeMs:0,
-    _peekPollGen:0,_peekPollActive:false,_peekPollSession:null,_peekPrevStatus:'active',_peekFullPending:false,_peekLastFullMs:900,_PEEK_HISTORY_REFRESH_MS:30000,
+    _peekPollGen:0,_peekPollActive:true,_peekPollSession:null,_peekPrevStatus:'active',_peekFullPending:false,_peekLastFullMs:900,_peekLastFullAttemptMs:900,_PEEK_HISTORY_REFRESH_MS:30000,
     _peekPollInFlight:false,_peekPollAgain:false,
     sessions:[{name:'lane',status:'waiting'}],_peekPollBeacon(){},_peekUpdateBranch(){},
-    refreshPeek:async live=>{refreshes.push(live);if(duringRequest)duringRequest();now+=requestMs;}});
-  ctx._refreshPeekSoon();assert.equal(timerDelays.get(ctx.peekTimer),40);
+    refreshPeek:async (live=false)=>{refreshes.push(live);if(!live){ctx._peekLastFullAttemptMs=now;return;}if(duringRequest)duringRequest();now+=requestMs;}});
+  ctx._refreshPeekSoon();assert.equal(timerDelays.get(ctx.peekTimer),0);
   await timers.get(ctx.peekTimer)();assert.deepEqual(refreshes,[true]);
   assert.equal(timerDelays.get(ctx.peekTimer),100);
-  now=3000;await timers.get(ctx.peekTimer)();assert.deepEqual(refreshes,[true,false]);
+  now=3000;await timers.get(ctx.peekTimer)();assert.deepEqual(refreshes,[true,false,true]);
   assert.ok(timerDelays.get(ctx.peekTimer)>100);
   // AMUX-4802: the cadence is a PERIOD. A 1500ms setting with a 200ms request
   // waits 1300, not 1500. The request's duration used to be added on top.
