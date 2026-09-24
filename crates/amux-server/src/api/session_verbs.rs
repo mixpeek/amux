@@ -12100,6 +12100,76 @@ fn build_claude_cmd(
     cmd
 }
 
+/// Durable "a start is running" marker in the worker's meta.
+///
+/// WHY (2026-09-24, testing the create modal's "Use worktree" on mixpeek). A
+/// deploy replaces the server with exec(): no destructor runs, the in-flight
+/// `git worktree add` loses its stderr pipe and dies, git's own cleanup deletes
+/// the half-written checkout, and nothing ever retried the start. Twice in one
+/// hour a worktree worker was left stopped with no error after the builder
+/// adopted a commit mid-checkout. Every normal return drops this guard and
+/// clears the marker; exec() skips the drop, so the marker survives exactly
+/// the case that needs it.
+struct StartInProgress(String);
+
+impl StartInProgress {
+    const KEY: &'static str = "start_in_progress_since";
+    fn begin(name: &str) -> Self {
+        update_meta(name, &[(Self::KEY, json!(now_i64()))]);
+        Self(name.to_string())
+    }
+}
+
+impl Drop for StartInProgress {
+    fn drop(&mut self) {
+        update_meta(
+            &self.0,
+            &[(Self::KEY, Value::Null), ("start_resume_attempts", json!(0))],
+        );
+    }
+}
+
+/// Whether a start recorded in `meta` was cut off and should be run again:
+/// begun within the last hour and resumed fewer than three times (so a start
+/// that kills its own server cannot loop).
+pub(crate) fn interrupted_start_due(meta: &Map<String, Value>, now: i64) -> bool {
+    let since = meta_i64(meta, StartInProgress::KEY);
+    since > 0 && now - since < 3600 && meta_i64(meta, "start_resume_attempts") < 3
+}
+
+/// Boot-time pass: re-run every start the previous process did not finish.
+/// Returns how many were resumed. Logs one WARN per resume so a sweep sees
+/// how often deploys cut starts off.
+pub(crate) async fn resume_interrupted_starts(state: &AppState) -> usize {
+    let now = now_i64();
+    let mut resumed = 0;
+    for name in all_lane_names() {
+        let meta = load_meta(&name);
+        if meta_i64(&meta, StartInProgress::KEY) == 0 {
+            continue;
+        }
+        if !interrupted_start_due(&meta, now) || is_running(&name).await {
+            update_meta(&name, &[(StartInProgress::KEY, Value::Null)]);
+            continue;
+        }
+        let attempts = meta_i64(&meta, "start_resume_attempts") + 1;
+        update_meta(&name, &[("start_resume_attempts", json!(attempts))]);
+        tracing::warn!(session = %name, attempts, measured = true, n_considered = 1,
+            verdict = "interrupted_start_resumed",
+            "a start was cut off by a server restart; running it again");
+        resumed += 1;
+        let st = state.clone();
+        crate::db::interactions::spawn(async move {
+            let (ok, msg) = start_session(&st, &name, "", false).await;
+            if !ok {
+                tracing::warn!(session = %name, reason = %chars_truncate(&msg, 200),
+                    verdict = "interrupted_start_resume_failed", "resumed start did not launch");
+            }
+        });
+    }
+    resumed
+}
+
 /// Per-session choreography lock — Python parity (`_get_session_lock`,
 /// py:24231 wraps the whole start choreography).
 ///
@@ -12424,6 +12494,9 @@ pub(crate) async fn start_session(
     let op_lock = session_op_lock(name);
     let _op = op_lock.lock().await;
     update_meta(name, &[("boot_start_scheduled", json!(false))]);
+    // A start interrupted by a server restart must come back by itself; the
+    // marker is what the next boot reads (see `resume_interrupted_starts`).
+    let _in_progress = StartInProgress::begin(name);
     if is_session_blocked(name) {
         return (
             false,
@@ -45158,6 +45231,27 @@ mod amux4770_worktree_isolation_tests {
     /// prune ran while its directory still existed, so the registration
     /// survived every delete. Pinned at source: reproducing needs a remove that
     /// is killed half way.
+    #[test]
+    fn a_start_cut_off_by_a_restart_is_resumed_a_bounded_number_of_times() {
+        let now = 1_790_000_000;
+        let meta = |since: i64, attempts: i64| {
+            let mut m = serde_json::Map::new();
+            m.insert("start_in_progress_since".into(), serde_json::json!(since));
+            m.insert("start_resume_attempts".into(), serde_json::json!(attempts));
+            m
+        };
+        assert!(super::interrupted_start_due(&meta(now - 30, 0), now));
+        assert!(super::interrupted_start_due(&meta(now - 30, 2), now));
+        assert!(!super::interrupted_start_due(&meta(now - 30, 3), now), "capped");
+        assert!(!super::interrupted_start_due(&meta(now - 7200, 0), now), "too old to resume");
+        assert!(!super::interrupted_start_due(&serde_json::Map::new(), now), "no marker, nothing to resume");
+        let src = include_str!("session_verbs.rs");
+        let start = src.split_once("pub(crate) async fn start_session(").unwrap().1;
+        let lock = start.find("let _op = op_lock.lock().await;").unwrap();
+        assert!(start[lock..lock + 400].contains("StartInProgress::begin(name)"),
+            "the marker must be taken under the op lock at the top of every start");
+    }
+
     #[test]
     fn reclaim_gives_remove_the_add_budget_and_prunes_after_the_directory_goes() {
         let src = include_str!("session_verbs.rs");
