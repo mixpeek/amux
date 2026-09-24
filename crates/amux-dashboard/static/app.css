@@ -1731,7 +1731,6 @@
     .header-row { gap:0; padding:6px max(6px, env(safe-area-inset-right, 0px)) 6px max(6px, env(safe-area-inset-left, 0px)); flex-wrap:nowrap; justify-content:space-between; }
     .header-row > .header-brand, .header-row > .header-actions { display:contents !important; }
     .header-row #brand-header, .header-row #conn-status, .header-row #notif-btn,
-    .header-row #needsyou-btn,
     .header-row .header-add-btn, .header-row .settings-btn, .header-row .btn-active,
     .header-row .btn-rate-limit { flex:0 0 44px; width:44px; min-width:44px; height:44px; min-height:44px; box-sizing:border-box; justify-content:center; padding:4px; }
     .header-row #brand-header { font-size:1.25rem; }
@@ -3163,6 +3162,9 @@
   /* Needs You panel reuses .notif-panel/.notif-panel-item/.notif-badge (and
      their mobile rules above) — only the lane grouping header and the
      truncation note are new. */
+  .needsyou-inline-count { align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px;
+    margin-left:6px; border-radius:9px; background:var(--red, #f85149); color:#fff; font-size:0.66rem; font-weight:700; }
+  .notif-feed-header { border-top:1px solid var(--border); }
   .needsyou-panel-lane {
     font-size: 0.68rem; font-weight: 700; color: var(--dim);
     padding: 8px 12px 2px; text-transform: uppercase; letter-spacing: 0.02em;

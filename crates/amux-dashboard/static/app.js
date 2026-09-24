@@ -4133,8 +4133,13 @@ function _notifUpdateBadge() {
   const badge = document.getElementById('notif-badge');
   if (!badge) return;
   _notifUnread = _notifItems.filter(n => !n.read).length;
-  badge.textContent = _notifUnread > 99 ? '99+' : String(_notifUnread);
-  badge.style.display = _notifUnread > 0 ? 'flex' : 'none';
+  // The bell also carries what is waiting on you, since Needs You now lives
+  // inside its panel. The try covers the call before _needsYouData exists.
+  let needsYou = 0;
+  try { needsYou = (_needsYouData && _needsYouData.n_considered) || 0; } catch (e) {}
+  const total = _notifUnread + needsYou;
+  badge.textContent = total > 99 ? '99+' : String(total);
+  badge.style.display = total > 0 ? 'flex' : 'none';
 }
 
 function _notifShowBanner(icon, title, body, session) {
@@ -4363,6 +4368,7 @@ function toggleNotifPanel() {
     panel.scrollTop = 0;
     _positionNotifPanel();
     _notifRenderPanel();
+    _needsYouFetch(true);
     _notifUpdateNativeBtn();
     _notifUpdateBannerBtn();
     _notifItems.forEach(n => n.read = true);
@@ -4438,45 +4444,11 @@ document.addEventListener('click', (e) => {
 // push channel that was ruled out. This is its own small header indicator
 // (button/badge/panel), visually consistent with the notif panel (same CSS
 // classes) but functionally independent of it.
-let _needsYouPanelOpen = false;
 let _needsYouData = null;
 
-function toggleNeedsYouPanel() {
-  _needsYouPanelOpen = !_needsYouPanelOpen;
-  const panel = document.getElementById('needsyou-panel');
-  if (!panel) return;
-  panel.classList.toggle('active', _needsYouPanelOpen);
-  document.getElementById('needsyou-btn')?.setAttribute('aria-expanded', String(_needsYouPanelOpen));
-  if (_needsYouPanelOpen) {
-    panel.scrollTop = 0;
-    _positionNeedsYouPanel();
-    _needsYouFetch();
-  }
-}
-
-function _positionNeedsYouPanel() {
-  const panel = document.getElementById('needsyou-panel');
-  const button = document.getElementById('needsyou-btn');
-  if (!panel || !button || !_needsYouPanelOpen) return;
-  const anchor = button.getBoundingClientRect();
-  const width = panel.getBoundingClientRect().width;
-  const top = Math.min(anchor.bottom + 8, Math.max(12, innerHeight - 120));
-  panel.style.left = Math.max(12, Math.min(anchor.left, innerWidth - width - 12)) + 'px';
-  panel.style.top = top + 'px';
-  panel.style.maxHeight = Math.max(80, Math.min(520, innerHeight - top - 12)) + 'px';
-}
-window.addEventListener('resize', _positionNeedsYouPanel);
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && _needsYouPanelOpen) {
-    toggleNeedsYouPanel();
-    document.getElementById('needsyou-btn')?.focus();
-  }
-});
-document.addEventListener('click', (e) => {
-  if (_needsYouPanelOpen && !e.target.closest('#needsyou-panel') && !e.target.closest('#needsyou-btn')) {
-    toggleNeedsYouPanel();
-  }
-});
+// Needs You is a section of the alert (bell) panel now; there is no separate
+// header button (Ethan, 2026-09-24). Existing callers close/open that panel.
+function toggleNeedsYouPanel() { toggleNotifPanel(); }
 
 async function _needsYouFetch(forceRender) {
   try {
@@ -4486,7 +4458,7 @@ async function _needsYouFetch(forceRender) {
     if (!d || d.measured !== true) return;  // an unmeasured probe is not a zero (ethos rule 4)
     _needsYouData = d;
     _needsYouUpdateBadge();
-    if (_needsYouPanelOpen || forceRender) _needsYouRenderPanel();
+    if (_notifPanelOpen || forceRender) _needsYouRenderPanel();
   } catch (e) { /* offline or the endpoint is unreachable — leave the last-known badge as is */ }
 }
 
@@ -4497,7 +4469,8 @@ function _needsYouUpdateBadge() {
   // would silently read as "that's everything" (ethos rule 4).
   const n = _needsYouData.n_considered || 0;
   badge.textContent = n > 99 ? '99+' : String(n);
-  badge.style.display = n > 0 ? 'flex' : 'none';
+  badge.style.display = n > 0 ? 'inline-flex' : 'none';
+  _notifUpdateBadge();
 }
 
 function _needsYouRenderPanel() {
@@ -11654,7 +11627,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1075';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1076';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

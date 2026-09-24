@@ -202,19 +202,16 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
             <button onclick="_notifToggleNative()" id="notif-native-btn" style="background:none;border:none;cursor:pointer;font-size:0.75rem;" title="Toggle native (background/lock-screen) notifications">&#x1F50A;</button>
           </div>
         </div>
-        <div id="notif-panel-list"></div>
-      </div>
-    </div>
-    <div style="position:relative;">
-      <button id="needsyou-btn" onclick="toggleNeedsYouPanel()" title="Needs You" style="cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.7;line-height:1;position:relative;" aria-label="Needs You" aria-controls="needsyou-panel" aria-expanded="false">&#x1F64B;<span id="needsyou-badge" class="notif-badge" style="display:none;">0</span></button>
-      <div id="needsyou-panel" class="notif-panel">
-        <div class="notif-panel-header">
-          <span>Needs You</span>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <button onclick="_needsYouFetch(true)" style="background:none;border:1px solid var(--border);color:var(--accent);cursor:pointer;font-size:0.68rem;border-radius:5px;padding:3px 9px;" title="Refresh">Refresh</button>
-          </div>
+        <!-- Needs You lives inside the alert panel (Ethan, 2026-09-24): the
+             blocking asks sit above the notification feed, and their count is
+             folded into the bell badge. -->
+        <div class="notif-panel-header needsyou-section-header">
+          <span>Needs You <span id="needsyou-badge" class="needsyou-inline-count" style="display:none;">0</span></span>
+          <button onclick="_needsYouFetch(true)" style="background:none;border:1px solid var(--border);color:var(--accent);cursor:pointer;font-size:0.68rem;border-radius:5px;padding:3px 9px;" title="Refresh">Refresh</button>
         </div>
         <div id="needsyou-panel-list"></div>
+        <div class="notif-panel-header notif-feed-header"><span>Recent</span></div>
+        <div id="notif-panel-list"></div>
       </div>
     </div>
   </div>
