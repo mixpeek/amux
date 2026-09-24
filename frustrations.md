@@ -4727,3 +4727,14 @@ CARD: AF-947
 SYMPTOM: Auto-created POG-25 showed Working now while its provider was at a hook-review picker. The project execution stage recorded assignment, but the UI treated it as live activity despite the worker view reporting Needs input.
 COST: Conflicting project and worker status hid startup and delivery progress.
 FIX: Derive Working now only from fresh active/working provider observations. Distinguish queued, assigned, starting, idle, paused, stopped, input, error, rate-limit and stale/unavailable states, and remove their working highlight. Emit project-worker-state-mismatch through client-debug when an existing displayed card changes into a mismatch. Regression covers each state and offline/cache startup.
+
+## Review matrix guessed source section numbers from board task IDs
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-25's review report marked T20 unavailable and shifted multiple Tn mappings, although POG-21 owns spec T20 and has a checked SDK/MCP candidate. The harness candidate catalog omitted acceptance criteria and source section markers.
+COST: Human-facing review material misrepresented coverage even while correctly withholding runtime and production approval.
+FIX: Include exact criteria, parsed source_sections, board status, execution stage and checked report commands/assets in the existing candidate catalog. Explicitly forbid deriving spec IDs from board numbers or ordering. Extend the catalog regression with a deliberately unrelated board ID and T20 marker. The existing project.candidate_catalog_delivered event covers this packet; correctness is rechecked through normal project review feedback rather than editing produced artifacts or marking them approved.

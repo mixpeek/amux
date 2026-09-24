@@ -32,9 +32,11 @@ pub(crate) fn candidate_catalog(conn: &Connection, project: &str) -> anyhow::Res
     bs::project_issues(conn,project)?.into_iter().filter(|row|row.archived==0).map(|row| {
         let e=planner::execution(conn,&row.id)?;
         let candidate=if row.status=="verified" && e.stage=="verified" && e.input_hash==planner::input_hash(&row) {
-            e.report.as_ref().map(|report|json!({"head":report.head,"summary":crate::api::board::chars_elide_middle(&report.summary,240,80),"verification":"task_candidate_only"}))
+            e.report.as_ref().map(|report|json!({"head":report.head,"summary":crate::api::board::chars_elide_middle(&report.summary,240,80),"verification":"task_candidate_only","checks":report.checks,"assets":report.assets,"retained_assets":e.retained_assets}))
         } else { None };
-        Ok(json!({"id":row.id,"title":row.title,"candidate":candidate}))
+        let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+        let source_sections=criteria.iter().flat_map(|criterion|criterion.split("[spec:").skip(1).filter_map(|part|part.split_once(']').map(|(id,_)|id.to_string()))).collect::<std::collections::BTreeSet<_>>();
+        Ok(json!({"id":row.id,"title":row.title,"status":row.status,"execution_stage":e.stage,"criteria":criteria,"source_sections":source_sections,"candidate":candidate}))
     }).collect()
 }
 
@@ -301,11 +303,15 @@ pub(crate) mod tests {
     fn project_candidate_catalog_shares_only_current_checked_local_heads() {
         let (_dir,db,_)=fixture();
         db.write(|c| {
-            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="verified".into();e.waiting=None;e.wait_category=None;e.report=Some(planner::Report{head:"a".repeat(40),summary:"Existing repository gate repaired".into(),checks:vec![],assets:vec![]});
+            c.execute("UPDATE issues SET acceptance_criteria='[\"[spec:T20] SDK parity\"]' WHERE id='A'",[])?;
+            let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.input_hash=planner::input_hash(&row);e.stage="verified".into();e.waiting=None;e.wait_category=None;e.report=Some(planner::Report{head:"a".repeat(40),summary:"Existing repository gate repaired".into(),checks:vec![planner::Check{criterion:"[spec:T20] SDK parity".into(),command:"python3 verify_sdk.py".into()}],assets:vec![super::super::assets::Asset{path:"sdk-proof.json".into(),sha256:"b".repeat(64)}]});
             c.execute("UPDATE issues SET status='verified' WHERE id='A'",[])?;planner::save_execution(c,&row,&e,"test.verified").map_err(store::sql_error)?;
             c.execute("INSERT INTO issues(id,title,status,type,project_group,created,updated) VALUES('FOREIGN','other project','verified','code','other',1,1)",[])?;
             let catalog=candidate_catalog(c,"sample").unwrap();assert!(!catalog.iter().any(|r|r["id"]=="FOREIGN"));
             assert_eq!(catalog.iter().find(|r|r["id"]=="A").unwrap()["candidate"]["head"],"a".repeat(40));
+            let entry=catalog.iter().find(|r|r["id"]=="A").unwrap();
+            assert_eq!(entry["source_sections"],json!(["T20"]));assert_eq!(entry["criteria"],json!(["[spec:T20] SDK parity"]));assert_eq!(entry["status"],"verified");
+            assert_eq!(entry["candidate"]["checks"][0]["command"],"python3 verify_sdk.py");assert_eq!(entry["candidate"]["assets"][0]["path"],"sdk-proof.json");
             assert!(catalog.iter().find(|r|r["id"]=="B").unwrap()["candidate"].is_null());
             c.execute("UPDATE issues SET title='Changed requirements' WHERE id='A'",[])?;
             assert!(candidate_catalog(c,"sample").unwrap().iter().find(|r|r["id"]=="A").unwrap()["candidate"].is_null());
