@@ -4771,3 +4771,14 @@ CARD: AF-947
 SYMPTOM: Candidate verification removed approved runtime commands before applying the source-path/static-command guard. A deferred command could reference the shared checkout or harness receipt files and appear acceptable until independent whole-project execution.
 COST: Runtime deferral hid invalid command provenance until late integration, undermining the distinction between a checked candidate and fresh runtime proof.
 FIX: Preflight every distinct declared command before filtering the deferred runtime subset. Preserve deferral (no duplicate runtime execution) and apply the same static candidate-relative policy to both phases. Emit project.verification_command_preflight_failed. Regression rejects shared-checkout, receipt-file and dynamic commands even when their contract would defer execution; valid runtime commands remain deferred. This source policy does not prove runtime entrypoints exist or that their assertions pass; those still require execution against the integrated candidate.
+
+## Supersedes "A report wins inside the window fix shipped with its own control reversed": wrong attribution
+AREA: attribution
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-09-24
+SESSION: amux-helper
+CARD: AH-181
+SYMPTOM: The earlier entry blamed 8116a29d (Amux-Session: amux, 2026-08-11) for shipping with its test reversed. amux checked with `git log -L`: the test has not changed since 2026-08-11, and `derive_status_explain` changed underneath it across e242f2f6, b7714d33, 2740c06f and abc9585e (Amux-Session: codex-amux-project-lifecycle, 247 lines, adding a new `status = "waiting"` branch). A six-week-green test cannot have been reversed at birth.
+COST: A wrong attribution sent to amux and written here, which amux had to disprove before working the real question. I read the commit that last touched the test instead of asking what changed since it last passed.
+FIX: The failing test stands; the owner of the regression is codex-amux-project-lifecycle's status work. Check `git log -L` on the assertion AND on the function under test before naming an author.
