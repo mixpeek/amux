@@ -6442,11 +6442,11 @@ fn stuck_composer_card_after_s() -> f64 {
 /// It never needed `ghost_rescue` for its data either, which is why restoring it
 /// took no resurrection: the age comes from `composer_stuck_since`, stamped by
 /// `rate_limit_sweep`, and `composer_stuck_lanes()` is the shared reader.
-pub fn detect_stuck_composer(now: f64) -> (Vec<Finding>, Vec<Suppressed>) {
-    stuck_composer_findings(
-        &crate::api::session_verbs::composer_stuck_lanes(),
-        now,
-    )
+pub fn detect_stuck_composer(
+    lanes: &[(String, i64)],
+    now: f64,
+) -> (Vec<Finding>, Vec<Suppressed>) {
+    stuck_composer_findings(lanes, now)
 }
 
 fn stuck_composer_findings(lanes: &[(String, i64)], now: f64) -> (Vec<Finding>, Vec<Suppressed>) {
@@ -7978,6 +7978,11 @@ async fn autofix_tick_with_inputs(
     // costs one probe per account per 300s, not per tick).
     let (mut connector_f, mut connector_s) = connector_auth_probe(now, home).await;
 
+    // Stuck composers: the running check is async (it asks tmux), so this is
+    // computed OFF the store lock like disk/CI/connectors rather than inside
+    // the detector match. Cheap either way: 233 lanes, 3.0 MB of meta, 12 ms.
+    let stuck_lanes = crate::api::session_verbs::composer_stuck_lanes().await;
+
     let (findings, suppressed, on) = {
         let conn = match state.store.read() {
             Ok(c) => c,
@@ -8017,7 +8022,7 @@ async fn autofix_tick_with_inputs(
                     std::mem::take(&mut connector_f),
                     std::mem::take(&mut connector_s),
                 ),
-                DetectorKind::StuckComposer => detect_stuck_composer(now),
+                DetectorKind::StuckComposer => detect_stuck_composer(&stuck_lanes, now),
             };
             findings.extend(f);
             suppressed.extend(s);
@@ -10027,7 +10032,15 @@ mod tests {
         // A file that is not a meta file at all must not become a lane.
         std::fs::write(sessions.join("held.env"), "CC_TAGS=x\n").unwrap();
 
-        let (findings, _) = super::detect_stuck_composer(now);
+        // The fleet read now happens in `composer_stuck_lanes()`, which also
+        // drops lanes that are not running; that half is pinned by
+        // `a_stamped_lane_that_is_not_running_is_not_stuck` below. Here the
+        // lanes are supplied, so this pins the threshold and the naming.
+        let lanes: Vec<(String, i64)> = vec![
+            ("held".to_string(), now as i64 - 8 * 3600),
+            ("fresh".to_string(), now as i64 - 60),
+        ];
+        let (findings, _) = super::detect_stuck_composer(&lanes, now);
         let named: Vec<&str> = findings.iter().map(|f| f.signature.as_str()).collect();
         assert_eq!(
             named,
@@ -10050,8 +10063,45 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let _g = crate::api::settings::test_env::set_home(dir.path());
         std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
-        let (findings, _) = super::detect_stuck_composer(1_788_000_000.0);
+        let (findings, _) = super::detect_stuck_composer(&[], 1_788_000_000.0);
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// A STAMP IS NOT A STUCK COMPOSER ONCE THE LANE IS GONE.
+    ///
+    /// `rate_limit_sweep` is the only writer of `composer_stuck_since` and it
+    /// skips lanes that are not running, so a lane stamped once and then
+    /// stopped keeps that stamp forever with nothing able to clear it.
+    /// Measured 2026-09-24 on the live fleet: lifecycle-haiku-r3-0915 read
+    /// 206.5h "stuck" with `running: false`, no tmux session at all, and a
+    /// preview of `[1]+Stopped claude --model ...`, which is bash job control
+    /// rather than anything a person typed. The first version of this detector
+    /// filed a card for it.
+    ///
+    /// The reader now shares the predicate the fleet list already applies to
+    /// this same field, so the detector and the status display cannot disagree
+    /// about which lanes count.
+    #[tokio::test]
+    async fn a_stamped_lane_that_is_not_running_is_not_stuck() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        // Stamped nine days ago, and no tmux session exists for it here.
+        std::fs::write(
+            sessions.join("ghost.meta.json"),
+            serde_json::json!({
+                "composer_stuck_since": 1_788_000_000i64 - 9 * 86_400,
+                "composer_preview": "[1]+Stopped claude --model claude-haiku-4-5"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let lanes = crate::api::session_verbs::composer_stuck_lanes().await;
+        assert!(
+            lanes.is_empty(),
+            "a stamped lane with no running session must not be offered as stuck: {lanes:?}"
+        );
     }
 
     /// The threshold must be a real gate in both directions and must be the
