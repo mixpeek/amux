@@ -69,12 +69,38 @@ pub(super) fn command(cli: &str, model: &str, cwd: &Path) -> Command {
     cmd
 }
 
+// launchd/systemd PATH can resolve an abandoned npm shim. Match worker and
+// account-probe discovery via the user's login shell, while passing all provider
+// arguments as argv (never interpolating model, prompt or config into shell code).
+fn login_command(shell: &str, cli: &str, model: &str, cwd: &Path) -> Command {
+    let provider = command(cli, model, cwd);
+    let mut cmd = Command::new(shell);
+    cmd.args(["-lc", "exec \"$@\"", "amux-codex-helper"])
+        .arg(provider.get_program())
+        .args(provider.get_args())
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd
+}
+
 pub(super) fn complete(model: &str, prompt: &str) -> Result<ModelCompletion, ModelFailure> {
     let cwd = tempfile::tempdir().map_err(|e| format!("Codex helper workspace: {e}"))?;
-    let cli = std::env::var("AMUX_CODEX_HELPER_CLI").unwrap_or_else(|_| "codex".into());
+    let explicit_cli = std::env::var("AMUX_CODEX_HELPER_CLI").ok();
+    let cli = explicit_cli.as_deref().unwrap_or("codex");
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+    let cmd = match explicit_cli {
+        Some(_) => command(cli, model, cwd.path()),
+        None => login_command(&shell, cli, model, cwd.path()),
+    };
+    tracing::info!(target:"amux::model_helper", provider="codex", model,
+        resolution=if explicit_cli.is_some() {"explicit_cli"} else {"worker_login_shell"},
+        measured=true, n_considered=1, verdict="codex_helper_launch",
+        "Using the worker login environment for provider discovery; one invocation, no model fallback");
     let budget = Duration::from_secs(super::MODEL_TIMEOUT_S);
     let exchange = super::helper_io::run(
-        command(&cli, model, cwd.path()),
+        cmd,
         prompt.as_bytes(),
         budget,
         super::output_limit(),
@@ -88,11 +114,11 @@ pub(super) fn complete(model: &str, prompt: &str) -> Result<ModelCompletion, Mod
                 });
             }
             let usage = observed_usage(&String::from_utf8_lossy(&output.stdout));
-            let message = super::finish_cli_exchange(exchange, &cli, budget).unwrap_err();
+            let message = super::finish_cli_exchange(exchange, cli, budget).unwrap_err();
             return Err(ModelFailure { message, usage });
         }
     }
-    let transcript = super::finish_cli_exchange(exchange, &cli, budget)?;
+    let transcript = super::finish_cli_exchange(exchange, cli, budget)?;
     parse_completion(&transcript)
 }
 
@@ -309,6 +335,34 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn login_discovery_preserves_literal_provider_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let scope = tempfile::tempdir().unwrap();
+        let cli = scope.path().join("fixture codex");
+        std::fs::write(&cli, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let model = "literal $(touch should-not-exist) `model`";
+        let expected = command(cli.to_str().unwrap(), model, scope.path())
+            .get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let output = login_command("/bin/sh", cli.to_str().unwrap(), model, scope.path())
+            .output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().lines().collect::<Vec<_>>(), expected);
+        assert!(!scope.path().join("should-not-exist").exists());
+    }
+
+    #[test]
+    fn default_discovery_uses_login_shell_with_the_same_data_only_flags() {
+        let cmd = login_command("/test/login-shell", "codex", "gpt-6-luna", Path::new("/empty"));
+        assert_eq!(cmd.get_program(), "/test/login-shell");
+        let args = cmd.get_args().map(|a| a.to_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(&args[..4], &["-lc", "exec \"$@\"", "amux-codex-helper", "codex"]);
+        assert!(args.contains(&"--ignore-user-config"));
+        assert!(args.windows(2).any(|a| a == ["--disable", "hooks"]));
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/empty")));
+    }
+
     #[test]
     fn codex_command_keeps_auth_but_disables_ambient_execution() {
         let cmd = command("fixture-codex", "gpt-6-astra", Path::new("/empty"));

@@ -4261,3 +4261,15 @@ CARD: AH-181
 SYMPTOM: `cargo test -p amux-server --lib api::sessions_legacy::tests::a_report_from_before_the_last_restart_is_a_previous_life` fails deterministically (reproduced in isolation, not contention): `derive_status("x", true)` returns `"waiting"` where the test's own CONTROL case asserts `"idle"` (sessions_legacy.rs:6317) for a fresh idle report (inside the contradiction window) over a waiting picker on the pane. Introduced by 8116a29d ("fix(status): a picker on the pane contradicts a stale idle report", part of AMUX-2952) — that commit's own message says the fresh-report control should still assert `idle` ("report wins" inside the window), so the shipped implementation and its own test disagree about where the window boundary falls.
 COST: A red `cargo test -p amux-server --lib` for anyone on this checkout who runs the full suite, with no indication it is pre-existing rather than theirs — exactly the "is a red build mine" question this repo's own CLAUDE.md exists to answer, except here the answer requires reading the failing commit's own message to see it contradicts its own test.
 FIX: amux to reconcile 8116a29d's window-boundary check against its own stated intent (fresh report inside the window should still win) — either the test's fresh-report timestamp or the implementation's window comparison is off by the wrong side of the boundary. Reported directly; not attempted here.
+
+
+## Selected Codex project planner resolved a broken service-manager CLI shim
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-23
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Retrying goal-spec project setup through the UI on f7f9b6a6 selected gpt-6-luna correctly, but Codex exited before inference: the service PATH found an abandoned npm wrapper whose native binary was missing. Worker sessions used the functioning login-shell installation.
+COST: Project creation could not proceed autonomously despite a working authenticated provider being installed. No fallback model was invoked and no project was falsely marked verified.
+FIX: Match existing worker and account-probe discovery through the login shell, pass all provider flags as literal argv, retain explicit helper CLI overrides, bounded I/O and data-only restrictions. Log the chosen resolution; test shell argument safety and wire project/outbox/state regressions into CI. Live project rerun pending.

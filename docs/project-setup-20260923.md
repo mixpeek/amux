@@ -24,3 +24,10 @@ deadline, so status and queue reads continue during busy traffic.
 Validation: 17 project API/unit tests; three dashboard function regressions; 25 outbox
 regressions. The original connection-recovery evidence remains separate. Live project
 execution and its implementation evidence are not implied by these harness tests.
+
+The first live rerun on `f7f9b6a6` proved selection reached Codex, then caught a
+service-manager PATH mismatch: a broken npm shim shadowed the working provider
+installed in the worker login environment. Helper discovery now matches workers
+and the existing account probe. Arguments remain literal, tools/hooks stay disabled,
+and explicit CLI overrides remain authoritative. This is one provider invocation,
+not a fallback call. Project/outbox/state regression scripts are also wired into CI.

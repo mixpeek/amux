@@ -25,6 +25,9 @@ jobs:
         run: |
           npm ci --ignore-scripts
           node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs
+          npm run test:project-setup
+          npm run test:outbox
+          npm run test:state
       # AF-148 / AMUX-3524 follow-up: a client JS change that ships WITHOUT a
       # version bump reaches no browser holding the cached script, and nothing
       # said so. dashboard_assets.rs pins that APP_VER and CACHE AGREE — but
