@@ -3707,6 +3707,16 @@ fn md_render_table(block: &[&str], max_width: usize) -> String {
     res.join("\n")
 }
 
+thread_local! {
+    /// Columns the READER can see, for laying out markdown tables (Ethan
+    /// 2026-09-24: "render peek view to be optimized for the screen, tables,
+    /// wrapping ... but do not hide / delete shit"). Tables used to be laid
+    /// out 100 wide whatever the screen, so a phone got a sideways-scrolling
+    /// box. Set only around a synchronous render (see
+    /// `render_session_transcript_at`); cells WRAP to fit, never truncate.
+    static MD_TABLE_COLS: std::cell::Cell<usize> = const { std::cell::Cell::new(100) };
+}
+
 fn md_to_ansi(text: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let header_re = cached_re!(r"^(#{1,6})\s+(.*)$");
@@ -3728,7 +3738,9 @@ fn md_to_ansi(text: &str) -> String {
                 blk.push(lines[j]);
                 j += 1;
             }
-            out.push(md_render_table(&blk, 100));
+            // Transcript prose is indented two columns under its marker.
+            let cols = MD_TABLE_COLS.with(|c| c.get()).saturating_sub(2).max(24);
+            out.push(md_render_table(&blk, cols));
             i = j;
             continue;
         }
@@ -3766,14 +3778,13 @@ fn tool_brief(inp: &Value) -> String {
         "old_string",
     ] {
         if let Some(v) = obj.get(k).and_then(|v| v.as_str()) {
-            let v = v.replace('\n', " ").trim().to_string();
+            // IN FULL (Ethan 2026-09-24: "do not hide / delete shit"). This cut
+            // every command to 90 characters plus an ellipsis, so the history
+            // could not show what a worker actually ran. Continuation lines are
+            // indented under the call; the reader's screen does the wrapping.
+            let v = v.trim();
             if !v.is_empty() {
-                let t = chars_truncate(&v, 90);
-                return if v.chars().count() > 90 {
-                    format!("{t}\u{2026}")
-                } else {
-                    t
-                };
+                return v.replace('\n', "\n    ");
             }
         }
     }
@@ -3849,6 +3860,20 @@ fn last_assistant_message(name: &str, max_chars: usize) -> String {
 }
 
 fn render_session_transcript(name: &str, max_chars: usize) -> String {
+    render_session_transcript_at(name, max_chars, 100)
+}
+
+/// The transcript with markdown tables laid out for a reader `cols` wide.
+/// Synchronous on purpose: the width lives in a thread-local, which is only
+/// sound when nothing awaits between setting and restoring it.
+fn render_session_transcript_at(name: &str, max_chars: usize, cols: usize) -> String {
+    let prev = MD_TABLE_COLS.with(|c| c.replace(cols.clamp(24, 400)));
+    let out = render_session_transcript_inner(name, max_chars);
+    MD_TABLE_COLS.with(|c| c.set(prev));
+    out
+}
+
+fn render_session_transcript_inner(name: &str, max_chars: usize) -> String {
     let Some(path) = session_jsonl_path(name) else {
         return String::new();
     };
@@ -3983,7 +4008,9 @@ mod peek_history_is_verbatim {
     #[test]
     fn peeks_own_entry_point_does_not_collapse_tool_runs() {
         let src = include_str!("session_verbs.rs");
-        let i = src.find("fn render_session_transcript(").expect("entry point");
+        // The public entry delegates to `_at` (table width) and then `_inner`,
+        // which is where the records are rendered.
+        let i = src.find("fn render_session_transcript_inner(").expect("entry point");
         let body = &src[i..i + 400];
         assert!(
             body.contains("max_chars, false)"),
@@ -15683,7 +15710,13 @@ fn parse_pane_geometry(raw: &str) -> Option<(i64, i64)> {
     Some((cols, rows))
 }
 
-async fn peek_response(name: &str, lines: i64, live_only: bool, no_trim: bool) -> Value {
+async fn peek_response_at(
+    name: &str,
+    lines: i64,
+    live_only: bool,
+    no_trim: bool,
+    table_cols: usize,
+) -> Value {
     let provider = provider_of(&parse_env(name));
     if live_only {
         let output = strip_scroll_pill(&tmux_capture(name, lines).await);
@@ -15747,7 +15780,7 @@ async fn peek_response(name: &str, lines: i64, live_only: bool, no_trim: bool) -
                 clean_gemini_frame(&tmux_capture(name, 0).await),
             )
         } else {
-            (render_session_transcript(name, 120_000), output)
+            (render_session_transcript_at(name, 120_000, table_cols), output)
         };
         let mut live = if output.is_empty() {
             String::new()
@@ -24799,11 +24832,13 @@ pub(crate) async fn peek_verb(name: &str, qs: &[(String, String)]) -> Response {
     let lines: i64 = qs_first(qs, "lines", "80").parse().unwrap_or(80);
     let live_only = qs_flag(qs, "live");
     let no_trim = qs_flag(qs, "notrim");
+    // The reader's visible width in columns, for table layout (default 100).
+    let table_cols: usize = qs_first(qs, "cols", "100").parse().unwrap_or(100);
     // Geometry is attached HERE rather than inside peek_response because
     // that function has six return points (live_only, alt-screen, normal,
     // short-output, empty…) and a key added to one of them is a key the
     // reader cannot rely on. One injection site covers every shape.
-    let mut resp = peek_response(name, lines, live_only, no_trim).await;
+    let mut resp = peek_response_at(name, lines, live_only, no_trim, table_cols).await;
     if let (Some((cols, rows)), Some(obj)) = (tmux_pane_geometry(name).await, resp.as_object_mut())
     {
         obj.insert("pane_cols".into(), json!(cols));
@@ -35821,6 +35856,29 @@ CLAUDE-POSTFIX-COMPLETE
     }
 
     #[test]
+    fn a_table_fits_the_readers_width_and_keeps_every_word() {
+        let md = "| name | what it does |\n|---|---|\n| peek | renders the worker history with every tool call, every result and every table, wrapped to the phone |\n| send | delivers exactly once in order |";
+        let words = ["renders", "worker", "history", "every", "wrapped", "phone", "delivers", "exactly", "order"];
+        for cols in [40usize, 60, 100] {
+            let prev = MD_TABLE_COLS.with(|c| c.replace(cols));
+            let out = strip_ansi(&md_to_ansi(md));
+            MD_TABLE_COLS.with(|c| c.set(prev));
+            let widest = out.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+            assert!(widest <= cols, "cols={cols} widest={widest}\n{out}");
+            for w in words { assert!(out.contains(w), "cols={cols} lost {w:?}\n{out}"); }
+        }
+    }
+
+    #[test]
+    fn a_tool_call_is_shown_in_full() {
+        let cmd = format!("echo {} && echo done", "x".repeat(300));
+        let brief = tool_brief(&json!({"command": format!("{cmd}\nsecond line")}));
+        assert!(brief.contains(&cmd), "{brief}");
+        assert!(brief.contains("second line"), "{brief}");
+        assert!(!brief.contains('\u{2026}'), "no ellipsis: {brief}");
+    }
+
+    #[test]
     fn transcript_md_render_basics() {
         let out = md_to_ansi("# Head\n**bold** and `code`");
         assert!(out.contains("\x1b[1mHead\x1b[22m"), "{out:?}");
@@ -37407,7 +37465,7 @@ CLAUDE-POSTFIX-COMPLETE
         .unwrap();
         // No provider process/alternate screen. A fresh or stopped worker is
         // still the same conversation surface, with measured empty history.
-        let body = peek_response(&name, 300, false, false).await;
+        let body = peek_response_at(&name, 300, false, false, 100).await;
         assert_eq!(body["name"], name);
         assert_eq!(body["history"], "");
         assert_eq!(body["history_lines"], 0);

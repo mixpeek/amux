@@ -14035,7 +14035,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     const provider = sessionProvider(sessions.find(s => s.name === name) || {});
     const lines = liveOnly && (provider === 'codex' || provider === 'ollama') ? 0 : 300;
     const _et = liveOnly ? _peekLiveEtag : _peekEtag;
-    const response = fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=' + lines + (liveOnly ? '&live=1&notrim=1' : ''),
+    const response = fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/peek?lines=' + lines + (liveOnly ? '&live=1&notrim=1' : '&cols=' + _peekVisibleCols()),
       { ...(_et ? { headers: { 'If-None-Match': _et } } : {}), signal: _peekAc.signal });
     _peekAgentsLoad();
     if (performance.now() - _peekPlanLast > 8000) { _peekPlanLast = performance.now(); _peekLoadPlan(); }
@@ -15723,6 +15723,27 @@ async function peekQuickSend(text) {
   if (!peekSession) return;
   await doSend(peekSession, text);
   _refreshPeekSoon();
+}
+// How many monospace columns the peek body shows, so the server lays out
+// markdown tables to fit this screen (cells wrap; nothing is cut). Measured
+// from the rendered font, not guessed from the viewport.
+let _peekColsCache = { w: 0, cols: 100 };
+function _peekVisibleCols() {
+  const body = document.getElementById('peek-body');
+  const w = body ? body.clientWidth : 0;
+  if (!w) return _peekColsCache.cols;
+  if (w === _peekColsCache.w) return _peekColsCache.cols;
+  const probe = document.createElement('span');
+  probe.textContent = 'M'.repeat(50);
+  probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;';
+  body.appendChild(probe);
+  const ch = probe.getBoundingClientRect().width / 50;
+  probe.remove();
+  const style = getComputedStyle(body);
+  const inner = w - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+  const cols = ch > 0 ? Math.max(24, Math.min(400, Math.floor(inner / ch))) : 100;
+  _peekColsCache = { w, cols };
+  return cols;
 }
 async function peekQuickKeys(keys) {
   if (!peekSession) return;
