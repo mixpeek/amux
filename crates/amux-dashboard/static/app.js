@@ -11627,7 +11627,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1076';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1077';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -24375,8 +24375,10 @@ async function submitCreate() {
     }
     // Save branch preference: custom name, auto (default), or none
     if (branch && dir) {
-      // Custom branch name — create it and save to config
-      await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {
+      // Custom branch name — create it and save to config. With a worktree the
+      // branch is created INSIDE the worktree at start; checking it out here
+      // would switch the main (possibly shared) checkout's branch.
+      if (!worktreeEnabled) await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({branch, create: true}),
       }).catch(() => {});

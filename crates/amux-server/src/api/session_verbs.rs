@@ -12014,14 +12014,62 @@ pub(crate) async fn start_session(
                 "HEAD"
             }
         };
-        let added = run_cmd(
-            "git",
-            &[
-                "-C", &work_dir, "worktree", "add", "--detach", &wt_path, pinned_at,
-            ],
-            WORKTREE_ADD_TIMEOUT,
-        )
-        .await;
+        // ON THE REQUESTED BRANCH (Ethan, 2026-09-24: tested the create modal's
+        // "Use worktree" box). The branch used to be created by a pre-start
+        // `git checkout -b` in the MAIN checkout, which switched a shared
+        // checkout's branch and left this worktree detached. Create it here
+        // instead: a new branch cut from the same pin, or the existing branch.
+        // If git refuses (e.g. that branch is checked out elsewhere), fall back
+        // to the detached worktree so isolation is never lost, and say so.
+        let requested_branch = {
+            let b = cfg.get_or("CC_BRANCH", "").trim().to_string();
+            (!b.is_empty() && b != "none" && b != "HEAD").then_some(b)
+        };
+        let mut added = None;
+        if let Some(branch) = requested_branch.as_deref() {
+            let ref_name = format!("refs/heads/{branch}");
+            let exists = run_cmd(
+                "git",
+                &["-C", &work_dir, "rev-parse", "--verify", "--quiet", &ref_name],
+                OP_TIMEOUT,
+            )
+            .await
+            .is_some_and(|o| o.status.success());
+            let args: Vec<&str> = if exists {
+                vec!["-C", &work_dir, "worktree", "add", &wt_path, branch]
+            } else {
+                vec![
+                    "-C", &work_dir, "worktree", "add", "--no-track", "-b", branch, &wt_path,
+                    pinned_at,
+                ]
+            };
+            let out = run_cmd("git", &args, WORKTREE_ADD_TIMEOUT).await;
+            if out.as_ref().is_some_and(|o| o.status.success()) && wt_dir.join(".git").exists() {
+                tracing::info!(session = name, branch, existed = exists, measured = true,
+                    n_considered = 1, verdict = "worktree_on_branch",
+                    "worktree created on the requested branch");
+                added = out;
+            } else {
+                let detail = out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                    .unwrap_or_default();
+                tracing::warn!(session = name, branch, existed = exists, detail = %detail,
+                    measured = true, n_considered = 1, verdict = "worktree_branch_unavailable",
+                    "requested branch could not be checked out in the worktree; falling back to a detached worktree");
+                let _ = reclaim_worktree(&work_dir, &wt_path).await;
+            }
+        }
+        if added.is_none() {
+            added = run_cmd(
+                "git",
+                &[
+                    "-C", &work_dir, "worktree", "add", "--detach", &wt_path, pinned_at,
+                ],
+                WORKTREE_ADD_TIMEOUT,
+            )
+            .await;
+        }
         // A `git worktree add` that exits 0 is not proof the directory is
         // there. The incident behind this card had the worktree REGISTERED and
         // the directory MISSING, so the exit status alone would have passed it.
@@ -24622,16 +24670,37 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         // Reading the record first also repairs workers ALREADY created
         // without the variable, which setting it at creation cannot do.
         let record = crate::fanout_workspace::load(&home(), name);
+        // THIRD SOURCE: start's own convention (Ethan, 2026-09-24, testing the
+        // create modal's "Use worktree"). A worker created from the dashboard has
+        // neither a workspace record nor CC_WORKTREE_REPO: CC_DIR is the REPO and
+        // start cut the worktree at ~/.amux/worktrees/<name>. Without this, every
+        // such delete logged worktree_reclaim_unresolved and leaked the worktree.
+        let conventional = home().join("worktrees").join(name);
+        let by_convention = record.is_none()
+            && cfg.get_or("CC_WORKTREE_REPO", "").is_empty()
+            && conventional.exists();
         let wt_repo = record
             .as_ref()
             .map(|w| w.repo.clone())
             .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| cfg.get_or("CC_WORKTREE_REPO", "").to_string());
+            .unwrap_or_else(|| {
+                if by_convention {
+                    cfg.get_or("CC_DIR", "").to_string()
+                } else {
+                    cfg.get_or("CC_WORKTREE_REPO", "").to_string()
+                }
+            });
         let wt_dir = record
             .as_ref()
             .map(|w| w.path.clone())
             .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| cfg.get_or("CC_DIR", "").to_string());
+            .unwrap_or_else(|| {
+                if by_convention {
+                    conventional.to_string_lossy().into_owned()
+                } else {
+                    cfg.get_or("CC_DIR", "").to_string()
+                }
+            });
         if wt_repo.is_empty() || wt_dir.is_empty() {
             // NEVER SKIP SILENTLY. From outside, a skipped reclaim and a
             // successful one are the same 200, which is exactly how this ran
@@ -44571,6 +44640,47 @@ mod amux4770_worktree_isolation_tests {
             code.contains("worktree_reclaim_failed"),
             "a failed reclaim must be announced. The old call discarded its result with `let _`, \
              which is why a leak on every ephemeral reap went unnoticed"
+        );
+    }
+
+    /// A worker created from the dashboard with "Use worktree" has no workspace
+    /// record and no CC_WORKTREE_REPO; its worktree is at start's conventional
+    /// path. Deleting it must reclaim that, not log unresolved and leak it
+    /// (found 2026-09-24 by creating and deleting one through the modal).
+    #[test]
+    fn deleting_a_dashboard_worktree_worker_reclaims_the_conventional_path() {
+        let src = include_str!("session_verbs.rs");
+        let body = src.split_once("async fn delete_post(").unwrap().1;
+        let body = body.split_once("\n    j200(").unwrap().0;
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(code.contains("let conventional = home().join(\"worktrees\").join(name);"));
+        assert!(code.contains("if by_convention {"));
+    }
+
+    /// "Use worktree" + a branch must create the worktree ON that branch, and
+    /// the dashboard must not check the branch out in the main checkout first.
+    #[test]
+    fn the_worktree_is_created_on_the_requested_branch_not_the_main_checkout() {
+        let src = include_str!("session_verbs.rs");
+        let block = src
+            .split_once("    // --- Worktree isolation (opt-in via CC_WORKTREE=1) ---")
+            .unwrap()
+            .1
+            .split_once("\n    // AC-346:")
+            .unwrap()
+            .0;
+        assert!(block.contains("cfg.get_or(\"CC_BRANCH\", \"\")"));
+        assert!(block.contains("\"--no-track\", \"-b\", branch"));
+        assert!(block.contains("verdict = \"worktree_branch_unavailable\""));
+        assert!(block.contains("\"worktree\", \"add\", \"--detach\""), "detached fallback kept");
+        let app = include_str!("../../../amux-dashboard/static/app.js");
+        assert!(
+            app.contains("if (!worktreeEnabled) await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/git', {"),
+            "with a worktree the create modal must not run `git checkout -b` in the main checkout"
         );
     }
 
