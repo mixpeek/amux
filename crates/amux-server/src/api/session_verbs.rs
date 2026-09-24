@@ -17082,7 +17082,16 @@ pub(crate) fn stamp_queued_delivery(
 /// `queue.parked_behind_hold` already calls that age a breach, so a message
 /// that crosses it arrives saying so rather than two instruments disagreeing
 /// about when "too old" starts.
-fn stale_delivery_stamp(text: &str, age_s: f64, parked_max_s: f64) -> Option<String> {
+fn stale_delivery_stamp(
+    text: &str,
+    age_s: f64,
+    parked_max_s: f64,
+    isolated: bool,
+) -> Option<String> {
+    // Isolated messages are owner bytes, with no harness prose added.
+    if isolated {
+        return None;
+    }
     // `partial_cmp`, not `!(a > b)`: clippy's `neg_cmp_op_on_partial_ord`
     // refused the negated form and it was right to. Spelling the comparison out
     // makes the NaN case a decision rather than a side effect — an unmeasured
@@ -17638,7 +17647,9 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         // message is not amux's call to make on their behalf.
         let parked_max = crate::invariants::checks::queue_parked_max_s();
         let aged_text;
-        let payload: &str = if let Some(stamped) = stale_delivery_stamp(&text, age, parked_max) {
+        let payload: &str = if let Some(stamped) =
+            stale_delivery_stamp(&text, age, parked_max, session_is_isolated(&session))
+        {
             aged_text = stamped;
             tracing::warn!(
                 session = %session, delivery_id = %id,
@@ -45090,27 +45101,35 @@ mod boot_delivery_tests {
     #[test]
     fn a_long_parked_message_arrives_carrying_its_age() {
         let parked_max = 72.0 * 3600.0;
+        assert_eq!(
+            super::stale_delivery_stamp("ship it", 223.1 * 3600.0, parked_max, true),
+            None,
+            "isolated queued messages must remain exact owner input"
+        );
 
         // Fresh: untouched. A stamp on every delivery would be noise on the
         // 99% of messages that are seconds old.
         assert_eq!(
-            super::stale_delivery_stamp("ship it", 5.0, parked_max),
+            super::stale_delivery_stamp("ship it", 5.0, parked_max, false),
             None
         );
         // Exactly at the threshold is not PAST it.
         assert_eq!(
-            super::stale_delivery_stamp("ship it", parked_max, parked_max),
+            super::stale_delivery_stamp("ship it", parked_max, parked_max, false),
             None,
             "the boundary must match the invariant's `age > max`, not `>=`"
         );
 
         // ts-gke's real worst case: 9.3 days.
-        let aged = super::stale_delivery_stamp("ship it", 223.1 * 3600.0, parked_max)
+        let aged = super::stale_delivery_stamp("ship it", 223.1 * 3600.0, parked_max, false)
             .expect("a message parked 223h must be stamped");
         assert!(aged.contains("223.1h"), "the age must be IN it: {aged}");
         // THE MESSAGE ITSELF SURVIVES. This is the whole reason it is a stamp
         // and not a void: dropping a peer's request is not amux's call.
-        assert!(aged.ends_with("ship it"), "the original text was altered: {aged}");
+        assert!(
+            aged.ends_with("ship it"),
+            "the original text was altered: {aged}"
+        );
         assert!(
             aged.lines().count() == 2,
             "the stamp is one line above the message, not woven into it: {aged:?}"
@@ -45118,7 +45137,8 @@ mod boot_delivery_tests {
 
         // A DIFFERENT AGE PRODUCES A DIFFERENT STAMP, so the field cannot be a
         // constant wearing a measurement's clothes.
-        let other = super::stale_delivery_stamp("ship it", 100.0 * 3600.0, parked_max).unwrap();
+        let other =
+            super::stale_delivery_stamp("ship it", 100.0 * 3600.0, parked_max, false).unwrap();
         assert_ne!(aged, other);
         assert!(other.contains("100.0h"));
     }
