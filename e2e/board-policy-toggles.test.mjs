@@ -15,3 +15,18 @@ test('the worker Board tab carries both policy toggles, wired to worker config',
 test('withholding an owner message requires force adherence, which defaults off',()=>{
  assert.match(bl,/pub\(crate\) fn stage_owner_command\(session: &str, text: &str\) -> bool \{\n    enabled\(session\)\n        && force_adherence\(session\)/);
 });
+test('an isolated worker shows the toggles off and disabled, with the reason',()=>{
+ const i=app.indexOf('function _peekBoardPolicySync(');
+ let d=0,end=0;for(let k=app.indexOf('{',i);k<app.length;k++){if(app[k]==='{')d++;else if(app[k]==='}'&&--d===0){end=k+1;break;}}
+ const els={'peek-board-policy':{style:{}},'peek-board-decompose':{},'peek-board-force':{},'peek-board-policy-note':{style:{}}};
+ const run=(s)=>new Function('document','sessions','peekSession',app.slice(i,end)+'\n_peekBoardPolicySync();')(
+   {getElementById:id=>els[id]},[s],s.name);
+ run({name:'iso',isolated:true,board_decompose:false,board_force_adherence:false});
+ assert.equal(els['peek-board-policy'].style.display,'flex');
+ assert.equal(els['peek-board-decompose'].disabled,true);
+ assert.match(els['peek-board-policy-note'].textContent,/Isolated worker/);
+ run({name:'w',isolated:false,board_decompose:true,board_force_adherence:false});
+ assert.equal(els['peek-board-decompose'].disabled,false);
+ assert.equal(els['peek-board-decompose'].checked,true);
+ assert.equal(els['peek-board-policy-note'].style.display,'none');
+});

@@ -2538,6 +2538,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div id="peek-board-policy" class="peek-board-policy" style="display:none;">
       <label title="Your messages still reach the worker; a planner files them onto this board in the background"><input type="checkbox" id="peek-board-decompose" onchange="togglePeekBoardPolicy('board_decompose', this.checked)"> Decompose onto board</label>
       <label title="Withhold task messages from the worker; it works only from the cards the planner creates"><input type="checkbox" id="peek-board-force" onchange="togglePeekBoardPolicy('board_force_adherence', this.checked)"> Force board adherence</label>
+      <span id="peek-board-policy-note" class="peek-board-policy-note" style="display:none;"></span>
     </div>
     <div id="bf-chips-peek" style="display:none;flex-wrap:wrap;gap:6px;padding:0 10px 6px;"></div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>

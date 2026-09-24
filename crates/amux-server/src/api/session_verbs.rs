@@ -8217,6 +8217,21 @@ pub(crate) async fn is_running(name: &str) -> bool {
 /// MATCH A VISIBLE OPTION: the bare option number, or a prefix of the option's
 /// own words. Anything else is treated as an ordinary prompt and delivered
 /// normally.
+/// `text` plus one space when its last token is an `@`-mention, so Claude
+/// Code's file picker is closed before the submitting Enter. Unchanged
+/// otherwise, including text that already ends in whitespace.
+pub(crate) fn close_trailing_mention(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.ends_with(char::is_whitespace) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    match text.split_whitespace().last() {
+        Some(tok) if tok.starts_with('@') && tok.len() > 1 => {
+            std::borrow::Cow::Owned(format!("{text} "))
+        }
+        _ => std::borrow::Cow::Borrowed(text),
+    }
+}
+
 /// An owner send that finds the lane at a dialog is typed only when it answers
 /// the visible options. Anything else is queued (see the call site in
 /// `send_text_inner_bound`): typed text vanishes into the dialog and its Enter
@@ -11384,12 +11399,22 @@ async fn send_text_inner_bound(
     }
     send_key(name, "C-u").await;
     sleep_ms(40).await;
+    // A TRAILING @-MENTION OPENS THE FILE PICKER EVEN THROUGH A PASTE (Ethan,
+    // 2026-09-24, MSG-68711 "i dont see it @/Users/.../x.png"): the cursor ends
+    // on the mention, Claude Code offers the completion, and the Enter below
+    // accepts it instead of submitting. The owner had to press Enter again.
+    // One trailing space closes the picker; the submitted turn is trimmed.
+    let staged = close_trailing_mention(&text);
+    if staged.len() != text.len() {
+        tracing::info!(session = %name, verdict = "trailing_mention_closed",
+            "message ends in an @-mention; staged a trailing space so Enter submits");
+    }
     if use_paste {
         // Named tmux buffer + paste-buffer -p (py:25630). Also the picker-safe
         // path — see `use_paste` above.
         let buf_name = format!("amux-{}-{}", name, (now_f64() * 1000.0) as i64);
         let tmp = std::env::temp_dir().join(format!("{buf_name}.txt"));
-        if std::fs::write(&tmp, &text).is_err() {
+        if std::fs::write(&tmp, staged.as_bytes()).is_err() {
             return (false, "could not stage paste buffer".into());
         }
         let tmp_s = tmp.to_string_lossy().into_owned();
@@ -11405,7 +11430,7 @@ async fn send_text_inner_bound(
         if !ok2 {
             return (false, "paste-buffer failed".into());
         }
-    } else if !send_literal(name, &text).await {
+    } else if !send_literal(name, &staged).await {
         return (false, "send-keys failed".into());
     }
     // HOW LONG THE COMPOSER NEEDS BEFORE Enter MEANS "SUBMIT".
@@ -35447,6 +35472,20 @@ CLAUDE-POSTFIX-COMPLETE
             !has_current_api_error(prose),
             "prose quoting the phrase mid-line must not match (anchored)"
         );
+    }
+
+    #[test]
+    fn a_trailing_mention_is_closed_before_enter() {
+        assert_eq!(
+            close_trailing_mention("i dont see it @/Users/ethan/.amux/uploads/e6f51fb9a32a-image.png"),
+            "i dont see it @/Users/ethan/.amux/uploads/e6f51fb9a32a-image.png "
+        );
+        assert_eq!(close_trailing_mention("see @a.png and fix it"), "see @a.png and fix it");
+        assert_eq!(close_trailing_mention("email me @ noon"), "email me @ noon");
+        assert_eq!(close_trailing_mention("@x.png "), "@x.png ");
+        let src = include_str!("session_verbs.rs");
+        assert!(src.contains("std::fs::write(&tmp, staged.as_bytes())"), "paste must stage the closed text");
+        assert!(src.contains("send_literal(name, &staged)"), "typed path must too");
     }
 
     #[test]

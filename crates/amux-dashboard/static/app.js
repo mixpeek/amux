@@ -11025,12 +11025,22 @@ function _peekBoardPolicySync() {
   const row = document.getElementById('peek-board-policy');
   if (!row) return;
   const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
-  const show = !!s && !s.isolated && typeof s.board_decompose === 'boolean';
+  // Shown on EVERY worker (Ethan, 2026-09-24: "i dont see the board toggle
+  // stuff", on an isolated worker where the row was hidden). An isolated
+  // worker gets no board automation, so the switches are shown off and
+  // disabled with the reason beside them rather than vanishing.
+  const show = !!s && typeof s.board_decompose === 'boolean';
   row.style.display = show ? 'flex' : 'none';
   if (!show) return;
+  const iso = !!s.isolated;
   const d = document.getElementById('peek-board-decompose'), f = document.getElementById('peek-board-force');
-  if (d) d.checked = !!s.board_decompose;
-  if (f) f.checked = !!s.board_force_adherence;
+  if (d) { d.checked = !iso && !!s.board_decompose; d.disabled = iso; }
+  if (f) { f.checked = !iso && !!s.board_force_adherence; f.disabled = iso; }
+  const note = document.getElementById('peek-board-policy-note');
+  if (note) {
+    note.textContent = iso ? 'Isolated worker: board automation is off. Turn off isolation to use these.' : '';
+    note.style.display = iso ? '' : 'none';
+  }
 }
 async function togglePeekBoardPolicy(field, on) {
   const name = peekSession;
@@ -11717,7 +11727,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1084';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1085';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
