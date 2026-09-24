@@ -8761,6 +8761,29 @@ mod composer_absorbs_non_composer_lines {
     }
 }
 
+/// What an EMPTY send (the Enter control) should do with the composer as drawn.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EmptySendPlan {
+    /// Real typed input is waiting: the Enter key submits it.
+    PressEnter,
+    /// A dim suggestion, an empty box, or no composer: look for a suggested
+    /// prompt to submit as text (a bare Enter does nothing to a suggestion).
+    ExtractSuggestion,
+    /// Keystrokes would land somewhere other than this worker's composer.
+    Refuse(&'static str),
+}
+
+/// Takes the RAW capture: stripped of ANSI, a dim suggestion reads as typed.
+pub(crate) fn empty_send_plan(raw_frame: &str) -> EmptySendPlan {
+    match composer_state(raw_frame) {
+        ComposerState::Typed(_) => EmptySendPlan::PressEnter,
+        ComposerState::BackgroundManager => EmptySendPlan::Refuse(
+            "the background-task manager is open over this worker; close it before sending",
+        ),
+        _ => EmptySendPlan::ExtractSuggestion,
+    }
+}
+
 pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     let clean = strip_ansi(raw_frame);
     // The manager view owns the keyboard: its own status bar says so. Positive
@@ -10902,6 +10925,36 @@ async fn send_text_inner_bound(
                 },
             );
         }
+        // ENTER MEANS "SUBMIT WHAT IS IN THE BOX", AND THE BOX HAS TWO SHAPES
+        // (Ethan 2026-09-24: "pressing enter should send this", a dim
+        // "\u{276f} do G4GM-49 and the idle capacity stuff" sitting unsent).
+        // Read the RAW frame, because stripping ANSI makes a dim suggestion and
+        // real typed text the same string (a_dim_suggestion_is_not_pending_input).
+        //  - Typed: real input is already in the composer. Press Enter. Pasting
+        //    the extracted line again would double it.
+        //  - Placeholder: Claude's dim suggestion. A bare Enter does NOTHING to
+        //    it, so fall through and submit the suggestion as text.
+        match empty_send_plan(&pane) {
+            EmptySendPlan::PressEnter => {
+                let (ok, msg) = send_keys_op(name, "Enter").await;
+                tracing::info!(
+                    session = %name, ok, detail = %msg,
+                    measured = true, n_considered = 1,
+                    verdict = "empty_send_submitted_typed_composer",
+                    "empty send: composer already holds typed input; pressed Enter instead of re-pasting it"
+                );
+                return (
+                    ok,
+                    if ok {
+                        "pressed Enter to submit the text already in the input box".into()
+                    } else {
+                        format!("Enter failed: {msg}")
+                    },
+                );
+            }
+            EmptySendPlan::Refuse(why) => return (false, why.into()),
+            EmptySendPlan::ExtractSuggestion => {}
+        }
         let nonblank: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
         let footer: Vec<&str> = nonblank[nonblank.len().saturating_sub(4)..]
             .iter()
@@ -10967,6 +11020,12 @@ async fn send_text_inner_bound(
                         );
                     }
                     text = suggested.to_string();
+                    tracing::info!(
+                        session = %name, chars = text.chars().count(),
+                        measured = true, n_considered = 1,
+                        verdict = "empty_send_submitted_suggestion",
+                        "empty send: submitting the composer's suggested prompt as text"
+                    );
                     break;
                 }
             }
@@ -23644,6 +23703,14 @@ pub(crate) async fn keys_verb(name: &str, body: &Value) -> Response {
         return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'keys'"}));
     }
     let (ok, msg) = send_keys_op(name, &keys).await;
+    // A key press had no log line at all, so "no Enter in the log" could not
+    // tell a press that never arrived from one the TUI ignored (2026-09-24).
+    tracing::info!(
+        session = %name, keys = %keys, ok, detail = %msg,
+        measured = true, n_considered = 1,
+        verdict = if ok { "keys_delivered_effect_unverified" } else { "keys_not_sent" },
+        "keys verb"
+    );
     let code = if ok {
         update_meta(name, &[("last_send", json!(now_i64()))]);
         StatusCode::OK
@@ -41100,6 +41167,20 @@ mod composer_state_tests {
         assert_eq!(
             composer_state("just some scrollback\nand more\n"),
             ComposerState::NotVisible
+        );
+    }
+
+    #[test]
+    fn enter_submits_typed_text_by_key_and_a_dim_suggestion_by_text() {
+        // Typed input: the key submits it; re-pasting would double it.
+        assert_eq!(empty_send_plan(LIVE_TYPED), EmptySendPlan::PressEnter);
+        // A dim suggestion: a bare Enter does nothing to it, so it is extracted.
+        assert_eq!(empty_send_plan(LIVE_PLACEHOLDER), EmptySendPlan::ExtractSuggestion);
+        // The control: stripped, the suggestion reads as typed. The plan must be
+        // computed from the raw frame or the Enter control silently no-ops.
+        assert_eq!(
+            empty_send_plan(&strip_ansi(LIVE_PLACEHOLDER)),
+            EmptySendPlan::PressEnter
         );
     }
 
