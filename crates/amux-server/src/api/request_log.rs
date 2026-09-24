@@ -1897,6 +1897,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "DELETE"],
     },
     RouteEntry {
+        path: "/api/projects/draft",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/projects",
         methods: &["GET"],
     },
@@ -2492,16 +2496,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/board/{id}/decompose",
-        methods: &["POST"],
-    },
-    RouteEntry {
-        path: "/api/board/{id}/fan-out",
-        methods: &["POST"],
-    },
-    // b707aefd one-shot launch endpoint, caught unlisted by the completeness
-    // check in tests/route_table_completeness.rs minutes after it landed.
-    RouteEntry {
-        path: "/api/board/launch",
         methods: &["POST"],
     },
     RouteEntry {

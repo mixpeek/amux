@@ -5607,8 +5607,8 @@ function _workerActionDefinitions(s) {
     { key: 'task-label', icon: '&#x270F;', label: 'Task label' + (s.task_override ? '' : ' (none)'),
       run: "editField('" + name + "','task','" + escJs(s.task_override || '') + "')" },
     { separator: true },
-    { key: 'task-queue', icon: '&#x2637;', label: 'Task queue',
-      run: "closeAllMenus();_openWorkQueue('" + name + "')" },
+    !s.isolated ? { key: 'task-queue', icon: '&#x2637;', label: 'Task queue',
+      run: "closeAllMenus();_openWorkQueue('" + name + "')" } : null,
     { key: 'peek-terminal', icon: '&#x1F4BB;', label: 'Peek terminal',
       run: "closeAllMenus();openPeek('" + name + "')" },
     { key: 'read-latest', icon: '&#x1F50A;', label: 'Read latest message',
@@ -6379,11 +6379,13 @@ function _idleMovedAt(s) {
   return Number.isFinite(at) && at > 0 ? at : 0;
 }
 function _idleMovedSuffix(s) {
+  if (s?.isolated) return '';
   const at = _idleMovedAt(s);
   if (!at) return ' · never';
   return ' · ' + esc(timeAgo(at).replace(/ ago$/, ''));
 }
 function _idleMovedTitle(s) {
+  if (s?.isolated) return ' title="Idle — ready for your next message."';
   const at = _idleMovedAt(s);
   return at
     ? ' title="Idle right now. Last moved a board card ' + esc(timeAgo(at)) + '."'

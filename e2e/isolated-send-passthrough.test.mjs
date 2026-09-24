@@ -25,3 +25,11 @@ test('isolated status never presents an old board claim as current work',()=>{
  assert.equal(ctx._runtimeBoardPresentation({isolated:true,status:'active',runtime_board:{measured:true,status:'linked',card_id:'OLD-1'}}).cardId,'');
  assert.equal(ctx._runtimeBoardPresentation({isolated:false,status:'active',runtime_board:{measured:true,status:'linked',card_id:'CURRENT-1'}}).cardId,'CURRENT-1');
 });
+
+test('isolated idle labels never imply board inactivity',()=>{
+ const code=source.slice(source.indexOf('function _idleMovedAt('),source.indexOf('function timeAgo('));
+ const ctx=vm.createContext({esc:s=>s,timeAgo:()=> '2h ago'});vm.runInContext(code,ctx);
+ assert.equal(ctx._idleMovedSuffix({isolated:true,last_board_change_ts:123}), '');
+ assert.equal(ctx._idleMovedTitle({isolated:true}), ' title="Idle — ready for your next message."');
+ assert.equal(ctx._idleMovedSuffix({isolated:false,last_board_change_ts:123}), ' · 2h');
+});
