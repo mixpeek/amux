@@ -4606,3 +4606,14 @@ CARD: AF-947
 SYMPTOM: The bucket-objects project overview said Failed / Work is held before verification while its two worker slots were actively making progress; the reason was only executor_capacity on the next queued task.
 COST: Normal bounded concurrency looked like a stalled or failed project.
 FIX: Exclude executor_capacity, like same-project output waits, from the outcome hold summary. Preserve actual authorization holds and acceptance failures. Regression covers running capacity queues, authorization, and a real acceptance failure.
+
+## A runtime check variation exhausted candidate retries before host acceptance
+AREA: efficiency
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-4 reported its approved runtime command plus a prose-criterion variation with cd server and a private-token flag. The variation ran early and exhausted generic retries on missing API credentials despite its report explicitly deferring runtime proof.
+COST: An owned local-fixture implementation became an unnecessary credential hold.
+FIX: Keep exact commands mandatory. For this measured missing-credential failure on a non-contract candidate check bound to an execution contract, grant one preparation retry through the existing bounded, budgeted path. Explain exact runtime-command reuse or genuine local unit checks and root entry points. Never supply production credentials, waive checks, broaden access, or reclassify assertion failures. Human authorization holds remain untouched.

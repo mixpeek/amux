@@ -303,6 +303,26 @@ fn host_execution_recoverable(row: &bs::IssueRow, e: &Execution, project: &store
         }))
 }
 
+/// A local candidate check accidentally invoked the runtime API before the
+/// integrated host phase. Ask for one corrected report; never waive the check,
+/// copy credentials or broaden executor access.
+fn premature_runtime_check(row: &bs::IssueRow, e: &Execution, project: &store::Project) -> bool {
+    if e.stage!="waiting" || e.suspended || e.wait_category.is_some()
+        || e.retry_grants.iter().any(|g|g.request.idempotency_key.starts_with("implementation-prepare:")) { return false; }
+    let Some(report)=e.report.as_ref() else { return false; };
+    let reason=e.waiting.as_deref().unwrap_or("");let lower=reason.to_ascii_lowercase();
+    if !(lower.contains("api_key") || lower.contains("private_token"))
+        || !(lower.contains("provide ") || lower.contains("set ")) { return false; }
+    let criteria:Vec<String>=serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let execution_bound=criteria.iter().any(|criterion|criterion.strip_prefix("contract:")
+        .and_then(|id|project.policy.acceptance.as_ref()?.criterion(id))
+        .is_some_and(|c|matches!(c.verifier,amux_core::project::ContractVerifier::Execution{..})));
+    execution_bound && report.checks.iter().any(|check|!check.criterion.starts_with("contract:")
+        && criteria.contains(&check.criterion)
+        && check.command.trim()!=project.policy.verify_command.trim()
+        && reason.starts_with(&format!("verification failed ({}):",check.command)))
+}
+
 fn provider_launch_recoverable(e: &Execution, project: &store::Project) -> bool {
     e.stage=="waiting" && !e.suspended && e.report.is_none() && e.wait_category.is_none()
         && project.policy.executor.provider=="codex"
@@ -486,6 +506,8 @@ pub fn plan(conn: &Connection, project: &store::Project) -> anyhow::Result<Vec<C
                 action = "grant_repair";
                 None
             }
+        } else if premature_runtime_check(row, &state, project) {
+            if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="prepare_runtime_checks"; None }
         } else if provider_launch_recoverable(&state, project) {
             if let Some(reason)=&budget_wait { Some(reason.clone()) } else { action="recover_provider_launch"; None }
         } else if owned_output_recoverable(row, &state, project) {
@@ -1040,6 +1062,21 @@ mod tests {
         e.waiting=Some("operational: Docker daemon socket permission denied".into());assert!(host_execution_recoverable(&row,&e,&p));
         e.wait_category=Some("spend".into());assert!(!host_execution_recoverable(&row,&e,&p));
         e.waiting=Some("docs.json missing".into());assert!(!owned_output_recoverable(&row,&e,&p));
+    }
+
+    #[test]
+    fn premature_runtime_check_keeps_gates_and_authorization_intact() {
+        let (_dir,db)=fixture();let c=db.read().unwrap();let mut p=store::get(&c,"sample").unwrap().unwrap();
+        p.policy.acceptance=Some(serde_json::from_value(json!({"revision":1,"criteria":[{"id":"api","requirement":"runtime","verifier":{"type":"execution","id":"api","command":"python3 runtime.py","receipt":"receipt.json","required_stages":["api"]},"evidence":[]}]})).unwrap());
+        let mut row=bs::get_issue(&c,"A").unwrap().unwrap();row.acceptance_criteria=Some("[\"Local check\",\"contract:api\"]".into());
+        let mut e=Execution{stage:"waiting".into(),waiting:Some("verification failed (python3 local.py): provide --api-key/API_KEY".into()),report:Some(Report{head:"a".repeat(40),summary:"candidate".into(),assets:vec![],checks:vec![Check{criterion:"Local check".into(),command:"python3 local.py".into()}]}),..Default::default()};
+        assert!(premature_runtime_check(&row,&e,&p));
+        e.wait_category=Some("spend".into());assert!(!premature_runtime_check(&row,&e,&p));e.wait_category=None;
+        e.suspended=true;assert!(!premature_runtime_check(&row,&e,&p));e.suspended=false;
+        e.waiting=Some("verification failed (python3 local.py): nonzero count assertion failed".into());assert!(!premature_runtime_check(&row,&e,&p));
+        e.waiting=Some("verification failed (python3 runtime.py): provide API_KEY".into());assert!(!premature_runtime_check(&row,&e,&p));
+        e.waiting=Some("verification failed (python3 local.py): provide API_KEY".into());p.policy.verify_command="python3 local.py".into();assert!(!premature_runtime_check(&row,&e,&p));
+        p.policy.verify_command="git diff --check".into();p.policy.acceptance=None;assert!(!premature_runtime_check(&row,&e,&p));
     }
 
     #[test]
