@@ -84,6 +84,10 @@ async fn prepare(
     configure_executor_env(&mut env, p, row);
     env.write(&path).map_err(|e| e.to_string())?;
     if p.policy.worktree {
+        // Startup and boundary adoption use the same operation lock. Do not
+        // inspect an index while another path is still checking it out.
+        let lock = sv::session_op_lock(&e.worker);
+        let _op = lock.lock().await;
         workspace::ensure(&crate::config::amux_home(), &e.worker, &p.policy.repository).await?;
     }
     permit(state, &p.name, &row.id, e)?;

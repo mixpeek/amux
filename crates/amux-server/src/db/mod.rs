@@ -227,9 +227,9 @@ pub(crate) enum WriterLockOutcome {
 /// nothing said so for 13 hours (both processes reported healthy the whole
 /// time; SQLite's own WAL locking serializes the writes correctly, so this
 /// was never about corruption, only a silent second writer). This makes that
-/// coexistence loud. It never blocks or fails startup: a probe that cannot
-/// even open the sidecar file degrades to `HeldByOther(None)` treated as
-/// "unknown", not a reason to refuse.
+/// coexistence explicit and prevents a second scheduler from acting on the
+/// same workers. Refuse startup if exclusive ownership cannot be established;
+/// read-only clients must use the running server rather than start another driver.
 fn claim_sole_writer(db_path: &Path) -> WriterLockOutcome {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::io::AsRawFd;
@@ -345,7 +345,7 @@ impl Store {
                      falls onto the compiled-in default port and can silently collide with \
                      the real server on this exact db_path"
                 );
-                None
+                anyhow::bail!("database runtime ownership unavailable for {} (holder pid {:?}, port {:?}); use the existing server or a separate AMUX_HOME", db_path.display(), existing.as_ref().and_then(|e|e.pid), existing.as_ref().and_then(|e|e.port));
             }
         };
         // Migrations run on a dedicated connection before anything else may
@@ -1714,21 +1714,18 @@ mod af937_writer_lock_tests {
 
     /// The defect this card fixes: a second process (simulated here by a
     /// planted foreign lock, not this test's own pid) already has db_path
-    /// open. Opening must still SUCCEED (never refuse to start) and must log
-    /// a WARN naming the other pid/port.
+    /// open. A second scheduler must not start; log and return the owning
+    /// pid/port before touching the database.
     #[test]
-    fn a_foreign_holder_produces_a_named_warn_and_does_not_block_startup() {
+    fn a_foreign_holder_blocks_duplicate_driver_before_database_open() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("t.db");
         let fake_pid = std::process::id().wrapping_add(9973); // never our own pid
         let _foreign = plant_foreign_holder(&db_path, fake_pid, 8823);
 
         let (opened, logs) = with_captured_logs(|| Store::open(&db_path));
-        let store = opened.expect("a contended writer-lock must not fail startup");
-        assert!(
-            !store.holds_writer_lock(),
-            "the loser of the flock must not report holding it"
-        );
+        assert!(opened.is_err(), "a second runtime must not start");
+        assert!(!db_path.exists(), "refusal must precede migrations and writer startup");
         assert!(
             logs.contains("concurrent_writer_detected"),
             "must warn under the greppable verdict: {logs}"
@@ -1741,6 +1738,8 @@ mod af937_writer_lock_tests {
             logs.contains("8823"),
             "the warning must carry the other process's port too: {logs}"
         );
+        drop(_foreign);
+        assert!(Store::open(&db_path).unwrap().holds_writer_lock(), "ownership recovers when the prior process exits");
     }
 
     /// The false-positive this design specifically avoids: the SAME process

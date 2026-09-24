@@ -223,7 +223,10 @@ fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
 }
 
 fn prelaunch_failure(reason: &str) -> bool {
-    workspace_name_collision(reason) || reason == "tmux not found or timed out"
+    workspace_name_collision(reason)
+        || reason == "tmux not found or timed out"
+        || reason == "workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"
+        || reason == "new workspace did not materialize cleanly; preserved for recovery"
 }
 
 fn workspace_name_collision(reason: &str) -> bool {
@@ -1051,6 +1054,14 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn workspace_checkout_race_is_a_bounded_prelaunch_retry() {
+        assert!(prelaunch_failure("workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"));
+        assert!(prelaunch_failure("new workspace did not materialize cleanly; preserved for recovery"));
+        assert!(!prelaunch_failure("existing workspace belongs to a different repository; preserved"));
+        assert!(!prelaunch_failure("workspace has uncommitted user changes"));
+    }
+
     #[test]
     fn retryable_waiting_verification_failure_is_reclaimed_automatically() {
         let (_dir, db) = fixture();

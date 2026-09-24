@@ -4353,3 +4353,14 @@ CARD: AF-947
 SYMPTOM: Goal 03 Tasks said "Submit an outcome" even though request 68596 was retained and intake exhausted. Overview still said "Driving project outcomes" with no executable tasks.
 COST: Users could submit duplicate commands or mistake stalled planning for active execution.
 FIX: Derive empty-board and no-active-task state from pending receipts. Show preparing versus held intake, confirm the outcome is saved, and link directly to request details. Test empty, interpreting, held, and completed request states.
+
+## A second server drove the same project workers and raced worktree creation
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Goal 03 intake recovered all 23 tasks, then workers on the shared database were simultaneously prepared by servers on 8824 and an old manual 8823 process. Each reported an empty index while another finished the same checkout; launch scripts raced too. The existing database ownership lock only warned and deliberately allowed both schedulers.
+COST: Several healthy completed checkouts were held as interrupted, worker launches failed, and task attempts were consumed before any provider work.
+FIX: Pause the affected project through UI and stop the obsolete duplicate process without touching its workers/files. Refuse a second database runtime before migrations or scheduling when ownership cannot be established; test rejection, owner identity, and recovery after release. Serialize project workspace preparation with the worker operation lock already used by startup/adoption. Treat the two known incomplete-checkout diagnostics as bounded prelaunch retries, preserving files and refusing wrong repositories or dirty-workspace shortcuts.
