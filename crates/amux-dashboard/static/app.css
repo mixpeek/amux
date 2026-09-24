@@ -829,6 +829,7 @@
     background: rgba(0,0,0,0.55);
     display: none; align-items: center; justify-content: center;
     padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
   }
   .modal-overlay.active { display: flex; }
   .modal-overlay .modal {
@@ -836,6 +837,14 @@
     width: 100%; max-width: 440px; max-height: min(86dvh, 640px);
     display: flex; flex-direction: column;
     box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+  }
+  @media (max-width: 600px) {
+    .modal-overlay {
+      padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    }
+    .modal-overlay .modal {
+      max-height: calc(var(--dialog-viewport-height, 100dvh) - 16px);
+    }
   }
   .modal-header {
     display: flex; align-items: center; justify-content: space-between;
@@ -926,6 +935,12 @@
     .map-modal-box .map-modal-actions .btn,
     .queue-box .queue-actions .btn,
     .amux-modal .amux-modal-foot .btn { min-height: 44px; }
+    .edit-overlay {
+      padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    }
+    .edit-box {
+      max-height: calc(var(--dialog-viewport-height, 100dvh) - 16px);
+    }
   }
   .overlay-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -3530,7 +3545,8 @@
       top: auto !important;
       bottom: calc(8px + env(safe-area-inset-bottom)) !important;
       width: auto !important; min-width: 0 !important; max-width: none !important;
-      max-height: 60vh; overflow-y: auto;
+      max-height: calc(var(--dialog-viewport-height, 100dvh) - 24px);
+      overflow-y: auto;
       z-index: 4000; border-radius: 10px;
       box-shadow: 0 -6px 28px rgba(0,0,0,0.45);
     }
@@ -4831,6 +4847,14 @@
     /* Same subtraction as the overlay padding: the box must shrink, not just
        shift, or a tall card still runs its sticky footer under the bar. */
     max-height: calc(100dvh - 32px - var(--sw-fail-h, 0px)); overflow-y: auto;
+  }
+  @media (max-width: 600px) {
+    .board-edit-overlay {
+      padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) calc(max(8px, env(safe-area-inset-bottom)) + var(--sw-fail-h, 0px)) max(8px, env(safe-area-inset-left));
+    }
+    .board-edit-box {
+      max-height: calc(var(--dialog-viewport-height, 100dvh) - 16px - var(--sw-fail-h, 0px));
+    }
   }
   .board-edit-box input, .board-edit-box textarea, .board-edit-box select {
     width: 100%; padding: 8px 10px; border-radius: 8px;
