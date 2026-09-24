@@ -150,3 +150,14 @@ test('project checkout navigation follows active work before an alphabetically e
  data.workers[1].workspace_available=false;
  assert.equal(ctx._projectPrimaryWorkspace(data).path,'/repo/.worktrees/idle');
 });
+
+
+test('project wait cards show the authorization cause without leaking scheduler tokens',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(source.slice(source.indexOf('function _projectTaskDisplay('),source.indexOf('function _projectOutcomeVerdict(')),ctx);
+ const display=(reason,waiting)=>ctx._projectTaskDisplay({phase:'waiting',execution_plan:{waiting_label:'Waiting',waiting_reason:reason,execution:{waiting}}});
+ assert.equal(display('executor_capacity','old failure').detail,'');
+ assert.equal(display('required_output:T1','old failure').detail,'');
+ assert.equal(display('authorization_required','spend: Production backfill needs approval').detail,'spend: Production backfill needs approval');
+ assert.equal(display('verification failed (test): assertion mismatch').detail,'verification failed (test): assertion mismatch');
+});

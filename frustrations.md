@@ -4661,3 +4661,14 @@ CARD: AF-947
 SYMPTOM: POG-14 supplied both required checks plus two additional checks; exact report length rejected valid coverage and stranded the retained receipt.
 COST: A complete candidate needed another model turn solely to remove useful checks.
 FIX: Require every declared criterion exactly once and unique nonempty supplemental checks, then run all commands through the existing validator and verifier. Supplemental checks never replace required coverage. Reconsider structurally valid rejected receipts from the exact current generation and clean HEAD without another executor turn; preserve stale/authorization/suspension protections and log the recovered receipt.
+
+## Project cards exposed scheduler tokens instead of actionable causes
+AREA: UX
+SEVERITY: papercut
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: The live board repeated executor_capacity and authorization_required under already readable labels; the production spend cause was hidden.
+COST: Users could not tell what actually needed approval and routine capacity waits looked broken.
+FIX: Show the retained authorization cause, omit redundant scheduler tokens beside their labels, and preserve concrete verification errors. Tests distinguish a current capacity queue from a stale previous failure. The underlying planner reason and diagnostics remain retained.

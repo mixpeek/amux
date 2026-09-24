@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1071';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1072';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45126,7 +45126,12 @@ function _projectAssets(data) {
 function _projectTaskDisplay(card, acceptance=(typeof _projectsData==='undefined'?null:_projectsData?.acceptance)) {
   const plan=card?.execution_plan || {}, e=plan.execution || {};
   const phase=card?.phase || card?.status || 'unknown';
-  if(plan.waiting_label || plan.waiting_reason) return {label:plan.waiting_label || 'Waiting', cls:'waiting', detail:plan.waiting_reason || ''};
+  if(plan.waiting_label || plan.waiting_reason) {
+    const reason=String(plan.waiting_reason || '');
+    const detail=reason==='authorization_required' ? (e.waiting || 'Owner authorization is required before this action.')
+      : /^(executor_capacity|project_paused|project_disabled|executor_suspended|required_output:)/.test(reason) ? '' : reason;
+    return {label:plan.waiting_label || 'Waiting', cls:'waiting', detail};
+  }
   if(e.stage==='repair') return {label:plan.action==='claim'?'Repair queued':'Repairing', cls:'waiting', detail:e.waiting || e.last_failure || ''};
   if(plan.action==='grant_repair') return {label:'Repair grant queued', cls:'waiting', detail:e.waiting || ''};
   if(e.stage==='reported' || e.stage==='verifying' || phase==='verifying') return {label:'Verifying', cls:'verifying', detail:e.waiting || ''};
