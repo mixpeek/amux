@@ -225,6 +225,7 @@ fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
 fn prelaunch_failure(reason: &str) -> bool {
     workspace_name_collision(reason)
         || reason == "tmux not found or timed out"
+        || reason == "provider launch ended without a live process or confirmed UI"
         || reason == "workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"
         || reason == "new workspace did not materialize cleanly; preserved for recovery"
 }
@@ -1056,6 +1057,7 @@ mod tests {
     }
     #[test]
     fn workspace_checkout_race_is_a_bounded_prelaunch_retry() {
+        assert!(prelaunch_failure("provider launch ended without a live process or confirmed UI"));
         assert!(prelaunch_failure("workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"));
         assert!(prelaunch_failure("new workspace did not materialize cleanly; preserved for recovery"));
         assert!(!prelaunch_failure("existing workspace belongs to a different repository; preserved"));

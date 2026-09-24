@@ -4375,3 +4375,14 @@ CARD: AF-947
 SYMPTOM: After stopping the obsolete 8823 runtime, endpoint.json still named that dead process. The production builder repeatedly queried its dead URL and refused adoption even though 8824 was healthy.
 COST: The duplicate-runtime repair could not deploy autonomously.
 FIX: Builder endpoint discovery checks the recorded owner. A measured dead owner falls back to the configured server port and logs ENDPOINT OWNER EXITED; a live owner or explicit URL remains authoritative. Hermetic activation tests exercise both dead and live ownership. No endpoint receipt is manually rewritten.
+
+## Failed provider startup remained a permanent project wait
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: POG-21 retained the measured launcher error "provider launch ended without a live process or confirmed UI" after concurrent runtimes disrupted startup. The planner did not classify that prelaunch failure for recovery.
+COST: The task would remain waiting even after its underlying launch race was removed.
+FIX: Include the existing exact startup diagnostic in bounded prelaunch recovery, only without a submitted result and within the existing attempt and automatic-grant limits. The generic retry remains observable through the existing retry receipt/log; test the diagnostic alongside checkout recovery and nonretryable repository/user-change cases.
