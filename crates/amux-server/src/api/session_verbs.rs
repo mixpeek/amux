@@ -17071,6 +17071,34 @@ pub(crate) fn stamp_queued_delivery(
     )
 }
 
+/// The age stamp a long-parked message carries when it finally delivers, or
+/// `None` when it is fresh enough to stand on its own (AMUX-5013).
+///
+/// Split out of `steer_deliver_tick` so the DECISION is testable: the tick
+/// itself needs a live store and a tmux pane, so inline this rule could only be
+/// exercised by reading it.
+///
+/// The threshold is the invariant's own (`queue_parked_max_s`), deliberately:
+/// `queue.parked_behind_hold` already calls that age a breach, so a message
+/// that crosses it arrives saying so rather than two instruments disagreeing
+/// about when "too old" starts.
+fn stale_delivery_stamp(text: &str, age_s: f64, parked_max_s: f64) -> Option<String> {
+    // `partial_cmp`, not `!(a > b)`: clippy's `neg_cmp_op_on_partial_ord`
+    // refused the negated form and it was right to. Spelling the comparison out
+    // makes the NaN case a decision rather than a side effect — an unmeasured
+    // age must not manufacture a staleness claim, so it falls through to None
+    // exactly like a fresh message.
+    match age_s.partial_cmp(&parked_max_s) {
+        Some(std::cmp::Ordering::Greater) => {}
+        _ => return None,
+    }
+    Some(format!(
+        "[amux: this message was queued {:.1}h ago and held until now. Check whether it \
+         is still current before acting on it]\n{text}",
+        age_s / 3600.0
+    ))
+}
+
 pub async fn steer_deliver_tick(state: &AppState) -> usize {
     // Reconcile superseded project packets before liveness/boundary checks:
     // an old unsent packet must not block retirement forever. All proof and
@@ -17584,12 +17612,52 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         };
         // from_steering=true is still passed: it makes the callee REFUSE rather
         // than re-queue if the lane starts generating between this check and the
+        // SAY HOW OLD IT IS, when it has been parked past the point the
+        // `queue.parked_behind_hold` invariant already calls a breach
+        // (AMUX-5013).
+        //
+        // The picker-answer void 90 lines up makes this exact argument for a
+        // different payload: "A keypress is only meaningful while its picker is
+        // up; once it is gone the same characters become an instruction the
+        // model will try to obey." A nine-day-old prose message has the same
+        // problem in slower motion, and unlike a keypress it cannot be voided
+        // safely — it is a peer's real request, not a stale gesture.
+        //
+        // Measured 2026-09-23: 61 messages sit in `steering_queue` behind 13
+        // paused lanes, in two bulk clusters (53 queued 09-14, 8 queued 09-20).
+        // ts-gke alone holds 21 from 09-14. Nothing drops them on resume, so
+        // the lane that comes back gets all 21 at once with no indication that
+        // the oldest is 9.3 days old, and acts on them as if sent today.
+        //
+        // `age` is already computed above for the delivery decision, and has
+        // only ever been used to deliver SOONER (`steer_max_age_s`). This is
+        // the first use of it to tell the RECIPIENT anything.
+        //
+        // Non-destructive on purpose. The message still arrives in full; the
+        // only change is that its age arrives with it. Dropping a peer's
+        // message is not amux's call to make on their behalf.
+        let parked_max = crate::invariants::checks::queue_parked_max_s();
+        let aged_text;
+        let payload: &str = if let Some(stamped) = stale_delivery_stamp(&text, age, parked_max) {
+            aged_text = stamped;
+            tracing::warn!(
+                session = %session, delivery_id = %id,
+                age_h = age / 3600.0, parked_max_h = parked_max / 3600.0,
+                measured = true, n_considered = 1,
+                verdict = "steering_delivered_stale",
+                "delivering a message that was parked past the invariant's own threshold; \
+                 stamped with its age so the recipient does not read it as current (AMUX-5013)"
+            );
+            &aged_text
+        } else {
+            &text
+        };
         // send, so a lost race leaves the row where it is instead of duplicating.
         let Some((ok, msg)) = send_claimed_steering(
             state,
             &id,
             &session,
-            &text,
+            payload,
             SendMode::drained(mid_turn, false),
         )
         .await
@@ -45005,6 +45073,56 @@ mod project_steering_tests {
 
 #[cfg(test)]
 mod boot_delivery_tests {
+
+    /// AMUX-5013. A message parked past the invariant's own threshold must
+    /// arrive SAYING SO, and a fresh one must arrive untouched.
+    ///
+    /// Measured 2026-09-23: 61 messages sit in `steering_queue` behind 13
+    /// paused lanes, in two bulk clusters (53 queued 09-14, 8 queued 09-20).
+    /// ts-gke alone holds 21 from 09-14. Nothing drops them on resume, so the
+    /// lane that comes back reads a 9.3-day-old request as current.
+    ///
+    /// The codebase already makes this argument ninety lines above the delivery
+    /// call, for a keypress: "once [the picker] is gone the same characters
+    /// become an instruction the model will try to obey" (AMUX-2823, which
+    /// VOIDS it). Prose cannot be voided safely — it is a peer's real request —
+    /// so it is stamped instead.
+    #[test]
+    fn a_long_parked_message_arrives_carrying_its_age() {
+        let parked_max = 72.0 * 3600.0;
+
+        // Fresh: untouched. A stamp on every delivery would be noise on the
+        // 99% of messages that are seconds old.
+        assert_eq!(
+            super::stale_delivery_stamp("ship it", 5.0, parked_max),
+            None
+        );
+        // Exactly at the threshold is not PAST it.
+        assert_eq!(
+            super::stale_delivery_stamp("ship it", parked_max, parked_max),
+            None,
+            "the boundary must match the invariant's `age > max`, not `>=`"
+        );
+
+        // ts-gke's real worst case: 9.3 days.
+        let aged = super::stale_delivery_stamp("ship it", 223.1 * 3600.0, parked_max)
+            .expect("a message parked 223h must be stamped");
+        assert!(aged.contains("223.1h"), "the age must be IN it: {aged}");
+        // THE MESSAGE ITSELF SURVIVES. This is the whole reason it is a stamp
+        // and not a void: dropping a peer's request is not amux's call.
+        assert!(aged.ends_with("ship it"), "the original text was altered: {aged}");
+        assert!(
+            aged.lines().count() == 2,
+            "the stamp is one line above the message, not woven into it: {aged:?}"
+        );
+
+        // A DIFFERENT AGE PRODUCES A DIFFERENT STAMP, so the field cannot be a
+        // constant wearing a measurement's clothes.
+        let other = super::stale_delivery_stamp("ship it", 100.0 * 3600.0, parked_max).unwrap();
+        assert_ne!(aged, other);
+        assert!(other.contains("100.0h"));
+    }
+
     use super::*;
     #[test]
     fn boot_delivery_requires_fresh_empty_idle_frame() {
