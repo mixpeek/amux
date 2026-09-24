@@ -950,6 +950,26 @@ fn cadence_seconds(expr: &str) -> Option<i64> {
     (widest > 0).then_some(widest)
 }
 
+/// The query the invariant actually runs, as a `const` so a test can drive the
+/// SHIPPED SQL against a temp database rather than a restatement of it. The
+/// recovery predicate below is the whole subject of AMUX-5032 and it is not
+/// reachable from `unrecorded_schedule_outcomes_are_visible`, which takes rows
+/// already built.
+pub(crate) const UNRECORDED_SCHEDULE_OUTCOMES_SQL: &str =
+    "SELECT r.schedule_id, COUNT(*), COALESCE(s.title,''), COALESCE(s.session,''), \
+            MAX(r.ran_at) AS newest_unknown, \
+            (SELECT MIN(n.ran_at) FROM schedule_runs n \
+               WHERE n.schedule_id = r.schedule_id \
+                 AND n.ran_at > MAX(r.ran_at) \
+                 AND (n.status IN ('ok','delivered','queued','refused') \
+                      OR (n.delivery IS NOT NULL AND n.delivery <> 'unknown'))) \
+              AS recovered_at, \
+            s.schedule_expr, \
+            (s.id IS NOT NULL AND COALESCE(s.enabled,0)=1 AND s.deleted IS NULL) AS can_fire \
+     FROM schedule_runs r LEFT JOIN schedules s ON s.id = r.schedule_id \
+     WHERE r.delivery='unknown' AND r.ran_at > ?1 \
+     GROUP BY r.schedule_id";
+
 fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "scheduler.unrecorded_delivery_outcomes";
     let window_h: i64 = std::env::var("AMUX_UNRECORDED_SCHEDULE_WINDOW_H")
@@ -980,6 +1000,32 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
     // having recovered — it invented a stalled SCHED-455 while that schedule
     // was firing every 20 minutes exactly as configured.
     //
+    // AND SO DOES A RECORDED FAILURE, by the same definition (AMUX-5032). The
+    // status list is a list of SUCCESSES plus one refusal, and a schedule that
+    // legitimately fails every fire never enters it, so a restart-orphaned
+    // `unknown` on that schedule can never be cleared by anything.
+    //
+    // That is not hypothetical and it is not rare. SCHED-410 sat red for 13
+    // days across 7 episodes for exactly this reason: its script raised on
+    // every fire, so it recorded `status=error, delivery='shell'` forever and
+    // never an `ok`, and the orphan row from a restart had nothing to clear it.
+    // The invariant only went green at 20:03:40 on 2026-09-23, 22 seconds after
+    // the script was fixed and the schedule finally recorded an `ok`.
+    //
+    // SCHED-483 is the same shape and is working AS DESIGNED: a daily GCP
+    // estate drift check that exits non-zero when it finds drift. It can go
+    // months without an `ok` while being perfectly healthy.
+    //
+    // `delivery` is the honest discriminator and it separates cleanly.
+    // Measured over the whole table: every one of the 123 `delivery='unknown'`
+    // rows is `status=error`, while genuine recorded failures carry
+    // `delivery='shell'` (179) or `'failed'` (12). So "a later row with a real
+    // delivery value" means an outcome was written down, which is what this
+    // invariant asks, and an orphan cannot recover another orphan.
+    //
+    // ORed rather than replacing the status list, so every recovery that
+    // counted before still counts: NULL-delivery `ok` rows (12910 of them,
+    // written before the column existed) are unaffected.
     // AND A REFUSAL COUNTS, because what this invariant measures is whether an
     // outcome got RECORDED, not whether the work succeeded (AMUX-4805). A
     // 'refused' row says the scheduler fired, reached a decision and wrote it
@@ -992,17 +1038,7 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
     // drops the fires from 15 to 11 and every one it removes is that shape.
     let rows: Vec<checks::UnrecordedScheduleOutcome> = conn
         .prepare(
-            "SELECT r.schedule_id, COUNT(*), COALESCE(s.title,''), COALESCE(s.session,''), \
-                    MAX(r.ran_at) AS newest_unknown, \
-                    (SELECT MIN(n.ran_at) FROM schedule_runs n \
-                       WHERE n.schedule_id = r.schedule_id \
-                         AND n.ran_at > MAX(r.ran_at) \
-                         AND n.status IN ('ok','delivered','queued','refused')) AS recovered_at, \
-                    s.schedule_expr, \
-                    (s.id IS NOT NULL AND COALESCE(s.enabled,0)=1 AND s.deleted IS NULL) AS can_fire \
-             FROM schedule_runs r LEFT JOIN schedules s ON s.id = r.schedule_id \
-             WHERE r.delivery='unknown' AND r.ran_at > ?1 \
-             GROUP BY r.schedule_id",
+            UNRECORDED_SCHEDULE_OUTCOMES_SQL,
         )
         .and_then(|mut st| {
             st.query_map([cutoff], |r| {
@@ -4563,5 +4599,110 @@ mod cadence_seconds_tests {
     fn an_unparseable_expression_yields_no_deadline() {
         assert_eq!(cadence_seconds("whenever ethan says so"), None);
         assert_eq!(cadence_seconds(""), None);
+    }
+}
+
+#[cfg(test)]
+mod unrecorded_schedule_sql_tests {
+    use rusqlite::Connection;
+
+    /// AMUX-5032. A schedule that legitimately FAILS every fire must still be
+    /// able to clear a restart-orphaned `unknown`.
+    ///
+    /// The recovery subquery listed successes plus one refusal, so a schedule
+    /// that never records an `ok` could never recover. SCHED-410 sat red for 13
+    /// days across 7 episodes for exactly that reason, and only went green 22
+    /// seconds after its script was fixed. SCHED-483 is the same shape while
+    /// being HEALTHY: a daily GCP drift check that exits non-zero when it finds
+    /// drift, so it can go months without an `ok`.
+    ///
+    /// Drives the SHIPPED query text, not a restatement of it.
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE schedule_runs(id INTEGER PRIMARY KEY, schedule_id TEXT, ran_at REAL, \
+                status TEXT, note TEXT, source TEXT, delivery TEXT, submission TEXT);
+             CREATE TABLE schedules(id TEXT PRIMARY KEY, title TEXT, session TEXT, \
+                schedule_expr TEXT, enabled INTEGER, deleted INTEGER);
+             INSERT INTO schedules(id,title,session,schedule_expr,enabled,deleted) \
+                VALUES('S1','drift check','lane','daily at 6am',1,NULL);",
+        )
+        .unwrap();
+        c
+    }
+    fn run(c: &Connection, at: f64, status: &str, delivery: Option<&str>) {
+        c.execute(
+            "INSERT INTO schedule_runs(schedule_id,ran_at,status,delivery) VALUES('S1',?1,?2,?3)",
+            rusqlite::params![at, status, delivery],
+        )
+        .unwrap();
+    }
+    fn recovered_at(c: &Connection) -> Option<f64> {
+        c.query_row(super::UNRECORDED_SCHEDULE_OUTCOMES_SQL, [0.0f64], |r| {
+            r.get::<_, Option<f64>>(5)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_later_recorded_failure_clears_a_restart_orphaned_unknown() {
+        let c = db();
+        run(&c, 100.0, "error", Some("unknown")); // the restart orphan
+        assert_eq!(
+            recovered_at(&c),
+            None,
+            "nothing after it yet, so it is still outstanding"
+        );
+
+        // The schedule fires again and the check legitimately FAILS. That is a
+        // recorded outcome: the fire happened and the result was written down.
+        run(&c, 200.0, "error", Some("shell"));
+        assert_eq!(
+            recovered_at(&c),
+            Some(200.0),
+            "a recorded failure is a recorded OUTCOME, which is what this \
+             invariant measures"
+        );
+    }
+
+    /// TWO ORPHANS AND NOTHING ELSE IS STILL OUTSTANDING — and this passes for
+    /// a STRUCTURAL reason, not because of the `<> 'unknown'` guard.
+    ///
+    /// I wrote this first as "an orphan cannot recover another orphan" and
+    /// mutated the guard to prove it: `<> 'unknown'` -> `<> 'nope'` left all
+    /// four tests GREEN. The anchor is `MAX(r.ran_at)` over the unknown rows,
+    /// so no unknown can ever be after it and the subquery never sees one. The
+    /// guard is unreachable from this query shape.
+    ///
+    /// It stays, because it states the intent and would matter if the anchor
+    /// ever stopped being the newest unknown. But it is NOT load-bearing today
+    /// and no test can honestly claim it is, so this one claims what it
+    /// actually establishes.
+    #[test]
+    fn two_orphans_with_no_later_fire_stay_outstanding() {
+        let c = db();
+        run(&c, 100.0, "error", Some("unknown"));
+        run(&c, 200.0, "error", Some("unknown"));
+        assert_eq!(recovered_at(&c), None);
+    }
+
+    #[test]
+    fn a_success_still_recovers_exactly_as_before() {
+        let c = db();
+        run(&c, 100.0, "error", Some("unknown"));
+        run(&c, 150.0, "ok", None); // a pre-delivery-column row
+        assert_eq!(
+            recovered_at(&c),
+            Some(150.0),
+            "NULL-delivery `ok` rows predate the column and must keep counting"
+        );
+    }
+
+    #[test]
+    fn a_refusal_still_recovers_exactly_as_before() {
+        let c = db();
+        run(&c, 100.0, "error", Some("unknown"));
+        run(&c, 150.0, "refused", Some("refused"));
+        assert_eq!(recovered_at(&c), Some(150.0));
     }
 }

@@ -503,6 +503,17 @@ jobs:
         run: |
           set -uo pipefail
           python3 scripts/test-tmux-start-guard.py
+      # AMUX-5040. Landed unwired in abc9585e and reddened `checks` on main
+      # for 3 consecutive runs via the AF-346 guard, which is the guard doing
+      # its job. Wired rather than baselined because it is hermetic by
+      # construction: pure unittest over tempdirs, no server and no network,
+      # 0.026s locally. One of its three cases asserts that prompt text and
+      # tool_input never reach the spool, which is the kind of claim that has
+      # to keep being re-checked rather than be believed once.
+      - name: the native-status hook producer keeps its ordering and privacy
+        run: |
+          set -uo pipefail
+          python3 scripts/test-native-status.py
       - name: the multiplayer browser contract's shape holds
         run: |
           set -uo pipefail

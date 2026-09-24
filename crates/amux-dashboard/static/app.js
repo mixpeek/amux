@@ -3194,11 +3194,13 @@ async function _runSyncBanner(quiet = false) {
       if (!stillQueued) { item.status = 'skipped'; item.label += ' — removed before delivery'; skipped++; return; }
       try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
       const opts = { ...q.options, headers: _authHeaders(q.options.headers) };
+      let retryableMessageRefusal = false;
       const r = _outboxUncertainMessage(q)
         ? await _outboxConfirmMessage(q, opts) : await _boundedMutationFetch(q.url, opts);
-      if (r.status === 409 && /\/(send|steer)$/.test(q.url.split('?')[0])) {
+      if ([409, 503].includes(r.status) && /\/(send|steer)$/.test(q.url.split('?')[0])) {
         const d = await r.clone().json().catch(() => ({}));
-        if (d.submission === 'uncertain') {
+        retryableMessageRefusal = d.retryable === true && d.submitted === false;
+        if (['uncertain', 'pending'].includes(d.submission)) {
           throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
         }
       }
@@ -3211,8 +3213,8 @@ async function _runSyncBanner(quiet = false) {
         // 845 times at a flat 4/min for over three hours, and generated enough
         // 5xx on its own to trip the route.mounted_routes_answer invariant
         // (AMUX-4900) where it was then filed as a server fault.
-        if (_outboxPermanentRefusal(r.status)
-          || !(r.status >= 500 || [401, 408, 429].includes(r.status))) q.state = 'blocked';
+        if (!retryableMessageRefusal && (_outboxPermanentRefusal(r.status)
+          || !(r.status >= 500 || [401, 408, 429].includes(r.status)))) q.state = 'blocked';
         throw new Error(await _apiErrText(r));
       }
       if (/\/api\/board\/[^/?]+$/.test(q.url) && (q.options.method || '').toUpperCase() === 'PATCH') {
@@ -3356,7 +3358,7 @@ function _outboxMessageId(q) {
 }
 function _outboxUncertainMessage(q) {
   return !!_outboxMessageId(q) && (q.delivery_uncertain === true ||
-    (q.state === 'blocked' && /acceptance is uncertain|delivery unconfirmed/i.test(q.error || '')));
+    (q.state === 'blocked' && /acceptance is uncertain|delivery unconfirmed|confirmation timed out|not confirmed and amux cannot check/i.test(q.error || '')));
 }
 // A 5xx the outbox must NOT retry, because it is a statement about the
 // CAPABILITY rather than about this attempt (AMUX-4910).
@@ -3385,15 +3387,12 @@ function _outboxUncertainMessage(q) {
 function _outboxPermanentRefusal(status) {
   return status === 501 || status === 505;
 }
-// 10 minutes. After this, stop auto-checking and let the user decide.
-const _OUTBOX_CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
 async function _outboxConfirmMessage(q, opts) {
   q.delivery_uncertain = true;
   // Counted from when THIS entry began being re-checked, not from when it was
   // queued: an entry restored after days offline has not been checked for
   // days, and its first read may well confirm it.
   q.checking_since ||= Date.now();
-  const checkingSince = q.checking_since;
   // AMUX-4594: the text lets the server settle a reservation no live send owns
   // from the lane transcript. A steering row has no typed prompt to match.
   let text = '';
@@ -3417,22 +3416,11 @@ async function _outboxConfirmMessage(q, opts) {
     _outboxDiagnostic('acceptance_released', {id:q.id, measured:true, n_considered:1});
     return _boundedMutationFetch(q.url, opts);
   }
+  // A missing transcript can become available after a worker/server restart.
+  // Keep receipt reconciliation alive at the normal capped backoff. Neither an
+  // outage's duration nor missing evidence authorizes another terminal paste.
   if (receipt?.stranded === true && receipt.delivered === 'unknown' && receipt.msg_id === msgId) {
-    // Nothing owns the reservation and amux has no evidence either way, so the
-    // person decides instead of the tab checking forever (AMUX-4594).
-    Object.assign(q, {delivery_uncertain:false, error:''});
     _outboxDiagnostic('acceptance_unknown', {id:q.id, measured:false, n_considered:1});
-    throw Object.assign(new Error('Not confirmed and amux cannot check: look at the worker, then resend or dismiss'), {outboxBlocked:true});
-  }
-  // Still pending. The fallback from ba203699 stands: past the timeout, stop
-  // auto-checking and let the person decide (Ethan 2026-09-14 incident).
-  if (Date.now() - checkingSince > _OUTBOX_CONFIRM_TIMEOUT_MS) {
-    _outboxDiagnostic('acceptance_timed_out', {id:q.id, measured:true, n_considered:1,
-      age_min:Math.round((Date.now() - checkingSince) / 60000)});
-    q.delivery_uncertain = false;
-    throw Object.assign(
-      new Error('Confirmation timed out after ' + Math.round((Date.now() - checkingSince) / 60000) + 'm. Dismiss or retry.'),
-      {outboxBlocked:true});
   }
   throw Object.assign(new Error('Awaiting confirmation — checking automatically'), {outboxUncertain:true});
 }
@@ -3853,7 +3841,7 @@ function _validateMessageAcknowledgement(receipt, url) {
         receipt.submitted === true || receipt.submission === 'deferred'))) return;
   // An ambiguous HTTP 200 is not a delivery receipt. Keep the intent for
   // explicit review instead of repeatedly injecting text into a live terminal.
-  throw Object.assign(new Error('Message delivery unconfirmed — review the queued message and terminal before retrying'), {outboxUncertain:true});
+  throw Object.assign(new Error('Message delivery unconfirmed — checking automatically'), {outboxUncertain:true});
 }
 function _localMessageRequest(url, init) {
   if ((init?.method || '').toUpperCase() !== 'POST' || !/\/api\/sessions\/[^/]+\/(send|steer)$/.test(url.split('?')[0])) return false;
@@ -5121,12 +5109,25 @@ async function _openStatusDetail(name) {
   dialog.showModal();
   const body = dialog.querySelector('.work-queue-body');
   try {
-    const [peekRes, boardRes] = await Promise.all([
+    const isolated = !!sessions.find(s => s.name === name)?.isolated;
+    const [peekRes, boardRes, evidence] = await Promise.all([
       fetch('/api/sessions/' + encodeURIComponent(name) + '/peek?lines=15').then(r => r.json()).catch(() => null),
-      fetch('/api/board?session=' + encodeURIComponent(name) + '&status=doing&slim=0').then(r => r.json()).catch(() => []),
+      isolated ? Promise.resolve([]) : fetch('/api/board?session=' + encodeURIComponent(name) + '&status=doing&slim=0').then(r => r.json()).catch(() => []),
+      fetch('/api/sessions/' + encodeURIComponent(name) + '/status-explain').then(r => { if (!r.ok) throw Error('Status unavailable'); return r.json(); }).catch(() => null),
     ]);
     if (!dialog.open) return;
-    let html = '';
+    let html = '<h3>Current status evidence</h3>';
+    if (evidence) {
+      const reason = evidence.explain || {}, report = reason.report || {};
+      html += '<p><strong>' + esc(evidence.running ? evidence.status || 'unknown' : 'stopped')
+        + '</strong> · ' + esc((reason.decided_by || 'unavailable').replaceAll('_', ' ')) + '</p>';
+      if (report.source) html += '<p>' + esc(report.source) + (report.event ? ' · ' + esc(report.event) : '')
+        + ' · observed ' + Math.max(0, Math.round(report.age_s || 0)) + 's ago'
+        + (report.sequence ? ' · event ' + esc(String(report.sequence)) : '')
+        + (report.applied && ['native_hook','report'].includes(reason.decided_by) ? '' : ' · fallback in use') + '</p>';
+      if (!report.native && evidence.running) html += '<p>Native hook evidence is unavailable; process, transcript and terminal observations are the fallback.</p>';
+      if (evidence.native_events?.length) html += '<details><summary>Recent native events (' + evidence.native_events.length + ')</summary><ol>' + evidence.native_events.slice(0,12).map(e => '<li>' + esc(e.event) + ' → ' + esc(e.state) + ' · ' + esc(new Date(e.event_ts * 1000).toLocaleTimeString()) + '</li>').join('') + '</ol></details>';
+    } else html += '<p role="alert">Live status could not be verified. Retry when connected.</p>';
     const cards = Array.isArray(boardRes) ? boardRes : [];
     const blocked = cards.filter(c => c.blocked_on || (c.depends_on && c.depends_on.length));
     if (blocked.length) {
@@ -5140,7 +5141,7 @@ async function _openStatusDetail(name) {
       }
     }
     if (peekRes) {
-      const lines = (peekRes.output || '').split('\n').filter(l => l.trim());
+      const lines = stripAnsi(peekRes.output || '').split('\n').filter(l => l.trim());
       const last = lines.slice(-12);
       if (last.length) {
         html += '<h3>Terminal</h3><pre style="font-size:0.8rem;max-height:200px;overflow:auto;padding:8px;border-radius:6px;background:var(--surface);white-space:pre-wrap;word-break:break-all;margin:0">'
@@ -5180,7 +5181,7 @@ function _workerExecutionBadge(s, runtimeBoard) {
   else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
   else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
 
-  return badge;
+  return badge + '<button type="button" class="status-badge" aria-label="Status evidence for ' + esc(s.name) + '" title="Inspect live status evidence" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">ⓘ</button>';
 }
 
 function updatePeekStatus() {
@@ -5640,13 +5641,13 @@ function _workerActionDefinitions(s) {
     // the label as the field name once made Save silently do nothing.
     { key: 'groups', icon: '&#x1F3F7;', label: 'Groups',
       run: "editField('" + name + "','tags','" + escJs((s.tags || []).join(', ')) + "')" },
-    { key: 'auto-drain', icon: s.auto_drain_backlog ? '&#x2611;' : '&#x2610;', label: 'Auto-drain backlog',
+    !s.isolated ? { key: 'auto-drain', icon: s.auto_drain_backlog ? '&#x2611;' : '&#x2610;', label: 'Auto-drain backlog',
       title: 'When this worker runs out of todo cards, pull its oldest eligible backlog card into todo automatically. Human, trigger, and dependency blocks stay parked.',
-      run: "toggleAutoDrain('" + name + "')" },
-    { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
+      run: "toggleAutoDrain('" + name + "')" } : null,
+    !s.isolated ? { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
       labelHtml: 'Spans groups' + _spansLabel(s),
       title: 'Let this worker message workers in other groups according to its resolved cross-group configuration.',
-      run: "toggleSpansGroups('" + name + "')" },
+      run: "toggleSpansGroups('" + name + "')" } : null,
     { key: 'directory', icon: '&#x1F4C1;', label: 'Change directory',
       run: "editField('" + name + "','dir','" + escJs(s.dir || '') + "')" },
     s.dir ? { key: 'copy-directory-link', icon: '&#x1F517;', label: 'Copy directory link',
@@ -5936,7 +5937,7 @@ function render() {
       <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
         <div class="card-header-top">
           <div class="card-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg></div>
-          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config, no self-report hooks. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
+          <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config or behavioral hooks. Passive lifecycle hooks report status only. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
           <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
           <div class="card-menu" id="menu-${s.name}">
           ${_renderWorkerActionMenu(s, 'card')}
@@ -8660,8 +8661,11 @@ async function doRestart(name) {
     } catch (e) {}
     if (sessionGone) { showToast('Worker no longer exists'); return; }
     if (alreadyStopped) { await fetchSessions(); await doStart(name); return; }
-    const stopResp = await apiCall(STOP_URL, { method: 'POST' });
-    if (!stopResp) return;
+    // Stop is durably queued: apiCall returns null until delivery is confirmed.
+    // Observe the actual process state before starting; a queue acknowledgement
+    // must not abandon the second half of the owner's restart request.
+    await apiCall(STOP_URL, { method: 'POST' });
+    amuxTrack('worker_restart_waiting_for_stop', {session:name});
     await new Promise(r => setTimeout(r, 1000));
     let stopped = false;
     const deadline = Date.now() + 30000;
@@ -9527,11 +9531,16 @@ function _workerConfigurationSection(key, title, note, rows) {
 // reachable here. The raw Environment editor remains the escape hatch for
 // open-ended startup keys such as CC_BACKEND/CC_CREATOR/CC_FLAGS — it is part
 // of this same tab, not a hidden file-editing workflow.
+function _visibleScopeCapabilities(level, isolated, capabilities) {
+  const keys = level === 'worker' ? (isolated ? ['env', 'skin'] : null) : ['memory', 'gates', 'env'];
+  return keys ? capabilities.filter(c => keys.includes(c.key)) : capabilities;
+}
+
 function _workerPrimaryConfigurationsHTML(name) {
   const s = sessions.find(x => x.name === name) || {};
   const provider = sessionProvider(s);
   const model = sessionConfiguredModel(s);
-  const effort = flagValue(s.flags || '', '--effort');
+  const effort = flagValue(s.flags || '', '--effort') || ((s.flags || '').match(/model_reasoning_effort=["']?([a-z]+)/) || [])[1] || '';
   const q = escJs(name);
   const edit = (field, current, extra) => '<button class="btn" style="font-size:0.68rem;min-height:32px;padding:4px 8px;"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
@@ -9541,24 +9550,24 @@ function _workerPrimaryConfigurationsHTML(name) {
     + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')" aria-label="' + esc(label) + '">'
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
-    _workerConfigurationRow('name', 'Name', s.name || name, 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
-    _workerConfigurationRow('description', 'Description', s.desc || '', 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
-    _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
+    _workerConfigurationRow('name', 'Name', s.name || name, s.isolated ? 'Renaming preserves messages and worker identity.' : 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
+    _workerConfigurationRow('description', 'Description', s.desc || '', s.isolated ? 'Description for the owner; isolated workers are hidden from peers.' : 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
+    _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
   ];
   const runtime = [
     _workerConfigurationRow('directory', 'Working directory', s.worktree_active ? '~/.amux/worktrees/' + name + ' (worktree)' : (s.dir || ''), 'Changing it restarts a running worker in the new directory.', edit('dir', s.dir || '')),
     _workerConfigurationRow('branch', 'Git branch', s.branch || '', 'Blank follows the detected branch; “none” explicitly uses the main checkout.', edit('branch', s.branch || '')),
-    _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
-    _workerConfigurationRow('model', 'Model version', model || 'Provider default', 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),
-    _workerConfigurationRow('effort', 'Reasoning effort', effort || 'Provider default', provider === 'claude' ? 'Can be changed independently or together with the model.' : 'This provider does not expose the effort picker.', provider === 'claude' ? edit('effort', effort || '', provider) : ''),
-    _workerConfigurationRow('mcp', 'Browser tooling', s.mcp === 'chrome' ? 'Chrome enabled' : 'Disabled', 'Applied on the next worker start.', edit('mcp', s.mcp || '')),
+    _workerConfigurationRow('provider', 'Model provider', providerLabel(provider), s.isolated ? 'Changes the CLI provider without injecting harness context.' : 'Provider swaps preserve durable board state and restart only when required.', edit('provider', provider)),
+    _workerConfigurationRow('model', 'Model version', model || 'Provider default', s.isolated ? 'Uses the native CLI conversation; no board context is added on restart.' : 'A supported live switch keeps the conversation; restart fallback rehydrates from board state.', edit('model', model || '', provider)),
+    _workerConfigurationRow('effort', 'Reasoning effort', effort || 'Provider default', provider === 'claude' ? 'Can be changed independently or together with the model.' : 'Configured by this provider’s CLI flags.', provider === 'claude' ? edit('effort', effort || '', provider) : ''),
+    s.isolated ? '' : _workerConfigurationRow('mcp', 'Browser tooling', s.mcp === 'chrome' ? 'Chrome enabled' : 'Disabled', 'Applied on the next worker start.', edit('mcp', s.mcp || '')),
   ];
   const permissions = [
     _workerConfigurationRow('yolo', 'Model tool approval bypass (YOLO)', s.yolo ? 'Enabled' : 'Disabled', 'Uses the selected provider’s native tool-permission flag.', sw(!!s.yolo, 'toggleYolo', 'Toggle model tool approval bypass')),
-    _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'Direct CLI messages; no boards, task intake, prompts, hooks, MCP config, or peer discovery. Restart to remove an already-loaded harness.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
-    _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
-    _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
+    _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'Direct CLI messages; no boards, task intake, injected prompts, behavioral hooks, MCP config, or peer discovery. Passive lifecycle hooks report status only. Restart to remove an already-loaded harness.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
+    s.isolated ? '' : _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
+    s.isolated ? '' : _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
   ];
   const advanced = [
     _workerConfigurationRow('pinned', 'Pinned in worker list', s.pinned ? 'Pinned' : 'Not pinned', 'Presentation preference; does not change execution priority.', sw(!!s.pinned, 'togglePin', 'Toggle pinned state')),
@@ -9568,7 +9577,7 @@ function _workerPrimaryConfigurationsHTML(name) {
     + '<div class="worker-config-grid">'
     + _workerConfigurationSection('identity', 'Identity & organization', 'How this worker is named, described, and grouped.', identity)
     + _workerConfigurationSection('runtime', 'Runtime & model', 'Where it runs and which model/tooling it uses.', runtime)
-    + _workerConfigurationSection('permissions', 'Permissions & communication', 'Standing authority for tools, peers, and external email.', permissions)
+    + _workerConfigurationSection('permissions', 'Permissions & communication', s.isolated ? 'Native CLI tool permissions and isolation.' : 'Standing authority for tools, peers, and external email.', permissions)
     + _workerConfigurationSection('advanced', 'Display & advanced', 'Presentation and lower-level environment controls.', advanced)
     + '</div>';
 }
@@ -9728,8 +9737,7 @@ async function _scopeLoad(scope, targetId) {
     // capability removal: _SCOPE_CAPS, GET/PUT /api/scope and the worker peek
     // Configurations tab still carries rules and status_mode — "for now" means the panel,
     // and hiding a tile must not silently delete the API behind it.
-    const _visCaps = (lvl === 'worker') ? d.capabilities
-      : d.capabilities.filter(c => ['memory', 'gates', 'env'].includes(c.key));
+    const _visCaps = _visibleScopeCapabilities(lvl, sessions.find(s => s.name === w)?.isolated, d.capabilities);
     _visCaps.forEach((c, i) => {
       const here = c.set_here, gset = G[c.key] && G[c.key].set_here;
       const grpHit = Gr.map((m, j) => (m[c.key] && m[c.key].set_here) ? groups[j] : null).filter(Boolean);
@@ -10292,8 +10300,18 @@ async function _steeringClearAll() {
   _steeringUpdateBadge();
   render();
   try {
-    await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', { method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: '{}' });
-    if (had) showToast('Cleared ' + had + ' queued message' + (had > 1 ? 's' : ''));
+    // THE SERVER'S COUNT, NOT THE OPTIMISTIC ONE. `had` is derived from this
+    // client's copy of the list, which is as stale as the last fetch; the
+    // response carries what the DELETE actually removed and what it spared by
+    // design (AMUX-5013). They disagree exactly when it matters: a lane parked
+    // behind a hold holds nothing BUT system rows, so the honest toast is
+    // "spared 21", and a client-side count of a stale list can say anything.
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', { method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: '{}' });
+    const j = await r.json().catch(() => ({}));
+    const cleared = Number.isFinite(j.cleared) ? j.cleared : had;
+    const spared = Number.isFinite(j.spared_system) ? j.spared_system : 0;
+    if (cleared) showToast('Cleared ' + cleared + ' queued message' + (cleared > 1 ? 's' : '') + (spared ? ', kept ' + spared + ' system push' + (spared > 1 ? 'es' : '') : ''));
+    else if (spared) showToast('Nothing cleared: all ' + spared + ' queued row' + (spared > 1 ? 's are' : ' is') + ' a system push');
     else showToast('Nothing to clear (system pushes are kept)');
     fetchSessions();
   } catch(e) { showToast('Failed to clear queue'); }
@@ -11603,7 +11621,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1051';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1060';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -11877,6 +11895,7 @@ function openPeek(name, opts) {
     _peekFilesRestore(name);
   }
   peekSession = name;
+  _applyPeekTabVisibility();
   _syncComposerPending();
   const identityOverlay = document.getElementById('peek-overlay');
   if (identityOverlay) {
@@ -15466,6 +15485,9 @@ async function peekQuickKeys(keys) {
   return result;
 }
 async function _submitSuggestion(name, isPeek, fallbackKeys) {
+  if (sessions.find(s => s.name === name)?.isolated) {
+    return isPeek ? peekQuickKeys(fallbackKeys || 'Enter') : doKeys(name, fallbackKeys || 'Enter');
+  }
   showSendingIndicator();
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
@@ -16382,12 +16404,6 @@ function _chipAction(chip, sessionName, isPeek) {
     if (isPeek) peekQuickSend(chip.value);
     else doSend(sessionName, chip.value);
   } else if (chip.action === 'keys') {
-    // Enter → always try suggestion extraction first; fall back to raw Enter if none found
-    if (chip.value === 'Enter') {
-      const name = isPeek ? peekSession : sessionName;
-      _submitSuggestion(name, isPeek, 'Enter');
-      return;
-    }
     if (isPeek) peekQuickKeys(chip.value);
     else doKeys(sessionName, chip.value);
   } else if (chip.action === 'slash') {

@@ -25,7 +25,9 @@ when the next model is better, does this feature get better with it, or become t
 
 Isolated means direct owner-to-CLI transport: no board capture or attribution,
 command decomposition, injected prompts, automated schedule/steering, or Amux
-routing/hooks/MCP. Preserve owner input, delivery receipts and message history.
+routing, behavioral hooks or MCP. Passive provider lifecycle observation is allowed
+for status only: it must not add context, change permissions, send prompts, or
+trigger boards. Preserve owner input, delivery receipts and message history.
 Explicit owner queuing is transport only. Isolation overrides stale project
 metadata; a restarted raw CLI must not inherit harness routing.
 

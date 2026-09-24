@@ -151,6 +151,7 @@ pub fn is_change(prev: Option<&(String, String)>, status: &str, decided_by: &str
 
 /// One pass. Returns (lanes seen, rows recorded, rows pruned).
 pub fn tick(state: &AppState) -> (u32, u32, u32) {
+    crate::api::native_status::replay(state);
     let Ok(conn) = state.store.read() else {
         return (0, 0, 0);
     };
@@ -240,7 +241,7 @@ pub fn tick(state: &AppState) -> (u32, u32, u32) {
             }
             if due {
                 let n = c.execute(
-                    "DELETE FROM session_events WHERE type=?1 AND ts < ?2",
+                    "DELETE FROM session_events WHERE type IN (?1, 'session.native_status') AND ts < ?2",
                     rusqlite::params![EVENT, cutoff],
                 )?;
                 cell.store(n as u32, std::sync::atomic::Ordering::Relaxed);

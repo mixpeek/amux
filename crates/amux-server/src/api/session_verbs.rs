@@ -1970,16 +1970,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     if current.contains("\u{276f} 1.") || (current.contains("\u{2502} \u{276f} 1.")) {
         return "waiting".into();
     }
-    // CODEX spells its selector cursor `›` (U+203A), not `❯` (U+276F) — found
-    // live 2026-08-11 (AMUX-2913): a codex lane parked on its trust-directory
-    // picker read `idle`, the exact needs-input-invisible failure AMUX-2834
-    // fixed for Claude Code. Requires the footer hint alongside the cursor so
-    // prose that merely QUOTES a numbered list cannot read as a picker (the
-    // AMUX-2642 self-block class).
-    let lower = current.to_lowercase();
-    if current.contains("\u{203a} 1.")
-        && (lower.contains("press enter to continue") || lower.contains("enter to select"))
-    {
+    if crate::backend::adapter::provider_picker_reason(&current, "codex").is_some() {
         return "waiting".into();
     }
     // GEMINI's picker cursor is `●` (U+25CF) inside a `│`-bordered box —
@@ -7522,9 +7513,8 @@ async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<R
     let (session, identity) = (name.to_string(), msg_id.to_string());
     let reply = state.store.write_async(move |conn| {
         ensure_fleet_tables(conn)?;
-        // Keep confirmed receipts across long offline periods. An interrupted
-        // reservation never expires into permission to inject the text again.
-        conn.execute("DELETE FROM send_dedup WHERE receipt_id IS NOT NULL AND ts < ?", [now_i64() - 30 * 86400])?;
+        // Delivery identities are durable. Deleting an old receipt would make
+        // a device returning after a long outage repeat an accepted message.
         let inserted = conn.execute(
             "INSERT INTO send_dedup (session,msg_id,ts) VALUES (?,?,?) ON CONFLICT(session,msg_id) DO NOTHING",
             rusqlite::params![session,identity,now_i64()],
@@ -7602,7 +7592,10 @@ fn send_receipt(state: &AppState, name: &str, msg_id: &str) -> Response {
                 "confirmed durable receipt independently of the original send response");
             j200(json!({"ok":true,"accepted":true,"id":id,"msg_id":msg_id}))
         }
-        Ok(None) | Err(rusqlite::Error::QueryReturnedNoRows) => jresp(
+        Err(rusqlite::Error::QueryReturnedNoRows) => j200(json!({
+            "ok":true,"accepted":false,"released":true,"delivered":false,"msg_id":msg_id
+        })),
+        Ok(None) => jresp(
             StatusCode::ACCEPTED,
             json!({"ok":true,"accepted":false,"msg_id":msg_id}),
         ),
@@ -7714,6 +7707,43 @@ fn transcript_has_prompt_since(path: &std::path::Path, text: &str, since: i64) -
     }
 }
 
+// Codex rollout recovery is positive-only: absence in a bounded/rotated log
+// cannot authorize a second delivery. Ignore assistant/tool text and require a
+// timestamp so an old occurrence cannot confirm a new message.
+fn codex_receipt_evidence(path: &Path, text: &str, since: i64) -> Option<bool> {
+    for v in iter_jsonl_tail(path, 16 * 1024 * 1024) {
+        let at = v["timestamp"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|s| s.timestamp());
+        if !at.is_some_and(|at| at >= since) {
+            continue;
+        }
+        let payload = &v["payload"];
+        let content = if v["type"] == "event_msg" && payload["type"] == "user_message" {
+            payload["message"].as_str().map(str::to_owned)
+        } else if v["type"] == "response_item"
+            && payload["type"] == "message"
+            && payload["role"] == "user"
+        {
+            payload["content"].as_array().map(|parts| {
+                parts
+                    .iter()
+                    .filter(|part| part["type"] == "input_text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        } else {
+            None
+        };
+        if content.as_deref() == Some(text) {
+            return Some(true);
+        }
+    }
+    None
+}
+
 fn stranded_answer(body: Value) -> Response {
     let mut response = j200(body);
     response.headers_mut().insert(
@@ -7773,7 +7803,14 @@ async fn send_receipt_resolving(
         && text_sha
             .as_deref()
             .is_none_or(|sha| sha == text_sha256(text));
-    let evidence = if judgeable {
+    let codex = matches!(provider_of(&parse_env(name)).as_str(), "codex" | "ollama");
+    let evidence = if codex
+        && !text.is_empty()
+        && text.len() <= 2000
+        && text_sha.as_deref() == Some(text_sha256(text).as_str())
+    {
+        codex_rollout_path(name).map(|path| (codex_receipt_evidence(&path, text, ts), path))
+    } else if !codex && judgeable {
         session_jsonl_path(name).map(|path| (transcript_has_prompt_since(&path, text, ts), path))
     } else {
         None
@@ -7811,7 +7848,7 @@ async fn send_receipt_resolving(
             );
             stranded_answer(json!({
                 "ok": true, "accepted": false, "stranded": true, "delivered": "unknown", "msg_id": msg_id,
-                "next": "look at the worker's terminal, then resend or dismiss",
+                "next": "receipt recovery remains pending; retry this receipt read, never a new message identity",
             }))
         }
     }
@@ -9500,6 +9537,11 @@ async fn queue_boot_prompt(
     text: &str,
     origin: SendOrigin,
 ) -> (bool, String) {
+    // Empty input is a control probe, never future model work. In particular,
+    // a startup picker cannot consume a suggested prompt that does not exist.
+    if text.trim().is_empty() {
+        return (true, "no suggestion found".into());
+    }
     use sha2::Digest;
     let start = meta_i64(&load_meta(name), "last_started");
     let identity = hex::encode(sha2::Sha256::digest(text.as_bytes()));
@@ -11942,7 +11984,7 @@ pub(crate) async fn start_session(
                 opts += " --sandbox workspace-write";
             }
             let logs = logs_dir().to_string_lossy().into_owned();
-            if !opts.contains(&logs) {
+            if !isolated && !opts.contains(&logs) {
                 opts += &format!(" --add-dir {}", sh_quote(&logs));
             }
             for path in codex_repository_write_dirs(&work_dir).await {
@@ -12567,7 +12609,35 @@ pub(crate) async fn start_session(
     // Startup profiles and scoped environment files may change directory.
     // Pin the actual provider invocation to the resolved workspace, even when
     // an earlier shell setup line was delayed by interactive initialization.
-    let cmd = provider_command_in_workspace(&work_dir, &cmd, isolated);
+    // Passive status identity survives raw-mode routing scrubbing. It grants no
+    // board, prompt, or automation capability. Bind it before the first hook.
+    let status_launch = if matches!(provider.as_str(), "codex" | "claude") {
+        match super::native_status::begin_launch(name, &provider) {
+            Ok(launch) => Some(launch),
+            Err(error) => {
+                tracing::warn!(session=name, %error, verdict="status_observer_launch_failed", "using process/transcript status fallback");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let observer_prefix = if let Some((run, _)) = &status_launch {
+        format!(
+            "AMUX_STATUS_WORKER={} AMUX_STATUS_RUN_ID={} AMUX_STATUS_HOME={} AMUX_STATUS_URL={} ",
+            sh_quote(name),
+            sh_quote(run),
+            sh_quote(&home().to_string_lossy()),
+            sh_quote(&format!(
+                "https://localhost:{}",
+                crate::config::canonical_port()
+            ))
+        )
+    } else {
+        String::new()
+    };
+    let cmd =
+        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated);
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -12692,7 +12762,10 @@ pub(crate) async fn start_session(
             let fresh_flag = format!("--name {}", sh_quote(name));
             let cmd_fresh = provider_command_in_workspace(
                 &work_dir,
-                &build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags),
+                &format!(
+                    "{observer_prefix}{}",
+                    build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
+                ),
                 isolated,
             );
             shell_step!(&cmd_fresh, true);
@@ -12802,7 +12875,13 @@ pub(crate) async fn start_session(
         "boot_fresh_launch".into(),
         json!(launch_was_childless && launched && pane_has_live_child(name).await == Some(true)),
     );
-    meta.insert("last_started".into(), json!(now_i64()));
+    meta.insert(
+        "last_started".into(),
+        json!(status_launch
+            .as_ref()
+            .map(|(_, ts)| *ts as i64)
+            .unwrap_or_else(now_i64)),
+    );
     // The launch directory is runtime identity, including when a saved active
     // task overrides the worker's general configured checkout.
     meta.insert("cc_cwd".into(), json!(work_dir));
@@ -16551,9 +16630,13 @@ pub(crate) fn lane_report(state: &AppState, name: &str) -> Option<LaneReport> {
         .ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     let rep = v.get(name)?;
-    let st = rep["state"].as_str()?.to_string();
+    let mut st = rep["state"].as_str()?.to_string();
     // ts is a FLOAT (time.time()); as_i64 reads every report as epoch-0.
-    let ts = rep["ts"].as_f64().unwrap_or(0.0);
+    let mut ts = rep["ts"].as_f64().unwrap_or(0.0);
+    if let Some(interrupted) = native_claude_interrupt(name, rep) {
+        st = "idle".into();
+        ts = interrupted;
+    }
     let started: f64 = conn
         .query_row(
             "SELECT MAX(ts) FROM session_events WHERE type='session.started' AND session=?1",
@@ -16563,6 +16646,7 @@ pub(crate) fn lane_report(state: &AppState, name: &str) -> Option<LaneReport> {
         .ok()
         .flatten()
         .unwrap_or(0.0);
+    let started = super::native_status::launch_started_at(name, started);
     let now = crate::config::now_f64();
     let applies = crate::api::sessions_legacy::report_applies(&st, ts, started, now);
     if !applies {
@@ -17031,6 +17115,43 @@ pub(crate) fn stamp_queued_delivery(
                      ORDER BY ts LIMIT 1)",
         rusqlite::params![at_ms, session, text],
     )
+}
+
+/// The age stamp a long-parked message carries when it finally delivers, or
+/// `None` when it is fresh enough to stand on its own (AMUX-5013).
+///
+/// Split out of `steer_deliver_tick` so the DECISION is testable: the tick
+/// itself needs a live store and a tmux pane, so inline this rule could only be
+/// exercised by reading it.
+///
+/// The threshold is the invariant's own (`queue_parked_max_s`), deliberately:
+/// `queue.parked_behind_hold` already calls that age a breach, so a message
+/// that crosses it arrives saying so rather than two instruments disagreeing
+/// about when "too old" starts.
+fn stale_delivery_stamp(
+    text: &str,
+    age_s: f64,
+    parked_max_s: f64,
+    isolated: bool,
+) -> Option<String> {
+    // Isolated messages are owner bytes, with no harness prose added.
+    if isolated {
+        return None;
+    }
+    // `partial_cmp`, not `!(a > b)`: clippy's `neg_cmp_op_on_partial_ord`
+    // refused the negated form and it was right to. Spelling the comparison out
+    // makes the NaN case a decision rather than a side effect — an unmeasured
+    // age must not manufacture a staleness claim, so it falls through to None
+    // exactly like a fresh message.
+    match age_s.partial_cmp(&parked_max_s) {
+        Some(std::cmp::Ordering::Greater) => {}
+        _ => return None,
+    }
+    Some(format!(
+        "[amux: this message was queued {:.1}h ago and held until now. Check whether it \
+         is still current before acting on it]\n{text}",
+        age_s / 3600.0
+    ))
 }
 
 pub async fn steer_deliver_tick(state: &AppState) -> usize {
@@ -17546,12 +17667,54 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         };
         // from_steering=true is still passed: it makes the callee REFUSE rather
         // than re-queue if the lane starts generating between this check and the
+        // SAY HOW OLD IT IS, when it has been parked past the point the
+        // `queue.parked_behind_hold` invariant already calls a breach
+        // (AMUX-5013).
+        //
+        // The picker-answer void 90 lines up makes this exact argument for a
+        // different payload: "A keypress is only meaningful while its picker is
+        // up; once it is gone the same characters become an instruction the
+        // model will try to obey." A nine-day-old prose message has the same
+        // problem in slower motion, and unlike a keypress it cannot be voided
+        // safely — it is a peer's real request, not a stale gesture.
+        //
+        // Measured 2026-09-23: 61 messages sit in `steering_queue` behind 13
+        // paused lanes, in two bulk clusters (53 queued 09-14, 8 queued 09-20).
+        // ts-gke alone holds 21 from 09-14. Nothing drops them on resume, so
+        // the lane that comes back gets all 21 at once with no indication that
+        // the oldest is 9.3 days old, and acts on them as if sent today.
+        //
+        // `age` is already computed above for the delivery decision, and has
+        // only ever been used to deliver SOONER (`steer_max_age_s`). This is
+        // the first use of it to tell the RECIPIENT anything.
+        //
+        // Non-destructive on purpose. The message still arrives in full; the
+        // only change is that its age arrives with it. Dropping a peer's
+        // message is not amux's call to make on their behalf.
+        let parked_max = crate::invariants::checks::queue_parked_max_s();
+        let aged_text;
+        let payload: &str = if let Some(stamped) =
+            stale_delivery_stamp(&text, age, parked_max, session_is_isolated(&session))
+        {
+            aged_text = stamped;
+            tracing::warn!(
+                session = %session, delivery_id = %id,
+                age_h = age / 3600.0, parked_max_h = parked_max / 3600.0,
+                measured = true, n_considered = 1,
+                verdict = "steering_delivered_stale",
+                "delivering a message that was parked past the invariant's own threshold; \
+                 stamped with its age so the recipient does not read it as current (AMUX-5013)"
+            );
+            &aged_text
+        } else {
+            &text
+        };
         // send, so a lost race leaves the row where it is instead of duplicating.
         let Some((ok, msg)) = send_claimed_steering(
             state,
             &id,
             &session,
-            &text,
+            payload,
             SendMode::drained(mid_turn, false),
         )
         .await
@@ -19846,16 +20009,18 @@ async fn get_dispatch(
                 // by which time the lane has taken another turn and the live
                 // verdict is a different, correct, useless answer.
                 let (history, since) = status_decision_history(&conn, &nm, 20);
-                Ok((running, status, explain, history, since))
+                let native_events = super::native_status::history(&conn, &nm);
+                Ok((running, status, explain, history, since, native_events))
             })
             .await;
             match joined {
-                Ok(Ok((running, status, explain, history, since))) => j200(json!({
+                Ok(Ok((running, status, explain, history, since, native_events))) => j200(json!({
                     "session": name,
                     "running": running,
                     "status": status,
                     "explain": explain,
                     "history": history,
+                    "native_events": native_events,
                     // AN EMPTY HISTORY HAS TWO MEANINGS and they are opposite:
                     // this lane has been stable, or nothing has been sampling
                     // it. `history_recorded_since` is null in the second case,
@@ -20693,9 +20858,18 @@ pub(crate) async fn steer_mutate(
         let include_system = body.get("include_system").map(py_truthy).unwrap_or(false);
         let session = name.to_string();
         let id2 = msg_id.clone();
+        // Read after the writer returns, never inside it: the writer thread is
+        // the only one that stores, and the await point orders the load after
+        // the store. Two counters rather than one packed word, because the
+        // response prints them as two numbers and a reader debugging this
+        // should not have to unpack anything.
+        let n_cleared = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let n_spared = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let (n_cleared_w, n_spared_w) = (n_cleared.clone(), n_spared.clone());
         let reply = state
             .store
             .write_async(move |conn| {
+                let (n_cleared, n_spared) = (&n_cleared_w, &n_spared_w);
                 ensure_fleet_tables(conn)?;
                 let mut sent_row: Option<(String, f64)> = None;
                 // AMUX-3562: this path reads the row itself rather than calling
@@ -20704,6 +20878,14 @@ pub(crate) async fn steer_mutate(
                 // rule though — read BEFORE the DELETE.
                 let mut sent_src: (Option<String>, Option<String>) = (None, None);
                 let removed: i64;
+                // WHAT THE CLEAR-ALL DID NOT TOUCH, counted before the DELETE.
+                // A clear-all that spares system rows can honestly report
+                // `cleared: 0` on a lane with 21 queued messages, and until
+                // this number existed there was nothing in the response that
+                // told the caller why (AMUX-5013). Measured on the live DB:
+                // all 61 rows parked behind paused lanes are system rows, so
+                // `cleared: 0` is the ONLY answer that path can give them.
+                let mut spared: i64 = 0;
                 if !id2.is_empty() {
                     sent_row = conn
                         .query_row(
@@ -20722,6 +20904,12 @@ pub(crate) async fn steer_mutate(
                     // queue is discarding THEIR drafts, not amux's drive
                     // prompts. Per-row ✕ still removes anything by id, and
                     // include_system:true asks for the full sweep explicitly.
+                    spared = conn.query_row(
+                        "SELECT COUNT(*) FROM steering_queue WHERE session=? \
+                         AND NOT (COALESCE(guard,'')='' OR guard IN ('selector-answer','project-steering'))",
+                        [&session],
+                        |r| r.get::<_, i64>(0),
+                    )?;
                     removed = conn.execute(
                         "DELETE FROM steering_queue WHERE session=? \
                          AND (COALESCE(guard,'')='' OR guard IN ('selector-answer','project-steering'))",
@@ -20747,13 +20935,28 @@ pub(crate) async fn steer_mutate(
                         ],
                     )?;
                 }
-                // Smuggle the count through WriteReply.applied? No — recompute
-                // is racy; return via a rev-free outcome and count separately.
+                // THE NUMBER THE DELETE ALREADY RETURNED, carried out rather
+                // than recomputed. The earlier note here rejected "smuggle the
+                // count through WriteReply.applied" as racy, which is true of a
+                // SECOND read and not of this one: `removed` is rusqlite's own
+                // row count from the statement inside the transaction, so
+                // publishing it races with nothing. Collapsing it to a bool
+                // made the response say `cleared: 1` for a 21-row drain.
+                n_cleared.store(removed, std::sync::atomic::Ordering::SeqCst);
+                n_spared.store(spared, std::sync::atomic::Ordering::SeqCst);
                 Ok(crate::db::WriteOutcome { applied: removed > 0, events: vec![] })
             })
             .await;
         return match reply {
-            Ok(r) => j200(json!({"ok": true, "cleared": if r.applied { 1 } else { 0 }})),
+            Ok(_) => {
+                let cleared = n_cleared.load(std::sync::atomic::Ordering::SeqCst);
+                let spared = n_spared.load(std::sync::atomic::Ordering::SeqCst);
+                // `spared` rides along so `cleared: 0` explains itself. A
+                // clear-all on a lane holding nothing but system rows is a
+                // legitimate no-op, and without the second number it is
+                // indistinguishable from a broken route.
+                j200(json!({"ok": true, "cleared": cleared, "spared_system": spared}))
+            }
             Err(e) => jresp(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({"error": e.to_string()}),
@@ -22024,9 +22227,10 @@ async fn isolated_peer_refusal(
 /// Message IDs a send task in THIS process is still working on (AMUX-4594).
 /// A reservation outside this set with no receipt belongs to no live send: a
 /// handler dropped before AMUX-4589, or a process that has since restarted.
-fn send_in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
+fn send_in_flight() -> &'static std::sync::Mutex<std::collections::HashMap<(String, String), usize>>
+{
     static IN_FLIGHT: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+        std::sync::Mutex<std::collections::HashMap<(String, String), usize>>,
     > = std::sync::OnceLock::new();
     IN_FLIGHT.get_or_init(Default::default)
 }
@@ -22042,7 +22246,7 @@ impl InFlightSend {
         }
         let key = (name.to_string(), msg_id.to_string());
         if let Ok(mut set) = send_in_flight().lock() {
-            set.insert(key.clone());
+            *set.entry(key.clone()).or_default() += 1;
         }
         Self(Some(key))
     }
@@ -22052,7 +22256,12 @@ impl Drop for InFlightSend {
     fn drop(&mut self) {
         if let Some(key) = self.0.take() {
             if let Ok(mut set) = send_in_flight().lock() {
-                set.remove(&key);
+                if let Some(count) = set.get_mut(&key) {
+                    *count -= 1;
+                    if *count == 0 {
+                        set.remove(&key);
+                    }
+                }
             }
         }
     }
@@ -22062,7 +22271,7 @@ impl Drop for InFlightSend {
 fn send_is_in_flight(name: &str, msg_id: &str) -> bool {
     send_in_flight()
         .lock()
-        .map(|set| set.contains(&(name.to_string(), msg_id.to_string())))
+        .map(|set| set.contains_key(&(name.to_string(), msg_id.to_string())))
         .unwrap_or(true)
 }
 
@@ -22531,7 +22740,13 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
             send_dedup_forget(state, name, &msg_id).await;
         }
     } else if ok {
-        send_dedup_accept(state, name, &msg_id, &send_response_id(name, &msg_id)).await;
+        // Typing text is not proof that the provider consumed it. Preserve the
+        // reservation on an unverified paste so receipt polling can reconcile
+        // against provider evidence instead of laundering uncertainty into a
+        // successful duplicate acknowledgement.
+        if message_acceptance_confirmed(ok, &msg) {
+            send_dedup_accept(state, name, &msg_id, &send_response_id(name, &msg_id)).await;
+        }
         update_meta(
             name,
             &[
@@ -22753,6 +22968,9 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     let (submitted, submission) = submission_verdict(ok, &msg);
     resp["submitted"] = submitted.map(Value::from).unwrap_or(Value::Null);
     resp["submission"] = json!(submission);
+    if !ok && transient_send_refusal(&msg) {
+        resp["retryable"] = json!(true);
+    }
     // A retry means the FIRST Enter was dropped. Reported even on success:
     // smoothing it into a plain "sent" is how a degrading delivery path stays
     // invisible until it drops a message for ten minutes (AMUX-2629).
@@ -22769,6 +22987,23 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
     // credit-gate state (_session_auto_actions) — process state this origin
     // does not hold; named gap.
     jresp(code, resp)
+}
+
+fn message_acceptance_confirmed(ok: bool, message: &str) -> bool {
+    let (submitted, submission) = submission_verdict(ok, message);
+    ok && (submitted == Some(true) || submission == "deferred")
+}
+
+// Only refusals before text is pasted are safe to repeat automatically.
+// Drafts, selectors, lifecycle holds and uncertain submission are not retries.
+fn transient_send_refusal(message: &str) -> bool {
+    [
+        "worker is still starting",
+        "session started generating",
+        "structured worker state",
+    ]
+    .iter()
+    .any(|prefix| message.starts_with(prefix))
 }
 
 /// `reset` as a callable verb, so the promoted `/api/workers/{id}/reset`
@@ -24621,6 +24856,46 @@ fn transcript_terminal_agents(
     latest.into_values().collect()
 }
 
+// Claude emits no Stop hook when an owner cancels a tool/question. Read the
+// explicit provider interruption marker, never infer completion from silence.
+fn claude_interrupt_from_records(records: &[Value]) -> Option<f64> {
+    let record = records
+        .iter()
+        .rev()
+        .find(|r| matches!(r["type"].as_str(), Some("user" | "assistant")))?;
+    if record["type"] != "user" {
+        return None;
+    }
+    let content = record["message"]["content"].as_array()?;
+    if content.len() != 1
+        || content[0]["type"] != "text"
+        || !matches!(
+            content[0]["text"].as_str(),
+            Some("[Request interrupted by user]" | "[Request interrupted by user for tool use]")
+        )
+    {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(record["timestamp"].as_str()?)
+        .ok()
+        .map(|ts| ts.timestamp_millis() as f64 / 1000.0)
+}
+
+pub(crate) fn native_claude_interrupt(name: &str, report: &Value) -> Option<f64> {
+    if report["native_status"] != true
+        || report["provider"] != "claude"
+        || !matches!(
+            report["state"].as_str(),
+            Some("active" | "waiting" | "blocked")
+        )
+    {
+        return None;
+    }
+    let path = lifecycle_transcript_path(name, report["session_id"].as_str()?)?;
+    let ts = claude_interrupt_from_records(&iter_jsonl_tail(&path, 131_072))?;
+    (ts > report["ts"].as_f64().unwrap_or(f64::MAX) && ts <= now_f64() + 5.0).then_some(ts)
+}
+
 fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> Option<PathBuf> {
     if !cached_re!(r"^[0-9a-fA-F-]{36}$").is_match(lifecycle_session) {
         return None;
@@ -25059,6 +25334,9 @@ pub(crate) async fn report_post(
             }),
         );
     }
+    if body["native_status"].as_bool() == Some(true) {
+        return super::native_status::post(state, name, body).await;
+    }
     // SELF-REPORTED CONVERSATION ID (AMUX-2936). Handled here, above the
     // subagent early-return, so EVERY report shape carries it — a lane that only
     // ever fires SubagentStart would otherwise never heal.
@@ -25214,6 +25492,9 @@ pub(crate) async fn report_post(
                 .unwrap_or_else(|| json!({}));
             let prev_state =
                 reports[&name_s]["state"].as_str().unwrap_or("").to_string();
+            if super::native_status::owns_report(&name_s, &reports[&name_s]) {
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            }
             // RR-0052 LEASE HEARTBEAT. Any self-report proves the process in this
             // lane is alive, so it renews the lease on every card the lane holds.
             // This runs BEFORE the resurrection guard below on purpose: that guard
@@ -27497,6 +27778,28 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_claude_interrupt_requires_latest_explicit_provider_boundary() {
+        let interrupted = serde_json::json!({"type":"user","timestamp":"2026-09-24T01:54:18.202Z",
+            "message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}});
+        assert!(super::claude_interrupt_from_records(std::slice::from_ref(&interrupted)).is_some());
+        assert!(super::claude_interrupt_from_records(&[
+            interrupted.clone(),
+            serde_json::json!({"type":"system"})
+        ])
+        .is_some());
+        for kind in ["user", "assistant"] {
+            assert!(super::claude_interrupt_from_records(&[
+                interrupted.clone(),
+                serde_json::json!({"type":kind,"message":{"content":"continue"}})
+            ])
+            .is_none());
+        }
+        assert!(super::claude_interrupt_from_records(&[
+            serde_json::json!({"type":"user","message":{"content":"[Request interrupted by user]"}})
+        ])
+        .is_none());
+    }
     /// AMUX-4943. `managed_by` was the literal `"python"` for every session, so
     /// it reported the same value for 164 of 164 lanes and would have reported
     /// it if every one were herdr-backed. The ethos test is "what input would
@@ -29336,6 +29639,101 @@ mod tests {
         );
     }
 
+    /// `cleared: 0` HAS TO EXPLAIN ITSELF, because on the lanes this actually
+    /// happens to it is the only answer the clear-all can give.
+    ///
+    /// Measured on the live DB 2026-09-23: 61 rows sat behind paused lanes and
+    /// every one carried a system guard (54 `task-callback:<CARD>`, 6
+    /// `board-drive`, 1 `staged-guard`, 1 `deferred-automation`). The clear-all
+    /// spares system rows on purpose, so an operator draining ts-gke's 21 got
+    /// `cleared: 0` with nothing in the response distinguishing "spared 21 by
+    /// design" from "this route is broken".
+    ///
+    /// The second half is that `cleared` was `if applied { 1 } else { 0 }`, a
+    /// bool wearing a count's clothes: a 21-row drain reported 1.
+    #[tokio::test]
+    async fn a_clear_all_reports_what_it_removed_and_what_it_spared() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("drainme.env"), "CC_TAGS=alpha\n").unwrap();
+
+        // Three human drafts and four of amux's own rows, so neither number can
+        // be right by coincidence and neither can be the other's total.
+        st.store
+            .write_async(move |conn| {
+                for (i, guard) in [
+                    ("h1", ""),
+                    ("h2", ""),
+                    ("h3", "selector-answer"),
+                    ("s1", "task-callback:MI-1"),
+                    ("s2", "task-callback:MI-2"),
+                    ("s3", "board-drive"),
+                    ("s4", "staged-guard"),
+                ] {
+                    conn.execute(
+                        "INSERT INTO steering_queue(id,session,text,queued_at,guard) \
+                         VALUES(?1,'drainme',?2,0,?3)",
+                        rusqlite::params![i, format!("msg {i}"), guard],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        let body = {
+            let response = steer_mutate(&st, "drainme", &Method::DELETE, &HeaderMap::new(), &json!({})).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let b: Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            )
+            .unwrap();
+            b
+        };
+        // THREE, not 1. `selector-answer` is human intent wearing a dedupe
+        // guard, which `steer_guard_is_system` already says and the old
+        // response could not express.
+        assert_eq!(body["cleared"], 3, "the real row count, not a bool: {body}");
+        assert_eq!(
+            body["spared_system"], 4,
+            "a caller looking at `cleared` alone cannot tell a no-op from a \
+             refusal; the spared count is what makes 0 legible: {body}"
+        );
+
+        // AND THE SPARED ROWS ARE STILL THERE. The number would otherwise be a
+        // label on a deletion that happened anyway.
+        let left: i64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM steering_queue WHERE session='drainme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 4, "the spared rows must survive the clear-all");
+
+        // include_system:true is the one that applies to a parked queue, and it
+        // reports the sweep as cleared rather than as spared.
+        let response = steer_mutate(
+            &st,
+            "drainme",
+            &Method::DELETE,
+            &HeaderMap::new(),
+            &json!({"include_system": true}),
+        )
+        .await;
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["cleared"], 4, "the full sweep takes the system rows: {body}");
+        assert_eq!(body["spared_system"], 0, "nothing was spared: {body}");
+    }
+
     #[tokio::test]
     async fn isolated_peer_queue_refuses_before_history_or_dedupe_but_owner_retry_survives() {
         let (st, dir) = state();
@@ -31015,10 +31413,17 @@ mod tests {
             }
             rest = &rest[at + "cmd_hist_record_".len()..];
         }
+        // 9 -> 11 at 852ee2ff, where a lane sending to ITSELF gained a ledger
+        // row: one arm on the ok path and one on the failure path, both
+        // `cmd_hist_record_with_id(.., "session", &origin, skip_board, ..)`.
+        // That commit added the call sites and left this number at 9, so the
+        // test it was written to satisfy went red on main and stayed red.
+        // Counted again here rather than adjusted by hand: both new sites pass
+        // the computed `skip_board`, which is the property below.
         assert_eq!(
             sites.len(),
-            9,
-            "the scan must see all 9 production call sites. A LOWER number means the detector \
+            11,
+            "the scan must see all 11 production call sites. A LOWER number means the detector \
              stopped matching rather than that the call sites went away, which is exactly how \
              the first two versions of this test passed a broken tree: one scanned a window \
              that excluded the send handlers, the other missed the multi-line spelling and left \
@@ -34776,6 +35181,107 @@ CLAUDE-POSTFIX-COMPLETE
         );
     }
 
+    #[test]
+    fn codex_receipt_evidence_requires_recent_exact_user_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let stamp = chrono::DateTime::from_timestamp(200, 0)
+            .unwrap()
+            .to_rfc3339();
+        let row = |kind: &str, role: &str| {
+            json!({"timestamp":stamp,"type":kind,
+            "payload":{"type":"message","role":role,"content":[{"type":"input_text","text":"first\nsecond"}]}}).to_string()
+        };
+        std::fs::write(&path, row("response_item", "assistant")).unwrap();
+        assert_eq!(codex_receipt_evidence(&path, "first\nsecond", 100), None);
+        std::fs::write(&path, row("response_item", "user")).unwrap();
+        assert_eq!(
+            codex_receipt_evidence(&path, "first\nsecond", 100),
+            Some(true)
+        );
+        assert_eq!(codex_receipt_evidence(&path, "first\nsecond", 201), None);
+        assert_eq!(codex_receipt_evidence(&path, "first", 100), None);
+    }
+
+    #[test]
+    fn message_acceptance_unverified_paste_is_not_a_receipt() {
+        assert!(message_acceptance_confirmed(true, "sent"));
+        assert!(message_acceptance_confirmed(true, "queued (steering)"));
+        assert!(!message_acceptance_confirmed(
+            true,
+            "sent (could not be verified)"
+        ));
+        assert!(!message_acceptance_confirmed(false, "not submitted"));
+        assert!(!message_acceptance_confirmed(true, "no suggestion found"));
+    }
+
+    #[test]
+    fn message_acceptance_transient_refusal_excludes_drafts_and_policy_holds() {
+        assert!(transient_send_refusal(
+            "worker is still starting — retry soon"
+        ));
+        assert!(transient_send_refusal("session started generating"));
+        for message in [
+            "not submitted",
+            "composer contains a draft",
+            "session is paused",
+            "session at a selector",
+            "target is an isolated (raw-agent) worker",
+        ] {
+            assert!(!transient_send_refusal(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn concurrent_send_retry_keeps_original_in_flight() {
+        let first = InFlightSend::enter("flight-reference-fixture", "same-id");
+        let retry = InFlightSend::enter("flight-reference-fixture", "same-id");
+        drop(retry);
+        assert!(send_is_in_flight("flight-reference-fixture", "same-id"));
+        drop(first);
+        assert!(!send_is_in_flight("flight-reference-fixture", "same-id"));
+    }
+
+    #[tokio::test]
+    async fn message_acceptance_forgotten_reservation_can_retry_and_old_receipts_survive() {
+        let (state, _dir) = state();
+        let name = "receipt-recovery-fixture";
+        assert!(send_dedup_gate(&state, name, "retry").await.is_none());
+        send_dedup_forget(&state, name, "retry").await;
+        let response = send_receipt_resolving(&state, name, "retry", "hello").await;
+        let value: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value["released"], true,
+            "a safely refused send must not wait forever: {value}"
+        );
+        assert!(send_dedup_gate(&state, name, "accepted").await.is_none());
+        send_dedup_accept(&state, name, "accepted", "receipt-old").await;
+        state
+            .store
+            .write_async(move |conn| {
+                conn.execute(
+                    "UPDATE send_dedup SET ts=? WHERE session=? AND msg_id='accepted'",
+                    rusqlite::params![now_i64() - 40 * 86400, name],
+                )?;
+                Ok(crate::db::WriteOutcome {
+                    applied: true,
+                    events: vec![],
+                })
+            })
+            .await
+            .unwrap();
+        assert!(send_dedup_gate(&state, name, "another").await.is_none());
+        assert!(
+            send_dedup_gate(&state, name, "accepted").await.is_some(),
+            "a long-offline device must not duplicate accepted text"
+        );
+    }
+
     /// AMUX-4594. A reservation no live send owns resolves from the transcript:
     /// a receipt when the text landed, a release when it did not, "unknown" when
     /// amux cannot tell, and nothing at all while a live send still holds it.
@@ -37479,6 +37985,25 @@ mod steer_boundary_tests {
         )
     }
 
+    #[tokio::test]
+    async fn empty_control_probe_never_becomes_queued_boot_work() {
+        let (state, _tmp) = tstate();
+        for text in ["", " "] {
+            assert_eq!(
+                queue_boot_prompt(&state, "empty-hook-test", text, SendOrigin::Owner).await,
+                (true, "no suggestion found".into())
+            );
+        }
+        let conn = state.store.read().unwrap();
+        ensure_fleet_tables(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM steering_queue", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
     async fn set_report(state: &AppState, name: &str, st: &str) {
         set_report_aged(state, name, st, 0.0).await
     }
@@ -39225,67 +39750,75 @@ mod submission_gate_tests {
     }
 
     /// AMUX-5018's regression check: ONE stored message reaching a pane more than
-/// once must be detectable.
-///
-/// The specimen was one `cmd_history` row and three arrivals, the first
-/// truncated at a fixed offset and the other two complete. Nothing saw it: the
-/// acceptance predicate answers "did this land", which is `true` for one copy
-/// and `true` for three, and the sender's receipt said "sent" either way. It no
-/// longer reproduces across three probes on both the direct and queued paths,
-/// and a non-reproduction is not a check.
-///
-/// A COUNT is the thing a bool could not express, so both are asserted here
-/// over the same records.
-#[test]
-fn one_message_landing_more_than_once_is_counted_not_flattened_to_landed() {
-    let sent_at = 100.0;
-    let say = |text: &str, at: &str| {
-        json!({
-            "type": "user",
-            "message": {"role": "user", "content": text},
-            "timestamp": at,
-        })
-    };
-    // 1970-01-01T00:01:41Z is 101.0, i.e. after `sent_at`.
-    let once = vec![say("rebuild the shared plane", "1970-01-01T00:01:41Z")];
-    let thrice = vec![
-        say("rebuild the shared pl", "1970-01-01T00:01:41Z"), // the truncated copy
-        say("rebuild the shared plane", "1970-01-01T00:01:42Z"),
-        say("rebuild the shared plane", "1970-01-01T00:01:43Z"),
-    ];
+    /// once must be detectable.
+    ///
+    /// The specimen was one `cmd_history` row and three arrivals, the first
+    /// truncated at a fixed offset and the other two complete. Nothing saw it: the
+    /// acceptance predicate answers "did this land", which is `true` for one copy
+    /// and `true` for three, and the sender's receipt said "sent" either way. It no
+    /// longer reproduces across three probes on both the direct and queued paths,
+    /// and a non-reproduction is not a check.
+    ///
+    /// A COUNT is the thing a bool could not express, so both are asserted here
+    /// over the same records.
+    #[test]
+    fn one_message_landing_more_than_once_is_counted_not_flattened_to_landed() {
+        let sent_at = 100.0;
+        let say = |text: &str, at: &str| {
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": text},
+                "timestamp": at,
+            })
+        };
+        // 1970-01-01T00:01:41Z is 101.0, i.e. after `sent_at`.
+        let once = vec![say("rebuild the shared plane", "1970-01-01T00:01:41Z")];
+        let thrice = vec![
+            say("rebuild the shared pl", "1970-01-01T00:01:41Z"), // the truncated copy
+            say("rebuild the shared plane", "1970-01-01T00:01:42Z"),
+            say("rebuild the shared plane", "1970-01-01T00:01:43Z"),
+        ];
 
-    assert_eq!(
-        submission_delivery_count(&once, "rebuild the shared plane", sent_at),
-        1,
-        "a single delivery must count as one"
-    );
-    assert_eq!(
-        submission_delivery_count(&thrice, "rebuild the shared plane", sent_at),
-        2,
-        "the two COMPLETE copies are what the count is for; the spliced partial \
+        assert_eq!(
+            submission_delivery_count(&once, "rebuild the shared plane", sent_at),
+            1,
+            "a single delivery must count as one"
+        );
+        assert_eq!(
+            submission_delivery_count(&thrice, "rebuild the shared plane", sent_at),
+            2,
+            "the two COMPLETE copies are what the count is for; the spliced partial \
          does not contain the full text and is a separate symptom"
-    );
+        );
 
-    // THE POINT: the existing predicate cannot tell these apart. Asserted so
-    // nobody deletes the count as a duplicate of the bool.
-    assert!(submission_records_have(&once, "rebuild the shared plane", sent_at));
-    assert!(submission_records_have(&thrice, "rebuild the shared plane", sent_at));
+        // THE POINT: the existing predicate cannot tell these apart. Asserted so
+        // nobody deletes the count as a duplicate of the bool.
+        assert!(submission_records_have(
+            &once,
+            "rebuild the shared plane",
+            sent_at
+        ));
+        assert!(submission_records_have(
+            &thrice,
+            "rebuild the shared plane",
+            sent_at
+        ));
 
-    // And the count must be able to read ZERO, or a >1 test proves nothing
-    // about whether the function looks at its input at all.
-    assert_eq!(
-        submission_delivery_count(&once, "a phrase nobody sent", sent_at),
-        0
-    );
-    // Records older than the send are not this send's deliveries.
-    assert_eq!(
-        submission_delivery_count(&once, "rebuild the shared plane", 1_000.0),
-        0,
-        "an identical message from before the send must not count as a re-delivery"
-    );
-}
+        // And the count must be able to read ZERO, or a >1 test proves nothing
+        // about whether the function looks at its input at all.
+        assert_eq!(
+            submission_delivery_count(&once, "a phrase nobody sent", sent_at),
+            0
+        );
+        // Records older than the send are not this send's deliveries.
+        assert_eq!(
+            submission_delivery_count(&once, "rebuild the shared plane", 1_000.0),
+            0,
+            "an identical message from before the send must not count as a re-delivery"
+        );
+    }
 
-#[test]
+    #[test]
     fn native_queue_acceptance_requires_exact_new_provider_receipt() {
         let receipt = json!({"type":"queue-operation","operation":"enqueue",
             "timestamp":"1970-01-01T00:02:00Z","content":GHOST});
@@ -44870,6 +45403,65 @@ mod project_steering_tests {
 
 #[cfg(test)]
 mod boot_delivery_tests {
+
+    /// AMUX-5013. A message parked past the invariant's own threshold must
+    /// arrive SAYING SO, and a fresh one must arrive untouched.
+    ///
+    /// Measured 2026-09-23: 61 messages sit in `steering_queue` behind 13
+    /// paused lanes, in two bulk clusters (53 queued 09-14, 8 queued 09-20).
+    /// ts-gke alone holds 21 from 09-14. Nothing drops them on resume, so the
+    /// lane that comes back reads a 9.3-day-old request as current.
+    ///
+    /// The codebase already makes this argument ninety lines above the delivery
+    /// call, for a keypress: "once [the picker] is gone the same characters
+    /// become an instruction the model will try to obey" (AMUX-2823, which
+    /// VOIDS it). Prose cannot be voided safely — it is a peer's real request —
+    /// so it is stamped instead.
+    #[test]
+    fn a_long_parked_message_arrives_carrying_its_age() {
+        let parked_max = 72.0 * 3600.0;
+        assert_eq!(
+            super::stale_delivery_stamp("ship it", 223.1 * 3600.0, parked_max, true),
+            None,
+            "isolated queued messages must remain exact owner input"
+        );
+
+        // Fresh: untouched. A stamp on every delivery would be noise on the
+        // 99% of messages that are seconds old.
+        assert_eq!(
+            super::stale_delivery_stamp("ship it", 5.0, parked_max, false),
+            None
+        );
+        // Exactly at the threshold is not PAST it.
+        assert_eq!(
+            super::stale_delivery_stamp("ship it", parked_max, parked_max, false),
+            None,
+            "the boundary must match the invariant's `age > max`, not `>=`"
+        );
+
+        // ts-gke's real worst case: 9.3 days.
+        let aged = super::stale_delivery_stamp("ship it", 223.1 * 3600.0, parked_max, false)
+            .expect("a message parked 223h must be stamped");
+        assert!(aged.contains("223.1h"), "the age must be IN it: {aged}");
+        // THE MESSAGE ITSELF SURVIVES. This is the whole reason it is a stamp
+        // and not a void: dropping a peer's request is not amux's call.
+        assert!(
+            aged.ends_with("ship it"),
+            "the original text was altered: {aged}"
+        );
+        assert!(
+            aged.lines().count() == 2,
+            "the stamp is one line above the message, not woven into it: {aged:?}"
+        );
+
+        // A DIFFERENT AGE PRODUCES A DIFFERENT STAMP, so the field cannot be a
+        // constant wearing a measurement's clothes.
+        let other =
+            super::stale_delivery_stamp("ship it", 100.0 * 3600.0, parked_max, false).unwrap();
+        assert_ne!(aged, other);
+        assert!(other.contains("100.0h"));
+    }
+
     use super::*;
     #[test]
     fn boot_delivery_requires_fresh_empty_idle_frame() {

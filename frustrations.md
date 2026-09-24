@@ -4117,7 +4117,7 @@ SESSION: codex-amux-project-lifecycle
 CARD: AF-946
 SYMPTOM: The raw Codex messaging probe created MRL-1/MRL-2 despite CC_ISOLATED=1; the dashboard prepended clock metadata, and a stale project association could route owner input into project steering.
 COST: Raw CLI communication silently enrolled in board intake, consumed interpretation tokens, and presented unrelated board claims as live work.
-FIX: Isolated delivery now skips task attribution, intake and recovery, preserves literal owner input, strips inherited harness routing at launch, and avoids answering provider menus automatically. Read-only message/delivery history remains. Runtime status and the isolated worker UI no longer borrow board claims or offer board automation. Logs emit isolated_message_passthrough / isolated_capture_suppressed. Regression coverage exercises direct and queued receipts, stale project settings, replay, and a managed-worker positive control. Capture-health measurements also exclude raw owner transport; dispatch diagnostics only flag missing managed workers, rather than expecting isolated workers to drain historical boards. The route census drops retired fan-out/launch endpoints and includes project draft.
+FIX: Isolated delivery now skips task attribution, intake and recovery, preserves literal owner input, strips inherited harness routing at launch, and avoids answering provider menus automatically. Read-only message/delivery history remains. Runtime status and the isolated worker UI no longer borrow board claims or offer board automation. Logs emit isolated_message_passthrough / isolated_capture_suppressed. Regression coverage exercises direct and queued receipts, stale project settings, replay, and a managed-worker positive control. Capture-health measurements also exclude raw owner transport; dispatch diagnostics only flag missing managed workers, rather than expecting isolated workers to drain historical boards. The route census drops retired fan-out/launch endpoints and includes project draft. The isolated Configurations panel omits unused global memory, board gates, connector, peer and email controls, and describes native CLI resume rather than board rehydration.
 
 ## `--continue` handed a lane a peer's conversation, and peek then read a third file
 AREA: cli
@@ -4151,3 +4151,69 @@ CARD: AMUX-5034
 SYMPTOM: SCHED-410 recorded `status=error` with a Python traceback in `note` on every 30-minute fire. Nothing counted it and nothing surfaced it; I found it by accident while chasing an unrelated invariant. All three routes to its owner were closed at once: `amux send coaching` -> "worker 'coaching' is not running"; `POST /api/board` on their board -> 403 `cross_board_create_forbidden`; `amux board request coaching` -> `cross_board_delegation_forbidden`.
 COST: A scheduled job produced nothing for an unknown number of days while reporting faithfully into a table nobody reads. The refusals are correct policy, so the gap is that a RECORDED failure with a named owner has no route when that owner is absent, and recording is treated as sufficient.
 FIX: The policy's own answer is "implement it yourself", and I did (Vault/Leadership 8895ce4; SCHED-410 now records `ok` on two consecutive runs). The remaining fix is surfacing: queue an `amux send` for a stopped lane's next start, or let the finder file on ITS OWN board naming the owner, or carry schedules erroring for N consecutive fires in the digest.
+
+## Restart abandoned its start after durable queued stop
+AREA: worker lifecycle
+SEVERITY: blocks
+STATUS: fixed (live validation pending)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: The isolated raw-pass-luna restart on main/8824 stopped the provider and left it stopped. All Stop requests now enter the durable outbox, while doRestart treated apiCall's null queued response as a failure and returned before observing termination or starting again.
+COST: Restart behaved as Stop, requiring manual recovery despite a successful durable delivery.
+FIX: Restart continues observing authoritative process state after queued stop acceptance and starts only after termination is confirmed. A worker_restart_waiting_for_stop beacon identifies the transition. Regression cases cover delayed queued stop, already-stopped workers and stop timeouts.
+
+## Provider hook state lost ordering and Codex had no native producer
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed (live provider validation pending)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Main-state reports had no launch identity or ordering and replaced observation time with receipt time. Older Codex rollout boundaries could override newer reports; isolated workers lacked a passive hook channel.
+COST: Delayed reports and missed permission/interrupt boundaries made worker badges disagree with their CLI and required manual inspection.
+FIX: Passive Codex/Claude hooks with per-launch ordered events, durable local delivery/replay, original observation timestamps and inspectable native history. Process absence and fresher fallback evidence still override stale claims. Producer privacy/concurrency/install tests, Rust replay/ordering/precedence regressions and dashboard lifecycle tests pass. Live proof is retained in ~/.amux/test-artifacts/native-status-20260923. Hook trust and launch identity are required; missing hooks remain explicitly identified as fallback.
+
+## Enter on a provider picker queued an empty message instead of pressing a key
+AREA: browser
+SEVERITY: blocks
+STATUS: fixed (live UI validation pending)
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Clicking Enter on status-hooks-luna's Codex hook review screen produced message.queued(chars=0) and a boot-delivery queue row, leaving the picker unchanged. The shortcut first called suggestion extraction; the startup gate queued the empty probe before checking whether any suggestion existed.
+COST: The worker appeared stuck on input even after using its Enter control; one empty test queue row required cancellation.
+FIX: Key chips send literal keys; isolated empty Send is also literal Enter and never invokes suggestion extraction. Empty startup probes return no_effect and cannot enter the durable queue. Four dashboard regressions and the empty_control_probe Rust regression pass. The exact test-only empty queue row was cancelled through the standard queue API.
+
+## Claude question cancellation stayed blocked and a live background shell appeared idle
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Live status-hooks-haiku test emitted a permission_prompt notification for AskUserQuestion, then no Stop hook after Escape; the card stayed blocked over a completed cancellation. A separate parent Stop hid its running background shell.
+COST: Two incorrect worker statuses reproduced in UI; three additional bounded test turns and status inspection.
+FIX: Preserve explicit question waiting across notifications, reconcile newer provider transcript interruption boundaries in both display and delivery, and retain working while provider-owned background shell footer remains. Regression tests added; final deployed validation recorded separately.
+
+## Reconnecting messages stopped recovering or lost their live send owner
+AREA: cloud
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-23
+SESSION: codex-amux-project-lifecycle
+CARD: AF-946
+SYMPTOM: Receipt recovery became permanently blocked after ten minutes or an unavailable transcript. A forgotten reservation returned accepted:false forever. Concurrent retries removed the original send's in-flight marker when the retry finished first, and confirmed identities were pruned after 30 days.
+COST: Four recovery gaps reproduced in regression tests; users were asked to resend without knowing whether the first message reached the worker.
+FIX: Keep bounded receipt polling alive; restore previously blocked uncertain messages; explicitly release absent reservations; retain durable identities; reference-count concurrent sends. Codex rollout evidence can positively reconcile exact recent user text without interpreting absence as permission to resend. TCP outage/reload/lost-ACK/restart/flapping regression and live cheap Codex transport test retain their evidence in docs and the local message-chaos test artifacts.
+
+## A worker committing to main had no session record, so every discovery path said it did not exist
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-23
+SESSION: amux
+CARD: AMUX-5041
+SYMPTOM: `codex-amux-project-lifecycle` authored four commits on origin/main between 22:02 and 22:12, including one editing a function I had pushed twelve minutes earlier. Every way I have of finding it says it is not there: `GET /api/sessions/codex-amux-project-lifecycle` returns `{"error":"session ... not found"}`, `/api/sessions` (168 entries) does not contain it, `~/.amux/sessions/` has no env file for it, and `tmux ls` has no such session. The only evidence it exists is the `Amux-Session:` trailer it writes on every commit.
+COST: I posted a wrong claim on AMUX-5040 ("the author's session no longer exists") and had to correct it on the same card. The CLAUDE.md remedy for an unreachable author is the ISOLATED case, which prescribes naming the exemption and pushing anyway; applying it here would have been a misdiagnosis, because an unregistered worker is a different thing from an isolated one and may be perfectly reachable by some channel I cannot see. There is no honest sentence available: "I could not obtain consent" is true, "the author is isolated" is false, and "the author does not exist" is false while looking the most supported.
+FIX: The `Amux-Session:` trailer is already a durable identity every commit carries, and the session registry is the only thing that does not read it. `push-consent.sh` should distinguish three states rather than two: a registered lane you can ask, an ISOLATED lane you cannot, and a trailer naming a session the registry has never heard of. The third needs its own label, because it is the one where silence about the gap reads as a clean verdict. Naming it also answers the question this entry could not: whether such a worker is unreachable or merely undiscovered.

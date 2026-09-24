@@ -406,6 +406,19 @@ if [[ -f "$SCRIPT_DIR/scripts/hooks/hook-report.sh" ]]; then
   fi
 fi
 
+# Passive status observation for both providers. Codex trust is deliberately
+# left to its normal /hooks review; installation never bypasses that review.
+install_hook_from_head scripts/hooks/native-status.py "$AMUX_HOME/native-status.py"
+if [[ "$AMUX_HOME" == "$HOME/.amux" ]]; then
+  for _provider in claude codex; do
+    _settings="$HOME/.$_provider/settings.json"
+    [[ "$_provider" == codex ]] && _settings="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+    /usr/bin/python3 "$SCRIPT_DIR/scripts/hooks/install-native-status-hooks.py" \
+      --provider "$_provider" --settings "$_settings" --script "$AMUX_HOME/native-status.py" \
+      || warn "could not install $_provider passive status observer"
+  done
+fi
+
 # ── 5. Service ──────────────────────────────────────────────────────────────
 if [[ "$OS" == "Linux" ]] && command -v systemctl &>/dev/null; then
   # envsubst ships in gettext-base (Debian/Ubuntu) / gettext (Fedora), not

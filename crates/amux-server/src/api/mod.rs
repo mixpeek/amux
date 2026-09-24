@@ -57,6 +57,7 @@ pub mod mdai;
 pub mod measured;
 pub mod memories;
 pub mod messages;
+pub(crate) mod native_status;
 pub mod metrics;
 pub mod observability;
 pub mod offline_origin;

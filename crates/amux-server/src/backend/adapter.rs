@@ -316,7 +316,23 @@ fn claude_background_wait_verdict(raw: &str) -> (bool, bool) {
 }
 
 pub(crate) fn claude_background_agents_working(raw: &str) -> bool {
-    claude_background_wait_verdict(raw).0
+    // The current footer survives a parent Stop while a Bash job runs. Only
+    // accept provider chrome after the last prompt, never quoted scrollback.
+    let footer = raw.rsplit_once('❯').map(|(_, footer)| footer).unwrap_or("");
+    let shells = footer.lines().any(|line| {
+        let line = line.trim();
+        (line.starts_with('⏸') || line.starts_with('⏵'))
+            && line.split('·').any(|part| {
+                let mut words = part.split_whitespace();
+                words
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| n > 0)
+                    && matches!(words.next(), Some("shell" | "shells"))
+                    && words.next().is_none()
+            })
+    });
+    shells || claude_background_wait_verdict(raw).0
 }
 
 pub(crate) fn claude_background_wait_superseded(raw: &str) -> bool {
@@ -1083,8 +1099,16 @@ fn scan_claude(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
 
 /// Current provider-owned picker, excluding quoted options above a newer
 /// composer. Model names/effort do not determine whether input is required.
-fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
+pub(crate) fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
     let lines = nonempty_trimmed(clean);
+    if matches!(provider, "codex" | "ollama")
+        && lines.last().is_some_and(|line| {
+            *line == "Press t to trust all; enter to review hooks; esc to close"
+        })
+        && lines.contains(&"Lifecycle hooks from config and enabled plugins.")
+    {
+        return Some("hook_trust_prompt");
+    }
     let lines = &lines[lines.len().saturating_sub(12)..];
     let selected = lines.iter().rposition(|line| match provider {
         "codex" | "ollama" => codex_picker_option(line),
@@ -1103,12 +1127,15 @@ fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
     let tail = lines.join(" ").to_lowercase();
     if provider != "gemini"
         && !tail.contains("press enter to continue")
+        && !tail.contains("press enter to confirm")
         && !tail.contains("enter to select")
         && !tail.contains("esc to cancel")
     {
         return None;
     }
-    Some(if tail.contains("trust") && tail.contains("directory") {
+    Some(if tail.contains("hooks need review") {
+        "hook_trust_prompt"
+    } else if tail.contains("trust") && tail.contains("directory") {
         "trust_prompt"
     } else if tail.contains("allow execution")
         || tail.contains("approve")
@@ -1601,6 +1628,16 @@ gemini-2.5-pro";
         let out = strip_ansi(raw);
         assert_eq!(out, "✻ Beaming… redplainlinkdone");
         assert!(!out.contains('\x1b'));
+    }
+
+    #[test]
+    fn native_hook_review_table_is_an_input_boundary_until_closed() {
+        let pane = "Hooks\nLifecycle hooks from config and enabled plugins.\n⚠ 10 hooks need review before they can run.\nPreToolUse 1 0 1 Before a tool executes\nPress t to trust all; enter to review hooks; esc to close";
+        assert_eq!(
+            provider_picker_reason(pane, "codex"),
+            Some("hook_trust_prompt")
+        );
+        assert_eq!(provider_picker_reason(&format!("{pane}\n›"), "codex"), None);
     }
 
     #[test]

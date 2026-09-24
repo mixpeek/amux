@@ -1,3 +1,4 @@
+import http from 'node:http';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -51,15 +52,15 @@ function installMissingStubs(src,ctx){
  }
  return missing;
 }
-function harness(queue,replies){
+function harness(queue,replies,transport=null){
  const requests=[],patches=[],signals=[],timers=[],beacons=[];
  const element={classList:{add(){},remove(){},contains(){return false;}},textContent:'',innerHTML:''};
  const ctx=vm.createContext({Date,Set,console,Response,JSON,navigator:{onLine:true},_upqList:async()=>[],_uploadSyncPending:false,_syncChecklist:[],_clearSyncTransientToast(){},_syncBannerBeacon:(phase,items)=>beacons.push({phase,n:(items||[]).length}),encodeURIComponent,decodeURIComponent,document:{getElementById:()=>element},drafts:[],offlineQueue:queue,_outboxActive:new Set(),describeOp:()=> 'test send',esc:s=>s,
   _outboxLock:async(_,f)=>f(),_readQueue:()=>queue,_interactionReplay:()=>({id:'int-test'}),_outboxQueueable:()=>true,_mutateQueue:async f=>f(queue),_authHeaders:h=>h,
-  _boundedMutationFetch:async(url,opts)=>{requests.push({url,opts});const r=replies.shift();assert(r,'unexpected request');if(r instanceof Error)throw r;return new Response(JSON.stringify(r.body),{status:r.status});},
-  _apiErrText:async r=>(await r.json()).error,_interactionSet:(_,v)=>patches.push(v),_interactionAcknowledge:async()=>{},_validateMessageAcknowledgement:r=>assert.equal(r.deduped,true),
+  _boundedMutationFetch:async(url,opts)=>{requests.push({url,opts});if(transport)return transport(url,opts);const r=replies.shift();assert(r,'unexpected request');if(r instanceof Error)throw r;return new Response(JSON.stringify(r.body),{status:r.status});},
+  _apiErrText:async r=>(await r.json()).error,_interactionSet:(_,v)=>patches.push(v),_interactionAcknowledge:async()=>{},
   _outboxDiagnostic:(kind,data)=>signals.push({kind,...data}),amuxTrack(){},updateConnectionStatus(){},fetchSessions(){},fetchBoard(){},showToast(){},setTimeout:(f,ms)=>timers.push(ms),clearTimeout(){},_writeError:'',_syncRetryTimer:null,_syncBackoffMs:0,_SYNC_MIN_MS:2000,_SYNC_MAX_MS:60000});
- const evaluated=reviewAction+'\n'+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
+ const evaluated=reviewAction+'\n'+section('function _validateMessageAcknowledgement(', 'function _localMessageRequest(')+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
  installMissingStubs(evaluated,ctx);
  vm.runInContext(evaluated,ctx);
  return {queue,requests,patches,signals,timers,beacons,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};
@@ -104,11 +105,11 @@ test('a released reservation is sent once with the same identity (AMUX-4594)',as
  assert.equal(JSON.parse(h.requests[1].opts.body).msg_id,'same-identity');
  assert(h.signals.some(s=>s.kind==='acceptance_released'&&s.measured===true));
 });
-test('an unknown stranded reservation asks the person instead of checking forever (AMUX-4594)',async()=>{
- const h=harness([pending({state:'blocked',error:'409: previous message acceptance is uncertain'})],[{status:200,body:{accepted:false,stranded:true,delivered:'unknown',msg_id:'same-identity'}}]);
+test('an unavailable transcript remains recoverable without a second paste',async()=>{
+ const h=harness([pending({state:'blocked',error:'409: previous message acceptance is uncertain'})],[{status:200,body:{accepted:false,stranded:true,delivered:'unknown',msg_id:'same-identity'}},accepted]);
  await h.drain();
- assert.equal(h.queue.length,1);assert.equal(h.queue[0].state,'blocked');assert.match(h.queue[0].error,/cannot check/);
- await h.drain();assert.equal(h.requests.length,1,'no further reads or sends once it is the person\'s call');
+ assert.equal(h.queue.length,1);assert.equal(h.queue[0].state,'pending');
+ await h.drain();assert.equal(h.queue.length,0);assert(h.requests.every(r=>r.opts.method==='GET'));
  assert(h.signals.some(s=>s.kind==='acceptance_unknown'));
 });
 test('an uncertain send is still re-checked when a quiet sync runs beside it (d69efdef, AMUX-4594)',async()=>{
@@ -118,12 +119,12 @@ test('an uncertain send is still re-checked when a quiet sync runs beside it (d6
  assert.equal(h.requests[0].opts.method,'GET');
  assert.equal(h.queue.length,1);assert.equal(h.patches.at(-1).phase,'unknown');
 });
-test('a send still pending after ten minutes of checking goes to the person (ba203699)',async()=>{
- const h=harness([pending({delivery_uncertain:true,checking_since:Date.now()-11*60000})],[waiting]);
+test('a long outage never retires automatic receipt recovery',async()=>{
+ const h=harness([pending({delivery_uncertain:true,checking_since:Date.now()-11*60000})],[waiting,accepted]);
  await h.drain();
  assert.equal(h.requests.length,1,'the verdict is read before giving up');
- assert.equal(h.queue.length,1);assert.equal(h.queue[0].state,'blocked');assert.match(h.queue[0].error,/timed out/);
- assert(h.signals.some(s=>s.kind==='acceptance_timed_out'));
+ assert.equal(h.queue.length,1);assert.equal(h.queue[0].state,'pending');
+ await h.drain();assert.equal(h.queue.length,0);assert(h.requests.every(r=>r.opts.method==='GET'));
 });
 // AMUX-4910. A 5xx is retried because a server that FAILED may succeed next
 // time. 501 is not that: it is the server saying the capability does not exist
@@ -160,4 +161,66 @@ test('a transient 5xx is still retried, so the 501 rule did not blunt recovery (
  await again.drain();
  assert.equal(again.requests.length,1,'a transient failure is retried');
  assert.equal(again.queue.length,0,'and clears when it succeeds');
+});
+
+test('a concurrent pending send moves to receipt polling instead of repeated POSTs',async()=>{
+ const h=harness([pending()],[{status:503,body:{submission:'pending',error:'still pending'}},accepted]);
+ await h.drain();await h.drain();
+ assert.equal(h.queue.length,0);assert.deepEqual(h.requests.map(r=>r.opts.method),['POST','GET']);
+});
+test('previously timed-out messages recover after reload without manual retry',async()=>{
+ const h=harness([pending({state:'blocked',error:'Confirmation timed out after 11m. Dismiss or retry.'})],[accepted]);
+ await h.drain();assert.equal(h.queue.length,0);assert.equal(h.requests[0].opts.method,'GET');
+});
+
+// Real TCP faults against the shipped replay loop. The fixture server models
+// only the durable receipt protocol; Rust tests cover the actual reservation
+// implementation separately. No production server or worker is interrupted.
+test('TCP outage, reload, lost ACK, restart and flapping preserve identity and FIFO',async()=>{
+ const acceptedIds=new Map(), deliveries=[];
+ let server,port,loseAck=false,unavailable=false;
+ const start=async()=>{
+  server=http.createServer(async(req,res)=>{
+   if(unavailable){res.writeHead(503);res.end(JSON.stringify({error:'restarting'}));return;}
+   const url=new URL(req.url,'http://fixture');
+   let body='';for await(const chunk of req)body+=chunk;
+   if(req.method==='GET'){
+    const id=url.searchParams.get('msg_id'),receipt=acceptedIds.get(id);
+    res.end(JSON.stringify(receipt?{accepted:true,msg_id:id,id:receipt}:{accepted:false,released:true,msg_id:id}));return;
+   }
+   const id=JSON.parse(body).msg_id;
+   if(!acceptedIds.has(id)){acceptedIds.set(id,'receipt-'+id);deliveries.push(id);}
+   if(loseAck){loseAck=false;req.socket.destroy();return;}
+   res.end(JSON.stringify({ok:true,deduped:true,id:acceptedIds.get(id)}));
+  });
+  await new Promise(resolve=>server.listen(port||0,'127.0.0.1',resolve));port=server.address().port;
+ };
+ const stop=async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));};
+ const transport=(url,opts)=>fetch('http://127.0.0.1:'+port+url,{...opts,signal:AbortSignal.timeout(500)});
+ await start();await stop();
+ const one=pending(),two=pending({id:'q2',options:{method:'POST',body:JSON.stringify({text:'second',msg_id:'second-id'})}});
+ let h=harness([one,two],[],transport);
+ try{
+  await h.drain();assert.equal(h.queue.length,2);assert.equal(deliveries.length,0);
+  // Browser reload reconstructs only durable data, not in-memory state.
+  h=harness(JSON.parse(JSON.stringify(h.queue)),[],transport);
+  await start();loseAck=true;
+  await h.drain();assert.equal(h.queue.length,2);assert.deepEqual(deliveries,['same-identity']);
+  // The server restarts after accepting but before the client got its ACK.
+  await stop();await h.drain();await start();unavailable=true;
+  await h.drain();assert.equal(h.queue.length,2);unavailable=false;
+  await h.drain();assert.equal(h.queue.length,0);
+  assert.deepEqual(deliveries,['same-identity','second-id'],'exactly once, ordered across all faults');
+  assert(h.requests.filter(r=>r.opts.method==='POST').every(r=>['same-identity','second-id'].includes(JSON.parse(r.opts.body).msg_id)));
+ }finally{if(server.listening)await stop();}
+});
+
+export {harness, pending};
+
+test('worker startup races retry automatically, but authorization refusals do not',async()=>{
+ const h=harness([pending()],[{status:409,body:{retryable:true,submitted:false,error:'worker is still starting'}},{status:200,body:{ok:true,submitted:true,id:'receipt-start'}}]);
+ await h.drain();assert.notEqual(h.queue[0].state,'blocked');
+ await h.drain();assert.equal(h.queue.length,0);
+ const denied=harness([pending()],[{status:403,body:{error:'not authorized'}}]);
+ await denied.drain();assert.equal(denied.queue[0].state,'blocked');await denied.drain();assert.equal(denied.requests.length,1);
 });

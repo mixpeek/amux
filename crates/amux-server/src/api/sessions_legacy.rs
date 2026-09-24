@@ -145,7 +145,8 @@ pub fn report_applies(state: &str, ts: f64, started: f64, now: f64) -> bool {
     from_this_life
         && !stale_active
         && age < trust_window
-        && matches!(state, "active" | "idle" | "waiting" | "blocked")
+        && age >= -5.0
+        && matches!(state, "active" | "idle" | "waiting" | "blocked" | "error")
 }
 
 /// Pane captures abandoned on a deadline, and the lanes they were for.
@@ -1301,7 +1302,7 @@ impl FleetSignals {
                 }
             }
         }
-        let reports = conn
+        let mut reports = conn
             .query_row(
                 "SELECT value FROM prefs WHERE key='session_reports'",
                 [],
@@ -1346,6 +1347,20 @@ impl FleetSignals {
             {
                 for (s, ts) in rows.flatten() {
                     started.insert(s, ts);
+                }
+            }
+        }
+        for name in running.iter().filter_map(|tmux| tmux.strip_prefix("amux-")) {
+            let fallback = started.get(name).copied().unwrap_or(0.0);
+            started.insert(
+                name.to_owned(),
+                super::native_status::launch_started_at(name, fallback),
+            );
+        }
+        for name in running.iter().filter_map(|tmux| tmux.strip_prefix("amux-")) {
+            if let Some(report) = reports.get_mut(name) {
+                if let Some(ts) = crate::api::session_verbs::native_claude_interrupt(name, report) {
+                    report["transcript_interrupt_ts"] = json!(ts);
                 }
             }
         }
@@ -1454,6 +1469,12 @@ impl FleetSignals {
         // the pgrep rescue, a child of a foreground shell).
         if !self.shell_only.contains(tmux_name) {
             return true;
+        }
+        // A successful process-tree probe plus an empty shell is positive
+        // termination evidence. Hooks cannot report SIGKILL, and a previous
+        // active hook must not resurrect that process for the trust window.
+        if self.provider_children_measured {
+            return false;
         }
         // AF-82 / D1: a lane that SELF-REPORTED an active agent recently is running,
         // even when the pane scrape reads shell-only — an agent launched as a child
@@ -1976,6 +1997,10 @@ impl FleetSignals {
                 json!({
                     "state": st,
                     "source": rep.get("source").and_then(|v| v.as_str()).unwrap_or(""),
+                    "native": rep["native_status"].as_bool().unwrap_or(false),
+                    "event": rep["event"], "run_id": rep["run_id"],
+                    "sequence": rep["sequence"], "observed_at": ts,
+                    "received_at": rep["received_at"],
                     "age_s": age.max(0.0),
                     "trust_window_s": trust_window,
                     "from_this_life": from_this_life,
@@ -2181,6 +2206,24 @@ impl FleetSignals {
         // A signal from before the latest worker restart is a previous life and
         // cannot vote. A visible selector still wins as `waiting`: an open turn
         // says work is unfinished, not that it is safe to type into the picker.
+        // Native lifecycle edges lead while current and fresh. Physical
+        // contradictions still rescue a missed hook; older rollout boundaries
+        // cannot undo a newer permission, interrupt, or completion hook.
+        let native = self.reports.get(name).filter(|rep| {
+            rep["native_status"].as_bool() == Some(true)
+                && report_applies(
+                    rep["state"].as_str().unwrap_or(""),
+                    rep["ts"].as_f64().unwrap_or(0.0),
+                    self.started.get(name).copied().unwrap_or(0.0),
+                    self.now,
+                )
+                && self.now - rep["ts"].as_f64().unwrap_or(0.0) <= 120.0
+                && !fresh_idle_contradicted
+        });
+        if let Some(rep) = native {
+            status = rep["state"].as_str().unwrap_or("idle").into();
+            decided = "native_hook";
+        }
         if let Some(signal) = self.codex_turns.get(name) {
             let started = self.started.get(name).copied().unwrap_or(0.0);
             let from_this_life = started > 0.0 && signal.ts >= started;
@@ -2192,7 +2235,9 @@ impl FleetSignals {
                 || heartbeat_fresh
                 || tool_child_running
                 || self.subagents_working(name);
-            let applied = from_this_life && active_is_live;
+            let newer_than_hook =
+                native.is_none_or(|rep| signal.ts > rep["ts"].as_f64().unwrap_or(0.0));
+            let applied = from_this_life && active_is_live && newer_than_hook;
             let pane_waiting = self
                 .pane_of(name)
                 .map(crate::api::session_verbs::detect_claude_status)
@@ -2222,7 +2267,7 @@ impl FleetSignals {
                     status = signal.state.clone();
                     decided = "codex_rollout";
                 }
-            } else if from_this_life && signal.state == "active" {
+            } else if from_this_life && signal.state == "active" && newer_than_hook {
                 // A `task_started` edge can survive a provider crash or an
                 // interrupted generation indefinitely. Codex also keeps its
                 // Working timer/footer repainting, so pane mtime/churn are not
@@ -2238,12 +2283,40 @@ impl FleetSignals {
                 }
             }
         }
+        if let Some(ts) = self
+            .reports
+            .get(name)
+            .and_then(|r| r["transcript_interrupt_ts"].as_f64())
+        {
+            if ts >= self.started.get(name).copied().unwrap_or(0.0) {
+                status = "idle".into();
+                decided = "claude_transcript_interrupt";
+                ex.insert("transcript_interrupt_ts".into(), json!(ts));
+            }
+        }
         // Main-turn completion does not complete its live tool/subagents.
         if status == "idle"
-            && (self.provider_child_activity.contains(name) || subagents_reported_live)
+            && (self.provider_child_activity.contains(name)
+                || subagents_reported_live
+                || provider_background_working)
         {
             status = "active".into();
             decided = "structured_live_children";
+        }
+        // CLI-owned menus (/hooks, /model, approval) can open without a model
+        // turn and therefore without UserPromptSubmit. A current structural
+        // picker is newer evidence than an earlier idle/active hook.
+        if status != "blocked"
+            && self.pane_of(name).is_some_and(|pane| {
+                crate::backend::adapter::provider_picker_reason(
+                    &crate::backend::adapter::strip_ansi(pane),
+                    "codex",
+                )
+                .is_some()
+            })
+        {
+            status = "waiting".into();
+            decided = "provider_picker";
         }
         // API-ERROR (5xx / Overloaded) is its own status (Ethan 2026-08-18).
         // Claude Code ENDS the turn on a 529 and returns to the prompt, so its
@@ -4020,7 +4093,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
                 meta["last_started"].as_i64().unwrap_or(0)
             }
         };
-        let mut status = signals.derive_status(&name, is_running);
+        let (mut status, status_evidence) = signals.derive_status_explain(&name, is_running);
         // A lane parked on a real picker is WAITING, never idle (AMUX-2834). The
         // derivation above cannot see a picker — it reads self-reports and tmux
         // activity, and a lane at a prompt is producing neither. The sweep in
@@ -4058,6 +4131,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             .map(|workspace| std::path::PathBuf::from(workspace.path))
             .unwrap_or_else(|| home.join("worktrees").join(&name));
         out.push(json!({
+            "status_evidence": {
+                "source": status_evidence["decided_by"],
+                "report": status_evidence["report"],
+                "observed_at": signals.now,
+                "running": is_running
+            },
             "archived": archived,
             "lifecycle": lifecycle,
             // Why a `waiting` lane is waiting, and proof a lane is genuinely
@@ -6087,6 +6166,7 @@ pub(crate) mod tests {
         let tmux = "amux-avetest";
         s.running.insert(tmux.into()); // the tmux session exists
         s.shell_only.insert(tmux.into()); // but the pane scrapes as a bare shell
+        s.provider_children_measured = false; // the process probe is unavailable
         assert!(
             !s.agent_running(tmux),
             "shell scrape + no report reads not-running"
@@ -6099,6 +6179,16 @@ pub(crate) mod tests {
             s.agent_running(tmux),
             "a 57s-old active self-report means an agent is running"
         );
+
+        // A measured empty process tree beats both native and fallback reports.
+        s.provider_children_measured = true;
+        assert!(
+            !s.agent_running(tmux),
+            "a report cannot resurrect a killed provider"
+        );
+        s.reports["avetest"]["native_status"] = json!(true);
+        assert!(!s.agent_running(tmux), "native hooks cannot report SIGKILL");
+        s.provider_children_measured = false;
 
         // A PREVIOUS-LIFE report (before the session (re)started) must NOT count.
         s.started.insert("avetest".into(), s.now - 10.0);
@@ -6588,6 +6678,99 @@ Claude usage limit reached. Your limit will reset at 3pm.
         let (status, ex) = s.derive_status_explain("x", false);
         assert_eq!(status, "");
         assert_eq!(ex["decided_by"], json!("not_running"));
+    }
+
+    #[test]
+    fn codex_hook_review_is_waiting_even_after_an_idle_hook() {
+        let frame = "Hooks need review\n10 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)\nPress enter to confirm or esc to go back";
+        assert_eq!(
+            crate::api::session_verbs::detect_claude_status(frame),
+            "waiting"
+        );
+        let mut s = signals();
+        s.running.insert("amux-x".into());
+        s.activity.insert("amux-x".into(), s.now as i64);
+        s.panes.insert("x".into(), frame.into());
+        s.reports = json!({"x":{"native_status":true,"state":"idle","ts":s.now-5.0}});
+        let (status, why) = s.derive_status_explain("x", true);
+        assert_eq!(status, "waiting", "{why}");
+        assert_eq!(why["decided_by"], "provider_picker");
+        assert_ne!(
+            crate::api::session_verbs::detect_claude_status(&format!("{frame}\n›")),
+            "waiting"
+        );
+    }
+
+    #[test]
+    fn native_hooks_lead_older_rollouts_and_yield_to_newer_evidence() {
+        let mut s = signals();
+        let lane = "native-test";
+        s.started.insert(lane.into(), s.now - 100.0);
+        s.reports = json!({lane: {"native_status":true,"state":"blocked","ts":s.now - 1.0,"source":"codex-hook","event":"PermissionRequest","sequence":4}});
+        s.codex_turns.insert(
+            lane.into(),
+            crate::api::session_verbs::CodexTurnSignal {
+                state: "active".into(),
+                ts: s.now - 10.0,
+                heartbeat_ts: s.now,
+                boundary: "task_started".into(),
+                rollout_file: None,
+            },
+        );
+        let (status, ex) = s.derive_status_explain(lane, true);
+        assert_eq!(status, "blocked", "{ex}");
+        assert_eq!(ex["decided_by"], "native_hook");
+        assert_eq!(ex["report"]["sequence"], 4);
+        // Completion after a lost hook still heals from the native transcript.
+        let signal = s.codex_turns.get_mut(lane).unwrap();
+        signal.state = "idle".into();
+        signal.ts = s.now;
+        assert_eq!(s.derive_status_explain(lane, true).0, "idle");
+        // Killed processes always beat the last hook.
+        assert_eq!(
+            s.derive_status_explain(lane, false).1["decided_by"],
+            "not_running"
+        );
+        s.reports[lane]["ts"] = json!(s.now - 200.0);
+        assert_ne!(
+            s.derive_status_explain(lane, true).1["decided_by"],
+            "native_hook"
+        );
+    }
+
+    #[test]
+    fn native_claude_question_cancel_overrides_its_older_notification() {
+        let mut s = signals();
+        let lane = "claude-question";
+        s.started.insert(lane.into(), s.now - 100.0);
+        s.reports = json!({lane:{"native_status":true,"state":"waiting","ts":s.now - 10.0,"transcript_interrupt_ts":s.now - 1.0}});
+        let (status, explain) = s.derive_status_explain(lane, true);
+        assert_eq!(status, "idle");
+        assert_eq!(explain["decided_by"], "claude_transcript_interrupt");
+        s.started.insert(lane.into(), s.now);
+        assert_ne!(
+            s.derive_status_explain(lane, true).1["decided_by"],
+            "claude_transcript_interrupt"
+        );
+    }
+
+    #[test]
+    fn native_parent_stop_does_not_hide_claude_background_shell() {
+        let mut s = signals();
+        let lane = "claude-shell";
+        s.started.insert(lane.into(), s.now - 100.0);
+        s.activity.insert(format!("amux-{lane}"), s.now as i64);
+        s.reports =
+            json!({lane:{"native_status":true,"state":"idle","ts":s.now - 1.0,"event":"Stop"}});
+        s.panes.insert(lane.into(), "✻ Baked for 7s · done 9:52 PM · 1 shell still running\n❯\n  ⏸ manual mode on · 1 shell · ← 5 agents".into());
+        assert_eq!(s.derive_status_explain(lane, true).0, "active");
+        s.panes.insert(lane.into(), "✻ Baked for 7s · done 9:52 PM · 1 shell still running\n❯\n  ⏸ manual mode on · ? for shortcuts · ← 5 agents".into());
+        assert_eq!(s.derive_status_explain(lane, true).0, "idle");
+        s.panes.insert(
+            lane.into(),
+            "❯ Text saying 1 shell\n  ⏸ manual mode on · 0 shells".into(),
+        );
+        assert_eq!(s.derive_status_explain(lane, true).0, "idle");
     }
 
     #[test]

@@ -1,0 +1,47 @@
+{
+  "marker": "CHAOS-1790217293587",
+  "worker": "status-hooks-luna",
+  "model": "gpt-6-luna",
+  "simulated": [
+    "connection unavailable before send",
+    "reload",
+    "acknowledgement lost",
+    "connection unavailable after acceptance"
+  ],
+  "outboxRemaining": 0,
+  "losses": 1,
+  "requests": [
+    {
+      "method": "POST",
+      "url": "/api/sessions/status-hooks-luna/send"
+    },
+    {
+      "method": "POST",
+      "url": "/api/sessions/status-hooks-luna/send"
+    },
+    {
+      "method": "POST",
+      "url": "/api/sessions/status-hooks-luna/send"
+    },
+    {
+      "method": "POST",
+      "url": "/api/sessions/status-hooks-luna/send"
+    }
+  ],
+  "receipts": [
+    {
+      "accepted": true,
+      "id": "msg-status-hooks-luna-CHAOS-1790217293587A",
+      "msg_id": "CHAOS-1790217293587A",
+      "ok": true
+    },
+    {
+      "accepted": true,
+      "id": "msg-status-hooks-luna-CHAOS-1790217293587B",
+      "msg_id": "CHAOS-1790217293587B",
+      "ok": true
+    }
+  ],
+  "buildBefore": "066765f5bc1c",
+  "buildAfter": "066765f5bc1c"
+}

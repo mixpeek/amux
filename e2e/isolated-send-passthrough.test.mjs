@@ -33,3 +33,12 @@ test('isolated idle labels never imply board inactivity',()=>{
  assert.equal(ctx._idleMovedTitle({isolated:true}), ' title="Idle — ready for your next message."');
  assert.equal(ctx._idleMovedSuffix({isolated:false,last_board_change_ts:123}), ' · 2h');
 });
+
+test('isolated configuration scope exposes only environment and presentation',()=>{
+ const code=source.slice(source.indexOf('function _visibleScopeCapabilities('),source.indexOf('function _workerPrimaryConfigurationsHTML('));
+ const ctx=vm.createContext({});vm.runInContext(code,ctx);
+ const caps=['memory','rules','env','gates','skin','status_mode','connectors'].map(key=>({key}));
+ assert.deepEqual(Array.from(ctx._visibleScopeCapabilities('worker',true,caps),c=>c.key),['env','skin']);
+ assert.equal(ctx._visibleScopeCapabilities('worker',false,caps),caps);
+ assert.deepEqual(Array.from(ctx._visibleScopeCapabilities('global',false,caps),c=>c.key),['memory','env','gates']);
+});

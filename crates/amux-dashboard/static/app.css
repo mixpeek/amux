@@ -6529,8 +6529,8 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .work-queue-dialog::backdrop { background: rgba(0,0,0,.5); }
 .work-queue-header { display: flex; align-items: center; gap: 12px; justify-content: space-between;
   padding: 16px; position: sticky; top: 0; background: var(--bg); border-bottom: 1px solid var(--border); }
-.work-queue-header h2 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
-.work-queue-dialog .btn { min-height: 44px; }
+.work-queue-header h2 { min-width: 0; font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
+.work-queue-dialog .btn { min-height: 44px; flex-shrink: 0; }
 .work-queue-body { padding: 0 16px 16px; }
 .work-queue-body p { color: var(--dim); font-size: .85rem; line-height: 1.5; }
 .work-queue-body h3 { font-size: .85rem; margin: 20px 0 8px; }

@@ -2475,6 +2475,19 @@ pub async fn cdp_new_tab(port: u16, url: &str) -> anyhow::Result<serde_json::Val
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
+    // WHY THE FALLBACK RAN, KEPT (AMUX-5039). The `_` arm used to discard the
+    // PUT's outcome, so when GET then failed, GET's error was the only one that
+    // survived. Chrome's is `405 ... Using unsafe HTTP verb GET to invoke
+    // /json/new. This action supports only PUT verb`, which reads as "amux uses
+    // GET, switch to PUT" while this function has led with PUT since Chrome
+    // 111. Measured 2026-09-23: three 502s on GET /api/browser/screenshot whose
+    // body said exactly that, sending the reader to implement a fix already
+    // three lines above the one they were reading.
+    let put_failure = match &put {
+        Ok(r) if r.status().is_success() => None,
+        Ok(r) => Some(format!("PUT answered HTTP {}", r.status())),
+        Err(e) => Some(format!("PUT failed: {e}")),
+    };
     let resp = match put {
         Ok(r) if r.status().is_success() => r,
         _ => {
@@ -2485,7 +2498,13 @@ pub async fn cdp_new_tab(port: u16, url: &str) -> anyhow::Result<serde_json::Val
                 .await?
         }
     };
-    cdp_json(resp, &format!("CDP /json/new on port {port}")).await
+    // The PUT's failure leads, because it is the one that explains why a
+    // verb Chrome rejects was tried at all.
+    let what = match &put_failure {
+        Some(why) => format!("CDP /json/new on port {port} ({why}, so amux fell back to GET)"),
+        None => format!("CDP /json/new on port {port}"),
+    };
+    cdp_json(resp, &what).await
 }
 
 /// Minimal query-encoding for the one place we build a query string by hand
@@ -3002,6 +3021,16 @@ fn registry_row_for_port(port: u16) -> Option<(String, String, u32)> {
 
 /// How many times a verb found the registry naming a browser whose PROCESS is
 /// gone (AMUX-3886). Read by `GET /api/browser/status`.
+/// How many times a verb found a browser ALIVE but wedged (its CDP port stopped
+/// answering) and stopped it so the next verb has a clean state (AMUX-5021).
+///
+/// Deliberately NOT folded into `DEAD_BROWSER_RECOVERIES`: that one counts
+/// browsers whose PROCESS was gone, and a wedged browser's process is running.
+/// AMUX-3886 exists to tell those two apart, so one counter for both would
+/// undo it exactly where a reader looks to check.
+pub static WEDGED_BROWSER_RECOVERIES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub static DEAD_BROWSER_RECOVERIES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -3182,16 +3211,71 @@ async fn cdp_list_failure(session: &str, port: u16, e: anyhow::Error) -> DriverE
             DriverError::Cdp(e)
         }
         CdpListVerdict::Wedged { pid, profile } => {
+            // RECOVER IT INSTEAD OF INSTRUCTING A HUMAN TO (AMUX-5021).
+            //
+            // AMUX-3886 got the DIAGNOSIS right and stopped one step short of
+            // the fix. The `Gone` arm below already self-heals: it records the
+            // corpse, clears the registry and answers with the fixable state.
+            // This arm returned a 502 whose body told the operator to run the
+            // two verbs amux itself owns — "POST /api/browser/stop then
+            // /api/browser/start to replace it".
+            //
+            // CLAUDE.md's standing harness rule is explicit about that shape:
+            // "if normal project or worker progress needs a manual override,
+            // restart, retry ... treat that need as an Amux defect. Implement
+            // bounded, logged discovery and recovery."
+            //
+            // Measured: 3 of 872 requests to /api/browser/screenshot (0.34%),
+            // all inside one 90-second window on 2026-09-23. The first waited
+            // 27,491 ms before giving up; the next two failed in 18 ms and
+            // 62 ms. So the caller already tolerates a long wait here, and
+            // `stop_profile_as_reason` is bounded: SIGTERM, then SIGKILL after
+            // an 8s budget.
+            //
+            // SIGTERM FIRST MATTERS and is why this reuses the stop path rather
+            // than killing directly — TERM is the signal Chrome flushes
+            // Cookies and Local Storage on, so a logged-in profile survives the
+            // recovery. SIGKILL is precisely what loses them.
+            //
+            // It does NOT restart. The `Gone` arm does not either, and starting
+            // a browser has side effects (a profile lock, a window) that belong
+            // to whoever asked for one. The caller gets `NotRunning`, which is
+            // the same fixable state a dead browser produces, and `start` is
+            // theirs to call.
             tracing::warn!(
                 session, port, pid, profile, cause = %format!("{e:#}"),
+                verdict = "browser_wedged_recovered",
                 "browser: Chrome is ALIVE but its CDP port did not answer — wedged or refusing, \
-                 not gone; the registry is left intact (AMUX-3886)"
+                 not gone. Stopping it so the next verb has a clean state instead of returning \
+                 a 502 that asks a human to do it (AMUX-5021, was AMUX-3886)"
             );
-            DriverError::Cdp(e.context(format!(
-                "Chrome pid {pid} (profile {profile:?}) is ALIVE but its CDP port {port} did not \
-                 answer /json/list, so the browser is wedged or refusing rather than gone. \
-                 POST /api/browser/stop then /api/browser/start to replace it"
-            )))
+            let report = stop_profile_as_reason(
+                &amux_home(),
+                &profile,
+                "amux:wedged-cdp-recovery",
+                "CDP port stopped answering /json/list while the process was alive",
+            )
+            .await;
+            tracing::info!(
+                session, port, pid, profile,
+                stopped = report.stopped,
+                verdict = "browser_wedged_recovered",
+                measured = true,
+                "browser: wedged Chrome stopped; the caller gets NotRunning and may start a \
+                 replacement"
+            );
+            NATIVE_TARGETS
+                .lock()
+                .expect("native targets poisoned")
+                .remove(session);
+            // A SEPARATE COUNTER, because reusing the existing one would make it
+            // lie. `DEAD_BROWSER_RECOVERIES` is documented as "how many times a
+            // verb found the registry naming a browser whose PROCESS is gone".
+            // A wedged browser's process is emphatically NOT gone — that is the
+            // whole distinction AMUX-3886 drew, and folding the two together
+            // would erase it in the one place someone reads to check.
+            WEDGED_BROWSER_RECOVERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            DriverError::NotRunning
         }
         CdpListVerdict::Gone {
             pid,
@@ -3231,6 +3315,78 @@ async fn cdp_list_failure(session: &str, port: u16, e: anyhow::Error) -> DriverE
 #[cfg(test)]
 mod cdp_list_failure_tests {
     use super::*;
+
+    /// AMUX-5021. A WEDGED browser must be RECOVERED, not reported with
+    /// instructions for a human.
+    ///
+    /// `Gone` already self-heals — records the corpse, clears the registry,
+    /// answers `NotRunning`. `Wedged` returned a 502 whose body said "POST
+    /// /api/browser/stop then /api/browser/start to replace it", two verbs
+    /// amux owns. CLAUDE.md's standing harness rule calls that an amux defect.
+    ///
+    /// A SOURCE GUARD, and the reason is worth stating rather than hiding.
+    /// Driving this end to end needs a registry entry whose pid is ALIVE, and
+    /// the recovery then kills it — so the test would have to spawn a real
+    /// child. That part is fine. What is not: `cdp_list_failure` calls
+    /// `amux_home()` directly, `amux_home` reads process env, and this
+    /// codebase's own config.rs warns that an env-mutating test races every
+    /// other test that reads a home. So the recovery would run against the
+    /// LIVE `~/.amux` and rewrite `browser-running.json` from a unit test.
+    /// The wiring is what regresses here; the decision it depends on
+    /// (`classify_cdp_list_failure`) is pure and tested separately.
+    #[test]
+    fn a_wedged_browser_is_recovered_rather_than_handed_back_as_a_502() {
+        let src = include_str!("browser.rs");
+        let at = src
+            .find("CdpListVerdict::Wedged { pid, profile } =>")
+            .expect("the Wedged arm is gone; this guard has lost its subject");
+        let end = src[at..]
+            .find("CdpListVerdict::Gone {")
+            .map(|i| at + i)
+            .expect("the Gone arm follows Wedged; the match shape changed");
+        let arm = &src[at..end];
+
+        assert!(
+            arm.contains("stop_profile_as_reason("),
+            "the Wedged arm no longer stops the wedged browser, so the caller is \
+             back to being told to do it by hand:\n{arm}"
+        );
+        assert!(
+            arm.contains("DriverError::NotRunning"),
+            "the Wedged arm must answer with the FIXABLE state, the way Gone does, \
+             rather than a 5xx:\n{arm}"
+        );
+        // NEGATIVES SEARCH THE CODE, NOT THE COMMENTS.
+        //
+        // A negative assertion over `include_str!` finds the arm's own prose.
+        // Building the needle with `format!` was my first fix and it is not
+        // enough: the phrase this arm must no longer EMIT is quoted in the
+        // comment explaining why it no longer emits it, so the literal is in
+        // the file whatever the test does. Stripping `//` lines fixes the class
+        // rather than the instance, and every negative below is over `code`.
+        //
+        // Fifth self-matching check in one session. The tell was never care; it
+        // was the result disagreeing with what I expected to have exercised.
+        let code: String = arm
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("libc::kill("),
+            "the Wedged arm kills directly; going through the stop path is what \
+             gives Chrome a TERM to flush cookies on:\n{code}"
+        );
+        assert!(
+            !code.contains("POST /api/browser/stop then"),
+            "the Wedged arm still tells the operator to run the verbs amux just \
+             ran:\n{code}"
+        );
+        // The positives must hold over the CODE too, or stripping comments could
+        // hide a regression where the call survives only in prose.
+        assert!(code.contains("stop_profile_as_reason("), "{code}");
+        assert!(code.contains("DriverError::NotRunning"), "{code}");
+    }
 
     /// THE DEFECT AMUX-3886 IS ABOUT, pinned against a real socket.
     ///
@@ -5743,6 +5899,63 @@ mod tests {
     }
 
     // ---- CDP client + driver mechanics (hermetic — fake WS, temp dirs) ----
+
+    /// A FALLBACK THAT HIDES WHY IT RAN TURNS ONE FAULT INTO A WRONG FIX.
+    ///
+    /// `cdp_new_tab` leads with PUT (Chrome 111+) and falls back to GET for
+    /// older builds. When BOTH fail, the caller used to see only GET's error,
+    /// and Chrome's is `405 ... Using unsafe HTTP verb GET to invoke
+    /// /json/new. This action supports only PUT verb` — an instruction to do
+    /// the thing the function already does. Measured 2026-09-23: three 502s on
+    /// GET /api/browser/screenshot carrying exactly that body (AMUX-5039).
+    ///
+    /// The fake Chrome here refuses both verbs, which is the only state in
+    /// which the two errors can disagree about the cause.
+    #[tokio::test]
+    async fn a_failed_put_survives_into_the_error_the_caller_reads() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // Two connections: the PUT attempt and the GET fallback.
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Chrome's real refusal, verbatim, for whichever verb asked.
+                let verb = if req.starts_with("PUT") { "PUT" } else { "GET" };
+                let body = format!(
+                    "Using unsafe HTTP verb {verb} to invoke /json/new. \
+                     This action supports only PUT verb."
+                );
+                let resp = format!(
+                    "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let err = super::cdp_new_tab(port, "https://example.com")
+            .await
+            .expect_err("both verbs were refused");
+        let msg = err.to_string();
+        // THE PUT'S OUTCOME IS THE CAUSE and must be in what the caller reads.
+        assert!(
+            msg.contains("PUT answered HTTP 405"),
+            "the PUT's failure is what explains the fallback, and it was dropped: {msg}"
+        );
+        assert!(
+            msg.contains("fell back to GET"),
+            "the caller cannot tell which verb produced the body without this: {msg}"
+        );
+        // The port still has to be there; it is how a reader finds the browser.
+        assert!(msg.contains(&port.to_string()), "{msg}");
+    }
 
     /// The client's one job: match responses by id THROUGH interleaved
     /// events, and surface CDP errors as errors. A fake Chrome answers every
