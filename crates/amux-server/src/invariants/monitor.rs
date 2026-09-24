@@ -1058,6 +1058,15 @@ fn provider_launch_check() -> Vec<InvariantResult> {
     checks::launch_matches_adapter(&rows)
 }
 
+// Use the same isolation boundary as command intake. Raw owner transport is
+// deliberately cardless, including workers with boards from before isolation.
+fn measures_board_capture(session: &str, text: &str) -> bool {
+    !session.is_empty()
+        && !crate::api::session_verbs::session_is_isolated(session)
+        && amux_core::board::title_from_prompt(text).is_some()
+        && !amux_core::board::is_informational_query(text)
+}
+
 /// AMUX-3148: read recent user prompts from `cmd_history`, compute per-session
 /// capture stats over the SAME `title_from_prompt` predicate the mint uses, and
 /// hand them to the pure check. Running the identical function is the point —
@@ -1131,16 +1140,9 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
     }
     let mut map: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
     for (session, text, carded, ts) in rows {
-        if session.is_empty()
-            || amux_core::board::title_from_prompt(&text).is_none()
-            || amux_core::board::is_informational_query(&text)
-        {
+        if !measures_board_capture(&session, &text) {
             continue;
         }
-        // AMUX-4159: isolated means no injected harness/peer automation, not
-        // invisible human work. These rows now follow the same invariant as
-        // every other owner-delivered task so another capture regression is a
-        // failing `/api/health/invariants` result instead of a policy-shaped gap.
         let e = map.entry(session).or_insert(Acc {
             cardable: 0,
             carded: 0,
@@ -2693,149 +2695,65 @@ async fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
         };
         per_lane
     };
-    let total: i64 = per_lane.iter().map(|(_, c)| *c).sum();
-    // DISPATCH IS NOT THE ONLY WAY A CARD GETS WORKED (AMUX-4934).
-    //
-    // board_drive genuinely skips isolated lanes, so the original predicate is
-    // right about PUSH and silent about PULL. A running isolated lane serves
-    // its own board: its `todo` card is the item it picks up next, not a card
-    // nobody will ever reach. Measured 2026-09-23, the two lanes this was
-    // failing on had moved their OWN cards 58 and 23 times, 22 of those to
-    // `done`, with nobody else touching them. The check had been failing for
-    // 19065 evaluations over 15 days against lanes that were working, and its
-    // prescribed remedy — demote the card to `backlog` — would have demoted
-    // the queued next item of an ACTIVE lane.
-    //
-    // `is_running` is the same probe `registered_lanes_running_check`, the
-    // sessions list and `amux start-all` already trust, kept in that spirit so
-    // this cannot disagree with the rest of the system about "running".
-    //
-    // Resolved ONLY for isolated lanes that hold todo cards — a handful, never
-    // the fleet — so the fleet-wide tmux probe stays off this check's path.
-    let mut pulling: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (lane, _) in per_lane.iter() {
-        if !lane.is_empty()
-            && crate::api::session_verbs::session_is_isolated(lane)
-            && crate::api::session_verbs::is_running(lane).await
-        {
-            pulling.insert(lane.clone());
-        }
-    }
-    let stranded = stranded_lanes(
-        per_lane,
-        &|l| crate::api::session_verbs::session_is_isolated(l),
-        &|l| pulling.contains(l),
-    );
+    // Isolated boards are historical data, not dispatch queues. A managed
+    // worker can be stopped or paused without losing ownership of its queue;
+    // only a missing worker makes this assignment unreachable.
+    let managed: Vec<_> = per_lane
+        .into_iter()
+        .filter(|(lane, _)| {
+            !lane.is_empty() && !crate::api::session_verbs::session_is_isolated(lane)
+        })
+        .collect();
+    let total = managed.iter().map(|(_, n)| n).sum();
+    let stranded = unregistered_board_owners(managed, &|lane| {
+        crate::api::session_verbs::home()
+            .join("sessions")
+            .join(format!("{lane}.env"))
+            .is_file()
+    });
     checks::todo_is_reachable_by_dispatch(&stranded, total)
 }
 
-/// The SELECTION, with the isolation predicate injected.
-///
-/// Split out for the same reason AF-529 split the ambient-env lookup: the real
-/// `session_is_isolated` reads this machine's worker config, so a test written
-/// against it would pass or fail depending on which box ran it — which is the
-/// exact defect that produced this seam the first time. Injected, the rule is
-/// assertable anywhere.
-///
-/// An EMPTY session is AF-137's case and already has its own check with its own
-/// remedy; counting it here too would double-report one card under two different
-/// fixes, so it is excluded here on purpose.
-fn stranded_lanes(
+fn unregistered_board_owners(
     per_lane: Vec<(String, i64)>,
-    is_isolated: &dyn Fn(&str) -> bool,
-    is_pulling: &dyn Fn(&str) -> bool,
+    registered: &dyn Fn(&str) -> bool,
 ) -> Vec<(String, i64)> {
-    let mut stranded: Vec<(String, i64)> = per_lane
+    let mut stranded: Vec<_> = per_lane
         .into_iter()
-        .filter(|(lane, _)| !lane.is_empty() && is_isolated(lane) && !is_pulling(lane))
+        .filter(|(lane, _)| !registered(lane))
         .collect();
-    stranded.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    stranded.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     stranded
 }
 
 #[cfg(test)]
-mod stranded_lanes_tests {
-    use super::stranded_lanes;
+mod isolated_board_diagnostics_tests {
+    use super::*;
 
-    fn lanes() -> Vec<(String, i64)> {
-        vec![
-            ("".to_string(), 3),           // AF-137's case, not this check's
-            ("amux".to_string(), 123),     // isolated -> stranded
-            ("mvs-infra".to_string(), 16), // dispatched -> fine
-            ("byo-ray".to_string(), 40), // isolated -> stranded, and BIGGER than amux? no: sorts under
-        ]
+    #[test]
+    fn isolated_transport_is_never_expected_to_capture_board_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/raw.env"), "CC_ISOLATED=1\n").unwrap();
+        let prompt = "Implement parser validation and regression tests";
+        assert!(!measures_board_capture("raw", prompt));
+        assert!(measures_board_capture("managed", prompt));
+        assert!(!measures_board_capture("", prompt));
     }
 
-    /// The predicate must be ISOLATION, not lane name, not queue size. Mutate
-    /// the filter to `false` and this fails; mutate it to drop the emptiness
-    /// guard and the empty lane appears, which is AF-137's card double-counted.
     #[test]
-    fn only_isolated_lanes_are_stranded_and_the_empty_session_is_left_to_af_137() {
-        // The fake says the EMPTY lane is isolated too. Deliberately: if it said
-        // otherwise, the empty-session assertion below would pass because of the
-        // fake rather than because of the `!lane.is_empty()` guard, and deleting
-        // that guard would leave the suite green. Measured — it did, until this
-        // line changed.
-        let out = stranded_lanes(
-            lanes(),
-            &|l| l.is_empty() || l == "amux" || l == "byo-ray",
-            &|_| false,
-        );
+    fn only_missing_managed_owners_are_unreachable() {
+        let lanes = vec![
+            ("paused".into(), 3),
+            ("stopped".into(), 5),
+            ("missing".into(), 2),
+        ];
         assert_eq!(
-            out,
-            vec![("amux".to_string(), 123), ("byo-ray".to_string(), 40)],
-            "isolated lanes only, largest first"
+            unregistered_board_owners(lanes, &|name| name != "missing"),
+            vec![("missing".into(), 2)]
         );
-        assert!(
-            !out.iter().any(|(l, _)| l.is_empty()),
-            "an empty session belongs to board.autofix_cards_are_dispatchable, not here"
-        );
-    }
-
-    /// Nothing isolated is the healthy fleet, and it must come back empty
-    /// rather than defaulting to "everything" — the direction that would spam
-    /// every lane with a false stranding.
-    #[test]
-    fn a_fleet_with_no_isolated_lane_strands_nothing() {
-        assert!(stranded_lanes(lanes(), &|_| false, &|_| false).is_empty());
-        // ...and the empty session is still excluded even when EVERYTHING is
-        // isolated, which is the only condition under which the guard is load
-        // bearing.
-        let all = stranded_lanes(lanes(), &|_| true, &|_| false);
-        assert!(
-            !all.iter().any(|(l, _)| l.is_empty()),
-            "the empty session is AF-137's card and must never appear here: {all:?}"
-        );
-    }
-
-    /// AMUX-4934. An isolated lane that is RUNNING serves its own board, so its
-    /// todo card is the item it picks up next rather than one nobody reaches.
-    ///
-    /// Measured 2026-09-23: this check had failed 19065 times over 15 days on
-    /// two lanes that had moved their own cards 58 and 23 times, 22 of them to
-    /// `done`, with no other actor touching them. Its prescribed remedy would
-    /// have demoted the queued next item of an ACTIVE lane.
-    #[test]
-    fn a_running_isolated_lane_pulls_its_own_work_and_is_not_stranded() {
-        let isolated = |l: &str| l == "amux" || l == "byo-ray";
-        // `amux` is isolated AND running: it pulls, so it is not stranded.
-        let out = stranded_lanes(lanes(), &isolated, &|l| l == "amux");
-        assert_eq!(
-            out,
-            vec![("byo-ray".to_string(), 40)],
-            "only the isolated lane that is NOT running is stranded"
-        );
-
-        // The CONTROL, and the half that must not rot: an isolated lane nobody
-        // is running still strands. Without this, excluding every isolated lane
-        // would pass, and the 2026-09-06 case (123 of 209 live todo cards
-        // parked on one lane) would stop being reported at all.
-        let none_running = stranded_lanes(lanes(), &isolated, &|_| false);
-        assert_eq!(
-            none_running,
-            vec![("amux".to_string(), 123), ("byo-ray".to_string(), 40)],
-            "a lane that is isolated and not running is still stranded"
-        );
+        assert!(unregistered_board_owners(vec![("active".into(), 4)], &|_| true).is_empty());
     }
 }
 

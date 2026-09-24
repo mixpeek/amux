@@ -2897,48 +2897,8 @@ pub fn autofix_cards_are_dispatchable(
     .evidence(json!({"open_unowned": open_unowned, "examples": examples}))]
 }
 
-/// Is the todo queue reachable by the thing that hands out todo cards? (AF-535)
-///
-/// AF-137 caught this for `session=NULL`. THIS IS THE SAME DEFECT ONE LEVEL UP,
-/// and the earlier check cannot see it: a card assigned to an ISOLATED lane has
-/// a perfectly good session, so it passes `COALESCE(session,'')=''` — and
-/// `board_drive`'s lane list is
-/// `all_lane_names().filter(|l| !session_is_isolated(l))`,
-/// so no tick will ever offer it to anybody. `todo` is the DISPATCH queue; the
-/// board's own WIP refusal calls a card there "a claim that it is next". A claim
-/// that it is next, addressed to a lane the dispatcher structurally skips, is
-/// ethos rule 3 arriving without anyone choosing it.
-///
-/// Measured 2026-09-06: 123 of the fleet's 209 live todo cards — 59% — sat on
-/// one isolated lane. Nothing anywhere reported it. The tell that finally
-/// surfaced it was a human writing "the board system still not working", which
-/// is the opposite of a check.
-///
-/// WHY THIS IS A CHECK AND NOT A SWEEP. Reassigning 123 of someone else's cards
-/// is ethos rule 8, and AF-137's own remedy says it in as many words: do NOT
-/// bulk-assign a backlog into one queue. The lanes are named so their owner can
-/// decide; the number is published so the decision is not made by nobody.
-///
-/// It derives "isolated" from `session_is_isolated`, the SAME predicate
-/// `board_drive` filters on, rather than restating a list — so a lane that
-/// becomes isolated cannot make this check quietly wrong.
-///
-/// ISOLATION ALONE WAS THE WRONG PREDICATE (AMUX-4934). board_drive skips
-/// isolated lanes, which makes the original claim true about PUSH and silent
-/// about PULL: a running isolated lane serves its own board, so its `todo`
-/// card is the item it picks up next. The check could not tell the 2026-09-06
-/// case — 123 cards parked on a lane that was not working them — from one card
-/// queued on a lane that had completed seventeen.
-///
-/// Measured 2026-09-23: it had been failing for 19065 evaluations across 15
-/// days on two lanes that had moved their OWN cards 58 and 23 times, 22 of
-/// those to `done`, with no other actor in their change log. One was ACTIVE at
-/// the time. Following the remedy in its own message would have demoted the
-/// queued next item of a lane that was working. That is ethos rule 3: the
-/// failing state had no truthful move, because the lanes were healthy.
-///
-/// So the lane must ALSO not be running to count as stranded. The 2026-09-06
-/// defect is still reported: a lane nobody is running cannot pull either.
+/// Managed todo queues must belong to registered workers. Isolated workers
+/// are raw CLI transport and excluded by the caller, regardless of liveness.
 pub fn todo_is_reachable_by_dispatch(
     stranded: &[(String, i64)],
     total_live_todo: i64,
@@ -2962,11 +2922,10 @@ pub fn todo_is_reachable_by_dispatch(
         .collect();
     vec![InvariantResult::fail(
         ID,
-        "every live todo card is reachable: dispatched by board_drive, or pulled by a \
-         running isolated lane that serves its own board"
+        "every managed todo card belongs to a registered worker"
             .to_string(),
         format!(
-            "{n} of {total_live_todo} live todo card(s) ({pct}%) belong to isolated              lane(s) that are NOT RUNNING, so board_drive will not offer them and the              lane is not there to pull them either: {}.              `todo` is the dispatch queue — a card here claims to be next. Either              reassign them to a lane that is dispatched, or move them to `backlog`,              which is unbounded and makes no such claim. Do NOT bulk-assign them              into one queue (AF-137's remedy, same reason).",
+            "{n} of {total_live_todo} managed todo card(s) ({pct}%) belong to unregistered workers: {}. Restore the worker, reassign the task to its intended managed worker, or move it to backlog. Do NOT bulk-assign unrelated work into one queue.",
             who.join(", "),
         ),
     )
