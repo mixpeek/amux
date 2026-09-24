@@ -441,18 +441,34 @@ async fn assemble_candidate(
     base_main: &str,
     heads: &[(String, String)],
 ) -> anyhow::Result<String> {
+    let mut inputs = heads.to_vec();
+    for import in super::checkout::imports(&crate::config::amux_home(), &p.name)? {
+        let task=import["task"].as_str().ok_or_else(||anyhow::anyhow!("project import task missing"))?;
+        let head=import["head"].as_str().ok_or_else(||anyhow::anyhow!("project import head missing"))?;
+        if !inputs.iter().any(|(_,known)|known==head) {inputs.push((task.to_string(),head.to_string()));}
+    }
+    let heads = &inputs;
     let repo = &p.policy.repository;
-    let temp = tempfile::Builder::new()
-        .prefix("amux-project-candidate-")
-        .tempdir()?;
-    let candidate = temp.path().join("candidate").to_string_lossy().into_owned();
-    workspace::git(
-        repo,
-        &["worktree", "add", "--detach", &candidate, base_main],
-    )
-    .await
-    .map_err(anyhow::Error::msg)?;
+    let owned = super::checkout::load(&crate::config::amux_home(), &p.name)
+        .filter(|w| p.policy.worktree && std::path::Path::new(&w.path).is_dir());
+    let temp = if owned.is_none() {Some(tempfile::Builder::new().prefix("amux-project-candidate-").tempdir()?)} else {None};
+    let candidate = if let Some(w) = &owned {
+        anyhow::ensure!(workspace::project_clean_status(&w.path).await.map_err(anyhow::Error::msg)?.is_empty(), "project candidate has uncommitted work; preserved");
+        w.path.clone()
+    } else {
+        let path = temp.as_ref().unwrap().path().join("candidate").to_string_lossy().into_owned();
+        workspace::git(repo, &["worktree", "add", "--detach", &path, base_main]).await.map_err(anyhow::Error::msg)?;
+        path
+    };
     let outcome = async {
+        if workspace::git(&candidate, &["merge-base", "--is-ancestor", base_main, "HEAD"]).await.is_err() {
+            if let Err(error) = workspace::git(&candidate, &["merge", "--no-ff", "--no-edit", base_main]).await {
+                let _ = workspace::git(&candidate, &["merge", "--abort"]).await;
+                let partial=workspace::git(&candidate,&["rev-parse","HEAD"]).await.map_err(anyhow::Error::msg)?;
+                let (task, head)=heads.last().ok_or_else(||anyhow::anyhow!("project has no task owner"))?;
+                return Err(anyhow::Error::new(CompositionFailure{task:task.clone(),head:head.clone(),partial,error:format!("Merge current main {base_main} preserving project work: {error}")}));
+            }
+        }
         // A repair may already include several previous task heads. Merge only
         // maximal heads so superseded divergent tips cannot conflict first.
         let mut args=vec!["merge-base","--independent"];
@@ -473,6 +489,7 @@ async fn assemble_candidate(
                 continue;
             }
             if let Err(error)=workspace::git(&candidate, &["merge", "--no-ff", "--no-edit", head]).await {
+                let _ = workspace::git(&candidate, &["merge", "--abort"]).await;
                 let partial=workspace::git(&candidate,&["rev-parse","HEAD"]).await.map_err(anyhow::Error::msg)?;
                 workspace::git(repo,&["update-ref",&format!("refs/amux/projects/{}/repair/{}",sha(&p.name),sha(task)),&partial]).await.map_err(anyhow::Error::msg)?;
                 return Err(anyhow::Error::new(CompositionFailure{task:task.clone(),head:head.clone(),partial,error}));
@@ -501,7 +518,9 @@ async fn assemble_candidate(
         Ok::<_, anyhow::Error>(head)
     }
     .await;
-    let _ = workspace::git(repo, &["worktree", "remove", "--force", &candidate]).await;
+    if temp.is_some() {
+        let _ = workspace::git(repo, &["worktree", "remove", "--force", &candidate]).await;
+    }
     outcome
 }
 
@@ -923,7 +942,7 @@ pub fn observe(
 /// Reopen the existing owner of failed integrated behavior. Keep every earlier
 /// report/evaluation and use the normal claim, concurrency, budget and delivery
 /// path. This is implementation work, never approval of a failed artifact.
-fn repair_owner(conn: &Connection, p: &store::Project, task: &str, expected_head: &str, context: &Value) -> anyhow::Result<WriteOutcome> {
+pub(super) fn repair_owner(conn: &Connection, p: &store::Project, task: &str, expected_head: &str, context: &Value) -> anyhow::Result<WriteOutcome> {
     let no_change=||WriteOutcome{applied:false,events:vec![]};
     if !p.policy.enabled || p.policy.paused || super::usage::waiting(conn,p)?.is_some() { return Ok(no_change()); }
     let Some(row)=bs::get_issue(conn,task)? else { return Ok(no_change()); };
@@ -1990,8 +2009,12 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
         .await;
         match observed {
             Ok(base_main) => {
+                let checkout_head = if let Some(w) = super::checkout::load(&crate::config::amux_home(), &p.name) {
+                    if std::path::Path::new(&w.path).is_dir() { Some(workspace::git(&w.path, &["rev-parse", "HEAD"]).await.map_err(anyhow::Error::msg)?) } else { None }
+                } else { None };
                 let unchanged = seen.as_ref().is_some_and(|o| {
                     o["base_main"] == json!(base_main)
+                        && checkout_head.as_ref().is_none_or(|head|o["candidate"] == json!(head))
                         && o["heads"] == json!(heads)
                         && o["intent"] == json!(intent)
                         && o["contract_revision"] == json!(contract.revision)
@@ -2005,7 +2028,8 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
                                 state.store.write_async(move|c| {
                                     let current=store::get(c,&project.name).map_err(store::sql_error)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
                                     if current.revision!=project.revision { return Ok(WriteOutcome{applied:false,events:vec![]}); }
-                                    repair_owner(c,&current,&task,&head,&context).map_err(store::sql_error)
+                                    let expected=planner::execution(c,&task).map_err(store::sql_error)?.report.map(|r|r.head).unwrap_or(head);
+                                    repair_owner(c,&current,&task,&expected,&context).map_err(store::sql_error)
                                 }).await?;
                                 return Ok(());
                             }
@@ -2129,6 +2153,11 @@ pub(crate) async fn publish_accepted_candidate(
         current == base_main,
         "main advanced after review; rebuild and review the project candidate again"
     );
+    if let Some(w) = super::checkout::load(&crate::config::amux_home(), &p.name) {
+        anyhow::ensure!(workspace::git(&w.path, &["rev-parse", "HEAD"]).await.map_err(anyhow::Error::msg)? == candidate
+            && workspace::project_clean_status(&w.path).await.map_err(anyhow::Error::msg)?.is_empty(),
+            "project checkout changed after review; verify and review the new candidate");
+    }
     let signature = publish_gate_signature(&p.policy.repository, base_main, candidate).await?;
     anyhow::ensure!(
         view["publish_gate"]["state"] == "passed" && view["publish_gate"]["signature"] == signature,

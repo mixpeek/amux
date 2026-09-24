@@ -14,3 +14,5 @@ pub(crate) mod outputs;
 pub(crate) mod task_retry;
 
 pub(crate) mod assets;
+
+pub(crate) mod checkout;

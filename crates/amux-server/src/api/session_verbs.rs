@@ -12383,6 +12383,15 @@ pub(crate) async fn start_session(
             "herdr-backed session start is not ported to the rust origin yet (gap named in api/session_verbs.rs)".into(),
         );
     }
+    if let Some(project) = cfg.get("CC_PROJECT").filter(|_| !isolated) {
+        let permit = state.store.read().map_err(|e|e.to_string())
+            .and_then(|c| crate::project_execution::checkout::start_permit(&c, project, name));
+        if let Err(error) = permit {
+            tracing::warn!(session=name, project, %error, measured=true, n_considered=1,
+                verdict="project.checkout_start_refused", "worker has no current exclusive project checkout claim");
+            return (false, error);
+        }
+    }
     if is_running(name).await {
         return (true, "already running".into());
     }
@@ -12439,7 +12448,12 @@ pub(crate) async fn start_session(
     let fanout = cfg.get("CC_EPHEMERAL") == Some("1") && !project_shared_checkout;
     let worktree_enabled = fanout || cfg.get_or("CC_WORKTREE", "") == "1";
     if fanout {
-        match crate::fanout_workspace::ensure(&home(), name, &work_dir).await {
+        let workspace = if let Some(project) = cfg.get("CC_PROJECT").filter(|_| !isolated) {
+            crate::project_execution::checkout::ensure(&home(), project, name, &work_dir).await
+        } else {
+            crate::fanout_workspace::ensure(&home(), name, &work_dir).await
+        };
+        match workspace {
             Ok(workspace) => work_dir = workspace.path,
             Err(error) => {
                 tracing::warn!(session=name,%error,verdict="fanout_workspace_required", "fan-out start refused; workspace preserved");

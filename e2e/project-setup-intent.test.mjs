@@ -194,3 +194,11 @@ test('task inspector retains the complete authorization diagnostic',()=>{
  assert.ok(box.innerHTML.includes('Full diagnostics ('+reason.length.toLocaleString()+' characters)'));
  assert.ok(!box.innerHTML.includes('<pre class="project-diagnostic" tabindex="0">authorization_required</pre>'));
 });
+
+test('project checkout settings restore one writer for either checkout mode',()=>{
+ const capacity={value:'3'},checkout={value:'1'};
+ const ctx=vm.createContext({document:{getElementById:id=>id==='project-capacity'?capacity:checkout}});
+ vm.runInContext(source.slice(source.indexOf('function _projectCheckoutChanged()'),source.indexOf('function _projectSettingsKey()')),ctx);
+ ctx._projectCheckoutChanged();assert.equal(capacity.value,'1');
+ checkout.value='0';capacity.value='2';ctx._projectCheckoutChanged();assert.equal(capacity.value,'1');
+});

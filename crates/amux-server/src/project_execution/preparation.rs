@@ -125,7 +125,7 @@ mod tests {
         let policy = serde_json::from_value(json!({"repository":"/repo", "enabled":true,
             "coordinator":{"provider":"codex","model":"gpt-6-luna","effort":"low"},
             "executor":{"provider":"codex","model":"gpt-6-luna","effort":"low"},
-            "verify_command":"git diff --check", "max_executors":2}))
+            "verify_command":"git diff --check", "max_executors":1}))
         .unwrap();
         store::save(&c, "p", 0, &policy, "test").unwrap();
         c.execute("INSERT INTO issues(id,title,desc,status,type,project_group,created,updated,next_action,acceptance_criteria) VALUES('A','Canonical cutover','Local implementation and gated production rollout','blocked','code','p',1,1,'Implement local fixture parity','[\"Production parity before rollout\"]')", []).unwrap();

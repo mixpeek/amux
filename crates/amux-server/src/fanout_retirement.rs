@@ -113,7 +113,14 @@ pub(crate) async fn retire<F: Fleet>(
             Outcome::Deferred
         });
     }
-    if env.contains_key("CC_PROJECT") && env.get("CC_WORKTREE").is_some_and(|v| v == "0") {
+    let project_checkout = env.get("CC_PROJECT").is_some_and(|project|
+        workspace::load(home, name).is_some_and(|w|
+            crate::project_execution::checkout::belongs_to(home, project, &w)));
+    let worktree_removed = if project_checkout {
+        crate::project_execution::checkout::cleanup(state, fleet, home, &env["CC_PROJECT"]).await?
+    } else { false };
+    let checkout_mode = if project_checkout { "project_worktree" } else { "shared_checkout" };
+    if project_checkout || (env.contains_key("CC_PROJECT") && env.get("CC_WORKTREE").is_some_and(|v| v == "0")) {
         if source == expired {
             return Ok(Outcome::Deferred);
         }
@@ -160,7 +167,7 @@ pub(crate) async fn retire<F: Fleet>(
                 return Ok(crate::db::WriteOutcome {applied:false,events:vec![]});
             }
             conn.execute("INSERT INTO session_events(ts,session,type,data,source) VALUES(?1,?2,'fanout.decommissioned',?3,'board-drive')",
-                rusqlite::params![crate::config::now_f64(),worker,serde_json::json!({"head":retired_head,"main":retired_main,"cards":expected_board,"worktree_removed":false,"mode":"shared_checkout"}).to_string()])?;
+                rusqlite::params![crate::config::now_f64(),worker,serde_json::json!({"head":retired_head,"main":retired_main,"cards":expected_board,"worktree_removed":worktree_removed,"mode":checkout_mode}).to_string()])?;
             std::fs::rename(&active,&expired).map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
         }).await;
@@ -168,8 +175,8 @@ pub(crate) async fn retire<F: Fleet>(
             Ok(outcome) if outcome.applied => {
                 crate::api::session_verbs::dispose_verified_worker_terminal(name).await;
                 crate::api::sessions_legacy::invalidate_sessions_cache();
-                tracing::info!(session=name,verdict="project_shared_executor_decommissioned",measured=true,worktree_removed=false,
-                    "fully verified shared-checkout project executor expired after confirming integration and review");
+                tracing::info!(session=name,verdict="project_executor_decommissioned",measured=true,worktree_removed,mode=checkout_mode,
+                    "fully verified project executor expired after confirming integration and review");
                 Ok(Outcome::Expired)
             }
             result => result.map(|_| Outcome::Deferred).map_err(|e| e.to_string()),
@@ -338,7 +345,7 @@ pub(crate) async fn retire<F: Fleet>(
     }
 }
 
-async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), String> {
+pub(crate) async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), String> {
     let root = std::fs::canonicalize(&w.path).map_err(|e| e.to_string())?;
     let actual = git(&w.path, &["rev-parse", "--show-toplevel"]).await?;
     if root != std::fs::canonicalize(actual).map_err(|e| e.to_string())?
@@ -368,8 +375,8 @@ async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), String> {
-    for name in ["project-report.json", "project-wait.json"] {
+pub(crate) fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), String> {
+    for name in ["project-report.json", "project-wait.json", "project-required-outputs.json"] {
         let receipt = Path::new(&w.path).join(".amux").join(name);
         match std::fs::remove_file(&receipt) {
             Ok(()) => {}

@@ -74,6 +74,7 @@ async fn prepare(
     e: &Execution,
 ) -> Result<(), String> {
     permit(state, &p.name, &row.id, e)?;
+    super::checkout::quiesce_others(state, &p.name, &e.worker).await?;
     let path = sv::env_path(&e.worker);
     let mut env = sv::EnvFile::load(&path);
     if !p.policy.worktree {
@@ -92,7 +93,7 @@ async fn prepare(
         // inspect an index while another path is still checking it out.
         let lock = sv::session_op_lock(&e.worker);
         let _op = lock.lock().await;
-        workspace::ensure(&crate::config::amux_home(), &e.worker, &p.policy.repository).await?;
+        super::checkout::ensure(&crate::config::amux_home(), &p.name, &e.worker, &p.policy.repository).await?;
     }
     permit(state, &p.name, &row.id, e)?;
     if !sv::is_running(&e.worker).await {
@@ -122,9 +123,11 @@ fn previous_result(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> ser
 }
 
 pub fn packet(p: &store::Project, row: &bs::IssueRow, e: &Execution) -> String {
-    let output_protocol=format!("For an unavailable concrete same-project output, first write the exact request body to `.amux/project-required-outputs.json` in your worktree; the harness ingests it without network access. Optionally POST the same body to /api/projects/{}/tasks/{}/required-outputs with generation, input_hash, idempotency_key, required_outputs (explicit task IDs), reason, and replaces_wait (null for a new wait; exact prior waiting string to replace an operational wait). Never turn spend/customer authorization into outputs. Stop after declaration. When outputs are Verified the harness continues the SAME attempt with a fresh generation and delivery ID. On continuation use the exact accepted report head SHAs in the local shared Git object store and compose those commits into your own candidate without resetting your existing work; do not fetch GitHub or assume unpublished project work is on origin/main, then rerun/report every criterion; an output arriving is not verification of your task. Required output receipts below identify accepted reports and integration evidence.",p.name,row.id);
+    let imports=super::checkout::imports(&crate::config::amux_home(),&p.name)
+        .map(|rows|rows.into_iter().filter(|r|r["path"].as_str().is_some_and(|path|std::path::Path::new(path).exists())).collect::<Vec<_>>()).unwrap_or_default();
+    let output_protocol=format!("For an unavailable concrete same-project output, first write the exact request body to `.amux/project-required-outputs.json` in your worktree; the harness ingests it without network access. Optionally POST the same body to /api/projects/{}/tasks/{}/required-outputs with generation, input_hash, idempotency_key, required_outputs (explicit task IDs), reason, and replaces_wait (null for a new wait; exact prior waiting string to replace an operational wait). Never turn spend/customer authorization into outputs. Stop after declaration. When outputs are Verified the harness continues the SAME attempt with a fresh generation and delivery ID. On continuation use the exact accepted report head SHAs in the local shared Git object store and check that those commits are already in this project branch, preserving existing work; do not fetch GitHub or assume unpublished project work is on origin/main, then rerun/report every criterion; an output arriving is not verification of your task. Required output receipts below identify accepted reports and integration evidence.",p.name,row.id);
     let checkout_instruction = if p.policy.worktree {
-        "Execute this finite project task in your isolated worktree. Own all required implementation locally."
+        "Execute this finite task in the one project worktree shared by all project workers. The harness serializes task execution. Preserve prior task commits and files; do not create another worktree or branch. If preserved_checkout_imports are present, merge their local commit SHAs into this project branch and resolve conflicts preserving the project requirements before reporting. Their original checkouts are retained as evidence, not separate work assignments."
     } else {
         "Execute this finite project task in the project's shared checkout. This project is single-lane in shared-checkout mode; keep the checkout clean, commit the exact result, and do not start unrelated work."
     };
@@ -183,7 +186,7 @@ Task packet:
         e.input_hash,
         p.name,
         row.id,
-        json!({"id":row.id,"project":p.name,"worker":e.worker,"title":row.title,"description":row.desc,"source_documents":crate::api::board_lifecycle::project_task_context(&p.policy.repository,&row.desc,row.acceptance_criteria.as_deref()),"criteria":criteria,"contract_requirements":contract_requirements,"review_preparation":p.policy.acceptance.as_ref().map(|c|super::acceptance::review_preparation(c,&serde_json::from_value::<Vec<String>>(criteria.clone().unwrap_or(json!([]))).unwrap_or_default())).unwrap_or_default(),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command,"verification_context":{"cwd":"assigned_checkout_git_root","asset_paths":"checkout_root_relative","contract_commands":"exact_from_checkout_root"}})
+        json!({"id":row.id,"project":p.name,"worker":e.worker,"preserved_checkout_imports":imports,"title":row.title,"description":row.desc,"source_documents":crate::api::board_lifecycle::project_task_context(&p.policy.repository,&row.desc,row.acceptance_criteria.as_deref()),"criteria":criteria,"contract_requirements":contract_requirements,"review_preparation":p.policy.acceptance.as_ref().map(|c|super::acceptance::review_preparation(c,&serde_json::from_value::<Vec<String>>(criteria.clone().unwrap_or(json!([]))).unwrap_or_default())).unwrap_or_default(),"next_action":row.next_action,"required_outputs":row.depends_on,"output_handoff":e.output_wait,"attempt":e.attempt,"max_attempts":e.attempt_limit(p.policy.max_attempts),"previous_result":previous_result(p,row,e),"verification":p.policy.verify_command,"verification_context":{"cwd":"assigned_checkout_git_root","asset_paths":"checkout_root_relative","contract_commands":"exact_from_checkout_root"}})
     )
 }
 
@@ -292,6 +295,7 @@ fn executor_flags(provider: &str, effort: Option<&str>, full_host_access: bool) 
 }
 
 fn configure_executor_env(env: &mut sv::EnvFile, p: &store::Project, row: &bs::IssueRow) {
+    env.remove("CC_REVIEW_HELD");
     for (key, value) in [
         ("CC_DIR", p.policy.repository.as_str()),
         ("CC_PROJECT", p.name.as_str()),
@@ -379,11 +383,14 @@ async fn verify(
     };
     let report = e.report.as_ref().ok_or("no report")?;
     verification_permit()?;
+    if sv::is_running(&e.worker).await {
+        sv::stop_for_pause(state, &e.worker).await.map_err(|e|e.to_string())?;
+    }
     let home = crate::config::amux_home();
     let w = if p.policy.worktree {
         let w = workspace::load(&home, &e.worker).ok_or("workspace missing")?;
         if !workspace::same_repository(&w.repo, &p.policy.repository)
-            || w.branch != format!("amux/fanout/{}", e.worker)
+            || !super::checkout::assignment_matches(&home, &p.name, &e.worker, &w)
         {
             return Err("registered workspace does not match project executor".into());
         }
@@ -436,6 +443,7 @@ async fn verify(
         &e.worker,
         &json!({"status":"verified_pending_review","head":report.head,"candidate":candidate,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
     );
+    let verified_worker = e.worker.clone();
     let expected_policy = p.policy.clone();
     let (id, expected, project) = (id.to_string(), e.clone(), p.name.clone());
     state.store.write_async(move|c| {
@@ -450,6 +458,8 @@ async fn verify(
         c.execute("UPDATE issues SET status='verified',evidence=?2,lease_owner=NULL,lease_expires_at=NULL WHERE id=?1",params![id,json!({"report":current.report,"candidate":candidate,"integration":"pending_project_acceptance","gate":policy.policy.verify_command}).to_string()])?;
         planner::save_execution(c,&row,&current,"project.verified").map_err(store::sql_error)
     }).await.map_err(|e|e.to_string())?;
+    let env = sv::env_path(&verified_worker);
+    if env.exists() { sv::set_review_hold_at(&env, true)?; }
     Ok(())
 }
 
@@ -500,7 +510,7 @@ async fn recover_host_execution(
     let home = crate::config::amux_home();
     let w = workspace::load(&home, &expected.worker).ok_or("registered workspace missing")?;
     if !workspace::same_repository(&w.repo, &p.policy.repository)
-        || w.branch != format!("amux/fanout/{}", expected.worker) {
+        || !super::checkout::assignment_matches(&home, &p.name, &expected.worker, &w) {
         return Err("registered workspace does not match this project executor".into());
     }
     let root = std::fs::canonicalize(&w.path).map_err(|e| e.to_string())?;
@@ -1059,16 +1069,18 @@ async fn reconcile_corrected_candidate(state: &AppState, p: &store::Project) -> 
             .collect::<Vec<_>>()
     };
     let home = crate::config::amux_home();
+    let mut known_heads = candidates.iter().filter_map(|(_,e)| e.report.as_ref().map(|r|r.head.clone())).collect::<std::collections::HashSet<_>>();
+    { let c=state.store.read()?; if let Some(candidate)=super::acceptance::status(&c,p)?["candidate"].as_str() {known_heads.insert(candidate.to_string());} }
     for (row, expected) in candidates {
         let Some(w) = workspace::load(&home, &expected.worker) else { continue };
         if !workspace::same_repository(&w.repo, &p.policy.repository)
-            || w.branch != format!("amux/fanout/{}", expected.worker)
+            || !super::checkout::assignment_matches(&home, &p.name, &expected.worker, &w)
         {
             continue;
         }
         let old = &expected.report.as_ref().expect("filtered report").head;
         let Ok(head) = workspace::git(&w.path, &["rev-parse", "HEAD"]).await else { continue };
-        if &head == old
+        if &head == old || (super::checkout::belongs_to(&home, &p.name, &w) && known_heads.contains(&head))
             || workspace::git(&w.path, &["merge-base", "--is-ancestor", old, &head]).await.is_err()
             || workspace::project_clean_status(&w.path).await.as_deref() != Ok("")
         {
@@ -1126,10 +1138,18 @@ async fn reconcile_corrected_candidate(state: &AppState, p: &store::Project) -> 
 }
 
 pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Result<()> {
+    let project_name = name.to_string();
+    state.store.write_async(move |c| {
+        let changed = c.execute("UPDATE group_config SET execution_policy=json_set(execution_policy,'$.max_executors',1),execution_rev=execution_rev+1 WHERE name=?1 AND json_extract(execution_policy,'$.max_executors')!=1", [&project_name])?;
+        if changed > 0 { tracing::info!(project=%project_name, measured=true, n_considered=changed,
+            verdict="project.checkout_capacity_normalized", "project writes serialized in one checkout"); }
+        Ok(WriteOutcome { applied:changed>0, events:vec![] })
+    }).await?;
     let p = {
         let c = state.store.read()?;
         store::get(&c, name)?.ok_or_else(|| anyhow::anyhow!("project missing"))?
     };
+    super::checkout::consolidate(state, &p).await?;
     state
         .store
         .write_async({
@@ -2282,9 +2302,10 @@ mod command_tests {
             let w = workspace::Workspace {
                 repo: p.policy.repository.clone(),
                 path: repo.to_string_lossy().into_owned(),
-                branch: format!("amux/fanout/{}", e.worker),
+                branch: super::super::checkout::branch(home.path(), "sample"),
                 base: head.clone(),
             };
+            workspace::save(home.path(), &super::super::checkout::owner(home.path(), "sample"), &w).unwrap();
             workspace::save(home.path(), &e.worker, &w).unwrap();
             let state = AppState {
                 store: Arc::new(db),
@@ -2642,8 +2663,9 @@ mod command_tests {
             })
             .unwrap();
         let mut execution = planner::execution(&state.store.read().unwrap(), &task_id).unwrap();
-        rt.block_on(crate::fanout_workspace::ensure(
+        rt.block_on(super::super::checkout::ensure(
             home.path(),
+            "lifecycle-e2e",
             &execution.worker,
             repo.to_str().unwrap(),
         ))
@@ -2799,6 +2821,27 @@ mod command_tests {
             crate::fanout_workspace::integration_status(home.path(), &execution.worker)["status"],
             "verified_pending_review"
         );
+        struct StoppedFleet;
+        impl crate::runtime_jobs::board_drive::Fleet for StoppedFleet {
+            fn lanes(&self) -> Vec<String> { vec![] }
+            fn auto_pickup_enabled(&self, _: &str) -> bool { false }
+            fn auto_continue_enabled(&self, _: &str) -> bool { false }
+            fn tags(&self, _: &str) -> Vec<String> { vec![] }
+            async fn is_running(&self, _: &str) -> bool { false }
+            async fn at_boundary(&self, _: &str) -> bool { true }
+            async fn deliver(&self, _: &str, _: &str) { panic!("cleanup must never dispatch") }
+        }
+        let owned = super::super::checkout::load(home.path(), "lifecycle-e2e").unwrap();
+        let extra = std::path::Path::new(&owned.path).join("owner-notes.txt");
+        std::fs::write(&extra, "unpublished owner work").unwrap();
+        assert!(rt.block_on(super::super::checkout::cleanup(&state, &StoppedFleet, home.path(), "lifecycle-e2e")).is_err());
+        assert!(extra.exists(), "unpublished work prevents cleanup");
+        std::fs::remove_file(extra).unwrap();
+        assert!(rt.block_on(super::super::checkout::cleanup(&state, &StoppedFleet, home.path(), "lifecycle-e2e")).unwrap());
+        assert!(!std::path::Path::new(&owned.path).exists());
+        assert!(!rt.block_on(super::super::checkout::cleanup(&state, &StoppedFleet, home.path(), "lifecycle-e2e")).unwrap());
+        assert!(std::path::Path::new(&final_execution.retained_assets[0].path).exists(), "review evidence survives checkout deletion");
+        assert_eq!(git(&repo, &["rev-parse", &owned.branch]), published, "published branch remains reviewable");
     }
 
     #[test]

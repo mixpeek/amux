@@ -5,7 +5,7 @@ Amux turns one requested outcome into independently verified changes. The durabl
 ```text
 Project intent + acceptance contract
   -> same-project task graph
-  -> disposable task attempts in isolated worktrees
+  -> task attempts sharing one project worktree (one writer at a time)
   -> exact reports, checks, commits and retained assets
   -> deterministic verification and integration
   -> whole-project checks on current origin/main

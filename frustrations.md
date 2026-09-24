@@ -4892,3 +4892,14 @@ CARD: AF-949
 SYMPTOM: Real UI send LAT24-RACE1 reached Codex, then launchctl bootout interrupted the server before receipt/history persistence. Codex answered while Amux was offline. On restart its text hash and authoritative rollout matched, but send_receipt_resolving refused even positive evidence until the reservation was 120 seconds old. Three later queued messages waited behind it.
 COST: A completed owner message and three valid follow-ups stayed pending for roughly two minutes, despite a healthy server and readable acceptance proof.
 FIX: Reconcile exact hash-bound positive transcript evidence immediately when no live send owns the ID. Preserve the age requirement for negative evidence/release, live-send exclusion and unknown reservations; offload transcript reads to the blocking pool and log early recovery.
+
+## Project workers multiply worktrees instead of sharing one project checkout
+AREA: board
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-951
+SYMPTOM: bucket-objects-gs3 has 25 clean worker worktrees and 24 independent tips. Project dispatch creates a new checkout per task, and UI labels advertise plural worktrees.
+COST: Review and integration span 25 directories rather than one project result; independent task heads require later composition and conflict repair.
+FIX: One project-owned checkout and branch, serialized claims and direct starts, preserved original commit/receipt imports, and review-gated project cleanup. Verification in progress.

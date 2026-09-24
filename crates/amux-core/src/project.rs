@@ -15,7 +15,7 @@ pub struct ModelProfile {
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
     pub repository: String,
-    /// Project executors default to a dedicated Git worktree. Shared-checkout mode is explicit,
+    /// Each project defaults to one dedicated Git worktree shared by its task workers. Shared-checkout mode is explicit,
     /// single-lane, and reserved for projects where the operator wants one worker in the saved
     /// project directory instead of a disposable candidate checkout.
     #[serde(default = "enabled_by_default")]
@@ -376,11 +376,8 @@ impl ExecutionPolicy {
         if self.executor_full_host_access && self.executor.provider != "codex" {
             return Err("full host access is supported only for Codex executors");
         }
-        if !(1..=3).contains(&self.max_executors) {
-            return Err("max_executors must be 1..3; one executor is the default");
-        }
-        if !self.worktree && self.max_executors != 1 {
-            return Err("shared-checkout projects support exactly one executor; enable dedicated worktrees for parallel execution");
+        if self.max_executors != 1 {
+            return Err("projects use one checkout and support exactly one executing task at a time");
         }
         if !(1..=5).contains(&self.max_attempts) {
             return Err("max_attempts must be 1..5");
@@ -598,6 +595,7 @@ mod tests {
         p.worktree = false;
         assert!(p.validate().is_err());
         p.worktree = true;
+        p.max_executors = 1;
         p.cost_budget_usd = Some(f64::NAN);
         assert!(p.validate().is_err());
         p.cost_budget_usd = Some(0.0);

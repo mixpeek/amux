@@ -207,6 +207,10 @@ fn project_summary_workspace(
         return None;
     }
     let home = crate::config::amux_home();
+    if let Some(workspace) = super::checkout::load(&home, &project.name) {
+        return Some(json!({"project":project.name,"repo":workspace.repo,"path":workspace.path,
+            "available":std::path::Path::new(&workspace.path).is_dir(),"branch":workspace.branch,"base":workspace.base}));
+    }
     let mut candidates: Vec<(u8, String)> = plans
         .iter()
         .filter_map(|plan| {
