@@ -4760,3 +4760,14 @@ CARD: AF-947
 SYMPTOM: Changing api_deploy_gate from a static command to a fresh execution contract revised project acceptance but left its existing task input valid. The worker could finish using the prior packet and never learn the new receipt requirements. The Settings UI also retained a prior validation error after the corrected save succeeded.
 COST: A normal user refinement needed an extra manual worker instruction, and the successful save appeared to have failed.
 FIX: On a changed contract criterion, invalidate only its bound task inputs through the existing stale-requirements path, retaining old reports, worker identity and authorization/suspension holds. Reclaim at the normal worker boundary with a fresh generation, never mutate the running provider or claim old evidence satisfies new criteria. Emit project.contract_task_invalidated and retain project.contract_requirements_changed events. Clear the settings error only after a successful save, with project_settings_saved signal. Regressions cover active and checked bindings, unchanged/unrelated tasks, preserved spend holds, no duplicate invalidation on unchanged saves, and failure-then-success UI acknowledgement.
+
+## Deferred execution commands skipped candidate source validation
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Candidate verification removed approved runtime commands before applying the source-path/static-command guard. A deferred command could reference the shared checkout or harness receipt files and appear acceptable until independent whole-project execution.
+COST: Runtime deferral hid invalid command provenance until late integration, undermining the distinction between a checked candidate and fresh runtime proof.
+FIX: Preflight every distinct declared command before filtering the deferred runtime subset. Preserve deferral (no duplicate runtime execution) and apply the same static candidate-relative policy to both phases. Emit project.verification_command_preflight_failed. Regression rejects shared-checkout, receipt-file and dynamic commands even when their contract would defer execution; valid runtime commands remain deferred. This source policy does not prove runtime entrypoints exist or that their assertions pass; those still require execution against the integrated candidate.

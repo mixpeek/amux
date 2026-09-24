@@ -246,11 +246,20 @@ pub(crate) fn validated_verification_commands<'a>(
     report: &'a planner::Report,
     contract: Option<&amux_core::project::AcceptanceContract>,
 ) -> Result<Vec<&'a str>, String> {
-    let commands = verification_commands(gate, report, contract);
-    for command in &commands {
-        workspace::validate_verification_command(w, command)?;
+    // Deferring runtime execution does not exempt its command from source-path
+    // validation. Otherwise a candidate can embed an absolute main-checkout
+    // command which fails only after the rest of the project has completed.
+    for command in workspace::distinct_verification_commands(
+        std::iter::once(gate).chain(report.checks.iter().map(|check| check.command.as_str())),
+    ) {
+        if let Err(error) = workspace::validate_verification_command(w, command) {
+            tracing::warn!(worker=%w.branch,command,measured=true,n_considered=1,
+                verdict="project.verification_command_preflight_failed",%error,
+                "deferred runtime commands must satisfy the same candidate source policy");
+            return Err(error);
+        }
     }
-    Ok(commands)
+    Ok(verification_commands(gate, report, contract))
 }
 
 fn project_effort_flags(provider: &str, effort: &str) -> Option<String> {
@@ -2852,5 +2861,24 @@ mod command_tests {
             super::verification_commands("git diff --check", &report, Some(&contract)),
             vec!["git diff --check", "python3 scripts/check_source.py"]
         );
+        let workspace = workspace::Workspace {
+            path: "/candidate-checkout".into(), repo: "/shared-checkout".into(),
+            branch: "amux/fanout/runtime-check".into(), base: "main".into(),
+        };
+        assert_eq!(validated_verification_commands(&workspace, "git diff --check", &report, Some(&contract)).unwrap(),
+            vec!["git diff --check", "python3 scripts/check_source.py"]);
+        for invalid in ["python3 /shared-checkout/scripts/run_image.py", "python3 .amux/run_image.py", "python3 $(pwd)/scripts/run_image.py"] {
+            let mut contract = contract.clone();
+            if let amux_core::project::ContractVerifier::Execution { command, .. } = &mut contract.criteria[0].verifier {
+                *command = invalid.into();
+            }
+            let mut report = report.clone();
+            report.checks[0].command = invalid.into();
+            report.checks[2].command = invalid.into();
+            // It really is deferred, so validating only runnable commands would
+            // accept this report. No runtime process is needed to reject it.
+            assert!(!verification_commands("git diff --check", &report, Some(&contract)).contains(&invalid));
+            assert!(validated_verification_commands(&workspace, "git diff --check", &report, Some(&contract)).is_err(), "{invalid}");
+        }
     }
 }
