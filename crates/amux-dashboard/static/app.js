@@ -10300,8 +10300,18 @@ async function _steeringClearAll() {
   _steeringUpdateBadge();
   render();
   try {
-    await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', { method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: '{}' });
-    if (had) showToast('Cleared ' + had + ' queued message' + (had > 1 ? 's' : ''));
+    // THE SERVER'S COUNT, NOT THE OPTIMISTIC ONE. `had` is derived from this
+    // client's copy of the list, which is as stale as the last fetch; the
+    // response carries what the DELETE actually removed and what it spared by
+    // design (AMUX-5013). They disagree exactly when it matters: a lane parked
+    // behind a hold holds nothing BUT system rows, so the honest toast is
+    // "spared 21", and a client-side count of a stale list can say anything.
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(peekSession) + '/steer', { method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: '{}' });
+    const j = await r.json().catch(() => ({}));
+    const cleared = Number.isFinite(j.cleared) ? j.cleared : had;
+    const spared = Number.isFinite(j.spared_system) ? j.spared_system : 0;
+    if (cleared) showToast('Cleared ' + cleared + ' queued message' + (cleared > 1 ? 's' : '') + (spared ? ', kept ' + spared + ' system push' + (spared > 1 ? 'es' : '') : ''));
+    else if (spared) showToast('Nothing cleared: all ' + spared + ' queued row' + (spared > 1 ? 's are' : ' is') + ' a system push');
     else showToast('Nothing to clear (system pushes are kept)');
     fetchSessions();
   } catch(e) { showToast('Failed to clear queue'); }

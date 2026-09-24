@@ -20858,9 +20858,18 @@ pub(crate) async fn steer_mutate(
         let include_system = body.get("include_system").map(py_truthy).unwrap_or(false);
         let session = name.to_string();
         let id2 = msg_id.clone();
+        // Read after the writer returns, never inside it: the writer thread is
+        // the only one that stores, and the await point orders the load after
+        // the store. Two counters rather than one packed word, because the
+        // response prints them as two numbers and a reader debugging this
+        // should not have to unpack anything.
+        let n_cleared = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let n_spared = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let (n_cleared_w, n_spared_w) = (n_cleared.clone(), n_spared.clone());
         let reply = state
             .store
             .write_async(move |conn| {
+                let (n_cleared, n_spared) = (&n_cleared_w, &n_spared_w);
                 ensure_fleet_tables(conn)?;
                 let mut sent_row: Option<(String, f64)> = None;
                 // AMUX-3562: this path reads the row itself rather than calling
@@ -20869,6 +20878,14 @@ pub(crate) async fn steer_mutate(
                 // rule though — read BEFORE the DELETE.
                 let mut sent_src: (Option<String>, Option<String>) = (None, None);
                 let removed: i64;
+                // WHAT THE CLEAR-ALL DID NOT TOUCH, counted before the DELETE.
+                // A clear-all that spares system rows can honestly report
+                // `cleared: 0` on a lane with 21 queued messages, and until
+                // this number existed there was nothing in the response that
+                // told the caller why (AMUX-5013). Measured on the live DB:
+                // all 61 rows parked behind paused lanes are system rows, so
+                // `cleared: 0` is the ONLY answer that path can give them.
+                let mut spared: i64 = 0;
                 if !id2.is_empty() {
                     sent_row = conn
                         .query_row(
@@ -20887,6 +20904,12 @@ pub(crate) async fn steer_mutate(
                     // queue is discarding THEIR drafts, not amux's drive
                     // prompts. Per-row ✕ still removes anything by id, and
                     // include_system:true asks for the full sweep explicitly.
+                    spared = conn.query_row(
+                        "SELECT COUNT(*) FROM steering_queue WHERE session=? \
+                         AND NOT (COALESCE(guard,'')='' OR guard IN ('selector-answer','project-steering'))",
+                        [&session],
+                        |r| r.get::<_, i64>(0),
+                    )?;
                     removed = conn.execute(
                         "DELETE FROM steering_queue WHERE session=? \
                          AND (COALESCE(guard,'')='' OR guard IN ('selector-answer','project-steering'))",
@@ -20912,13 +20935,28 @@ pub(crate) async fn steer_mutate(
                         ],
                     )?;
                 }
-                // Smuggle the count through WriteReply.applied? No — recompute
-                // is racy; return via a rev-free outcome and count separately.
+                // THE NUMBER THE DELETE ALREADY RETURNED, carried out rather
+                // than recomputed. The earlier note here rejected "smuggle the
+                // count through WriteReply.applied" as racy, which is true of a
+                // SECOND read and not of this one: `removed` is rusqlite's own
+                // row count from the statement inside the transaction, so
+                // publishing it races with nothing. Collapsing it to a bool
+                // made the response say `cleared: 1` for a 21-row drain.
+                n_cleared.store(removed, std::sync::atomic::Ordering::SeqCst);
+                n_spared.store(spared, std::sync::atomic::Ordering::SeqCst);
                 Ok(crate::db::WriteOutcome { applied: removed > 0, events: vec![] })
             })
             .await;
         return match reply {
-            Ok(r) => j200(json!({"ok": true, "cleared": if r.applied { 1 } else { 0 }})),
+            Ok(_) => {
+                let cleared = n_cleared.load(std::sync::atomic::Ordering::SeqCst);
+                let spared = n_spared.load(std::sync::atomic::Ordering::SeqCst);
+                // `spared` rides along so `cleared: 0` explains itself. A
+                // clear-all on a lane holding nothing but system rows is a
+                // legitimate no-op, and without the second number it is
+                // indistinguishable from a broken route.
+                j200(json!({"ok": true, "cleared": cleared, "spared_system": spared}))
+            }
             Err(e) => jresp(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({"error": e.to_string()}),
@@ -29599,6 +29637,101 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    /// `cleared: 0` HAS TO EXPLAIN ITSELF, because on the lanes this actually
+    /// happens to it is the only answer the clear-all can give.
+    ///
+    /// Measured on the live DB 2026-09-23: 61 rows sat behind paused lanes and
+    /// every one carried a system guard (54 `task-callback:<CARD>`, 6
+    /// `board-drive`, 1 `staged-guard`, 1 `deferred-automation`). The clear-all
+    /// spares system rows on purpose, so an operator draining ts-gke's 21 got
+    /// `cleared: 0` with nothing in the response distinguishing "spared 21 by
+    /// design" from "this route is broken".
+    ///
+    /// The second half is that `cleared` was `if applied { 1 } else { 0 }`, a
+    /// bool wearing a count's clothes: a 21-row drain reported 1.
+    #[tokio::test]
+    async fn a_clear_all_reports_what_it_removed_and_what_it_spared() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("drainme.env"), "CC_TAGS=alpha\n").unwrap();
+
+        // Three human drafts and four of amux's own rows, so neither number can
+        // be right by coincidence and neither can be the other's total.
+        st.store
+            .write_async(move |conn| {
+                for (i, guard) in [
+                    ("h1", ""),
+                    ("h2", ""),
+                    ("h3", "selector-answer"),
+                    ("s1", "task-callback:MI-1"),
+                    ("s2", "task-callback:MI-2"),
+                    ("s3", "board-drive"),
+                    ("s4", "staged-guard"),
+                ] {
+                    conn.execute(
+                        "INSERT INTO steering_queue(id,session,text,queued_at,guard) \
+                         VALUES(?1,'drainme',?2,0,?3)",
+                        rusqlite::params![i, format!("msg {i}"), guard],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+
+        let body = {
+            let response = steer_mutate(&st, "drainme", &Method::DELETE, &HeaderMap::new(), &json!({})).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let b: Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            )
+            .unwrap();
+            b
+        };
+        // THREE, not 1. `selector-answer` is human intent wearing a dedupe
+        // guard, which `steer_guard_is_system` already says and the old
+        // response could not express.
+        assert_eq!(body["cleared"], 3, "the real row count, not a bool: {body}");
+        assert_eq!(
+            body["spared_system"], 4,
+            "a caller looking at `cleared` alone cannot tell a no-op from a \
+             refusal; the spared count is what makes 0 legible: {body}"
+        );
+
+        // AND THE SPARED ROWS ARE STILL THERE. The number would otherwise be a
+        // label on a deletion that happened anyway.
+        let left: i64 = st
+            .store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM steering_queue WHERE session='drainme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 4, "the spared rows must survive the clear-all");
+
+        // include_system:true is the one that applies to a parked queue, and it
+        // reports the sweep as cleared rather than as spared.
+        let response = steer_mutate(
+            &st,
+            "drainme",
+            &Method::DELETE,
+            &HeaderMap::new(),
+            &json!({"include_system": true}),
+        )
+        .await;
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["cleared"], 4, "the full sweep takes the system rows: {body}");
+        assert_eq!(body["spared_system"], 0, "nothing was spared: {body}");
     }
 
     #[tokio::test]
