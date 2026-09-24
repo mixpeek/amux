@@ -1076,16 +1076,19 @@ fn preserve_created_order(conn: &Connection, project: &str, ids: &[String]) -> r
 /// Repair only the exact untouched reversed-create pattern from a durable
 /// all-new intake receipt. Manual ordering and mixed updates are not rewritten.
 pub(crate) fn reconcile_project_intake_order(conn: &Connection, project: &str) -> rusqlite::Result<WriteOutcome> {
-    let mut q=conn.prepare("SELECT intake_result FROM cmd_history WHERE project_group=?1 AND capture_pending=0 AND json_extract(intake_result,'$.state')='committed'")?;
-    let receipts=q.query_map([project],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut q=conn.prepare("SELECT id,intake_result FROM cmd_history WHERE project_group=?1 AND capture_pending=0 AND json_extract(intake_result,'$.state')='committed' AND json_extract(intake_result,'$.task_order') IS NULL")?;
+    let receipts=q.query_map([project],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut changed=0;
-    for raw in receipts {
+    for (message_id,raw) in receipts {
         let Ok(value)=serde_json::from_str::<Value>(&raw) else { continue; };
         let Some(tasks)=value["decision"]["tasks"].as_array() else { continue; };
         let Some(ids)=value["task_ids"].as_array() else { continue; };
         if tasks.len()!=ids.len() || !tasks.iter().all(|t|t["action"]=="create" && t["existing_id"].is_null()) { continue; }
         let Some(ids)=ids.iter().map(|id|id.as_str().map(str::to_string)).collect::<Option<Vec<_>>>() else { continue; };
         changed+=preserve_created_order(conn,project,&ids)?;
+        // Reconciliation is one-time: even an exact reverse order explicitly
+        // chosen later by the owner must remain authoritative.
+        conn.execute("UPDATE cmd_history SET intake_result=json_set(intake_result,'$.task_order','reconciled') WHERE id=?1",[message_id])?;
     }
     Ok(WriteOutcome{applied:changed>0,events:if changed>0 { vec![PendingEvent{entity_type:EntityType::Other("project".into()),entity_id:project.into(),mutation:MutationKind::Updated,payload:None}] } else {vec![]}})
 }
@@ -1431,7 +1434,7 @@ fn apply(
         .as_ref()
         .map(|p| p.id.clone())
         .or_else(|| children.first().cloned());
-    let result = json!({"state":"committed","decision":d,"task_ids":children,"root":root,"telemetry":telemetry});
+    let result = json!({"state":"committed","decision":d,"task_ids":children,"task_order":"decomposition","root":root,"telemetry":telemetry});
     conn.execute("UPDATE cmd_history SET card_id=?2,capture_pending=0,intake_result=?3,intake_retry_at=0 WHERE id=?1",rusqlite::params![message_id,root,result.to_string()])?;
     events.push(PendingEvent {
         entity_type: EntityType::Message,
@@ -3082,11 +3085,12 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
         let positions=||ids.iter().map(|id|bs::get_issue(&c,id).unwrap().unwrap().pos).collect::<Vec<_>>();
         assert!(positions().windows(2).all(|p|p[0]<p[1]));
         assert!(!reconcile_project_intake_order(&c,"sample").unwrap().applied);
+        c.execute("UPDATE cmd_history SET intake_result=json_remove(intake_result,'$.task_order') WHERE id=1",[]).unwrap();
         for (i,id) in ids.iter().enumerate() { c.execute("UPDATE issues SET pos=?2 WHERE id=?1",rusqlite::params![id,-1024.0*(i+1) as f64]).unwrap(); }
         assert!(reconcile_project_intake_order(&c,"sample").unwrap().applied);
         assert!(positions().windows(2).all(|p|p[0]<p[1]));
         assert!(!reconcile_project_intake_order(&c,"sample").unwrap().applied);
-        c.execute("UPDATE issues SET pos=17 WHERE id=?1",[&ids[1]]).unwrap();
+        for (i,id) in ids.iter().enumerate() { c.execute("UPDATE issues SET pos=?2 WHERE id=?1",rusqlite::params![id,-1024.0*(i+1) as f64]).unwrap(); }
         let manual=positions();
         assert!(!reconcile_project_intake_order(&c,"sample").unwrap().applied);
         assert_eq!(positions(),manual,"manual ordering remains authoritative");

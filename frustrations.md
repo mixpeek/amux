@@ -4528,7 +4528,7 @@ SESSION: codex-project-lifecycle
 CARD: AF-947
 SYMPTOM: The goal-03 planner emitted T1 through T23, but each single-card create prepended the card. The driver therefore ran T23 first and left the storage contract and invariant tasks last.
 COST: Downstream work repeatedly rediscovered missing foundational outputs and consumed repairs before foundational tasks were attempted.
-FIX: Preserve decomposition order for each new project batch; reconcile only the exact untouched reverse-insertion pattern from a durable all-new intake receipt. Keep explicit manual ordering and mixed existing-task updates unchanged. Log project.intake_order_preserved and test order, idempotency, and manual-order protection.
+FIX: Preserve decomposition order for each new project batch; reconcile only the exact untouched reverse-insertion pattern from a durable all-new intake receipt. Keep explicit manual ordering and mixed existing-task updates unchanged. Record the one-time reconciliation in the intake receipt so a later manual full reversal is never undone. Log project.intake_order_preserved and test order, idempotency, and manual-order protection.
 
 ## Operational retry retained a stale wait category
 AREA: reliability
