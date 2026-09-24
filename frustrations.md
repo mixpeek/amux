@@ -4782,3 +4782,14 @@ CARD: AH-181
 SYMPTOM: The earlier entry blamed 8116a29d (Amux-Session: amux, 2026-08-11) for shipping with its test reversed. amux checked with `git log -L`: the test has not changed since 2026-08-11, and `derive_status_explain` changed underneath it across e242f2f6, b7714d33, 2740c06f and abc9585e (Amux-Session: codex-amux-project-lifecycle, 247 lines, adding a new `status = "waiting"` branch). A six-week-green test cannot have been reversed at birth.
 COST: A wrong attribution sent to amux and written here, which amux had to disprove before working the real question. I read the commit that last touched the test instead of asking what changed since it last passed.
 FIX: The failing test stands; the owner of the regression is codex-amux-project-lifecycle's status work. Check `git log -L` on the assertion AND on the function under test before naming an author.
+
+## Peek history fetches competed with and rewound live terminal updates
+AREA: reliability
+SEVERITY: hurts
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Open peek raced full and live responses without ordering, session invalidations launched redundant full requests, and the serial polling loop waited for history. Codex live polls also retransmitted 300 rows of tmux scrollback instead of the viewport used by the full endpoint.
+COST: Delayed history could freeze or rewind a current terminal. A sampled Codex response was 144144 serialized bytes at 300 rows versus 24044 for its viewport; this is a single-worker observation, not a fleet benchmark.
+FIX: Coalesce one request per channel/open identity; let history run beside live polling, retain newer frames when older requests finish, abort requests on close/switch, and request untrimmed live frames for client-side overlap removal. Codex live captures use the viewport. Input/session updates nudge the serial live loop. A stalled live body has a 3-second deadline; history retains 15 seconds and bounded retry cadence. Log first-frame latency, stale-live suppression and existing request-failure evidence. Ten executable regressions cover held history, out-of-order responses, deduplication, switches, timeout recovery, selection, conditional responses and session/input nudges.
