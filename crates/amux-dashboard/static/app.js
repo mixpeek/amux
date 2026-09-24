@@ -5112,6 +5112,7 @@ function _reportWorkFrontier(s, w, verdict) {
 // board explains why an idle lane cannot claim its ready card.
 function _stalledChip(s) {
   if (!s.running || s.status !== 'idle') return '';
+  if (s.board_force_adherence === false) return '';
   const w = _workFrontierFor(s.name);
   if (!w || !w.measured || !(w.ready > 0) || w.claimable !== 0) return '';
   if (w.holding.length) {
@@ -11778,7 +11779,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1092';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1093';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
