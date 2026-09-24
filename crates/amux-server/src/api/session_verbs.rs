@@ -31413,10 +31413,17 @@ mod tests {
             }
             rest = &rest[at + "cmd_hist_record_".len()..];
         }
+        // 9 -> 11 at 852ee2ff, where a lane sending to ITSELF gained a ledger
+        // row: one arm on the ok path and one on the failure path, both
+        // `cmd_hist_record_with_id(.., "session", &origin, skip_board, ..)`.
+        // That commit added the call sites and left this number at 9, so the
+        // test it was written to satisfy went red on main and stayed red.
+        // Counted again here rather than adjusted by hand: both new sites pass
+        // the computed `skip_board`, which is the property below.
         assert_eq!(
             sites.len(),
-            9,
-            "the scan must see all 9 production call sites. A LOWER number means the detector \
+            11,
+            "the scan must see all 11 production call sites. A LOWER number means the detector \
              stopped matching rather than that the call sites went away, which is exactly how \
              the first two versions of this test passed a broken tree: one scanned a window \
              that excluded the send handlers, the other missed the multi-line spelling and left \
