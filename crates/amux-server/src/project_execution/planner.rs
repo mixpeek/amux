@@ -216,10 +216,14 @@ fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
         && (matches!(
             reason,
             "executor_returned_without_result" | "executor_stopped_before_result"
-        ) || (prelaunch_failure(reason) && e.report.is_none())
+        ) || ((prelaunch_failure(reason) || report_failure_reason(reason)) && e.report.is_none())
             || (e.report.is_some()
             && e.verification_retries.is_empty()
             && e.waiting.as_deref() == Some(reason)))
+}
+
+pub(crate) fn report_failure_reason(reason: &str) -> bool {
+    ["report", "criterion", "check", "asset"].iter().any(|part| reason.contains(part))
 }
 
 fn prelaunch_failure(reason: &str) -> bool {
@@ -916,9 +920,12 @@ pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Re
 }
 
 pub(crate) fn report_correction_allowed(e: &Execution, report: &Report) -> bool {
+    // A rejected first report retained no candidate. A corrected receipt for
+    // that same claim can recover without buying a model turn. The ingestion
+    // path still validates generation, input, clean HEAD and the full contract;
+    // explicit authorization/output holds and suspension remain authoritative.
     e.stage=="waiting" && !e.suspended && e.wait_category.is_none() && e.waiting.is_some()
-        && (e.report.as_ref().is_some_and(|old|old.head!=report.head)
-            || (e.report.is_none() && e.waiting.as_deref()==Some("each current criterion needs exactly one executable check")))
+        && e.report.as_ref().is_none_or(|old|old.head!=report.head)
 }
 
 pub fn record_report(
@@ -1048,6 +1055,16 @@ pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refused_report_repair_is_bounded_and_preserves_authorization_holds() {
+        let mut e=super::Execution {stage:"waiting".into(),waiting:Some("asset SHA256 required".into()),attempt:1,..Default::default()};
+        assert!(super::auto_repairable_wait(&e,2));
+        assert!(!super::auto_repairable_wait(&e,1));
+        e.suspended=true;
+        assert!(!super::auto_repairable_wait(&e,2));
+        e.suspended=false;e.wait_category=Some("spend".into());
+        assert!(!super::auto_repairable_wait(&e,2));
+    }
     #[test]
     fn foreign_worktree_branch_collision_is_repairable_with_home_scoped_worker_name() {
         let reason = "Preparing worktree (checking out 'amux/fanout/px-example')\nfatal: 'amux/fanout/px-example' is already checked out at '/other-home/worktrees/px-example'";

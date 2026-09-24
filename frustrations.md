@@ -4942,3 +4942,10 @@ FIX: One project-owned checkout and branch, serialized claims and direct starts,
 - **Root cause:** intake copied an approved requirement literally without its contract marker. The executor did not receive the receipt protocol; failure routing could not find the task. Receipt validation errors were also omitted from repair context.
 - **Fix:** reconcile unambiguous exact requirement matches into approved verifier markers on the same task before dispatch. Already-completed owners receive bounded repair through the normal claim/budget path with retained history. Include receipt errors in failure packets. Log `project.contract_ownership_reconciled`.
 - **Verification:** regressions require task reuse, no duplicate board items, normal automatic claiming, retained prior report, idempotence and preserved human approval boundary.
+
+### 2026-09-24 — receipt polling interrupted an unfinished project result (AF-954)
+
+- **Symptom:** the shared-checkout lifecycle probe became held on `asset SHA256 required` while its executor was still replacing placeholder hashes. A corrected first report could not recover because no prior report had been accepted.
+- **Root cause:** receipt polling propagated validation failures before checking current-turn liveness; correction eligibility special-cased one validation message.
+- **Fix:** refuse incomplete receipts without interrupting a live turn. At a confirmed end, classify the invalid receipt for bounded normal repair. A fully validated same-claim first report can recover without another model turn; authorization holds, suspension, generation/input identity and clean-candidate checks remain required. Log `project.report_incomplete_observed` and the existing corrected-receipt recovery event.
+- **Verification:** active-to-stopped observation regression, bounded attempts, and clean corrected-first-receipt recovery without incrementing attempts. Live publication remains a separate gate.
