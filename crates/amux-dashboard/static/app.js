@@ -11717,7 +11717,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1083';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1084';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -13108,6 +13108,25 @@ function _resolveOutputPath(p) {
 async function _openPathFromOutput(p) {
   if (window.getSelection && String(window.getSelection()) !== '') return;  // a drag-select is not a click
   let full = _resolveOutputPath(p);
+  // FEEDBACK BEFORE THE NETWORK (Ethan, 2026-09-24: "clicking a link to open a
+  // file from peek is slow"). A relative path awaited /api/fs/resolve before
+  // anything moved, so the tap looked dead for a round trip, longer on a phone
+  // over the tailnet. Open the viewer now; openFilePreview fills it in.
+  const _t0 = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  const _rawName = String(p || '').replace(/:\d+$/, '');
+  // .mdai and spreadsheets open in their own viewers, so they get no early file overlay.
+  if (/\.[A-Za-z0-9]{1,8}$/.test(_rawName.slice(_rawName.lastIndexOf('/') + 1))
+      && !/\.(mdai|xlsx|xls|ods)$/i.test(_rawName)) {
+    const ov = document.getElementById('file-overlay');
+    const ti = document.getElementById('file-title');
+    const bo = document.getElementById('file-body');
+    if (ov && ti && bo) {
+      ti.textContent = _rawName.split('/').pop();
+      bo.className = 'file-overlay-body';
+      bo.textContent = 'Loading...';
+      ov.classList.add('active');
+    }
+  }
   // AMUX-3511 (Ethan's screenshots): workers print paths relative to the
   // root THEY think in (vault root, repo root), not necessarily their cwd —
   // the blind join turned NYC/Events/x.md from cwd .../Vault/NYC into
@@ -13133,7 +13152,18 @@ async function _openPathFromOutput(p) {
     // (and `_linkifyPaths` captures the suffix as a separate group, so `p`
     // never carried one either). Said out loud so it does not get "fixed" back
     // in as defensive noise.
-    openFilePreview(full);
+    const _tResolved = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    await openFilePreview(full);
+    const _tDone = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    // Where the time went, from the device that felt it. Server-side the two
+    // calls measure ~10ms, so any slowness is transfer or render on the client.
+    try {
+      fetch(API + '/api/client-debug', { method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'file-link-open', measured: true, n_considered: 1,
+          resolve_ms: Math.round(_tResolved - _t0), preview_ms: Math.round(_tDone - _tResolved),
+          ext: (lastSeg.split('.').pop() || '').toLowerCase(), ver: APP_VER }) }).catch(() => {});
+    } catch (e) {}
     return;
   }
   openExplore(full, (typeof peekSession !== 'undefined' && peekSession) ? peekSession : null);
