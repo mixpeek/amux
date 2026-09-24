@@ -25,7 +25,12 @@ const bubbles = page => page.$$eval('#peek-body .chat-msg', els => els.map(e => 
 
 async function openWorker(page, name, touch) {
   const title = page.locator(`.card[data-session="${name}"] .card-header, .card[data-session="${name}"] [onclick*="headerTap"]`).first();
-  if (touch) { await title.tap(); await page.waitForTimeout(120); await title.tap(); }
+  if (touch) {
+    // Tap the NAME: the middle of the header is the status button on a phone,
+    // which opens the status dialog and swallows the second tap.
+    const nameEl = page.locator(`.card[data-session="${name}"] .card-header`).getByText(name, { exact: true }).first();
+    await nameEl.tap(); await page.waitForTimeout(120); await nameEl.tap();
+  }
   else {
     // The worker menu's open entry: "Open chat" or "Peek terminal" by renderer.
     await page.locator(`.card[data-session="${name}"] [onclick*="toggleMenu"]`).click();

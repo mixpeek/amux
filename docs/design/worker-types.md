@@ -67,12 +67,22 @@ autostart spawn guard (`terminal`), the scratch working directory
   `tool`, `done`, `queued`, `stopped`, `lagged`). History:
   `GET /api/sessions/{name}/chat?limit=&before=`.
 - A turn with no output for 15 minutes is killed and recorded as failed.
+- Server restarts (the builder exec()s the server on every commit) do not lose
+  work. The queue is persisted under `AMUX_HOME/chat-state/`, and the running
+  turn is marked in meta. Boot recovery resumes queued messages. A turn the
+  restart cut off gets an assistant message with an explicit error and is not
+  re-run, because its tools may already have acted.
+- The conversation id is owned by the adapter (`chat_conversation_id`) and
+  mirrored to `cc_conversation_id` for the transcript readers. If the mirror is
+  changed from outside, the adapter restores it and logs it.
 - `AMUX_CHAT_CLAUDE_BIN` / `AMUX_CHAT_CODEX_BIN` override the provider binary
   (tests use a fake that speaks stream-json).
 
 Log verdicts: `worker_exec_dispatch` (debug, per handled operation),
 `chat_turn_completed`, `chat_turn_failed`, `chat_conversation_reset`,
-`chat_worker_stopped`, `worker_type_changed`.
+`chat_conversation_mirror_repaired`, `chat_turn_interrupted`,
+`chat_queue_recovered`, `chat_recovery_pass`, `chat_worker_stopped`,
+`worker_type_changed`.
 
 ## API
 
@@ -100,3 +110,12 @@ None of the board, message, schedule, group or lifecycle code changes.
 `crates/amux-server/tests/worker_types_e2e.rs` takes one coding and one chat
 worker through create, list, board, start, send, streamed reply, resume,
 canonical events, peek, type edit, stop and the store API.
+`crates/amux-server/tests/chat_worker_recovery.rs` pins restart recovery.
+
+`e2e/worker-types-click.cjs` drives the real dashboard with clicks and taps
+only (desktop and iPhone 13): create a chat worker from the + menu, watch a
+reply stream in, queue two messages, use the shared tabs, send from the card,
+stop and start from the menu, switch a coding worker to chat and back, reload,
+and repeat the core flow on the phone. Run it against an isolated server; its
+header has the exact command. Unset `TMUX` when you start that server, or it
+will reach the real fleet's panes.

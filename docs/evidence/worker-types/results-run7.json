@@ -1,0 +1,145 @@
+[
+ {
+  "step": "create modal offers types from the registry",
+  "pass": true,
+  "detail": "[\"Coding\",\"Chat\"]"
+ },
+ {
+  "step": "chat disables providers its adapter cannot drive",
+  "pass": true,
+  "detail": "[\"Gemini\",\"Ollama\",\"Muse Code\"]"
+ },
+ {
+  "step": "chat hides branch/worktree options",
+  "pass": true
+ },
+ {
+  "step": "new card shows the chat badge",
+  "pass": true,
+  "detail": "[\"chat\"]"
+ },
+ {
+  "step": "worker window opens on the Chat tab",
+  "pass": true
+ },
+ {
+  "step": "first prompt answered and rendered",
+  "pass": true,
+  "detail": "hello from e2e"
+ },
+ {
+  "step": "no terminal keystroke chips in the chat window",
+  "pass": true,
+  "detail": "[\"Continue\",\"/amux\",\"/standup\",\"/handoff\",\"/adhd\",\"+\",\"\u270e\"]"
+ },
+ {
+  "step": "Worktree tab hidden for chat",
+  "pass": true
+ },
+ {
+  "step": "reply visibly streams (bubble grew across samples)",
+  "pass": true,
+  "detail": "{\"distinct\":4,\"sawBubble\":true}"
+ },
+ {
+  "step": "streamed reply finalized",
+  "pass": true,
+  "detail": "7 48 49 50 51 52 53 54 55 56 57 58 59 60"
+ },
+ {
+  "step": "user bubble shows the text without the send-time stamp",
+  "pass": true,
+  "detail": "[\"Count from 1 to 60, separated by spaces, nothing else.\"]"
+ },
+ {
+  "step": "back-to-back sends queue and answer in order",
+  "pass": true,
+  "detail": "[\"first\",\"second\"]"
+ },
+ {
+  "step": "queued indicator shows while the second message waits",
+  "pass": true
+ },
+ {
+  "step": "Messages tab lists the chat messages (shared ledger)",
+  "pass": true
+ },
+ {
+  "step": "Configurations shows the Worker type row",
+  "pass": true
+ },
+ {
+  "step": "card composer has no keystroke chips for chat",
+  "pass": true,
+  "detail": "[\"Continue\",\"/amux\",\"/standup\",\"/handoff\",\"/adhd\",\"+\",\"\u270e\"]"
+ },
+ {
+  "step": "card-composer message answered in the chat",
+  "pass": true,
+  "detail": "from the card"
+ },
+ {
+  "step": "menu says \"Open chat\", hides \"Clear scrollback\"",
+  "pass": true,
+  "detail": "[\"\ud83d\udcacOpen chat\",\"\u23f9Stop\"]"
+ },
+ {
+  "step": "Stop from the menu stops it (Start button appears)",
+  "pass": true
+ },
+ {
+  "step": "Start brings it back",
+  "pass": true
+ },
+ {
+  "step": "coding worker opens on the Terminal tab",
+  "pass": true
+ },
+ {
+  "step": "coding worker keeps keystroke chips",
+  "pass": true,
+  "detail": "[\"Continue\",\"Enter\",\"\u2191 Up\",\"\u2193 Down\",\"Space\",\"Ctrl C\",\"Esc\",\"/amux\",\"/standup\",\"/handoff\",\"/adhd\",\"+\",\"\u270e\"]"
+ },
+ {
+  "step": "type switched to Chat from Configurations",
+  "pass": true
+ },
+ {
+  "step": "type switched back to Coding",
+  "pass": true
+ },
+ {
+  "step": "coding card carries no type badge again",
+  "pass": true,
+  "detail": "[]"
+ },
+ {
+  "step": "reload restores the chat with full history",
+  "pass": true,
+  "detail": "{\"restoredTo\":\"e2e-chat-mug56ipw\",\"before\":5,\"afterReload\":5}"
+ },
+ {
+  "step": "phone: chat window opens by tapping",
+  "pass": true
+ },
+ {
+  "step": "phone: send by tap, reply streams and lands",
+  "pass": true,
+  "detail": "{\"ms\":{\"distinct\":2,\"sawBubble\":true},\"last\":\"red, blue, green\"}"
+ },
+ {
+  "step": "phone: no horizontal overflow in the chat",
+  "pass": true,
+  "detail": "overflow px 0"
+ },
+ {
+  "step": "phone: Send tap target >= 44px tall",
+  "pass": true,
+  "detail": "{\"x\":291.34375,\"y\":586,\"width\":48.65625,\"height\":44}"
+ },
+ {
+  "step": "no page errors",
+  "pass": true,
+  "detail": "[]"
+ }
+]
