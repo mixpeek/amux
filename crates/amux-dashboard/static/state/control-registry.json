@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2141,
+  "n_considered": 2139,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1234,12 +1234,6 @@
     },
     "_handleDeeplink": {
       "kind": "command._handleDeeplink",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_hideCachedWorkers": {
-      "kind": "command._hideCachedWorkers",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2566,12 +2560,6 @@
     },
     "_setupChipDrag": {
       "kind": "command._setupChipDrag",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_showCachedWorkers": {
-      "kind": "command._showCachedWorkers",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

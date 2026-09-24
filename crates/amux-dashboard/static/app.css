@@ -7234,3 +7234,6 @@ select.input { height:var(--control-height); }
 .conn-status.no-offline::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 5px; border-radius: 50%; background: var(--yellow, #d29922); vertical-align: middle; }
 .conn-sw-notice { margin: 8px 0; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem; line-height: 1.45; background: rgba(210,153,34,0.1); color: var(--text); }
 .conn-sw-notice .btn { margin-left: 6px; min-height: 44px; }
+
+/* Live reads failing: the cached fleet stays usable, its statuses read as last-known. */
+.cards.workers-stale .status-badge { filter: grayscale(1); opacity: 0.55; }

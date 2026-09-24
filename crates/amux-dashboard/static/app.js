@@ -588,7 +588,6 @@ let _expiredWorkerInventoryLoading = false;
 let archivedExpanded = false;
 let gitInfo = {};  // {sessionName: {branch, repo, _conflict}}
 let _sessionLoadError = null; // Last failed worker read; a response is not necessarily data.
-let _cachedWorkersVisible = false; // Explicit opt-in; stale cache must not masquerade as live state.
 let _initialLoad = true;   // true until first data arrives from server
 let _lastDataTime = null;  // timestamp of last successful data
 // AC-275: when NO data has ever arrived, _lastDataTime stays null and every
@@ -2760,6 +2759,12 @@ function _outboxAgeLabel(q) {
 // up here because updateConnectionStatus runs during startup, long before the
 // SW code further down: a `let` beside that code would be in its dead zone.
 let _swOfflineNotice = null;
+// "workers as of 8:41 AM" while live reads fail, so a cached list says its age.
+function _workersAsOfNote() {
+  if (!_sessionLoadError || !sessions.length) return '';
+  const at = Number(localStorage.getItem('amux_sessions_cache_at') || 0);
+  return at ? ' · workers as of ' + new Date(at).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : ' · showing saved workers';
+}
 function updateConnectionStatus() {
   // Log the state transition (for the click-to-view disconnection history).
   // _writeError is a failed offline-queue op, not a connectivity issue.
@@ -2789,7 +2794,7 @@ function updateConnectionStatus() {
     }
     // A marker, not more words: the text stays the connection state.
     el.classList.toggle('no-offline', !!_swOfflineNotice);
-    const offNote = _swOfflineNotice ? ' · offline mode off' : '';
+    const offNote = (_swOfflineNotice ? ' · offline mode off' : '') + _workersAsOfNote();
     el.setAttribute('aria-label', el.textContent + offNote + ' — connection details');
     if (el.id === 'conn-status') el.title = el.textContent + offNote + ' — connection details';
   });
@@ -4665,7 +4670,6 @@ function _sessionReadFailed(status, reason) {
 function _sessionReadRecovered() {
   const changed = !!_sessionLoadError;
   _sessionLoadError = null;
-  _cachedWorkersVisible = false;
   _sessionRetryAttempt = 0;
   clearTimeout(_sessionRetryTimer);
   _sessionRetryTimer = null;
@@ -4699,9 +4703,7 @@ function _sessionReadNotice() {
   const auth = _sessionLoadError.status === 401;
   const pending = offlineQueue.length + drafts.length;
   const offlineCaps = sessions.length
-    ? (_cachedWorkersVisible
-        ? ' The worker list is showing an explicitly opened cached copy.'
-        : ' The cached worker list is hidden so stale workers cannot look live.')
+    ? ' The worker list is the last saved copy on this device.'
       + (pending
         ? ' ' + pending + ' queued operation' + (pending === 1 ? '' : 's') + ' will sync automatically when the server returns.'
         : ' Commands you send will be queued and delivered when the server returns.')
@@ -4727,38 +4729,6 @@ function _sessionReadNotice() {
     + errDetail + ' · ' + esc(_sessionLoadError.reason) + '</code></details></div>';
 }
 
-
-function _showCachedWorkers() {
-  _cachedWorkersVisible = true;
-  render();
-}
-
-function _hideCachedWorkers() {
-  _cachedWorkersVisible = false;
-  render();
-}
-
-function _staleWorkerCacheGate(count) {
-  const n = Number(count || 0);
-  const errDetail = _sessionLoadError && _sessionLoadError.status ? 'HTTP ' + _sessionLoadError.status : 'Network error';
-  return '<div class="offline-cache-gate" role="alert">'
-    + '<div><strong>Live worker state is unavailable.</strong>'
-    + '<p>' + errDetail + ' on GET /api/sessions. Cached workers are hidden so old statuses, boards, and actions do not look current.</p>'
-    + '<p class="offline-cache-gate-meta">' + n + ' cached worker' + (n === 1 ? '' : 's') + ' retained locally for inspection if you need them.</p></div>'
-    + '<div class="offline-cache-gate-actions">'
-    + '<button type="button" class="btn primary" onclick="_retrySessionRead()">Retry connection</button>'
-    + (n ? '<button type="button" class="btn" onclick="_showCachedWorkers()">Show cached copy</button>' : '')
-    + '<a class="btn" href="/api/_clear_sw">Clear cache &amp; reload</a>'
-    + '</div></div>';
-}
-
-function _staleWorkerListBanner() {
-  return '<div class="offline-cache-banner" role="status">'
-    + '<strong>Showing cached workers.</strong> Live reads are still failing, so statuses, board counts, and actions may be stale.'
-    + ' <button type="button" class="btn" onclick="_hideCachedWorkers()">Hide cached copy</button>'
-    + ' <button type="button" class="btn primary" onclick="_retrySessionRead()">Retry connection</button>'
-    + '</div>';
-}
 
 // Locked-out browsers use the same Connect actions, not a credential URL.
 function _amuxAuthWithheldBanner() {
@@ -4861,7 +4831,6 @@ async function _fetchSessionsOnce() {
     if (firstLoad) render();
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
-    _cachedWorkersVisible = false;
     if (j !== lastSessionsJSON) {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
@@ -4871,7 +4840,7 @@ async function _fetchSessionsOnce() {
       // Quota-full store: drop the cache rather than let the throw break rendering.
       // IDB is the durable fallback (no 5MB cap), so a quota eviction here still
       // leaves sessions recoverable on offline startup.
-      try { localStorage.setItem('amux_sessions_cache', j); }
+      try { localStorage.setItem('amux_sessions_cache', j); localStorage.setItem('amux_sessions_cache_at', String(Date.now())); }
       catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
       if (typeof _idb !== 'undefined') _idb.set('sessions_cache', data);
       render();
@@ -5832,12 +5801,17 @@ function render() {
   _renderGroupsTab();
   const stripEl = document.getElementById('grp-scope-strip');
   if (stripEl && stripEl.innerHTML) { stripEl.innerHTML = ''; stripEl._want = ''; }
-  if (_sessionLoadError && sessions.length && !_cachedWorkersVisible) {
-    el.innerHTML = _staleWorkerCacheGate(sessions.length);
-    _restoreCardFocus(focusedId);
-    return;
-  }
-  const staleWorkerPrefix = (_sessionLoadError && _cachedWorkersVisible) ? _staleWorkerListBanner() : '';
+  // OFFLINE SHOWS THE LAST-KNOWN FLEET (Ethan 2026-09-24: "we need to be able
+  // to see all the locally stored workers and should be able to open each
+  // worker even offline send commands"). This used to replace the whole list
+  // with a gate ("Cached workers are hidden so old statuses ... do not look
+  // current") behind a "Show cached copy" button. The offline-first rule is the
+  // opposite: the local copy IS the UI, the network refreshes it. Staleness is
+  // shown, not enforced: status badges grey out and the top-left badge says
+  // which moment the list is from. Sends queue in the outbox as they already do.
+  const workersStale = !!(_sessionLoadError && sessions.length);
+  el.classList.toggle('workers-stale', workersStale);
+  const staleWorkerPrefix = '';
   const _nonArchivedCount = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s)).length;
   if (!_nonArchivedCount && !drafts.length) {
     if (_sessionLoadError) {
@@ -11685,7 +11659,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1087';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1088';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -14130,7 +14104,10 @@ async function _refreshPeekFrame(liveOnly, request) {
         // No usable cache and the fetch failed (typically the server mid-restart,
         // ~11s). Say so — the poll keeps retrying and heals within seconds; a
         // silent EMPTY terminal here read as a broken peek.
-        body.innerHTML = '<span style="color:var(--dim)">amux server unreachable — retrying…</span>';
+        // Offline-first: say what this device holds, and that sending works.
+        body.innerHTML = '<span style="color:var(--dim)">No saved copy of this worker on this device yet '
+          + '(a worker is saved each time you open it online). The server is unreachable and retrying; '
+          + 'messages you send now are kept and delivered in order when it returns.</span>';
         statusEl.textContent = 'Reconnecting…';
       }
     }
@@ -35203,10 +35180,9 @@ function connectSSE() {
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
           sessions = msg.payload;
-          _cachedWorkersVisible = false;
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
-          try { localStorage.setItem('amux_sessions_cache', j); }
+          try { localStorage.setItem('amux_sessions_cache', j); localStorage.setItem('amux_sessions_cache_at', String(Date.now())); }
           catch (e2) { try { localStorage.removeItem('amux_sessions_cache'); } catch (e3) {} }
           render();
           // Keep an OPEN peek/worker view live on a session event, not only the

@@ -28,6 +28,7 @@ if not LOG:
 
 RULE = "─" * 24
 buf = []          # the composer's current contents
+said = []         # submitted lines, echoed above the composer like a real transcript
 seq = 0           # submissions recorded so far
 
 def draw():
@@ -35,6 +36,8 @@ def draw():
     # and the bypass footer, with no spinner line (no spinner == not generating).
     out = sys.stdout
     out.write("\x1b[2J\x1b[H")
+    for line in said[-10:]:
+        out.write("> " + line + "\r\n")
     out.write(RULE + " fake-claude " + RULE + "\r\n")
     out.write("❯ " + "".join(buf) + "\r\n")
     out.write(RULE + RULE + "\r\n")
@@ -46,6 +49,7 @@ def submit():
     text = "".join(buf).strip()
     buf.clear()
     if text:
+        said.append(text)
         seq += 1
         with open(LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps({"seq": seq, "text": text, "pid": os.getpid(), "t": time.time()}) + "\n")

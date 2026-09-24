@@ -40,7 +40,7 @@ export async function startAmux({ binary, env: extra = {}, root } = {}) {
   // tmux appends to TMUX_TMPDIR; macOS's long TMPDIR overflows the socket path.
   const tmuxDir = fs.mkdtempSync('/tmp/amux-chaos-tmux-');
   fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(userHome, { recursive: true });
-  const port = await freePort();
+  let port = await freePort();
   const log = path.join(root, 'fake-claude.log');
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AMUX_') && !['TMUX', 'TMUX_PANE'].includes(k)));
   Object.assign(env, {
@@ -56,13 +56,15 @@ export async function startAmux({ binary, env: extra = {}, root } = {}) {
     GIT_AUTHOR_NAME: 'chaos', GIT_AUTHOR_EMAIL: 'chaos@example.invalid',
     GIT_COMMITTER_NAME: 'chaos', GIT_COMMITTER_EMAIL: 'chaos@example.invalid',
   }, extra);
-  const base = `https://localhost:${port}`;
+  let base = `https://localhost:${port}`;
   const serverLog = path.join(root, 'server.log');
   let proc = null;
   const up = async () => {
     const out = fs.openSync(serverLog, 'a');
     proc = spawn(binary, [], { env, stdio: ['ignore', out, out], detached: true });
+    let exited = false; proc.on('exit', () => { exited = true; });
     for (let i = 0; i < 240; i++) {
+      if (exited) throw new Error('server exited during boot; see ' + serverLog);
       try { if ((await request(base, 'GET', '/health', undefined, 2000)).status === 200) return; } catch {}
       await new Promise(r => setTimeout(r, 250));
     }
@@ -83,8 +85,18 @@ export async function startAmux({ binary, env: extra = {}, root } = {}) {
   const fakeLog = () => fs.existsSync(log)
     ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
   const stop = async () => { await down(); try { tmux('kill-server'); } catch {} };
-  await up();
-  return { base, root, home, userHome, env, port, serverLog, up, down, stop, tmux, fakeLog,
+  // The free-port probe races every other process on a busy box: a port can
+  // be taken between probe and bind (seen: AddrInUse). Retry the FIRST boot on
+  // a fresh port; a restart keeps its port, since clients already hold it.
+  for (let attempt = 1; ; attempt++) {
+    try { await up(); break; } catch (e) {
+      await down();
+      if (attempt >= 3) throw e;
+      port = await freePort(); base = `https://localhost:${port}`;
+      env.AMUX_RS_PORT = String(port);
+    }
+  }
+  return { get base() { return base; }, root, home, userHome, env, get port() { return port; }, serverLog, up, down, stop, tmux, fakeLog,
     req: (m, p, b, t) => request(base, m, p, b, t) };
 }
 
