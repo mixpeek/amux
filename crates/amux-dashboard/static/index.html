@@ -2531,6 +2531,14 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
          session filter above, not by a separate code path. Stays its OWN row:
          chips wrap to arbitrary height, so folding them into the toolbar would
          reintroduce the second row it just lost, only unpredictably. -->
+    <!-- How this worker's messages meet its board (Ethan, 2026-09-24). Decompose:
+         your message is delivered AND planned onto the board in the background.
+         Force adherence: your message is withheld; only the planned cards reach
+         the worker. Defaults: decompose on, force off. Hidden for isolated workers. -->
+    <div id="peek-board-policy" class="peek-board-policy" style="display:none;">
+      <label title="Your messages still reach the worker; a planner files them onto this board in the background"><input type="checkbox" id="peek-board-decompose" onchange="togglePeekBoardPolicy('board_decompose', this.checked)"> Decompose onto board</label>
+      <label title="Withhold task messages from the worker; it works only from the cards the planner creates"><input type="checkbox" id="peek-board-force" onchange="togglePeekBoardPolicy('board_force_adherence', this.checked)"> Force board adherence</label>
+    </div>
     <div id="bf-chips-peek" style="display:none;flex-wrap:wrap;gap:6px;padding:0 10px 6px;"></div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>
   </div>

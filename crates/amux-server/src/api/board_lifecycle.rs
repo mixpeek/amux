@@ -44,8 +44,27 @@ fn policy_enabled(value: Option<&str>) -> bool {
     })
 }
 
+/// "Force adherence to board" (Ethan, 2026-09-24: "all workers by default
+/// should have 1 enabled, 2 disabled"). When ON, an owner's task-like message is
+/// withheld from the lane and only the planned cards reach it. When OFF (the
+/// default) the message is delivered as text immediately and the same planner
+/// still decomposes it onto the board in the background (`capture`), which is
+/// toggle 1 (`enabled`). Before this key existed, 1 implied 2, so every
+/// non-isolated worker silently dropped the owner's words.
+pub(crate) const FORCE_ADHERENCE_KEY: &str = "AMUX_BOARD_FORCE_ADHERENCE";
+pub(crate) fn force_adherence(session: &str) -> bool {
+    setting(session, FORCE_ADHERENCE_KEY).is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+pub(crate) const DECOMPOSE_KEY: &str = POLICY_KEY;
+
 pub(crate) fn stage_owner_command(session: &str, text: &str) -> bool {
     enabled(session)
+        && force_adherence(session)
         && board_intake::model_client().is_some()
         && !session_verbs::session_is_isolated(session)
         && amux_core::board::title_from_prompt(text).is_some()
@@ -2077,6 +2096,25 @@ async fn diagnostics(State(state): State<AppState>, Query(p): Query<Params>) -> 
 
 #[cfg(test)]
 mod tests {
+    /// Ethan, 2026-09-24: decompose ON, force adherence OFF by default. The
+    /// default must not withhold an owner's words; only an explicit override
+    /// at the worker layer turns withholding on.
+    #[test]
+    fn force_adherence_is_off_by_default_and_on_only_by_explicit_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/plain.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("sessions/strict.env"),
+            "CC_DIR=\"/tmp\"\nAMUX_BOARD_FORCE_ADHERENCE=\"1\"\n",
+        )
+        .unwrap();
+        assert!(!force_adherence("plain"), "default must deliver the owner's text");
+        assert!(force_adherence("strict"));
+        assert!(!stage_owner_command("plain", "Implement the parser validation"));
+    }
+
     use super::*;
     #[test]
     fn command_intake_is_default_with_explicit_opt_out() {

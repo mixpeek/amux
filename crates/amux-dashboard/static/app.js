@@ -10951,9 +10951,37 @@ function togglePeekIssuesAll() {
 // is re-rendered after the body returns, whatever route it took.
 function renderPeekIssues() {
   _renderPeekIssuesBody();
+  _peekBoardPolicySync();
   // Re-read the host: the body may have replaced the panel's contents.
   const list = document.getElementById('peek-issues-list');
   if (list) _renderBoardActivity(list, _peekIssuesAllSessions ? '' : peekSession);
+}
+// Worker board policy toggles (Ethan, 2026-09-24): "decompose onto board"
+// (background, default on) and "force board adherence" (default off). They
+// show the RESOLVED value from /api/sessions, so a group/global layer reads true.
+function _peekBoardPolicySync() {
+  const row = document.getElementById('peek-board-policy');
+  if (!row) return;
+  const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === peekSession);
+  const show = !!s && !s.isolated && typeof s.board_decompose === 'boolean';
+  row.style.display = show ? 'flex' : 'none';
+  if (!show) return;
+  const d = document.getElementById('peek-board-decompose'), f = document.getElementById('peek-board-force');
+  if (d) d.checked = !!s.board_decompose;
+  if (f) f.checked = !!s.board_force_adherence;
+}
+async function togglePeekBoardPolicy(field, on) {
+  const name = peekSession;
+  if (!name) return;
+  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ [field]: !!on })
+  });
+  if (r) {
+    try { const d = await r.json(); showToast(d.message || 'Saved'); } catch (e) {}
+  }
+  await fetchSessions();
+  _peekBoardPolicySync();
 }
 function _renderPeekIssuesBody() {
   // Don't rebuild mid-drag — a board SSE refresh would destroy the active Sortable.
@@ -11627,7 +11655,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1078';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1079';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

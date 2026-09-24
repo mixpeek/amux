@@ -27697,6 +27697,16 @@ async fn config_patch_with_liveness(
             "CC_STANDING_ORDERS",
             "Pickup / continue master",
         ),
+        (
+            "board_decompose",
+            super::board_lifecycle::DECOMPOSE_KEY,
+            "Decompose onto board",
+        ),
+        (
+            "board_force_adherence",
+            super::board_lifecycle::FORCE_ADHERENCE_KEY,
+            "Force board adherence",
+        ),
     ];
     if let Some((field, key, label, v)) = automation
         .iter()
@@ -27716,6 +27726,10 @@ async fn config_patch_with_liveness(
         }
         let effective = if key == crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY {
             crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(name)
+        } else if key == super::board_lifecycle::DECOMPOSE_KEY {
+            super::board_lifecycle::enabled(name)
+        } else if key == super::board_lifecycle::FORCE_ADHERENCE_KEY {
+            super::board_lifecycle::force_adherence(name)
         } else {
             standing_orders_on(name, key)
         };

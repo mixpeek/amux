@@ -4149,6 +4149,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // guessing, and so a value supplied by a group or global layer shows
             // as on rather than as an unset worker key (AMUX-4055).
             "auto_drain_backlog": crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(&name),
+            "board_decompose": crate::api::board_lifecycle::enabled(&name),
+            "board_force_adherence": crate::api::board_lifecycle::force_adherence(&name),
             "auto_drain_backlog_own": env.contains_key(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY),
             // AMUX-3048: the raw event-driven count behind agents_working, so a
             // LEAKED count (a lost SubagentStop pinning a lane "working") is
