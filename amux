@@ -3602,51 +3602,24 @@ Every child needs a concrete description, next_action, and 1-12 falsifiable acce
       return $?
       ;;
     fan-out|fanout)
-      local id="${1:-}"
-      local help='Usage: amux board fan-out <EPIC-ID> [--model MODEL] [--provider PROVIDER] [--flags "extra flags"]'
-      if [[ "$id" == --help || "$id" == -h ]]; then
-        printf '%s\n' "$help"
-        return 0
-      fi
-      [[ -n "$id" ]] || die "$help"
-      _board_id_guard "fan-out" "$id"
-      shift
-      local model="" provider="" flags=""
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --model) [[ -n "${2:-}" ]] || die "amux board fan-out: --model needs a value"; model="$2"; shift 2 ;;
-          --provider) [[ -n "${2:-}" ]] || die "amux board fan-out: --provider needs a value"; provider="$2"; shift 2 ;;
-          --flags) [[ -n "${2:-}" ]] || die "amux board fan-out: --flags needs a value"; flags="$2"; shift 2 ;;
-          --*) _board_bad_flag fan-out "$1" "--model <model> --provider <provider> --flags <extra>" ;;
-          *) die "amux board fan-out: unexpected argument '$1'" ;;
-        esac
-      done
-      local body='{'
-      [[ -n "$model" ]] && body+="\"model\":\"$model\","
-      [[ -n "$provider" ]] && body+="\"provider\":\"$provider\","
-      [[ -n "$flags" ]] && body+="\"flags\":\"$flags\","
-      body="${body%,}}"
-      local result
-      result=$(_curl -sk -X POST -H 'Content-Type: application/json' \
-        -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" \
-        -d "$body" "$AMUX_API/api/board/$id/fan-out")
-      local started; started=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("workers_started",0))' 2>/dev/null || echo "?")
-      local failed; failed=$(echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("workers_failed",0))' 2>/dev/null || echo "?")
-      if echo "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("ok") else 1)' 2>/dev/null; then
-        echo "fan-out: $started worker(s) started, $failed failed"
-        echo "$result" | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-for n in d.get("started",[]): print(f"  started: {n}")
-for f in d.get("failed",[]): print(f"  FAILED:  {f[\"name\"]}: {f[\"error\"]}")
-' 2>/dev/null
-        return 0
-      else
-        echo "fan-out failed:" >&2
-        echo "$result" >&2
-        return 1
-      fi
+      # RETIRED SERVER-SIDE (AMUX-5037). c5601217 "Make isolated messages raw
+      # CLI transport and retire replaced orchestration" deleted the route
+      # `.route("/{id}/fan-out", post(fan_out_item))`, its 968-line handler,
+      # api/orchestrations.rs and the 1479-line fan_out_e2e.rs — and never
+      # touched this file. So the client half kept POSTing to a path that
+      # answers 404, while `amux board` advertised it in its own help.
+      #
+      # Measured before removing it: across 3.7M rows of _amux_request_log the
+      # ONLY request ever made to /api/board/<id>/fan-out is the 404 probe I
+      # ran while diagnosing this. Nobody has used it.
+      #
+      # Kept as an explicit refusal rather than deleted, so an existing script
+      # or muscle memory gets a sentence instead of "unknown verb".
+      die "amux board fan-out was retired with the server route it called (c5601217).
+  The endpoint POST /api/board/<id>/fan-out now answers 404.
+  Decompose an epic with: amux board decompose <ID> --stdin"
       ;;
+
     artifact)
       # The API has had a structured artifact registry since migration 0046,
       # but workers had no attributed CLI path to write it. A registry nobody
@@ -4824,9 +4797,6 @@ ${BOLD}amux board${RESET} — manage board issues from the CLI
   amux board decompose <ID> --stdin Atomically turn a captured prompt into an epic
                                    plus ordered child tasks with dependencies,
                                    p0-p3 priorities and concrete next actions.
-  amux board fan-out <EPIC-ID>     Spin up ephemeral workers for each child card
-    [--model M] [--provider P]     of an already-decomposed epic. Each worker gets
-    [--flags "extra"]              its own worktree and board card.
   amux board artifact <ID> <ref>   Register a file, URL, commit, PR, screenshot or
                                    verification asset on the task.
   amux board reviewer <ID> <W>     Name the peer a card in review is handed to
