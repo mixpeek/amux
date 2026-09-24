@@ -4007,7 +4007,29 @@ fn detect_schedule_run_health(conn: &Connection, now: f64) -> (Vec<Finding>, Vec
             );
             findings.push(Finding {
                 kind: DetectorKind::SilentSubsystem,
-                signature: format!("silent|schedule-errors|{id}"),
+                // THE EPISODE'S TIMESTAMP IS PART OF THE IDENTITY (AMUX-5034).
+                //
+                // Without it this signature never varies, so `already_filed`
+                // latches on the FIRST filing and the schedule can never file
+                // again — for any future failure, with any cause, forever.
+                //
+                // Measured 2026-09-23. `session_events` holds exactly one row
+                // with idem `autofix:silent|schedule-errors|SCHED-410`, from
+                // 2026-09-02 21:21. Its card COACH-3 was filed for a urllib
+                // connection error, resolved, and marked `verified` 30 minutes
+                // later. Three weeks on the same schedule broke again with a
+                // completely different cause (a KeyError on a transcript
+                // segment) and failed on every 30-minute fire for days with
+                // NOTHING filed. Three schedules are latched this way today
+                // (SCHED-410, -440, -443) and all three cards are terminal.
+                //
+                // The `5xx|` detector already solved this: carry the newest
+                // offending row's epoch so a new EPISODE is a new signature,
+                // and let `fault_identity` strip it so an OPEN card still
+                // suppresses the fan-out. This is that, and the docstring on
+                // `open_card_for_fault` already describes it as the intent:
+                // "a genuinely new occurrence after that still files".
+                signature: format!("silent|schedule-errors|{id}|{}", newest.ran_at),
                 title: format!("Schedule {id} has failed {} times in a row", streak.len()),
                 evidence: vec![
                     ("schedule".into(), format!("{} ({id})", newest.title)),
@@ -7556,9 +7578,15 @@ fn fault_identity(signature: &str) -> Option<&str> {
     // another card: 121 p95 rollup cards by 2026-09-15, eight hand-folded into
     // AMUX-4620 in one day. A single-family `latency|p95|<family>` signature has
     // no trailing epoch, so it still gets no identity below and behaves as before.
+    // AMUX-5034: `silent|schedule-errors|<id>|<epoch>` joins the list for the
+    // same reason the two latency rollups did. Its identity is the SCHEDULE,
+    // so one open card suppresses the next fire's refile; the epoch exists only
+    // so a NEW episode after that card is judged is a new signature rather than
+    // being swallowed by `already_filed` forever.
     if !(signature.starts_with("5xx|")
         || signature.starts_with("latency|outlier|")
-        || signature.starts_with("latency|p95|"))
+        || signature.starts_with("latency|p95|")
+        || signature.starts_with("silent|schedule-errors|"))
     {
         return None;
     }
@@ -9332,7 +9360,7 @@ mod tests {
         let (two, _) = super::detect_schedule_run_health(&conn, now as f64);
         assert!(!two
             .iter()
-            .any(|f| f.signature == "silent|schedule-errors|SCHED-9"));
+            .any(|f| f.signature.starts_with("silent|schedule-errors|SCHED-9|")));
 
         conn.execute(
             "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'error','Traceback line 43','cron-rs')",
@@ -9342,7 +9370,7 @@ mod tests {
         let (three, _) = super::detect_schedule_run_health(&conn, now as f64);
         let f = three
             .iter()
-            .find(|f| f.signature == "silent|schedule-errors|SCHED-9")
+            .find(|f| f.signature.starts_with("silent|schedule-errors|SCHED-9|"))
             .expect("third consecutive error must become one stable incident");
         assert_eq!(f.count, 3);
         assert!(f
@@ -9359,8 +9387,74 @@ mod tests {
         assert!(
             !broken
                 .iter()
-                .any(|f| f.signature == "silent|schedule-errors|SCHED-9"),
+                .any(|f| f.signature.starts_with("silent|schedule-errors|SCHED-9|")),
             "an honest refused outcome is not an error and must break the streak"
+        );
+    }
+
+    /// AMUX-5034. A schedule that is fixed, closed, and later breaks AGAIN must
+    /// be able to file again.
+    ///
+    /// `already_filed` keys on the exact signature and is durable forever. With
+    /// `silent|schedule-errors|<id>` the first filing latched the schedule for
+    /// good. Measured: one `session_events` row with idem
+    /// `autofix:silent|schedule-errors|SCHED-410` from 2026-09-02, its card
+    /// COACH-3 filed for a urllib error and `verified` 30 minutes later; three
+    /// weeks on the same schedule broke with a KeyError and failed every
+    /// 30-minute fire for days with nothing filed.
+    ///
+    /// Two properties, and they pull in opposite directions, so both are here:
+    /// a NEW episode must mint a NEW signature, and `fault_identity` must strip
+    /// the episode so an OPEN card still suppresses the fan-out.
+    #[test]
+    fn a_second_failure_episode_can_file_after_the_first_card_is_closed() {
+        let conn = schedule_health_conn();
+        let now = 1_788_000_000i64;
+        let err = |at: i64, note: &str| {
+            conn.execute(
+                "INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) \
+                 VALUES('SCHED-9',?1,'error',?2,'cron-rs')",
+                rusqlite::params![at, note],
+            )
+            .unwrap();
+        };
+        for (at, note) in [(now - 300, "urllib timeout"), (now - 240, "urllib timeout"), (now - 180, "urllib timeout")] {
+            err(at, note);
+        }
+        let (first, _) = super::detect_schedule_run_health(&conn, now as f64);
+        let a = first
+            .iter()
+            .find(|f| f.signature.starts_with("silent|schedule-errors|SCHED-9|"))
+            .expect("the first episode files");
+
+        // A LATER failure is a DIFFERENT signature, so `already_filed` on the
+        // first one cannot swallow it.
+        err(now - 60, "KeyError: speaker");
+        let (second, _) = super::detect_schedule_run_health(&conn, now as f64);
+        let b = second
+            .iter()
+            .find(|f| f.signature.starts_with("silent|schedule-errors|SCHED-9|"))
+            .expect("the second episode files");
+        assert_ne!(
+            a.signature, b.signature,
+            "a newer failure must mint a new signature, or already_filed latches \
+             this schedule forever"
+        );
+
+        // ...AND BOTH COLLAPSE TO ONE IDENTITY, so an open card suppresses the
+        // refile instead of producing a card per fire. Without this the fix
+        // trades a permanent silence for the 8-cards-in-50-minutes fan-out
+        // AMUX-3673 removed.
+        let ia = super::fault_identity(&a.signature).expect("schedule errors have an identity");
+        let ib = super::fault_identity(&b.signature).expect("schedule errors have an identity");
+        assert_eq!(ia, ib);
+        assert_eq!(ia, "silent|schedule-errors|SCHED-9");
+
+        // A DIFFERENT schedule is a different identity, or one noisy schedule
+        // would suppress every other one.
+        assert_ne!(
+            super::fault_identity("silent|schedule-errors|SCHED-9|1").unwrap(),
+            super::fault_identity("silent|schedule-errors|SCHED-8|1").unwrap()
         );
     }
 
