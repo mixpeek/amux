@@ -11825,7 +11825,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1102';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1103';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45490,6 +45490,8 @@ function _projectInventoryState(project) {
   const live=_projectLiveWorkerState(summary.working_workers);
   if(live) return live;
   if(Number(summary.active_tasks||0)>0 && Number(summary.waiting_tasks||0)===Number(summary.active_tasks||0) && Number(summary.running_executions||0)===0) return {label:'Execution held',cls:'review'};
+  if(Number(summary.running_executions||0)===0 && Number(summary.queued_repairs||0)>0) return {label:'Repair queued',cls:'ready'};
+  if(Number(summary.running_executions||0)===0 && Number(summary.active_tasks||0)>0) return {label:'Ready to dispatch',cls:'ready'};
   if(Number(summary.running_executions||0)>0 || Number(summary.active_tasks||0)>0) return {label:'Driving',cls:'active'};
   if(Number(summary.task_count||0)>0) return {label:'Verifying outcome',cls:'active'};
   return {label:'Ready',cls:'ready'};
@@ -46115,7 +46117,10 @@ function _projectRender(data) {
   const openCards=data.cards.filter(c=>!['verified','closed'].includes(c.phase));
   const allHeld=openCards.length>0 && openCards.every(c=>c.phase==='waiting');
   const live=_projectLiveWorkerState(openCards.filter(c=>c.execution_plan?.execution?.stage==='working').map(c=>c.execution_plan.execution.worker).filter(Boolean));
-  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':live?.label||(!openCards.length && _projectIntakeState(data)?.label)||'Driving project outcomes';
+  const queuedRepair=openCards.some(c=>c.execution_plan?.execution?.stage==='repair' && c.execution_plan?.action==='claim');
+  const running=openCards.some(c=>['reserved','working','reported','verifying'].includes(c.execution_plan?.execution?.stage));
+  const activeState=live?.label || (queuedRepair?'Repair queued — preparing worker':!running && openCards.length?'Ready to dispatch':(!openCards.length && _projectIntakeState(data)?.label)||'Driving project outcomes');
+  document.getElementById('project-state').textContent=data.acceptance?.state==='accepted'?'Published to main · accepted':p.policy.paused?(data.pause_settled?'Paused':'Pausing — stopping executors'):retirement?.state==='review_not_configured'?'Review gate needs configuration — completed executors retained':data.acceptance?.state==='awaiting_human'?'Awaiting human artifact review — completed executors retained without running':!p.policy.enabled?'Disabled':allHeld?'Execution held — inspect task reason':activeState;
   document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
   document.getElementById('project-pause').disabled=p.policy.paused && !data.pause_settled;
   const setText=(id,text)=>{const el=document.getElementById(id);if(el && el.textContent!==text) el.textContent=text;};

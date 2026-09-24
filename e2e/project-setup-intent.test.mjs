@@ -73,6 +73,9 @@ test('project card stops claiming Driving when its assigned worker needs input',
  session.status='active';assert.equal(ctx._projectInventoryState(project).label,'Driving');
  session.status='stopped';session.running=false;assert.equal(ctx._projectInventoryState(project).label,'Worker stopped');
  ctx._sessionLoadError='offline';assert.equal(ctx._projectInventoryState(project).label,'Worker state unavailable');
+ ctx._sessionLoadError=null;project.summary.working_workers=[];project.summary.running_executions=0;project.summary.queued_repairs=1;
+ assert.equal(ctx._projectInventoryState(project).label,'Repair queued');
+ project.summary.queued_repairs=0;assert.equal(ctx._projectInventoryState(project).label,'Ready to dispatch');
 });
 
 test('directory viewer ignores older network and offline cache responses after navigation',async()=>{

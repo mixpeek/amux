@@ -1840,6 +1840,11 @@ fn project_checkout_directory_key(cfg: &EnvFile, raw: &str, checkout: &Path) -> 
     Some(if selected { "Enter" } else { "2" })
 }
 
+fn project_checkout_repair_claim_ready(plans: &[crate::project_execution::planner::CardPlan], worker: &str) -> bool {
+    plans.iter().any(|p| p.action == "claim" && p.execution.stage == "repair"
+        && p.execution.worker == worker && !p.execution.suspended)
+}
+
 pub(crate) fn is_resume_mode_prompt(raw: &str) -> bool {
     let clean = strip_ansi(raw).to_lowercase().replace('\u{2019}', "'");
     let opt1 = cached_re!(r"(?m)^\s*(?:[\u{276f}>]\s*)?1\.\s+resume from summary");
@@ -20161,13 +20166,19 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let checkout = crate::project_execution::checkout::load(&home(), project);
             if let Some(key) = checkout.as_ref().filter(|w| crate::fanout_workspace::same_repository(&w.repo, repo))
                 .and_then(|w| project_checkout_directory_key(&cfg, &pane, Path::new(&w.path))) {
-                let permitted = state.store.read().ok().is_some_and(|c|
-                    crate::project_execution::checkout::start_permit(&c, project, name).is_ok());
+                let permitted = state.store.read().ok().is_some_and(|c| {
+                    if crate::project_execution::checkout::start_permit(&c, project, name).is_ok() { return true; }
+                    let Ok(Some(p)) = crate::project_execution::store::get(&c, project) else { return false; };
+                    p.policy.enabled && !p.policy.paused && crate::project_execution::planner::plan(&c, &p)
+                        .ok().is_some_and(|plans| project_checkout_repair_claim_ready(&plans, name))
+                });
                 if permitted {
                     let (ok, msg) = send_keys_op(name, key).await;
                     tracing::warn!(session=%name,project=%project,ok,detail=%msg,measured=true,n_considered=1,verdict="registered_project_checkout_selected","resolved project checkout selector");
                     emit_event(state,name,"project.checkout_selector_resolved",Some(json!({"key":key,"ok":ok,"detail":msg})),None,"status").await;
                     if ok { continue; }
+                } else {
+                    tracing::warn!(session=%name,project=%project,measured=true,n_considered=1,verdict="project.checkout_selector_held","registered checkout selector detected but no active or claimable project task authorizes continuation");
                 }
             }
         }
@@ -47273,6 +47284,18 @@ mod project_hook_review_tests {
             cfg.set(key,"1"); assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),None); cfg.remove(key);
         }
         cfg.set("CC_PROVIDER","claude"); assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),None);
+    }
+    #[test]
+    fn queued_repair_can_clear_its_checkout_picker_without_creating_a_new_claim() {
+        use crate::project_execution::planner::{CardPlan, Execution};
+        use amux_core::project::Phase;
+        let mut plan=CardPlan{id:"A".into(),phase:Phase::Ready,action:"claim".into(),waiting_reason:None,waiting_label:None,
+            execution:Execution{stage:"repair".into(),worker:"owner".into(),..Default::default()}};
+        assert!(project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
+        assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"other"));
+        plan.execution.suspended=true;assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
+        plan.execution.suspended=false;plan.action="observe".into();assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
+        plan.action="claim".into();plan.execution.stage="waiting".into();assert!(!project_checkout_repair_claim_ready(&[plan],"owner"));
     }
 }
 
