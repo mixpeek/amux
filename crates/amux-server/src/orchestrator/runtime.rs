@@ -477,7 +477,12 @@ impl Runtime {
         // Circuit breaker (RR-0048b): evaluate the rolling window BEFORE
         // planning. While open, reconciliation looks for runnable work and
         // auto-closes when it finds the fleet can actually move again.
-        let window = self.window_stats(now)?;
+        let window = {
+            let store = self.store.clone();
+            let window_secs = self.breaker.window_secs;
+            tokio::task::spawn_blocking(move || Self::window_stats(&store, window_secs, now))
+                .await??
+        };
         sections.mark("window_stats");
         // Evaluate under the lock WITHOUT awaiting (the guard is not Send);
         // publish the change after the guard drops.
@@ -695,9 +700,31 @@ impl Runtime {
     /// Rolling-window stats from the revisioned event journal — the same
     /// events every other consumer sees, so the breaker and the dashboard
     /// can never disagree about what happened (ethos rule 4).
-    fn window_stats(&self, now: DateTime<Utc>) -> anyhow::Result<amux_core::circuit::WindowStats> {
-        let conn = self.store.read()?;
-        let cutoff_at = now - chrono::Duration::seconds(self.breaker.window_secs as i64);
+    /// OFF THE ASYNC THREAD (AMUX-5027). This is eight synchronous SQLite
+    /// queries against a 4.7 GB database, run every `tick_secs` (3s), and it
+    /// was called straight from the async tick.
+    ///
+    /// Measured over the whole server log: `runtime_job_blocking_poll` fired
+    /// 15661 times, 6936 of them from orchestrator-runtime, and its worst
+    /// section was `window_stats` in 989 of 1674 samples, p50 1827 ms, max
+    /// 30622 ms. Meanwhile the queries themselves total ~180 ms on a warm idle
+    /// read, the read pool has NEVER waited (`read_pool_slow_acquire` 0,
+    /// `read_pool_exhausted` 0), and host load at those events is BELOW
+    /// baseline (0.40 vs 0.56 load_per_core). So the cost is real, variable by
+    /// two orders of magnitude, and not explained by contention this process
+    /// can see.
+    ///
+    /// Whatever the remaining cause, a blocking read has no business holding a
+    /// runtime thread while other jobs in the pool wait behind it. Taking an
+    /// `&SharedStore` rather than `&self` is what makes it movable onto the
+    /// blocking pool.
+    fn window_stats(
+        store: &crate::db::SharedStore,
+        window_secs: u64,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<amux_core::circuit::WindowStats> {
+        let conn = store.read()?;
+        let cutoff_at = now - chrono::Duration::seconds(window_secs as i64);
         let cutoff = cutoff_at.to_rfc3339();
         let cutoff_epoch = cutoff_at.timestamp();
         let completed: u32 = conn.query_row(
@@ -3715,6 +3742,53 @@ mod tick_section_tests {
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
+    }
+
+    /// AMUX-5027. `window_stats` must stay OFF the async runtime thread.
+    ///
+    /// It is eight synchronous SQLite queries against a 4.7 GB database, run
+    /// every tick. Measured before the fix: `runtime_job_blocking_poll` fired
+    /// 15661 times across the log, 6936 from this job, and `window_stats` was
+    /// the worst section in 989 of 1674 samples at p50 1827 ms / max 30622 ms.
+    ///
+    /// A SOURCE GUARD, deliberately. What regresses here is the WIRING — a
+    /// later edit calling `Self::window_stats(...)` directly again — and no
+    /// unit test can observe which pool a future call runs on. The signature
+    /// change is what makes the mistake hard: taking `&SharedStore` rather than
+    /// `&self` means a direct call from the tick does not even have a receiver
+    /// to hand, so this guard is the second line rather than the only one.
+    #[test]
+    fn window_stats_is_not_called_on_the_async_thread() {
+        let src = include_str!("runtime.rs");
+        let at = src
+            .find("sections.mark(\"window_stats\")")
+            .expect("the window_stats section mark is gone; this guard has lost its subject");
+        // The call sits immediately above its own mark.
+        let before = &src[at.saturating_sub(400)..at];
+        assert!(
+            before.contains("spawn_blocking"),
+            "window_stats is invoked without spawn_blocking; it holds a runtime \
+             thread for a median 1827 ms every tick. Preceding source was:\n{before}"
+        );
+        assert!(
+            before.contains("Self::window_stats("),
+            "the guard no longer sees the call it is guarding, so it would pass \
+             whatever the tick does. Preceding source was:\n{before}"
+        );
+        // And the blocking form must be the ONLY form: a receiver-style call
+        // anywhere is the exact regression.
+        //
+        // THE NEEDLE IS BUILT, NOT WRITTEN. Spelling it as a literal here puts
+        // it in this file, and `include_str!` then finds the test's own prose
+        // and fails on it. That is not hypothetical: the first draft of this
+        // assertion did exactly that, which is the third self-matching test I
+        // have hit today.
+        let receiver_call = format!("self{}window_stats(", ".");
+        assert!(
+            !src.contains(&receiver_call),
+            "a receiver-style call to window_stats is back; that form runs on the \
+             async thread"
+        );
     }
 
     /// AMUX-4955. The verdict has to name the section a reader should go open.
