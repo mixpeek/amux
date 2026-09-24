@@ -14310,6 +14310,17 @@ pub async fn debug_logs(RawQuery(q): RawQuery) -> Response {
 }
 
 fn mark_pending_structured_resume(state: &AppState, name: &str, reason: &str) -> bool {
+    if session_is_isolated(name) {
+        tracing::info!(
+            session = name,
+            reason,
+            measured = true,
+            n_considered = 1,
+            verdict = "isolated_restart_context_suppressed",
+            "isolated configuration restart preserves CLI transport without board context"
+        );
+        return true;
+    }
     let meta = load_meta(name);
     let cfg = parse_env(name);
     let context = state
@@ -26162,7 +26173,7 @@ async fn apply_live_config_change(
                         mode: SwapMode::Restart,
                         applied: restarted,
                         note: if restarted {
-                            " (live switch failed; session restarted to apply it, pending work resumes from board)"
+                            " (live switch failed; session restarted to apply the change)"
                         } else {
                             " (live switch failed AND the restart failed — the session may still be on the old model)"
                         },
@@ -26198,7 +26209,7 @@ async fn apply_live_config_change(
                 mode,
                 applied: restarted,
                 note: if restarted {
-                    " (session restarted; pending work resumes from board)"
+                    " (session restarted)"
                 } else {
                     " (restart failed)"
                 },
@@ -26398,7 +26409,7 @@ async fn config_patch_with_liveness(
             set_confirmed_active_model(name, &provider_val, None);
         }
         let suffix = if restarted {
-            " (session restarted; pending work resumes from board)"
+            " (session restarted)"
         } else {
             ""
         };
@@ -26680,7 +26691,7 @@ async fn config_patch_with_liveness(
         };
         let state_word = if enabled { "enabled" } else { "disabled" };
         let suffix = if restarted {
-            " (session restarted; pending work resumes from board)"
+            " (session restarted)"
         } else {
             ""
         };
@@ -32635,6 +32646,13 @@ mod tests {
         )
         .unwrap();
         assert!(!super::super::board_lifecycle::enabled("raw"));
+        let before = load_meta("raw");
+        assert!(mark_pending_structured_resume(&st, "raw", "effort change"));
+        assert_eq!(
+            load_meta("raw"),
+            before,
+            "raw config changes cannot manufacture resume instructions"
+        );
         let empty_db = rusqlite::Connection::open_in_memory().unwrap();
         let mut stale = Map::new();
         stale.insert(
