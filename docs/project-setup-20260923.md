@@ -38,3 +38,14 @@ Project drafting is now excluded from automatic replay, including already-retain
 outbox entries. Actual create/command mutations remain durable. The draft's outer
 and browser deadlines exceed the helper's bounded I/O deadline. Pending draft
 requests can be dismissed in the Connection modal; their original form stays saved.
+
+Schema rejection on the next single-call run exposed missing evidence-path
+constraints in the setup prompt. Those constraints now reach the planner. A
+validation error gets one bounded same-model correction with the prior response
+and precise diagnostic; provider failures do not trigger retries or fallbacks.
+
+Goal 03 also exceeds the old 16,000-character preview, omitting later Studio,
+API-suite and standalone acceptance bodies. The bounded preview now retains up
+to 64,000 characters per file (three files maximum), and explicitly marks larger
+previews. A regression requires complete later-section details to reach setup;
+the existing oversized source still must account for every section exactly once.

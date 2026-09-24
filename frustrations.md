@@ -4285,3 +4285,27 @@ CARD: AF-947
 SYMPTOM: A UI click on Fill in the fields timed out at the global outbox's 15-second limit, then replayed the Codex draft repeatedly while its original inference continued. The UI showed a generic failure and a pending operation, discarding eventual model answers.
 COST: Duplicate low-cost model invocations and no usable project settings. Observed on d05d9737 with actual provider launch logs; stopped the test page before continuing repair.
 FIX: Exclude project draft inference from the mutation outbox and automatic replay of retained entries. Preserve real project commands and creation delivery. Align draft deadlines after bounded helper I/O, expose retained draft dismissal, and add shipped-predicate plus replay regressions. Live rerun pending.
+
+
+## Project drafting lacked the evidence contract constraints it had to satisfy
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: A single non-replayed Luna setup request on 720aa190 returned a contract rejected for its evidence paths. The prompt omitted allowed file extensions and several size/count constraints, and the invalid result had no bounded correction path.
+COST: A valid project description still required hand-editing JSON instead of completing setup. The rejected contract was not applied and no runtime verification was claimed.
+FIX: State contract constraints explicitly, preserve scope, and supply the exact validation failure plus prior draft for at most one same-model correction. Log each validation verdict, keep provider failures non-retrying, and bound total lifetime to two helper deadlines. Regression tests cover correction and the stop bound; live rerun pending.
+
+
+## Full project setup only received the opening half of a normal goal specification
+AREA: reliability
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-24
+SESSION: codex-project-lifecycle
+CARD: AF-947
+SYMPTOM: Goal 03 is about 29 KB, but the model input truncated file content at 16,000 characters. Studio, API regression and standalone acceptance bodies begin later; only their headings reached setup and decomposition. The setup request basis also omitted the existing truncation flag.
+COST: Counting all 23 headings could look like complete decomposition while later requirements were unavailable to the planner.
+FIX: Retain up to 64,000 characters per referenced file within the existing three-file bound; normal goal specifications now reach planning intact. Oversized source previews explicitly require the executor to read the full source. Test exact tail acceptance preservation and retain the existing oversized-section coverage test.

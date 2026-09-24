@@ -900,7 +900,7 @@ fn referenced_files(repository: &str, text: &str) -> Vec<ReferencedProjectFile> 
             Some(scoped_spec_excerpt(&content, &scoped_ids))
         };
         let mut chars = scoped_content.as_deref().unwrap_or(&content).chars();
-        let snippet: String = chars.by_ref().take(16_000).collect();
+        let snippet: String = chars.by_ref().take(64_000).collect();
         let truncated = chars.next().is_some();
         files.push(ReferencedProjectFile {
             path: rel,
@@ -922,6 +922,9 @@ fn request_basis(text: &str, files: &[ReferencedProjectFile]) -> String {
         basis.push_str(&file.path);
         basis.push('\n');
         basis.push_str(&file.content);
+        if file.truncated {
+            basis.push_str("\nSOURCE_PREVIEW_TRUNCATED: Executors must read the complete referenced file before implementing or verifying its requirements. Section headings alone are not acceptance criteria.");
+        }
         for section in &file.sections {
             basis.push_str("\nREQUIRED_SPEC_SECTION [spec:");
             basis.push_str(&section.id);
@@ -2758,6 +2761,19 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
     }
 
     #[test]
+    fn project_context_keeps_complete_normal_sized_spec_acceptance_details() {
+        let dir=tempfile::tempdir().unwrap();
+        let body=format!("### T1. First\n{}\n### T23. Last\nRAW_LIFECYCLE_MUST_CREATE_AND_DELETE_THREE_OBJECTS\n", "context ".repeat(3500));
+        std::fs::write(dir.path().join("spec.md"),&body).unwrap();
+        let files=referenced_files(dir.path().to_str().unwrap(),"Implement ./spec.md");
+        assert!(!files[0].truncated);
+        assert_eq!(files[0].content,body);
+        let basis=project_request_context(dir.path().to_str().unwrap(),"Implement ./spec.md");
+        assert!(basis.contains("RAW_LIFECYCLE_MUST_CREATE_AND_DELETE_THREE_OBJECTS"));
+        assert!(basis.contains("REQUIRED_SPEC_SECTION [spec:T23]"));
+    }
+
+    #[test]
     fn truncated_goal_spec_still_requires_every_indexed_section_once() {
         let temp = tempfile::tempdir().unwrap();
         let spec = temp.path().join("research/goal-specs/large.md");
@@ -2767,10 +2783,10 @@ The single minimal stack includes Mongo, Ray, MVS, and Redis, and produces a hum
         for n in 1..=20 {
             body.push_str(&format!(
                 "\n### T{n}. Capability {n}\n- Intent: produce capability {n}.\n- Acceptance criteria:\n  - capability {n} is implemented and verified.\n{}",
-                "supporting context ".repeat(70)
+                "supporting context ".repeat(250)
             ));
         }
-        assert!(body.chars().count() > 16_000);
+        assert!(body.chars().count() > 64_000);
         std::fs::write(&spec, body).unwrap();
         let project = crate::project_execution::store::Project {
             name: "large-goal".into(),

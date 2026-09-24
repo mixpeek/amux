@@ -11630,7 +11630,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1062';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1063';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -45439,7 +45439,7 @@ async function _projectDraftFields() {
   if (btn) btn.disabled=true;
   if (state) state.textContent='Thinking…';
   try {
-    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:document.getElementById('project-coordinator-provider').value,model:document.getElementById('project-coordinator').value.trim(),effort:document.getElementById('project-coordinator-effort').value||undefined}}),signal:AbortSignal.timeout(260000)});
+    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:document.getElementById('project-coordinator-provider').value,model:document.getElementById('project-coordinator').value.trim(),effort:document.getElementById('project-coordinator-effort').value||undefined}}),signal:AbortSignal.timeout(510000)});
     const d=await r.json();
     if (!r.ok || !d.measured) { if(state) state.textContent=d.why_unmeasured||d.error||'Could not draft from that description'; return; }
     const nameEl=document.getElementById('project-name');
