@@ -1460,8 +1460,61 @@ impl GmailClient {
             "body": body,
             "body_html": html_body,
             "snippet": full.get("snippet").cloned().unwrap_or(json!("")),
-            "attachments": collect_attachments(&payload),
+            "attachments": self.save_attachments(account, gmail_id, collect_attachments(&payload)).await,
         }))
+    }
+
+    /// Put each attachment on disk and say where (`path`), so a worker can open
+    /// an image or PDF directly (Ethan, 2026-09-25: "amux is having trouble
+    /// seeing attached images in an email"). The list alone named an
+    /// attachmentId behind a second endpoint, and the server log showed no
+    /// worker ever fetching one: an agent sees an image only as a file it can
+    /// read. Cached by message id; a part over 25 MB is listed, not saved.
+    async fn save_attachments(&self, account: &str, gmail_id: &str, list: Vec<Value>) -> Vec<Value> {
+        const MAX_BYTES: i64 = 25 * 1024 * 1024;
+        let dir = self.home.join("email-attachments").join(sanitize_filename(gmail_id));
+        let mut out = Vec::with_capacity(list.len());
+        for (i, mut att) in list.into_iter().enumerate() {
+            let inline_data = att.get("_data").and_then(Value::as_str).unwrap_or("").to_string();
+            if let Some(o) = att.as_object_mut() {
+                o.remove("_data");
+            }
+            let size = att.get("size").and_then(Value::as_i64).unwrap_or(0);
+            if size > MAX_BYTES {
+                att["path_error"] = json!("larger than 25 MB; fetch it from /api/email/message/{id}/attachments/{attachment_id}");
+                out.push(att);
+                continue;
+            }
+            let name = sanitize_filename(att.get("filename").and_then(Value::as_str).unwrap_or("attachment"));
+            // Index-prefixed: an inline logo repeated nine times shares a filename.
+            let path = dir.join(format!("{i:02}-{name}"));
+            if !path.exists() {
+                let attachment_id = att.get("attachment_id").and_then(Value::as_str).unwrap_or("").to_string();
+                let bytes = if !attachment_id.is_empty() {
+                    self.get_attachment(account, gmail_id, &attachment_id).await
+                } else if !inline_data.is_empty() {
+                    base64url_decode(&inline_data)
+                } else {
+                    Err("no attachment data in the message".to_string())
+                };
+                match bytes.and_then(|b| {
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    std::fs::write(&path, b).map_err(|e| e.to_string())
+                }) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::warn!(account, gmail_id, file = %name, error = %e,
+                            verdict = "email_attachment_not_saved", "email attachment could not be saved for workers");
+                        att["path_error"] = json!(e);
+                        out.push(att);
+                        continue;
+                    }
+                }
+            }
+            att["path"] = json!(path.to_string_lossy());
+            out.push(att);
+        }
+        out
     }
 
     /// Download one attachment's raw bytes by its Gmail `attachmentId` (from
@@ -2107,6 +2160,10 @@ pub fn collect_attachments(payload: &Value) -> Vec<Value> {
                 "size": node.pointer("/body/size").and_then(Value::as_i64).unwrap_or(0),
                 "attachment_id": node.pointer("/body/attachmentId").and_then(Value::as_str).unwrap_or(""),
                 "inline": inline,
+                // Gmail puts a SMALL part's bytes here instead of behind an
+                // attachmentId; without this those parts could never be read.
+                // Stripped before the response by `save_attachments`.
+                "_data": node.pointer("/body/data").and_then(Value::as_str).unwrap_or(""),
             }));
         }
         if let Some(parts) = node.get("parts").and_then(Value::as_array) {
@@ -2722,6 +2779,27 @@ mod tests {
         assert!(
             collect_attachments(&json!({"mimeType":"text/plain","body":{"data":"aGk"}})).is_empty()
         );
+    }
+
+    /// Ethan, 2026-09-25: workers could not see images in emails. Reading a
+    /// message now puts each attachment on disk with a `path` a worker can open,
+    /// including small parts Gmail embeds with no attachmentId.
+    #[tokio::test]
+    async fn reading_a_message_saves_its_attachments_where_a_worker_can_open_them() {
+        let home = tempfile::tempdir().unwrap();
+        let client = GmailClient::new(MockHttp::new(vec![]), home.path().to_path_buf());
+        let embedded = json!({"filename": "chart.png", "mime_type": "image/png", "size": 5,
+            "attachment_id": "", "inline": false, "_data": "aGVsbG8"});
+        let huge = json!({"filename": "video.mov", "mime_type": "video/quicktime",
+            "size": 30 * 1024 * 1024, "attachment_id": "att-9", "inline": false, "_data": ""});
+        let out = client.save_attachments("me@x.example", "18c0ffee", vec![embedded, huge]).await;
+        let png = &out[0];
+        let path = std::path::PathBuf::from(png["path"].as_str().expect("image saved with a path"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+        assert!(path.starts_with(home.path().join("email-attachments")));
+        assert!(png.get("_data").is_none(), "raw data must not reach the response");
+        assert!(out[1].get("path").is_none());
+        assert!(out[1]["path_error"].as_str().unwrap().contains("25 MB"));
     }
 
     #[test]
