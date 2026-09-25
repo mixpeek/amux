@@ -441,6 +441,28 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
     timeout: Duration,
     permit: &F,
 ) -> Result<(), String> {
+    verify_commands_with_cleanup(workspace, candidate, commands, timeout, permit, || async {
+        Ok(())
+    })
+    .await
+}
+
+/// Run a verifier's output cleanup before testing candidate cleanliness. Some
+/// approved runtime checks write declared diagnostic files even on failure;
+/// callers may retain those outside Git without treating them as source edits.
+pub(crate) async fn verify_commands_with_cleanup<F, C, Fut>(
+    workspace: &Workspace,
+    candidate: &str,
+    commands: &[&str],
+    timeout: Duration,
+    permit: &F,
+    cleanup: C,
+) -> Result<(), String>
+where
+    F: Fn() -> Result<(), String>,
+    C: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     if !(Duration::from_secs(1)
         ..=Duration::from_secs(amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS))
         .contains(&timeout)
@@ -455,6 +477,7 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
         validate_verification_command(workspace, command)?;
     }
     permit()?;
+    cleanup().await?;
     let head = git(candidate, &["rev-parse", "HEAD"]).await?;
     if !project_clean_status(candidate).await?.is_empty() {
         return Err("worktree has uncommitted changes".into());
@@ -479,7 +502,9 @@ pub(crate) async fn verify_commands<F: Fn() -> Result<(), String>>(
             verdict = "candidate_verification_command",
             "bounded candidate check completed"
         );
+        let cleanup_result = cleanup().await;
         let (status, output) = result?;
+        cleanup_result?;
         if !status.success() {
             return Err(format!(
                 "verification failed ({command}): candidate validation exited {}. {output}",
@@ -1619,6 +1644,36 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("verification failed (exit 9)"));
+    }
+    #[tokio::test]
+    async fn declared_runtime_outputs_can_be_retained_without_ignoring_source_edits() {
+        let (dir, workspace) = fixture().await;
+        commit(&workspace, "candidate.txt", "ready\n").await;
+        let candidate = workspace.path.clone();
+        let archive = dir.path().join("runtime-output.txt");
+        verify_commands_with_cleanup(
+            &workspace, &candidate, &["printf 'measured\\n' > runtime-output.txt"],
+            Duration::from_secs(5), &|| Ok(()),
+            || {
+                let candidate = candidate.clone();
+                let archive = archive.clone();
+                async move {
+                    let output = std::path::Path::new(&candidate).join("runtime-output.txt");
+                    if output.exists() {
+                        std::fs::rename(output, archive).map_err(|error| error.to_string())?;
+                    }
+                    Ok(())
+                }
+            },
+        ).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&archive).unwrap(), "measured\n");
+        assert!(project_clean_status(&candidate).await.unwrap().is_empty());
+
+        let error = verify_commands_with_cleanup(
+            &workspace, &candidate, &["printf 'unapproved\\n' > source-edit.txt"],
+            Duration::from_secs(5), &|| Ok(()), || async { Ok(()) },
+        ).await.unwrap_err();
+        assert_eq!(error, "verification changed the reported worktree");
     }
     #[tokio::test]
     async fn project_verification_timeout_kills_children_in_both_candidate_phases() {
