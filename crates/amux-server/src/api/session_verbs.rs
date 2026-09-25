@@ -13362,7 +13362,10 @@ pub(crate) async fn start_session(
             if codex_yolo {
                 codex_flags = strip_provider_yolo_flags(&codex_flags);
             }
-            let mut opts = String::new();
+            // An unattended worker must reach its composer without stopping at
+            // Codex's optional npm upgrade picker. This is a per-process
+            // override, so we do not change the owner's global Codex settings.
+            let mut opts = String::from(" -c check_for_update_on_startup=false");
             if !codex_flags.is_empty() {
                 opts += &format!(" {}", shell_quote_flags(&codex_flags));
             }
@@ -13518,6 +13521,7 @@ pub(crate) async fn start_session(
                 " --oss --local-provider ollama --model {}",
                 sh_quote(&model)
             );
+            opts += " -c check_for_update_on_startup=false";
             if !opts.contains("--dangerously-bypass") && !opts.contains("-a ") {
                 opts += if ollama_yolo {
                     " --dangerously-bypass-approvals-and-sandbox"
