@@ -1125,6 +1125,20 @@ fn codex_model_bar(line: &str) -> bool {
         && (location == "~" || location.starts_with("~/") || location.starts_with('/'))
 }
 
+/// Codex's trailing shortcuts/warnings chrome row, painted below the model
+/// bar on live captures (Codex-W4/Luna-L1/L4, 2026-09-25): "← for agents · ?
+/// for shortcuts ... ⚠ N warnings · f2 to view". Matched on its own fixed
+/// hint phrases, not merely "whatever row happens to be last" — accepting
+/// ANY last row would let a Codex-shaped model bar pasted into another
+/// provider's pane (landing second-to-last under that OTHER provider's own
+/// single chrome row) read as a current, idle Codex frame, which is exactly
+/// the pasted-frame false positive this parser exists to refuse (F2, Opus-
+/// Adjudicator's CA-10 review, 2026-09-25).
+fn codex_footer_hint_row(line: &str) -> bool {
+    let low = line.to_ascii_lowercase();
+    low.contains("for shortcuts") || low.contains("f2 to view") || low.contains("for agents")
+}
+
 fn codex_active_status_line(line: &str) -> bool {
     let low = line.trim().to_ascii_lowercase();
     low.starts_with("• working (")
@@ -1176,18 +1190,23 @@ fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
     let tail = &lines[start..];
     // Provider identity must be the CURRENT footer, not a Codex-looking frame
     // pasted into another provider's prompt. The model/path bar is Codex's
-    // final non-empty row OR its second-to-last — live captures (Codex-W4
-    // idle, Luna-L1/L4 idle, 2026-09-25) now draw one more chrome row below
-    // it, a shortcuts/warnings footer ("← for agents · ? for shortcuts ...
-    // ⚠ N warnings · f2 to view"), which is not itself `codex_model_bar` (no
-    // `~`/`/`-shaped segment) and so cannot be mistaken for one — bounded to
-    // exactly one trailing row, deliberately, so an older or a genuinely
-    // different (pasted/historical) frame still requires the bar to anchor
-    // the tail rather than searching arbitrarily far back.
-    let model_i = [tail.len().checked_sub(1), tail.len().checked_sub(2)]
-        .into_iter()
-        .flatten()
-        .find(|i| codex_model_bar(tail[*i]))?;
+    // final non-empty row, OR its second-to-last when — and ONLY when — the
+    // actual final row is a recognised Codex footer chrome row: live captures
+    // (Codex-W4 idle, Luna-L1/L4 idle, 2026-09-25) draw one more chrome row
+    // below the bar, `codex_footer_hint_row`. Checking the LAST row's own
+    // identity (not merely accepting whatever is there) is load-bearing: a
+    // Codex-shaped bar pasted into another provider's pane, with that OTHER
+    // provider's own single chrome row landing last, must NOT anchor here —
+    // that pane's real last row decides, and it is not Codex's.
+    let n = tail.len();
+    let model_i = n
+        .checked_sub(1)
+        .filter(|&i| codex_model_bar(tail[i]))
+        .or_else(|| {
+            n.checked_sub(2).filter(|&i| {
+                codex_model_bar(tail[i]) && n.checked_sub(1).is_some_and(|last| codex_footer_hint_row(tail[last]))
+            })
+        })?;
     let prompt_i = tail[..model_i].iter().rposition(|s| s.starts_with('›'))?;
     // Current Codex paints the active row immediately before its disabled
     // prompt. Older builds painted it immediately after the submitted prompt,
@@ -2191,6 +2210,36 @@ one more unrelated row pushing the bar a third line back";
     #[test]
     fn codex_pane_generation_state_bare_prompt_alone_is_not_identifiable() {
         assert_eq!(codex_pane_generation_state("\u{203a} Ask Codex to do anything"), None);
+    }
+
+    /// F2 (Opus-Adjudicator, CA-10 review, 2026-09-25): the second-to-last
+    /// acceptance added for the trailing shortcuts/warnings footer must not
+    /// accept an ARBITRARY last row — only a recognised Codex footer row. A
+    /// Codex-shaped model bar pasted into a live, mid-turn CLAUDE pane, with
+    /// Claude's own status bar landing last, must read as `None` (not a
+    /// current, identifiable Codex frame at all), not `Some(false)` (idle) —
+    /// the latter would let `pane_is_at_boundary` (which calls
+    /// `codex_pane_generation_state` first, for every provider) deliver a
+    /// queued message into a lane that is demonstrably still generating
+    /// ("esc to interrupt" is live in the same frame).
+    #[test]
+    fn codex_bar_second_to_last_requires_a_real_codex_footer_as_the_actual_last_row() {
+        let pasted_codex_bar_under_live_claude_status_bar = "\
+Some earlier Codex session output the user pasted into this live Claude conversation:
+\u{203a} Ask Codex to do anything
+
+  gpt-5.5 high \u{b7} ~ \u{b7} Review canonical CW-53 source
+\u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle) \u{b7} esc to interrupt";
+        assert_eq!(codex_pane_generation_state(pasted_codex_bar_under_live_claude_status_bar), None);
+
+        // Same shape, genuine Codex footer as the real last row: still accepted.
+        let genuine_codex_idle_with_footer = "\
+Some earlier Codex session output the user pasted into this live Claude conversation:
+\u{203a} Ask Codex to do anything
+
+  gpt-5.5 high \u{b7} ~ \u{b7} Review canonical CW-53 source
+  \u{2190} for agents \u{b7} ? for shortcuts \u{b7} \u{26a0} 1 warning \u{b7} f2 to view";
+        assert_eq!(codex_pane_generation_state(genuine_codex_idle_with_footer), Some(false));
     }
 
     #[test]
