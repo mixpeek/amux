@@ -3167,6 +3167,12 @@ function setOnline(val) {
   if (!was && val) {
     // The visible sync checklist is the receipt; a toast would cover its rows.
     if (!offlineQueue.length && !drafts.length) showToast('Reconnected');
+    // A RECONNECT WITH A BACKLOG SHOWS THE CHECKLIST (Ethan, 2026-09-24: "when
+    // reconnecting and there's a backlog of tasks to sync ... bring the
+    // animation up that goes thru each one by one with check boxes ... on the
+    // homepage visible"). Routine retries stay in the pill (his earlier "it's
+    // in the way"), and so does a reconnect while a worker terminal is open.
+    _syncBannerAuto = true;
     runSyncBanner(false);
     // Reconnect SSE (reset fallback so we can get back to Live mode)
     _sseFallback = false; _sseRetries = 0;
@@ -3239,6 +3245,7 @@ function _clearSyncTransientToast() {
 }
 let _syncChecklist = [];
 let _syncBannerRequested = false;
+let _syncBannerAuto = false;
 let _syncChecklistAt = 0;
 let _syncPillText = '';
 // The pill is the one place sync state lives. With work pending or in flight a
@@ -3318,8 +3325,8 @@ async function _runSyncBanner(quiet = false) {
     _syncPillText = done < items.length ? 'Syncing ' + done + '/' + items.length : '';
     updateConnectionStatus();
     itemsEl.innerHTML = items.map(i => {
-      const icon = i.status === 'done' ? '&#x2714;' : i.status === 'failed' ? '&#x2718;' : i.status === 'running' ? '&#x27A4;' : i.status === 'skipped' ? '&mdash;' : '&#x2022;';
-      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '">' + icon + ' ' + esc(i.label) + '</div>';
+      const icon = i.status === 'done' ? '&#x2714;' : i.status === 'failed' ? '&#x2718;' : i.status === 'skipped' ? '&mdash;' : '';
+      return '<div data-sync-id="' + esc(i.key) + '" class="sync-item ' + i.status + '"><span class="sync-box" aria-hidden="true">' + icon + '</span>' + esc(i.label) + '</div>';
     }).join('');
   }
 
@@ -3328,7 +3335,8 @@ async function _runSyncBanner(quiet = false) {
   // popping up its fine but its in the way just keep it in the pending/live
   // status at the top"). Progress shows in the connection pill ("Syncing 1/3");
   // tapping the pill opens this list. `_syncBannerRequested` is that tap.
-  const show = _syncBannerRequested;
+  const show = _syncBannerRequested || (_syncBannerAuto && !peekSession);
+  _syncBannerAuto = false;
   if (show) {
     // The checklist replaces transient queue feedback, including a toast from
     // an offline write immediately before reconnect. Keep failure toasts intact.
@@ -3499,6 +3507,7 @@ async function _runSyncBanner(quiet = false) {
       if (!_syncFlight) {
         const wasUp = banner.classList.contains('active');
         banner.classList.remove('active');
+        _syncBannerRequested = false;
         if (wasUp) _syncBannerBeacon('cleared', _syncChecklist);
       }
     }, 2000);
@@ -3666,6 +3675,7 @@ async function forceRetry() {
   closeQueueModal();
   if (!offlineQueue.length && !drafts.length) return;
   await _mutateQueue(current => current.forEach(q => { q.state = 'pending'; q.reviewed_at = Date.now(); }));
+  _syncBannerAuto = true;
   if (online) { runSyncBanner(); } else { setOnline(true); }
 }
 
@@ -11957,7 +11967,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1107';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1108';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

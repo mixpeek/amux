@@ -7331,3 +7331,15 @@ select.input { height:var(--control-height); }
 .vault-actions .btn { min-height: 44px; }
 .tag-filter.tag-reset-btn { font: inherit; font-size: 0.72rem; cursor: pointer; color: var(--accent); }
 @media (max-width: 600px) { .tag-filter.tag-reset-btn { min-height: 44px; } }
+
+/* Reconnect checklist: a checkbox per row that ticks as each write lands. */
+.sync-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; transition: opacity .2s; }
+.sync-item .sync-box { flex: 0 0 auto; width: 16px; height: 16px; border: 1.5px solid var(--dim); border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11px; line-height: 1; }
+.sync-item.running .sync-box { border-color: var(--accent); border-top-color: transparent; border-radius: 50%; animation: sync-spin .8s linear infinite; }
+.sync-item.done .sync-box { background: var(--green, #3fb950); border-color: var(--green, #3fb950); color: #fff; animation: sync-pop .25s ease-out; }
+.sync-item.failed .sync-box { background: var(--red, #f85149); border-color: var(--red, #f85149); color: #fff; }
+.sync-item.pending, .sync-item.waiting { opacity: .7; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+@keyframes sync-pop { 0% { transform: scale(.4); } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .sync-item .sync-box { animation: none !important; } }
