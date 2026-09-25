@@ -12080,7 +12080,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1118';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1119';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -17106,10 +17106,10 @@ async function _approvalsRefresh() {
       // existed and made you hunt for what it said — on the one surface whose
       // entire job is letting a human judge the content before it sends.
       html += '<details open style="margin:4px 0;text-align:left;">'
-        + '<summary style="cursor:pointer;display:flex;align-items:center;gap:10px;min-height:34px;">'
-        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-        + '<b>' + esc(p.session || '?') + '</b> &rarr; ' + esc(pv.to || '?')
-        + ' &middot; ' + esc(pv.subject || '(reply)') + '</span>'
+        + '<summary style="cursor:pointer;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-height:34px;">'
+        + '<span style="flex:1 1 160px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        + '<b>' + esc(p.session || '?') + '</b> &middot; '
+        + (pv.endpoint === 'reply' ? (pv.reply_all ? 'reply all' : 'reply') : 'new email') + '</span>'
         + '<span style="opacity:0.7;font-size:0.76rem;">expires in ' + mins + 'm</span>'
         + '<button onclick="event.preventDefault();_apprApprove(\'' + esc(p.id) + '\',this)" '
         + 'style="background:#16a34a;color:#fff;border:none;border-radius:6px;'
@@ -17134,10 +17134,15 @@ async function _approvalsRefresh() {
         + 'border-radius:6px;padding:8px 14px;font-size:0.8rem;cursor:pointer;'
         + 'min-height:34px;min-width:44px;">Discard</button>'
         + '</summary>'
+        // FULL ADDRESSES AND THE SUBJECT, REPLIES INCLUDED (Ethan, 2026-09-25:
+        // "include their full email and the subject (if its reply etc)"). The
+        // one-line summary cut long addresses with an ellipsis and a reply read
+        // only "(reply)", while the server already records the resolved thread
+        // recipients and subject.
+        + _apprHeaders(pv)
         + '<div id="appr-body-' + esc(p.id) + '" '
         + 'style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);'
         + 'border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.8rem;max-height:320px;overflow:auto;">'
-        + (pv.cc ? 'cc: ' + esc(pv.cc) + '\n' : '')
         + esc(pv.body || '') + '</div></details>';
     }
     html += '<div style="opacity:0.65;font-size:0.74rem;margin-top:4px;">'
@@ -17146,6 +17151,16 @@ async function _approvalsRefresh() {
     el.innerHTML = html;
     el.style.display = 'block';
   } catch (e) {}
+}
+function _apprHeaders(pv) {
+  const row = (k, v) => v ? '<div style="display:flex;gap:8px;"><span style="opacity:0.7;min-width:56px;">' + k
+    + '</span><span style="flex:1;min-width:0;word-break:break-all;">' + esc(v) + '</span></div>' : '';
+  const subject = pv.subject || (pv.endpoint === 'reply' ? '(thread subject unavailable)' : '(no subject)');
+  return '<div class="appr-headers" style="font-size:0.8rem;line-height:1.5;margin:6px 0 2px;">'
+    + row('From', pv.from) + row('To', pv.to || '?') + row('Cc', pv.cc)
+    + row('Subject', subject)
+    + (pv.endpoint === 'reply' ? row('Replying', pv.reply_all ? 'to everyone on the thread' : 'to the sender') : '')
+    + '</div>';
 }
 // Says what is waiting WITHOUT flattening two different asks into one noun. An
 // email draft and a permission grant need different decisions from the reader.
@@ -17211,7 +17226,7 @@ function _apprEdit(id, btn) {
   const host = document.getElementById('appr-body-' + id);
   if (!host) return;
   if (host.dataset.editing === '1') { _apprEditCancel(id); return; }
-  const text = host.innerText.replace(/^cc: .*\n/, '');
+  const text = host.innerText;   // cc now lives in the header block, not the body
   host.dataset.editing = '1';
   host.dataset.original = text;
   _apprEditing.add(id);
