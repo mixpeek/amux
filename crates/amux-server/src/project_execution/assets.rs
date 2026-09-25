@@ -54,6 +54,18 @@ pub async fn retain(
     root: &Path,
     report: &super::planner::Report,
 ) -> anyhow::Result<Vec<Retained>> {
+    retain_at_candidate(home, root, report, &report.head).await
+}
+
+/// A later task may replace a same-named Markdown/JSON/text report in the one
+/// project checkout. Keep the first task's exact committed bytes, while the
+/// driver independently verifies the current assembled candidate.
+pub async fn retain_at_candidate(
+    home: &Path,
+    root: &Path,
+    report: &super::planner::Report,
+    candidate_head: &str,
+) -> anyhow::Result<Vec<Retained>> {
     validate_manifest(&report.assets)?;
     let root = root.canonicalize()?;
     let target = home.join("artifacts/project-reports");
@@ -67,21 +79,25 @@ pub async fn retain(
     let mut total = 0;
     for asset in &report.assets {
         let ext = extension(asset)?;
-        let file = root.join(&asset.path).canonicalize()?;
-        anyhow::ensure!(
-            file.starts_with(&root) && file.is_file(),
-            "asset escaped candidate"
-        );
-        let size = std::fs::metadata(&file)?.len();
-        total += size;
-        anyhow::ensure!(
-            size <= 64 * 1024 * 1024 && total <= 256 * 1024 * 1024,
-            "asset size limit"
-        );
-        let mut bytes = Vec::new();
-        std::fs::File::open(&file)?
-            .take(64 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
+        let historical_text = report.head != candidate_head && matches!(ext, "md" | "json" | "txt");
+        let bytes = if historical_text {
+            let output = tokio::process::Command::new("git")
+                .args(["show", &format!("{}:{}", report.head, asset.path)])
+                .current_dir(&root).env_remove("GIT_DIR").env_remove("GIT_WORK_TREE")
+                .output().await?;
+            anyhow::ensure!(output.status.success(), "report must be committed in reported candidate");
+            output.stdout
+        } else {
+            let file = root.join(&asset.path).canonicalize()?;
+            anyhow::ensure!(file.starts_with(&root) && file.is_file(), "asset escaped candidate");
+            let size = std::fs::metadata(&file)?.len();
+            anyhow::ensure!(size <= 64 * 1024 * 1024, "asset size limit");
+            let mut bytes = Vec::new();
+            std::fs::File::open(&file)?.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+            bytes
+        };
+        total += bytes.len() as u64;
+        anyhow::ensure!(total <= 256 * 1024 * 1024, "asset size limit");
         anyhow::ensure!(
             bytes.len() <= 64 * 1024 * 1024,
             "asset size changed beyond limit"
@@ -91,17 +107,14 @@ pub async fn retain(
             "asset identity mismatch"
         );
         if matches!(ext, "md" | "json" | "txt") {
-            let output = tokio::process::Command::new("git")
-                .args(["show", &format!("{}:{}", report.head, asset.path)])
-                .current_dir(&root)
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .output()
-                .await?;
-            anyhow::ensure!(
-                output.status.success() && output.stdout == bytes,
-                "report must be committed in reported candidate"
-            );
+            if !historical_text {
+                let output = tokio::process::Command::new("git")
+                    .args(["show", &format!("{}:{}", report.head, asset.path)])
+                    .current_dir(&root).env_remove("GIT_DIR").env_remove("GIT_WORK_TREE")
+                    .output().await?;
+                anyhow::ensure!(output.status.success() && output.stdout == bytes,
+                    "report must be committed in reported candidate");
+            }
             if ext == "json" {
                 let _: serde_json::Value = serde_json::from_slice(&bytes)?;
             }
@@ -309,6 +322,14 @@ mod tests {
             retain(home.path(), repo.path(), &report).await.is_err(),
             "uncommitted report refused even with matching hash"
         );
+        git(&["add", "report.md"]);
+        git(&["commit", "-m", "later task replaced shared report name"]);
+        let candidate_head = git(&["rev-parse", "HEAD"]);
+        report.assets[0] = spec.clone();
+        let historical = retain_at_candidate(home.path(), repo.path(), &report, &candidate_head)
+            .await.unwrap();
+        assert_eq!(historical[0].head, report.head);
+        assert_eq!(std::fs::read(&historical[0].path).unwrap(), b"# Result\n");
         for path in ["../report.md", "/tmp/report.md", "run.mdai", "page.html"] {
             report.assets[0].path = path.into();
             assert!(retain(home.path(), repo.path(), &report).await.is_err());

@@ -408,13 +408,12 @@ async fn verify(
             base: String::new(),
         }
     };
-    let head = workspace::git(&w.path, &["rev-parse", "HEAD"]).await?;
-    if head != original_report.head {
-        workspace::git(&w.path, &["merge-base", "--is-ancestor", &original_report.head, &head])
+    let candidate_head = workspace::git(&w.path, &["rev-parse", "HEAD"]).await?;
+    if candidate_head != original_report.head {
+        workspace::git(&w.path, &["merge-base", "--is-ancestor", &original_report.head, &candidate_head])
             .await.map_err(|_| "reported head is stale or no longer in project history".to_string())?;
     }
-    let mut report = original_report.clone();
-    report.head = head;
+    let report = original_report.clone();
     archive_declared_diagnostics(&home, p, id, e, &w, &report).await?;
     if !workspace::project_clean_status(&w.path).await?.is_empty() {
         return Err("worktree has uncommitted changes".into());
@@ -424,12 +423,12 @@ async fn verify(
     let timeout = std::time::Duration::from_secs(p.policy.verification_timeout_secs);
     workspace::verify_commands_with_cleanup(&w, &w.path, &commands, timeout, &verification_permit,
         || archive_declared_diagnostics(&home, p, id, e, &w, &report)).await?;
-    if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
+    if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != candidate_head
         || !workspace::project_clean_status(&w.path).await?.is_empty()
     {
         return Err("verification changed the reported worktree".into());
     }
-    let retained = super::assets::retain(&home, std::path::Path::new(&w.path), &report)
+    let retained = super::assets::retain_at_candidate(&home, std::path::Path::new(&w.path), &report, &candidate_head)
         .await
         .map_err(|e| e.to_string())?;
     // Task verification proves one immutable worker head. It must not publish that head: whole-
@@ -437,9 +436,9 @@ async fn verify(
     // and wait for the human criterion. Publishing here made "Verified" indistinguishable from
     // "approved and delivered" and let a prose-only task land before its claimed runtime outcome
     // had been reviewed.
-    let candidate = report.head.clone();
+    let candidate = candidate_head.clone();
     verification_permit()?;
-    if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != report.head
+    if workspace::git(&w.path, &["rev-parse", "HEAD"]).await? != candidate_head
         || !workspace::project_clean_status(&w.path).await?.is_empty()
     {
         return Err("worktree changed during verification".into());
@@ -447,7 +446,7 @@ async fn verify(
     workspace::write_integration_status(
         &home,
         &e.worker,
-        &json!({"status":"verified_pending_review","head":report.head,"candidate":candidate,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
+        &json!({"status":"verified_pending_review","head":candidate_head,"source_head":report.head,"candidate":candidate,"mode":if p.policy.worktree {"worktree"} else {"shared_checkout"},"branch":w.branch}),
     );
     let verified_worker = e.worker.clone();
     let expected_policy = p.policy.clone();
@@ -1264,6 +1263,24 @@ async fn recover_corrected_reports(state: &AppState, name: &str) -> anyhow::Resu
     Ok(())
 }
 
+fn committed_assets_match(w: &workspace::Workspace, report: &planner::Report, head: &str) -> bool {
+    if report.assets.is_empty() { return false; }
+    for asset in &report.assets {
+        let path = std::path::Path::new(&asset.path);
+        if !path.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+            return false;
+        }
+        let blob = format!("{head}:{}", asset.path);
+        let Ok(output) = std::process::Command::new("git").arg("-C").arg(&w.path)
+            .arg("show").arg(&blob).output() else { return false };
+        if !output.status.success() || output.stdout.len() > 16 * 1024 * 1024
+            || hex::encode(Sha256::digest(&output.stdout)) != asset.sha256 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Correct a mistyped full SHA only when its substantial prefix resolves to a
 /// unique commit and every declared asset matches the bytes in that commit.
 /// No prefix-only inference can mark a task verified: the normal independent
@@ -1277,20 +1294,8 @@ async fn recover_reported_head(w: &workspace::Workspace, report: &planner::Repor
     let prefix = &report.head[..10];
     let revision = format!("{prefix}^{{commit}}");
     let resolved = workspace::git(&w.path, &["rev-parse", "--verify", &revision]).await.ok()?;
-    if resolved.len() != 40 || resolved == report.head { return None; }
-    for asset in &report.assets {
-        let path = std::path::Path::new(&asset.path);
-        if !path.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
-            return None;
-        }
-        let blob = format!("{resolved}:{}", asset.path);
-        let output = std::process::Command::new("git").arg("-C").arg(&w.path)
-            .arg("show").arg(&blob).output().ok()?;
-        if !output.status.success() || output.stdout.len() > 16 * 1024 * 1024
-            || hex::encode(Sha256::digest(&output.stdout)) != asset.sha256 {
-            return None;
-        }
-    }
+    if resolved.len() != 40 || resolved == report.head
+        || !committed_assets_match(w, report, &resolved) { return None; }
     tracing::info!(worker=%w.branch,reported=%report.head,resolved,
         measured=true,n_considered=report.assets.len(),verdict="project.reported_head_recovered",
         "unique commit prefix and all committed asset hashes agree; full checks remain required");
@@ -1315,7 +1320,7 @@ async fn recover_mechanical_verification_wait(
         }
         rows.into_iter().zip(states).filter(|(_, e)| {
             e.stage == "waiting" && e.report.is_some() && e.wait_category.is_none()
-                && matches!(e.waiting.as_deref(), Some("reported head is stale" | "worktree has uncommitted changes"))
+                && matches!(e.waiting.as_deref(), Some("reported head is stale" | "worktree has uncommitted changes" | "asset identity mismatch"))
         }).collect::<Vec<_>>()
     };
     let home = crate::config::amux_home();
@@ -1329,6 +1334,8 @@ async fn recover_mechanical_verification_wait(
         let corrected_head = recover_reported_head(&w, report).await;
         let mut corrected = report.clone();
         if let Some(head) = corrected_head { corrected.head = head; }
+        if expected.waiting.as_deref() == Some("asset identity mismatch")
+            && !committed_assets_match(&w, &corrected, &corrected.head) { continue; }
         if let Err(error) = archive_declared_diagnostics(&home, p, &row.id, &expected, &w, &corrected).await {
             tracing::warn!(project=%p.name,task=%row.id,%error,verdict="project.verification_diagnostic_recovery_held");
             continue;
