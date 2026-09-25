@@ -26438,12 +26438,48 @@ fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> Option<Path
     if !cached_re!(r"^[0-9a-fA-F-]{36}$").is_match(lifecycle_session) {
         return None;
     }
+    // A WORKTREE WORKER'S TRANSCRIPT IS NOT UNDER CC_DIR (2026-09-24,
+    // celery-retirement read WORKING for 5h on a subagent that finished at
+    // 15:40). Claude Code files a conversation under the directory it was
+    // launched in, which for a worktree worker is <repo>/.worktrees/<name>,
+    // while CC_DIR names the repo. This looked only under CC_DIR, found
+    // nothing, and the lost-stop healer and interrupt detector silently did
+    // nothing for every worktree worker.
     let wd = work_dir_of(&parse_env(name));
-    let path = claude_home()
-        .join("projects")
-        .join(project_name(&wd))
-        .join(format!("{lifecycle_session}.jsonl"));
-    path.exists().then_some(path)
+    let bases = [
+        std::path::Path::new(&wd).join(".worktrees").join(name).to_string_lossy().into_owned(),
+        meta_str(&load_meta(name), "cc_cwd"),
+        wd.clone(),
+    ];
+    static FOUND: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
+        std::sync::OnceLock::new();
+    let cache = FOUND.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(lifecycle_session) {
+        if hit.exists() {
+            return Some(hit.clone());
+        }
+    }
+    let (hit, by_id) = find_transcript(&claude_home().join("projects"), &bases, lifecycle_session)?;
+    if by_id {
+        tracing::info!(session = name, path = %hit.display(), verdict = "lifecycle_transcript_found_by_id",
+            "conversation found by its id outside the worker's configured directory");
+    }
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(lifecycle_session.to_string(), hit.clone());
+    Some(hit)
+}
+
+/// Known launch directories first, then the id itself: it is a UUID, so a
+/// match anywhere under `projects` is this conversation. The bool says the
+/// fallback was needed.
+fn find_transcript(projects: &std::path::Path, bases: &[String], id: &str) -> Option<(PathBuf, bool)> {
+    let file = format!("{id}.jsonl");
+    for base in bases.iter().filter(|b| !b.trim().is_empty()) {
+        let path = projects.join(project_name(base)).join(&file);
+        if path.exists() {
+            return Some((path, false));
+        }
+    }
+    std::fs::read_dir(projects).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.exists()).map(|p| (p, true))
 }
 
 fn stored_live_subagent_lanes(state: &AppState) -> std::collections::HashSet<String> {
@@ -36369,6 +36405,28 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     /// `detect_claude_status(pane) == "waiting" && !is_rate_limit_menu(pane)`;
     /// this asserts the discriminator directly against real picker shapes, so a
     /// regression that reclassifies a selector cannot pass green.
+    #[test]
+    fn a_worktree_workers_lifecycle_transcript_is_found() {
+        let claude = tempfile::tempdir().unwrap();
+        let projects = claude.path().join("projects");
+        let id = "5ded726c-c40a-4b9d-ac1d-6029b5e8d55b";
+        let wt = projects.join(project_name("/repo/.worktrees/wt-worker"));
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        // The old lookup: CC_DIR only. It finds nothing for a worktree worker.
+        let old = projects.join(project_name("/repo")).join(format!("{id}.jsonl"));
+        assert!(!old.exists());
+        let bases = ["/repo/.worktrees/wt-worker".to_string(), String::new(), "/repo".to_string()];
+        assert_eq!(find_transcript(&projects, &bases, id), Some((wt.join(format!("{id}.jsonl")), false)));
+        // Launched somewhere amux does not know: still found by the id.
+        let other = projects.join("-somewhere-else");
+        std::fs::create_dir_all(&other).unwrap();
+        let id2 = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(other.join(format!("{id2}.jsonl")), "{}\n").unwrap();
+        assert_eq!(find_transcript(&projects, &bases, id2), Some((other.join(format!("{id2}.jsonl")), true)));
+        assert_eq!(find_transcript(&projects, &bases, "99999999-2222-3333-4444-555555555555"), None);
+    }
+
     #[test]
     fn a_limit_recorded_in_the_transcript_is_seen_when_the_banner_scrolled_away() {
         // mvs-infra, 2026-09-24 18:39Z, shape copied from its transcript.
