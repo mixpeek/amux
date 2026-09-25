@@ -4925,8 +4925,16 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             };
             if v["isolated"].as_bool() == Some(true) {
                 // Raw CLI status must not be rewritten by historical board claims.
-                v["task_name"] = v["desc"].clone();
-                v["task_source"] = json!("desc");
+                // The owner's own latest message is not a board claim: it is
+                // what this worker was last asked to do, so it names the task
+                // better than the role description (amux-helper, 2026-09-25).
+                if let Some(m) = recent_owner_messages.get(&name) {
+                    v["task_name"] = json!(m);
+                    v["task_source"] = json!("message");
+                } else {
+                    v["task_name"] = v["desc"].clone();
+                    v["task_source"] = json!("desc");
+                }
                 v["task_board_id"] = json!("");
                 v["last_human_ts"] = json!(last_human_ts.get(&name).copied().unwrap_or(0));
                 v["runtime_board"] = json!({"measured":true,"n_considered":0,
