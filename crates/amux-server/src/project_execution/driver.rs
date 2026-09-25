@@ -1264,6 +1264,39 @@ async fn recover_corrected_reports(state: &AppState, name: &str) -> anyhow::Resu
     Ok(())
 }
 
+/// Correct a mistyped full SHA only when its substantial prefix resolves to a
+/// unique commit and every declared asset matches the bytes in that commit.
+/// No prefix-only inference can mark a task verified: the normal independent
+/// checks still run on the clean assembled descendant.
+async fn recover_reported_head(w: &workspace::Workspace, report: &planner::Report) -> Option<String> {
+    if report.head.len() != 40 || !report.head.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || report.assets.is_empty() { return None; }
+    if workspace::git(&w.path, &["cat-file", "-t", &report.head]).await.as_deref() == Ok("commit") {
+        return Some(report.head.clone());
+    }
+    let prefix = &report.head[..10];
+    let revision = format!("{prefix}^{{commit}}");
+    let resolved = workspace::git(&w.path, &["rev-parse", "--verify", &revision]).await.ok()?;
+    if resolved.len() != 40 || resolved == report.head { return None; }
+    for asset in &report.assets {
+        let path = std::path::Path::new(&asset.path);
+        if !path.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+            return None;
+        }
+        let blob = format!("{resolved}:{}", asset.path);
+        let output = std::process::Command::new("git").arg("-C").arg(&w.path)
+            .arg("show").arg(&blob).output().ok()?;
+        if !output.status.success() || output.stdout.len() > 16 * 1024 * 1024
+            || hex::encode(Sha256::digest(&output.stdout)) != asset.sha256 {
+            return None;
+        }
+    }
+    tracing::info!(worker=%w.branch,reported=%report.head,resolved,
+        measured=true,n_considered=report.assets.len(),verdict="project.reported_head_recovered",
+        "unique commit prefix and all committed asset hashes agree; full checks remain required");
+    Some(resolved)
+}
+
 /// A diagnostic file or a later project commit is an operational change, not
 /// authorization for another paid model turn. Re-enter verification only once
 /// the shared candidate is clean and the reported commit remains an ancestor.
@@ -1293,15 +1326,18 @@ async fn recover_mechanical_verification_wait(
             continue;
         }
         let report = expected.report.as_ref().expect("filtered report");
-        if let Err(error) = archive_declared_diagnostics(&home, p, &row.id, &expected, &w, report).await {
+        let corrected_head = recover_reported_head(&w, report).await;
+        let mut corrected = report.clone();
+        if let Some(head) = corrected_head { corrected.head = head; }
+        if let Err(error) = archive_declared_diagnostics(&home, p, &row.id, &expected, &w, &corrected).await {
             tracing::warn!(project=%p.name,task=%row.id,%error,verdict="project.verification_diagnostic_recovery_held");
             continue;
         }
         let Ok(status) = workspace::project_clean_status(&w.path).await else { continue };
         if !status.is_empty() { continue; }
         let Ok(head) = workspace::git(&w.path, &["rev-parse", "HEAD"]).await else { continue };
-        if head != report.head
-            && workspace::git(&w.path, &["merge-base", "--is-ancestor", &report.head, &head]).await.is_err() {
+        if head != corrected.head
+            && workspace::git(&w.path, &["merge-base", "--is-ancestor", &corrected.head, &head]).await.is_err() {
             continue;
         }
         let project = p.name.clone();
@@ -1318,6 +1354,7 @@ async fn recover_mechanical_verification_wait(
                 return Ok(WriteOutcome { applied:false, events:vec![] });
             }
             current.stage = "reported".into();
+            current.report = Some(corrected);
             current.last_failure = current.waiting.take();
             planner::save_execution(c, &row, &current, "project.verification_recovered")
                 .map_err(store::sql_error)
@@ -1742,6 +1779,26 @@ pub(crate) async fn apply_pause(state: &AppState, name: &str, paused: bool) -> a
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    #[tokio::test]
+    async fn mistyped_report_head_needs_unique_commit_and_matching_asset_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        workspace::git(root, &["init"]).await.unwrap();
+        std::fs::write(dir.path().join("report.md"), b"measured candidate\n").unwrap();
+        workspace::git(root, &["add", "report.md"]).await.unwrap();
+        workspace::git(root, &["-c", "user.name=Amux Test", "-c", "user.email=test@local",
+            "commit", "-m", "candidate"]).await.unwrap();
+        let actual = workspace::git(root, &["rev-parse", "HEAD"]).await.unwrap();
+        let claimed = format!("{}{}", &actual[..10], "0".repeat(30));
+        let workspace = workspace::Workspace { repo:root.into(), path:root.into(),
+            branch:"test".into(), base:actual.clone() };
+        let mut report = planner::Report { head:claimed, summary:"candidate".into(), checks:vec![],
+            assets:vec![super::super::assets::Asset {path:"report.md".into(),
+                sha256:hex::encode(Sha256::digest(b"measured candidate\n"))}] };
+        assert_eq!(recover_reported_head(&workspace,&report).await,Some(actual));
+        report.assets[0].sha256 = "0".repeat(64);
+        assert_eq!(recover_reported_head(&workspace,&report).await,None);
+    }
     #[test]
     fn required_output_file_survives_network_loss_but_refuses_stale_or_paused_claims() {
         let home=tempfile::tempdir().unwrap();let _home=crate::api::settings::test_env::set_home(home.path());
