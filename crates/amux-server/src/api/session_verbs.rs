@@ -26203,11 +26203,21 @@ fn apply_subagent_event(
         && prior_agent_ts > 0.0
         && (event_ts < prior_agent_ts
             || (event_ts == prior_agent_ts && ev == "start" && prior_agent_state == "terminal"));
+    // A STOP FOR AN AGENT STILL MARKED LIVE IS NEVER STALE (2026-09-24,
+    // celery-retirement). The floor exists so an old event cannot resurrect an
+    // agent whose edge was compacted away; ending a live agent resurrects
+    // nothing. Refusing it left a subagent that finished at 15:40Z counted
+    // live for hours, because the healer's terminal record (15:40:09) sat
+    // below a floor (16:44) raised by unrelated agents' later stops.
+    let stops_a_live_agent = matches!(ev, "stop" | "done")
+        && prior_agent_state == "live"
+        && event_ts >= prior_agent_ts;
     let stale_terminal_floor = ev != "reset"
         && !agent_id.is_empty()
         && event_ts > 0.0
         && terminal_floor_ts > 0.0
-        && event_ts <= terminal_floor_ts;
+        && event_ts <= terminal_floor_ts
+        && !stops_a_live_agent;
     let mut verdict = "applied";
 
     if stale_time || stale_session || stale_agent_order || stale_terminal_floor {
@@ -41104,6 +41114,27 @@ mod steer_boundary_tests {
         );
         assert_eq!(replay.verdict, "stale_before_terminal_floor");
         assert_eq!(replay.count, 0);
+    }
+
+    /// celery-retirement, 2026-09-24: one agent started at 15:39 and its stop
+    /// was lost; later agents' stops pushed the floor to 16:44. The healer's
+    /// terminal record (15:40) must still end the live agent.
+    #[test]
+    fn a_lost_stop_below_the_floor_still_ends_a_live_agent() {
+        let sid = "5ded726c-c40a-4b9d-ac1d-6029b5e8d55b";
+        let mut current = apply_subagent_event(&json!({}), "start", "ghost", "ghost-start", 100.0, sid, 100.0).next;
+        for i in 0..=SUBAGENT_EVENT_HISTORY_LIMIT {
+            current = apply_subagent_event(&current, "start", &format!("later-{i:03}"), &format!("s-{i:03}"), 200.0 + i as f64, sid, 300.0).next;
+            current = apply_subagent_event(&current, "stop", &format!("later-{i:03}"), &format!("e-{i:03}"), 200.5 + i as f64, sid, 300.0).next;
+        }
+        assert!(current["terminal_floor_ts"].as_f64().unwrap() > 101.0, "the floor rose past the ghost's stop");
+        assert_eq!(current["count"], json!(1), "only the ghost is live");
+        let healed = apply_subagent_event(&current, "done", "ghost", "transcript-terminal:ghost", 101.0, sid, 999.0);
+        assert_eq!(healed.verdict, "applied");
+        assert_eq!(healed.count, 0);
+        // A replayed START below the floor is still refused.
+        let replay = apply_subagent_event(&healed.next, "start", "later-000", "old-start", 150.0, sid, 999.0);
+        assert_eq!(replay.verdict, "stale_before_terminal_floor");
     }
 
     /// Fail-closed is the whole safety property: an unknown lane must not be
