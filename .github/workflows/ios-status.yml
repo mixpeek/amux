@@ -1,0 +1,25 @@
+name: iOS — App Store status (read-only)
+
+# Prints the App Store Connect version and review state. Changes nothing.
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: ios
+      - name: App Store Connect status
+        run: bundle exec fastlane status
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}

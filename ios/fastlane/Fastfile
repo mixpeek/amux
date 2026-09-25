@@ -89,6 +89,29 @@ platform :ios do
     )
   end
 
+  # Read-only: where the app stands on App Store Connect (versions, review
+  # state, attached build). Changes nothing. Added 2026-09-25 so "is the iOS
+  # update live?" has a measured answer instead of a guess.
+  lane :status do
+    api_key = app_store_connect_api_key(
+      key_id:        ENV["APP_STORE_CONNECT_API_KEY_ID"],
+      issuer_id:     ENV["APP_STORE_CONNECT_API_ISSUER_ID"],
+      key_content:   ENV["APP_STORE_CONNECT_API_KEY_CONTENT"],
+      is_key_content_base64: true
+    )
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+    bundle_id = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+    app = Spaceship::ConnectAPI::App.find(bundle_id)
+    UI.user_error!("app #{bundle_id} not found") unless app
+    app.get_app_store_versions(limit: 5, includes: "build").each do |v|
+      build = v.build ? "#{v.build.version} (#{v.build.processing_state})" : "none"
+      UI.message("STATUS version=#{v.version_string} state=#{v.app_store_state} release=#{v.release_type} created=#{v.created_date} build=#{build}")
+    end
+    app.get_review_submissions(filter: { platform: "IOS" }).first(5).each do |sub|
+      UI.message("STATUS submission=#{sub.id} state=#{sub.state} submitted=#{sub.submitted_date}")
+    end
+  end
+
   # Promote latest TestFlight build to App Store (run manually)
   lane :release do
     api_key = app_store_connect_api_key(
