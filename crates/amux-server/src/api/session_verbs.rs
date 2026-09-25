@@ -26171,7 +26171,15 @@ fn apply_subagent_event(
     // than an evicted terminal edge still cannot resurrect that agent.
     let mut terminal_floor_ts = next["terminal_floor_ts"].as_f64().unwrap_or(0.0);
 
-    if !event_id.is_empty() && seen.iter().any(|id| id == event_id) {
+    // A REFUSED EVENT WAS NEVER DELIVERED. Every event id is recorded, the
+    // refused ones included, so once the floor fix (c9106be8) made the
+    // healer's stop valid, its retry was dropped here as a duplicate and the
+    // live agent stayed live. A stop for an agent that is still live has, by
+    // definition, not taken effect yet.
+    let ends_a_live_agent = matches!(ev, "stop" | "done")
+        && !agent_id.is_empty()
+        && agent_edges.get(agent_id).and_then(|edge| edge["state"].as_str()) == Some("live");
+    if !event_id.is_empty() && seen.iter().any(|id| id == event_id) && !ends_a_live_agent {
         return SubagentApply {
             next,
             verdict: "duplicate_event",
@@ -26287,7 +26295,7 @@ fn apply_subagent_event(
         }
     }
 
-    if !event_id.is_empty() {
+    if !event_id.is_empty() && !seen.iter().any(|id| id == event_id) {
         seen.push(event_id.to_string());
         if seen.len() > SUBAGENT_EVENT_HISTORY_LIMIT {
             seen.drain(..seen.len() - SUBAGENT_EVENT_HISTORY_LIMIT);
@@ -41129,6 +41137,9 @@ mod steer_boundary_tests {
         }
         assert!(current["terminal_floor_ts"].as_f64().unwrap() > 101.0, "the floor rose past the ghost's stop");
         assert_eq!(current["count"], json!(1), "only the ghost is live");
+        // The first delivery was refused under the old rule but its id was
+        // recorded, exactly as on the live server. A retry must still land.
+        current["seen_events"].as_array_mut().unwrap().push(json!("transcript-terminal:ghost"));
         let healed = apply_subagent_event(&current, "done", "ghost", "transcript-terminal:ghost", 101.0, sid, 999.0);
         assert_eq!(healed.verdict, "applied");
         assert_eq!(healed.count, 0);
