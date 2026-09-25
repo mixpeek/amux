@@ -12005,7 +12005,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1114';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1115';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -18987,9 +18987,18 @@ function _msgCardChip(cardId, message, linkedCard) {
   const stC = st => st === 'verified' ? 'var(--green)' : st === 'done' ? '#3fb950'
     : st === 'doing' ? '#d29922' : st === 'review' ? '#bc8cff'
     : st === 'discarded' ? 'var(--dim)' : 'var(--accent)';
-  const st = c ? (c.status || 'todo') : '';
+  // AN EPIC'S OWN STATUS IS NOT ITS PROGRESS (Ethan, 2026-09-25: a root read
+  // "backlog" beside children that were done and doing). The root closes only
+  // when every child is terminal, so until then show where its children are.
+  const kids = c && c.type === 'epic' && Array.isArray(boardItems)
+    ? boardItems.filter(x => x.epic === cardId && !x.deleted && !x.archived) : [];
+  const kidsDone = kids.filter(x => ['done', 'verified', 'discarded'].includes(x.status)).length;
+  const kidsMoving = kids.some(x => ['doing', 'review'].includes(x.status));
+  let st = c ? (c.status || 'todo') : '';
+  if (kids.length && !['done', 'verified', 'discarded'].includes(st)) st = kidsDone === kids.length ? 'done' : (kidsMoving || kidsDone) ? 'doing' : st;
   const displaySt = c && c.deleted ? 'deleted'
     : c && c.archived ? 'archived'
+    : kids.length ? kidsDone + ' of ' + kids.length + ' done'
     : st;
   const undec = c && ((c.log || '').indexOf('capture: worker prompt') !== -1) && st === 'todo';
   const lastCommit = c ? (((c.log || '').match(/commit ([0-9a-f]{7,12}) \u2014 [^\n]*/g) || []).pop() || '') : '';
