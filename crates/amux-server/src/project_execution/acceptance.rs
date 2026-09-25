@@ -2211,6 +2211,24 @@ pub(crate) async fn tick(state: &AppState, p: &store::Project) -> anyhow::Result
     Ok(())
 }
 
+async fn sync_checked_out_main(repo: &str, published: &str) {
+    // Publishing the remote ref does not move a checked-out local main. Fast-forward
+    // it when Git can do so without overwriting local work. A conflict leaves the
+    // owner's checkout untouched; origin/main remains the publication authority.
+    if workspace::git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .await
+        .ok()
+        .as_deref()
+        != Some("main")
+    {
+        return;
+    }
+    if let Err(error) = workspace::git(repo, &["merge", "--ff-only", published]).await {
+        tracing::warn!(repository=%repo, published, %error, verdict="project.local_main_sync_skipped",
+            "remote main is published; local main could not fast-forward without disturbing local work");
+    }
+}
+
 /// Publish exactly the candidate a human accepted. A changed main ref never receives a blind
 /// merge: the project must be re-composed and re-reviewed against the new base instead.
 pub(crate) async fn publish_accepted_candidate(
@@ -2245,6 +2263,7 @@ pub(crate) async fn publish_accepted_candidate(
     .await
     .is_ok()
     {
+        sync_checked_out_main(&p.policy.repository, &current).await;
         return Ok(current);
     }
     anyhow::ensure!(
@@ -2294,6 +2313,7 @@ pub(crate) async fn publish_accepted_candidate(
     )
     .await
     .map_err(anyhow::Error::msg)?;
+    sync_checked_out_main(&p.policy.repository, &published).await;
     tracing::info!(project=%p.name, candidate, published, measured=true, n_considered=1, verdict="project.accepted_candidate_published", "human-approved project candidate published to main");
     Ok(published)
 }

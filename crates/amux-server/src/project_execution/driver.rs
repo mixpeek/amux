@@ -3151,6 +3151,7 @@ mod command_tests {
         )
         .is_empty());
         assert_eq!(published, git(&repo, &["rev-parse", "origin/main"]));
+        assert_eq!(published, git(&repo, &["rev-parse", "main"]), "a clean checked-out local main should fast-forward with publication");
         assert_eq!(
             git(&repo, &["show", "origin/main:docs/lifecycle-report.md"]),
             body.trim()
