@@ -7374,3 +7374,13 @@ select.input { height:var(--control-height); }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
 @keyframes sync-pop { 0% { transform: scale(.4); } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .sync-item .sync-box { animation: none !important; } }
+
+/* Compact worker-group bars (project workers, paused, expired, archived):
+   Ethan, 2026-09-24, "make these narrower". Desktop drops to ~34px; phones
+   keep the 44px touch target the mobile rules require. */
+.worker-group-footer { min-height: 34px; padding: 3px 6px 3px 12px; margin-top: 6px; }
+.worker-group-menu summary { width: 30px; min-height: 26px; font-size: 16px; border-radius: 6px; }
+@media (max-width: 600px) {
+  .worker-group-footer { min-height: 44px; padding: 0 0 0 12px; }
+  .worker-group-menu summary { width: 44px; min-width: 44px; min-height: 44px; }
+}
