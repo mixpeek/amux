@@ -749,6 +749,7 @@ pub trait Fleet: Send + Sync {
     /// `active` badge: it is the signal that a parent task may have been
     /// parked in To Do while its delegated work kept running.
     fn active_child_work(&self, _lane: &str) -> bool { false }
+    fn redistribution_compatible(&self, _idle: &str, _owner: &str) -> bool { false }
     /// When a session runs out of todo cards but still has blocked/done work,
     /// keep nudging it to re-assess and continue. ON BY DEFAULT since
     /// 2026-08-11 (Ethan: "standing order whenever idle to take care of any
@@ -780,6 +781,13 @@ pub trait Fleet: Send + Sync {
     ) -> Result<ResumeDelivery, String> {
         self.deliver_work(lane, text).await?;
         Ok(ResumeDelivery::Queued)
+    }
+    async fn deliver_verification(&self, lane: &str, text: &str, delivery_id: &str) -> Result<VerificationDelivery, String> {
+        Ok(match self.deliver_resume(lane, text, delivery_id).await? {
+            ResumeDelivery::Queued => VerificationDelivery::Queued,
+            ResumeDelivery::AlreadyQueued => VerificationDelivery::Pending,
+            ResumeDelivery::AlreadyDelivered => VerificationDelivery::Confirmed,
+        })
     }
 
     /// One bounded blocker review per substantive card/dependency state.
@@ -880,6 +888,13 @@ impl Fleet for LiveFleet {
                 || explain["provider_background_working"] == true
         })
     }
+    fn redistribution_compatible(&self, idle: &str, owner: &str) -> bool {
+        let enabled = |lane: &str| crate::api::session_verbs::scoped_setting_in(
+            &crate::api::session_verbs::home(), lane, "AMUX_REDISTRIBUTE_READY")
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1"|"true"|"on"|"yes"));
+        enabled(idle) && enabled(owner)
+            && !crate::api::session_verbs::lane_groups(idle).is_disjoint(&crate::api::session_verbs::lane_groups(owner))
+    }
     async fn start_for_dispatch(&self, lane: &str) -> Result<(), String> {
         crate::api::session_verbs::start_for_board_dispatch(&self.state, lane).await
     }
@@ -921,6 +936,18 @@ impl Fleet for LiveFleet {
             }
         };
         Ok(disposition)
+    }
+    async fn deliver_verification(&self, lane: &str, text: &str, delivery_id: &str) -> Result<VerificationDelivery, String> {
+        let disposition = self.deliver_resume(lane, text, delivery_id).await?;
+        if disposition != ResumeDelivery::AlreadyDelivered {
+            return Ok(match disposition {
+                ResumeDelivery::Queued => VerificationDelivery::Queued,
+                ResumeDelivery::AlreadyQueued => VerificationDelivery::Pending,
+                ResumeDelivery::AlreadyDelivered => unreachable!(),
+            });
+        }
+        let conn=self.state.store.read().map_err(|e|e.to_string())?;
+        verification_history_disposition(&conn,lane,delivery_id)
     }
     async fn deliver_blocker_recovery(&self, lane: &str, text: &str, card: &str, rev: i64, identity: &str) -> Result<bool, String> {
         let queued = crate::api::session_verbs::enqueue_state_reminder(
@@ -2916,6 +2943,17 @@ pub enum ResumeDelivery {
     AlreadyQueued,
     AlreadyDelivered,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerificationDelivery { Queued, Pending, Confirmed, Refused }
+
+fn verification_history_disposition(conn:&Connection,lane:&str,delivery_id:&str)->Result<VerificationDelivery,String>{
+    let confirmed=conn.query_row("SELECT outcome FROM steering_history WHERE id=?1 AND session=?2",
+        rusqlite::params![delivery_id,lane],|r|r.get::<_,Option<String>>(0))
+        .optional().map_err(|e|e.to_string())?.flatten().as_deref()
+        .and_then(crate::api::session_verbs::submit_verdict_of)
+        .is_some_and(|v|matches!(v,"confirmed"|"retried"));
+    Ok(if confirmed{VerificationDelivery::Confirmed}else{VerificationDelivery::Refused})
+}
 
 #[derive(Clone, Copy, Debug)]
 struct ResumeEventOrder {
@@ -3660,6 +3698,47 @@ pub fn select_pickup_with(
     }
 }
 
+struct RedistributedPickup { card:String, prompt:String, owner:String }
+
+fn select_redistributable_pickup(conn:&Connection,owner:&str,recipient:&str,now:f64,
+    continuation_gate:bool)->Option<RedistributedPickup> {
+    let fresh_cut=pickup_fresh_cut(now);
+    let reclaim_cut=now-reclaim_cooldown_s();
+    let ids=conn.prepare(&format!("SELECT i.id FROM issues i WHERE {dw} \
+        ORDER BY COALESCE(i.pinned,0) DESC,i.created ASC,i.id ASC LIMIT 32",dw=dispatchable_where()))
+        .and_then(|mut st|st.query_map(rusqlite::params![owner,fresh_cut,reclaim_cut],|r|r.get::<_,String>(0))
+            .map(|rows|rows.flatten().collect::<Vec<_>>())).unwrap_or_default();
+    for id in ids {
+        let Ok(Some(row))=bs::get_issue(conn,&id) else{continue};
+        let opted=row.tags.iter().any(|tag|tag.eq_ignore_ascii_case("dispatch:pool"));
+        let held=row.pinned!=0
+            || row.blocked_on.as_deref().is_some_and(|v|!v.trim().is_empty())
+            || row.waiting_on.as_deref().is_some_and(|v|!v.trim().is_empty())
+            || fresh_source_ref_trigger(&row,now as i64);
+        let self_review=row.reviewer.as_deref().is_some_and(|v|v==recipient)||row.creator==recipient;
+        if !opted||held||self_review||!deps_blocking(conn,&row).is_empty()||bs::is_capture_shell(&row)
+            || irreversible_op(&format!("{}\n{}\n{}",row.title,row.desc,row.log.as_deref().unwrap_or(""))).is_some()
+            || (continuation_gate&&bs::continuation_verdict(row.next_action.as_deref().unwrap_or(""))!=bs::ContinuationVerdict::Ok){continue}
+        let prompt=format!("[amux pool redistribution] `{owner}` is busy; this card is explicitly tagged `dispatch:pool` \
+            and you share an enabled work group. The atomic claim makes you the owner; do not review your own implementation.\n\n{}",
+            pickup_prompt(conn,owner,&row));
+        return Some(RedistributedPickup{card:id,prompt,owner:owner.to_string()});
+    }
+    None
+}
+
+async fn redistributed_pickup<F:Fleet>(state:&AppState,fleet:&F,recipient:&str,now:f64)->Option<RedistributedPickup>{
+    for owner in fleet.lanes(){
+        if owner==recipient||!fleet.auto_pickup_enabled(&owner)||fleet.is_isolated(&owner)
+            ||!fleet.redistribution_compatible(recipient,&owner)||!fleet.is_running(&owner).await{continue}
+        if fleet.at_boundary(&owner).await&&!fleet.active_child_work(&owner){continue}
+        let pickup=state.store.read().ok().and_then(|conn|select_redistributable_pickup(
+            &conn,&owner,recipient,now,bs::continuation_required(Some(recipient))));
+        if pickup.is_some(){return pickup}
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Verify nudge — option B (idle session) + option A (batched daily)
 // ---------------------------------------------------------------------------
@@ -3722,49 +3801,80 @@ fn verify_batch_pending(conn: &Connection, session: &str, now: f64) -> bool {
     let Some(cards) = data.get("cards").and_then(Value::as_array).filter(|ids| !ids.is_empty()) else {
         return true; // Legacy event has no identity; retain its bounded cooldown.
     };
-    cards.iter().any(|id| {
+    let unchanged = cards.iter().all(|id| {
         let Some(id) = id.as_str() else { return true };
-        conn.query_row(&format!(
-            "SELECT EXISTS(SELECT 1 FROM issues WHERE id=?1 AND session=?2 AND status='done' \
-             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {})",
-            unverifiable_types_sql(), needs_human_sql()),
-            rusqlite::params![id, session], |r| r.get::<_, bool>(0)).unwrap_or(true)
-    })
+        let Some(previous) = data.get("contracts").and_then(|v|v.get(id)).and_then(Value::as_str) else { return false };
+        match verification_contract(conn,id) {
+            Ok(Some(current)) => current == previous,
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    });
+    unchanged && done_verify_candidates(conn, session).is_empty()
 }
 
-/// Cards in `done` that this session could verify. Returns (id, title, type)
-/// tuples, capped at 8 for prompt brevity.
-fn done_verify_candidates(conn: &Connection, session: &str) -> Vec<(String, String, String)> {
-    conn.prepare(&format!(
-        "SELECT id, title, COALESCE(type,'code') FROM issues \
-         WHERE session=?1 AND status='done' AND deleted IS NULL \
-         AND COALESCE(archived,0)=0 AND owner_type='agent' {} {} \
-         ORDER BY updated DESC LIMIT 8",
-        unverifiable_types_sql(),
-        needs_human_sql()
-    ))
-    .and_then(|mut st| {
-        st.query_map(rusqlite::params![session], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
-        })
-        .map(|rows| rows.flatten().collect())
-    })
-    .unwrap_or_default()
+fn verification_contract(conn:&Connection,id:&str)->rusqlite::Result<Option<String>> {
+    use sha2::{Digest,Sha256};
+    let Some(row)=bs::get_issue(conn,id)? else{return Ok(None)};
+    let gate=bs::effective_gate_configured(conn,&row,TaskStatus::Verified);
+    let human_hold=row.tags.iter().any(|t|t.to_ascii_lowercase().starts_with("needs:you"));
+    let state=json!([row.id,row.session,row.status,row.item_type,row.archived,row.owner_type,
+        human_hold,row.acceptance_criteria,row.evidence,gate]);
+    Ok(Some(format!("{:x}",Sha256::digest(state.to_string().as_bytes()))))
+}
+
+/// Cross-owner cards in `done` that explicitly name this session as reviewer.
+/// Returns (id, title, type) tuples, capped at 8 for prompt brevity.
+fn done_verify_candidates(conn: &Connection, reviewer: &str) -> Vec<(String, String, String)> {
+    let measured=(||->rusqlite::Result<Vec<(String,String,String)>>{
+        let mut history=conn.prepare("SELECT data FROM session_events WHERE session=?1 AND type IN ('verify.nudge','verify.refused') AND ts>?2")?;
+        let history=history.query_map(rusqlite::params![reviewer,now_f64()-VERIFY_NUDGE_COOLDOWN_S],|r|r.get::<_,String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut offered=HashSet::new();
+        for raw in history {
+            if let Ok(Value::Object(data))=serde_json::from_str::<Value>(&raw) {
+                if let Some(contracts)=data.get("contracts").and_then(Value::as_object) {
+                    for (id,signature) in contracts { if let Some(signature)=signature.as_str(){offered.insert((id.clone(),signature.to_string()));} }
+                }
+            }
+        }
+        let mut stmt=conn.prepare(&format!("SELECT id,title,COALESCE(type,'code') FROM issues WHERE reviewer=?1 AND status='done' \
+            AND COALESCE(session,'')<>?1 AND COALESCE(creator,'')<>?1 \
+            AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {} ORDER BY updated ASC,id ASC",
+            unverifiable_types_sql(),needs_human_sql()))?;
+        let rows=stmt.query_map([reviewer],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?;
+        let mut selected=Vec::new();
+        for row in rows { let row=row?; if verification_contract(conn,&row.0)?.is_some_and(|s|!offered.contains(&(row.0.clone(),s))){selected.push(row);if selected.len()==8{break;}} }
+        Ok(selected)
+    })();
+    measured.unwrap_or_else(|error|{tracing::warn!(session=reviewer,measured=false,n_considered=0,%error,
+        verdict="verification_selection_unmeasured","verification selection failed; no worker turn queued");Vec::new()})
+}
+
+fn verification_delivery_id(conn:&Connection,session:&str,contracts:&serde_json::Map<String,Value>)->String {
+    use sha2::{Digest,Sha256};
+    let generation=conn.prepare("SELECT data FROM session_events WHERE session=?1 AND type IN ('verify.nudge','verify.refused')")
+        .and_then(|mut st|st.query_map([session],|r|r.get::<_,String>(0))
+            .map(|rows|rows.flatten().filter(|raw|serde_json::from_str::<Value>(raw).ok()
+                .and_then(|v|v.get("contracts").cloned()).as_ref()==Some(&Value::Object(contracts.clone()))).count()))
+        .unwrap_or(0);
+    format!("board-verify:{:x}",Sha256::digest(json!([session,contracts,generation]).to_string().as_bytes()))
 }
 
 /// Total count of done cards for this session (for the "and N more" line).
-fn done_card_count(conn: &Connection, session: &str) -> i64 {
+fn done_card_count(conn: &Connection, reviewer: &str) -> i64 {
     // SAME predicate as the selector, including the type filter AND the
     // needs:you exclusion. These two feed the "... and N more" arithmetic; if
     // they diverge the prompt states a total its own list cannot account for.
     conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='done' \
+            "SELECT COUNT(*) FROM issues WHERE reviewer=?1 AND status='done' \
+             AND COALESCE(session,'')<>?1 AND COALESCE(creator,'')<>?1 \
              AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent' {} {}",
             unverifiable_types_sql(),
             needs_human_sql()
         ),
-        rusqlite::params![session],
+        rusqlite::params![reviewer],
         |r| r.get(0),
     )
     .unwrap_or(0)
@@ -3784,8 +3894,8 @@ fn verify_nudge_text(cards: &[(String, String, String)], total: i64) -> String {
     }
     let list = lines.join("\n");
     format!(
-        "[amux] You have no queued work (no todo/doing/review cards), but {total} of your \
-         cards sit in `done` awaiting verification.\n\n\
+        "[amux] You have no queued work (no todo/doing/review cards), but {total} cross-owner \
+         cards sit in `done` and explicitly name YOU as reviewer.\n\n\
          {list}\n\n\
          For each card, read its RESOLVED gate first — GET /api/board/contract?card=<id> — \
          and move to `verified` only when EVERY criterion there holds, with evidence of \
@@ -3796,19 +3906,11 @@ fn verify_nudge_text(cards: &[(String, String, String)], total: i64) -> String {
          AF-112 family, one layer up). If you cannot satisfy the resolved gate honestly, \
          leave the card in `done`. If the work is stale or was superseded, archive it \
          with a note explaining why.\n\n\
-         To see ALL of them (this list is the 8 most recent): \
-         GET /api/board?status=done&done_limit=0 scoped to you. NOTE: the UNSCOPED \
-         /api/board caps terminal (done/verified/discarded) cards at 100, so a done card \
-         of yours can look ABSENT there while it is very much on the board — check by id \
-         (GET /api/board/<id>) or with the scoped query above, not the capped default \
-         (this is the exact trap that read as 'these cards do not exist', 2026-08-13).\n\n\
-         Cards that genuinely cannot be verified by you (e.g., they require a human \
-         decision or access you lack) should be tagged `needs:you` — with the ask and \
-         what unblocks it — to mark them human-blocked. Be honest about what that does \
-         today: it moves the card into the dashboard needs:you view, and NOTHING pushes \
-         it to the owner (there is no digest/alert/email path for needs:you as of \
-         2026-09-03, AC-413). So tag it only when a human genuinely owes the next step; \
-         it is not an escape hatch that makes the card someone else's problem."
+         This batch is capped at 8. Read each exact card by id; another eligible batch \
+         is offered after this batch changes. Do not take ownership and do not substitute \
+         an owner-scoped Done query: your authority here is the explicit reviewer field. \
+         If the gate cannot be satisfied, leave the card in `done` and record the failed \
+         criterion on the card for its owner."
     )
 }
 
@@ -6759,6 +6861,21 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         Advance::Nudge { .. } => unreachable!("handled above"),
     };
 
+    if current_claim.is_none()&&matches!(&pickup,Some(Pickup::None{..})) {
+        if let Some(redistributed)=redistributed_pickup(state,fleet,lane,now).await {
+            let claimed=claim_card_from_expected_owner(state,lane,&redistributed.card,"todo",Some(&redistributed.owner)).await;
+            if claimed==ClaimCardOutcome::Claimed {
+                return match fleet.deliver_work(lane,&redistributed.prompt).await {
+                    Ok(())=>LaneTrace::acted(lane,"assigned",&redistributed.card,
+                        format!("atomically reassigned from busy pool peer {} and prompt queued",redistributed.owner)).with_counts(eligible,open),
+                    Err(error)=>{let released=release_claim_after_dispatch_failure(state,lane,&redistributed.card,"todo",&error).await;
+                        LaneTrace::skip(lane,if released{"delivery-failed-released"}else{"delivery-failed-release-raced"},
+                            format!("redistributed {} was not dispatched: {error}",redistributed.card)).with_counts(eligible,open)}
+                };
+            }
+        }
+    }
+
     if let Some((card, cause)) = current_claim {
         // An exact runtime identity prevents a second claim, but cannot veto
         // the canonical recovery of that same abandoned WIP slot forever.
@@ -7064,12 +7181,14 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 }
             }
             // VERIFY NUDGE — options A+B. When a session has no todo/doing/
-            // review work but holds `done` cards, nudge it to verify them.
+            // review work, hand it bounded `done` work that explicitly names
+            // it as the independent reviewer. The card stays with its owner.
             // This is NOT the removed `done` advance tier (lines 1042-1076):
             //   - fires only when the session has NOTHING ELSE to do
             //   - one batched message, not per-card nudges
             //   - 24h cooldown (the old tier nudged per card per cooldown)
-            //   - the session decides what to verify, not the loop
+            //   - the explicit reviewer field supplies authority; owner and
+            //     prior author are excluded rather than asked to self-verify
             let verify_trace = 'verify: {
                 if eligible > 0 || open > 0 {
                     break 'verify None;
@@ -7091,28 +7210,47 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 if cards.is_empty() {
                     break 'verify None;
                 }
+                let contracts:serde_json::Map<String,Value>=cards.iter().filter_map(|(id,_,_)|
+                    verification_contract(&conn,id).ok().flatten().map(|s|(id.clone(),json!(s)))).collect();
+                if contracts.len()!=cards.len(){break 'verify Some("verification contracts unmeasured".into())}
+                let delivery_id=verification_delivery_id(&conn,lane,&contracts);
                 drop(conn);
                 let text = verify_nudge_text(&cards, total);
-                if let Err(error) = fleet.deliver_work(lane, &text).await {
-                    return nudge_delivery_failed(lane, lane, "", &error).with_counts(eligible, open);
+                match fleet.deliver_verification(lane,&text,&delivery_id).await {
+                    Err(error)=>return nudge_delivery_failed(lane,lane,"",&error).with_counts(eligible,open),
+                    Ok(VerificationDelivery::Queued)=>return LaneTrace::acted(lane,"verify-queued",
+                        cards.first().map(|(id,_,_)|id.as_str()).unwrap_or(""),
+                        format!("verification prompt queued as {delivery_id}; cooldown awaits confirmed submission")).with_counts(eligible,open),
+                    Ok(VerificationDelivery::Pending)=>return LaneTrace::skip(lane,"verify-delivery-pending",
+                        format!("{delivery_id} is queued but not confirmed submitted; no cooldown consumed")).with_counts(eligible,open),
+                    Ok(VerificationDelivery::Refused)=>{
+                        crate::api::session_verbs::emit_event(state,lane,"verify.refused",
+                            Some(json!({"cards":cards.iter().map(|(id,_,_)|id.as_str()).collect::<Vec<_>>(),
+                                "contracts":contracts,"delivery_id":delivery_id,"submission":"refused"})),
+                            Some(format!("verify-refused:{delivery_id}")),"board-drive").await;
+                        return LaneTrace::skip(lane,"verify-delivery-unconfirmed",
+                            format!("{delivery_id} reached history without confirmed submission; fault recorded, unchanged contracts wait for the bounded retry window")).with_counts(eligible,open)
+                    },
+                    Ok(VerificationDelivery::Confirmed)=>{}
                 }
                 crate::api::session_verbs::emit_event(
                     state,
                     lane,
                     "verify.nudge",
-                    Some(json!({"done_count": total, "cards": cards.iter().map(|(id,_,_)| id.as_str()).collect::<Vec<_>>()})),
-                    None,
+                    Some(json!({"done_count":total,"cards":cards.iter().map(|(id,_,_)|id.as_str()).collect::<Vec<_>>(),
+                        "contracts":contracts,"delivery_id":delivery_id,"submission":"confirmed"})),
+                    Some(format!("verify-confirmed:{delivery_id}")),
                     "board-drive",
                 )
                 .await;
                 tracing::info!(session = lane, total, batch_size = cards.len(),
-                    verdict = "verify_batch_queued",
-                    "board_drive: verification batch accepted; next batch becomes eligible when these cards are resolved");
+                    verdict = "verify_batch_confirmed",
+                    "board_drive: verification batch submission confirmed; next batch becomes eligible when these cards are resolved");
                 return LaneTrace::acted(
                     lane,
                     "verify-nudge",
                     cards.first().map(|(id,_,_)| id.as_str()).unwrap_or(""),
-                    format!("{total} done card(s), batched verify prompt delivered"),
+                    format!("{total} done card(s), batched verify prompt confirmed submitted"),
                 )
                 .with_counts(eligible, open);
             };
@@ -7678,6 +7816,11 @@ pub(crate) async fn claim_card_from_outcome(
     card: &str,
     from: &'static str,
 ) -> ClaimCardOutcome {
+    claim_card_from_expected_owner(state,session,card,from,None).await
+}
+
+async fn claim_card_from_expected_owner(state:&AppState,session:&str,card:&str,from:&'static str,
+    expected_owner:Option<&str>)->ClaimCardOutcome {
     let card_s = card.to_string();
     // Assign the claimer as part of the swap. For auto-pickup this is a no-op
     // (the card is already `i.session=lane`), but it makes a MANUAL claim
@@ -7685,6 +7828,7 @@ pub(crate) async fn claim_card_from_outcome(
     // card in the same atomic step, rather than leaving it `doing` with a stale
     // owner.
     let session_s = session.to_string();
+    let expected_owner=expected_owner.map(str::to_string);
     // THE GUARD'S VERDICT HAS TO ESCAPE THE CLOSURE (AMUX-3776). `reassigned`
     // is computed inside the write, where it can be read in the same
     // transaction as the swap — which is correct and is why it lives there —
@@ -7713,6 +7857,9 @@ pub(crate) async fn claim_card_from_outcome(
             };
             if row.status != from {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            }
+            if expected_owner.as_deref().is_some_and(|owner|row.session.as_deref()!=Some(owner)) {
+                return Ok(crate::db::WriteOutcome { applied:false,events:vec![] });
             }
             let blockers = deps_blocking(conn, &row);
             if !blockers.is_empty() {
@@ -9075,8 +9222,8 @@ mod tests {
         let conn = board_db();
         let ins = |id: &str, typ: &str| {
             conn.execute(
-                "INSERT INTO issues (id,title,status,session,owner_type,archived,type,updated,created) \
-                 VALUES (?1,?2,'done','me','agent',0,?3,100,100)",
+                "INSERT INTO issues (id,title,status,session,reviewer,creator,owner_type,archived,type,updated,created) \
+                 VALUES (?1,?2,'done','author','me','author','agent',0,?3,100,100)",
                 rusqlite::params![id, format!("card {id}"), typ],
             )
             .expect("insert");
@@ -9114,23 +9261,26 @@ mod tests {
     #[test]
     fn verify_candidates_never_include_a_humans_card_or_an_archived_one() {
         let conn = board_db();
-        let ins = |id: &str, session: &str, status: &str, owner: &str, arch: i64, del: Option<i64>| {
+        let ins = |id: &str, session: &str, reviewer: &str, creator: &str, status: &str, owner: &str, arch: i64, del: Option<i64>| {
             conn.execute(
-                "INSERT INTO issues (id,title,status,session,owner_type,archived,deleted,type,updated,created)                  VALUES (?1,?2,?3,?4,?5,?6,?7,'code',100,100)",
-                rusqlite::params![id, format!("card {id}"), status, session, owner, arch, del],
+                "INSERT INTO issues (id,title,status,session,reviewer,creator,owner_type,archived,deleted,type,updated,created) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'code',100,100)",
+                rusqlite::params![id, format!("card {id}"), status, session, reviewer, creator, owner, arch, del],
             )
             .expect("insert");
         };
-        ins("A-1", "me", "done", "agent", 0, None);      // the only one that qualifies
-        ins("A-2", "me", "done", "human", 0, None);      // ethos rule 8: never sweep a human's work
-        ins("A-3", "me", "done", "agent", 1, None);      // archived
-        ins("A-4", "me", "done", "agent", 0, Some(1));   // deleted
-        ins("A-5", "me", "todo", "agent", 0, None);      // not done
-        ins("A-6", "other", "done", "agent", 0, None);   // another lane
+        ins("A-1", "author", "me", "author", "done", "agent", 0, None); // the only one that qualifies
+        ins("A-2", "author", "me", "author", "done", "human", 0, None); // never sweep a human's work
+        ins("A-3", "author", "me", "author", "done", "agent", 1, None); // archived
+        ins("A-4", "author", "me", "author", "done", "agent", 0, Some(1)); // deleted
+        ins("A-5", "author", "me", "author", "todo", "agent", 0, None); // not done
+        ins("A-6", "author", "other", "author", "done", "agent", 0, None); // names another reviewer
+        ins("A-7", "me", "me", "author", "done", "agent", 0, None); // reviewer owns it
+        ins("A-8", "author", "me", "me", "done", "agent", 0, None); // reviewer created it
 
         let got = done_verify_candidates(&conn, "me");
         let ids: Vec<&str> = got.iter().map(|(i, _, _)| i.as_str()).collect();
-        assert_eq!(ids, vec!["A-1"], "only this lane's own live agent-owned done card");
+        assert_eq!(ids, vec!["A-1"], "only live Done explicitly delegated to an independent peer");
         assert_eq!(done_card_count(&conn, "me"), 1, "the count must share the selector's predicate");
     }
 
@@ -9151,8 +9301,8 @@ mod tests {
         let conn = board_db();
         let ins = |id: &str| {
             conn.execute(
-                "INSERT INTO issues (id,title,status,session,owner_type,archived,type,updated,created) \
-                 VALUES (?1,?2,'done','me','agent',0,'code',100,100)",
+                "INSERT INTO issues (id,title,status,session,reviewer,creator,owner_type,archived,type,updated,created) \
+                 VALUES (?1,?2,'done','author','me','author','agent',0,'code',100,100)",
                 rusqlite::params![id, format!("card {id}")],
             )
             .expect("insert");
@@ -9198,7 +9348,8 @@ mod tests {
         let conn = board_db();
         for i in 0..11 {
             conn.execute(
-                "INSERT INTO issues (id,title,status,session,owner_type,archived,type,updated,created)                  VALUES (?1,?2,'done','me','agent',0,'code',?3,?3)",
+                "INSERT INTO issues (id,title,status,session,reviewer,creator,owner_type,archived,type,updated,created) \
+                 VALUES (?1,?2,'done','author','me','author','agent',0,'code',?3,?3)",
                 rusqlite::params![format!("A-{i}"), format!("card {i}"), i],
             )
             .expect("insert");
@@ -9210,7 +9361,7 @@ mod tests {
 
         let text = verify_nudge_text(&cards, total);
         assert!(text.contains("... and 3 more"), "11 - 8 = 3; got: {text}");
-        assert!(text.contains("11 of your"), "the headline must state the true total");
+        assert!(text.contains("11 cross-owner"), "the headline must state the true total and authority");
         // Every listed card must actually appear, or the list and the count
         // describe different sets.
         for (id, _, _) in &cards {
@@ -9252,6 +9403,8 @@ mod tests {
         delivered: std::sync::Mutex<Vec<(String, String)>>,
         resume_ids: std::sync::Mutex<HashSet<String>>,
         resume_disposition: std::sync::Mutex<Option<ResumeDelivery>>,
+        verification_disposition: std::sync::Mutex<Option<VerificationDelivery>>,
+        verification_attempts: std::sync::atomic::AtomicUsize,
         running: std::sync::atomic::AtomicBool,
         boundary: std::sync::atomic::AtomicBool,
         active_child: std::sync::atomic::AtomicBool,
@@ -9266,6 +9419,8 @@ mod tests {
             Self { delivered: std::sync::Mutex::new(vec![]),
                 resume_ids: std::sync::Mutex::new(HashSet::new()),
                 resume_disposition: std::sync::Mutex::new(None),
+                verification_disposition: std::sync::Mutex::new(None),
+                verification_attempts: std::sync::atomic::AtomicUsize::new(0),
                 running: std::sync::atomic::AtomicBool::new(true),
                 boundary: std::sync::atomic::AtomicBool::new(true),
                 active_child: std::sync::atomic::AtomicBool::new(false),
@@ -9321,6 +9476,13 @@ mod tests {
             }
             self.deliver(lane, text).await;
             Ok(ResumeDelivery::Queued)
+        }
+        async fn deliver_verification(&self,lane:&str,text:&str,_:&str)->Result<VerificationDelivery,String>{
+            self.verification_attempts.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            if let Some(error)=self.delivery_error.lock().unwrap().clone(){return Err(error)}
+            let d=self.verification_disposition.lock().unwrap().take().unwrap_or(VerificationDelivery::Confirmed);
+            if matches!(d,VerificationDelivery::Queued|VerificationDelivery::Confirmed){self.deliver(lane,text).await;}
+            Ok(d)
         }
     }
 
@@ -9634,6 +9796,14 @@ mod tests {
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
     }
+    fn drive_done_for_peer(store: &std::sync::Arc<crate::db::Store>, id: &str) {
+        drive_card(store, id, "done", "agent", "code");
+        let id=id.to_string();
+        store.write(move |conn| {
+            conn.execute("UPDATE issues SET session='author',reviewer='lane',creator='author' WHERE id=?1",[id])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
     fn drive_status(store: &std::sync::Arc<crate::db::Store>, id: &str) -> String {
         store.read().unwrap().query_row("SELECT status FROM issues WHERE id=?1", [id], |r| r.get(0)).unwrap()
     }
@@ -9706,7 +9876,7 @@ mod tests {
     #[tokio::test]
     async fn refused_verification_nudge_retries_without_consuming_cooldown() {
         let (_dir, state, store) = drive_state();
-        drive_card(&store, "VERIFY-1", "done", "agent", "code");
+        drive_done_for_peer(&store, "VERIFY-1");
         let fleet = BoundaryFleet::default();
         *fleet.delivery_error.lock().unwrap() = Some("queue unavailable".into());
         let refused = drive_lane(&state, &fleet, "lane").await;
@@ -9724,7 +9894,7 @@ mod tests {
     #[tokio::test]
     async fn completed_verification_batch_drains_next_batch_without_daily_delay() {
         let (_dir, state, store) = drive_state();
-        for n in 0..10 { drive_card(&store, &format!("VERIFY-{n}"), "done", "agent", "code"); }
+        for n in 0..10 { drive_done_for_peer(&store, &format!("VERIFY-{n}")); }
         let fleet = BoundaryFleet::default();
         let first = drive_lane(&state, &fleet, "lane").await;
         assert_eq!(first.outcome, "verify-nudge", "{first:?}");
@@ -9741,6 +9911,169 @@ mod tests {
         assert_eq!(next.outcome, "verify-nudge", "{next:?}");
         assert_eq!(drive_events(&store, "verify.nudge"), 2);
         assert_eq!(fleet.delivered.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unresolved_prior_verification_does_not_starve_new_target(){
+        let (_d,state,store)=drive_state();drive_done_for_peer(&store,"OLD");
+        let fleet=BoundaryFleet::default();assert_eq!(drive_lane(&state,&fleet,"lane").await.outcome,"verify-nudge");
+        drive_done_for_peer(&store,"B");
+        let next=drive_lane(&state,&fleet,"lane").await;
+        assert_eq!(next.outcome,"verify-nudge","{next:?}");assert_eq!(next.card.as_deref(),Some("B"));
+        assert_eq!(drive_status(&store,"OLD"),"done");
+    }
+
+    #[tokio::test]
+    async fn queued_verification_is_not_execution_and_unchanged_state_does_not_storm(){
+        let (_d,state,store)=drive_state();drive_done_for_peer(&store,"VERIFY");
+        let fleet=BoundaryFleet::default();
+        *fleet.verification_disposition.lock().unwrap()=Some(VerificationDelivery::Queued);
+        assert_eq!(drive_lane(&state,&fleet,"lane").await.outcome,"verify-queued");assert_eq!(drive_events(&store,"verify.nudge"),0);
+        *fleet.verification_disposition.lock().unwrap()=Some(VerificationDelivery::Pending);
+        assert_eq!(drive_lane(&state,&fleet,"lane").await.reason,"verify-delivery-pending");assert_eq!(drive_events(&store,"verify.nudge"),0);
+        *fleet.verification_disposition.lock().unwrap()=Some(VerificationDelivery::Confirmed);
+        assert_eq!(drive_lane(&state,&fleet,"lane").await.outcome,"verify-nudge");
+        for _ in 0..3{drive_lane(&state,&fleet,"lane").await;}
+        assert_eq!(drive_events(&store,"verify.nudge"),1);assert_eq!(fleet.delivered.lock().unwrap().len(),2);
+    }
+
+    #[tokio::test]
+    async fn done_verification_is_picked_up_only_by_the_explicit_independent_peer(){
+        let (_d,state,store)=drive_state();
+        drive_done_for_peer(&store,"PEER-VERIFY");
+        drive_card(&store,"UNREVIEWED","done","agent","code");
+        drive_done_for_peer(&store,"PRIOR-AUTHOR");
+        store.write(|conn|{conn.execute("UPDATE issues SET creator='lane' WHERE id='PRIOR-AUTHOR'",[])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        let fleet=BoundaryFleet::default();
+        let peer=drive_lane(&state,&fleet,"lane").await;
+        assert_eq!(peer.outcome,"verify-nudge","{peer:?}");
+        let delivered=fleet.delivered.lock().unwrap();
+        assert_eq!(delivered.len(),1);assert_eq!(delivered[0].0,"lane");
+        assert!(delivered[0].1.contains("PEER-VERIFY"));
+        assert!(!delivered[0].1.contains("UNREVIEWED")&&!delivered[0].1.contains("PRIOR-AUTHOR"));
+        assert!(delivered[0].1.contains("explicitly name YOU as reviewer"));
+        drop(delivered);
+        assert_eq!(drive_status(&store,"PEER-VERIFY"),"done","pickup never reassigns ownership");
+    }
+
+    #[tokio::test]
+    async fn refused_verification_fault_does_not_storm_or_starve_a_new_peer_target(){
+        let (_d,state,store)=drive_state();drive_done_for_peer(&store,"REFUSED-A");
+        let fleet=BoundaryFleet::default();
+        *fleet.verification_disposition.lock().unwrap()=Some(VerificationDelivery::Refused);
+        let refused=drive_lane(&state,&fleet,"lane").await;
+        assert_eq!(refused.reason,"verify-delivery-unconfirmed","{refused:?}");
+        assert_eq!(drive_events(&store,"verify.refused"),1);assert_eq!(drive_events(&store,"verify.nudge"),0);
+        assert_eq!(fleet.verification_attempts.load(std::sync::atomic::Ordering::SeqCst),1);
+        for _ in 0..3{drive_lane(&state,&fleet,"lane").await;}
+        assert_eq!(fleet.verification_attempts.load(std::sync::atomic::Ordering::SeqCst),1,
+            "unchanged refused contract must not call delivery again inside the retry window");
+        drive_done_for_peer(&store,"ELIGIBLE-B");
+        *fleet.verification_disposition.lock().unwrap()=Some(VerificationDelivery::Confirmed);
+        let next=drive_lane(&state,&fleet,"lane").await;
+        assert_eq!(next.outcome,"verify-nudge","{next:?}");assert_eq!(next.card.as_deref(),Some("ELIGIBLE-B"));
+        assert_eq!(fleet.verification_attempts.load(std::sync::atomic::Ordering::SeqCst),2);
+        assert_eq!(drive_events(&store,"verify.refused"),1);assert_eq!(drive_events(&store,"verify.nudge"),1);
+    }
+
+    #[tokio::test]
+    async fn expired_verification_refusal_retries_through_real_outbox_with_a_new_identity(){
+        use crate::api::session_verbs as sv;
+        let (dir,state,store)=drive_state();let _home=crate::api::settings::test_env::set_home(dir.path());
+        let sessions=dir.path().join("sessions");std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("lane.env"),format!("CC_DIR=\"{}\"\nCC_ISOLATED=0\n",dir.path().display())).unwrap();
+        drive_done_for_peer(&store,"RETRY-A");
+        let contracts:serde_json::Map<String,Value>={let conn=store.read().unwrap();
+            [("RETRY-A".to_string(),json!(verification_contract(&conn,"RETRY-A").unwrap().unwrap()))].into_iter().collect()};
+        let first_id={let conn=store.read().unwrap();verification_delivery_id(&conn,"lane",&contracts)};
+        let first=sv::steer_enqueue_idempotent_report(&state,"lane","verify A",sv::BOARD_DRIVE_GUARD,"",&first_id).await.unwrap();
+        assert_eq!(first.disposition,sv::StableEnqueueDisposition::New);
+        let refused_id=first_id.clone();let refused_contracts=contracts.clone();
+        store.write(move |conn|{
+            conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome) \
+                SELECT id,session,text,queued_at,?1,'not submitted: injected refusal' FROM steering_queue WHERE id=?2",
+                rusqlite::params![now_f64(),refused_id])?;
+            conn.execute("DELETE FROM steering_queue WHERE id=?1",[&refused_id])?;
+            conn.execute("INSERT INTO session_events(ts,session,type,data,idem,source) VALUES(?1,'lane','verify.refused',?2,?3,'test')",
+                rusqlite::params![now_f64(),json!({"cards":["RETRY-A"],"contracts":refused_contracts,
+                    "delivery_id":refused_id,"submission":"refused"}).to_string(),format!("verify-refused:{refused_id}")])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        for _ in 0..3{
+            let repeated=sv::steer_enqueue_idempotent_report(&state,"lane","verify A",sv::BOARD_DRIVE_GUARD,"",&first_id).await.unwrap();
+            assert_eq!(repeated.disposition,sv::StableEnqueueDisposition::AlreadyDelivered);
+        }
+        {let conn=store.read().unwrap();assert_eq!(verification_history_disposition(&conn,"lane",&first_id).unwrap(),VerificationDelivery::Refused);
+            assert!(done_verify_candidates(&conn,"lane").is_empty());
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue",[],|r|r.get::<_,i64>(0)).unwrap(),0);}
+        store.write(|conn|{conn.execute("UPDATE session_events SET ts=?1 WHERE type='verify.refused'",
+            [now_f64()-VERIFY_NUDGE_COOLDOWN_S-1.0])?;Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        let retry_id={let conn=store.read().unwrap();assert_eq!(done_verify_candidates(&conn,"lane").len(),1);
+            verification_delivery_id(&conn,"lane",&contracts)};
+        assert_ne!(retry_id,first_id,"expired refusal must advance the durable delivery generation");
+        let retry=sv::steer_enqueue_idempotent_report(&state,"lane","verify A retry",sv::BOARD_DRIVE_GUARD,"",&retry_id).await.unwrap();
+        assert_eq!(retry.disposition,sv::StableEnqueueDisposition::New);
+        let conn=store.read().unwrap();assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1",[retry_id],|r|r.get::<_,i64>(0)).unwrap(),1);drop(conn);
+        assert_eq!(drive_events(&store,"verify.nudge"),0,"a refused attempt never spends success cooldown");
+    }
+
+    struct PoolFleet{delivered:std::sync::Mutex<Vec<String>>}
+    impl Fleet for PoolFleet{
+        fn lanes(&self)->Vec<String>{vec!["idle-a".into(),"idle-b".into(),"busy".into()]}
+        fn auto_pickup_enabled(&self,_:&str)->bool{true} fn tags(&self,_:&str)->Vec<String>{vec!["pool".into()]}
+        fn redistribution_compatible(&self,idle:&str,owner:&str)->bool{idle.starts_with("idle-")&&owner=="busy"}
+        async fn is_running(&self,_:&str)->bool{true} async fn at_boundary(&self,lane:&str)->bool{lane!="busy"}
+        fn auto_continue_enabled(&self,_:&str)->bool{false}
+        async fn deliver(&self,lane:&str,_:&str){self.delivered.lock().unwrap().push(lane.into());}
+    }
+    #[tokio::test]
+    async fn two_idle_workers_cannot_claim_same_pool_card(){
+        let (_d,state,store)=drive_state();drive_card(&store,"SHARED","todo","agent","code");
+        store.write(|c|{c.execute("UPDATE issues SET session='busy' WHERE id='SHARED'",[])?;
+            c.execute("INSERT INTO issue_tags(issue_id,tag) VALUES('SHARED','dispatch:pool')",[])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        let fleet=PoolFleet{delivered:std::sync::Mutex::new(vec![])};
+        let (a,b)=tokio::join!(drive_lane(&state,&fleet,"idle-a"),drive_lane(&state,&fleet,"idle-b"));
+        assert_eq!([a.outcome.as_str(),b.outcome.as_str()].iter().filter(|v|**v=="assigned").count(),1);
+        assert_eq!(drive_status(&store,"SHARED"),"doing");assert_eq!(fleet.delivered.lock().unwrap().len(),1);
+        assert_eq!(drive_events(&store,"claim.cross_owner"),1);
+    }
+
+    #[tokio::test]
+    async fn redistribution_cas_requires_original_owner(){
+        let (_d,state,store)=drive_state();drive_card(&store,"RACE","todo","agent","code");
+        store.write(|c|{c.execute("UPDATE issues SET session='new-owner' WHERE id='RACE'",[])?;
+            Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        assert_eq!(claim_card_from_expected_owner(&state,"idle","RACE","todo",Some("busy")).await,ClaimCardOutcome::NotApplied);
+        assert_eq!(drive_status(&store,"RACE"),"todo");
+    }
+
+    #[test]
+    fn redistribution_excludes_pinned_holds_author_and_reviewer(){
+        let conn=board_db();let add=|id:&str|{conn.execute("INSERT INTO issues(id,title,desc,status,session,creator,created,updated,owner_type,type,next_action) \
+            VALUES(?1,?1,'SCOPE:x','todo','busy','peer',1,1,'agent','code','do x')",[id]).unwrap();
+            conn.execute("INSERT INTO issue_tags(issue_id,tag) VALUES(?1,'dispatch:pool')",[id]).unwrap();};
+        for id in ["AUTHOR","REVIEWER","HOLD","PIN"]{add(id)}
+        conn.execute("UPDATE issues SET creator='idle' WHERE id='AUTHOR'",[]).unwrap();
+        conn.execute("UPDATE issues SET reviewer='idle' WHERE id='REVIEWER'",[]).unwrap();
+        conn.execute("UPDATE issues SET blocked_on='explicit hold' WHERE id='HOLD'",[]).unwrap();
+        conn.execute("UPDATE issues SET pinned=1 WHERE id='PIN'",[]).unwrap();
+        assert!(select_redistributable_pickup(&conn,"busy","idle",now_f64(),true).is_none());
+    }
+
+    #[test]
+    fn untagged_named_assignment_is_not_redistributed(){
+        let conn=board_db();
+        conn.execute("INSERT INTO issues(id,title,desc,status,session,creator,created,updated,owner_type,type,next_action) \
+            VALUES('NAMED','named','SCOPE:x','todo','busy','peer',1,1,'agent','code','do x')",[]).unwrap();
+        assert!(select_redistributable_pickup(&conn,"busy","idle",now_f64(),true).is_none());
+    }
+
+    #[test]
+    fn claude_cli_start_delegates_before_directory_continue(){
+        const CLI:&str=include_str!(concat!(env!("CARGO_MANIFEST_DIR"),"/../../amux"));
+        let body=&CLI[CLI.find("cmd_start() {").unwrap()..];
+        assert!(body.find("$_provider\" == \"claude").unwrap()<body.find("cmd=\"$cmd --continue\"").unwrap());
     }
 
     #[tokio::test]
