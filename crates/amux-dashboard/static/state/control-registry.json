@@ -1,9 +1,15 @@
 {
   "measured": true,
-  "n_considered": 2159,
+  "n_considered": 2182,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_applyPeekTabVisibility": {
+      "kind": "command._applyPeekTabVisibility",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2492,6 +2498,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_runWorkerActionNames": {
+      "kind": "command._runWorkerActionNames",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_saveChips": {
       "kind": "command._saveChips",
       "feedback_required": true,
@@ -2548,6 +2560,12 @@
     },
     "_selectProvider": {
       "kind": "command._selectProvider",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_selectWorkerType": {
+      "kind": "command._selectWorkerType",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2902,6 +2920,12 @@
     },
     "_workerModelsFor": {
       "kind": "command._workerModelsFor",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_workerTypeSet": {
+      "kind": "command._workerTypeSet",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3742,6 +3766,12 @@
     },
     "runVisibleWorkerAction": {
       "kind": "command.runVisibleWorkerAction",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "runWorkerGroupAction": {
+      "kind": "command.runWorkerGroupAction",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

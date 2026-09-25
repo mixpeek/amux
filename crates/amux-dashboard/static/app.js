@@ -12005,7 +12005,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1115';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1116';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12414,7 +12414,12 @@ function _chatRender(errorText) {
     }
   }
   if (_chat.streaming) {
-    const t = _chat.streaming.text;
+    // STREAMED TEXT IS HEALED BEFORE IT IS RENDERED (chat-demo, for Ethan,
+    // 2026-09-25). A reply mid-stream has an unclosed fence, a half-written
+    // link or a dangling ** that would flash as raw markup or swallow the rest
+    // of the bubble. remend (Streamdown's healing step) closes them for this
+    // frame only; the finished message renders from its own complete text.
+    const t = (typeof remend === 'function') ? remend(_chat.streaming.text) : _chat.streaming.text;
     const tool = _chat.streaming.tool ? '<div class="chat-tool">using ' + esc(_chat.streaming.tool) + '…</div>' : '';
     html += _chatBubble('assistant', (t ? renderMarkdown(t) : '<span class="chat-typing"><i></i><i></i><i></i></span>') + tool,
       'responding…', 'is-streaming');
@@ -29886,6 +29891,16 @@ function renderMarkdown(raw, basePath) {
         const tgt = (!isAnchor && /^https?:/i.test(href || '')) ? ' target="_blank" rel="noopener"' : '';
         const t = title ? ' title="' + esc(title) + '"' : '';
         return '<a href="' + esc(href || '#') + '"' + tgt + t + '>' + text + '</a>';
+      };
+      // Media inline, scaled to the container: an image link to a video file
+      // plays in place instead of showing a broken image.
+      renderer.image = function({ href, title, text }) {
+        const h = esc(href || ''), t = title ? ' title="' + esc(title) + '"' : '';
+        if (/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(href || ''))
+          return '<video controls preload="metadata" src="' + h + '"' + t + '></video>';
+        if (/\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(href || ''))
+          return '<audio controls preload="metadata" src="' + h + '"' + t + '></audio>';
+        return '<img src="' + h + '" alt="' + esc(text || '') + '"' + t + ' loading="lazy">';
       };
       let html = marked.parse(raw, { gfm: true, breaks: false, renderer });
       html = html.replace(/<table>/g, '<div class="table-scroll"><table>').replace(/<\/table>/g, '</table></div>');

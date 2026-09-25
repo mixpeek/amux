@@ -7384,3 +7384,17 @@ select.input { height:var(--control-height); }
   .worker-group-footer { min-height: 44px; padding: 0 0 0 12px; }
   .worker-group-menu summary { width: 44px; min-width: 44px; min-height: 44px; }
 }
+
+/* Chat: media fits the bubble; code and tables scroll inside it, never widen it. */
+.chat-bubble img, .chat-bubble video { max-width: 100%; height: auto; border-radius: 6px; display: block; margin: 6px 0; }
+.chat-bubble audio { max-width: 100%; }
+.chat-bubble pre { max-width: 100%; overflow-x: auto; }
+.chat-bubble .table-scroll { max-width: 100%; overflow-x: auto; }
+.chat-bubble a[href^="streamdown:"], .chat-bubble a:not([href]) { color: inherit; text-decoration: none; pointer-events: none; }
+.chat-bubble pre { background: rgba(127,127,127,0.12); border-radius: 6px; padding: 8px 10px; font-size: 0.8rem; line-height: 1.45; }
+.chat-bubble :not(pre) > code { background: rgba(127,127,127,0.14); border-radius: 4px; padding: 1px 4px; font-size: 0.88em; }
+.chat-bubble table { border-collapse: collapse; margin: 6px 0; font-size: 0.85rem; }
+.chat-bubble th, .chat-bubble td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; vertical-align: top; }
+.chat-bubble th { background: rgba(127,127,127,0.08); }
+.chat-bubble h1, .chat-bubble h2, .chat-bubble h3 { margin: 4px 0 6px; line-height: 1.25; }
+.chat-bubble h1 { font-size: 1.15rem; } .chat-bubble h2 { font-size: 1.05rem; } .chat-bubble h3 { font-size: 0.98rem; }
