@@ -12005,7 +12005,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1116';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1117';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -29124,10 +29124,21 @@ function renderScheduler(opts) {
         // row now carries WHICH path the command took and what Claude Code
         // said about the submission, and burying that in the DB would be the
         // same failure as not recording it (ethos rule 4).
-        const bits = [r.status, new Date(r.ran_at * 1000).toLocaleTimeString()];
-        if (r.delivery && r.delivery !== r.status) bits.push('via ' + r.delivery);
-        if (r.submission) bits.push(r.submission);
-        if (r.note) bits.push(String(r.note).split('\n')[0].slice(0, 120));
+        // A RUNNING SHELL RUN IS ON THIS MACHINE, NOT IN THE WORKER (Ethan,
+        // 2026-09-25: "says this but the worker is idle"). "running · via shell
+        // · started on host; result pending" beside an idle worker read as a
+        // stuck job. Say where it runs and for how long.
+        let bits;
+        if (r.status === 'running') {
+          bits = ['running on this machine for ' + _fmtDur(Date.now() - r.ran_at * 1000),
+                  'started ' + new Date(r.ran_at * 1000).toLocaleTimeString()];
+          if (r.delivery === 'shell') bits.push('a shell command: the worker is not involved and stays idle');
+        } else {
+          bits = [r.status, new Date(r.ran_at * 1000).toLocaleTimeString()];
+          if (r.delivery && r.delivery !== r.status) bits.push('via ' + r.delivery);
+          if (r.submission) bits.push(r.submission);
+          if (r.note) bits.push(String(r.note).split('\n')[0].slice(0, 120));
+        }
         return `<span class="sched-run-dot ${cls}" title="${esc(bits.join(' · '))}"></span>`;
       }).join('');
       const sessStatus = sessMap[s.session] || 'idle';
