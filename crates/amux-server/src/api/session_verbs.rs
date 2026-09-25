@@ -1601,6 +1601,30 @@ pub(crate) struct ClaudeLimitObservation {
 /// under the limit message pushed it out of that window. The transcript says
 /// it structurally, whatever else the pane prints. A later user message (the
 /// owner's "continue") or any other assistant turn ends it.
+/// The last real record is any other API error Claude Code ended a turn on
+/// ("API Error: The response stopped arriving", 529 Overloaded, ...): an
+/// assistant record with `isApiErrorMessage`. Returns its `error` kind.
+///
+/// WHY (Ethan, 2026-09-24: amux-chat-worker ended a turn on "The response
+/// stopped arriving" and read `idle`). The screen check only knows
+/// "API Error: 5xx" and only looks at the last 8 lines; this message has no
+/// status code. Usage limits are `transcript_rate_limit`'s, not this.
+pub(crate) fn transcript_api_error(records: &[Value]) -> Option<String> {
+    let last = last_turn_record(records)?;
+    let is_error = last.get("type").and_then(Value::as_str) == Some("assistant")
+        && last.get("isApiErrorMessage").and_then(Value::as_bool).unwrap_or(false)
+        && last.get("error").and_then(Value::as_str) != Some("rate_limit");
+    is_error.then(|| last.get("error").and_then(Value::as_str).unwrap_or("api_error").to_string())
+}
+
+fn last_turn_record(records: &[Value]) -> Option<&Value> {
+    records.iter().rev().find(|r| {
+        matches!(r.get("type").and_then(Value::as_str), Some("user" | "assistant"))
+            && !r.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
+            && !r.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
+    })
+}
+
 pub(crate) fn transcript_rate_limit(records: &[Value]) -> Option<i64> {
     let last = records.iter().rev().find(|r| {
         matches!(r.get("type").and_then(Value::as_str), Some("user" | "assistant"))
@@ -20503,11 +20527,26 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             }
         }
 
-        let transcript_reset = if provider_of(&cfg) == "claude" {
-            session_jsonl_path(name).and_then(|p| transcript_rate_limit(&iter_jsonl_tail(&p, 256 * 1024)))
+        let records = if provider_of(&cfg) == "claude" {
+            session_jsonl_path(name).map(|p| iter_jsonl_tail(&p, 256 * 1024)).unwrap_or_default()
         } else {
-            None
+            Vec::new()
         };
+        let transcript_reset = transcript_rate_limit(&records);
+        // An ordinary API error the turn ended on: stamp it so the session
+        // list reads `api_error` (sessions_legacy), clear it once anything
+        // newer lands. Same stamp-in-sweep, read-in-list shape as the picker.
+        let api_error = transcript_api_error(&records);
+        let since = meta_i64(&load_meta(name), "api_error_since");
+        match (&api_error, since > 0) {
+            (Some(kind), false) => {
+                update_meta(name, &[("api_error_since", json!(now_i64())), ("api_error_code", json!(kind))]);
+                tracing::warn!(session = %name, kind = %kind, verdict = "api_error_turn_end",
+                    "the worker's last turn ended on an API error; it needs a retry or continue");
+            }
+            (None, true) => update_meta(name, &[("api_error_since", json!(0)), ("api_error_code", json!(""))]),
+            _ => {}
+        }
         let observation = observe_claude_limit_with(
             &pane,
             meta_i64(&load_meta(name), "rate_limited_until"),
@@ -36443,6 +36482,22 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         std::fs::write(other.join(format!("{id2}.jsonl")), "{}\n").unwrap();
         assert_eq!(find_transcript(&projects, &bases, id2), Some((other.join(format!("{id2}.jsonl")), true)));
         assert_eq!(find_transcript(&projects, &bases, "99999999-2222-3333-4444-555555555555"), None);
+    }
+
+    #[test]
+    fn a_turn_that_ended_on_an_api_error_is_found_in_the_transcript() {
+        // amux-chat-worker, 2026-09-25T00:30:38Z, shape from its transcript.
+        let err = json!({"type":"assistant","error":"server_error","isApiErrorMessage":true,
+            "message":{"role":"assistant","content":[{"type":"text",
+                "text":"API Error: The response stopped arriving. The response above may be incomplete."}]}});
+        let limit = json!({"type":"assistant","error":"rate_limit","isApiErrorMessage":true,
+            "quotaLimits":{"status":"rejected","resetsAt":1}});
+        let ok = json!({"type":"assistant","message":{"role":"assistant","content":[]}});
+        let owner = json!({"type":"user","message":{"role":"user","content":"continue"}});
+        assert_eq!(transcript_api_error(&[ok.clone(), err.clone()]), Some("server_error".into()));
+        assert_eq!(transcript_api_error(&[err.clone(), owner]), None, "a retry ends it");
+        assert_eq!(transcript_api_error(&[err, ok]), None, "a later turn ends it");
+        assert_eq!(transcript_api_error(&[limit]), None, "limits are the rate-limit rule's");
     }
 
     #[test]

@@ -4173,6 +4173,15 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         {
             status = "waiting".to_string();
         }
+        // A TURN THAT ENDED ON AN API ERROR is `api_error`, not idle (Ethan,
+        // 2026-09-24: "The response stopped arriving" read idle). The sweep
+        // stamps it from the conversation's own error record.
+        if is_running
+            && matches!(status.as_str(), "idle" | "waiting")
+            && meta["api_error_since"].as_i64().unwrap_or(0) > 0
+        {
+            status = "api_error".to_string();
+        }
         // STUCK COMPOSER (AMUX-2904): genuinely TYPED text sits under `❯`
         // with no live turn and no live agents — an Enter that never landed,
         // or a human's committed-but-unsubmitted command. Same shape as the
@@ -4296,7 +4305,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // consumer). code/count stay honest empties — the tail scrape
             // proves a 5xx is PRESENT, not which one or how many times.
             "api_error": status == "api_error",
-            "api_error_code": "",
+            "api_error_code": meta["api_error_code"].as_str().unwrap_or(""),
             "api_error_count": 0,
             // COMPUTED, NOT HARDCODED (AMUX-2820). These were literal `false`
             // and `0`, with a comment calling them "a correct-TYPED honest
