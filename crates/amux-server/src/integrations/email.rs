@@ -2122,6 +2122,16 @@ fn decode_body(payload: &Value) -> (String, String) {
     (html, text)
 }
 
+/// "content" for anything a reader should look at; "signature" for a small
+/// inline image (logos, spacers, social icons), under 20 KB.
+pub fn attachment_kind(mime: &str, size: i64, inline: bool) -> &'static str {
+    if inline && mime.starts_with("image/") && size < 20_000 {
+        "signature"
+    } else {
+        "content"
+    }
+}
+
 /// Walk a full-format message payload and list its attachments (parts that carry
 /// a non-empty `filename`). Each entry names the filename, mime type, size and
 /// the Gmail `attachmentId` (fetchable at
@@ -2160,6 +2170,16 @@ pub fn collect_attachments(payload: &Value) -> Vec<Value> {
                 "size": node.pointer("/body/size").and_then(Value::as_i64).unwrap_or(0),
                 "attachment_id": node.pointer("/body/attachmentId").and_then(Value::as_str).unwrap_or(""),
                 "inline": inline,
+                // INLINE IS NOT "IGNORE" (Ethan, 2026-09-25: a customer's
+                // iPhone email carried 9 wheel photos, all inline, and a
+                // worker said it had no images). Phones send photos inline;
+                // what is noise is a small signature graphic. `kind` says which
+                // so a reader need not guess from `inline`.
+                "kind": attachment_kind(
+                    node.get("mimeType").and_then(Value::as_str).unwrap_or(""),
+                    node.pointer("/body/size").and_then(Value::as_i64).unwrap_or(0),
+                    inline,
+                ),
                 // Gmail puts a SMALL part's bytes here instead of behind an
                 // attachmentId; without this those parts could never be read.
                 // Stripped before the response by `save_attachments`.
@@ -2800,6 +2820,16 @@ mod tests {
         assert!(png.get("_data").is_none(), "raw data must not reach the response");
         assert!(out[1].get("path").is_none());
         assert!(out[1]["path_error"].as_str().unwrap().contains("25 MB"));
+    }
+
+    #[test]
+    fn inline_phone_photos_are_content_and_small_logos_are_signature() {
+        // John Goodman's iPhone email: 9 inline JPEG photos, ~150 KB each.
+        assert_eq!(attachment_kind("image/jpeg", 157_757, true), "content");
+        // The Nissan Outlook spacer: an 823-byte inline JPEG.
+        assert_eq!(attachment_kind("image/jpeg", 823, true), "signature");
+        assert_eq!(attachment_kind("application/pdf", 900, true), "content");
+        assert_eq!(attachment_kind("image/png", 900, false), "content", "a real file is content");
     }
 
     #[test]
