@@ -2717,6 +2717,32 @@ fn confirmed_active_model(meta: &serde_json::Value, provider: &str) -> String {
 /// `board_fresh` and `summary_fresh` carry the SAME rule (`ts > 0 && age <= 24h`)
 /// so the two time-sensitive sources age out identically; a stale summary falls
 /// through to a stale board title, then to desc.
+/// "[09:28 AM] build a video like this @/Users/x/up.png" -> "build a video like this",
+/// one line, at most 140 characters. Slash commands and bare "continue"-style
+/// nudges say nothing about the task and yield "".
+fn task_label_from_message(text: &str) -> String {
+    let t = text.trim();
+    static STAMP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static UPLOAD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let stamp = STAMP.get_or_init(|| regex::Regex::new(r"^\[\s*\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?\s*\]\s*").unwrap());
+    let upload = UPLOAD.get_or_init(|| regex::Regex::new(r"@?/[^\s]+\.(?:png|jpe?g|gif|webp|heic|pdf)\b").unwrap());
+    let t = stamp.replace(t, "");
+    let t = upload.replace_all(&t, "");
+    let one: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = one.to_lowercase();
+    if one.starts_with('/') || one.chars().count() < 12
+        || matches!(lower.as_str(), "continue" | "go" | "yes" | "ok" | "do both" | "you do it" | "you do it all")
+    {
+        return String::new();
+    }
+    let mut out: String = one.chars().take(140).collect();
+    if one.chars().count() > 140 {
+        out.push('\u{2026}');
+    }
+    out
+}
+
+#[cfg(test)]
 fn resolve_task_name(
     board_title: Option<&str>,
     board_fresh: bool,
@@ -2724,10 +2750,27 @@ fn resolve_task_name(
     summary_fresh: bool,
     desc: &str,
 ) -> (String, &'static str) {
+    resolve_task_name_with(board_title, board_fresh, summary, summary_fresh, None, desc)
+}
+
+/// `recent_message` is the owner's latest message to this worker within 24h.
+/// It outranks a stale card title and the role description (Ethan,
+/// 2026-09-25: "make sure the task names are up to date"; amux-helper, a
+/// worker with no card, showed its role text as its task).
+fn resolve_task_name_with(
+    board_title: Option<&str>,
+    board_fresh: bool,
+    summary: &str,
+    summary_fresh: bool,
+    recent_message: Option<&str>,
+    desc: &str,
+) -> (String, &'static str) {
     if board_fresh {
         (board_title.unwrap_or_default().to_string(), "board")
     } else if summary_fresh {
         (summary.to_string(), "summary")
+    } else if let Some(m) = recent_message.filter(|m| !m.trim().is_empty()) {
+        (m.to_string(), "message")
     } else if let Some(t) = board_title {
         (t.to_string(), "board")
     } else {
@@ -4651,6 +4694,24 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             }
         }
     }
+    // The owner's latest message per worker in the last 24h, cleaned for a
+    // one-line task label (stamp and attachment paths removed).
+    let recent_owner_messages: BTreeMap<String, String> = {
+        let since_ms = (crate::runtime_jobs::registry::unix_now() as i64 - 86_400) * 1000;
+        let mut stmt = conn.prepare(
+            "SELECT session, text FROM cmd_history WHERE type = 'user' AND ts >= ?1
+             AND session IS NOT NULL ORDER BY ts ASC",
+        )?;
+        let rows = stmt.query_map([since_ms], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = BTreeMap::new();
+        for (sess, text) in rows.flatten() {
+            let label = task_label_from_message(&text);
+            if !label.is_empty() {
+                out.insert(sess, label);
+            }
+        }
+        out
+    };
     // Board linkage per card, Python's exact query + precedence
     // (py:20187-20197, 20348-20365): ORDER BY updated ASC with dict
     // overwrite so the NEWEST-touched doing card wins (the 2026-07-22
@@ -4660,6 +4721,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         let mut stmt = conn.prepare(
             "SELECT session, id, title, COALESCE(updated, 0) FROM issues
              WHERE status = 'doing' AND deleted IS NULL AND session IS NOT NULL
+               AND COALESCE(archived, 0) = 0
              ORDER BY updated ASC",
         )?;
         let mut doing: BTreeMap<String, (String, String, i64)> = BTreeMap::new();
@@ -4975,16 +5037,20 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             // worker's role, which is honest rather than a wrong task claim.
             let summary_fresh = !summary.is_empty() && summary_ts > 0 && now - summary_ts <= 86400;
             let desc = v["desc"].as_str().unwrap_or("").to_string();
-            let (tname, tsrc) = resolve_task_name(
+            let (tname, tsrc) = resolve_task_name_with(
                 board.map(|(_, t, _)| t.as_str()),
                 board_fresh,
                 &summary,
                 summary_fresh,
+                recent_owner_messages.get(&name).map(String::as_str),
                 &desc,
             );
             v["task_name"] = json!(tname);
             v["task_source"] = json!(tsrc);
-            v["task_override"] = json!(summary);
+            // The dashboard shows a non-empty override as the task headline, so
+            // a stale one must not be sent at all: this is how a 40-day-old
+            // "AMUX-2676 — worker card evidence" sat above amux's real card.
+            v["task_override"] = json!(if summary_fresh { summary.as_str() } else { "" });
             v["task_override_updated"] = json!(summary_ts);
             v["status"] = json!(truth.status);
             v["task_board_id"] = json!(truth.card_id);
@@ -5979,6 +6045,20 @@ pub(crate) mod tests {
         let (name, src) = resolve_task_name(None, false, "", false, "just the role");
         assert_eq!(src, "desc");
         assert_eq!(name, "just the role");
+    }
+
+    #[test]
+    fn a_worker_with_no_card_shows_the_owners_latest_message_not_its_role() {
+        let label = task_label_from_message(
+            "[10:43 AM] figure out why this task is stuck up ehtere. and make sure the task names are up to date @/Users/ethan/.amux/uploads/95fcc22b70cc-image.png");
+        assert_eq!(label, "figure out why this task is stuck up ehtere. and make sure the task names are up to date");
+        assert_eq!(task_label_from_message("continue"), "");
+        assert_eq!(task_label_from_message("/clear"), "");
+        let (name, src) = resolve_task_name_with(None, false, "", false, Some(&label), "Ethan's direct-request session");
+        assert_eq!((name.as_str(), src), (label.as_str(), "message"));
+        // A fresh card still wins; a stale card title does not beat a recent message.
+        assert_eq!(resolve_task_name_with(Some("AMUX-9 card"), true, "", false, Some(&label), "d").1, "board");
+        assert_eq!(resolve_task_name_with(Some("old card"), false, "", false, Some(&label), "d").1, "message");
     }
 
     /// ATE-92: a control/checkpoint turn does not release still-live causal
