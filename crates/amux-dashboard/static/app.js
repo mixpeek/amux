@@ -10387,6 +10387,12 @@ function setPeekTab(tab) {
   const scheds = document.getElementById('peek-schedules-panel');
   if (tab === 'schedules') { scheds.classList.add('active'); _peekLoadSchedules(); }
   else { scheds.classList.remove('active'); }
+  document.getElementById('peek-tab-shell')?.classList.toggle('active', tab === 'shell');
+  const shellP = document.getElementById('peek-shell-panel');
+  if (shellP) {
+    if (tab === 'shell') { shellP.classList.add('active'); _peekShellLoad(); }
+    else { shellP.classList.remove('active'); _peekShellStop(); }
+  }
   document.getElementById('peek-tab-logs')?.classList.toggle('active', tab === 'logs');
   const logsP = document.getElementById('peek-logs-panel');
   if (tab === 'logs') { logsP.classList.add('active'); _peekLogsLoad(); }
@@ -11553,6 +11559,75 @@ function _peekRenderSchedules() {
     searchQuery: _peekSchedSearch,
   });
 }
+// ── Shell tab: this worker's shell schedules, live and past output ──
+// A shell schedule runs on the host, never in the worker (Ethan 2026-09-25:
+// "i need to be able to see it ... maybe there should be a shell tab assigned
+// to each worker"). The scheduler tees each run to a log; this tails it.
+let _shellTimer = null;
+const _shellView = {};   // schedule id -> { log, offset }
+function _peekShellStop() { clearTimeout(_shellTimer); _shellTimer = null; }
+async function _peekShellLoad() {
+  _peekShellStop();
+  const list = document.getElementById('peek-shell-list');
+  if (!list || !peekSession) return;
+  let d;
+  try { d = await (await fetch(API + '/api/schedules/shell?session=' + encodeURIComponent(peekSession), { headers: _authHeaders() })).json(); }
+  catch (e) { list.innerHTML = '<div class="peek-shell-empty">Could not load: ' + esc(e.message || e) + '</div>'; return; }
+  const scheds = d.schedules || [];
+  if (!scheds.length) { list.innerHTML = '<div class="peek-shell-empty">This worker has no shell schedules.</div>'; return; }
+  list.innerHTML = scheds.map(s => {
+    const last = s.last_run || {};
+    const st = s.running ? 'running' : (last.status || 'never run');
+    const opts = (s.logs || []).map((l, i) => '<option value="' + esc(l.name) + '">' + (i === 0 ? 'Latest · ' : '')
+      + new Date(l.started_ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '</option>').join('');
+    return '<div class="peek-shell-card" data-id="' + esc(s.id) + '">'
+      + '<div class="peek-shell-row"><b>' + esc(s.title || s.id) + '</b>'
+      + '<span class="peek-shell-status st-' + esc(String(st).replace(/[^a-z]/g, '')) + '">' + esc(st) + '</span></div>'
+      + '<div class="peek-shell-meta"><code>' + esc(s.schedule_expr || '') + '</code>' + (s.enabled ? '' : ' · disabled')
+      + ' · <code class="peek-shell-cmd">' + esc(s.command || '') + '</code></div>'
+      + '<div class="peek-shell-actions"><button class="btn primary" onclick="_peekShellRun(\'' + escJs(s.id) + '\')"' + (s.running ? ' disabled' : '') + '>Run now</button>'
+      + (opts ? '<select class="input" onchange="_peekShellPick(\'' + escJs(s.id) + '\', this.value)">' + opts + '</select>' : '') + '</div>'
+      + '<pre class="peek-shell-out" id="shell-out-' + esc(s.id) + '">' + (opts ? 'Loading…' : 'No output recorded yet. Runs from now on are captured here.') + '</pre></div>';
+  }).join('');
+  for (const s of scheds) {
+    _shellView[s.id] = { log: (s.logs && s.logs[0] && s.logs[0].name) || '', offset: 0, running: s.running };
+    if (_shellView[s.id].log) await _peekShellFetch(s.id, true);
+  }
+  _peekShellSchedule();
+}
+function _peekShellSchedule() {
+  _peekShellStop();
+  if (Object.values(_shellView).some(v => v.running)) _shellTimer = setTimeout(_peekShellTick, 1500);
+}
+async function _peekShellTick() {
+  for (const [id, v] of Object.entries(_shellView)) if (v.running) await _peekShellFetch(id, false);
+  if (Object.values(_shellView).some(v => v.running)) _peekShellSchedule();
+  else _peekShellLoad();   // a run just finished: refresh statuses and the log list
+}
+async function _peekShellFetch(id, reset) {
+  const v = _shellView[id]; const pre = document.getElementById('shell-out-' + id);
+  if (!v || !pre) return;
+  if (reset) { v.offset = 0; pre.textContent = ''; }
+  try {
+    const r = await fetch(API + '/api/schedules/' + encodeURIComponent(id) + '/output?log=' + encodeURIComponent(v.log) + '&offset=' + v.offset, { headers: _authHeaders() });
+    const d = await r.json();
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
+    pre.textContent += d.text || '';
+    if (!pre.textContent) pre.textContent = '(no output)';
+    v.offset = d.next_offset || v.offset;
+    v.running = !!d.running;
+    if (atBottom || reset) pre.scrollTop = pre.scrollHeight;
+  } catch (e) { /* the next tick retries */ }
+}
+async function _peekShellPick(id, log) {
+  const v = _shellView[id]; if (!v) return;
+  v.log = log; v.running = false;
+  await _peekShellFetch(id, true);
+}
+async function _peekShellRun(id) {
+  await runScheduleNow(id);
+  setTimeout(_peekShellLoad, 600);
+}
 async function _peekLoadSchedules() {
   const list = document.getElementById('peek-schedules-list');
   if (!peekSession || !list) return;
@@ -12005,7 +12080,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1117';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1118';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

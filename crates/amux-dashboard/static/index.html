@@ -2331,6 +2331,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
     <button class="peek-tab" id="peek-tab-steering" onclick="setPeekTab('steering')"><span class="tab-ico">⇉</span><span class="tab-lbl">Steering</span><span class="peek-tab-count" id="peek-tab-steering-count"></span></button>
     <button class="peek-tab" id="peek-tab-schedules" onclick="setPeekTab('schedules')"><span class="tab-ico">⏱</span><span class="tab-lbl">Schedules</span><span class="peek-tab-count" id="peek-tab-schedules-count"></span></button>
+    <button class="peek-tab" id="peek-tab-shell" onclick="setPeekTab('shell')" title="This worker's shell schedules: what runs on this machine for it, live and past output"><span class="tab-ico">$</span><span class="tab-lbl">Shell</span></button>
     <button class="peek-tab" id="peek-tab-scope" onclick="setPeekTab('scope')" title="Edit this worker's configuration and see which layer supplies each value"><span class="tab-ico">&#9707;</span><span class="tab-lbl">Configurations</span></button>
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this worker"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span><span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
     <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span><span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
@@ -2720,6 +2721,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
   </div>
   <!-- Schedules panel — same view as the homepage Scheduler, scoped to this session -->
+  <div id="peek-shell-panel" class="peek-tasks-panel peek-shell-panel">
+    <div class="peek-shell-head"><b>Shell</b><span class="peek-shell-sub">Shell schedules run on this machine, not in the worker. Output streams here as they run.</span></div>
+    <div id="peek-shell-list"></div>
+  </div>
   <div id="peek-schedules-panel" class="peek-tasks-panel" style="padding:0;gap:0;">
     <div style="padding:10px 12px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;">
       <span style="font-weight:600;font-size:0.9rem;">Scheduler</span>

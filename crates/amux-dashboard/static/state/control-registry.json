@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2182,
+  "n_considered": 2189,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -1948,6 +1948,12 @@
     },
     "_peekScrollTo": {
       "kind": "command._peekScrollTo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekShellRun": {
+      "kind": "command._peekShellRun",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -7398,3 +7398,20 @@ select.input { height:var(--control-height); }
 .chat-bubble th { background: rgba(127,127,127,0.08); }
 .chat-bubble h1, .chat-bubble h2, .chat-bubble h3 { margin: 4px 0 6px; line-height: 1.25; }
 .chat-bubble h1 { font-size: 1.15rem; } .chat-bubble h2 { font-size: 1.05rem; } .chat-bubble h3 { font-size: 0.98rem; }
+
+/* Worker Shell tab: shell schedules run on this machine; their output streams here. */
+.peek-shell-panel { padding: 10px 12px; gap: 10px; overflow-y: auto; }
+.peek-shell-head { display: flex; flex-direction: column; gap: 2px; }
+.peek-shell-sub, .peek-shell-meta, .peek-shell-empty { font-size: 0.75rem; color: var(--dim); }
+.peek-shell-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.peek-shell-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; font-size: 0.85rem; }
+.peek-shell-status { font-size: 0.7rem; font-weight: 600; padding: 1px 6px; border-radius: 3px; background: rgba(127,127,127,0.14); white-space: nowrap; }
+.peek-shell-status.st-running { background: rgba(210,153,34,0.18); color: var(--yellow, #d29922); animation: peek-shell-pulse 1.4s ease-in-out infinite; }
+.peek-shell-status.st-ok, .peek-shell-status.st-delivered { background: rgba(63,185,80,0.15); color: #3fb950; }
+.peek-shell-status.st-error, .peek-shell-status.st-failed, .peek-shell-status.st-refused { background: rgba(248,81,73,0.15); color: #f85149; }
+.peek-shell-cmd { overflow-wrap: anywhere; }
+.peek-shell-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.peek-shell-actions .btn, .peek-shell-actions select { min-height: 36px; }
+@media (max-width: 600px) { .peek-shell-actions .btn, .peek-shell-actions select { min-height: 44px; } }
+.peek-shell-out { margin: 0; max-height: 360px; overflow: auto; background: #010409; color: #c9d1d9; border-radius: 6px; padding: 8px 10px; font-size: 0.74rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+@keyframes peek-shell-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }

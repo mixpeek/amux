@@ -1441,6 +1441,46 @@ impl ShellRunClaim {
     }
 }
 
+/// Where a shell run's output goes: `~/.amux/shell-runs/<schedule>/<start_ms>.log`.
+/// Keeps the newest `SHELL_RUN_LOGS_KEPT` per schedule. `None` if the dir
+/// cannot be made (the run still happens; only the live view is lost).
+pub const SHELL_RUN_LOGS_KEPT: usize = 30;
+pub const SHELL_RUN_LOG_CAP: u64 = 2 * 1024 * 1024;
+pub fn shell_runs_dir(schedule_id: &str) -> std::path::PathBuf {
+    let safe: String = schedule_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    crate::config::amux_home().join("shell-runs").join(safe)
+}
+fn shell_run_log_path(schedule_id: &str) -> Option<std::path::PathBuf> {
+    let dir = shell_runs_dir(schedule_id);
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut logs: Vec<_> = std::fs::read_dir(&dir).ok()?.flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log")).map(|e| e.path()).collect();
+    logs.sort();
+    while logs.len() >= SHELL_RUN_LOGS_KEPT {
+        let _ = std::fs::remove_file(logs.remove(0));
+    }
+    Some(dir.join(format!("{}.log", chrono::Utc::now().timestamp_millis())))
+}
+/// Append-only, size-capped writer; silently inert when there is no file.
+struct ShellRunLog { f: Option<std::fs::File>, written: u64, capped: bool }
+impl ShellRunLog {
+    fn open(p: Option<&std::path::Path>) -> Self {
+        let f = p.and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+        let written = f.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0);
+        Self { f, written, capped: false }
+    }
+    fn write(&mut self, b: &[u8]) {
+        use std::io::Write;
+        let Some(f) = self.f.as_mut() else { return };
+        if self.written >= SHELL_RUN_LOG_CAP {
+            if !self.capped { let _ = f.write_all(b"\n[output past 2 MB not kept]\n"); self.capped = true; }
+            return;
+        }
+        let _ = f.write_all(b);
+        self.written += b.len() as u64;
+    }
+}
+
 /// Create the durable `running` row before a long shell process starts.
 ///
 /// This is one transaction with the overlap lookup. UI-only button disabling
@@ -1615,23 +1655,61 @@ impl LiveDeliverer {
                 .and_then(|v| v.as_object().cloned())
                 .unwrap_or_default();
 
-        let run_once = |cmd: String| async move {
-            // kill_on_drop: SHELL_TIMEOUT_S firing drops this future, and a
-            // scheduled shell command is precisely the kind that hangs. Without
-            // it the bash child is left unreaped (DESKT-30).
-            let fut = tokio::process::Command::new("/bin/bash")
-                .arg("-c")
-                .arg(cmd)
-                .kill_on_drop(true)
-                .output();
-            match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
-                Ok(Ok(o)) => Ok((
-                    o.status.code().unwrap_or(-1),
-                    String::from_utf8_lossy(&o.stdout).into_owned(),
-                    String::from_utf8_lossy(&o.stderr).into_owned(),
-                )),
-                Ok(Err(e)) => Err(format!("could not spawn /bin/bash: {e}")),
-                Err(_) => Err(format!("timed out after {SHELL_TIMEOUT_S}s")),
+        // OUTPUT IS STREAMED TO A FILE AS IT IS PRODUCED (Ethan 2026-09-25:
+        // "i need to be able to see it ... maybe there should be a shell tab
+        // assigned to each worker"). `.output()` held everything in memory
+        // until exit and kept a 480-char note, so a running job was invisible
+        // and a finished one mostly lost. Each run now tees stdout+stderr, in
+        // arrival order, to ~/.amux/shell-runs/<schedule>/<start_ms>.log,
+        // which the worker's Shell tab tails. Same timeout and kill_on_drop.
+        let sched_id = sched.id().to_string();
+        let run_once = |cmd: String| {
+            let sid = sched_id.clone();
+            async move {
+                let path = shell_run_log_path(&sid);
+                let fut = async {
+                    use tokio::io::AsyncReadExt;
+                    let mut child = tokio::process::Command::new("/bin/bash")
+                        .arg("-c")
+                        .arg(cmd)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .kill_on_drop(true)
+                        .spawn()
+                        .map_err(|e| format!("could not spawn /bin/bash: {e}"))?;
+                    let log = std::sync::Arc::new(std::sync::Mutex::new(ShellRunLog::open(path.as_deref())));
+                    let pump = |mut r: Box<dyn tokio::io::AsyncRead + Unpin + Send>, log: std::sync::Arc<std::sync::Mutex<ShellRunLog>>| async move {
+                        let mut all = Vec::new();
+                        let mut buf = [0u8; 8192];
+                        loop {
+                            match r.read(&mut buf).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    all.extend_from_slice(&buf[..n]);
+                                    if let Ok(mut l) = log.lock() { l.write(&buf[..n]); }
+                                }
+                            }
+                        }
+                        all
+                    };
+                    let out = child.stdout.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
+                    let err = child.stderr.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
+                    let (o, e) = tokio::join!(
+                        async { match out { Some(r) => pump(r, log.clone()).await, None => Vec::new() } },
+                        async { match err { Some(r) => pump(r, log.clone()).await, None => Vec::new() } },
+                    );
+                    let status = child.wait().await.map_err(|e| format!("wait failed: {e}"))?;
+                    let code = status.code().unwrap_or(-1);
+                    if let Ok(mut l) = log.lock() { l.write(format!("\n[exit {code}]\n").as_bytes()); }
+                    Ok::<_, String>((code, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned()))
+                };
+                match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        if let Some(p) = &path { ShellRunLog::open(Some(p)).write(format!("\n[timed out after {SHELL_TIMEOUT_S}s]\n").as_bytes()); }
+                        Err(format!("timed out after {SHELL_TIMEOUT_S}s"))
+                    }
+                }
             }
         };
 

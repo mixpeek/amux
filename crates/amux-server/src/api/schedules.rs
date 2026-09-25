@@ -48,6 +48,112 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}", get(get_one).patch(patch).delete(delete_schedule))
         .route("/{id}/run", post(run_now))
         .route("/{id}/skip", post(skip_next))
+        .route("/shell", get(shell_for_session))
+        .route("/{id}/output", get(shell_output))
+}
+
+// ---- the worker's Shell tab (2026-09-25) ------------------------------------
+//
+// Ethan: "i need to be able to see it ... maybe there should be a shell tab
+// assigned to each worker". A shell schedule runs on the host, never in the
+// worker, so its only visible trace used to be a 480-char note written at exit.
+// The scheduler now tees each run to ~/.amux/shell-runs/<schedule>/<ms>.log;
+// these two reads are what the tab shows.
+
+fn shell_logs(id: &str) -> Vec<Value> {
+    let dir = crate::runtime_jobs::scheduler::shell_runs_dir(id);
+    let mut v: Vec<(String, u64)> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let size = e.metadata().ok()?.len();
+                    name.ends_with(".log").then_some((name, size))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.into_iter()
+        .map(|(name, size)| {
+            let started_ms: i64 = name.trim_end_matches(".log").parse().unwrap_or(0);
+            json!({"name": name, "started_ms": started_ms, "size": size})
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct ShellQuery {
+    session: Option<String>,
+}
+
+/// GET /api/schedules/shell?session=<name>: the worker's shell schedules, each
+/// with its latest run and its saved output logs.
+async fn shell_for_session(State(state): State<AppState>, Query(q): Query<ShellQuery>) -> Response {
+    let session = q.session.unwrap_or_default();
+    let conn = match state.store.read() {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": e.to_string(), "measured": false}))).into_response(),
+    };
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, title, command, schedule_expr, enabled FROM schedules
+         WHERE session=?1 AND kind='shell' AND COALESCE(deleted,0)=0 ORDER BY title",
+    ) {
+        let rows = stmt.query_map([&session], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?, r.get::<_, Option<i64>>(4)?))
+        });
+        if let Ok(rows) = rows {
+            for (id, title, command, expr, enabled) in rows.flatten() {
+                let last = conn.query_row(
+                    "SELECT id, ran_at, status, note, source FROM schedule_runs WHERE schedule_id=?1 ORDER BY id DESC LIMIT 1",
+                    [&id],
+                    |r| Ok(json!({"id": r.get::<_, i64>(0)?, "ran_at": r.get::<_, i64>(1)?, "status": r.get::<_, Option<String>>(2)?,
+                                  "note": r.get::<_, Option<String>>(3)?, "source": r.get::<_, Option<String>>(4)?})),
+                ).ok();
+                let running = last.as_ref().is_some_and(|l| l["status"] == "running");
+                out.push(json!({"id": id, "title": title, "command": command, "schedule_expr": expr,
+                    "enabled": enabled.unwrap_or(0) != 0, "running": running, "last_run": last, "logs": shell_logs(&id)}));
+            }
+        }
+    }
+    let n = out.len();
+    Json(json!({"session": session, "measured": true, "n_considered": n, "schedules": out})).into_response()
+}
+
+#[derive(Deserialize)]
+struct OutputQuery {
+    log: Option<String>,
+    offset: Option<u64>,
+}
+
+/// GET /api/schedules/{id}/output?log=<name>&offset=<bytes>: a run's output
+/// from `offset` (default: the newest log from 0), at most 256 KB per call, so
+/// a running job can be tailed by polling with the returned `next_offset`.
+async fn shell_output(State(state): State<AppState>, Path(id): Path<String>, Query(q): Query<OutputQuery>) -> Response {
+    let logs = shell_logs(&id);
+    let name = match q.log.filter(|l| !l.contains('/') && !l.contains("..") && l.ends_with(".log")) {
+        Some(l) => l,
+        None => match logs.first().and_then(|l| l["name"].as_str()) {
+            Some(l) => l.to_string(),
+            None => return Json(json!({"schedule": id, "measured": true, "n_considered": 0, "logs": logs,
+                "text": "", "next_offset": 0, "why_empty": "no output recorded yet: runs before this change, or none since"})).into_response(),
+        },
+    };
+    let path = crate::runtime_jobs::scheduler::shell_runs_dir(&id).join(&name);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::NOT_FOUND, Json(json!({"error": format!("{name}: {e}")}))).into_response(),
+    };
+    let off = q.offset.unwrap_or(0).min(bytes.len() as u64) as usize;
+    let end = (off + 256 * 1024).min(bytes.len());
+    let running = state.store.read().ok().and_then(|c| c.query_row(
+        "SELECT status FROM schedule_runs WHERE schedule_id=?1 ORDER BY id DESC LIMIT 1", [&id], |r| r.get::<_, String>(0)).ok())
+        .is_some_and(|s| s == "running") && logs.first().and_then(|l| l["name"].as_str()) == Some(name.as_str());
+    Json(json!({"schedule": id, "log": name, "measured": true, "n_considered": 1, "running": running,
+        "size": bytes.len(), "offset": off, "next_offset": end,
+        "text": String::from_utf8_lossy(&bytes[off..end]), "logs": logs})).into_response()
 }
 
 // ---- the fields this server does NOT honour (AMUX-2680) -------------------
