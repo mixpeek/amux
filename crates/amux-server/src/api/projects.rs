@@ -456,6 +456,9 @@ fn project_executor_workers(
     name: &str,
 ) -> anyhow::Result<Vec<String>> {
     let project = store::get(conn, name)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
+    if project.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        return Ok(vec![crate::project_execution::checkout::owner(&crate::config::amux_home(), name)]);
+    }
     let plans = crate::project_execution::planner::plan(conn, &project)?;
     let mut workers = std::collections::BTreeSet::new();
     for plan in plans {
@@ -487,9 +490,11 @@ async fn closeout(
             if acceptance.get("state").and_then(|v| v.as_str()) != Some("accepted") {
                 anyhow::bail!("project closeout requires accepted whole-project acceptance");
             }
-            let plans = crate::project_execution::planner::plan(c, &project)?;
-            if plans.iter().any(|plan| !matches!(plan.phase, amux_core::project::Phase::Verified | amux_core::project::Phase::Closed)) {
-                anyhow::bail!("project closeout requires terminal project tasks");
+            if project.policy.mode != amux_core::project::ProjectExecutionMode::Lead {
+                let plans = crate::project_execution::planner::plan(c, &project)?;
+                if plans.iter().any(|plan| !matches!(plan.phase, amux_core::project::Phase::Verified | amux_core::project::Phase::Closed)) {
+                    anyhow::bail!("project closeout requires terminal project tasks");
+                }
             }
             Ok((project.clone(), project_executor_workers(c, &project.name)?,
                 acceptance["fingerprint"].as_str().unwrap_or_default().to_string()))
@@ -550,7 +555,9 @@ async fn closeout(
             continue;
         }
         let before = crate::fanout_workspace::integration_status(&home, &worker);
-        let worker_head = before["head"].as_str().unwrap_or_default().to_string();
+        let worker_head = if project_policy.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+            state.store.read().ok().and_then(|c|crate::project_execution::lead::ready(&c,&name).ok().flatten().map(|(_,head)|head)).unwrap_or_default()
+        } else { before["head"].as_str().unwrap_or_default().to_string() };
         let published_contains_worker = !worker_head.is_empty()
             && crate::fanout_workspace::git(
                 &project_policy.policy.repository,
@@ -762,6 +769,18 @@ pub(crate) fn executor_steering_hold(
     c: &rusqlite::Connection,
     worker: &str,
 ) -> anyhow::Result<Option<String>> {
+    let env = super::session_verbs::parse_env(worker);
+    if env.get("CC_PROJECT_LEAD") == Some("1") {
+        let Some(name) = env.get("CC_PROJECT") else { return Ok(Some("project_missing".into())); };
+        let Some(project) = store::get(c, name)? else { return Ok(Some("project_missing".into())); };
+        if project.policy.mode != amux_core::project::ProjectExecutionMode::Lead
+            || worker != crate::project_execution::checkout::owner(&crate::config::amux_home(), name) {
+            return Ok(Some("project_lead_identity_changed".into()));
+        }
+        if !project.policy.enabled { return Ok(Some("project_disabled".into())); }
+        if project.policy.paused { return Ok(Some("project_paused".into())); }
+        return crate::project_execution::usage::waiting(c, &project);
+    }
     let Some((name, id)) = executor_task(c, worker).ok().flatten() else {
         return Ok(Some("project_task_identity_changed".into()));
     };
@@ -844,6 +863,9 @@ pub(crate) fn steering_delivery_hold(
             None
         });
     };
+    if guard == "project-lead" {
+        return executor_steering_hold(c, worker);
+    }
     if guard == "project-execution" {
         return Ok(
             (!crate::project_execution::planner::delivery_current(c, project, worker, id)?)

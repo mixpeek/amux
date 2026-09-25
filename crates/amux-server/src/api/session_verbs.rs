@@ -7729,14 +7729,15 @@ async fn steer_enqueue_precond_with_id(
     // REFUSES rather than silently dropping: a producer that thinks it
     // delivered is how a board card gets claimed for a lane nobody is driving.
     let project_managed = !session_is_isolated(name) && parse_env(name).get("CC_PROJECT").is_some();
-    let guard = if guard.is_empty() && project_managed {
+    let lead_worker = project_managed && parse_env(name).get("CC_PROJECT_LEAD") == Some("1");
+    let guard = if guard.is_empty() && project_managed && !lead_worker {
         "project-steering"
     } else {
         guard
     };
     if project_managed
         && !guard.is_empty()
-        && !matches!(guard, "project-execution" | "project-steering")
+        && !matches!(guard, "project-execution" | "project-steering" | "project-lead")
     {
         tracing::info!(
             session = name,
@@ -13114,7 +13115,20 @@ pub(crate) async fn start_session(
     let worktree_enabled = fanout || cfg.get_or("CC_WORKTREE", "") == "1";
     if fanout {
         let workspace = if let Some(project) = cfg.get("CC_PROJECT").filter(|_| !isolated) {
-            crate::project_execution::checkout::ensure(&home(), project, name, &work_dir).await
+            // The lead is also the checkout owner. start_session already holds
+            // this worker's session_op_lock, so calling checkout::ensure here
+            // would reacquire the same lock and deadlock every lead start.
+            // The project driver prepared the checkout before entering start.
+            if cfg.get("CC_PROJECT_LEAD") == Some("1") {
+                crate::project_execution::checkout::load(&home(), project)
+                    .filter(|w| {
+                        crate::project_execution::checkout::belongs_to(&home(), project, w)
+                            && std::path::Path::new(&w.path).is_dir()
+                    })
+                    .ok_or_else(|| "project lead checkout is missing; project driver must prepare it before start".to_string())
+            } else {
+                crate::project_execution::checkout::ensure(&home(), project, name, &work_dir).await
+            }
         } else {
             crate::fanout_workspace::ensure(&home(), name, &work_dir).await
         };

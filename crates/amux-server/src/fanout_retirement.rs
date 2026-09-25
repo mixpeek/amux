@@ -84,6 +84,29 @@ pub(crate) async fn retire<F: Fleet>(
     };
     let env_bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
     let env = crate::config::parse_env_file(&source);
+    if env.get("CC_PROJECT_LEAD").is_some_and(|v|v=="1") {
+        let project=env.get("CC_PROJECT").ok_or("lead has no project")?;
+        if name!=crate::project_execution::checkout::owner(home,project) {return Err("lead identity differs; preserved".into());}
+        let allowed={let c=state.store.read().map_err(|e|e.to_string())?;
+            crate::project_execution::acceptance::retirement_allowed(&c,project).map_err(|e|e.to_string())?["allowed"]==true};
+        if !allowed {return Ok(Outcome::ReviewHeld);}
+        let pending={let c=state.store.read().map_err(|e|e.to_string())?;
+            c.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1)",[name],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?};
+        if pending || fleet.active_child_work(name) {return Ok(Outcome::Deferred);}
+        let receipt=workspace::integration_status(home,name);
+        if receipt["status"]!="integrated" || receipt["approved_candidate"]!=true {return Ok(Outcome::NeedsIntegration);}
+        let removed=if env.get("CC_WORKTREE").is_some_and(|v|v=="1") {
+            crate::project_execution::checkout::cleanup(state,fleet,home,project).await?
+        } else {if fleet.is_running(name).await {fleet.stop_for_retirement(name).await?;} false};
+        if fleet.is_running(name).await {return Err("lead provider did not stop; preserved".into());}
+        if source==expired {return Ok(Outcome::Deferred);}
+        if std::fs::read(&active).ok().as_deref()!=Some(env_bytes.as_slice()) {return Ok(Outcome::Deferred);}
+        std::fs::rename(&active,&expired).map_err(|e|e.to_string())?;
+        crate::api::session_verbs::dispose_verified_worker_terminal(name).await;
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+        tracing::info!(project,session=name,worktree_removed=removed,verdict="project.lead_expired",measured=true,n_considered=1,"approved project lead expired; transcript and evidence retained");
+        return Ok(Outcome::Expired);
+    }
     if !enabled(&env) || fleet.is_isolated(name) {
         return Ok(Outcome::Deferred);
     }
@@ -346,6 +369,10 @@ pub(crate) async fn retire<F: Fleet>(
 }
 
 pub(crate) async fn check_checkout(w: &workspace::Workspace, head: &str) -> Result<(), String> {
+    // Previous closeout attempts may have removed a receipt that the worker
+    // accidentally committed. Restore only that missing tracked file before
+    // checking cleanliness; never overwrite a user's modified file.
+    restore_missing_tracked_receipts(w)?;
     let root = std::fs::canonicalize(&w.path).map_err(|e| e.to_string())?;
     let actual = git(&w.path, &["rev-parse", "--show-toplevel"]).await?;
     if root != std::fs::canonicalize(actual).map_err(|e| e.to_string())?
@@ -376,8 +403,19 @@ pub(crate) async fn check_checkout(w: &workspace::Workspace, head: &str) -> Resu
 }
 
 pub(crate) fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), String> {
-    for name in ["project-report.json", "project-wait.json", "project-required-outputs.json"] {
+    for name in ["project-report.json", "project-wait.json", "project-required-outputs.json", "project-lead.json"] {
+        let relative = format!(".amux/{name}");
         let receipt = Path::new(&w.path).join(".amux").join(name);
+        // A worker may have accidentally committed an old harness receipt.
+        // Removing a tracked file dirties the published checkout and makes
+        // worktree removal fail forever. Preserve its exact committed bytes;
+        // only untracked scratch receipts need disposal.
+        let tracked = std::process::Command::new("git")
+            .args(["-C", &w.path, "ls-files", "--error-unmatch", "--", &relative])
+            .output()
+            .map_err(|e| e.to_string())?
+            .status.success();
+        if tracked { continue; }
         match std::fs::remove_file(&receipt) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -385,6 +423,23 @@ pub(crate) fn discard_harness_receipts(w: &workspace::Workspace) -> Result<(), S
         }
     }
     let _ = std::fs::remove_dir(Path::new(&w.path).join(".amux"));
+    Ok(())
+}
+
+fn restore_missing_tracked_receipts(w: &workspace::Workspace) -> Result<(), String> {
+    for name in ["project-report.json", "project-wait.json", "project-required-outputs.json", "project-lead.json"] {
+        let relative = format!(".amux/{name}");
+        let receipt = Path::new(&w.path).join(&relative);
+        if receipt.exists() { continue; }
+        let tracked = std::process::Command::new("git")
+            .args(["-C", &w.path, "ls-files", "--error-unmatch", "--", &relative])
+            .output().map_err(|e| e.to_string())?.status.success();
+        if !tracked { continue; }
+        let restored = std::process::Command::new("git")
+            .args(["-C", &w.path, "restore", "--source=HEAD", "--worktree", "--", &relative])
+            .output().map_err(|e| e.to_string())?;
+        if !restored.status.success() { return Err(String::from_utf8_lossy(&restored.stderr).into_owned()); }
+    }
     Ok(())
 }
 

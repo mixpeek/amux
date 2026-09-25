@@ -1,6 +1,14 @@
-//! Project execution is a policy on a group and a projection of board issues.
-//! Workers are assignments; they never become the identity of the project.
+//! Project execution is a policy on a group. In lead mode, one durable worker
+//! owns progress and board steps are only a projection of its plan.
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectExecutionMode {
+    #[default]
+    Tasks,
+    Lead,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,6 +23,9 @@ pub struct ModelProfile {
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
     pub repository: String,
+    /// Existing task-driven projects retain their mode. New projects use Lead.
+    #[serde(default)]
+    pub mode: ProjectExecutionMode,
     /// Each project defaults to one dedicated Git worktree shared by its task workers. Shared-checkout mode is explicit,
     /// single-lane, and reserved for projects where the operator wants one worker in the saved
     /// project directory instead of a disposable candidate checkout.

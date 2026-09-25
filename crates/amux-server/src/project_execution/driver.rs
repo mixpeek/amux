@@ -277,7 +277,7 @@ fn project_effort_flags(provider: &str, effort: &str) -> Option<String> {
     }
 }
 
-fn executor_flags(provider: &str, effort: Option<&str>, full_host_access: bool) -> String {
+pub(super) fn executor_flags(provider: &str, effort: Option<&str>, full_host_access: bool) -> String {
     let mut flags = if provider == "claude" {
         "--dangerously-skip-permissions".to_string()
     } else if provider == "codex" && full_host_access {
@@ -327,7 +327,7 @@ fn configure_executor_env(env: &mut sv::EnvFile, p: &store::Project, row: &bs::I
     env.set("CC_FLAGS", &flags);
 }
 
-async fn sync_shared_checkout(repo: &str) -> Result<(), String> {
+pub(super) async fn sync_shared_checkout(repo: &str) -> Result<(), String> {
     let root = workspace::git(repo, &["rev-parse", "--show-toplevel"]).await?;
     if !workspace::project_clean_status(&root).await?.is_empty() {
         return Err(
@@ -1432,6 +1432,9 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         let c = state.store.read()?;
         store::get(&c, name)?.ok_or_else(|| anyhow::anyhow!("project missing"))?
     };
+    if p.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        return super::lead::drive(state, &p).await;
+    }
     super::checkout::consolidate(state, &p).await?;
     state
         .store

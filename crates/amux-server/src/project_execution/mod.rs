@@ -3,6 +3,7 @@ pub(crate) mod acceptance;
 pub(crate) mod driver;
 pub(crate) mod graph;
 pub(crate) mod intake;
+pub(crate) mod lead;
 pub(crate) mod planner;
 pub(crate) mod preparation;
 pub mod store;

@@ -12005,7 +12005,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1109';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1113';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -46021,8 +46021,9 @@ function _projectCurrentTab() {
   const tab=_projectStorage('tab_'+(_projectsName||'')) || 'overview';
   return _projectTabs.some(([key])=>key===tab) ? tab : 'overview';
 }
-function _projectTabsHtml() {
-  return '<nav class="project-tabs" aria-label="Project sections">'+_projectTabs.map(([key,label])=>`<button type="button" class="project-tab" data-project-tab="${esc(key)}" onclick="_projectSetTab('${escJs(key)}')">${esc(label)}</button>`).join('')+'</nav>';
+function _projectTabsHtml(project) {
+  const lead=project?.policy?.mode==='lead';
+  return '<nav class="project-tabs" aria-label="Project sections">'+_projectTabs.filter(([key])=>!lead||key!=='dependencies').map(([key,label])=>`<button type="button" class="project-tab" data-project-tab="${esc(key)}" onclick="_projectSetTab('${escJs(key)}')">${esc(lead&&key==='tasks'?'Plan':label)}</button>`).join('')+'</nav>';
 }
 function _projectSetTab(tab) {
   _projectStorage('tab_'+(_projectsName||''),tab);
@@ -46038,9 +46039,9 @@ function _projectApplyTab() {
   });
 }
 function _projectDetailTemplate(project) {
-  return _projectTabsHtml()+
+  return _projectTabsHtml(project)+
     '<section id="project-panel-overview" class="project-tab-panel" data-project-panel="overview">'+
-      '<section class="project-command-center"><div class="project-status"><div><span class="project-eyebrow">Current state</span><strong id="project-state"></strong></div><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div class="project-metrics" aria-label="Project progress"><div><strong id="project-metric-outcomes">—</strong><span id="project-metric-outcomes-label">Outcomes verified</span></div><div><strong id="project-metric-tasks">—</strong><span>Unfinished tasks</span></div></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><div id="project-commands"></div><details class="project-update" data-open-key="update"><summary>Add or refine the outcome</summary><p>Describe the result you want and how you would recognize it as complete.</p><label class="project-composer-label" for="project-command">Your request</label><textarea id="project-command" rows="3" placeholder="Describe the result and how a human can verify the produced artifact" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div></details></section>'+
+      '<section class="project-command-center"><div class="project-status"><div><span class="project-eyebrow">Current state</span><strong id="project-state"></strong></div><button class="btn" id="project-pause" onclick="_projectPause()">Pause</button></div><div class="project-metrics" aria-label="Project progress"><div><strong id="project-metric-outcomes">—</strong><span id="project-metric-outcomes-label">Outcomes verified</span></div><div><strong id="project-metric-tasks">—</strong><span id="project-metric-tasks-label">Unfinished tasks</span></div></div><section class="project-summary" aria-label="Project progress and acceptance"><div id="project-progress" class="project-progress" role="status"></div><div id="project-acceptance" class="project-acceptance"></div></section><div id="project-commands"></div><details class="project-update" data-open-key="update"><summary>Add or refine the outcome</summary><p>Describe the result you want and how you would recognize it as complete.</p><label class="project-composer-label" for="project-command">Your request</label><textarea id="project-command" rows="3" placeholder="Describe the result and how a human can verify the produced artifact" oninput="_projectDraft()"></textarea><div class="project-send"><button class="btn primary" id="project-send" onclick="_projectSend()">Submit outcome</button><span id="project-receipt" role="status"></span></div></details></section>'+
       '<div id="project-overview" class="project-overview-grid"></div>'+
     '</section>'+
     '<section id="project-panel-tasks" class="project-tab-panel" data-project-panel="tasks" hidden><div class="project-workspace"><div id="project-cards" class="project-columns" aria-label="Project tasks"></div><aside id="project-inspector" class="project-inspector" tabindex="-1" aria-label="Task inspector"></aside></div></section>'+
@@ -46070,7 +46071,7 @@ function _projectAssets(data) {
   if(reviewAssets.length) {
     reviewAssets.forEach((entry,index)=>{
       const task=(data.cards||[]).find(card=>card.id===entry.task);
-      add({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:task?.title || (entry.task?'Task candidate evidence':'Project acceptance')}});
+      add({acceptance:true,entry,index,asset:entry.asset,card:{id:entry.task||'project',title:task?.title || (entry.task==='project-outcome'?'Produced project files':entry.task?'Task candidate evidence':'Project acceptance')}});
     });
     return assets;
   }
@@ -46149,7 +46150,7 @@ function _projectOutcomeVerdict(data) {
     summary=held.length+' task'+(held.length===1?' is':'s are')+' held before whole-project verification. The task board shows the exact reason and repair status.'+(budget && spent>=budget?' The observed token budget is exhausted; Amux will not start another paid worker turn.':'');
   } else if(criteria.length && (active>0 || pending>0 || state)) {
     tone='running';title=acc.candidate?'Verification still in progress':'Work in progress; verification has not started';
-    summary=acc.candidate?'The project is verified only after every configured check passes and the retained evidence is reviewed.':'No whole-project candidate exists yet. Task work and reports are not lifecycle proof.';
+    summary=acc.candidate?'The project is verified only after every configured check passes and the retained evidence is reviewed.':'No whole-project candidate exists yet. The lead’s progress report is not proof of completion.';
   } else if(cards.length && active===0) {
     tone='pending';title='Tasks finished, outcome not independently verified';
     summary='Task completion alone does not prove the requested outcome. Configure and run whole-project acceptance before approving it.';
@@ -46231,8 +46232,10 @@ function _projectRenderEvidencePanel(data) {
       return path?`<li><button class="project-link" onclick="${click}">${esc(path)}</button></li>`:'';
     }).join('');
     return _projectDisclosure('evidence_'+id,id+' · '+items.length+' artifact'+(items.length===1?'':'s')+' · '+_projectClip(items[0]?.card.title||'Evidence',70),'<ul class="project-asset-list">'+links+'</ul>');
-  }).join('') || '<p class="project-empty" role="status">No retained artifacts yet. Completed tasks should retain reviewable files.</p>';
-  const html='<section class="project-evidence-intro"><h3>Proof and review</h3><p>Check the complete outcome before approving it. Task files are supporting evidence; only whole-project checks establish that the requested result works.</p>'+_projectAcceptanceHtml(data.acceptance||{})+'</section><div class="project-evidence-groups"><h3>Retained files · '+assets.length+'</h3>'+rows+'</div>';
+  }).join('') || '<p class="project-empty" role="status">No retained files yet. The lead should produce reviewable evidence before requesting approval.</p>';
+  const lead=data.project?.policy?.mode==='lead';
+  const intro=lead?'Review the produced files and the independent checks before approving the whole outcome.':'Check the complete outcome before approving it. Task files are supporting evidence; only whole-project checks establish that the requested result works.';
+  const html='<section class="project-evidence-intro"><h3>Proof and review</h3><p>'+intro+'</p>'+_projectAcceptanceHtml(data.acceptance||{})+'</section><div class="project-evidence-groups"><h3>Retained files · '+assets.length+'</h3>'+rows+'</div>';
   if(el.dataset.sig!==html){el.dataset.sig=html;el.innerHTML=html;}
 }
 function _projectRenderDependencyPanel(data) {
@@ -46278,9 +46281,12 @@ async function _projectResumeWorker(name) {
   await resumeWorker(name);
   setTimeout(()=>openPeek(name),250);
 }
-function _projectWorkerAction(worker,runtime) {
+function _projectWorkerAction(worker,runtime,lead=false) {
   const name=worker?.name||'';
   if(!name) return '';
+  if(lead && runtime.lifecycle==='expired') return worker?.history_log
+    ? `<button class="btn" onclick="openFilePreview('${escJs(worker.history_log)}')">Review worker log</button>`
+    : '<span class="project-muted">Worker log unavailable; review the project plan and evidence.</span>';
   if(runtime.lifecycle==='expired' || worker?.resumable) return `<button class="btn" onclick="_projectResumeWorker('${escJs(name)}')">Resume and open</button>`;
   if(runtime.preparing) return '<span class="project-muted">Worker and checkout are being prepared automatically.</span>';
   if(runtime.lifecycle==='missing') return '<span class="project-muted">No worker env remains; retained task evidence is still listed.</span>';
@@ -46299,6 +46305,7 @@ function _projectWorkerAction(worker,runtime) {
 }
 function _projectRenderWorkersPanel(data) {
   const el=document.getElementById('project-workers-panel'); if(!el) return;
+  const lead=data.project?.policy?.mode==='lead';
   const workers=_projectWorkers(data).slice().sort((a,b)=>{
     const rank=w=>{const r=_projectWorkerRuntime(w);return r.running?0:r.lifecycle==='review'?1:r.lifecycle==='paused'?2:r.lifecycle==='expired'?4:3;};
     return rank(a)-rank(b) || String(a.name||'').localeCompare(String(b.name||''));
@@ -46312,10 +46319,11 @@ function _projectRenderWorkersPanel(data) {
     const checkout=worker.workspace_available===true ? workspace.path : '';
     const tasks=(worker.tasks||[]).slice().sort((a,b)=>Number(b.updated||0)-Number(a.updated||0)).map(t=>`<li><button class="project-link" onclick="_projectSetTab('tasks');setTimeout(()=>_projectSelectTask('${escJs(t.id)}'),0)">${esc(t.id)}</button><span>${esc(_projectClip(t.title||'',72))}</span><small>${esc(t.display_label||t.phase||t.status||'')}${t.stage?' · '+esc(t.stage):''}</small></li>`).join('');
     const checkoutHtml=checkout?_projectCheckoutPathButton(checkout):integration?.status==='integrated'?'Removed after publish · '+_projectCheckoutPathButton(workspace.repo||env.dir,'Open repository'):runtime.preparing?'Preparing checkout':'Checkout unavailable';
-    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd><dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd><dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+checkoutHtml+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||(runtime.preparing?'Not assigned yet':'Not recorded'))+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
-    const details=_projectDisclosure('worker_'+worker.name,'Checkout, model and task history',facts+'<ul class="project-run-list">'+(tasks||'<li><span>No project tasks recorded for this worker</span></li>')+'</ul>');
-    return '<article class="project-overview-card project-worker-card"><div class="project-card-heading"><h3>'+esc(worker.name||'worker')+'</h3><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></div><p>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.retained_assets||0))+' files</p><div class="project-worker-actions">'+_projectWorkerAction(worker,runtime)+'</div>'+details+'</article>';
-  }).join('') || '<p class="project-empty" role="status">No workers have been assigned to this project yet. Workers appear here after project tasks are claimed, and remain listed after pause, archive or expiration.</p>';
+    const facts='<dl class="project-context"><dt>Lifecycle</dt><dd><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></dd>'+(lead?'': '<dt>Tasks</dt><dd>'+esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.task_count||0))+' total</dd>')+'<dt>Model</dt><dd>'+esc(model||'Not recorded')+'</dd><dt>Checkout</dt><dd>'+checkoutHtml+'</dd><dt>Branch</dt><dd>'+esc(workspace.branch||(runtime.preparing?'Not assigned yet':'Not recorded'))+'</dd><dt>Integration</dt><dd>'+esc(integration?.status || 'No integration receipt')+(integration?.head?' · '+esc(String(integration.head).slice(0,12)):'')+'</dd></dl>';
+    const details=_projectDisclosure('worker_'+worker.name,lead?'Checkout and model':'Checkout, model and task history',facts+(lead?'':'<ul class="project-run-list">'+(tasks||'<li><span>No project tasks recorded for this worker</span></li>')+'</ul>'));
+    const summary=lead?'Lead worker · '+esc(String((data.acceptance?.review_assets||[]).length))+' review files':esc(String(worker.verified_tasks||0))+' verified · '+esc(String(worker.active_tasks||0))+' active · '+esc(String(worker.retained_assets||0))+' files';
+    return '<article class="project-overview-card project-worker-card"><div class="project-card-heading"><h3>'+esc(worker.name||'worker')+'</h3><span class="project-status-chip '+esc(runtime.lifecycle)+'">'+esc(runtime.label)+'</span></div><p>'+summary+'</p><div class="project-worker-actions">'+_projectWorkerAction(worker,runtime,lead)+'</div>'+details+'</article>';
+  }).join('') || '<p class="project-empty" role="status">'+(lead?'The project lead is being prepared.':'No workers have been assigned to this project yet.')+'</p>';
   const html=closeout+rows;
   if(el.dataset.sig!==html){el.dataset.sig=html;el.innerHTML=html;}
 }
@@ -46330,7 +46338,7 @@ async function _projectsLoad() {
   const current=()=>token===_projectsToken && activeView==='projects';
   const root=document.getElementById('projects-view');
   if(!document.getElementById('project-selector')) {
-    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Turn a requested outcome into accountable tasks, a verified candidate, human review and one approved publish.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
+    root.innerHTML='<div class="project-heading project-hero"><div><h2>Projects</h2><p>Give one lead worker an outcome. Review its verified result before publishing.</p></div><label class="project-select-control">Project <select id="project-selector" onchange="_projectChoose(this.value)"></select></label><button class="btn primary" onclick="_projectChoose(\'\')">+ New project</button></div><div id="project-error-box" class="project-error-box"><p id="project-error" role="alert"></p><button class="btn" id="project-error-retry" hidden onclick="_projectRetryNow()">Retry now</button></div><div class="project-shell"><aside id="project-list" class="project-list" aria-label="Projects"></aside><main id="project-detail" class="project-detail"></main></div>';
     _projectsName=_projectStorage('selected');
   }
   try {
@@ -46343,7 +46351,7 @@ async function _projectsLoad() {
     if(!current()) return;
     _projectRenderInventory(inventory.projects);
     if(!_projectsName) {
-      if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=(inventory.projects.length?'':'<p class="project-empty" role="status">No projects yet. Create one to describe an outcome and follow its tasks and evidence.</p>')+_projectConfig(null)
+      if(!document.getElementById('project-config')) document.getElementById('project-detail').innerHTML=(inventory.projects.length?'':'<p class="project-empty" role="status">No projects yet. Create one to describe an outcome and review its verified result.</p>')+_projectConfig(null)
       if(document.getElementById('project-config') && !document.getElementById('project-config').dataset.restored) {document.getElementById('project-config').dataset.restored='1';_projectSettingsRestore();}
     } else {
       const expected=_projectsName;const data=await _projectRequest('/'+encodeURIComponent(expected),'GET',undefined,abort.signal);
@@ -46391,7 +46399,8 @@ function _projectEffortOptions(value) {
   return ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(v=>'<option value="'+esc(v)+'" '+(v===(value||'')?'selected':'')+'>'+(v?esc(v):'Provider default')+'</option>').join('');
 }
 function _projectConfig(project) {
-  const p=project?.policy || {repository:'',worktree:true,coordinator:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor_full_host_access:false,verify_command:'',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and task evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  const p=project?.policy || {repository:'',mode:'lead',worktree:true,coordinator:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor:{provider:'codex',model:'gpt-6-luna',effort:'low'},executor_full_host_access:false,verify_command:'git diff --check',max_executors:1,max_attempts:2,acceptance:{criteria:[{id:'candidate-check',requirement:'The committed project candidate passes the baseline repository check',verifier:{type:'command',id:'candidate-check',command:'git diff --check'}},{id:'human-review',requirement:'A person reviewed the produced artifacts against the requested outcome',verifier:{type:'human',id:'artifact-review',instructions:'Open the retained reports, screenshots, videos and project evidence below. Approve only when the integrated result matches the requested outcome.'}}]}};
+  const lead=p.mode==='lead';
   // A new project's Repository starts with the SAME default the create-worker
   // form's Working directory field uses (Ethan 2026-09-23) instead of an
   // empty required field: the last-browsed directory, or /root in cloud mode.
@@ -46408,7 +46417,7 @@ function _projectConfig(project) {
   const draftBlock=project?'':(
     '<div class="project-draft-box">'+
       '<label>Describe what you want, and this fills in the fields below<textarea id="project-draft-input" rows="3" placeholder="e.g. Add a /health endpoint that checks the DB connection and returns 503 if it is down, with a test that hits it"></textarea></label>'+
-      hint('Fills in the project name, verification command and acceptance requirement from your description — review everything below before creating. Uses your planning model and repository-scoped spec references. Proposed whole-project verifier scripts become deliverables; review their scope before creating.')+
+      hint('Fills in the project name, verification command and acceptance requirement from your description. Review them before creating.')+
       '<button class="btn" type="button" id="project-draft-btn" onclick="_projectDraftFields()">Fill in the fields</button> <span id="project-draft-state" role="status"></span>'+
     '</div>'
   );
@@ -46417,23 +46426,22 @@ function _projectConfig(project) {
     '<div class="project-form-grid">'+
     '<label>Project name<input id="project-name" required pattern="[a-z0-9][a-z0-9_\\-]{0,47}" value="'+esc(project?.name || '')+'" '+(project?'readonly':'')+'></label>'+
     '<label>Repository<span class="ac-wrap" style="display:block"><input id="project-repository" required placeholder="/absolute/path/to/repository" autocomplete="off" autocorrect="off" spellcheck="false" value="'+esc(p.repository)+'" oninput="repoAcFetch(this.value)" onfocus="repoAcFetch(this.value)" onkeydown="repoAcKeydown(event)"><span id="project-repo-ac-list" class="ac-list"></span></span>'+hint('The absolute path to the git checkout this project works in.')+'</label>'+
-    '<label>Executor provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('Which AI does the work on each task.')+'</label>'+
-    '<label>Executor model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
-    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+hint('Baseline check after each task, in addition to its own acceptance checks. Whole-project runtime proof is defined below.')+
+    '<label>'+(lead?'Lead worker':'Executor')+' provider<select id="project-provider" onchange="_projectModelOptions(\'executor\',this.value)">'+['claude','codex','gemini','ollama'].map(v=>'<option '+(v===p.executor.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint(lead?'One persistent worker owns this project until verification or a real human decision.':'Which AI does the work on each task.')+'</label>'+
+    '<label>'+(lead?'Lead worker':'Executor')+' model<input id="project-executor" list="project-executor-models" required value="'+esc(p.executor.model)+'"><datalist id="project-executor-models">'+_projectModelSuggestions(p.executor.provider)+'</datalist></label>'+
+    '<label>Verification command<input id="project-verify" required placeholder="./verify.sh" value="'+esc(p.verify_command)+'"></label>'+hint(lead?'Repository check for the committed candidate. The independent outcome checks below decide whether it is ready for review.':'Baseline check after each task, in addition to its own acceptance checks. Whole-project runtime proof is defined below.')+
     '</div>'+
-    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" data-default="'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label>'+hint('What a task must prove to count as done. This runs independently on the composed, unpublished candidate: a runtime/e2e claim needs a fresh execution receipt, a raw measurement per stage, and retained evidence. Human approval publishes that exact candidate to <code>origin/main</code>.')+
+    '<label>Whole-project acceptance contract (JSON)<textarea id="project-contract" rows="8" data-default="'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'" placeholder="{&quot;criteria&quot;:[{&quot;id&quot;:&quot;e2e&quot;,&quot;requirement&quot;:&quot;The end-to-end lifecycle passes&quot;,&quot;verifier&quot;:{&quot;type&quot;:&quot;execution&quot;,&quot;id&quot;:&quot;e2e-suite&quot;,&quot;command&quot;:&quot;./scripts/e2e.sh&quot;,&quot;receipt&quot;:&quot;artifacts/execution.json&quot;,&quot;required_stages&quot;:[&quot;build&quot;,&quot;lifecycle&quot;],&quot;assertions&quot;:[{&quot;stage&quot;:&quot;build&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/build/passed&quot;,&quot;operator&quot;:&quot;equals&quot;,&quot;expected&quot;:&quot;true&quot;},{&quot;stage&quot;:&quot;lifecycle&quot;,&quot;artifact&quot;:&quot;artifacts/raw.json&quot;,&quot;pointer&quot;:&quot;/objects&quot;,&quot;operator&quot;:&quot;at_least&quot;,&quot;expected&quot;:&quot;100&quot;}]},&quot;evidence&quot;:[&quot;artifacts/execution.json&quot;,&quot;artifacts/raw.json&quot;]}]}">'+esc(p.acceptance?JSON.stringify(p.acceptance,null,2):'')+'</textarea></label>'+hint('The exact checks Amux runs on the unpublished candidate. A runtime/e2e claim needs fresh measured evidence. Human approval publishes only the reviewed candidate to <code>origin/main</code>.')+
     '<details class="project-settings"><summary>Advanced settings</summary><div class="project-form-grid">'+
-    '<label>Project checkout<select id="project-worktree" onchange="_projectCheckoutChanged()"><option value="1" '+(worktree?'selected':'')+'>One project worktree (default)</option><option value="0" '+(!worktree?'selected':'')+'>Shared project checkout (single executor)</option></select></label>'+hint('All project workers share one branch and checkout under the repository’s .worktrees folder. Tasks execute one at a time to prevent conflicting edits.')+
-    '<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('The AI that decomposes your request into tasks, before any executor runs.')+'</label>'+
-    '<label>Planning model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label>'+
-    '<label>Planning effort<select id="project-coordinator-effort">'+_projectEffortOptions(coordinatorEffort)+'</select></label>'+
+    '<label>Project checkout<select id="project-worktree" onchange="_projectCheckoutChanged()"><option value="1" '+(worktree?'selected':'')+'>One project worktree (default)</option><option value="0" '+(!worktree?'selected':'')+'>Shared project checkout (single executor)</option></select></label>'+hint(lead?'The lead owns one branch and checkout under the repository’s .worktrees folder.':'Project workers share one branch and checkout under the repository’s .worktrees folder.')+
+    (lead?'<input id="project-coordinator-provider" type="hidden" value="'+esc(p.coordinator.provider)+'">':'<label>Planning model provider<select id="project-coordinator-provider" onchange="_projectModelOptions(\'coordinator\',this.value)">'+['claude','codex'].map(v=>'<option '+(v===p.coordinator.provider?'selected':'')+'>'+v+'</option>').join('')+'</select>'+hint('The AI that decomposes your request into tasks, before any executor runs.')+'</label>')+
+    (lead?'<input id="project-coordinator" type="hidden" value="'+esc(p.coordinator.model)+'"><input id="project-coordinator-effort" type="hidden" value="'+esc(coordinatorEffort)+'">':'<label>Planning model<input id="project-coordinator" list="project-coordinator-models" required value="'+esc(p.coordinator.model)+'"><datalist id="project-coordinator-models">'+_projectModelSuggestions(p.coordinator.provider)+'</datalist></label><label>Planning effort<select id="project-coordinator-effort">'+_projectEffortOptions(coordinatorEffort)+'</select></label>')+
     '<label>Executor effort<select id="project-executor-effort">'+_projectEffortOptions(executorEffort)+'</select></label>'+
     '<label>Codex executor host tools<select id="project-executor-host-access"><option value="0" '+(!p.executor_full_host_access?'selected':'')+'>Sandboxed (default)</option><option value="1" '+(p.executor_full_host_access?'selected':'')+'>Full host access (for local Docker)</option></select></label>'+hint('Codex is sandboxed by default: no access to your host\'s Docker, devices or network beyond the checkout. Choose Full host access only if a task must control local Docker or another host resource directly.')+
     '<input id="project-capacity" type="hidden" value="1">'+
     '<label>Timeout per verification command (seconds)<input id="project-verification-timeout" type="number" required min="1" max="3600" step="1" value="'+esc(String(p.verification_timeout_secs ?? 600))+'"></label>'+
-    '<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+hint('How many times a task retries against the verification command before it is flagged for human review.')+
+    (lead?'<input id="project-attempts" type="hidden" value="'+esc(String(p.max_attempts))+'">':'<label>Attempts per task<input id="project-attempts" type="number" min="1" max="5" value="'+esc(String(p.max_attempts))+'"></label>'+hint('How many times a task retries against the verification command before it is flagged for human review.'))+
     '<label>Observed token stop limit<input id="project-token-budget" type="number" min="1" value="'+esc(String(p.token_budget || ''))+'"></label>'+
-    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label>'+hint('amux stops a task and flags it for review once its observed usage crosses either limit — a running provider can exceed them before that check lands. Leave blank for no limit.')+
+    '<label>Estimated dollar stop limit<input id="project-cost-budget" type="number" min="0.01" step="0.01" value="'+esc(String(p.cost_budget_usd || ''))+'"></label>'+hint('Amux pauses the lead and flags the project for review once observed usage crosses either limit. A running turn can exceed the limit before the check lands. Leave blank for no limit.')+
     '</div></details>'+
     '<button class="btn primary" type="submit">'+(project?'Save settings':'Create project')+'</button> <button class="btn" type="button" id="project-settings-cancel" onclick="_projectSettingsCancel()">Cancel</button> <span id="project-settings-state" role="status"></span></form>';
 }
@@ -46447,7 +46455,10 @@ async function _projectDraftFields() {
   if (btn) btn.disabled=true;
   if (state) state.textContent='Thinking…';
   try {
-    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:document.getElementById('project-coordinator-provider').value,model:document.getElementById('project-coordinator').value.trim(),effort:document.getElementById('project-coordinator-effort').value||undefined}}),signal:AbortSignal.timeout(510000)});
+    const provider=document.getElementById('project-provider').value;
+    const draftProvider=['codex','claude'].includes(provider)?provider:document.getElementById('project-coordinator-provider').value;
+    const draftModel=draftProvider===provider?document.getElementById('project-executor').value.trim():document.getElementById('project-coordinator').value.trim();
+    const r=await fetch(API+'/api/projects/draft',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeaders()),body:JSON.stringify({description,repository:document.getElementById('project-repository').value.trim(),coordinator:{provider:draftProvider,model:draftModel,effort:document.getElementById('project-executor-effort').value||undefined}}),signal:AbortSignal.timeout(510000)});
     const d=await r.json();
     if (!r.ok || !d.measured) { if(state) state.textContent=d.why_unmeasured||d.error||'Could not draft from that description'; return; }
     const nameEl=document.getElementById('project-name');
@@ -46506,7 +46517,7 @@ async function _projectSave() {
   const executor={provider:value('provider'),model:value('executor')};
   if(value('coordinator-effort')) coordinator.effort=value('coordinator-effort');
   if(value('executor-effort')) executor.effort=value('executor-effort');
-  const policy={repository:value('repository'),worktree,coordinator,executor,executor_full_host_access:value('executor-host-access')==='1',verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:1,max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
+  const policy={repository:value('repository'),mode:current?.policy.mode||'lead',worktree,coordinator,executor,executor_full_host_access:value('executor-host-access')==='1',verify_command:value('verify'),verification_timeout_secs:Number(value('verification-timeout')),max_executors:1,max_attempts:Number(value('attempts')),token_budget:value('token-budget')?Number(value('token-budget')):null,cost_budget_usd:value('cost-budget')?Number(value('cost-budget')):null,acceptance,enabled:true,paused:current?.policy.paused || false};
   const description=current?'':(document.getElementById('project-draft-input')?.value||'').trim();
   const pendingKey='create_'+name;
   let initial;
@@ -46611,7 +46622,52 @@ function _projectEmptyTasksHtml(data) {
   const intake=_projectIntakeState(data);
   return '<p class="project-empty" role="status">'+esc(intake?.message || 'No tasks yet. Submit an outcome and the planning model will break it into tasks.')+(intake?' <button type="button" class="btn" onclick="_projectSetTab(\'overview\')">View request</button>':'')+'</p>';
 }
+function _projectRenderLead(data) {
+  const p=data.project, lead=data.lead||{}, plan=Array.isArray(lead.plan)?lead.plan:[], acc=data.acceptance||{};
+  const worker=_projectWorkers(data)[0];
+  const finalizing=acc.state==='accepted' && !!worker?.workspace_available;
+  const state=finalizing?'Published · finishing cleanup':acc.state==='accepted'?'Approved and published':acc.state==='awaiting_human'?'Ready for your review':p.policy.paused?'Paused':
+    ({needs_input:'Needs your input',needs_approval:'Needs your approval',blocked_external:'Waiting on an external system',ready_for_verification:'Checking the result',working:'Working on the project'})[lead.state]||'Preparing lead worker';
+  document.getElementById('project-state').textContent=state;
+  document.getElementById('project-pause').textContent=p.policy.paused?'Resume':'Pause';
+  document.getElementById('project-pause').hidden=acc.state==='accepted';
+  document.getElementById('project-pause').disabled=p.policy.paused&&!data.pause_settled;
+  const done=plan.filter(s=>s.state==='done').length;
+  document.getElementById('project-metric-outcomes').textContent=done+' / '+plan.length;
+  document.getElementById('project-metric-outcomes-label').textContent='Plan steps';
+  document.getElementById('project-metric-tasks').textContent=String(plan.filter(s=>s.state==='working').length);
+  document.getElementById('project-metric-tasks-label').textContent='Steps in progress';
+  const accepted=acc.state==='accepted',review=acc.state==='awaiting_human';
+  document.querySelector('#project-panel-overview .project-update').hidden=accepted;
+  document.getElementById('project-progress').textContent=accepted?'The outcome passed independent checks, was approved, and was published. Review files and worker history remain available.':lead.note||'The lead worker will report its current plan here. Independent checks and human review decide when the outcome is delivered.';
+  document.getElementById('project-acceptance').innerHTML=accepted?_projectCloseoutBanner(data,true):review?'<p class="project-wait">Automated checks passed. Review the evidence before publishing.</p>':'';
+  const pending=(data.commands||[]).filter(c=>c.pending);
+  document.getElementById('project-commands').innerHTML=pending.map(c=>'<div class="project-intake"><strong>Request '+Number(c.id)+' · Queued for lead</strong><p>'+esc(_projectClip(c.text,400))+'</p></div>').join('');
+  document.getElementById('project-usage').textContent=(data.usage?.measured?Number(data.usage.tokens||0).toLocaleString()+' observed tokens':'Token usage not yet measured')+' · One lead worker · No AMUX task leases';
+  const checkout=worker?.workspace_available?worker.workspace?.path:null;
+  const workspace=checkout?_projectCheckoutPathButton(checkout):accepted?'Project worktree removed after publication':'Checkout preparing';
+  const next=review?'Review the evidence and decide':finalizing?'Published to main; finishing worker and worktree cleanup':accepted?'Published to main; worker history and evidence retained':state;
+  document.getElementById('project-overview').innerHTML=_projectOutcomeCard(data)+
+    '<section class="project-overview-card project-next"><h3>'+(accepted?'Result':'Next step')+'</h3><p>'+esc(next)+'</p>'+(!accepted&&lead.note?'<p>'+esc(lead.note)+'</p>':'')+
+    (worker?.lifecycle==='expired'&&worker.history_log?'<button class="btn" onclick="openFilePreview(\''+escJs(worker.history_log)+'\')">Review worker log</button>':worker&&worker.lifecycle!=='expired'?'<button class="btn" onclick="openPeek(\''+escJs(worker.name)+'\')">Open lead worker</button>':'')+'</section>'+
+    '<section class="project-overview-card"><h3>Current plan</h3><p>'+done+' of '+plan.length+' steps reported complete. The lead may revise these as it learns; only whole-project checks establish success.</p><button class="project-link" onclick="_projectSetTab(\'tasks\')">View plan →</button></section>'+
+    '<section class="project-overview-card"><h3>Workspace</h3><p>'+workspace+'</p><p>One checkout and one lead worker for this project.</p></section>'+
+    _projectDisclosure('lead_history','Plan and progress history',((data.lead_history||[]).map(e=>'<article class="project-run-list"><strong>'+esc(String(e.progress?.state||'Update').replaceAll('_',' '))+'</strong><p>'+esc(_projectClip(e.progress?.note||'',400))+'</p><small>'+esc(new Date(Number(e.ts||0)*1000).toLocaleString())+'</small></article>').join('')||'<p>No progress reported yet.</p>'));
+  const columns=[['working','Working'],['pending','Next'],['done','Done'],['skipped','Changed plan']];
+  document.getElementById('project-cards').innerHTML=columns.map(([key,label])=>{
+    const steps=plan.filter(s=>s.state===key);
+    return '<section class="project-column" role="group" aria-label="'+label+' plan steps"><h3>'+label+' <span>'+steps.length+'</span></h3><div class="project-column-cards">'+
+      (steps.map(s=>'<article class="project-card"><strong>'+esc(s.title)+'</strong></article>').join('')||'<p class="project-muted">Nothing here</p>')+'</div></section>';
+  }).join('');
+  document.getElementById('project-inspector').innerHTML='<p class="project-muted">The plan is a live view of the lead worker’s thinking. The outcome contract and evidence are in Evidence.</p>';
+  _projectRenderWorkersPanel(data);
+  _projectRenderEvidencePanel(data);
+  _projectApplyTab();
+}
 function _projectRender(data) {
+  if(data.project?.policy?.mode==='lead') { _projectRenderLead(data); return; }
+  document.getElementById('project-pause').hidden=false;
+  document.querySelector('#project-panel-overview .project-update').hidden=false;
   const p=data.project,u=data.usage;
   const retirement=data.acceptance?.executor_retirement;
   const openCards=data.cards.filter(c=>!['verified','closed'].includes(c.phase));
@@ -46723,7 +46779,7 @@ function _projectCloseoutBanner(data,compact=false) {
   const note=retained>0
     ? retained+' retained worker'+(retained===1?'':'s')+' can be finalized. Expired worker records stay in this project for retrospective review.'
     : (expired>0 ? expired+' worker'+(expired===1?' is':'s are')+' expired and '+(expired===1?'remains':'remain')+' reviewable here.' : 'No retained project workers need closeout.');
-  return '<div class="project-closeout '+(compact?'compact':'')+'"><div><strong>Finalize project</strong><p>'+esc(note)+'</p></div><button class="btn primary" id="project-closeout" onclick="_projectCloseout()">'+esc(label)+'</button></div>';
+  return '<div class="project-closeout '+(compact?'compact':'')+'"><div><strong>'+(retained>0?'Finish project cleanup':'Project complete')+'</strong><p>'+esc(note)+'</p></div>'+(retained>0?'<button class="btn primary" id="project-closeout" onclick="_projectCloseout()">'+esc(label)+'</button>':'')+'</div>';
 }
 async function _projectAcceptanceDecision(criterion,decision) {
   const acc=_projectsData?.acceptance;if(!acc?.fingerprint)return;

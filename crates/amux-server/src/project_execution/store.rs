@@ -75,6 +75,16 @@ pub fn save(
     if let Some(contract) = &policy.acceptance {
         contract.validate().map_err(anyhow::Error::msg)?;
     }
+    if policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        let contract=policy.acceptance.as_ref().ok_or_else(||anyhow::anyhow!("lead projects need an independent acceptance contract"))?;
+        anyhow::ensure!(contract.criteria.iter().any(|c|c.verifier.is_human()),"lead projects need human artifact review");
+        anyhow::ensure!(contract.criteria.iter().any(|c|!c.verifier.is_human()),"lead projects need at least one automated outcome check");
+        anyhow::ensure!(contract.criteria.iter().any(|c| match &c.verifier {
+            amux_core::project::ContractVerifier::Command { command, .. } => !matches!(command.trim(), "git diff --check" | "true" | ":"),
+            amux_core::project::ContractVerifier::Execution { .. } => true,
+            amux_core::project::ContractVerifier::Human { .. } => false,
+        }), "replace the starter git diff --check with an outcome-specific automated check before creating a lead project");
+    }
     let current = get(conn, name)?;
     let revision = current.as_ref().map(|p| p.revision).unwrap_or(0);
     // The contract revision is server-owned: it moves only when the criteria change, so a receipt
@@ -104,6 +114,11 @@ pub fn save(
         });
     }
     if let Some(current) = &current {
+        if current.policy.mode != policy.mode {
+            let has_intent:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM cmd_history WHERE project_group=?1)",[name],|r|r.get(0))?;
+            let has_tasks:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM issues WHERE project_group=?1)",[name],|r|r.get(0))?;
+            anyhow::ensure!(!has_intent && !has_tasks,"project execution mode cannot change after work begins; create a new project for the lead model");
+        }
         if (current.policy.paused || !current.policy.enabled) && !policy.paused && policy.enabled {
             let stopping = bs::project_issues(conn, name)?
                 .iter()
@@ -478,6 +493,31 @@ fn project_workers(rows: &[bs::IssueRow], plans: &[super::planner::CardPlan]) ->
 
 pub fn board(conn: &Connection, name: &str) -> anyhow::Result<Value> {
     let project = get(conn, name)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
+    if project.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        let home=crate::config::amux_home();
+        let worker=super::checkout::owner(&home,name);
+        let (lifecycle,env)=project_worker_lifecycle(&home,&worker);
+        let workspace=crate::fanout_workspace::load(&home,&worker);
+        let available=workspace.as_ref().is_some_and(|w|std::path::Path::new(&w.path).is_dir());
+        let history_log=home.join("logs").join(format!("{worker}.log"));
+        let history_log=history_log.is_file().then(||history_log.to_string_lossy().into_owned());
+        let integration=crate::fanout_workspace::integration_status(&home,&worker);
+        let lead=super::lead::latest(conn,name)?.unwrap_or(json!({"state":"pending","plan":[]}));
+        let mut history_query=conn.prepare("SELECT id,ts,data FROM session_events WHERE session=?1 AND type='project.lead_progress' ORDER BY id DESC LIMIT 20")?;
+        let lead_history=history_query.query_map([format!("project:{name}")],|r|{
+            let raw:String=r.get(2)?;
+            Ok(json!({"id":r.get::<_,i64>(0)?,"ts":r.get::<_,f64>(1)?,"progress":serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null)}))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut acceptance=super::acceptance::status(conn,&project)?;
+        acceptance["executor_retirement"]=super::acceptance::retirement_allowed(conn,name)?;
+        return Ok(json!({"project":project,"pause_settled":lifecycle!="active","cards":[],"lead":lead,"lead_history":lead_history,
+            "workers":[{"name":worker,"lifecycle":lifecycle,"openable":lifecycle!="missing" && lifecycle!="expired",
+                "resumable":lifecycle=="expired","task_count":0,"verified_tasks":0,"active_tasks":0,
+                "retained_assets":0,"env":env,"workspace":workspace,"workspace_available":available,
+                "integration":integration,"history_log":history_log,"tasks":[]}],"migrations":[],
+            "commands":super::intake::receipts(conn,name)?,"acceptance":acceptance,
+            "measured":true,"n_considered":1,"usage":super::usage::summary(conn,name)?}));
+    }
     let rows = bs::project_issues(conn, name)?;
     let plans = super::planner::plan(conn, &project)?;
     let mut q=conn.prepare("SELECT idem,type,data FROM session_events WHERE session=?1 AND type IN ('project.migrated','project.migration_rolled_back') ORDER BY id DESC LIMIT 20")?;

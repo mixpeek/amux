@@ -23,7 +23,11 @@ pub fn receive(
         !text.trim().is_empty() && text.len() <= 100_000,
         "command must contain 1..100000 bytes"
     );
-    anyhow::ensure!(store::get(conn, project)?.is_some(), "project not found");
+    let project_policy = store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project not found"))?;
+    if project_policy.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        anyhow::ensure!(super::acceptance::status(conn, &project_policy)?["state"] != "accepted",
+            "this project is published; create a new project for another outcome");
+    }
     let prior:Option<(i64,String)>=conn.query_row("SELECT id,text FROM cmd_history WHERE session='project:'||project_group AND type='user' AND project_group=?1 AND json_extract(client_meta,'$.idempotency_key')=?2",params![project,key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     if let Some((id, original)) = prior {
         anyhow::ensure!(
@@ -40,7 +44,8 @@ pub fn receive(
     }
     // cmd_history.ts is milliseconds everywhere else. A seconds timestamp
     // makes a new project command look ancient to message retention.
-    conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,delivery,capture_pending,project_group,client_meta) VALUES(?1,'user',?2,?3,'operator','board',1,?4,?5)",params![text,format!("project:{project}"),chrono::Utc::now().timestamp_millis(),project,json!({"idempotency_key":key}).to_string()])?;
+    let delivery = if project_policy.policy.mode == amux_core::project::ProjectExecutionMode::Lead { "lead" } else { "board" };
+    conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,delivery,capture_pending,project_group,client_meta) VALUES(?1,'user',?2,?3,'operator',?4,1,?5,?6)",params![text,format!("project:{project}"),chrono::Utc::now().timestamp_millis(),delivery,project,json!({"idempotency_key":key}).to_string()])?;
     let id = conn.last_insert_rowid();
     Ok((
         id,
@@ -111,7 +116,7 @@ pub(crate) async fn interpret(
 fn pending_receipts(conn: &Connection, now: i64) -> rusqlite::Result<Vec<(i64, String)>> {
     // Exhausted malformed responses and duplicates waiting on them must not
     // monopolize the bounded recovery batch and starve newer accepted commands.
-    let mut q=conn.prepare("SELECT c.id,c.project_group FROM cmd_history c JOIN group_config g ON g.name=c.project_group WHERE c.session='project:'||c.project_group AND c.type='user' AND c.capture_pending!=0 AND c.intake_retry_at<=?1 AND json_extract(g.execution_policy,'$.paused')!=1 AND CASE WHEN json_extract(c.intake_result,'$.waiting_on') IS NOT NULL THEN EXISTS(SELECT 1 FROM cmd_history p WHERE p.id=json_extract(c.intake_result,'$.waiting_on') AND p.capture_pending=0) ELSE c.intake_attempts<2+coalesce(json_array_length(c.client_meta,'$.intake_retries'),0) OR json_extract(c.intake_result,'$.state')='prepared' OR (json_extract(c.intake_result,'$.state')='received' AND (json_extract(c.intake_result,'$.error') IS NULL OR coalesce(json_extract(c.intake_result,'$.validation_revision'),0)!=?2)) END ORDER BY c.id LIMIT 2")?;
+    let mut q=conn.prepare("SELECT c.id,c.project_group FROM cmd_history c JOIN group_config g ON g.name=c.project_group WHERE c.session='project:'||c.project_group AND c.type='user' AND c.capture_pending!=0 AND c.intake_retry_at<=?1 AND json_extract(g.execution_policy,'$.paused')!=1 AND coalesce(json_extract(g.execution_policy,'$.mode'),'tasks')='tasks' AND CASE WHEN json_extract(c.intake_result,'$.waiting_on') IS NOT NULL THEN EXISTS(SELECT 1 FROM cmd_history p WHERE p.id=json_extract(c.intake_result,'$.waiting_on') AND p.capture_pending=0) ELSE c.intake_attempts<2+coalesce(json_array_length(c.client_meta,'$.intake_retries'),0) OR json_extract(c.intake_result,'$.state')='prepared' OR (json_extract(c.intake_result,'$.state')='received' AND (json_extract(c.intake_result,'$.error') IS NULL OR coalesce(json_extract(c.intake_result,'$.validation_revision'),0)!=?2)) END ORDER BY c.id LIMIT 2")?;
     let rows = q
         .query_map(params![now,board_lifecycle::INTAKE_VALIDATION_REVISION], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect();

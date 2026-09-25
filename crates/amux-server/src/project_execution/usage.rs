@@ -6,8 +6,13 @@ use serde_json::{json, Value};
 
 // Disjoint indexed branches preserve task ownership without scanning the ledger.
 const EXECUTION_USAGE_SQL: &str = "WITH ownership AS (
- SELECT session AS worker,min(ts) AS since FROM session_events INDEXED BY idx_sev_session
- WHERE session IN (SELECT value FROM json_each(?2)) AND type='project.claimed' AND json_extract(data,'$.project_group')=?1 GROUP BY session
+ SELECT worker,min(ts) AS since FROM (
+   SELECT session AS worker,ts FROM session_events INDEXED BY idx_sev_session
+   WHERE session IN (SELECT value FROM json_each(?2)) AND type='project.claimed' AND json_extract(data,'$.project_group')=?1
+   UNION ALL
+   SELECT json_extract(data,'$.worker') AS worker,ts FROM session_events INDEXED BY idx_sev_session
+   WHERE session='project:'||?1 AND type='project.lead_delivery' AND json_extract(data,'$.worker') IN (SELECT value FROM json_each(?2))
+ ) GROUP BY worker
 ) SELECT model,count(*),sum(input),sum(cache_read),sum(cache_write),sum(output),sum(outside),sum(CASE WHEN outside=1 THEN input+cache_read+cache_write+output ELSE 0 END) FROM (
  SELECT l.model,l.input,l.cache_read,l.cache_write,l.output,0 AS outside
  FROM issues i CROSS JOIN token_ledger l INDEXED BY idx_ledger_task ON l.task=i.id WHERE i.project_group=?1
@@ -30,6 +35,16 @@ fn executor_owners(conn: &Connection, name: &str) -> anyhow::Result<Vec<String>>
         .query_map([name], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut owners = Vec::new();
+    if super::store::get(conn,name)?.is_some_and(|p|p.policy.mode==amux_core::project::ProjectExecutionMode::Lead) {
+        let worker=super::checkout::owner(&home,name);
+        let path=home.join("sessions").join(format!("{worker}.env"));
+        let source=if path.exists(){path}else{path.with_extension("env.reaped")};
+        let env=crate::config::parse_env_file(&source);
+        if env.get("CC_PROJECT").map(String::as_str)==Some(name)
+            && env.get("CC_PROJECT_LEAD").map(String::as_str)==Some("1") {
+            owners.push(worker);
+        }
+    }
     for worker in workers {
         // Sharing is intentional only for the registered project checkout.
         // Accidental aliases of individual worker checkouts stay ambiguous.

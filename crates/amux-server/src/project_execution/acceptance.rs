@@ -231,6 +231,18 @@ fn review_assets(
     let mut assets = Vec::new();
     let mut seen = HashSet::new();
     if let Some(acceptance) = acceptance {
+        if let Some(lead) = acceptance["lead_assets"].as_array() {
+            for asset in lead {
+                let Some(key) = asset_key(asset) else { continue; };
+                if !seen.insert(key) { continue; }
+                assets.push(json!({
+                    "task": "project-outcome",
+                    "title": "Produced project files",
+                    "worker": super::checkout::owner(&crate::config::amux_home(), project),
+                    "asset": asset,
+                }));
+            }
+        }
         for result in acceptance["results"].as_array().into_iter().flatten() {
             let criterion = result["criterion"].as_str().unwrap_or("acceptance");
             for asset in result["evidence"].as_array().into_iter().flatten() {
@@ -275,6 +287,9 @@ fn review_assets(
 /// Every task is Verified or Closed, nothing is in flight, no request awaits intake, and at least
 /// one task is Verified. An empty project is never settled, so it can never be accepted.
 pub fn settled(conn: &Connection, project: &str) -> anyhow::Result<bool> {
+    if store::get(conn, project)?.is_some_and(|p| p.policy.mode == amux_core::project::ProjectExecutionMode::Lead) {
+        return Ok(super::lead::ready(conn, project)?.is_some());
+    }
     let rows = bs::project_issues(conn, project)?;
     let mut verified = false;
     for row in &rows {
@@ -319,11 +334,12 @@ fn published_anchor(
         Ok(heads) => heads,
         Err(_) => return Ok(None),
     };
-    let workers: HashSet<_> = planner::plan(conn, p)?
-        .into_iter()
-        .map(|plan| plan.execution.worker)
-        .filter(|worker| !worker.trim().is_empty())
-        .collect();
+    let workers: HashSet<_> = if p.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        [super::checkout::owner(&crate::config::amux_home(), &p.name)].into_iter().collect()
+    } else {
+        planner::plan(conn, p)?.into_iter().map(|plan| plan.execution.worker)
+            .filter(|worker| !worker.trim().is_empty()).collect()
+    };
     if workers.is_empty() {
         return Ok(None);
     }
@@ -403,6 +419,10 @@ fn published_anchor(
 }
 
 fn verified_heads(conn: &Connection, project: &str) -> anyhow::Result<Vec<(String, String)>> {
+    if store::get(conn, project)?.is_some_and(|p| p.policy.mode == amux_core::project::ProjectExecutionMode::Lead) {
+        let (worker,head)=super::lead::ready(conn,project)?.ok_or_else(||anyhow::anyhow!("project lead has no current committed candidate"))?;
+        return Ok(vec![(worker,head)]);
+    }
     let mut heads = Vec::new();
     for row in bs::project_issues(conn, project)? {
         if row.item_type == "epic"
@@ -760,6 +780,13 @@ pub fn status(conn: &Connection, p: &store::Project) -> anyhow::Result<Value> {
         pending(&mut view, reason);
         return Ok(view);
     };
+    if p.policy.mode == amux_core::project::ProjectExecutionMode::Lead
+        && result["state"] == "awaiting_human"
+        && result["lead_artifact_schema"] != 1
+    {
+        pending(&mut view, "lead_artifact_retention_pending");
+        return Ok(view);
+    }
     let mut approvals = HashMap::new();
     for (_, a) in events(conn, &p.name, "project.acceptance_approval", Some(&fp))? {
         approvals.insert(a["criterion"].as_str().unwrap_or_default().to_string(), a);
@@ -821,6 +848,11 @@ fn runnable(conn: &Connection, project: &str, fp: &str) -> anyhow::Result<bool> 
         .into_iter()
         .filter(|(id, _)| *id > rerun)
         .collect();
+    if store::get(conn, project)?.is_some_and(|p| p.policy.mode == amux_core::project::ProjectExecutionMode::Lead)
+        && live.last().is_some_and(|(_, e)| e["state"] == "awaiting_human" && e["lead_artifact_schema"] != 1)
+    {
+        return Ok(true);
+    }
     // Older receipts may have passed the outcome checks without running the repository's
     // publication gate. Re-evaluate them before they can be published; this costs no model turn.
     if live.last().is_some_and(|(_, e)| {
@@ -1407,6 +1439,28 @@ async fn retain_evidence(
     Ok(retained.iter().map(|r| json!(r)).collect())
 }
 
+/// A lead project has no task report manifest. Retain the passive files it
+/// actually committed since main so review remains possible after checkout
+/// removal. The candidate commit, not the lead's prose, defines this set.
+async fn retain_lead_assets(
+    home: &std::path::Path,
+    candidate: &str,
+    head: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let changed = workspace::git(candidate, &["diff", "--name-only", "-z", "--diff-filter=AM", "origin/main", head])
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let paths = changed
+        .split('\0')
+        .filter(|path| !path.is_empty() && *path != ".amux/project-lead.json")
+        .filter(|path| matches!(std::path::Path::new(path).extension().and_then(|x| x.to_str()), Some("md" | "json" | "txt" | "png" | "webm")))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!paths.is_empty(), "lead candidate has no changed reviewable Markdown, JSON, text, PNG or WebM file");
+    anyhow::ensure!(paths.len() <= 16, "lead candidate has more than 16 reviewable files; select the essential evidence in the acceptance contract");
+    retain_evidence(home, candidate, head, &paths, &[]).await
+}
+
 async fn retain_failed_execution_evidence(
     home: &std::path::Path,
     candidate: &str,
@@ -1803,6 +1857,15 @@ async fn run(
     let home = crate::config::amux_home();
     let outcome = async {
         let mut results = Vec::new();
+        let lead_assets = if p.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+            match retain_lead_assets(&home, &candidate, main).await {
+                Ok(assets) => assets,
+                Err(error) => {
+                    results.push(json!({"criterion":"lead-artifacts","type":"artifact","state":"failed","evidence_error":error.to_string()}));
+                    Vec::new()
+                }
+            }
+        } else { Vec::new() };
         // Human criteria may appear first in the contract, but review consumes
         // the outputs of automated checks. Preserve their source ownership.
         let runtime_paths=contract.criteria.iter().filter(|c|matches!(c.verifier,ContractVerifier::Execution{..})).flat_map(|c|c.evidence.iter()).collect::<std::collections::HashSet<_>>();
@@ -1859,7 +1922,7 @@ async fn run(
             let ran = workspace::checked_command(cmd, &permit, timeout).await;
             let elapsed_ms = began.elapsed().as_millis() as u64;
             match ran {
-                Err(e) if e.starts_with("acceptance cancelled") => return Ok::<Option<Vec<Value>>, anyhow::Error>(None),
+                Err(e) if e.starts_with("acceptance cancelled") => return Ok::<Option<(Vec<Value>,Vec<Value>)>, anyhow::Error>(None),
                 Err(e) => results.push(with("operational", json!({"output": tail(&e, 4000), "elapsed_ms": elapsed_ms}))),
                 Ok((status, output)) => {
                     if workspace::git(&candidate, &["rev-parse", "HEAD"]).await.map_err(anyhow::Error::msg)? != main {
@@ -1916,12 +1979,12 @@ async fn run(
                 }
             }
         }
-        Ok(Some(results))
+        Ok(Some((results, lead_assets)))
     }
     .await;
     // Only this temporary checkout is disposable; retained evidence lives in the private asset store.
     let _ = workspace::git(&repo, &["worktree", "remove", "--force", &candidate]).await;
-    let Some(results) = outcome? else {
+    let Some((results, lead_assets)) = outcome? else {
         return Ok(None);
     };
     let has = |s: &str| results.iter().any(|r| r["state"] == s);
@@ -1936,7 +1999,7 @@ async fn run(
     };
     Ok(Some(
         json!({"fingerprint":fp,"contract_revision":contract.revision,"main":main,"intent":intent,"state":state,
-        "started":started,"finished":crate::config::now_f64(),"results":results}),
+        "started":started,"finished":crate::config::now_f64(),"results":results,"lead_assets":lead_assets,"lead_artifact_schema":1}),
     ))
 }
 
@@ -2346,7 +2409,7 @@ mod tests {
     #[test]
     fn pre_gate_review_receipts_are_rechecked_before_publication() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE session_events(id INTEGER PRIMARY KEY,ts REAL,session TEXT,type TEXT,data TEXT,source TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE session_events(id INTEGER PRIMARY KEY,ts REAL,session TEXT,type TEXT,data TEXT,source TEXT); CREATE TABLE group_config(name TEXT PRIMARY KEY,execution_policy TEXT,execution_rev INTEGER);").unwrap();
         insert(
             &conn,
             "p",

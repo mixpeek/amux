@@ -4,7 +4,7 @@ use crate::fanout_workspace::{self as workspace, Workspace};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub(super) fn owner(home: &Path, project: &str) -> String {
+pub(crate) fn owner(home: &Path, project: &str) -> String {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let hash = format!("{:x}", Sha256::digest(home.to_string_lossy().as_bytes()));
     format!("project-{project}-{}", &hash[..8])
@@ -45,6 +45,13 @@ pub(crate) fn start_permit(
         .ok_or("project missing")?;
     if p.policy.paused || !p.policy.enabled {
         return Err("project is paused or disabled".into());
+    }
+    if p.policy.mode == amux_core::project::ProjectExecutionMode::Lead {
+        return if worker == owner(&crate::config::amux_home(), project) {
+            Ok(())
+        } else {
+            Err("only the project lead may write the project checkout".into())
+        };
     }
     let rows = crate::db::board_store::project_issues(conn, project).map_err(|e| e.to_string())?;
     let mut owned = false;
@@ -322,7 +329,10 @@ pub(crate) async fn cleanup<F: crate::runtime_jobs::board_drive::Fleet>(
         {
             return Err("project awaits artifact review".into());
         }
-        let mut workers = Vec::new();
+        let mut workers = if super::store::get(&c, project).map_err(|e|e.to_string())?
+            .is_some_and(|p|p.policy.mode==amux_core::project::ProjectExecutionMode::Lead) {
+            vec![name.clone()]
+        } else { Vec::new() };
         for row in crate::db::board_store::project_issues(&c, project).map_err(|e| e.to_string())? {
             if !matches!(
                 amux_core::project::phase(
