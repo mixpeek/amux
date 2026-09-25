@@ -1106,7 +1106,17 @@ fn scan_gemini(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
 /// short-circuit idle/trust) and [`TerminalAdapter::generating`] (which the
 /// clock-holding caller uses to mint the turn that makes the worker Active).
 fn codex_model_bar(line: &str) -> bool {
-    let Some((identity, location)) = line.rsplit_once('\u{b7}') else {
+    // First TWO `·`-separated segments only — "<model> <effort> · <path>" —
+    // not `rsplit_once`/last segment. Live captures (Codex-W4/Luna-L1/L4,
+    // 2026-09-25) now append a THIRD segment, a free-text current-task title
+    // ("gpt-5.5 high · ~ · Review canonical CW-53 source"), which put the
+    // path in the MIDDLE rather than at the end and broke the identity/path
+    // split for every live bar, idle or active. The path segment's own shape
+    // (`~`, `~/...`, `/...`) is unambiguous regardless of what chrome follows
+    // it, so anything past segment 2 is simply not inspected.
+    let mut parts = line.split('\u{b7}');
+    let identity = parts.next().unwrap_or("");
+    let Some(location) = parts.next() else {
         return false;
     };
     let location = location.trim();
@@ -1166,8 +1176,18 @@ fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
     let tail = &lines[start..];
     // Provider identity must be the CURRENT footer, not a Codex-looking frame
     // pasted into another provider's prompt. The model/path bar is Codex's
-    // final non-empty row and its prompt glyph is `›` (not Claude's `❯`).
-    let model_i = tail.len().checked_sub(1).filter(|i| codex_model_bar(tail[*i]))?;
+    // final non-empty row OR its second-to-last — live captures (Codex-W4
+    // idle, Luna-L1/L4 idle, 2026-09-25) now draw one more chrome row below
+    // it, a shortcuts/warnings footer ("← for agents · ? for shortcuts ...
+    // ⚠ N warnings · f2 to view"), which is not itself `codex_model_bar` (no
+    // `~`/`/`-shaped segment) and so cannot be mistaken for one — bounded to
+    // exactly one trailing row, deliberately, so an older or a genuinely
+    // different (pasted/historical) frame still requires the bar to anchor
+    // the tail rather than searching arbitrarily far back.
+    let model_i = [tail.len().checked_sub(1), tail.len().checked_sub(2)]
+        .into_iter()
+        .flatten()
+        .find(|i| codex_model_bar(tail[*i]))?;
     let prompt_i = tail[..model_i].iter().rposition(|s| s.starts_with('›'))?;
     // Current Codex paints the active row immediately before its disabled
     // prompt. Older builds painted it immediately after the submitted prompt,
@@ -2004,6 +2024,53 @@ CLAUDE-POSTFIX-COMPLETE
 
   gpt-5.6-sol xhigh · ~/Dev/amux · Main [default]";
 
+    // Live captures, 2026-09-25, `tmux capture-pane` on Codex-W4 (idle) and
+    // Luna-L1 (idle — the coordinator's "active" framing was already stale by
+    // capture time; the fleet had moved on to its next idle boundary). Both
+    // are the SAME Codex-family TUI as Codex-W4, just a different model
+    // string, which is the point: nothing here may key off "codex" vs "luna"
+    // by name. Internal mid-line padding before the right-aligned
+    // warnings/shortcuts segment is compressed for source readability; the
+    // parser reads line content, not column width, so this is not a loss of
+    // fidelity. Two real, load-bearing structural facts neither older fixture
+    // above carries: (1) the model bar now carries a THIRD `·`-segment, a
+    // free-text current-task title, not just "<model> <effort> · <path>";
+    // (2) the model bar is no longer the pane's final line — a
+    // shortcuts/warnings chrome row is painted below it.
+    const FX_CODEX_IDLE_WITH_SHORTCUTS_FOOTER: &str = "\
+⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 5% of your weekly limit left. Run /status for a breakdown.
+⚠ weekly limit: only 2% left · resets at 6:49 PM on 27 Sep · /status
+
+› Ask Codex to do anything
+
+  GPT-5.5 high · ~ · Review canonical CW-53 source
+  ← for agents · ? for shortcuts · ⚠ 5 warnings · f2 to view";
+
+    const FX_LUNA_IDLE_WITH_SHORTCUTS_FOOTER: &str = "\
+Worked for 6m 0s · 4:45 PM
+⚠ weekly limit: only 2% left · resets at 6:49 PM on 27 Sep · /status
+
+› Ask Codex to do anything
+
+  GPT-6-Luna medium · ~ · Reconcile LLMA-7 evidence
+  ← for agents · ? for shortcuts · ⚠ 4 warnings · f2 to view";
+
+    // CONSTRUCTED, not captured — no live pane was mid-turn with this exact
+    // chrome at capture time (noted honestly rather than claimed as a
+    // specimen). Built from two real pieces: the ATE-37 active row
+    // (`FX_CODEX_WORKING_WITH_PROMPT_SHELL`) and the verbatim shortcuts
+    // footer row captured above, to pin that a trailing footer row does not
+    // ALSO have to mean idle — the active anchor (the row immediately before
+    // the prompt) must still win regardless of what chrome trails the model
+    // bar.
+    const FX_CODEX_ACTIVE_WITH_SHORTCUTS_FOOTER: &str = "\
+• Waiting for background terminal (16m 29s • esc to interrupt)
+› Ask Codex to do anything
+  gpt-5.6-sol xhigh · ~ · Ship the ATE-37 fix
+  ← for agents · ? for shortcuts · ⚠ 1 warning · f2 to view";
+
     #[test]
     fn codex_working_pane_is_generating() {
         assert!(
@@ -2049,6 +2116,81 @@ CLAUDE-POSTFIX-COMPLETE
         // The trust dialog is a block (Waiting), not active work.
         let trust = "Do you trust the contents of this directory?\n\n\u{203a} 1. Yes, continue";
         assert!(!adapter("codex").generating(trust));
+    }
+
+    /// AMUX (2026-09-25): the reviewed candidate's two live findings. A
+    /// three-segment model bar broke `codex_model_bar` for EVERY live Codex
+    /// pane, idle or active (confirmed: the pre-existing
+    /// `FX_CODEX_INTERRUPTED_AT_PROMPT` fixture above already carried a third
+    /// segment and only asserted `!generating`, which a totally unmatched bar
+    /// also produces — passing for the wrong reason, ethos rule 7). This pins
+    /// the bar recognition on its own, independent of any downstream
+    /// generating/idle verdict.
+    #[test]
+    fn codex_model_bar_accepts_a_trailing_task_title_segment() {
+        assert!(codex_model_bar("  GPT-5.5 high \u{b7} ~ \u{b7} Review canonical CW-53 source"));
+        assert!(codex_model_bar("  GPT-6-Luna medium \u{b7} ~ \u{b7} Reconcile LLMA-7 evidence"));
+        assert!(codex_model_bar("  gpt-5.6-sol xhigh \u{b7} ~/Dev/amux \u{b7} Main [default]"));
+        // Two-segment (no trailing chrome) must keep working — this is not a
+        // relaxation that stops caring about the path segment's own shape.
+        assert!(codex_model_bar("  gpt-5.5 xhigh \u{b7} ~/Dev/amux"));
+        // A line with a `·` but no path-shaped second segment is still
+        // rejected — the shortcuts/warnings footer row itself, verbatim.
+        assert!(!codex_model_bar(
+            "  \u{2190} for agents \u{b7} ? for shortcuts \u{b7} \u{26a0} 5 warnings \u{b7} f2 to view"
+        ));
+    }
+
+    /// The actual regression: a live idle Codex/Luna frame with the
+    /// shortcuts/warnings row trailing the model bar must still resolve to an
+    /// IDENTIFIABLE idle Codex frame (`Some(false)`), not `None` — which is
+    /// what left the stale picker/status stuck showing through after "Ask
+    /// Codex to do anything" was already the current prompt.
+    #[test]
+    fn codex_pane_generation_state_survives_trailing_shortcuts_footer() {
+        assert_eq!(codex_pane_generation_state(FX_CODEX_IDLE_WITH_SHORTCUTS_FOOTER), Some(false));
+        assert_eq!(codex_pane_generation_state(FX_LUNA_IDLE_WITH_SHORTCUTS_FOOTER), Some(false));
+        assert!(!adapter("codex").generating(FX_CODEX_IDLE_WITH_SHORTCUTS_FOOTER));
+        assert!(!adapter("codex").generating(FX_LUNA_IDLE_WITH_SHORTCUTS_FOOTER));
+    }
+
+    /// The other direction: a trailing footer row must not make the active
+    /// anchor unreachable either — the active row immediately before the
+    /// (still-disabled) prompt keeps winning regardless of what chrome trails
+    /// the model bar underneath it.
+    #[test]
+    fn codex_pane_generation_state_active_survives_trailing_shortcuts_footer() {
+        assert_eq!(codex_pane_generation_state(FX_CODEX_ACTIVE_WITH_SHORTCUTS_FOOTER), Some(true));
+        assert!(adapter("codex").generating(FX_CODEX_ACTIVE_WITH_SHORTCUTS_FOOTER));
+    }
+
+    /// The bound is exactly ONE trailing chrome row, not an unbounded
+    /// backward scan — a model-bar-shaped line sitting further back than that
+    /// (e.g. quoted in scrollback, or behind two trailing rows instead of
+    /// one) must NOT be picked up as the CURRENT frame's identity. Guards
+    /// against reintroducing the pasted/historical-frame false positive the
+    /// existing `stale_picker_ignored` handling elsewhere in this file exists
+    /// to prevent, this time for the model-bar anchor itself.
+    #[test]
+    fn codex_pane_generation_state_does_not_search_past_two_trailing_rows() {
+        let two_extra_rows_back = "\
+› Ask Codex to do anything
+
+  gpt-5.5 high \u{b7} ~ \u{b7} Review canonical CW-53 source
+  \u{2190} for agents \u{b7} ? for shortcuts
+one more unrelated row pushing the bar a third line back";
+        assert_eq!(codex_pane_generation_state(two_extra_rows_back), None);
+    }
+
+    /// "Do NOT force idle from any prompt": a bare `›` composer with no
+    /// identifiable Codex model bar anywhere in the tail is not a current
+    /// Codex frame at all as far as this structural parser is concerned —
+    /// `None`, not `Some(false)`. (The generic multi-provider fallback in
+    /// `detect_claude_status` is a separate, deliberately looser path; this
+    /// one is not it.)
+    #[test]
+    fn codex_pane_generation_state_bare_prompt_alone_is_not_identifiable() {
+        assert_eq!(codex_pane_generation_state("\u{203a} Ask Codex to do anything"), None);
     }
 
     #[test]

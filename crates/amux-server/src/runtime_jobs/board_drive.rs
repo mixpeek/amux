@@ -3743,16 +3743,22 @@ async fn redistributed_pickup<F:Fleet>(state:&AppState,fleet:&F,recipient:&str,n
 // Verify nudge — option B (idle session) + option A (batched daily)
 // ---------------------------------------------------------------------------
 
-/// The SQL fragment excluding types for which `verified` is meaningless,
-/// DERIVED from `verified_is_meaningful` rather than hand-listed.
+/// The SQL fragment excluding types this PEER-REVIEW path (`done_verify_candidates`/
+/// `done_card_count`, the explicit-named-reviewer nudge) cannot meaningfully verify.
 ///
-/// AMUX-2825 names calling that predicate as non-negotiable, and the shipped
-/// nudge (fe44d61) did not call it once: it selected every `done` card
-/// regardless of type. Measured on the live board, 299 of 1162 agent-owned
-/// done cards — 25%, across 36 lanes — are doc/chore/investigation/research/
-/// escalation/watch, which ship nothing and so have no production to confirm
-/// in. Nagging a lane to verify those is precisely the make-work AMUX-2816's
-/// narrowing removed, re-created one tier down.
+/// Base list DERIVED from `verified_is_meaningful` rather than hand-listed, per
+/// AMUX-2825. That predicate answers "is there a production to confirm this
+/// in", which is the right question for the OTHER caller of this shape
+/// (`completion_label_for_type`, an owner completing their own work). It is
+/// the wrong question here: a peer named as `reviewer` isn't confirming a
+/// deploy, it's bound-checking the RESOLVED gate — `verification_contract`
+/// already hashes exactly that (acceptance_criteria/evidence/gate/etc), so
+/// Chore and Investigation are answerable by this path even though nothing
+/// they do ships. Carved out here, NOT by changing `verified_is_meaningful`
+/// itself (that predicate has other callers this fix must not move) and not by
+/// relabeling either type as code-like. Doc/Research/Escalation/Epic/Decision/
+/// Watch stay excluded — this widens the door by exactly the two types named,
+/// not a general reopening.
 ///
 /// NOT IN rather than IN, deliberately: `issues.type` holds values outside the
 /// enum (10 cards are typed `bug` today). An IN-list would silently drop them;
@@ -3761,7 +3767,10 @@ async fn redistributed_pickup<F:Fleet>(state:&AppState,fleet:&F,recipient:&str,n
 fn unverifiable_types_sql() -> String {
     let names: Vec<String> = amux_core::board::ItemType::ALL
         .iter()
-        .filter(|t| !amux_core::board::verified_is_meaningful(**t))
+        .filter(|t| {
+            !amux_core::board::verified_is_meaningful(**t)
+                && !matches!(t, amux_core::board::ItemType::Chore | amux_core::board::ItemType::Investigation)
+        })
         .map(|t| format!("'{}'", t.as_str()))
         .collect();
     format!("AND COALESCE(type,'code') NOT IN ({})", names.join(","))
@@ -9217,6 +9226,14 @@ mod tests {
     /// AMUX-2825's non-negotiable constraint, which fe44d61 did not implement:
     /// the sweep MUST exclude types where `verified` is meaningless. 299 of
     /// 1162 live agent-owned done cards (25%, 36 lanes) are such types.
+    ///
+    /// Chore and Investigation are a NAMED exception for this specific
+    /// explicit-named-peer path (unlike `verified_is_meaningful`'s own
+    /// callers, which still exclude them) — see `unverifiable_types_sql`'s
+    /// doc comment. This test pins that exception explicitly, by type name,
+    /// not by re-deriving it from the predicate under test, so a future edit
+    /// to either the carve-out or `verified_is_meaningful` itself is forced
+    /// to touch this assertion rather than silently staying green.
     #[test]
     fn the_sweep_never_lists_a_card_that_cannot_be_verified() {
         let conn = board_db();
@@ -9240,15 +9257,20 @@ mod tests {
 
         for t in amux_core::board::ItemType::ALL {
             let id = format!("T-{}", t.as_str());
-            let want = amux_core::board::verified_is_meaningful(t);
+            let peer_exception = matches!(t, amux_core::board::ItemType::Chore | amux_core::board::ItemType::Investigation);
+            let want = amux_core::board::verified_is_meaningful(t) || peer_exception;
             assert_eq!(
                 ids.contains(id.as_str()),
                 want,
-                "{} verified_is_meaningful={want} but selection said otherwise",
-                t.as_str()
+                "{} verified_is_meaningful={} peer_exception={peer_exception} but selection said otherwise",
+                t.as_str(),
+                amux_core::board::verified_is_meaningful(t),
             );
         }
         assert!(ids.contains("T-bug"), "an unknown type must stay verifiable, not be silently dropped");
+        assert!(ids.contains("T-investigation"), "investigation is the named peer-review exception");
+        assert!(ids.contains("T-chore"), "chore is the named peer-review exception");
+        assert!(!ids.contains("T-doc"), "doc stays excluded — the exception is investigation/chore only");
         assert_eq!(
             done_card_count(&conn, "me") as usize,
             ids.len(),
