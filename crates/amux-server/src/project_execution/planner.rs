@@ -442,6 +442,11 @@ pub(crate) fn grant_preparation(c: &Connection, project: &str, task: &str, expec
     grant_preparation_kind(c,project,task,expected,"implementation-prepare",hint)
 }
 
+pub(crate) fn grant_environment_recovery(c: &Connection, project: &str, task: &str, expected: &Execution) -> anyhow::Result<WriteOutcome> {
+    grant_preparation_kind(c,project,task,expected,"environment-recovered",
+        "Amux measured a working server/.venv/bin/python in this project checkout. Preserve the staged implementation, run the repository's unchanged commit hooks, commit the candidate, and report every current criterion with committed assets. Do not bypass validation or claim unrun lifecycle checks.")
+}
+
 fn grant_preparation_kind(c: &Connection, project: &str, task: &str, expected: &Execution, kind: &str, hint: &str) -> anyhow::Result<WriteOutcome> {
     let row=bs::get_issue(c,task)?.ok_or_else(||anyhow::anyhow!("task missing"))?;
     let current=execution(c,task)?;
@@ -917,6 +922,79 @@ fn canonical_report(row: &bs::IssueRow, report: &Report, gate: &str) -> anyhow::
     Ok(canonical)
 }
 
+/// Contract commands come from the human-approved project policy, so a worker
+/// cannot change them. Supply a missing exact binding deterministically; never
+/// invent a check for an ordinary task criterion or replace a conflicting one.
+fn bind_approved_contract_checks(
+    row: &bs::IssueRow,
+    report: &Report,
+    contract: Option<&amux_core::project::AcceptanceContract>,
+) -> anyhow::Result<Report> {
+    let criteria: Vec<String> = serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    let mut bound = report.clone();
+    for criterion in criteria {
+        let Some(id) = criterion.strip_prefix("contract:") else { continue };
+        if bound.checks.iter().any(|check| check.criterion == criterion) { continue; }
+        let approved = contract.and_then(|contract| contract.criterion(id))
+            .ok_or_else(|| anyhow::anyhow!("contract:{id} is not an approved criterion"))?;
+        let command = match &approved.verifier {
+            amux_core::project::ContractVerifier::Command { command, .. }
+            | amux_core::project::ContractVerifier::Execution { command, .. } => command,
+            amux_core::project::ContractVerifier::Human { .. } => {
+                anyhow::bail!("contract:{id} is a human criterion")
+            }
+        };
+        bound.checks.push(Check { criterion: criterion.clone(), command: command.clone() });
+        tracing::info!(task=%row.id,criterion,verdict="project.approved_contract_check_bound",
+            measured=true,n_considered=1,"exact approved verifier supplied without a model retry");
+    }
+    Ok(bound)
+}
+
+/// The policy also names exact passive evidence paths. If a worker omitted a
+/// manifest entry for a file already tracked in its candidate, bind the bytes
+/// ourselves. Missing, untracked or changed files still fail verification.
+fn bind_approved_contract_assets(
+    row: &bs::IssueRow,
+    report: &Report,
+    contract: Option<&amux_core::project::AcceptanceContract>,
+    checkout: &str,
+) -> anyhow::Result<Report> {
+    let criteria: Vec<String> = serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
+    let Some(contract) = contract else { return Ok(report.clone()) };
+    let root = std::fs::canonicalize(checkout)?;
+    let mut bound = report.clone();
+    for criterion in criteria {
+        let Some(id) = criterion.strip_prefix("contract:") else { continue };
+        let Some(approved) = contract.criterion(id) else { continue };
+        if !matches!(approved.verifier, amux_core::project::ContractVerifier::Command { .. }) {
+            continue;
+        }
+        for relative in &approved.evidence {
+            if bound.assets.iter().any(|asset| asset.path == *relative) { continue; }
+            let path = std::path::Path::new(relative);
+            anyhow::ensure!(path.components().all(|part| matches!(part, std::path::Component::Normal(_))),
+                "unsafe contract evidence path {relative}");
+            let source = root.join(path);
+            let Ok(canonical) = std::fs::canonicalize(&source) else { continue };
+            if !canonical.starts_with(&root) || !canonical.is_file()
+                || std::fs::symlink_metadata(&source)?.file_type().is_symlink() { continue; }
+            let tracked = std::process::Command::new("git").arg("-C").arg(&root)
+                .args(["ls-files", "--error-unmatch", "--", relative])
+                .output().is_ok_and(|output| output.status.success());
+            if !tracked { continue; }
+            let bytes = std::fs::read(&canonical)?;
+            anyhow::ensure!(bytes.len() <= 16 * 1024 * 1024, "contract evidence exceeds 16 MiB: {relative}");
+            bound.assets.push(super::assets::Asset {
+                path: relative.clone(), sha256: hex::encode(Sha256::digest(&bytes)),
+            });
+            tracing::info!(task=%row.id,path=%relative,verdict="project.approved_contract_asset_bound",
+                measured=true,n_considered=1,"tracked approved evidence bound to report without a model retry");
+        }
+    }
+    Ok(bound)
+}
+
 pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Result<()> {
     let criteria: Vec<String> =
         serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
@@ -967,16 +1045,31 @@ pub fn record_report(
         "outside project"
     );
     let policy = store::get(conn, project)?.ok_or_else(|| anyhow::anyhow!("project missing"))?;
-    let canonical=canonical_report(&row,report,&policy.policy.verify_command)?;
-    let report=&canonical;
     let mut state = execution(conn, id)?;
     anyhow::ensure!(
-        state.worker == worker
-            && state.generation == generation
-            && state.input_hash == hash
-            && input_hash(&row) == hash,
+        state.worker == worker && state.generation == generation
+            && state.input_hash == hash && input_hash(&row) == hash,
         "stale or foreign execution report"
     );
+    let workspace = if policy.policy.worktree {
+        let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
+            .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
+        anyhow::ensure!(
+            crate::fanout_workspace::same_repository(&workspace.repo, &policy.policy.repository)
+                && super::checkout::assignment_matches(&crate::config::amux_home(), project, worker, &workspace),
+            "registered workspace does not match project executor"
+        );
+        workspace
+    } else {
+        crate::fanout_workspace::Workspace {
+            repo: policy.policy.repository.clone(), path: policy.policy.repository.clone(),
+            branch: format!("shared-checkout/{worker}"), base: String::new(),
+        }
+    };
+    let canonical=canonical_report(&row,report,&policy.policy.verify_command)?;
+    let canonical=bind_approved_contract_checks(&row,&canonical,policy.policy.acceptance.as_ref())?;
+    let canonical=bind_approved_contract_assets(&row,&canonical,policy.policy.acceptance.as_ref(),&workspace.path)?;
+    let report=&canonical;
     if state.report.as_ref() == Some(report) {
         return Ok(WriteOutcome {
             applied: false,
@@ -1004,23 +1097,6 @@ pub fn record_report(
     let criteria: Vec<String> =
         serde_json::from_str(row.acceptance_criteria.as_deref().unwrap_or("[]"))?;
     super::acceptance::contract_binding(&criteria, report, policy.policy.acceptance.as_ref())?;
-    let workspace = if policy.policy.worktree {
-        let workspace=crate::fanout_workspace::load(&crate::config::amux_home(),worker)
-            .ok_or_else(||anyhow::anyhow!("registered executor workspace missing; restore its workspace record before reporting"))?;
-        anyhow::ensure!(
-            crate::fanout_workspace::same_repository(&workspace.repo, &policy.policy.repository)
-                && super::checkout::assignment_matches(&crate::config::amux_home(), project, worker, &workspace),
-            "registered workspace does not match project executor"
-        );
-        workspace
-    } else {
-        crate::fanout_workspace::Workspace {
-            repo: policy.policy.repository.clone(),
-            path: policy.policy.repository.clone(),
-            branch: format!("shared-checkout/{worker}"),
-            base: String::new(),
-        }
-    };
     if let Err(error) = super::driver::validated_verification_commands(
         &workspace,
         &policy.policy.verify_command,
@@ -1590,6 +1666,55 @@ mod tests {
         assert!(validate_report(&row,&canonical_report(&row,&report,"git diff --check").unwrap()).is_err());
         report.checks.remove(0);report.checks[0].criterion="invented criterion".into();
         assert!(validate_report(&row,&canonical_report(&row,&report,"git diff --check").unwrap()).is_err());
+    }
+    #[test]
+    fn missing_contract_check_uses_only_the_approved_command() {
+        let (_dir, db) = fixture();
+        let c = db.read().unwrap();
+        let mut row = bs::get_issue(&c, "A").unwrap().unwrap();
+        row.acceptance_criteria = Some("[\"Output passes its test\",\"contract:runtime\"]".into());
+        let contract = serde_json::from_value(json!({
+            "criteria": [{"id":"runtime","requirement":"Run the lifecycle",
+                "verifier":{"type":"command","id":"runtime","command":"python3 scripts/verify.py"},
+                "evidence":[]}]
+        })).unwrap();
+        let report = Report {head:"a".repeat(40),summary:"candidate".into(),
+            assets:vec![fixture_asset()],
+            checks:vec![Check {criterion:"Output passes its test".into(),command:"python3 scripts/unit.py".into()}]};
+        let bound = bind_approved_contract_checks(&row, &report, Some(&contract)).unwrap();
+        assert!(validate_report(&row, &bound).is_ok());
+        assert_eq!(bound.checks[1].command, "python3 scripts/verify.py");
+        let mut conflicting = report;
+        conflicting.checks.push(Check {criterion:"contract:runtime".into(),command:"true".into()});
+        assert_eq!(bind_approved_contract_checks(&row,&conflicting,Some(&contract)).unwrap(), conflicting);
+        assert!(super::super::acceptance::contract_binding(
+            &serde_json::from_str::<Vec<String>>(row.acceptance_criteria.as_deref().unwrap()).unwrap(),
+            &conflicting, Some(&contract)).is_err());
+    }
+    #[test]
+    fn approved_evidence_binding_requires_a_tracked_file() {
+        let (_db_dir, db) = fixture();
+        let c = db.read().unwrap();
+        let mut row = bs::get_issue(&c, "A").unwrap().unwrap();
+        row.acceptance_criteria = Some("[\"contract:migration\"]".into());
+        let contract = serde_json::from_value(json!({"criteria":[{
+            "id":"migration","requirement":"Prove migration",
+            "verifier":{"type":"command","id":"migration","command":"python3 scripts/verify.py"},
+            "evidence":["migration.json","untracked.txt"]
+        }]})).unwrap();
+        let checkout = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git").arg("init").arg(checkout.path())
+            .output().unwrap().status.success());
+        std::fs::write(checkout.path().join("migration.json"), b"{\"passed\":true}\n").unwrap();
+        std::fs::write(checkout.path().join("untracked.txt"), b"not committed\n").unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(checkout.path())
+            .args(["add","migration.json"]).output().unwrap().status.success());
+        let report = Report {head:"a".repeat(40),summary:"candidate".into(),
+            assets:vec![],checks:vec![]};
+        let bound = bind_approved_contract_assets(&row,&report,Some(&contract),checkout.path().to_str().unwrap()).unwrap();
+        assert_eq!(bound.assets.len(),1);
+        assert_eq!(bound.assets[0].path,"migration.json");
+        assert_eq!(bound.assets[0].sha256,hex::encode(Sha256::digest(b"{\"passed\":true}\n")));
     }
 
     #[test]
