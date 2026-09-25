@@ -3858,8 +3858,28 @@ pub async fn create_session_legacy(
     if !cc_model.is_empty() {
         pairs.push(("CC_MODEL", cc_model.clone()));
     }
+    // YOLO AT CREATE TIME. The dashboard previously configured YOLO by
+    // PATCHing the env AFTER create and BEFORE start. With autostart the two
+    // are one call, so the flag must go into the env file that create writes.
+    let yolo = body
+        .get("yolo")
+        .map(crate::api::py_truthy)
+        .unwrap_or(false);
+    let cc_flags = if yolo {
+        let yolo_flag = crate::api::session_verbs::provider_yolo_flag_pub(&provider);
+        if cc_flags.is_empty() {
+            yolo_flag.to_string()
+        } else {
+            format!("{cc_flags} {yolo_flag}")
+        }
+    } else {
+        cc_flags
+    };
     if !cc_flags.is_empty() {
         pairs.push(("CC_FLAGS", cc_flags.clone()));
+    }
+    if yolo {
+        pairs.push(("CC_AUTO_CONTINUE", "1".to_string()));
     }
     // ISOLATED AT CREATE TIME (Ethan, 2026-08-27). `CC_ISOLATED` was settable
     // only by hand-editing the env file after the fact, so the one decision
@@ -3945,10 +3965,18 @@ pub async fn create_session_legacy(
                 false
             }
         });
+    let prompt = s("prompt");
     if autostart {
         let st = _state.clone();
         let n = name.clone();
+        let p = prompt.clone();
         tokio::spawn(async move {
+            if !p.is_empty() {
+                crate::api::session_verbs::queue_boot_prompt_pub(
+                    &st, &n, &p,
+                    crate::api::session_verbs::SendOrigin::Owner,
+                ).await;
+            }
             let (ok, detail) = crate::api::session_verbs::start_session(&st, &n, "", false).await;
             if ok {
                 tracing::info!(session = %n, measured = true, n_considered = 1,
@@ -4391,6 +4419,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "provider": configured_provider,
             "model": env.get("CC_MODEL").cloned().unwrap_or_default(),
             "dir": env.get("CC_DIR").cloned().unwrap_or_default(),
+            "project": env.get("CC_PROJECT").cloned().unwrap_or_default(),
             "preview": "",
             "task_name": "",
             "desc": env.get("CC_DESC").cloned().unwrap_or_default(),

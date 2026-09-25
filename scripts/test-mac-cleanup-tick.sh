@@ -94,6 +94,34 @@ case "$(classify_owner ethan /Applications/Ollama.app/Contents/Resources/llama-s
   *"ollama stop"*) echo "  ok   an ollama model server carries its unload command" ;;
   *) echo "  FAIL an ollama model server is not named with its remedy"; fails=$((fails+1)) ;; esac
 
+echo "5b. the label comes from the FULL command line of a live process, not a truncated one"
+# The lima VM helper is 173 characters and its name starts after column 80. A
+# fixture that hands classify_owner the whole path passes while the shipped call
+# sites cut the command first, so this spawns a REAL process and asks about its pid.
+LONGD="$FIX/$(printf 'd%.0s' $(seq 1 50))"; mkdir -p "$LONGD"
+cat > "$LONGD/com.apple.Virtualization.VirtualMachine.xpc" <<'VM'
+#!/bin/bash
+sleep 30
+VM
+chmod +x "$LONGD/com.apple.Virtualization.VirtualMachine.xpc"
+"$LONGD/com.apple.Virtualization.VirtualMachine.xpc" &
+VPID=$!
+sleep 1
+VCMD=$(ps -o command= -p "$VPID" 2>/dev/null)
+VPOS=$(awk -v s="$VCMD" 'BEGIN{ print index(s, "Virtualization.VirtualMachine.xpc") }')
+# Positive control: without this the cell proves nothing, because a short path
+# would match even with the truncation still in place.
+check "fixture puts the VM name past column 80" "yes" "$([ "${VPOS:-0}" -gt 80 ] && echo yes || echo no)"
+case "$(owner_label_for_pid "$VPID")" in
+  *"guest VM"*) echo "  ok   a live VM helper is labelled a user-owned guest VM" ;;
+  *) echo "  FAIL live VM helper mislabelled: $(owner_label_for_pid "$VPID")"; fails=$((fails+1)) ;;
+esac
+kill "$VPID" 2>/dev/null || true; wait "$VPID" 2>/dev/null || true
+# Source-level pin of the defect CLASS, because the two call sites are inline and
+# a behavioural cell cannot reach them: no `ps -o command=` may feed a cut.
+check "no call site truncates the command it classifies" "0" \
+  "$(grep -c -E 'ps -o command=.*\| *cut ' "$TICK" || true)"
+
 echo "6. the reboot line appears only when fseventsd is actually large"
 check "small fseventsd asks for no reboot" "no"  "$(needs_reboot 8 20 && echo yes || echo no)"
 check "large fseventsd asks for a reboot"  "yes" "$(needs_reboot 96 20 && echo yes || echo no)"
@@ -197,6 +225,27 @@ out=$(AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRES
       AMUX_CLEANUP_FAMILY_SHARE_PCT=99.9 AMUX_CLEANUP_FAMILY_AGE_H=99999 "$TICK" 2>&1)
 case "$out" in *"largest family"*"under the"*) echo "  ok   under both thresholds it reports without firing" ;;
   *) echo "  FAIL no under-threshold family line: $(printf '%s' "$out" | tail -3)"; fails=$((fails+1)) ;; esac
+
+echo "7d. the stale-process arm parses 08 and 09 in elapsed times (bash reads them as octal)"
+# 2026-09-24: SCHED-465 printed "value too great for base" because this arm did its
+# own bash arithmetic on fields like 08 and 09, then reported found=0. Fixture times
+# below all contain one, and two are past the 6h floor.
+cat > "$FIX/fake-ps.sh" <<'FPS'
+#!/bin/bash
+echo "12345 08:09:07 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-1.sh"
+echo "12346 1-09:08:09 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-2.sh"
+echo "12347 00:09 /bin/bash -c source /x/.claude/shell-snapshots/snapshot-bash-3.sh"
+FPS
+chmod +x "$FIX/fake-ps.sh"
+out=$(AMUX_CLEANUP_STALE_PS_CMD="$FIX/fake-ps.sh" AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 \
+      AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 AMUX_CLEANUP_AGENTS="" \
+      AMUX_CLEANUP_REPORT_GB=99999 "$TICK" --dry-run 2>&1)
+check "no octal error on 08/09 fields" "0" "$(printf '%s\n' "$out" | grep -c 'value too great')"
+check "both stale times are found, the 9-second one is not" "2" \
+  "$(printf '%s\n' "$out" | sed -n 's/.*shell-snapshots found=\([0-9]*\) .*/\1/p')"
+case "$out" in *"pid=12345 age=08:09:07"*"pid=12346 age=1-09:08:09"*) echo "  ok   each stale process is named with its age" ;;
+  *) echo "  FAIL stale processes not named with their ages: $(printf '%s' "$out" | grep -E 'stale shell|shell-snapshots' | head -3)"; fails=$((fails+1)) ;; esac
+check "dry run killed nothing" "0" "$(printf '%s\n' "$out" | sed -n 's/.*shell-snapshots found=[0-9]* killed=\([0-9]*\) .*/\1/p')"
 
 echo "8. end to end: an agent restart goes through the knob, and only past the floor"
 AREC="$FIX/restart-calls"

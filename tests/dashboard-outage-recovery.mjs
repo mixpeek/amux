@@ -800,7 +800,7 @@ test('Stop deduplication preserves a later Stop after Start and separate worker 
 });
 
 
-test('project output waits remain in progress while real operational failures are visible', () => {
+test('project overview distinguishes a held task from failed whole-project acceptance', () => {
   const ctx = vm.createContext({});
   vm.runInContext(code('_projectOutcomeVerdict'), ctx);
   const acceptance = {state:'pending', criteria:[{verifier:{type:'human'}}]};
@@ -809,7 +809,26 @@ test('project output waits remain in progress while real operational failures ar
   assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'running');
   child.phase = 'waiting';
   child.execution_plan = {waiting_reason:'executor_returned_without_result',waiting_label:'Missing report after attempt'};
+  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'running');
+  assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[child]}).tone,'review');
+  acceptance.criteria.push({verifier:{type:'command'},result:{state:'failed'}});
   assert.equal(ctx._projectOutcomeVerdict({acceptance,cards:[parent,child]}).tone,'failed');
+});
+
+test('project workers have their own group and group actions target only eligible members', () => {
+  const ctx=vm.createContext({searchQuery:'',sessions:[
+    {name:'project-running',project:'mixpeek',lifecycle:'active',running:true},
+    {name:'project-paused',project:'mixpeek',lifecycle:'paused',running:false},
+    {name:'review-only',project:'',lifecycle:'review',running:false},
+    {name:'personal',project:'',lifecycle:'active',running:true},
+  ],_expiredWorkerInventory:new Map([['project-expired',{name:'project-expired',project:'mixpeek',lifecycle:'expired'}]]),boardItems:[]});
+  for(const name of ['_workerGroupMembers','_workerGroupActionNames']) vm.runInContext(code(name),ctx);
+  assert.deepEqual(Array.from(ctx._workerGroupMembers('project'),s=>s.name).sort(),['project-expired','project-paused','project-running']);
+  assert.deepEqual(Array.from(ctx._workerGroupActionNames('project','pause')),['project-running']);
+  assert.deepEqual(Array.from(ctx._workerGroupActionNames('project','resume')).sort(),['project-expired','project-paused']);
+  assert.deepEqual(Array.from(ctx._workerGroupMembers('review'),s=>s.name),['review-only']);
+  ctx.searchQuery='paused';
+  assert.deepEqual(Array.from(ctx._workerGroupActionNames('project','resume')),['project-paused']);
 });
 
 test('local settings never probe the gateway-only billing route', async () => {

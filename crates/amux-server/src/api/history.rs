@@ -180,7 +180,7 @@ async fn get_history_item(
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
         let conn = store.read()?;
         let sql = "SELECT id, text, type, session, ts, origin, card_id, \
-                   delivery, queued_at, delivered_at, submit_verdict, capture_pending, \
+                   delivery, queued_at, delivered_at, submit_verdict, capture_pending, queue_id, \
                    (SELECT title FROM issues WHERE issues.id=cmd_history.card_id) AS card_title, \
                    (SELECT status FROM issues WHERE issues.id=cmd_history.card_id) AS card_status, \
                    (SELECT archived FROM issues WHERE issues.id=cmd_history.card_id) AS card_archived, \
@@ -191,7 +191,38 @@ async fn get_history_item(
         if let Some(d) = rows.first_mut() {
             let mtype = d.get("type").and_then(Value::as_str).unwrap_or("").to_string();
             d["kind"] = json!(msg_kind(&mtype));
-            d["queued"] = json!(msg_is_queued(&mtype));
+            // The RECORDED delivery wins over the type inference: an owner's
+            // queued message is type=user, delivery=queued (MSG-68866 read
+            // queued:false while it sat in the queue).
+            let rec_delivery = d.get("delivery").and_then(Value::as_str).unwrap_or("").to_string();
+            d["queued"] = json!(msg_is_queued(&mtype) || rec_delivery == "queued");
+            // THE QUEUE ID IS EXACT. When the message was linked to its queue
+            // row, answer from that row: still in steering_queue means waiting,
+            // in steering_history means delivered then. The time-window join
+            // below is only for rows with no link.
+            let qid = d.get("queue_id").and_then(Value::as_str).unwrap_or("").to_string();
+            let mut exact = false;
+            if !qid.is_empty() {
+                let waiting: bool = conn
+                    .query_row("SELECT 1 FROM steering_queue WHERE id=?1", [&qid], |_| Ok(true))
+                    .unwrap_or(false);
+                let hist: Option<Option<f64>> = conn
+                    .query_row("SELECT delivered_at FROM steering_history WHERE id=?1", [&qid], |r| r.get(0))
+                    .ok();
+                if waiting {
+                    d["delivered"] = json!("waiting in queue");
+                    d["delivered_source"] = json!(format!("steering_queue row {qid} — held until the worker's next idle point"));
+                    d["queued"] = json!(true);
+                } else if let Some(Some(t)) = hist {
+                    d["delivered"] = json!("delivered");
+                    d["delivered_source"] = json!(format!("steering_history row {qid} — stamped by the deliverer"));
+                    d["delivered_at_actual"] = json!((t * 1000.0) as i64);
+                    d["queued"] = json!(false);
+                }
+                // Answered exactly; the time-window guess below is skipped.
+                exact = waiting || matches!(hist, Some(Some(_)));
+            }
+            if !exact {
             // JOIN THE INSTRUMENT THAT CAN ACTUALLY ANSWER. Matched on session
             // and a +/-10s window around `ts`, never on text: cmd_history keeps
             // the "[08:19 AM] " prefix the composer adds and steering_history
@@ -222,6 +253,7 @@ async fn get_history_item(
             d["delivered_source"] = json!(source);
             if let Some(Some(t)) = steering {
                 d["delivered_at_actual"] = json!((t * 1000.0) as i64);
+            }
             }
         }
         attach_linked_cards(&conn, &mut rows)?;
@@ -838,7 +870,8 @@ async fn list_history(State(state): State<AppState>, Query(p): Query<ListParams>
                     .unwrap_or("")
                     .to_string();
                 d["kind"] = json!(msg_kind(&mtype));
-                d["queued"] = json!(msg_is_queued(&mtype));
+                let rec = d.get("delivery").and_then(Value::as_str).unwrap_or("") == "queued";
+                d["queued"] = json!(msg_is_queued(&mtype) || rec);
                 // `delivery` is the RECORDED fact; `queued` above is the inference
                 // from `type`. Both are sent: the inference keeps every historical
                 // row classifiable, the recorded value is authoritative when
@@ -1865,6 +1898,43 @@ mod tests {
         let (out, hits) = redact_secrets("no secrets in this friendly text");
         assert_eq!(hits, 0);
         assert_eq!(out, "no secrets in this friendly text");
+    }
+
+    /// MSG-68866: an owner message queued behind a long turn read
+    /// `queued:false, delivered:unknown` while its queue row sat waiting.
+    #[tokio::test]
+    async fn a_queued_owner_message_reads_as_waiting_then_delivered() {
+        let (app, dir) = app();
+        let db = dir.path().join("history-test.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "INSERT INTO cmd_history (id,text,type,session,ts,delivery,queue_id)
+                 VALUES (7,'isabella signed up','user','ops',1790280995000,'queued','steer-1790280995138');
+                 INSERT INTO steering_queue (id,session,text,queued_at)
+                 VALUES ('steer-1790280995138','ops','isabella signed up',1790280995.1);",
+            )
+            .unwrap();
+        }
+        let (st, row) = send(&app, "GET", "/api/history/MSG-7", None).await;
+        assert_eq!(st, StatusCode::OK, "{row}");
+        assert_eq!(row["queued"], json!(true), "{row}");
+        assert_eq!(row["delivered"], json!("waiting in queue"), "{row}");
+        let (_, list) = send(&app, "GET", "/api/history", None).await;
+        let lrow = list.as_array().unwrap().iter().find(|r| r["id"] == json!(7)).unwrap();
+        assert_eq!(lrow["queued"], json!(true), "the list agrees: {lrow}");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "DELETE FROM steering_queue WHERE id='steer-1790280995138';
+                 INSERT INTO steering_history (id,session,text,queued_at,delivered_at)
+                 VALUES ('steer-1790280995138','ops','isabella signed up',1790280995.1,1790284000.5);",
+            )
+            .unwrap();
+        }
+        let (_, row) = send(&app, "GET", "/api/history/MSG-7", None).await;
+        assert_eq!(row["delivered"], json!("delivered"), "{row}");
+        assert_eq!(row["delivered_at_actual"], json!(1790284000500i64), "{row}");
     }
 
     #[tokio::test]

@@ -4921,6 +4921,46 @@ FIX: One project-owned checkout and branch, serialized claims and direct starts,
 
 - **Checked:** 132 focused project, ownership, and recovery tests passed (one real-Docker fixture explicitly ignored); status-hook durability suite passed. Repository path aliases resolve through the existing repository-identity helper; unrelated per-worker aliases remain ambiguous.
 
+### 2026-09-24 — pre-project conversation history inflated project budgets (AF-951)
+
+- **Symptom:** after correctly recovering shared-checkout usage, the live probe inherited 8.15 million unrelated historical tokens outside task windows.
+- **Root cause:** project accounting included every unclaimed ledger row ever named for an executor, including conversation history from before its first project assignment.
+- **Fix:** keep task-claimed usage and scope additional executor usage to its first durable project claim. Retain the original ledger history. The `project_usage_assignment_scoped` log records the boundary policy without exposing messages.
+- **Verification:** add pre-project Claude history to the real project-budget regression; it must remain in the ledger without changing the project total.
+- **Additional case:** delegated Claude transcripts inherit their parent's identity. Recovery now follows that same parent mapping, including subagent records, rather than leaving foreign child usage on the project.
+
+### 2026-09-24 — project checkout reuse displayed as a branch conflict (AF-952)
+
+- **Symptom:** the second project worker showed a conflict warning solely because its completed predecessor shared the same branch.
+- **Root cause:** the generic branch collision check did not distinguish the project's registered shared checkout from unrelated workers on a branch.
+- **Fix:** the Git map identifies validated project checkout ownership; the UI describes intentional project sharing and keeps warnings when an unmanaged or different-project worker also uses the branch. Reclassification logs `project_shared_checkout_classified`.
+- **Verification:** backend registration/branch/isolation tests and UI classification tests cover the intended pair plus outside-worker and different-project collisions.
+
+### 2026-09-24 — copied acceptance prose lost verifier ownership (AF-953)
+
+- **Symptom:** the second task completed, but whole-project verification rejected historical runtime evidence and no repair worker started.
+- **Root cause:** intake copied an approved requirement literally without its contract marker. The executor did not receive the receipt protocol; failure routing could not find the task. Receipt validation errors were also omitted from repair context.
+- **Fix:** reconcile unambiguous exact requirement matches into approved verifier markers on the same task before dispatch. Already-completed owners receive bounded repair through the normal claim/budget path with retained history. Include receipt errors in failure packets. Log `project.contract_ownership_reconciled`.
+- **Verification:** regressions require task reuse, no duplicate board items, normal automatic claiming, retained prior report, idempotence and preserved human approval boundary.
+
+### 2026-09-24 — receipt polling interrupted an unfinished project result (AF-954)
+
+- **Symptom:** the shared-checkout lifecycle probe became held on `asset SHA256 required` while its executor was still replacing placeholder hashes. A corrected first report could not recover because no prior report had been accepted.
+- **Root cause:** receipt polling propagated validation failures before checking current-turn liveness; correction eligibility special-cased one validation message.
+- **Fix:** refuse incomplete receipts without interrupting a live turn. At a confirmed end, classify the invalid receipt for bounded normal repair. A fully validated same-claim first report can recover without another model turn; authorization holds, suspension, generation/input identity and clean-candidate checks remain required. Log `project.report_incomplete_observed` and the existing corrected-receipt recovery event.
+- **Verification:** active-to-stopped observation regression, bounded attempts, and clean corrected-first-receipt recovery without incrementing attempts. Live publication remains a separate gate.
+
+### 2026-09-24 — project said Driving while Codex waited at checkout selector
+
+- **Symptom:** `bucket-objects-gs3` showed Driving and POG-2 working for hours, but the live worker was parked on Codex's resume directory picker. Its queued task packet could not land.
+- **Root cause:** project list and overview treated a durable `working` assignment as live execution; the status join existed only on task cards. After the one-worktree migration, Codex asked whether to use the old session checkout or the current registered project checkout, and the harness did not resolve its own directory choice.
+- **Fix:** join project summaries with current worker observations in the list and overview. For an active project claim, resolve only the exact Codex directory selector to the registered project checkout, with no persistent provider preference or trust change. Record a `project.checkout_selector_resolved` event and measured warning.
+- **Verification:** picker safety and project-card status regressions added; live 8824 retest pending deployment.
+- **Follow-up:** the first deploy moved POG-2 to `repair` after its old claim timed out. The original picker guard covered only `reserved` and `working` claims, so it still could not clear the menu; the project also called a `repair` task Driving. Permit only an exact, planner-approved repair claim to clear the registered checkout selector, and label queued repairs as queued until a worker actually runs. The guard logs `project.checkout_selector_held` if it cannot justify continuation.
+- **Transport check:** the second deploy proved the exact choice was recognized but `send_keys_op` refused digit `2` (`registered_project_checkout_selected ok=false`). Add that key to the existing narrow sender allowlist and assert the actual choice is sendable, as the hook-choice test already does for `3`.
+- **Next observed blocker:** after the directory choice finally sent, Codex displayed its exclusive-conversation Retry screen. The old generation's packet was stale, so delivery's bounded Retry path could not run, while the project driver refused to claim a non-boundary worker. The status correctly changed to Repair queued, but no recovery occurred. The periodic sweep now retries only that exact Codex screen for an enabled, unpaused, planner-claimable repair, at most once per five minutes, then reobserves. It does not change provider permissions or force a new task claim. A focused test covers provider, lifecycle, exact screen, key transport, and cooldown gates.
+- **Live retry result:** port 8824 sent `r` and Codex returned to the same exclusive-conversation screen. A successful key send alone was insufficient. If the screen remains after the bounded retry, the sweep now stops only this locked local worker, clears its old conversation identity, and lets the project's normal claim path start a fresh one from retained files and task packet. It keeps the other app's conversation untouched.
+
 ## A project worktree and the main checkout overwrite each other's crates in the one shared cargo target
 AREA: gates
 SEVERITY: slows

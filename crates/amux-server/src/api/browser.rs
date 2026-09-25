@@ -1098,7 +1098,7 @@ fn cdp_status(e: &anyhow::Error) -> StatusCode {
 }
 
 /// Resolve session → page → connected CDP client, or the mapped error.
-async fn connect_session(
+pub(crate) async fn connect_session(
     session: &str,
     create_url: Option<&str>,
 ) -> Result<(chrome::DriverPage, chrome::CdpClient), Response> {

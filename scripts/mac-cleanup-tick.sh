@@ -64,6 +64,12 @@ FSEVENTSD_REBOOT_GB=${AMUX_CLEANUP_FSEVENTSD_REBOOT_GB:-20}
 SNAPSHOT_FLOOR_GB=${AMUX_CLEANUP_SNAPSHOT_FLOOR_GB:-100}
 SNAPSHOT_RECLAIM_GB=${AMUX_CLEANUP_SNAPSHOT_RECLAIM_GB:-50}
 SNAPSHOT_URGENCY=${AMUX_CLEANUP_SNAPSHOT_URGENCY:-2}
+# Lima/colima VM data disks. On 2026-09-24 ~/.colima held 330.9 GB in nine of them
+# while the disk sat at 1.8 GB free, and nothing in amux named it: disk_watch's
+# named list does not include it and this tick reported only processes. Six of the
+# nine (162.7 GB) belonged to no registered VM at all (DESKT-47).
+LIMA_ROOT=${AMUX_CLEANUP_LIMA_ROOT:-$HOME/.colima/_lima}
+LIMA_SHOW_KB=${AMUX_CLEANUP_LIMA_SHOW_KB:-10485760}
 # A process FAMILY is what actually took this box down: on 2026-08-29 local Ray
 # held 194 worker processes and 44.35 GB under one parent for 40 hours, and the
 # watcher of the day only had a rule for zombies, so it reported 79 harmless
@@ -81,6 +87,9 @@ RESTART_CMD=${AMUX_CLEANUP_RESTART_CMD:-launchctl kickstart -k gui/UID/LABEL}
 # waiting for builds, dev servers, CI watchers. One of them held a tight
 # busy-loop (`until [ -s /dev/null ]`) at 100% CPU for 21 hours (2026-09-19).
 STALE_SHELL_SNAPSHOT_H=${AMUX_CLEANUP_STALE_SHELL_SNAPSHOT_H:-6}
+# Seam: the test points this at a fixture so the arm can be fed elapsed times
+# without a real process. The default is what the scheduler actually runs.
+STALE_PS_CMD=${AMUX_CLEANUP_STALE_PS_CMD:-ps -eo pid=,etime=,args=}
 
 # ── pure decisions (no side effects, so the tests can exercise them) ──────────
 
@@ -190,6 +199,73 @@ family_too_old() { # <oldest_secs> <ceiling_hours>
   awk -v s="$1" -v h="$2" 'BEGIN{ exit !(h+0 > 0 && s+0 >= (h+0) * 3600) }'
 }
 
+# The owner label for a LIVE pid, classified from its FULL command line.
+# classify_owner matches on substrings, and the substring that names a process
+# can sit past any fixed column: Apple's VM helper is 173 characters and
+# "Virtualization.VirtualMachine.xpc" starts after character 80. Both call sites
+# used to cut the command to 80 or 70 characters BEFORE classifying, so the case
+# added for exactly this process could never match, and the live report went on
+# calling a stoppable 31 GB guest VM "SIP-protected, reboot only". Its unit test
+# passed the whole path in by hand, which is not the value the caller passed.
+# Truncate for DISPLAY if you must; never for classification.
+owner_label_for_pid() { # <pid>
+  local c u
+  c=$(ps -o command= -p "$1" 2>/dev/null)
+  u=$(ps -o user= -p "$1" 2>/dev/null | tr -d ' ')
+  classify_owner "${u:-?}" "${c:-unknown}"
+}
+
+# Whole GB with one decimal from 1 GB up, whole MB below, so a real 78.7 GB disk
+# reads naturally and a few-MB test fixture is exact.
+fmt_kb() { # <kb>
+  awk -v k="$1" 'BEGIN{ if (k >= 1048576) printf "%.1fG", k/1048576; else printf "%dM", k/1024 }'
+}
+
+# Names of the lima instances whose hostagent is running, from `ps` command lines
+# on stdin. Split from the ps call so the pattern can be tested on a real-shaped
+# line: the instance name is the directory in --pidfile .../_lima/<name>/ha.pid.
+lima_names_from_ps() {
+  sed -n 's|.*limactl hostagent.*/_lima/\([^/ ]*\)/ha\.pid.*|\1|p'
+}
+
+lima_running_names() {
+  # Seam: the test sets AMUX_CLEANUP_LIMA_RUNNING (newline-separated, may be empty).
+  if [ "${AMUX_CLEANUP_LIMA_RUNNING+set}" = set ]; then printf '%s\n' "$AMUX_CLEANUP_LIMA_RUNNING"; return 0; fi
+  ps -Ao command= 2>/dev/null | lima_names_from_ps
+}
+
+# Report the lima data disks: allocated size (ls -lsk, instant, no du), whether a
+# VM is registered for each, whether it is running. REPORT ONLY. These are other
+# lanes' VM data, so this never deletes: deletion is the owner's call (ethos rule 8).
+# A disk under _disks/ with no ~/.colima/_lima/<name> instance directory cannot be
+# booted by any VM unless a profile of that exact name is recreated, so it reads
+# ORPHANED. A missing root says so instead of reading as clean.
+lima_disks_report() { # <lima_root> [show_kb]
+  local root=$1 show=${2:-10485760} d name kb reg state age running
+  local n=0 total=0 orph=0 runn=0 detail=""
+  if [ ! -d "$root" ]; then
+    echo "mac-cleanup: lima disks: no lima root at $root (not present)"; return 0
+  fi
+  running=$(lima_running_names)
+  for d in "$root"/_disks/*/datadisk; do
+    [ -e "$d" ] || continue
+    name=$(basename "$(dirname "$d")")
+    kb=$(ls -lsk "$d" 2>/dev/null | awk '{print $1+0}')
+    kb=${kb:-0}
+    n=$((n+1)); total=$((total+kb))
+    if printf '%s\n' "$running" | grep -qx -- "$name"; then state=running; runn=$((runn+kb))
+    elif [ -d "$root/$name" ]; then state=stopped
+    else state=ORPHANED; orph=$((orph+kb)); fi
+    if [ "$state" != stopped ] || [ "$kb" -ge "$show" ]; then
+      age=$(( ( $(date +%s) - $(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0) ) / 86400 ))
+      detail="${detail}mac-cleanup:   $(fmt_kb "$kb") ${name} ${state} (last written ${age}d ago)"$'\n'
+    fi
+  done
+  if [ "$n" = 0 ]; then echo "mac-cleanup: lima disks: none under $root/_disks"; return 0; fi
+  echo "mac-cleanup: lima disks: ${n} ($(fmt_kb "$total") allocated, $(fmt_kb "$orph") ORPHANED with no registered VM, $(fmt_kb "$runn") in running VMs)"
+  printf '%s' "$detail"
+}
+
 needs_reboot() { # <fseventsd_gb> <threshold>
   awk -v f="$1" -v t="$2" 'BEGIN{ exit !(f+0 >= t+0) }'
 }
@@ -226,6 +302,9 @@ swap_used=$(printf '%s' "$swap_line" | sed -E 's/.*used = ([0-9.]+)M.*/\1/'); ca
 swap_free=$(printf '%s' "$swap_line" | sed -E 's/.*free = ([0-9.]+)M.*/\1/'); case "$swap_free" in ''|*[!0-9.]*) swap_free=-1 ;; esac
 
 echo "mac-cleanup: measured=$measured pressure=$level free=${free_gb}G inactive=${inactive_gb}G compressor=${compressor_gb}G swap_used=${swap_used}MB swap_free=${swap_free}MB dry_run=$DRY"
+# Right after the reading, because the schedule keeps only the head of this output:
+# the disk consumer is the line a reader needs during an emergency.
+lima_disks_report "$LIMA_ROOT" "$LIMA_SHOW_KB"
 
 # ── act: purge ───────────────────────────────────────────────────────────────
 purged=no
@@ -288,20 +367,15 @@ while IFS= read -r line; do
   [ -n "$line" ] || continue
   pid=$(printf '%s' "$line" | awk '{print $1}')
   elapsed_raw=$(printf '%s' "$line" | awk '{print $2}')
-  # Parse elapsed (DD-HH:MM:SS or HH:MM:SS or MM:SS)
-  elapsed_s=0
-  case "$elapsed_raw" in
-    *-*)
-      days=${elapsed_raw%%-*}; rest=${elapsed_raw#*-}
-      elapsed_s=$((days * 86400))
-      ;;
-    *) rest=$elapsed_raw ;;
-  esac
-  IFS=: read -r f1 f2 f3 <<< "$rest"
-  case "$rest" in
-    *:*:*) elapsed_s=$((elapsed_s + f1*3600 + f2*60 + f3)) ;;
-    *:*)   elapsed_s=$((elapsed_s + f1*60 + f2)) ;;
-  esac
+  # Reuse etime_secs, the parser the family scan already trusts and tests. This
+  # arm used to carry its OWN bash-arithmetic copy, and bash reads a leading-zero
+  # field such as 08 or 09 as invalid octal: SCHED-465 printed "line 303: 09:
+  # value too great for base" at 17:21 and 17:51 on 2026-09-24, then reported
+  # found=0 while it could not have counted the very processes it exists for.
+  # Two parsers for one format is how one of them stays broken. An unparseable
+  # time is skipped and never guessed, since this arm KILLS what it matches.
+  elapsed_s=$(etime_secs "$elapsed_raw")
+  case "$elapsed_s" in ''|*[!0-9]*) continue ;; esac
   [ "$elapsed_s" -ge "$stale_cutoff_s" ] || continue
   stale_found=$((stale_found+1))
   cpu=$(ps -o pcpu= -p "$pid" 2>/dev/null | tr -d ' ')
@@ -312,7 +386,7 @@ while IFS= read -r line; do
     echo "mac-cleanup: killed stale shell-snapshot pid=$pid age=${elapsed_raw} cpu=${cpu}%"
   fi
 done <<EOF
-$(ps -eo pid=,etime=,args= 2>/dev/null | grep 'shell-snapshots/snapshot-bash' | grep -v grep)
+$($STALE_PS_CMD 2>/dev/null | grep 'shell-snapshots/snapshot-bash' | grep -v grep)
 EOF
 echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} (floor ${STALE_SHELL_SNAPSHOT_H}h)"
 
@@ -325,9 +399,8 @@ while IFS= read -r line; do
   pid=$(printf '%s' "$line" | awk '{print $1}'); mem=$(printf '%s' "$line" | awk '{print $2}')
   gb=$(to_gb "$mem")
   awk -v g="$gb" -v t="$REPORT_GB" 'BEGIN{ exit !(g+0 >= t+0) }' || continue
-  cmd=$(ps -o command= -p "$pid" 2>/dev/null | cut -c1-80)
-  usr=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
-  echo "mac-cleanup:   ${gb}G pid=$pid $(classify_owner "$usr" "$cmd") — $(printf '%s' "$cmd" | awk '{print $1}' | sed 's|.*/||')"
+  cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+  echo "mac-cleanup:   ${gb}G pid=$pid $(owner_label_for_pid "$pid") — $(printf '%s' "$cmd" | awk '{print $1}' | sed 's|.*/||')"
   reported=$((reported+1))
 done <<EOF
 $(top -l 1 -o mem -n 12 -stats pid,mem 2>/dev/null | awk 'f{print} /^PID/{f=1}' | sed 's/\*//')
@@ -365,12 +438,10 @@ if [ -n "$fam" ]; then
   fam_gb=$(awk -v k="$fam_kb" 'BEGIN{ printf "%.1f", k/1048576 }')
   fam_pct=$(awk -v f="$fam_kb" -v p="$phys_kb" 'BEGIN{ printf "%.1f", (p>0)? f/p*100 : -1 }')
   fam_hours=$(awk -v s="$fam_age" 'BEGIN{ printf "%.1f", s/3600 }')
-  fam_cmd=$(ps -o command= -p "$fam_ppid" 2>/dev/null | cut -c1-70)
-  fam_user=$(ps -o user= -p "$fam_ppid" 2>/dev/null | tr -d ' ')
   if family_exceeds "$fam_kb" "$phys_kb" "$FAMILY_SHARE_PCT"; then
-    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, oldest ${fam_hours}h — $(classify_owner "${fam_user:-?}" "${fam_cmd:-unknown}") — reported, never killed"
+    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, oldest ${fam_hours}h — $(owner_label_for_pid "$fam_ppid") — reported, never killed"
   elif family_too_old "$fam_age" "$FAMILY_AGE_H"; then
-    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid} has run ${fam_hours}h, past the ${FAMILY_AGE_H}h ceiling — $(classify_owner "${fam_user:-?}" "${fam_cmd:-unknown}")"
+    echo "mac-cleanup: FAMILY ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid} has run ${fam_hours}h, past the ${FAMILY_AGE_H}h ceiling — $(owner_label_for_pid "$fam_ppid")"
   else
     echo "mac-cleanup: largest family ${fam_gb}G (${fam_pct}% of RAM) in ${fam_n} children of pid ${fam_ppid}, under the ${FAMILY_SHARE_PCT}% share and ${FAMILY_AGE_H}h ceiling"
   fi

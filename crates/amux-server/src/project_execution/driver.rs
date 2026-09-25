@@ -765,6 +765,8 @@ async fn ingest_matching_report_file(
             return Ok(false);
         }
     }
+    let (receipt_task, receipt_worker, receipt_generation) =
+        (id.to_string(), expected.worker.clone(), expected.generation);
     let (project, id, expected) = (project.to_string(), id.to_string(), expected.clone());
     let out = state
         .store
@@ -812,7 +814,6 @@ async fn ingest_matching_report_file(
                     events: vec![],
                 });
             }
-            tracing::info!(task=%id,worker=%current.worker,generation=current.generation,measured=true,n_considered=1,verdict="project_report_file_ingested", "durable worker receipt file accepted before terminal boundary");
             planner::record_report(
                 c,
                 &project,
@@ -825,6 +826,9 @@ async fn ingest_matching_report_file(
             .map_err(store::sql_error)
         })
         .await?;
+    if out.applied {
+        tracing::info!(task=%receipt_task,worker=%receipt_worker,generation=receipt_generation,measured=true,n_considered=1,verdict="project_report_file_ingested", "durable worker receipt accepted before terminal boundary");
+    }
     Ok(out.applied)
 }
 
@@ -938,10 +942,17 @@ where
     };
     let report_file = read_project_report_file(&expected.worker);
     if let Ok(Some(file)) = report_file.as_ref() {
-        if report_file_matches_execution(file, expected)
-            && ingest_matching_report_file(state, project, id, expected, file.clone()).await?
-        {
-            return Ok(());
+        if report_file_matches_execution(file, expected) {
+            match ingest_matching_report_file(state, project, id, expected, file.clone()).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => {},
+                Err(error) => {
+                    // Polling may see a syntactically complete placeholder while
+                    // the executor is still building its receipt. Only a current
+                    // terminal boundary may turn that into a failed attempt.
+                    tracing::warn!(task=id,%error,measured=true,n_considered=1,verdict="project.report_incomplete_observed","report refused; executor liveness will decide whether repair is needed");
+                }
+            }
         }
     }
     match ingest_required_outputs_file(state,project,id,expected).await {
@@ -1005,7 +1016,8 @@ where
         match report_file {
             Ok(Some(file)) if report_file_matches_execution(&file, &current) => {
                 tracing::info!(task=%id,worker=%current.worker,generation=current.generation,measured=true,n_considered=1,verdict="project_report_file_ingested","worker receipt file substituted for missing HTTP report");
-                return planner::record_report(c,&project,&id,&current.worker,current.generation,&current.input_hash,&file.report).map_err(store::sql_error);
+                return planner::record_report(c,&project,&id,&current.worker,current.generation,&current.input_hash,&file.report)
+                    .map_err(|error|store::sql_error(anyhow::anyhow!("invalid executor report: {error}")));
             }
             Ok(Some(_)) => {
                 tracing::warn!(task=%id,worker=%current.worker,generation=current.generation,measured=true,n_considered=1,verdict="project_report_file_stale","worker report file did not match the current task input hash");
@@ -1034,10 +1046,7 @@ fn repair_after_failure(e: &Execution, max_attempts: u32, action: &str, error: &
         return !e.verification_retry_pending;
     }
     !e.verification_retry_pending
-        && ((action == "observe"
-            && (error.contains("report")
-                || error.contains("criterion")
-                || error.contains("check")))
+        && ((action == "observe" && planner::report_failure_reason(error))
             || matches!(
                 error,
                 "executor_stopped_before_result" | "executor_returned_without_result"
@@ -1137,6 +1146,33 @@ async fn reconcile_corrected_candidate(state: &AppState, p: &store::Project) -> 
     Ok(())
 }
 
+// A corrected receipt can arrive after verification rejected an earlier
+// candidate. A malformed correction belongs to that task: it must not stop
+// planning or recovery for every other task in the project.
+async fn recover_corrected_reports(state: &AppState, name: &str) -> anyhow::Result<()> {
+    let reports={let c=state.store.read()?;bs::project_issues(&c,name)?.into_iter().filter_map(|row| {
+        let e=planner::execution(&c,&row.id).ok()?;
+        if e.stage!="waiting" { return None; }
+        let file=read_project_report_file(&e.worker).ok().flatten()?;
+        (planner::report_correction_allowed(&e,&file.report) && report_file_matches_execution(&file,&e) && planner::validate_report(&row,&file.report).is_ok()).then_some((row.id,e,file))
+    }).collect::<Vec<_>>()};
+    for (id,e,file) in reports {
+        match ingest_matching_report_file(state,name,&id,&e,file).await {
+            Ok(true) => tracing::info!(project=name,task=%id,measured=true,n_considered=1,verdict="project.corrected_receipt_recovered","current-attempt corrected candidate returned to independent verification without model retry"),
+            Ok(false) => {},
+            Err(error) => {
+                if crate::log_dedupe::first_this_bucket(
+                    &format!("project-corrected-receipt-refused:{name}:{id}"),
+                    crate::log_dedupe::hour_bucket(crate::config::now_f64()),
+                ) {
+                    tracing::warn!(project=name,task=%id,%error,measured=true,n_considered=1,verdict="project.corrected_receipt_refused","invalid task receipt retained; other project tasks continue");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Result<()> {
     let project_name = name.to_string();
     state.store.write_async(move |c| {
@@ -1156,6 +1192,8 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
             let name = name.to_string();
             move |c| {
                 let mut result=crate::api::board_lifecycle::reconcile_project_intake_order(c,&name)?;
+                let bindings=super::acceptance::reconcile_contract_ownership(c,&name).map_err(store::sql_error)?;
+                result.applied|=bindings.applied;result.events.extend(bindings.events);
                 let reviews=super::acceptance::reconcile_review_preparation(c,&name).map_err(store::sql_error)?;
                 result.applied|=reviews.applied;result.events.extend(reviews.events);
                 let statuses=planner::reconcile_issue_statuses(c,&name).map_err(store::sql_error)?;
@@ -1166,19 +1204,7 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         })
         .await?;
     reconcile_corrected_candidate(state, &p).await?;
-    // A corrected receipt can arrive after verification rejected the earlier
-    // candidate. Consume only current-attempt clean descendants; no new model turn.
-    let reports={let c=state.store.read()?;bs::project_issues(&c,name)?.into_iter().filter_map(|row| {
-        let e=planner::execution(&c,&row.id).ok()?;
-        if e.stage!="waiting" { return None; }
-        let file=read_project_report_file(&e.worker).ok().flatten()?;
-        (planner::report_correction_allowed(&e,&file.report) && report_file_matches_execution(&file,&e) && planner::validate_report(&row,&file.report).is_ok()).then_some((row.id,e,file))
-    }).collect::<Vec<_>>()};
-    for (id,e,file) in reports {
-        if ingest_matching_report_file(state,name,&id,&e,file).await? {
-            tracing::info!(project=name,task=%id,measured=true,n_considered=1,verdict="project.corrected_receipt_recovered","current-attempt corrected candidate returned to independent verification without model retry");
-        }
-    }
+    recover_corrected_reports(state, name).await?;
     let held={let c=state.store.read()?;bs::project_issues(&c,name)?.into_iter().filter_map(|row| {
         let e=planner::execution(&c,&row.id).ok()?;
         (e.stage=="waiting" && e.report.is_none() && e.output_wait.is_none()).then_some((row.id,e))
@@ -1563,7 +1589,7 @@ mod observation_tests {
         // A structural refusal kept no report. Reconsider the exact same durable
         // receipt after validation is repaired, without consuming a model attempt.
         let accepted=planner::execution(&state.store.read().unwrap(),"A").unwrap().report.unwrap();
-        state.store.write(|c| {let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="waiting".into();e.report=None;e.waiting=Some("each current criterion needs exactly one executable check".into());c.execute("UPDATE issues SET status='blocked' WHERE id='A'",[])?;planner::save_execution(c,&row,&e,"test.structural_refusal").map_err(store::sql_error)}).unwrap();
+        state.store.write(|c| {let row=bs::get_issue(c,"A")?.unwrap();let mut e=planner::execution(c,"A").unwrap();e.stage="waiting".into();e.report=None;e.waiting=Some("asset SHA256 required".into());c.execute("UPDATE issues SET status='blocked' WHERE id='A'",[])?;planner::save_execution(c,&row,&e,"test.structural_refusal").map_err(store::sql_error)}).unwrap();
         let rejected=planner::execution(&state.store.read().unwrap(),"A").unwrap();
         let file=ProjectReportFile{generation:rejected.generation,input_hash:rejected.input_hash.clone(),report:accepted};
         let mut suspended=rejected.clone();suspended.suspended=true;assert!(!planner::report_correction_allowed(&suspended,&file.report));
@@ -1776,10 +1802,21 @@ mod observation_tests {
             auth_token: None,
             reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(drive_project(&state, "sample"))
-            .unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let live = TurnObservation { running:true, idle:false, ended_at:None,
+                report:serde_json::Value::Null, waiting_reason:None };
+            observe_with(&state,"sample","A",&e,||async {Some(live)}).await.unwrap();
+            let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+            assert_eq!(current.stage,"working","an incomplete report must not interrupt the current turn");
+            assert_eq!(current.attempt,1);
+            let stopped = TurnObservation { running:false, idle:false, ended_at:None,
+                report:serde_json::Value::Null, waiting_reason:None };
+            let error=observe_with(&state,"sample","A",&e,||async {Some(stopped)}).await.unwrap_err().to_string();
+            assert!(error.contains("invalid executor report:"),"{error}");
+            assert!(repair_after_failure(&e,2,"observe",&error));
+            assert!(!repair_after_failure(&e,1,"observe",&error),"report errors must respect the attempt limit");
+            transition(&state,"A",&e,"repair",Some(error)).await.unwrap();
+        });
         let c = state.store.read().unwrap();
         let after = planner::execution(&c, "A").unwrap();
         assert_eq!(after.stage, "repair");
@@ -1801,6 +1838,47 @@ mod observation_tests {
                 .action,
             "claim"
         );
+        drop(c);
+
+        // Reconsidering the durable receipt after a failed turn must not make
+        // this one invalid task abort the rest of the project's driver tick.
+        let git=|args:&[&str]| {
+            let out=std::process::Command::new("git").arg("-C").arg(&worktree).args(args).output().unwrap();
+            assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init","-q"]);
+        git(&["config","user.name","test"]);
+        git(&["config","user.email","test@example.com"]);
+        std::fs::write(worktree.join("wrong-path.md"),"wrong receipt").unwrap();
+        git(&["add","wrong-path.md"]);
+        git(&["commit","-qm","produce incomplete candidate"]);
+        let head=git(&["rev-parse","HEAD"]);
+        state.store.write(|c| {
+            c.execute("UPDATE issues SET status='doing' WHERE id='A'",[])?;
+            let row=bs::get_issue(c,"A")?.unwrap();
+            let mut e=planner::execution(c,"A").unwrap();
+            e.stage="waiting".into();
+            e.wait_category=None;
+            planner::save_execution(c,&row,&e,"test.invalid_correction").map_err(store::sql_error)
+        }).unwrap();
+        let current=planner::execution(&state.store.read().unwrap(),"A").unwrap();
+        std::fs::write(worktree.join(".amux/project-report.json"),serde_json::to_vec(&json!({
+            "generation":current.generation,
+            "input_hash":current.input_hash,
+            "report":{
+                "head":head,
+                "summary":"still uses substituted verifier",
+                "checks":[{"criterion":"contract:goal-artifact","command":"test -f wrong-path.md"}],
+                "assets":[{"path":"wrong-path.md","sha256":hex::encode(Sha256::digest(b"wrong receipt"))}]
+            }
+        })).unwrap()).unwrap();
+        let file=read_project_report_file(&current.worker).unwrap().unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            assert!(ingest_matching_report_file(&state,"sample","A",&current,file).await.is_err());
+            recover_corrected_reports(&state,"sample").await.unwrap();
+        });
+        assert_eq!(planner::execution(&state.store.read().unwrap(),"A").unwrap().stage,"waiting");
     }
     #[test]
     fn project_observation_rejects_delayed_delivery_old_idle_and_report_races() {

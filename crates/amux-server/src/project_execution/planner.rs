@@ -216,14 +216,27 @@ fn repairable_wait_reason(reason: &str, e: &Execution) -> bool {
         && (matches!(
             reason,
             "executor_returned_without_result" | "executor_stopped_before_result"
-        ) || (prelaunch_failure(reason) && e.report.is_none())
+        ) || prelaunch_failure(reason)
+            || (report_failure_reason(reason) && e.report.is_none())
             || (e.report.is_some()
             && e.verification_retries.is_empty()
             && e.waiting.as_deref() == Some(reason)))
 }
 
-fn prelaunch_failure(reason: &str) -> bool {
+pub(crate) fn report_failure_reason(reason: &str) -> bool {
+    ["report", "criterion", "check", "asset"].iter().any(|part| reason.contains(part))
+}
+
+pub(crate) fn prelaunch_failure(reason: &str) -> bool {
     workspace_name_collision(reason)
+        // Git can abort a large checkout while materializing files (for
+        // example when the server restarts during worktree add). No provider
+        // turn was delivered, so this is an operational startup failure, not
+        // evidence that the task exhausted its model attempts. The workspace
+        // ensure path still rejects dirty/incomplete checkouts on retry.
+        || (reason.contains("Preparing worktree")
+            && reason.contains("error: unable to create file ")
+            && reason.contains("No such file or directory"))
         || reason == "tmux not found or timed out"
         || reason == "provider launch ended without a live process or confirmed UI"
         || reason == "workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"
@@ -248,6 +261,7 @@ fn worker_name(project: &str, task: &str) -> String {
 
 const AUTO_REPAIR_GRANT_PREFIX: &str = "auto-repair:";
 const AUTO_REPAIR_GRANT_LIMIT: usize = 3;
+const PRELAUNCH_REPAIR_GRANT_LIMIT: usize = 2;
 
 fn auto_repairable_wait(e: &Execution, max_attempts: u32) -> bool {
     e.stage == "waiting"
@@ -269,15 +283,29 @@ fn auto_repair_grants(e: &Execution) -> usize {
         .count()
 }
 
-/// After the first recovery, another turn requires a new candidate and a new
-/// independently observed verification failure. Repeating the same failure or
-/// merely changing a report cannot buy an unbounded retry loop.
+/// Candidate verification retries require independently observed progress.
+/// Infrastructure failures before a worker turn get their own small allowance;
+/// a prior candidate report may still be retained for review at that point.
 pub(crate) fn auto_repair_grantable_wait(e: &Execution, max_attempts: u32) -> bool {
+    let prelaunch = e.waiting.as_deref().is_some_and(prelaunch_failure);
+    let prior_prelaunch_grants = e
+        .retry_grants
+        .iter()
+        .filter(|g| {
+            g.request
+                .idempotency_key
+                .starts_with(AUTO_REPAIR_GRANT_PREFIX)
+                && g.previous_result["waiting"]
+                    .as_str()
+                    .is_some_and(prelaunch_failure)
+        })
+        .count();
     e.stage == "waiting"
         && !e.suspended
         && e.attempt >= e.attempt_limit(max_attempts)
         && auto_repair_grants(e) < AUTO_REPAIR_GRANT_LIMIT
-        && (auto_repair_grants(e)==0 || e.report.as_ref().is_some_and(|report| {
+        && ((prelaunch && prior_prelaunch_grants < PRELAUNCH_REPAIR_GRANT_LIMIT)
+            || auto_repair_grants(e)==0 || e.report.as_ref().is_some_and(|report| {
             e.waiting.as_deref().is_some_and(|reason|reason.starts_with("verification failed (")
                 && e.retry_grants.iter().filter(|g|g.request.idempotency_key.starts_with(AUTO_REPAIR_GRANT_PREFIX)).all(|g| {
                     g.previous_result.get("waiting").is_some()
@@ -916,9 +944,12 @@ pub(crate) fn validate_report(row: &bs::IssueRow, report: &Report) -> anyhow::Re
 }
 
 pub(crate) fn report_correction_allowed(e: &Execution, report: &Report) -> bool {
+    // A rejected first report retained no candidate. A corrected receipt for
+    // that same claim can recover without buying a model turn. The ingestion
+    // path still validates generation, input, clean HEAD and the full contract;
+    // explicit authorization/output holds and suspension remain authoritative.
     e.stage=="waiting" && !e.suspended && e.wait_category.is_none() && e.waiting.is_some()
-        && (e.report.as_ref().is_some_and(|old|old.head!=report.head)
-            || (e.report.is_none() && e.waiting.as_deref()==Some("each current criterion needs exactly one executable check")))
+        && e.report.as_ref().is_none_or(|old|old.head!=report.head)
 }
 
 pub fn record_report(
@@ -1048,6 +1079,16 @@ pub(crate) fn register_test_workspace(worker: &str, repo: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refused_report_repair_is_bounded_and_preserves_authorization_holds() {
+        let mut e=super::Execution {stage:"waiting".into(),waiting:Some("asset SHA256 required".into()),attempt:1,..Default::default()};
+        assert!(super::auto_repairable_wait(&e,2));
+        assert!(!super::auto_repairable_wait(&e,1));
+        e.suspended=true;
+        assert!(!super::auto_repairable_wait(&e,2));
+        e.suspended=false;e.wait_category=Some("spend".into());
+        assert!(!super::auto_repairable_wait(&e,2));
+    }
     #[test]
     fn foreign_worktree_branch_collision_is_repairable_with_home_scoped_worker_name() {
         let reason = "Preparing worktree (checking out 'amux/fanout/px-example')\nfatal: 'amux/fanout/px-example' is already checked out at '/other-home/worktrees/px-example'";
@@ -1376,8 +1417,43 @@ mod tests {
         assert!(prelaunch_failure("provider launch ended without a live process or confirmed UI"));
         assert!(prelaunch_failure("workspace index is empty over a nonempty commit; preserve and recover the interrupted checkout"));
         assert!(prelaunch_failure("new workspace did not materialize cleanly; preserved for recovery"));
+        assert!(prelaunch_failure("Preparing worktree (checking out 'amux/project/demo')\nUpdating files: 12%\nerror: unable to create file customers/a/screenshot.png: No such file or directory"));
+        assert!(!prelaunch_failure("error: unable to create file customers/a/screenshot.png: Permission denied"));
         assert!(!prelaunch_failure("existing workspace belongs to a different repository; preserved"));
         assert!(!prelaunch_failure("workspace has uncommitted user changes"));
+    }
+
+    #[test]
+    fn checkout_failure_can_repair_after_an_earlier_model_repair_grant() {
+        let grant = |generation, reason: &str| super::super::task_retry::Grant {
+            request: super::super::task_retry::Request {
+                idempotency_key: format!("auto-repair:sample:A:{generation}"),
+                expect_generation: generation,
+                expect_revision: generation,
+                input_hash: "input".into(),
+            },
+            allowed_through: 4,
+            previous_result: json!({"waiting": reason}),
+        };
+        let checkout = "Preparing worktree (checking out 'amux/project/sample')\nerror: unable to create file evidence/a.png: No such file or directory";
+        let mut e = Execution {
+            stage: "waiting".into(),
+            attempt: 4,
+            waiting: Some(checkout.into()),
+            report: Some(Report {
+                head: "a".repeat(40),
+                summary: "Earlier candidate retained for review".into(),
+                assets: vec![],
+                checks: vec![],
+            }),
+            retry_grants: vec![grant(1, "verification failed (gate): old candidate")],
+            ..Default::default()
+        };
+        assert!(auto_repair_grantable_wait(&e, 3));
+        e.retry_grants.push(grant(2, checkout));
+        assert!(auto_repair_grantable_wait(&e, 3));
+        e.retry_grants.push(grant(3, checkout));
+        assert!(!auto_repair_grantable_wait(&e, 3));
     }
 
     #[test]

@@ -189,7 +189,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div class="header-row">
   <div class="header-brand" style="display:flex;gap:8px;align-items:center;">
     <h1 role="button" tabindex="0" aria-label="About amux" title="About amux" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAbout()}" id="brand-header" style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="openAbout()"><span id="brand-icon-header"></span><span id="brand-name-header">amux</span></h1>
-    <span role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showConnHistory()}" id="conn-status" class="conn-status online" title="Connection status — click for disconnection history" onclick="showConnHistory()"></span>
+    <span role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_connPillClick()}" id="conn-status" class="conn-status online" title="Connection and sync status. Tap for pending changes or disconnection history" onclick="_connPillClick()"></span>
     <div style="position:relative;">
       <button id="notif-btn" onclick="toggleNotifPanel()" title="Notifications" style="cursor:pointer;padding:2px 4px;font-size:1rem;opacity:0.7;line-height:1;position:relative;" aria-label="Notifications" aria-controls="notif-panel" aria-expanded="false">&#x1F514;<span id="notif-badge" class="notif-badge" style="display:none;">0</span></button>
       <div id="notif-panel" class="notif-panel">
@@ -445,6 +445,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <details><summary>Browser blocks HTTPS before sign-in?</summary><p>On the server machine, open <code>http://localhost:&lt;this server's port&gt;/connection-setup</code> for local trust and install instructions. This page cannot grant OS/browser trust. Ask the operator to provide a trusted certificate; do not disable TLS checks.</p></details>
         </section>
         <div class="settings-sep"></div>
+        <section class="settings-section" id="settings-vault-section">
+          <div class="settings-section-label">Vault</div>
+          <p class="connection-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above an item's limit waits for your approval in the approvals banner.</p>
+          <div id="vault-items">Loading…</div>
+        </section>
+        <div class="settings-sep"></div>
         <div class="settings-section" id="settings-apikeys-section">
           <div class="settings-section-label">API Keys</div>
           <div style="font-size:0.72rem;color:var(--dim);margin-bottom:6px;">Also used to fetch each vendor's own live model list instead of amux's static fallback.</div>
@@ -646,6 +652,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 </div>
 <div id="pinned-notes-home" class="pinned-notes-home"></div>
 <div id="cards" class="cards"></div>
+<div id="project-workers-section"></div>
 <div id="review-section"></div>
 <div id="paused-section"></div>
 <div id="expired-section"></div>
@@ -2126,6 +2133,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <div id="ac-list" class="ac-list"></div>
       </div>
     </div>
+    <div class="field-group">
+      <label class="field-label" for="create-group">Group <span class="field-optional">(optional)</span></label>
+      <input id="create-group" class="input" type="text" list="create-group-list" placeholder="e.g. backend, or several: backend, api"
+        autocomplete="off" autocorrect="off" autocapitalize="off" style="min-height:44px;">
+      <datalist id="create-group-list"></datalist>
+    </div>
     <div class="field-group" id="create-template-field">
       <div class="field-label" onclick="_toggleTmplSection()" style="cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;">
         <span id="tmpl-section-chev" style="font-size:0.7rem;color:var(--dim);transition:transform 0.15s;">&#x25B6;</span>
@@ -2146,6 +2159,12 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="field-group">
       <label class="field-label">Initial prompt <span class="field-optional">(optional)</span></label>
       <textarea id="create-prompt" rows="3" placeholder="What should Claude work on first?"></textarea>
+    </div>
+    <div class="field-group" id="create-groups-field">
+      <label class="field-label">Groups <span class="field-optional">(optional)</span></label>
+      <input id="create-groups" type="text" placeholder="ops, gtm" autocomplete="off" autocorrect="off"
+        onfocus="_showGroupSuggestions()" oninput="_filterGroupSuggestions(this.value)">
+      <div id="create-groups-suggestions" class="ac-list" style="position:relative;"></div>
     </div>
     <div class="field-group">
       <label class="field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
@@ -2536,15 +2555,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
          session filter above, not by a separate code path. Stays its OWN row:
          chips wrap to arbitrary height, so folding them into the toolbar would
          reintroduce the second row it just lost, only unpredictably. -->
-    <!-- How this worker's messages meet its board (Ethan, 2026-09-24). Decompose:
-         your message is delivered AND planned onto the board in the background.
-         Force adherence: your message is withheld; only the planned cards reach
-         the worker. Defaults: decompose on, force off. Hidden for isolated workers. -->
-    <div id="peek-board-policy" class="peek-board-policy" style="display:none;">
-      <label title="Your messages still reach the worker; a planner files them onto this board in the background"><input type="checkbox" id="peek-board-decompose" onchange="togglePeekBoardPolicy('board_decompose', this.checked)"> Decompose onto board</label>
-      <label title="On: the board drives this worker (task messages become cards, it picks up cards and gets board reminders). Off: the board only records; nothing is typed into the worker."><input type="checkbox" id="peek-board-force" onchange="togglePeekBoardPolicy('board_force_adherence', this.checked)"> Force board adherence</label>
-      <span id="peek-board-policy-note" class="peek-board-policy-note" style="display:none;"></span>
-    </div>
+    <div id="peek-board-config" class="peek-board-config" style="display:none;"></div>
     <div id="bf-chips-peek" style="display:none;flex-wrap:wrap;gap:6px;padding:0 10px 6px;"></div>
     <div class="peek-tasks-list" id="peek-issues-list"></div>
   </div>
@@ -2881,7 +2892,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="sync-banner" class="sync-banner">
   <div class="sync-title">
     <span id="sync-title-text">Syncing...</span>
-    <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="document.getElementById('sync-banner').classList.remove('active')">Dismiss</button>
+    <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="_syncBannerRequested=false;_syncChecklist=[];document.getElementById('sync-banner').classList.remove('active')">Dismiss</button>
   </div>
   <div id="sync-items"></div>
 </div>

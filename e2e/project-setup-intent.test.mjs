@@ -64,6 +64,20 @@ test('project worker lifecycle uses measured provider status rather than process
  ctx.sessions=[];assert.equal(ctx._projectWorkerRuntime({name:'demo',lifecycle:'expired'}).label,'Expired');
 });
 
+test('project card stops claiming Driving when its assigned worker needs input',()=>{
+ const session={name:'worker-1',running:true,status:'waiting'};
+ const ctx=vm.createContext({sessions:[session],online:true,_sessionLoadError:null});
+ vm.runInContext(source.slice(source.indexOf('function _projectInventoryState('),source.indexOf('function _projectRenderInventory(')),ctx);
+ const project={policy:{enabled:true},summary:{active_tasks:2,running_executions:1,working_workers:['worker-1']}};
+ assert.equal(ctx._projectInventoryState(project).label,'Worker needs input');
+ session.status='active';assert.equal(ctx._projectInventoryState(project).label,'Driving');
+ session.status='stopped';session.running=false;assert.equal(ctx._projectInventoryState(project).label,'Worker stopped');
+ ctx._sessionLoadError='offline';assert.equal(ctx._projectInventoryState(project).label,'Worker state unavailable');
+ ctx._sessionLoadError=null;project.summary.working_workers=[];project.summary.running_executions=0;project.summary.queued_repairs=1;
+ assert.equal(ctx._projectInventoryState(project).label,'Repair queued');
+ project.summary.queued_repairs=0;assert.equal(ctx._projectInventoryState(project).label,'Ready to dispatch');
+});
+
 test('directory viewer ignores older network and offline cache responses after navigation',async()=>{
  const nodes=new Map(),pending=[],renders=[],cache=[];
  const ctx=vm.createContext({document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',value:''});return nodes.get(id)}},history:{replaceState:()=>{}},location:{pathname:'/'},_encodeHashPath:s=>s,_updateFilesCwdBtn:()=>{},_filesToolbarCheck:()=>{},esc:s=>s,API:'',_filesShowHidden:false,_renderFilesEntries:(_body,path,data)=>renders.push({path,data}),_autoCacheDirFiles:()=>{},_idb:{setFile:()=>{},getFile:()=>new Promise(resolve=>cache.push(resolve))},fetch:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject}))});
@@ -201,4 +215,22 @@ test('project checkout settings restore one writer for either checkout mode',()=
  vm.runInContext(source.slice(source.indexOf('function _projectCheckoutChanged()'),source.indexOf('function _projectSettingsKey()')),ctx);
  ctx._projectCheckoutChanged();assert.equal(capacity.value,'1');
  checkout.value='0';capacity.value='2';ctx._projectCheckoutChanged();assert.equal(capacity.value,'1');
+});
+
+test('shared project branch is intentional but outside workers remain a conflict', async()=>{
+ let rows={},now=30000;const logs=[];
+ const ctx=vm.createContext({sessions:[{name:'a',dir:'/repo'},{name:'b',dir:'/repo'}],gitInfo:{},peekSession:null,API:'',Date:{now:()=>now},fetch:async()=>({ok:true,json:async()=>structuredClone(rows)}),render:()=>{},console:{info:(...a)=>logs.push(a),error:()=>{}},esc:s=>s});
+ vm.runInContext(source.slice(source.indexOf('function _isBranchMain('),source.indexOf('// Show the working directory')),ctx);
+ const branch='amux/project/example';
+ rows={a:{repo:'/repo',branch,project_checkout:'example'},b:{repo:'/repo',branch,project_checkout:'example'}};
+ await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,false);
+ assert.match(ctx._renderBranchBadge('a',''),/Shared project checkout/);
+ assert.doesNotMatch(ctx._renderBranchBadge('a',''),/⚠/);
+ rows.b.project_checkout=null;now+=21000;await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,true,'unmanaged worker on the branch is still a conflict');
+ rows.b.project_checkout='other';now+=21000;await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,true,'different project cannot borrow the shared checkout exemption');
+ rows.b.project_checkout='example';now+=21000;await ctx._fetchGitBranches(ctx.sessions);
+ assert.equal(ctx.gitInfo.a._conflict,false);assert.equal(logs.length,1);
 });

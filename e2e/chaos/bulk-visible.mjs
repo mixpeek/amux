@@ -32,10 +32,12 @@ try {
   const box = await btn.boundingBox();
   check('button is on screen and tappable at 390px', box && box.x + box.width <= 390 && box.height >= 32, box);
 
+  check('no Reset button in the default group view', await page.locator('.tag-reset-btn').count() === 0);
   await page.locator('.tag-filter', { hasText: /^x$/ }).click();
   await waitFor('filtered count', () => btn.textContent().then(t => t === 'All shown (2)'), 10000, 200);
   check('filtering to group x makes it "All shown (2)"', await btn.textContent() === 'All shown (2)');
   await page.screenshot({ path: path.join(amux.root, '1-filtered.png') });
+  check('Reset appears once a group is selected', await page.locator('.tag-reset-btn').isVisible());
 
   await btn.click();
   await page.locator('#bulk-actions-overlay.open').waitFor({ timeout: 5000 });
@@ -47,6 +49,13 @@ try {
   check('stop: both shown workers stopped', !(await running('bx-one')) && !(await running('bx-two')));
   check('stop: the hidden worker kept running', await running('by-three'));
 
+  // Reset the group view, then filter again for the delete checks.
+  await page.locator('.tag-reset-btn').click();
+  await waitFor('all shown again', () => btn.textContent().then(t => t === 'All shown (3)'), 10000, 200).catch(() => null);
+  check('Reset restores every group ("All shown (3)", no pill selected)', await btn.textContent() === 'All shown (3)' && await page.locator('.tag-filter.active').count() === 0);
+  check('Reset disappears after resetting', await page.locator('.tag-reset-btn').count() === 0);
+  await page.locator('.tag-filter', { hasText: /^x$/ }).click();
+  await waitFor('filtered again', () => btn.textContent().then(t => t === 'All shown (2)'), 10000, 200);
   // Delete: a wrong typed count must cancel.
   await btn.click();
   await page.locator('.bulk-visible-actions button', { hasText: 'Delete' }).click();

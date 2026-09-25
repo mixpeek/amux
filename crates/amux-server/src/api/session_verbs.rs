@@ -1656,17 +1656,57 @@ pub(crate) struct ClaudeLimitObservation {
     pub reset_at: i64,
 }
 
+/// The provider's own record of a limit: the conversation ended on Claude
+/// Code's synthetic 429 (`error: "rate_limit"`, `isApiErrorMessage`,
+/// `quotaLimits.status: "rejected"`). Returns the reset epoch (0 when absent).
+///
+/// WHY (Ethan, 2026-09-24: mvs-infra hit "You've hit your session limit" and
+/// read `idle`, so "continue all limited" skipped it). The screen check only
+/// sees the last 8 lines, and a "Remote Control disconnected" notice printed
+/// under the limit message pushed it out of that window. The transcript says
+/// it structurally, whatever else the pane prints. A later user message (the
+/// owner's "continue") or any other assistant turn ends it.
+pub(crate) fn transcript_rate_limit(records: &[Value]) -> Option<i64> {
+    let last = records.iter().rev().find(|r| {
+        matches!(r.get("type").and_then(Value::as_str), Some("user" | "assistant"))
+            && !r.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
+            && !r.get("isMeta").and_then(Value::as_bool).unwrap_or(false)
+    })?;
+    let limited = last.get("type").and_then(Value::as_str) == Some("assistant")
+        && last.get("error").and_then(Value::as_str) == Some("rate_limit")
+        && last.pointer("/quotaLimits/status").and_then(Value::as_str) == Some("rejected");
+    limited.then(|| last.pointer("/quotaLimits/resetsAt").and_then(Value::as_i64).unwrap_or(0))
+}
+
+/// Screen-only observation; production passes the transcript through
+/// `observe_claude_limit_with`.
+#[cfg(test)]
 pub(crate) fn observe_claude_limit(
     pane: &str,
     recorded_reset: i64,
     now: chrono::DateTime<chrono::Local>,
+) -> Option<ClaudeLimitObservation> {
+    observe_claude_limit_with(pane, recorded_reset, now, None)
+}
+
+/// `observe_claude_limit` plus the transcript's structured limit record.
+pub(crate) fn observe_claude_limit_with(
+    pane: &str,
+    recorded_reset: i64,
+    now: chrono::DateTime<chrono::Local>,
+    transcript_reset: Option<i64>,
 ) -> Option<ClaudeLimitObservation> {
     let menu = is_rate_limit_menu(pane);
     let auto_resume = crate::backend::adapter::claude_auto_resume_banner(pane);
     let lines: Vec<_> = pane.lines().collect();
     let footer = lines[lines.len().saturating_sub(8)..].join("\n");
     if !menu && auto_resume.is_none() && !is_rate_limited_credit_banner(&footer) {
-        return None;
+        let reset = transcript_reset?;
+        return Some(ClaudeLimitObservation {
+            menu: false,
+            kind: "transcript",
+            reset_at: effective_rate_limit_reset(recorded_reset, reset, now.timestamp()),
+        });
     }
     let kind = if menu {
         "menu"
@@ -1867,6 +1907,64 @@ fn project_hook_review_key(cfg: &EnvFile, raw: &str) -> Option<&'static str> {
     });
     if selected { return Some("Enter"); }
     clean.lines().map(str::trim).any(|line| line == choice).then_some("3")
+}
+
+// A Codex resume after project checkout consolidation can ask which of two
+// directories to use. The registered project checkout is an Amux-owned choice,
+// not a new authorization or a question for the owner. Never choose a path
+// from the pane alone: it must equal the durable project checkout record.
+fn project_checkout_directory_key(cfg: &EnvFile, raw: &str, checkout: &Path) -> Option<&'static str> {
+    if cfg.get("CC_PROVIDER") != Some("codex")
+        || cfg.get("CC_PROJECT").is_none_or(str::is_empty)
+        || ["CC_ISOLATED", "CC_PAUSED", "CC_ARCHIVED", "CC_PROJECT_PAUSED"]
+            .iter().any(|key| env_flag_on(cfg.get(key)))
+    { return None; }
+    let clean = strip_ansi(raw);
+    if crate::backend::adapter::provider_picker_reason(&clean, "codex") != Some("user_input") {
+        return None;
+    }
+    let lines: Vec<_> = clean.lines().map(str::trim).filter(|line| !line.is_empty()).rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+    if lines.last().copied() != Some("Press enter to continue") { return None; }
+    let option = |number: usize| -> Option<(&str, bool)> {
+        let prefix = format!("{number}. ");
+        lines.iter().rev().find_map(|line| {
+            let selected = line.starts_with('›') || line.starts_with('❯');
+            let text = if selected { line[3..].trim() } else { line };
+            text.strip_prefix(&prefix).map(|value| (value, selected))
+        })
+    };
+    let (old, _) = option(1)?;
+    let (current, selected) = option(2)?;
+    if !old.starts_with("Use session directory (")
+        || !current.starts_with("Use current directory (")
+        || option(3)?.0 != "Always use session directory"
+        || option(4)?.0 != "Always use current directory"
+    { return None; }
+    let chosen = current.strip_prefix("Use current directory (")?.strip_suffix(')')?;
+    if Path::new(chosen) != checkout { return None; }
+    Some(if selected { "Enter" } else { "2" })
+}
+
+fn project_checkout_repair_claim_ready(plans: &[crate::project_execution::planner::CardPlan], worker: &str) -> bool {
+    plans.iter().any(|p| p.action == "claim" && p.execution.stage == "repair"
+        && p.execution.worker == worker && !p.execution.suspended)
+}
+
+fn project_repair_claim_ready(state: &AppState, project: &str, worker: &str) -> bool {
+    state.store.read().ok().is_some_and(|c| {
+        let Ok(Some(p)) = crate::project_execution::store::get(&c, project) else { return false; };
+        p.policy.enabled && !p.policy.paused && crate::project_execution::planner::plan(&c, &p)
+            .ok().is_some_and(|plans| project_checkout_repair_claim_ready(&plans, worker))
+    })
+}
+
+fn project_codex_conversation_retry_ready(cfg: &EnvFile, pane: &str, last_retry: i64, now: i64) -> bool {
+    cfg.get("CC_PROVIDER") == Some("codex")
+        && cfg.get("CC_PROJECT").is_some_and(|p| !p.is_empty())
+        && !["CC_ISOLATED", "CC_PAUSED", "CC_PROJECT_PAUSED", "CC_ARCHIVED", "CC_REVIEW_HELD"]
+            .iter().any(|key| env_flag_on(cfg.get(key)))
+        && codex_conversation_open_elsewhere(pane)
+        && (last_retry == 0 || now - last_retry >= 300)
 }
 
 pub(crate) fn is_resume_mode_prompt(raw: &str) -> bool {
@@ -4721,6 +4819,10 @@ fn provider_yolo_flag(provider: &str) -> &'static str {
         "gemini" | "muse" => "--yolo",
         _ => "--dangerously-skip-permissions",
     }
+}
+
+pub(crate) fn provider_yolo_flag_pub(provider: &str) -> &'static str {
+    provider_yolo_flag(provider)
 }
 
 fn strip_provider_yolo_flags(flags: &str) -> String {
@@ -8801,7 +8903,8 @@ fn project_execution_composer_owns_text(raw: &str, text: &str) -> bool {
         return false;
     };
     let tail = send_tail_squashed(text);
-    !tail.is_empty() && pending.contains(&tail)
+    let pending_sq: String = pending.split_whitespace().collect();
+    !tail.is_empty() && pending_sq.contains(&tail)
 }
 
 /// Codex's model/path line is footer chrome, not a continuation of the input.
@@ -9483,10 +9586,10 @@ fn submission_delivery_count(records: &[Value], text: &str, since: f64) -> usize
                 return false;
             }
             let hit = match &msg["content"] {
-                Value::String(s) => s.contains(needle),
+                Value::String(s) => jsonl_content_matches(s, needle),
                 Value::Array(items) => items
                     .iter()
-                    .any(|c| c["text"].as_str().is_some_and(|t| t.contains(needle))),
+                    .any(|c| c["text"].as_str().is_some_and(|t| jsonl_content_matches(t, needle))),
                 _ => false,
             };
             hit && rec["timestamp"]
@@ -9569,6 +9672,18 @@ pub(crate) fn muse_intent_in_tail(tail: &str, needle: &str) -> bool {
     })
 }
 
+/// Whether a JSONL content string matches the sent needle.
+///
+/// The dashboard stamps non-slash messages as `[HH:MM author] original_text`,
+/// so the JSONL content is the needle plus a prefix of ~20-60 chars. Plain
+/// `contains` would false-positive if message A is a substring of a completely
+/// different, much longer message B sent within the same 2-second window.
+/// Guarding with a length bound prevents that: 200 chars of overhead covers
+/// any plausible timestamp/author prefix while rejecting unrelated messages.
+pub(crate) fn jsonl_content_matches(content: &str, needle: &str) -> bool {
+    content.contains(needle) && content.len() <= needle.len() + 200
+}
+
 /// The evidence scan itself, over already-parsed records — pure so it can be
 /// tested against a planted transcript rather than a mock of the file reader.
 pub(crate) fn jsonl_records_have(recs: &[Value], needle: &str, since: f64) -> bool {
@@ -9586,11 +9701,11 @@ pub(crate) fn jsonl_records_have(recs: &[Value], needle: &str, since: f64) -> bo
             continue;
         }
         let hit = match &msg["content"] {
-            Value::String(s) => s.contains(needle),
+            Value::String(s) => jsonl_content_matches(s, needle),
             Value::Array(items) => items.iter().any(|c| {
                 c["text"]
                     .as_str()
-                    .map(|t| t.contains(needle))
+                    .map(|t| jsonl_content_matches(t, needle))
                     .unwrap_or(false)
             }),
             _ => false,
@@ -9739,7 +9854,10 @@ pub(crate) fn read_frame(raw: &str, tail_sq: &str) -> FrameRead {
     // repeat our text is not our message sitting unsent — and treating it as
     // one would make the verifier press Escape+Enter and re-submit a message
     // that already landed.
-    let still_there = state.typed().map(|p| p.contains(tail_sq)).unwrap_or(false);
+    let still_there = state.typed().map(|p| {
+        let p_sq: String = p.split_whitespace().collect();
+        p_sq.contains(tail_sq)
+    }).unwrap_or(false);
     if !still_there {
         return FrameRead::Cleared;
     }
@@ -9984,29 +10102,53 @@ async fn verify_submitted(
                 // frame reads say Cleared but the JSONL has no record, something
                 // accepted the Enter and then unwound it.
                 if confirmed {
-                    // Cool-off: one more frame read to catch a restoration.
+                    // Cool-off: two more frame reads to catch restorations
+                    // up to ~900ms (200-800ms measured range).
                     sleep_ms(300).await;
                     let raw2 = tmux_capture(name, 25).await;
                     let frame2 = read_frame(&raw2, &tail_sq);
                     if final_frame_confirms(frame2) {
-                        // CORROBORATE WITH JSONL when the cool-off confirms.
-                        // Three consecutive Cleared reads is strong frame
-                        // evidence. If the JSONL also has the message, this
-                        // is a real submission. If it does not, the JSONL may
-                        // simply be lagging (Claude writes it after accepting
-                        // the prompt, not before), so still trust the frame,
-                        // but log it for sweep visibility.
                         let jsonl_ok = sent_at > 0.0
                             && (jsonl_submission_since(name, text, sent_at)
                                 || muse_user_intent_since(name, text, sent_at));
-                        if !jsonl_ok && sent_at > 0.0 {
-                            tracing::info!(
-                                session = %name,
-                                verdict = "confirmed_frame_only",
-                                "three Cleared reads confirm submission; JSONL has no \
-                                 record yet (lag or session without transcript)"
-                            );
+                        if jsonl_ok {
+                            return (Submission::Confirmed, retried);
                         }
+                        // Frame says Cleared but JSONL has no record yet.
+                        // One more read at the tail of the measured window
+                        // before trusting the frame alone.
+                        sleep_ms(300).await;
+                        let raw3 = tmux_capture(name, 25).await;
+                        let frame3 = read_frame(&raw3, &tail_sq);
+                        if !final_frame_confirms(frame3) {
+                            tracing::warn!(
+                                session = %name,
+                                cool_off_frame = ?frame3,
+                                verdict = "cleared_then_restored_late",
+                                "three Cleared reads followed by late text \
+                                 restoration (>600ms); JSONL had no record (AMUX-5090)"
+                            );
+                            cleared_once = false;
+                            continue;
+                        }
+                        // Four Cleared reads with no JSONL: trust the frame,
+                        // but WARN so sweeps can detect patterns.
+                        tracing::warn!(
+                            session = %name,
+                            verdict = "confirmed_frame_only",
+                            "four Cleared reads confirm submission; JSONL has no \
+                             record yet (lag or session without transcript)"
+                        );
+                        // AND KEEP WATCHING (Ethan 2026-09-24 12:26, amux-helper:
+                        // "i just sent something ... and its in unsubmitted text").
+                        // Every trailing-@-mention send that day ended here, and
+                        // Claude Code put the text back AFTER these reads, so the
+                        // message sat unsubmitted while amux had said "sent".
+                        // Widening the window chases timing; instead, for 90s,
+                        // confirm by the transcript or, if the exact message is
+                        // back in the box at idle, press Enter again (the manual
+                        // Enter that fixed the morning's incidents).
+                        spawn_direct_draft_idle_submit(name, text, sent_at, 90.0);
                         return (Submission::Confirmed, retried);
                     }
                     // The composer has text again: the submission was rolled
@@ -10039,7 +10181,25 @@ async fn verify_submitted(
             // send lock is held from paste through verify, and we pasted
             // seconds ago. `ghost_rescue` cannot make that claim and correctly
             // does not try.
-            FrameRead::CollapsedPaste => {}
+            //
+            // COLLAPSED PASTE GETS A LONGER JSONL WAIT (chaos-test finding,
+            // 2026-09-24). The frame hides the actual text, so `read_frame`
+            // can never return Cleared for a collapsed paste that was accepted
+            // (it transitions directly from CollapsedPaste to NoUi/Cleared as
+            // Claude processes the turn). If JSONL writing lags by >~1.5s (the
+            // normal stuck_looks window), the code would retry Enter on a
+            // message the agent already accepted. Give JSONL 3 extra seconds
+            // when the dominant signal is CollapsedPaste.
+            FrameRead::CollapsedPaste => {
+                if sent_at > 0.0 {
+                    sleep_ms(500).await;
+                    if jsonl_submission_since(name, text, sent_at)
+                        || muse_user_intent_since(name, text, sent_at)
+                    {
+                        return (Submission::Confirmed, retried);
+                    }
+                }
+            }
         }
         // ONE stuck look is not proof either: for ~1s after a successful submit
         // the pane still shows the echoed text and no spinner yet (worse during
@@ -10088,19 +10248,44 @@ async fn verify_submitted(
     }
     let raw = tmux_capture(name, 25).await;
     if observe_submission_frame(read_frame(&raw, &tail_sq), &mut cleared_once) {
-        // Same cool-off as the in-loop Cleared path (AMUX-5090).
+        // Same two-read cool-off as the in-loop Cleared path (AMUX-5090).
         sleep_ms(300).await;
         let raw2 = tmux_capture(name, 25).await;
         let frame2 = read_frame(&raw2, &tail_sq);
         if final_frame_confirms(frame2) {
-            return (Submission::Confirmed, retried);
+            let jsonl_ok = sent_at > 0.0
+                && (jsonl_submission_since(name, text, sent_at)
+                    || muse_user_intent_since(name, text, sent_at));
+            if !jsonl_ok && sent_at > 0.0 {
+                sleep_ms(300).await;
+                let raw3 = tmux_capture(name, 25).await;
+                let frame3 = read_frame(&raw3, &tail_sq);
+                if !final_frame_confirms(frame3) {
+                    tracing::warn!(
+                        session = %name,
+                        cool_off_frame = ?frame3,
+                        verdict = "cleared_then_restored_post_loop_late",
+                        "post-loop: late text restoration after >600ms (AMUX-5090)"
+                    );
+                } else {
+                    tracing::warn!(
+                        session = %name,
+                        verdict = "confirmed_frame_only_post_loop",
+                        "four Cleared reads confirm post-loop; JSONL has no record yet"
+                    );
+                    return (Submission::Confirmed, retried);
+                }
+            } else {
+                return (Submission::Confirmed, retried);
+            }
+        } else {
+            tracing::warn!(
+                session = %name,
+                cool_off_frame = ?frame2,
+                verdict = "cleared_then_restored_post_loop",
+                "post-loop Cleared reads followed by text restoration (AMUX-5090)"
+            );
         }
-        tracing::warn!(
-            session = %name,
-            cool_off_frame = ?frame2,
-            verdict = "cleared_then_restored_post_loop",
-            "post-loop Cleared reads followed by text restoration (AMUX-5090)"
-        );
     }
     // Last resort before reporting a failure (which makes callers re-send):
     // trust the durable JSONL record over a possibly-torn final frame.
@@ -10214,6 +10399,15 @@ async fn queue_boot_prompt(
         }
         Err(error) => (false, error.into()),
     }
+}
+
+pub(crate) async fn queue_boot_prompt_pub(
+    state: &AppState,
+    name: &str,
+    text: &str,
+    origin: SendOrigin,
+) -> (bool, String) {
+    queue_boot_prompt(state, name, text, origin).await
 }
 
 async fn queue_start_prompt(state: AppState, name: String, text: String, origin: SendOrigin) {
@@ -11865,7 +12059,7 @@ async fn send_text_inner_bound(
             // (submit_own_steering_draft); the direct path returned "not
             // submitted" and nobody ever pressed Enter, so the text sat until a
             // human noticed. Now it gets the same treatment, bounded and logged.
-            spawn_direct_draft_idle_submit(name, &text);
+            spawn_direct_draft_idle_submit(name, &text, sent_at, 0.0);
             return (
                 true,
                 "queued (held in the input box; submitted automatically when this turn ends)".into(),
@@ -11887,7 +12081,10 @@ fn direct_draft_watches() -> &'static std::sync::Mutex<std::collections::HashSet
 /// idle boundary, if and only if the composer still holds exactly that
 /// message. A human who edited or cleared it wins; the watch stops. Bounded to
 /// 30 minutes; every exit is a counted verdict.
-fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
+/// `grace_s`: for this long an EMPTY box does not end the watch (Claude Code
+/// can clear the box and restore the text a second or more later); only the
+/// transcript recording the message, or the grace running out, does.
+fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s: f64) {
     let key = format!("{name}\u{0}{}", text.split_whitespace().collect::<String>());
     if let Ok(mut w) = direct_draft_watches().lock() {
         if !w.insert(key.clone()) {
@@ -11896,11 +12093,18 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
     }
     let (name, text) = (name.to_string(), text.to_string());
     tokio::spawn(async move {
-        let deadline = now_f64() + 1800.0;
+        let started = now_f64();
+        let deadline = started + 1800.0;
         let verdict: &'static str = loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if now_f64() > deadline {
                 break "direct_draft_idle_submit_gave_up";
+            }
+            if sent_at > 0.0
+                && (jsonl_submission_since(&name, &text, sent_at)
+                    || muse_user_intent_since(&name, &text, sent_at))
+            {
+                break "direct_draft_confirmed_by_transcript";
             }
             if !is_running(&name).await {
                 break "direct_draft_lane_stopped";
@@ -11915,6 +12119,9 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
                     }
                 }
                 ComposerState::Empty | ComposerState::Placeholder(_) => {
+                    if now_f64() < started + grace_s {
+                        continue; // a restoration may still be on its way
+                    }
                     break "direct_draft_left_composer";
                 }
                 // A full-screen view or the background manager: keep waiting.
@@ -11937,7 +12144,7 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str) {
             w.remove(&key);
         }
         let preview = chars_truncate(&text, 80);
-        if verdict == "direct_draft_submitted_at_idle" || verdict == "direct_draft_left_composer" {
+        if matches!(verdict, "direct_draft_submitted_at_idle" | "direct_draft_left_composer" | "direct_draft_confirmed_by_transcript") {
             tracing::info!(session = %name, %preview, measured = true, n_considered = 1, verdict,
                 "held direct message resolved");
         } else {
@@ -11956,7 +12163,9 @@ const ALLOWED_TMUX_KEYS: [&str; 47] = [
 ];
 // "1": the resume-mode auto-answer selects BY DIGIT (see resume_mode_action —
 // Enter would take whatever is highlighted, including "Don't ask me again").
-const ALLOWED_TMUX_CHAR_KEYS: [&str; 6] = ["y", "n", "q", "x", "1", "3"];
+// "2": the exact registered project-checkout picker selects the current
+// directory without persisting a provider preference.
+const ALLOWED_TMUX_CHAR_KEYS: [&str; 8] = ["y", "n", "q", "x", "r", "1", "2", "3"];
 
 async fn send_keys_op(name: &str, keys: &str) -> (bool, String) {
     if !is_running(name).await {
@@ -14168,32 +14377,94 @@ pub(crate) async fn start_for_board_dispatch(state: &AppState, name: &str) -> Re
     if parse_env(name).get("CC_REVIEW_HELD") == Some("1") {
         return Err("review-held workers are excluded from board automation".into());
     }
-    let (started, detail) = start_session(state, name, "", false).await;
-    if !started {
-        return Err(detail);
-    }
-    // Process creation and the provider reaching the PTY are separate events.
-    // Slow shell/profile startup must not strand an already reserved board task.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !is_running(name).await {
-        if lane_is_paused(name) || session_is_isolated(name) {
-            return Err("worker protected during provider startup".into());
+    let cfg = parse_env(name);
+    let codex_project = cfg.get("CC_PROJECT").is_some() && provider_of(&cfg) == "codex";
+    let failed_before_launch = codex_project
+        && cfg.get("CC_BOARD_CARD").is_some_and(|card| {
+            state.store.read().ok()
+                .and_then(|c| crate::project_execution::planner::execution(&c, card).ok())
+                .and_then(|e| e.last_failure)
+                .as_deref()
+                .is_some_and(crate::project_execution::planner::prelaunch_failure)
+        });
+    let mut fresh_retry = false;
+    loop {
+        // A failed Codex resume can exit to the shell with this exact error.
+        // Reusing its recorded conversation ID would recreate the same error
+        // forever. This is only for a claimed project executor; start_session
+        // rechecks the exclusive task permit before touching its checkout.
+        let stale_resume = codex_project
+            && codex_resume_config_failure(&tmux_capture(name, 25).await);
+        let fresh = fresh_retry || stale_resume || failed_before_launch;
+        if fresh {
+            let mut meta = load_meta(name);
+            meta.remove("codex_session_id");
+            meta.remove("pending_structured_resume_context");
+            meta.remove("pending_structured_resume_token");
+            save_meta(name, &meta);
         }
-        if tokio::time::Instant::now() >= deadline {
-            tracing::warn!(
-                session = name,
-                verdict = "board_provider_start_timeout",
-                measured = true,
-                n_considered = 1,
-                "provider did not become live after process startup"
-            );
-            return Err(format!(
-                "start reported '{detail}', but no live provider process remains after 30s"
-            ));
+        let (started, detail) = start_session(state, name, "", fresh).await;
+        if !started {
+            return Err(detail);
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        // Process creation and the provider reaching the PTY are separate
+        // events. Check that it stays live long enough to avoid delivering a
+        // task packet to a shell after an immediate Codex resume failure.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !is_running(name).await {
+            if lane_is_paused(name) || session_is_isolated(name) {
+                return Err("worker protected during provider startup".into());
+            }
+            if codex_project && !fresh
+                && codex_resume_config_failure(&tmux_capture(name, 25).await)
+            {
+                fresh_retry = true;
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(session=name,measured=true,n_considered=1,
+                    verdict="board_provider_start_timeout",
+                    "provider did not become live after process startup");
+                return Err(format!(
+                    "start reported '{detail}', but no live provider process remains after 30s"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        if fresh_retry && !fresh {
+            continue;
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        if is_running(name).await {
+            return Ok(());
+        }
+        if codex_project && !fresh
+            && codex_resume_config_failure(&tmux_capture(name, 25).await)
+        {
+            fresh_retry = true;
+            continue;
+        }
+        return Err(format!(
+            "start reported '{detail}', but provider exited before task delivery"
+        ));
     }
-    Ok(())
+}
+
+fn codex_resume_config_failure(pane: &str) -> bool {
+    pane.contains("Failed to rebuild configuration for resume:")
+        && pane.contains("Failed to rebuild config for cwd ")
+}
+
+#[cfg(test)]
+mod codex_project_resume_tests {
+    use super::codex_resume_config_failure;
+
+    #[test]
+    fn only_exact_failed_resume_configuration_restarts_fresh() {
+        assert!(codex_resume_config_failure("Failed to rebuild configuration for resume:\nFailed to rebuild config for cwd /repo/.worktrees/project-demo"));
+        assert!(!codex_resume_config_failure("Failed to rebuild config for cwd /repo while applying user changes"));
+        assert!(!codex_resume_config_failure("This conversation is open in another app"));
+    }
 }
 
 #[cfg(unix)]
@@ -20130,6 +20401,59 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let _ = reconcile_terminal_subagents(state, name).await;
         }
         let pane = tmux_capture(name, 30).await;
+        // A Codex resume can stop at its exclusive-conversation screen after
+        // the previous project attempt has timed out. Delivery cannot retry it:
+        // the old packet is no longer an active claim, while the project driver
+        // refuses to claim a non-boundary worker. Only a *currently claimable*
+        // repair may retry this exact provider screen. Never press into an
+        // isolated, paused, archived, or unrelated worker.
+        let now = now_i64();
+        let last_retry = meta_i64(&load_meta(name), "codex_open_elsewhere_retry_at");
+        if project_codex_conversation_retry_ready(&cfg, &pane, last_retry, now) {
+            if let Some(project) = cfg.get("CC_PROJECT").filter(|p| !p.is_empty()) {
+                if project_repair_claim_ready(state, project, name) {
+                    let lock = lane_send_lock(name);
+                    let _guard = lock.lock().await;
+                    if codex_conversation_open_elsewhere(&tmux_capture(name, 15).await)
+                        && project_repair_claim_ready(state, project, name)
+                    {
+                        update_meta(name, &[("codex_open_elsewhere_retry_at", json!(now))]);
+                        let (ok, detail) = send_keys_op(name, "r").await;
+                        tracing::warn!(session=%name,project=%project,ok,detail=%detail,measured=true,n_considered=1,verdict="project_repair_codex_conversation_retry","retrying exact Codex conversation screen for a claimable project repair");
+                        emit_event(state,name,"project.conversation_retry",Some(json!({"ok":ok,"detail":detail})),None,"status").await;
+                        if ok {
+                            sleep_ms(2000).await;
+                            if codex_conversation_open_elsewhere(&tmux_capture(name, 15).await)
+                                && project_repair_claim_ready(state, project, name)
+                            {
+                                // The other app still owns the old Codex
+                                // conversation. The task packet and candidate
+                                // files are durable, so release only this
+                                // worker's locked process; the normal project
+                                // claim path will start a fresh conversation.
+                                // Never attempt to take over the other owner.
+                                send_key(name, "Escape").await;
+                                sleep_ms(500).await;
+                                let (stopped, stop_detail) = stop_session(state, name).await;
+                                if stopped && !is_running(name).await {
+                                    kill_tmux_session(name).await;
+                                    let mut meta = load_meta(name);
+                                    meta.remove("codex_session_id");
+                                    meta.remove("pending_structured_resume_context");
+                                    meta.remove("pending_structured_resume_token");
+                                    save_meta(name, &meta);
+                                    tracing::warn!(session=%name,project=%project,measured=true,n_considered=1,verdict="project_repair_codex_conversation_recycled","locked local process stopped; next project claim will launch a fresh Codex conversation in the registered checkout");
+                                    emit_event(state,name,"project.conversation_recycled",Some(json!({"reason":"codex_open_elsewhere","stopped":true})),None,"status").await;
+                                } else {
+                                    tracing::warn!(session=%name,project=%project,stopped,detail=%stop_detail,measured=true,n_considered=1,verdict="project_repair_codex_recycle_held","locked provider could not be stopped; conversation identity retained");
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
         if let Some(key) = project_hook_review_key(&cfg, &pane) {
             let (ok, msg) = send_keys_op(name, key).await;
             tracing::info!(session=%name,ok,detail=%msg,measured=true,n_considered=1,verdict="project_hook_review_safe_choice","requesting safe startup choice without granting hook trust");
@@ -20137,6 +20461,24 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             // Reobserve on the next sweep: never press Enter on an assumed
             // selection or send task text while the picker is transitioning.
             continue;
+        }
+
+        if let (Some(project), Some(repo)) = (cfg.get("CC_PROJECT"), cfg.get("CC_DIR")) {
+            let checkout = crate::project_execution::checkout::load(&home(), project);
+            if let Some(key) = checkout.as_ref().filter(|w| crate::fanout_workspace::same_repository(&w.repo, repo))
+                .and_then(|w| project_checkout_directory_key(&cfg, &pane, Path::new(&w.path))) {
+                let permitted = state.store.read().ok().is_some_and(|c|
+                    crate::project_execution::checkout::start_permit(&c, project, name).is_ok())
+                    || project_repair_claim_ready(state, project, name);
+                if permitted {
+                    let (ok, msg) = send_keys_op(name, key).await;
+                    tracing::warn!(session=%name,project=%project,ok,detail=%msg,measured=true,n_considered=1,verdict=if ok {"registered_project_checkout_selected"} else {"registered_project_checkout_choice_failed"},"attempted registered project checkout choice");
+                    emit_event(state,name,"project.checkout_selector_resolved",Some(json!({"key":key,"ok":ok,"detail":msg})),None,"status").await;
+                    if ok { continue; }
+                } else {
+                    tracing::warn!(session=%name,project=%project,measured=true,n_considered=1,verdict="project.checkout_selector_held","registered checkout selector detected but no active or claimable project task authorizes continuation");
+                }
+            }
         }
 
         // RESUME-MODE SELECTOR: amux's to answer (D2; policy set once by Ethan
@@ -20227,7 +20569,14 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         let agents_live = sub_activity
             .get(name)
             .is_some_and(|m| now_f64() - m < 180.0);
-        let typed_pending = (!is_rate_limit_menu(&pane)
+        // A send in flight has pasted text into the composer but not yet
+        // pressed Enter or completed verification. Reading that text as
+        // "stuck" stamps composer_stuck_since, the dashboard shows
+        // "unsubmitted text", and a human may intervene mid-choreography.
+        // Skip the stuck check entirely when lane_send_lock is held.
+        let send_in_flight = lane_send_lock(name).try_lock().is_err();
+        let typed_pending = (!send_in_flight
+            && !is_rate_limit_menu(&pane)
             && !selector_now
             && !pane_bar_says_generating(&pane)
             && detect_claude_status(&pane) != "active"
@@ -20281,10 +20630,16 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             }
         }
 
-        let observation = observe_claude_limit(
+        let transcript_reset = if provider_of(&cfg) == "claude" {
+            session_jsonl_path(name).and_then(|p| transcript_rate_limit(&iter_jsonl_tail(&p, 256 * 1024)))
+        } else {
+            None
+        };
+        let observation = observe_claude_limit_with(
             &pane,
             meta_i64(&load_meta(name), "rate_limited_until"),
             chrono::Local::now(),
+            transcript_reset,
         );
         let Some(observation) = observation else {
             // Neither the menu nor the credit banner is on screen: clear the stamp.
@@ -24511,7 +24866,29 @@ pub(crate) async fn steer_history_verb(
     let blocked = lane_block_reason(name).await;
     let max_age = steer_max_age_s();
     let now = now_f64();
+    // WHAT THE QUEUE IS WAITING FOR (MSG-68866, 2026-09-24: "this message
+    // disappeared from queued, it was never sent either"). The row said
+    // deliverable=true, blocked_reason=None while the drain held it behind a
+    // 53-minute turn with 5 background agents, so nothing distinguished waiting
+    // from lost. Ask the drain's own decision, once, with the oldest row's age.
+    let oldest_age = out
+        .iter()
+        .filter_map(|r| r["queued_at"].as_f64())
+        .map(|q| now - q)
+        .fold(0.0_f64, f64::max);
+    let waiting_for = if out.is_empty() || blocked.is_some() {
+        None
+    } else {
+        match steer_delivery_for(state, name, oldest_age).await {
+            SteerDelivery::Hold => Some(
+                "the worker's current turn to end: queued messages are delivered at its next idle point \
+                 (a turn with live background agents waits for them too). Send now delivers it immediately.",
+            ),
+            _ => None,
+        }
+    };
     for row in out.iter_mut() {
+        row["waiting_for"] = json!(waiting_for);
         let age = now - row["queued_at"].as_f64().unwrap_or(now);
         row["age_s"] = json!(age as i64);
         row["overdue"] = json!(age >= max_age);
@@ -25632,6 +26009,16 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         );
     }
     let cfg = parse_env(name);
+    if cfg.get("CC_PROJECT").is_some() {
+        // A project owns one checkout shared by all of its task executors.
+        // Deleting one executor used to reclaim that *shared* checkout while
+        // another task was checking out or writing it. Keep worker history for
+        // review; project approval handles eventual retirement and cleanup.
+        return jresp(
+            StatusCode::CONFLICT,
+            json!({"error":"project workers are retained for review; finish and approve the project to expire its workers and remove its checkout"}),
+        );
+    }
     if cfg.get("CC_PINNED") == Some("1") && !is_session_blocked(name) {
         return jresp(
             StatusCode::FORBIDDEN,
@@ -25916,7 +26303,15 @@ fn apply_subagent_event(
     // than an evicted terminal edge still cannot resurrect that agent.
     let mut terminal_floor_ts = next["terminal_floor_ts"].as_f64().unwrap_or(0.0);
 
-    if !event_id.is_empty() && seen.iter().any(|id| id == event_id) {
+    // A REFUSED EVENT WAS NEVER DELIVERED. Every event id is recorded, the
+    // refused ones included, so once the floor fix (c9106be8) made the
+    // healer's stop valid, its retry was dropped here as a duplicate and the
+    // live agent stayed live. A stop for an agent that is still live has, by
+    // definition, not taken effect yet.
+    let ends_a_live_agent = matches!(ev, "stop" | "done")
+        && !agent_id.is_empty()
+        && agent_edges.get(agent_id).and_then(|edge| edge["state"].as_str()) == Some("live");
+    if !event_id.is_empty() && seen.iter().any(|id| id == event_id) && !ends_a_live_agent {
         return SubagentApply {
             next,
             verdict: "duplicate_event",
@@ -25948,11 +26343,21 @@ fn apply_subagent_event(
         && prior_agent_ts > 0.0
         && (event_ts < prior_agent_ts
             || (event_ts == prior_agent_ts && ev == "start" && prior_agent_state == "terminal"));
+    // A STOP FOR AN AGENT STILL MARKED LIVE IS NEVER STALE (2026-09-24,
+    // celery-retirement). The floor exists so an old event cannot resurrect an
+    // agent whose edge was compacted away; ending a live agent resurrects
+    // nothing. Refusing it left a subagent that finished at 15:40Z counted
+    // live for hours, because the healer's terminal record (15:40:09) sat
+    // below a floor (16:44) raised by unrelated agents' later stops.
+    let stops_a_live_agent = matches!(ev, "stop" | "done")
+        && prior_agent_state == "live"
+        && event_ts >= prior_agent_ts;
     let stale_terminal_floor = ev != "reset"
         && !agent_id.is_empty()
         && event_ts > 0.0
         && terminal_floor_ts > 0.0
-        && event_ts <= terminal_floor_ts;
+        && event_ts <= terminal_floor_ts
+        && !stops_a_live_agent;
     let mut verdict = "applied";
 
     if stale_time || stale_session || stale_agent_order || stale_terminal_floor {
@@ -26022,7 +26427,7 @@ fn apply_subagent_event(
         }
     }
 
-    if !event_id.is_empty() {
+    if !event_id.is_empty() && !seen.iter().any(|id| id == event_id) {
         seen.push(event_id.to_string());
         if seen.len() > SUBAGENT_EVENT_HISTORY_LIMIT {
             seen.drain(..seen.len() - SUBAGENT_EVENT_HISTORY_LIMIT);
@@ -26183,12 +26588,48 @@ fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> Option<Path
     if !cached_re!(r"^[0-9a-fA-F-]{36}$").is_match(lifecycle_session) {
         return None;
     }
+    // A WORKTREE WORKER'S TRANSCRIPT IS NOT UNDER CC_DIR (2026-09-24,
+    // celery-retirement read WORKING for 5h on a subagent that finished at
+    // 15:40). Claude Code files a conversation under the directory it was
+    // launched in, which for a worktree worker is <repo>/.worktrees/<name>,
+    // while CC_DIR names the repo. This looked only under CC_DIR, found
+    // nothing, and the lost-stop healer and interrupt detector silently did
+    // nothing for every worktree worker.
     let wd = work_dir_of(&parse_env(name));
-    let path = claude_home()
-        .join("projects")
-        .join(project_name(&wd))
-        .join(format!("{lifecycle_session}.jsonl"));
-    path.exists().then_some(path)
+    let bases = [
+        std::path::Path::new(&wd).join(".worktrees").join(name).to_string_lossy().into_owned(),
+        meta_str(&load_meta(name), "cc_cwd"),
+        wd.clone(),
+    ];
+    static FOUND: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
+        std::sync::OnceLock::new();
+    let cache = FOUND.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(lifecycle_session) {
+        if hit.exists() {
+            return Some(hit.clone());
+        }
+    }
+    let (hit, by_id) = find_transcript(&claude_home().join("projects"), &bases, lifecycle_session)?;
+    if by_id {
+        tracing::info!(session = name, path = %hit.display(), verdict = "lifecycle_transcript_found_by_id",
+            "conversation found by its id outside the worker's configured directory");
+    }
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(lifecycle_session.to_string(), hit.clone());
+    Some(hit)
+}
+
+/// Known launch directories first, then the id itself: it is a UUID, so a
+/// match anywhere under `projects` is this conversation. The bool says the
+/// fallback was needed.
+fn find_transcript(projects: &std::path::Path, bases: &[String], id: &str) -> Option<(PathBuf, bool)> {
+    let file = format!("{id}.jsonl");
+    for base in bases.iter().filter(|b| !b.trim().is_empty()) {
+        let path = projects.join(project_name(base)).join(&file);
+        if path.exists() {
+            return Some((path, false));
+        }
+    }
+    std::fs::read_dir(projects).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.exists()).map(|p| (p, true))
 }
 
 fn stored_live_subagent_lanes(state: &AppState) -> std::collections::HashSet<String> {
@@ -36188,6 +36629,51 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     /// this asserts the discriminator directly against real picker shapes, so a
     /// regression that reclassifies a selector cannot pass green.
     #[test]
+    fn a_worktree_workers_lifecycle_transcript_is_found() {
+        let claude = tempfile::tempdir().unwrap();
+        let projects = claude.path().join("projects");
+        let id = "5ded726c-c40a-4b9d-ac1d-6029b5e8d55b";
+        let wt = projects.join(project_name("/repo/.worktrees/wt-worker"));
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        // The old lookup: CC_DIR only. It finds nothing for a worktree worker.
+        let old = projects.join(project_name("/repo")).join(format!("{id}.jsonl"));
+        assert!(!old.exists());
+        let bases = ["/repo/.worktrees/wt-worker".to_string(), String::new(), "/repo".to_string()];
+        assert_eq!(find_transcript(&projects, &bases, id), Some((wt.join(format!("{id}.jsonl")), false)));
+        // Launched somewhere amux does not know: still found by the id.
+        let other = projects.join("-somewhere-else");
+        std::fs::create_dir_all(&other).unwrap();
+        let id2 = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(other.join(format!("{id2}.jsonl")), "{}\n").unwrap();
+        assert_eq!(find_transcript(&projects, &bases, id2), Some((other.join(format!("{id2}.jsonl")), true)));
+        assert_eq!(find_transcript(&projects, &bases, "99999999-2222-3333-4444-555555555555"), None);
+    }
+
+    #[test]
+    fn a_limit_recorded_in_the_transcript_is_seen_when_the_banner_scrolled_away() {
+        // mvs-infra, 2026-09-24 18:39Z, shape copied from its transcript.
+        let limit = json!({"type":"assistant","isSidechain":false,"error":"rate_limit",
+            "isApiErrorMessage":true,"apiErrorStatus":429,
+            "quotaLimits":{"status":"rejected","resetsAt":1790280600,"rateLimitType":"five_hour"},
+            "message":{"role":"assistant","content":[{"type":"text",
+                "text":"You've hit your session limit \u{00b7} resets 4:10pm (America/New_York)"}]}});
+        let tool = json!({"type":"assistant","message":{"role":"assistant","content":[]}});
+        let owner = json!({"type":"user","message":{"role":"user","content":"continue"}});
+        let meta = json!({"type":"user","isMeta":true,"message":{"role":"user","content":"x"}});
+        let system = json!({"type":"system","content":"Remote Control disconnected"});
+        assert_eq!(transcript_rate_limit(&[tool.clone(), limit.clone(), system.clone(), meta]), Some(1790280600));
+        assert_eq!(transcript_rate_limit(&[limit.clone(), owner]), None, "the owner's continue ends it");
+        assert_eq!(transcript_rate_limit(&[limit.clone(), tool]), None, "a later turn ends it");
+        // The pane shows only the ordinary idle footer, 12+ lines under the banner.
+        let pane = "\u{276f} \n\u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)";
+        let now = chrono::Local::now();
+        assert!(observe_claude_limit(pane, 0, now).is_none(), "the screen alone cannot see it");
+        let seen = observe_claude_limit_with(pane, 0, now, Some(1790280600)).expect("transcript sees it");
+        assert_eq!((seen.kind, seen.reset_at, seen.menu), ("transcript", 1790280600, false));
+    }
+
+    #[test]
     fn empty_send_at_a_selector_takes_the_enter_path() {
         // Predicate under test: the exact gate shipped in send_text_inner.
         let picker_enter =
@@ -38974,6 +39460,14 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             Some(json!({"toggle_pin": true})),
         )
         .await;
+        let mut project_env = EnvFile::load(&env_path("probe"));
+        project_env.set("CC_PROJECT", "sample");
+        project_env.write(&env_path("probe")).unwrap();
+        let (st, v) = call(&app, "POST", "/api/sessions/probe/delete", None).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{v}");
+        assert!(env_path("probe").exists(), "project worker history must survive");
+        project_env.remove("CC_PROJECT");
+        project_env.write(&env_path("probe")).unwrap();
         let (st, v) = call(&app, "POST", "/api/sessions/probe/delete", None).await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert!(!env_path("probe").exists());
@@ -40837,6 +41331,30 @@ mod steer_boundary_tests {
         assert_eq!(replay.count, 0);
     }
 
+    /// celery-retirement, 2026-09-24: one agent started at 15:39 and its stop
+    /// was lost; later agents' stops pushed the floor to 16:44. The healer's
+    /// terminal record (15:40) must still end the live agent.
+    #[test]
+    fn a_lost_stop_below_the_floor_still_ends_a_live_agent() {
+        let sid = "5ded726c-c40a-4b9d-ac1d-6029b5e8d55b";
+        let mut current = apply_subagent_event(&json!({}), "start", "ghost", "ghost-start", 100.0, sid, 100.0).next;
+        for i in 0..=SUBAGENT_EVENT_HISTORY_LIMIT {
+            current = apply_subagent_event(&current, "start", &format!("later-{i:03}"), &format!("s-{i:03}"), 200.0 + i as f64, sid, 300.0).next;
+            current = apply_subagent_event(&current, "stop", &format!("later-{i:03}"), &format!("e-{i:03}"), 200.5 + i as f64, sid, 300.0).next;
+        }
+        assert!(current["terminal_floor_ts"].as_f64().unwrap() > 101.0, "the floor rose past the ghost's stop");
+        assert_eq!(current["count"], json!(1), "only the ghost is live");
+        // The first delivery was refused under the old rule but its id was
+        // recorded, exactly as on the live server. A retry must still land.
+        current["seen_events"].as_array_mut().unwrap().push(json!("transcript-terminal:ghost"));
+        let healed = apply_subagent_event(&current, "done", "ghost", "transcript-terminal:ghost", 101.0, sid, 999.0);
+        assert_eq!(healed.verdict, "applied");
+        assert_eq!(healed.count, 0);
+        // A replayed START below the floor is still refused.
+        let replay = apply_subagent_event(&healed.next, "start", "later-000", "old-start", 150.0, sid, 999.0);
+        assert_eq!(replay.verdict, "stale_before_terminal_floor");
+    }
+
     /// Fail-closed is the whole safety property: an unknown lane must not be
     /// treated as idle. With no report AND no pane (no tmux session under test),
     /// the capture is empty and "cannot tell" must read as "do not deliver" —
@@ -41226,6 +41744,33 @@ mod submission_gate_tests {
             packet
         ));
     }
+
+    #[test]
+    fn read_frame_detects_text_with_spaces_still_in_composer() {
+        let msg = "this is a test message with spaces";
+        let t = tail_sq(msg);
+        assert_eq!(t, "sagewithspaces");
+        let frame = frame_stuck_idle(msg);
+        assert_eq!(read_frame(&frame, &t), FrameRead::StillThereIdle);
+        assert_eq!(
+            read_frame(&frame_cleared(), &t),
+            FrameRead::Cleared
+        );
+    }
+
+    #[test]
+    fn composer_owns_text_with_spaces() {
+        let msg = "deploy the new version to staging now";
+        assert!(project_execution_composer_owns_text(
+            &frame_stuck_idle(msg),
+            msg
+        ));
+        assert!(!project_execution_composer_owns_text(
+            &frame_cleared(),
+            msg
+        ));
+    }
+
     /// A successful submit: composer drawn and empty.
     fn frame_cleared() -> String {
         "\u{2500}\u{2500}\u{2500}\u{2500} amux-rust \u{2500}\u{2500}\n\u{276f} \n\u{2500}\u{2500}\u{2500}\u{2500}\n\u{23f5}\u{23f5} bypass permissions on\n".into()
@@ -41742,6 +42287,31 @@ with open(sys.argv[3],'ab',buffering=0) as log:
             jsonl_records_have(&with_it, GHOST, sent_at),
             "post-send user message IS evidence"
         );
+    }
+
+    #[test]
+    fn jsonl_content_matches_rejects_substring_of_unrelated_message() {
+        assert!(jsonl_content_matches("hello world", "hello world"));
+        assert!(jsonl_content_matches("[12:30 PM ethan] hello world", "hello world"));
+        assert!(
+            !jsonl_content_matches(
+                &"x".repeat(300),
+                "hello"
+            ),
+            "a 5-char needle inside a 300-char content is a different message"
+        );
+        assert!(jsonl_content_matches(
+            &format!("{}{}", "x".repeat(195), "hello"),
+            "hello"
+        ), "200 chars of overhead is allowed (timestamp + author)");
+        assert!(
+            !jsonl_content_matches(
+                &format!("{}{}", "x".repeat(201), "hello"),
+                "hello"
+            ),
+            "201 chars of overhead exceeds the bound"
+        );
+        assert!(!jsonl_content_matches("no match at all", "hello world"));
     }
 
     #[test]
@@ -47257,6 +47827,59 @@ mod project_hook_review_tests {
         }
         cfg.set("CC_PROVIDER","claude"); assert_eq!(project_hook_review_key(&cfg,pane),None);
         cfg.set("CC_PROVIDER","codex"); cfg.remove("CC_PROJECT"); assert_eq!(project_hook_review_key(&cfg,pane),None);
+    }
+    #[test]
+    fn project_checkout_picker_uses_only_the_registered_checkout_without_persisting_preference() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("worker.env");
+        std::fs::write(&path,"CC_PROVIDER=codex\nCC_PROJECT=demo\n").unwrap();
+        let mut cfg=EnvFile::load(&path);
+        let pane="› 1. Use session directory (/repo/.worktrees/old)\n  2. Use current directory (/repo/.worktrees/project-demo)\n  3. Always use session directory\n  4. Always use current directory\n  Press enter to continue";
+        let checkout=Path::new("/repo/.worktrees/project-demo");
+        assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),Some("2"));
+        assert!(ALLOWED_TMUX_CHAR_KEYS.contains(&project_checkout_directory_key(&cfg,pane,checkout).unwrap()), "the exact checkout choice must be sendable");
+        assert_eq!(project_checkout_directory_key(&cfg,&pane.replace("› 1.","  1.").replace("  2.","› 2."),checkout),Some("Enter"));
+        assert_eq!(project_checkout_directory_key(&cfg,pane,Path::new("/repo/.worktrees/other")),None);
+        assert_eq!(project_checkout_directory_key(&cfg,&pane.replace("2. Use current directory", "2. Trust this directory"),checkout),None);
+        assert_eq!(project_checkout_directory_key(&cfg,&format!("{pane}\n› Work on something else"),checkout),None);
+        for key in ["CC_ISOLATED","CC_PAUSED","CC_ARCHIVED","CC_PROJECT_PAUSED"] {
+            cfg.set(key,"1"); assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),None); cfg.remove(key);
+        }
+        cfg.set("CC_PROVIDER","claude"); assert_eq!(project_checkout_directory_key(&cfg,pane,checkout),None);
+    }
+    #[test]
+    fn queued_repair_can_clear_its_checkout_picker_without_creating_a_new_claim() {
+        use crate::project_execution::planner::{CardPlan, Execution};
+        use amux_core::project::Phase;
+        let mut plan=CardPlan{id:"A".into(),phase:Phase::Ready,action:"claim".into(),waiting_reason:None,waiting_label:None,
+            execution:Execution{stage:"repair".into(),worker:"owner".into(),..Default::default()}};
+        assert!(project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
+        assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"other"));
+        plan.execution.suspended=true;assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
+        plan.execution.suspended=false;plan.action="observe".into();assert!(!project_checkout_repair_claim_ready(&[plan.clone()],"owner"));
+        plan.action="claim".into();plan.execution.stage="waiting".into();assert!(!project_checkout_repair_claim_ready(&[plan],"owner"));
+    }
+    #[test]
+    fn only_a_live_project_codex_retry_screen_is_eligible_for_bounded_repair() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("worker.env");
+        std::fs::write(&path,"CC_PROVIDER=codex\nCC_PROJECT=demo\n").unwrap();
+        let mut cfg=EnvFile::load(&path);
+        let pane="This conversation is open in another app   R to Retry\nClose it there and press R to continue here.\nr retry";
+        assert!(project_codex_conversation_retry_ready(&cfg,pane,0,1000));
+        assert!(ALLOWED_TMUX_CHAR_KEYS.contains(&"r"),"the retry key must be accepted by the sender");
+        assert!(!project_codex_conversation_retry_ready(&cfg,pane,900,1000));
+        assert!(project_codex_conversation_retry_ready(&cfg,pane,700,1000));
+        assert!(!project_codex_conversation_retry_ready(&cfg,"› Ask Codex to do anything",0,1000));
+        for key in ["CC_ISOLATED","CC_PAUSED","CC_PROJECT_PAUSED","CC_ARCHIVED","CC_REVIEW_HELD"] {
+            cfg.set(key,"1");
+            assert!(!project_codex_conversation_retry_ready(&cfg,pane,0,1000),"{key}");
+            cfg.remove(key);
+        }
+        cfg.set("CC_PROVIDER","claude");
+        assert!(!project_codex_conversation_retry_ready(&cfg,pane,0,1000));
+        cfg.set("CC_PROVIDER","codex");cfg.remove("CC_PROJECT");
+        assert!(!project_codex_conversation_retry_ready(&cfg,pane,0,1000));
     }
 }
 
