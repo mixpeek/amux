@@ -669,6 +669,166 @@ fn ensure_spotlight_excluded(dir: &std::path::Path) -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// 7. A translated process tree on Apple Silicon (MO-3622).
+//
+// Measured 2026-09-26 with the 15-minute load at 167% of 28 cores: 88% of the
+// ~300 process spawns per second on the box ran under Rosetta, and a translated
+// spawn costs about 12x the CPU of a native one (400 spawns: 7.7 CPU-s vs 0.65).
+// Nothing announced it. The tmux server here is an Intel-only build, so every
+// pane it starts prefers x86_64 and every universal binary below it (bash, git,
+// grep, awk, python3) runs translated; `claude` itself is arm64 and made no
+// difference, because the preference is inherited down the tree, not chosen per
+// binary. It looked like "too much work" because the cost hides inside `sys`
+// time and in oahd/trustd/syspolicyd/XProtect waking on every exec.
+//
+// The signal is the census itself, logged every tick, plus one WARN per
+// cooldown naming who is translated. It does not act: switching a tree native
+// means restarting the tmux server or launching lanes under `arch`, which is the
+// owner's call.
+// ---------------------------------------------------------------------------
+
+/// `P_TRANSLATED` in `p_flag` (sys/proc.h), which is what `ps -o flags=` prints
+/// in hex. Verified against `sysctl sysctl.proc_translated` on the same pids.
+const P_TRANSLATED: u32 = 0x0002_0000;
+
+/// A census of one `ps -A -o flags=,comm=` snapshot.
+#[derive(Debug, PartialEq, Eq)]
+struct TranslatedCensus {
+    total: usize,
+    translated: usize,
+    /// Most-common translated command names first, at most eight.
+    top: Vec<(String, usize)>,
+}
+
+impl TranslatedCensus {
+    fn share_pct(&self) -> f64 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        100.0 * self.translated as f64 / self.total as f64
+    }
+}
+
+fn parse_translated_census(text: &str) -> TranslatedCensus {
+    let mut total = 0usize;
+    let mut translated = 0usize;
+    let mut by_comm: std::collections::BTreeMap<String, usize> = Default::default();
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some((flags, comm)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(flags) = u32::from_str_radix(flags, 16) else {
+            continue;
+        };
+        let comm = comm.trim();
+        if comm.is_empty() {
+            continue;
+        }
+        total += 1;
+        if flags & P_TRANSLATED != 0 {
+            translated += 1;
+            let name = comm.rsplit('/').next().unwrap_or(comm);
+            *by_comm.entry(name.to_string()).or_default() += 1;
+        }
+    }
+    let mut top: Vec<(String, usize)> = by_comm.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    top.truncate(8);
+    TranslatedCensus {
+        total,
+        translated,
+        top,
+    }
+}
+
+/// `None` = not measured: not an Apple Silicon build (an aarch64 macOS server
+/// proves the host is Apple Silicon; anywhere else there is no Rosetta), or `ps`
+/// failed.
+fn rosetta_census() -> Option<TranslatedCensus> {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return None;
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-o", "flags=,comm="])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(parse_translated_census(&String::from_utf8_lossy(
+        &out.stdout,
+    )))
+}
+
+fn rosetta_warn_min_procs() -> usize {
+    std::env::var("AMUX_ROSETTA_WARN_MIN_PROCS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(40)
+}
+
+fn rosetta_warn_min_share_pct() -> f64 {
+    std::env::var("AMUX_ROSETTA_WARN_MIN_SHARE_PCT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(10.0)
+}
+
+/// How long between WARNs. The census line is logged every tick regardless; the
+/// WARN is the nudge, and a nudge that fires every 30 minutes forever is noise.
+const ROSETTA_WARN_COOLDOWN_S: u64 = 6 * 3600;
+
+static ROSETTA_LAST_WARN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Pure decision: is a WARN due for this census at `now` (unix seconds)?
+fn rosetta_warn_due(
+    census: &TranslatedCensus,
+    min_procs: usize,
+    min_share_pct: f64,
+    last_warn_s: u64,
+    now_s: u64,
+) -> bool {
+    // A census with nothing translated is never "a translated tree", whatever
+    // the operator set the thresholds to.
+    census.translated > 0
+        && census.translated >= min_procs
+        && census.share_pct() >= min_share_pct
+        && now_s.saturating_sub(last_warn_s) >= ROSETTA_WARN_COOLDOWN_S
+}
+
+fn note_rosetta_census(census: &TranslatedCensus) {
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = ROSETTA_LAST_WARN.load(std::sync::atomic::Ordering::Relaxed);
+    if !rosetta_warn_due(
+        census,
+        rosetta_warn_min_procs(),
+        rosetta_warn_min_share_pct(),
+        last,
+        now_s,
+    ) {
+        return;
+    }
+    ROSETTA_LAST_WARN.store(now_s, std::sync::atomic::Ordering::Relaxed);
+    tracing::warn!(
+        job = JOB,
+        verdict = "rosetta_translated_tree",
+        measured = true,
+        n_considered = census.total,
+        translated = census.translated,
+        share_pct = census.share_pct() as i64,
+        top = ?census.top,
+        "mac-health: an Apple Silicon host is running much of its process tree under Rosetta; \
+         every spawn there costs ~12x the CPU of a native one (MO-3622). Usual cause: an \
+         Intel-only tmux server, whose panes hand x86_64 down to every universal binary. \
+         Check `sysctl -n sysctl.proc_translated` in a lane shell and `file $(which tmux)`"
+    );
+}
+
 fn one_pass() {
     let grace = ray_orphan_grace_s();
     let pw_grace = playwright_chrome_grace_s();
@@ -895,6 +1055,12 @@ fn one_pass() {
         }
     }
 
+    // --- Rosetta census (MO-3622) ---
+    let rosetta = rosetta_census();
+    if let Some(census) = &rosetta {
+        note_rosetta_census(census);
+    }
+
     // --- Claude process count ---
     let claude_count = check_claude_count(max_claude);
     tracing::info!(
@@ -915,6 +1081,10 @@ fn one_pass() {
         zombies_reaped,
         indexing_daemons_hot = hot_daemons.len(),
         spotlight_newly_excluded = spotlight_newly_excluded.len(),
+        // -1 is never a count: not an Apple Silicon build, or ps failed.
+        translated_procs = rosetta.as_ref().map(|r| r.translated as i64).unwrap_or(-1),
+        translated_of = rosetta.as_ref().map(|r| r.total as i64).unwrap_or(-1),
+        translated_measured = rosetta.is_some(),
         "mac-health tick"
     );
 }
@@ -1263,5 +1433,67 @@ mod ps_row_tests {
             ps_row("not a ps row at all").is_none(),
             "pid must be numeric"
         );
+    }
+
+    // ---- MO-3622: the translated-tree census can fail -----------------------
+
+    #[test]
+    fn translated_census_reads_the_p_translated_bit_from_ps_flags() {
+        // Real `ps -A -o flags=,comm=` shapes from the affected host: 0x34004 is
+        // a translated bash, 0x4004 a native launchd, 0x34084 a translated git.
+        let text = "  4004 /sbin/launchd\n\
+                    34004 bash\n\
+                    34004 /bin/bash\n\
+                    34084 /usr/bin/git\n\
+                    4004 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n\
+                    34004 /Applications/Some Tool.app/Contents/MacOS/Some Tool\n\
+                    not-hex bash\n\
+                    4004\n\
+                    \n";
+        let c = parse_translated_census(text);
+        assert_eq!(c.total, 6, "unparseable rows are not counted as processes");
+        assert_eq!(c.translated, 4);
+        assert_eq!(
+            c.top[0],
+            ("bash".to_string(), 2),
+            "basename groups /bin/bash with bash"
+        );
+        assert!(c.top.contains(&("git".to_string(), 1)));
+        // A name with spaces survives whole.
+        assert!(c.top.contains(&("Some Tool".to_string(), 1)));
+        assert!((c.share_pct() - 66.666).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_native_host_is_never_flagged() {
+        let text = "4004 /sbin/launchd\n4004 bash\n4004 git\n";
+        let c = parse_translated_census(text);
+        assert_eq!(c.translated, 0);
+        assert!(!rosetta_warn_due(&c, 0, 0.0, 0, 10_000_000));
+        assert_eq!(parse_translated_census("").share_pct(), 0.0);
+    }
+
+    #[test]
+    fn rosetta_warn_needs_count_share_and_an_expired_cooldown() {
+        let c = TranslatedCensus {
+            total: 1000,
+            translated: 200,
+            top: vec![],
+        };
+        let now = 10_000_000;
+        assert!(rosetta_warn_due(&c, 40, 10.0, 0, now));
+        // Too few translated processes in absolute terms.
+        assert!(!rosetta_warn_due(&c, 300, 10.0, 0, now));
+        // Too small a share of a big table.
+        assert!(!rosetta_warn_due(&c, 40, 25.0, 0, now));
+        // Inside the cooldown: the census line still logs, the nudge does not.
+        assert!(!rosetta_warn_due(&c, 40, 10.0, now - 60, now));
+        assert!(rosetta_warn_due(
+            &c,
+            40,
+            10.0,
+            now - ROSETTA_WARN_COOLDOWN_S,
+            now
+        ));
     }
 }
