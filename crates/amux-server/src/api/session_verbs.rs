@@ -26156,15 +26156,26 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
         );
     }
     let cfg = parse_env(name);
-    if cfg.get("CC_PROJECT").is_some() {
-        // A project owns one checkout shared by all of its task executors.
-        // Deleting one executor used to reclaim that *shared* checkout while
-        // another task was checking out or writing it. Keep worker history for
-        // review; project approval handles eventual retirement and cleanup.
-        return jresp(
-            StatusCode::CONFLICT,
-            json!({"error":"project workers are retained for review; finish and approve the project to expire its workers and remove its checkout"}),
-        );
+    // A project owns one checkout shared by all of its task executors.
+    // Deleting one executor used to reclaim that *shared* checkout while
+    // another task was checking out or writing it, so project workers were
+    // refused outright. That left the owner no way to clear finished or
+    // archived executors (Ethan, 2026-09-26: "i want a way to delete
+    // workers", 25 project workers selected with no Delete offered).
+    // The hazard was the checkout, not the worker: a STOPPED project worker
+    // is deletable, and its checkout is never reclaimed here (the worktree
+    // block below is skipped for it). A running one is still refused, since
+    // it may be writing that checkout right now.
+    let project = cfg.get("CC_PROJECT").map(|p| p.to_string());
+    if let Some(project) = project.as_deref() {
+        if is_running(name).await {
+            tracing::info!(session = name, project, verdict = "project_worker_delete_refused_running",
+                "refused deleting a running project worker; its project checkout is shared");
+            return jresp(
+                StatusCode::CONFLICT,
+                json!({"error":"this project worker is running and shares its project's checkout; pause or archive it first, then delete"}),
+            );
+        }
     }
     if cfg.get("CC_PINNED") == Some("1") && !is_session_blocked(name) {
         return jresp(
@@ -26183,7 +26194,11 @@ async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Respo
     // ephemeral workers, with 111 MB of directory still on disk for one of
     // them. The remedy a human would reach for, `git worktree prune`, skips
     // locked entries and so reported the repo clean the whole time.
-    if cfg.get("CC_WORKTREE") == Some("1") {
+    if let Some(project) = project.as_deref() {
+        tracing::info!(session = name, project, verdict = "project_worker_deleted_checkout_kept",
+            "deleted a stopped project worker; the project's shared checkout was left in place");
+    }
+    if cfg.get("CC_WORKTREE") == Some("1") && project.is_none() {
         // THE WORKSPACE RECORD IS THE AUTHORITY, THE ENV IS THE FALLBACK
         // (AMUX-4914). The env used to be the only source, and fan-out creation
         // never writes CC_WORKTREE_REPO: board.rs sets CC_DIR, CC_WORKTREE=1,

@@ -2679,7 +2679,7 @@ async function _runWorkerActionNames(key, names, note) {
 }
 const _workerGroupMenuOpen = new Map();
 const _workerGroupActions = {
-  project: ['start','pause','resume','archive','wake'],
+  project: ['start','pause','resume','archive','wake','delete'],
   review: ['archive','delete'],
   paused: ['resume','archive','delete'],
   expired: ['resume','archive'],
@@ -2711,16 +2711,17 @@ function _workerActionEligible(s,key) {
   if(key==='resume') return lifecycle==='paused'||lifecycle==='expired';
   if(key==='archive') return !s.archived && ['review','paused','expired'].includes(lifecycle);
   if(key==='wake') return !!s.archived;
-  // The server refuses project workers (409, they expire with their project)
-  // and pinned ones (403). An expired worker with no session has nothing to delete.
-  if(key==='delete') return !s.project && !s.pinned && sessions.some(x=>x.name===s.name);
+  // The server refuses a RUNNING project worker (409: it shares its project's
+  // checkout) and pinned ones (403). A stopped project worker is deletable and
+  // its checkout is kept. An expired worker with no session has nothing to delete.
+  if(key==='delete') return !(s.project && s.running) && !s.pinned && sessions.some(x=>x.name===s.name);
   return false;
 }
 function _workerGroupActionNames(kind,key) {
   return _workerGroupMembers(kind).filter(s=>_workerActionEligible(s,key)).map(s=>s.name);
 }
 const _workerGroupDeleteNote = {
-  project: 'Delete: project workers are removed when their project is approved',
+  project: 'Delete: running project workers must be paused or archived first',
   expired: 'Delete: expired workers have no session left to delete'
 };
 function _workerGroupMenu(kind) {
@@ -12157,7 +12158,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1123';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1124';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
