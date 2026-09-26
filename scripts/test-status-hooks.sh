@@ -524,4 +524,38 @@ with tempfile.TemporaryDirectory() as d:
     print("ok   a supported handler still wires Notification")
 PY2
 
+# MO-3622: on an Apple Silicon Mac whose pane tree is translated, the hook
+# re-execs natively so its ~20 forks stop paying the Rosetta tax (12x CPU each,
+# measured). The probe is a fake tmux that records whether ITS OWN process is
+# translated: tmux is the one child the hook always starts on this path, and the
+# universal `sysctl` it runs inherits the hook's architecture preference. Only
+# meaningful when this test itself runs translated on arm64 hardware; anywhere
+# else there is nothing to prove, and saying so beats a vacuous pass.
+if [ "$(/usr/sbin/sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ] \
+   && [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+  mkdir -p "$TMP/probe-bin"
+  cat > "$TMP/probe-bin/tmux" <<'SH'
+#!/bin/sh
+printf '%s\n' "$(/usr/sbin/sysctl -n sysctl.proc_translated)" >> "$HOOK_TMUX_CALLS"
+printf '%s\n' amux-nativearch
+SH
+  chmod +x "$TMP/probe-bin/tmux"
+  for mode in native optout; do
+    rm -f "$TMP/arch-calls"
+    if [ "$mode" = optout ]; then OPT=0; else OPT=1; fi
+    HOME="$TMP/home" PATH="$TMP/probe-bin:$PATH" AMUX_URL="$URL" AMUX_SESSION= TMUX_PANE=%1 \
+      AMUX_NATIVE_ARCH=$OPT HOOK_TMUX_CALLS="$TMP/arch-calls" \
+      bash scripts/hooks/hook-report.sh active prompt-hook <<<'{}'
+    got="$(head -1 "$TMP/arch-calls")"
+    if [ "$mode" = native ]; then
+      [ "$got" = 0 ] || { echo "FAIL hook children still translated (proc_translated=$got); the native re-exec did not take" >&2; exit 1; }
+    else
+      [ "$got" = 1 ] || { echo "FAIL AMUX_NATIVE_ARCH=0 must restore the inherited (translated) arch, got proc_translated=$got" >&2; exit 1; }
+    fi
+  done
+  echo "ok   hook re-execs natively on a translated tree, and AMUX_NATIVE_ARCH=0 opts out"
+else
+  echo "skip hook native re-exec: this run is not a translated shell on arm64 hardware, so there is no Rosetta tax to remove"
+fi
+
 echo "ok   all shipped status-hook durability regressions passed"

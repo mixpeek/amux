@@ -23,6 +23,28 @@
 # keep order; a newer main state replaces the older row so replayed idle can
 # never overwrite a later active turn. The hook still always exits zero: amux
 # must never block the model.
+# NATIVE ARCH (MO-3622). This script runs on every tool call of every lane
+# (about 8 times a second across the fleet) and forks ~20 processes per run.
+# On an Apple Silicon Mac whose tmux server is an Intel build, the whole pane
+# tree inherits x86_64 and runs under Rosetta, where each of those forks costs
+# about 12x the CPU of a native one (measured 2026-09-26: 400 spawns = 7.7 CPU-s
+# translated, 0.65 native; this script 0.6 s CPU and 0.7 s wall per call
+# translated, 0.14 s and 0.17 s native). Re-exec ONCE under `arch -arm64
+# -x86_64`: native wherever a native slice exists, unchanged where it does not
+# (an Intel Mac, an Intel-only bash). stdin and argv pass through untouched, so
+# the payload the harness pipes in still reaches the `cat` below. `execfail`
+# keeps a failed exec from ending a script whose contract is to never be the
+# reason a hook fails; the guard variable stops a loop. AMUX_NATIVE_ARCH=0 opts
+# out. The bash builtins $OSTYPE/$HOSTTYPE decide, so a native run pays nothing.
+case "$OSTYPE:$HOSTTYPE" in
+  darwin*:x86_64)
+    if [ "${AMUX_NATIVE_ARCH:-1}" != 0 ] && [ -z "${_AMUX_NATIVE_REEXEC:-}" ] && [ -x /usr/bin/arch ]; then
+      export _AMUX_NATIVE_REEXEC=1
+      shopt -s execfail
+      exec /usr/bin/arch -arm64 -x86_64 "$BASH" "$0" "$@"
+    fi
+    ;;
+esac
 if [ "${1:-}" = "--drain-subagents" ]; then
   /usr/bin/python3 - "${2:-}" "${3:-}" "${4:-}" "${5:-lifecycle_queue}" <<'PY'
 import fcntl,json,os,ssl,sys,tempfile,time,urllib.error,urllib.request
