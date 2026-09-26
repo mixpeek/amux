@@ -14,6 +14,12 @@ fails=0
 [ -x "$TICK" ] || { echo "FAIL: $TICK missing or not executable — no cell below ran"; exit 1; }
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expected '$2', got '$3'"; fails=$((fails+1)); fi; }
 
+# The cargo-target arm scans real roots and DELETES real idle targets (DESKT-51). Nothing in this
+# file tests it (scripts/test-mac-cleanup-targets.sh does), and its end-to-end cells run the whole
+# tick for real, so point the arm at a root that does not exist: a test of the purge arm must
+# never reap a build directory on the machine running it, or spend minutes scanning ~/Dev.
+export AMUX_CLEANUP_TARGET_ROOTS="$FIX/no-such-root"
+
 # Library mode must define the decisions without running a single probe.
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
 check "library mode defines should_purge" "yes" "$(type should_purge >/dev/null 2>&1 && echo yes || echo no)"
@@ -225,6 +231,11 @@ out=$(AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRES
       AMUX_CLEANUP_FAMILY_SHARE_PCT=99.9 AMUX_CLEANUP_FAMILY_AGE_H=99999 "$TICK" 2>&1)
 case "$out" in *"largest family"*"under the"*) echo "  ok   under both thresholds it reports without firing" ;;
   *) echo "  FAIL no under-threshold family line: $(printf '%s' "$out" | tail -3)"; fails=$((fails+1)) ;; esac
+
+echo "7c2. this suite never lets the cargo-target arm near the real tree"
+out=$(AMUX_CLEANUP_PURGE_CMD=true AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRESSURE_PURGE=99 \
+      AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=999999 AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 "$TICK" --dry-run 2>&1)
+check "the arm scanned no roots under this suite" "yes" "$(printf '%s' "$out" | grep -q 'cargo targets: found 0 under 0 root(s)' && echo yes || echo no)"
 
 echo "7d. the stale-process arm parses 08 and 09 in elapsed times (bash reads them as octal)"
 # 2026-09-24: SCHED-465 printed "value too great for base" because this arm did its

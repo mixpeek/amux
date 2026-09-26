@@ -361,6 +361,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-lima.sh
+      - name: the idle cargo-target reaper keeps anything it cannot prove idle and unopened (DESKT-51)
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-cleanup-targets.sh
       # AF-677. AF-346's ratchet (above) recorded 31 harnesses as unwired rather
       # than wiring them blind, because that decision belongs to each one's
       # owner (ethos rule 8). This is that decision, made for 28 of the 31:

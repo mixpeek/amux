@@ -13,6 +13,13 @@
 #      com.procwarden.menubar, which leaked to 27 GB over 15 days and again to
 #      1.3 GB within 13 hours of a restart. KeepAlive brings it straight back,
 #      so a restart costs nothing but the leak.
+#   4. Cargo `target/` directories nothing has written to for 24 hours and no
+#      process holds open. Build output is regenerable by definition and was the
+#      largest single class of waste on this box: 127 cache-signed directories
+#      held 233 GB on 2026-09-26 and one hand pass over the idle ones freed
+#      66.8 GiB (DESKT-51). The scan is bounded, every guard fails closed (an
+#      unmeasurable directory is kept and the line says so), and the shared
+#      target is never a candidate.
 #
 # WHAT IT ONLY REPORTS, however large it gets:
 #   Everything else. fseventsd held 96 GB on this box and macOS protects it; a
@@ -41,7 +48,7 @@ DRY=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -uo pipefail$/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
 done
@@ -77,6 +84,26 @@ LIMA_SHOW_KB=${AMUX_CLEANUP_LIMA_SHOW_KB:-10485760}
 # ranking misses it too, because no single child is large.
 FAMILY_SHARE_PCT=${AMUX_CLEANUP_FAMILY_SHARE_PCT:-15}
 FAMILY_AGE_H=${AMUX_CLEANUP_FAMILY_AGE_H:-12}
+# Idle cargo target dirs (DESKT-51). The roots are where lanes actually leave them:
+# per-session Claude scratchpads, the per-user temp dir, Codex work dirs, the repos,
+# and the amux/ao worktree stores. 24h idle matches scripts/reap-amux-debris.sh's
+# side-target floor: a lane's build touches its target constantly, so a full idle
+# day is a strong signal and being wrong costs one rebuild. The shared target is
+# protected by KEEP, not by luck. The scan and the deletions each carry a time
+# budget so one slow disk cannot stretch a 30-minute tick past its schedule.
+# A root may carry a scan depth as path@N. The per-user temp dir holds only shallow targets but is
+# full of leaked clones, and scanning it to the default depth measured 40s of a 110s scan.
+# TMPDIR may be unset under the scheduler, and `/tmp` is a symlink that find does not follow, so the
+# per-user temp dir comes from getconf when TMPDIR is empty rather than from a symlink that scans nothing.
+USER_TMP=${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)}
+TARGET_ROOTS=${AMUX_CLEANUP_TARGET_ROOTS:-/private/tmp/claude-$(id -u)@6:/private/tmp@3:${USER_TMP%/}@3:$HOME/Documents/Codex@8:$HOME/Dev@8:$HOME/.amux/worktrees@6:$HOME/.ao/data/worktrees@8}
+TARGET_IDLE_H=${AMUX_CLEANUP_TARGET_IDLE_H:-24}
+TARGET_KEEP=${AMUX_CLEANUP_TARGET_KEEP:-$HOME/.amux/rust-build-target:$HOME/.ao/data/cargo-target-shared:${CARGO_TARGET_DIR:-}}
+TARGET_DEPTH=${AMUX_CLEANUP_TARGET_DEPTH:-8}
+TARGET_SCAN_S=${AMUX_CLEANUP_TARGET_SCAN_S:-120}
+TARGET_WALK_S=${AMUX_CLEANUP_TARGET_WALK_S:-60}
+TARGET_BUDGET_S=${AMUX_CLEANUP_TARGET_BUDGET_S:-300}
+LSOF_CMD=${AMUX_CLEANUP_LSOF_CMD:-lsof -nP}
 # Seams: the tests point these at a recorder so an action can be observed
 # without running it. Defaults are what the scheduler actually runs.
 PURGE_CMD=${AMUX_CLEANUP_PURGE_CMD:-sudo -n /usr/sbin/purge}
@@ -283,6 +310,153 @@ to_gb() { # <top-mem-string>
 
 # Library mode: the test sources this file for the functions above and must not
 # trip a single probe or action doing it.
+# ── idle cargo target dirs (DESKT-51) ────────────────────────────────────────
+# The cache-directory tagging signature (bford.info/cachedir). CACHEDIR.TAG marks
+# ANY cache, not just cargo's: ruff, pytest and uv virtualenvs all write it, and a
+# .venv is not disposable. So the tag alone never qualifies a directory; it must
+# also carry .rustc_info.json, which only a cargo target root has.
+CARGO_TAG_SIG=8a477f597d28d172789f06886806bc55
+
+# Print every cargo target root under the colon-separated roots. Runs in the
+# CALLER'S shell (redirect its stdout, do not $(...) it) because it sets
+# TARGET_SCAN_COMPLETE and TARGET_ROOTS_SCANNED, and a caller that reads only the
+# list cannot tell a finished scan from one cut off by the budget (ethos rule 4).
+# Pruned names never contain a target root and are where the file count lives:
+# node_modules, .git, virtualenvs, and cargo's own build internals.
+find_cargo_targets() { # <colon-roots> <maxdepth> <budget_s>
+  local roots=$1 depth=$2 budget=$3 deadline left rc tag d r tmp rdepth
+  local -a rootarr
+  TARGET_SCAN_COMPLETE=yes
+  TARGET_ROOTS_SCANNED=0
+  deadline=$(( $(date +%s) + budget ))
+  IFS=':' read -r -a rootarr <<< "$roots"
+  # ${arr[@]+"${arr[@]}"}: bash 3.2 (macOS /bin/bash) treats an EMPTY array as unset under
+  # `set -u`, so a bare "${arr[@]}" aborts the tick when the list is empty.
+  for r in ${rootarr[@]+"${rootarr[@]}"}; do
+    rdepth=$depth
+    case "$r" in *@[0-9]*) rdepth=${r##*@}; r=${r%@*} ;; esac
+    [ -n "$r" ] && [ -d "$r" ] || continue
+    left=$(( deadline - $(date +%s) ))
+    if [ "$left" -le 0 ]; then TARGET_SCAN_COMPLETE=no; continue; fi
+    TARGET_ROOTS_SCANNED=$((TARGET_ROOTS_SCANNED+1))
+    tmp=$(mktemp "${TMPDIR:-/tmp}/cargo-scan.XXXXXX")
+    # `|| rc=$?`, never `cmd; rc=$?`: the tests source this under `set -e`, where a
+    # non-zero find (an unreadable directory) would end the shell before rc was read.
+    # The braces are for the shell's own "Alarm clock: 14" job message, which it prints
+    # to ITS stderr when the alarm kills find and would otherwise land in the tick output.
+    rc=0
+    { perl -e 'alarm shift; exec @ARGV' "$left" find "$r" -maxdepth "$rdepth" \
+      \( -name node_modules -o -name .git -o -name .venv -o -name venv -o -name deps \
+         -o -name incremental -o -name build -o -name .fingerprint \) -prune \
+      -o -name CACHEDIR.TAG -type f -print > "$tmp" 2>/dev/null; } 2>/dev/null || rc=$?
+    # 128+SIGALRM: what was found before the alarm is still in the file
+    if [ "$rc" = 142 ]; then TARGET_SCAN_COMPLETE=no; fi
+    while IFS= read -r tag; do
+      d=$(dirname "$tag")
+      grep -q -- "$CARGO_TAG_SIG" "$tag" 2>/dev/null || continue
+      [ -f "$d/.rustc_info.json" ] || continue
+      printf '%s\n' "$d"
+    done < "$tmp"
+    rm -f -- "${tmp:?}"
+  done
+}
+
+# 0 = nothing inside was written in the last <hours>; 1 = something was; 2 = the
+# walk did not finish inside its budget, so idleness is UNKNOWN and the caller must
+# keep the directory. `find -print -quit` stops at the first recent file, so an
+# active target costs almost nothing and only a truly idle one is walked in full.
+dir_idle() { # <dir> <hours> <walk_budget_s>
+  local d=$1 mins=$(( $2 * 60 )) budget=$3 out rc=0
+  out=$(perl -e 'alarm shift; exec @ARGV' "$budget" find "$d" -type f -mmin "-$mins" -print -quit 2>/dev/null) || rc=$?
+  if [ "$rc" = 142 ]; then return 2; fi
+  [ -z "$out" ]
+}
+
+# Does any row of an lsof snapshot name this directory or something inside it?
+# The boundary matters: a handle on .../target-mr283/x must NOT protect
+# .../target, and a handle on .../target/x must. Matching on the bare prefix gets
+# the first wrong; matching the whole path column gets both right.
+has_open_handle() { # <dir> <lsof_snapshot_file>
+  local pat
+  pat=$(printf '%s' "$1" | sed 's/[][\.*^$/+?(){}|]/\\&/g')
+  grep -Eq -- "(^|[[:space:]])${pat}(/|[[:space:]]|\$)" "$2"
+}
+
+# Is <dir> equal to, or inside, a protected path from the colon-separated list?
+is_kept_target() { # <dir> <colon-list>
+  local d=$1 k
+  local -a keep
+  IFS=':' read -r -a keep <<< "$2"
+  for k in ${keep[@]+"${keep[@]}"}; do
+    [ -n "$k" ] || continue
+    k=${k%/}
+    case "$d" in "$k"|"$k"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Reap idle cargo targets. Sets TARGETS_FOUND / _ELIGIBLE / _REAPED / _REAPED_KB.
+# WHY EVERY GUARD FAILS CLOSED: this deletes tens of GB in other lanes' trees, so
+# "could not tell" has to mean "kept". lsof unavailable, a walk cut off by its
+# budget, or a scan cut off by its budget each keep the directory and say so in the
+# line, because a summary that read the same for "nothing idle" and "could not
+# look" would be the defect this file already has a rule against.
+reap_idle_cargo_targets() { # <roots> <idle_hours> <dry:0|1>
+  local roots=$1 idle_h=$2 dry=${3:-0}
+  local cands eligible lsofsnap t0 d kb rc n_active=0 n_open=0 n_unk=0 n_shared=0 n_over=0 n_fail=0 n_elig_kb=0 handles=measured
+  TARGETS_FOUND=0; TARGETS_ELIGIBLE=0; TARGETS_REAPED=0; TARGETS_REAPED_KB=0
+  t0=$(date +%s)
+  cands=$(mktemp "${TMPDIR:-/tmp}/cargo-cands.XXXXXX"); eligible=$(mktemp "${TMPDIR:-/tmp}/cargo-elig.XXXXXX"); lsofsnap=$(mktemp "${TMPDIR:-/tmp}/cargo-lsof.XXXXXX")
+  find_cargo_targets "$roots" "$TARGET_DEPTH" "$TARGET_SCAN_S" > "$cands"
+  # Overlapping roots list a target twice. `find` on a path that is already gone prints nothing,
+  # which dir_idle reads as IDLE, so a duplicate would be "reaped" a second time at size zero.
+  sort -u "$cands" -o "$cands"
+  TARGETS_FOUND=$(grep -c . "$cands" || true)
+  # One snapshot for selection. Empty or failed means we cannot see open files at
+  # all, and an empty snapshot would read as "nothing is open" for every directory.
+  if $LSOF_CMD > "$lsofsnap" 2>/dev/null && [ -s "$lsofsnap" ]; then :; else handles=UNMEASURED; fi
+  if [ "$handles" = UNMEASURED ]; then
+    echo "mac-cleanup: cargo targets: found ${TARGETS_FOUND} under ${TARGET_ROOTS_SCANNED} root(s), scan complete=${TARGET_SCAN_COMPLETE}, open handles UNMEASURED (lsof produced nothing): reaped 0, nothing is deleted without it"
+    rm -f -- "${cands:?}" "${eligible:?}" "${lsofsnap:?}"; return 0
+  fi
+  while IFS= read -r d; do
+    [ -d "$d" ] || continue     # gone since the scan (a lane removed it, or an overlapping root already did)
+    if is_kept_target "$d" "$TARGET_KEEP"; then n_shared=$((n_shared+1)); continue; fi
+    # The walk phase needs its own guard: a hundred candidates at the per-walk budget each
+    # would outlast the tick's schedule even though every single walk is bounded.
+    if [ $(( $(date +%s) - t0 )) -ge "$TARGET_BUDGET_S" ]; then n_over=$((n_over+1)); continue; fi
+    rc=0; dir_idle "$d" "$idle_h" "$TARGET_WALK_S" || rc=$?
+    if [ "$rc" = 1 ]; then n_active=$((n_active+1)); continue; fi
+    if [ "$rc" = 2 ]; then n_unk=$((n_unk+1)); continue; fi
+    if has_open_handle "$d" "$lsofsnap"; then n_open=$((n_open+1)); continue; fi
+    kb=$(du -sk "$d" 2>/dev/null | awk '{print $1+0}')
+    printf '%s\t%s\n' "${kb:-0}" "$d" >> "$eligible"
+    TARGETS_ELIGIBLE=$((TARGETS_ELIGIBLE+1)); n_elig_kb=$((n_elig_kb+${kb:-0}))
+  done < "$cands"
+  # Biggest first, so a spent budget has already taken the wins that matter.
+  sort -rn "$eligible" -o "$eligible"
+  while IFS=$'\t' read -r kb d; do
+    if [ $(( $(date +%s) - t0 )) -ge "$TARGET_BUDGET_S" ]; then n_over=$((n_over+1)); continue; fi
+    if [ "$dry" = 1 ]; then
+      echo "mac-cleanup:   would reap $(fmt_kb "$kb") $d (idle >= ${idle_h}h, dry run)"
+      continue
+    fi
+    # A second look right before the delete: a build may have started since the
+    # selection snapshot, and it will hold the directory open.
+    $LSOF_CMD > "$lsofsnap" 2>/dev/null || true
+    if [ ! -s "$lsofsnap" ] || has_open_handle "$d" "$lsofsnap"; then n_open=$((n_open+1)); continue; fi
+    rm -rf -- "${d:?}"
+    if [ -e "$d" ]; then
+      n_fail=$((n_fail+1)); echo "mac-cleanup:   FAILED to remove $(fmt_kb "$kb") $d (still present after rm)"
+    else
+      TARGETS_REAPED=$((TARGETS_REAPED+1)); TARGETS_REAPED_KB=$((TARGETS_REAPED_KB+kb))
+      echo "mac-cleanup:   reaped $(fmt_kb "$kb") $d (idle >= ${idle_h}h)"
+    fi
+  done < "$eligible"
+  echo "mac-cleanup: cargo targets: found ${TARGETS_FOUND} under ${TARGET_ROOTS_SCANNED} root(s), scan complete=${TARGET_SCAN_COMPLETE}, eligible ${TARGETS_ELIGIBLE} ($(fmt_kb "$n_elig_kb") idle >= ${idle_h}h), reaped ${TARGETS_REAPED} ($(fmt_kb "$TARGETS_REAPED_KB")), kept: active ${n_active}, open ${n_open}, unmeasured ${n_unk}, shared ${n_shared}, over budget ${n_over}, failed ${n_fail}"
+  rm -f -- "${cands:?}" "${eligible:?}" "${lsofsnap:?}"
+}
+
 [ "${AMUX_CLEANUP_LIB_ONLY:-0}" = "1" ] && return 0 2>/dev/null
 
 # ── measure ──────────────────────────────────────────────────────────────────
@@ -407,6 +581,11 @@ $(top -l 1 -o mem -n 12 -stats pid,mem 2>/dev/null | awk 'f{print} /^PID/{f=1}' 
 EOF
 [ "$reported" = 0 ] && echo "mac-cleanup:   none"
 
+# ── act: reap idle cargo target dirs ─────────────────────────────────────────
+# Before the snapshot arm on purpose: freed blocks stay pinned by a local snapshot
+# until it is thinned, so the reap comes first and the thin below sees the result.
+reap_idle_cargo_targets "$TARGET_ROOTS" "$TARGET_IDLE_H" "$DRY"
+
 # ── act: thin APFS local snapshots when the disk is tight ────────────────────
 disk_free_gb=$(df -k /System/Volumes/Data 2>/dev/null | awk 'NR==2{ printf "%.1f", $4/1048576 }')
 case "$disk_free_gb" in ''|*[!0-9.]*) disk_free_gb=-1 ;; esac
@@ -459,5 +638,5 @@ if [ -n "$fse_pid" ]; then
   fi
 fi
 
-echo "mac-cleanup: done purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} reported=${reported}"
+echo "mac-cleanup: done purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} targets_reaped=${TARGETS_REAPED} reported=${reported}"
 exit 0
