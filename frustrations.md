@@ -4982,3 +4982,36 @@ CARD: ACW-1
 SYMPTOM: I ran a test server from a worktree with its own AMUX_HOME and port (TMUX_TMPDIR set, but $TMUX from my pane still pointed at the real tmux server). Its first `pipe_reconcile_tick` logged `re-armed pipe-pane session=<lane> writer_changed=true` for 20 real fleet lanes: its `.pipe-writer-version` marker did not exist yet, so every `amux-*` pane on the machine looked like it needed the new writer. For ~2 hours those lanes' pane output went to the test home's logs dir. The live server never noticed, because its own marker was current.
 COST: ~2 hours of pane logs for 20 lanes written to a scratch dir (recovered to ~/.amux/logs/recovered-acw-2026-09-24/), and 30 minutes to find and restore. Nothing in the live server's view showed it: pane_pipe stayed 1.
 FIX: pipe_reconcile_tick now skips any `amux-<name>` pane with no `<name>.env` in its own sessions dir and counts them (`pipe_reconcile_foreign_panes_skipped`). Restoring was the server's own path: move `.pipe-writer-version` aside so the live reconciler re-arms. Branch feature/worker-type.
+
+## Every spawn on this Mac costs about 12x the CPU because the tmux tree runs under Rosetta, and nothing said so
+AREA: instruments
+SEVERITY: slows
+STATUS: open
+DATE: 2026-09-26
+SESSION: mac-ops
+CARD: MO-3622
+SYMPTOM: 15-minute load 46.6 on 28 cores with 33% sys and 21% idle and no process to blame. The pid counter showed 240-320 spawns/s and 88% of the sampled ones were translated (`sysctl -n sysctl.proc_translated` prints 1 in a lane shell). The first visible sign was elsewhere: `colima list` from a lane failed with "limactl is running under rosetta, please reinstall lima with native arch". The tmux server is an Intel-only /usr/local/bin/tmux, and the x86_64 preference is inherited down the whole tree, so even an arm64 `claude` spawns translated bash. 400 spawns cost 7.7 CPU-s translated, 0.65 native.
+COST: about 90 minutes of RCA, three tick escalations in 30 minutes, and every tool call in every lane carried the tax until the hook fix. The cost sits in sys time and in oahd, trustd, syspolicyd and XProtect waking on each exec, so a per-process ranking cannot show it.
+FIX: The signal exists now: the mac-health tick logs translated_procs and WARNs rosetta_translated_tree (commit 36906988). Still open: the tree is still translated. That needs an arm64 tmux plus a restart of every lane, or lane launches under `arch -arm64 -x86_64`, and both change every lane's environment, so it is the owner's call. Detail: docs/incidents/2026-09-26-mac-cpu-rosetta-spawn-storm.md.
+
+## hook-report.sh forked about 20 processes on every tool call, roughly 4.7 cores fleet-wide, and its cost was invisible
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-26
+SESSION: mac-ops
+CARD: MO-3622
+SYMPTOM: The PostToolUse hook ran 8.0 times per second across the fleet. A tracer caught 16 descendants per run (13 bash, 2 python3, cat). Translated, one run cost 0.6 s of CPU and 0.7 s of wall time; native, 0.14 s and 0.17 s.
+COST: 0.7 s of added latency after every tool call in every lane, and about half of all process spawns on the box. Nothing reported hook cost anywhere.
+FIX: e5b632de re-execs the script under `arch -arm64 -x86_64` (opt out with AMUX_NATIVE_ARCH=0), with a test cell that fails if the children stay translated. Further cuts are possible (two python3 startups and a curl remain) but were not needed for this incident.
+
+## TmuxBackend::reconcile probed every session twice every 2 seconds, and a spawn leaves no trace
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-26
+SESSION: mac-ops
+CARD: MO-3622
+SYMPTOM: amux-server-rs forked about 50 processes per second, 26 of them the bootstrap loop's per-session `has-session` and `list-panes` (13.0/s of each at 28 sessions). The one sweep that calls reconcile reads only the session name.
+COST: half of the server's spawns and about 0.5 core of translated tmux clients, invisible in the logs because a process that has exited leaves nothing to grep.
+FIX: 63c2614d makes reconcile one `list-panes -a` census, and TmuxBackend spawns are now counted per 60 s window with a WARN (`tmux_spawn_rate_high`) and `tmux_spawns` in GET /api/debug/tmux. The count covers TmuxBackend::run only; peek captures and the session-verb helpers spawn tmux from their own call sites and are not counted.
