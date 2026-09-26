@@ -235,6 +235,61 @@ pub(crate) fn env_pair_is_argv_safe(key: &str, value: &str) -> bool {
         .any(|needle| k.contains(needle))
 }
 
+// ---------------------------------------------------------------------------
+// Native-arch launch (MO-3623, follow-on to MO-3622).
+//
+// MO-3622 fixed amux's own spawn sources; this is the proactive fix for the
+// cause underneath them, applied at the one point every NEW worker passes
+// through. `/usr/local/bin/tmux` is Intel-only, so its pane shells inherit
+// x86_64 preference, and that preference survives an `exec` of an arm64-only
+// binary (confirmed by experiment: a translated shell execing a thin-arm64
+// program directly still hands x86_64 to THAT program's own children — being
+// native yourself does not reset it). What DOES reset it: wrapping the exec in
+// `arch -arm64 -x86_64`, which sets a fresh preference list that then
+// propagates to everything the wrapped process spawns. So the agent's own
+// subprocess tree (every Bash tool call, every git/python it runs) goes
+// native, with no tmux server restart and no effect on any session already
+// running — this only ever changes a NEW spawn's command line.
+// ---------------------------------------------------------------------------
+
+/// True when wrapping a new session's launch in `arch -arm64 -x86_64` is both
+/// possible and worth doing: an Apple Silicon build of this server (the same
+/// signal `mac_health::rosetta_census` uses — this server is always built
+/// native for its own host) with `/usr/bin/arch` present, unless
+/// `AMUX_NATIVE_ARCH=0` opts out.
+fn should_prefer_native_arch() -> bool {
+    native_arch_eligible(
+        cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        std::env::var("AMUX_NATIVE_ARCH").ok().as_deref() != Some("0"),
+        std::path::Path::new("/usr/bin/arch").exists(),
+    )
+}
+
+/// Pure form of the decision above, so a test can drive every combination
+/// without mutating process-global environment state (which a parallel test
+/// run could race).
+fn native_arch_eligible(is_apple_silicon_build: bool, opted_in: bool, arch_exists: bool) -> bool {
+    is_apple_silicon_build && opted_in && arch_exists
+}
+
+/// The argv to `exec`, with the native-arch wrapper prefixed when eligible.
+/// `arch -arm64 -x86_64` itself falls back per-slice when the wrapped binary
+/// has no arm64 build (verified: an x86_64-only binary still runs, under
+/// x86_64), so this never turns a working launch into a failing one — it can
+/// only make an eligible one run more of its own descendants natively.
+fn native_launch_argv(command: &[String]) -> Vec<String> {
+    if !should_prefer_native_arch() {
+        return command.to_vec();
+    }
+    let mut argv = vec![
+        "/usr/bin/arch".to_string(),
+        "-arm64".to_string(),
+        "-x86_64".to_string(),
+    ];
+    argv.extend(command.iter().cloned());
+    argv
+}
+
 impl TmuxBackend {
     pub fn new() -> Self {
         Self { bin: "tmux".into() }
@@ -543,7 +598,7 @@ impl SessionBackend for TmuxBackend {
             let line = format!(
                 "cd {} && exec {}",
                 sh_quote(&spec.cwd),
-                spec.command
+                native_launch_argv(&spec.command)
                     .iter()
                     .map(|a| sh_quote(a))
                     .collect::<Vec<_>>()
@@ -934,6 +989,103 @@ fn sh_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // ---- MO-3623: wrap a new session's launch so its own descendants run
+    // native, and only when it is eligible to.
+
+    #[test]
+    fn native_arch_eligible_needs_all_three_conditions() {
+        assert!(super::native_arch_eligible(true, true, true));
+        assert!(
+            !super::native_arch_eligible(false, true, true),
+            "not an Apple Silicon build"
+        );
+        assert!(
+            !super::native_arch_eligible(true, false, true),
+            "AMUX_NATIVE_ARCH=0 opts out"
+        );
+        assert!(
+            !super::native_arch_eligible(true, true, false),
+            "/usr/bin/arch missing"
+        );
+    }
+
+    #[test]
+    fn native_launch_argv_prefixes_arch_only_when_eligible() {
+        let cmd = vec![
+            "claude".to_string(),
+            "--model".to_string(),
+            "sonnet".to_string(),
+        ];
+        // The pure gate says yes: wrapped, in this exact order.
+        let with_wrap = |cmd: &[String]| -> Vec<String> {
+            let mut argv = vec![
+                "/usr/bin/arch".to_string(),
+                "-arm64".to_string(),
+                "-x86_64".to_string(),
+            ];
+            argv.extend(cmd.iter().cloned());
+            argv
+        };
+        // native_launch_argv itself always reads the REAL environment via
+        // should_prefer_native_arch, so assert it agrees with that live
+        // reading rather than asserting a hardcoded outcome (this box's own
+        // eligibility is not this test's business, only that the two agree).
+        if super::should_prefer_native_arch() {
+            assert_eq!(super::native_launch_argv(&cmd), with_wrap(&cmd));
+        } else {
+            assert_eq!(super::native_launch_argv(&cmd), cmd);
+        }
+    }
+
+    /// THE REGRESSION, run for real. Only meaningful on a translated shell on
+    /// Apple Silicon hardware (mirrors the equivalent cell in
+    /// test-status-hooks.sh) -- anywhere else there is no Rosetta tax to prove
+    /// this removes, and saying so beats a vacuous pass.
+    #[test]
+    fn a_wrapped_launch_makes_its_own_children_native() {
+        use std::process::Command;
+        let translated = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "sysctl.proc_translated"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+            .unwrap_or(false);
+        let arm64_hw = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.optional.arm64"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+            .unwrap_or(false);
+        if !translated || !arm64_hw {
+            eprintln!(
+                "skip: this test process is not translated on Apple Silicon hardware, so \
+                 there is no Rosetta tax to prove native_launch_argv removes"
+            );
+            return;
+        }
+        let probe = |argv: &[String]| -> bool {
+            let out = Command::new(&argv[0])
+                .args(&argv[1..])
+                .output()
+                .expect("probe must run");
+            String::from_utf8_lossy(&out.stdout).trim() == "0"
+        };
+        let bare = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "sysctl -n sysctl.proc_translated".to_string(),
+        ];
+        assert!(
+            !probe(&bare),
+            "a bare exec from this translated test process must still read translated; \
+             otherwise this test proves nothing"
+        );
+        assert!(
+            probe(&super::native_launch_argv(&bare)),
+            "native_launch_argv's wrapper must make its own child report native"
+        );
+    }
+
     #[test]
     fn process_exit_census_requires_every_pane_to_be_dead() {
         let exits = super::parse_process_exits(
