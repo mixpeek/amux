@@ -6986,71 +6986,89 @@ async fn a_fresh_trigger_refreshes_an_already_passed_due_date() {
     assert!(log.contains(&format!("revisit {due}")), "log must name the refreshed date: {log}");
 }
 
-/// The refresh above must not fire on an ordinary edit that happens to share a
-/// PATCH with nothing new about the trigger — only a genuinely NEW, non-empty
-/// `source_ref` in THIS SAME request may touch `due`. Otherwise any unrelated
-/// field edit on an already-stale backlog card would silently reset its clock.
-#[tokio::test]
-async fn an_unrelated_edit_does_not_refresh_a_stale_due_date() {
-    let (app, _tmp) = app();
-    let c = create(&app, json!({ "title": "stale but untouched" })).await;
+/// Park a card in backlog with `due` and a trigger, claim it (backlog -> doing),
+/// then re-park it (doing -> backlog) with `repark`, and return the `due` that
+/// came out. The three tests below share this because the refresh lives in the
+/// status-TRANSITION arm of the PATCH handler: a PATCH that does not change the
+/// status (an edit, or "backlog" sent to a card already in backlog) never
+/// enters that arm, so a guard test written that way passes with the guard
+/// deleted. The first draft of these tests did exactly that, and mutating the
+/// guards out left them green (the follow-up to PR #228).
+async fn repark_with_stale_due(app: &axum::Router, due: &str, repark: Value) -> (String, String) {
+    let c = create(app, json!({ "title": "re-parked backlog card" })).await;
     let id = c["id"].as_str().unwrap().to_string();
 
     let (st, _, v) = send(
-        &app,
+        app,
         "PATCH",
         &format!("/api/board/{id}"),
-        Some(json!({ "status": "backlog", "due": "2020-01-01", "source_ref": "waiting on X", "gate_ack": true })),
+        Some(json!({ "status": "backlog", "due": due, "source_ref": "waiting on X", "gate_ack": true })),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(st, StatusCode::OK, "park: {v}");
+    let (_, _, got) = send(app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(got["due"].as_str(), Some(due), "setup: the date must land as sent");
 
-    // An edit that does NOT mention source_ref at all.
-    let (st, _, v) =
-        send(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({ "desc": "adding a note" }))).await;
-    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, _, v) = send(
+        app,
+        "PATCH",
+        &format!("/api/board/{id}"),
+        Some(json!({ "status": "doing", "gate_ack": true, "next_action": "check the external condition" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "claim: {v}");
 
-    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(
-        got["due"].as_str(),
-        Some("2020-01-01"),
-        "an edit that never touched source_ref must not refresh the stale due date"
-    );
+    let (st, _, v) = send(app, "PATCH", &format!("/api/board/{id}"), Some(repark)).await;
+    assert_eq!(st, StatusCode::OK, "re-park: {v}");
+
+    let (_, _, got) = send(app, "GET", &format!("/api/board/{id}"), None).await;
+    (
+        got["due"].as_str().unwrap_or("").to_string(),
+        got["log"].as_str().unwrap_or("").to_string(),
+    )
 }
 
-/// The refresh must never touch a due date that is still in the future — the
-/// same "the owner's choice survives" guarantee `a_caller_supplied_revisit_date_survives_the_default`
-/// already covers for the blank case, extended to the refresh path.
+/// The refresh must not fire on a re-park that carries no new trigger: only a
+/// genuinely NEW, non-empty `source_ref` in THIS SAME request may touch `due`.
+/// Otherwise every plain re-park of an already-stale backlog card would
+/// silently reset its clock.
+#[tokio::test]
+async fn a_repark_without_a_new_trigger_does_not_refresh_a_stale_due_date() {
+    let (app, _tmp) = app();
+    let (due, log) =
+        repark_with_stale_due(&app, "2020-01-01", json!({ "status": "backlog", "gate_ack": true })).await;
+    assert_eq!(due, "2020-01-01", "a re-park that never set source_ref must not refresh the stale date: {log}");
+}
+
+/// The refresh must never touch a due date that is still in the future: the
+/// same "the owner's choice survives" guarantee
+/// `a_caller_supplied_revisit_date_survives_the_default` covers for the blank
+/// case, extended to the refresh path.
 #[tokio::test]
 async fn a_fresh_trigger_never_touches_a_still_future_due_date() {
     let (app, _tmp) = app();
-    let c = create(&app, json!({ "title": "deliberately dated ahead" })).await;
-    let id = c["id"].as_str().unwrap().to_string();
-
-    let (st, _, v) = send(
+    let (due, log) = repark_with_stale_due(
         &app,
-        "PATCH",
-        &format!("/api/board/{id}"),
-        Some(json!({ "status": "backlog", "due": "2099-01-01", "source_ref": "waiting on X", "gate_ack": true })),
+        "2099-01-01",
+        json!({ "status": "backlog", "source_ref": "waiting on Y now instead", "gate_ack": true }),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(due, "2099-01-01", "a future date is the owner's choice and must survive a fresh trigger: {log}");
+}
 
-    let (st, _, v) = send(
+/// An `autofix:` source_ref is the system stamping its own repair, not a human
+/// or worker naming a fresh external condition, so it must not reset a stale
+/// due date either (the same exclusion the `last_verified_at` self-heal makes).
+#[tokio::test]
+async fn an_autofix_trigger_does_not_refresh_a_stale_due_date() {
+    let (app, _tmp) = app();
+    let (due, log) = repark_with_stale_due(
         &app,
-        "PATCH",
-        &format!("/api/board/{id}"),
-        Some(json!({ "status": "backlog", "source_ref": "waiting on Y now instead", "gate_ack": true })),
+        "2020-01-01",
+        json!({ "status": "backlog", "source_ref": "autofix: stamped by the harness", "gate_ack": true }),
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "{v}");
-
-    let (_, _, got) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(
-        got["due"].as_str(),
-        Some("2099-01-01"),
-        "a future date is the owner's choice and must survive a fresh trigger"
-    );
+    assert_eq!(due, "2020-01-01", "an autofix trigger must not refresh the stale date: {log}");
 }
 
 /// Every status with a next actor must be left alone. A `doing` card carrying
