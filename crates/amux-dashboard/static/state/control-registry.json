@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2190,
+  "n_considered": 2200,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -2944,6 +2944,12 @@
     },
     "_wsTermSetupHandlers": {
       "kind": "command._wsTermSetupHandlers",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_wselRun": {
+      "kind": "command._wselRun",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

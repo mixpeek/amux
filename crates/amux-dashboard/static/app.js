@@ -2641,20 +2641,20 @@ function openVisibleWorkerActions() {
 async function runVisibleWorkerAction(key) {
   return _runWorkerActionNames(key, _visibleWorkerNames());
 }
-async function _runWorkerActionNames(key, names) {
+async function _runWorkerActionNames(key, names, note) {
   const a = _VISIBLE_ACTIONS[key];
-  if (!a || !names.length) return;
+  if (!a || !names.length) return null;
   closeBulkActions();
   const list = names.length > 8 ? names.slice(0, 8).join(', ') + ' and ' + (names.length - 8) + ' more' : names.join(', ');
-  if (!await showConfirm(a.label + ' ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + '?\n\n' + list, a.label, !!a.danger)) return;
+  if (!await showConfirm(a.label + ' ' + names.length + ' worker' + (names.length === 1 ? '' : 's') + '?\n\n' + list + (note ? '\n\n' + note : ''), a.label, !!a.danger)) return null;
   // THE TYPED COUNT ONLY FOR A REAL SWEEP, AND NEVER AS A PLACEHOLDER (Ethan,
   // 2026-09-24: "i try to delete via all shown ... but it says delete
   // canceled"). The count sat grey inside the box, which reads as prefilled,
   // so OK submitted an empty box and every delete was refused.
   if (a.danger && names.length > 3) {
     const typed = await showPrompt('Type the number ' + names.length + ' to delete ' + names.length + ' workers', '');
-    if (typed === null) { showToast('Delete cancelled'); return; }
-    if (typed !== String(names.length)) { showToast('Nothing deleted: you typed "' + typed + '", expected ' + names.length); return; }
+    if (typed === null) { showToast('Delete cancelled'); return null; }
+    if (typed !== String(names.length)) { showToast('Nothing deleted: you typed "' + typed + '", expected ' + names.length); return null; }
   }
   const failed = []; let done = 0;
   const queue = names.slice();
@@ -2675,12 +2675,13 @@ async function _runWorkerActionNames(key, names) {
     _expiredWorkerInventoryAttemptAt = 0;
   }
   await fetchSessions();
+  return { done, failed };
 }
 const _workerGroupMenuOpen = new Map();
 const _workerGroupActions = {
   project: ['start','pause','resume','archive','wake'],
-  review: ['archive'],
-  paused: ['resume','archive'],
+  review: ['archive','delete'],
+  paused: ['resume','archive','delete'],
   expired: ['resume','archive'],
   archived: ['wake','delete']
 };
@@ -2701,27 +2702,86 @@ function _workerGroupMembers(kind) {
     return belongs && (!q || [s.name,s.dir,s.desc,s.task_name,...(s.tags||[])].some(v=>String(v||'').toLowerCase().includes(q)));
   });
 }
-function _workerGroupActionNames(kind,key) {
-  return _workerGroupMembers(kind).filter(s=>{
-    const lifecycle=s.lifecycle||'active';
-    if(key==='start') return !s.running && !s.archived && lifecycle==='active';
-    if(key==='pause') return !!s.running && !s.archived && lifecycle==='active';
-    if(key==='resume') return lifecycle==='paused'||lifecycle==='expired';
-    if(key==='archive') return !s.archived && ['review','paused','expired'].includes(lifecycle);
-    if(key==='wake') return !!s.archived;
-    if(key==='delete') return !!s.archived && !s.project;
-    return false;
-  }).map(s=>s.name);
+// One predicate for the group menus and the cross-group selection, so a count
+// on a button is the number the action will actually touch.
+function _workerActionEligible(s,key) {
+  const lifecycle=s.lifecycle||'active';
+  if(key==='start') return !s.running && !s.archived && lifecycle==='active';
+  if(key==='pause') return !!s.running && !s.archived && lifecycle==='active';
+  if(key==='resume') return lifecycle==='paused'||lifecycle==='expired';
+  if(key==='archive') return !s.archived && ['review','paused','expired'].includes(lifecycle);
+  if(key==='wake') return !!s.archived;
+  // The server refuses project workers (409, they expire with their project)
+  // and pinned ones (403). An expired worker with no session has nothing to delete.
+  if(key==='delete') return !s.project && !s.pinned && sessions.some(x=>x.name===s.name);
+  return false;
 }
+function _workerGroupActionNames(kind,key) {
+  return _workerGroupMembers(kind).filter(s=>_workerActionEligible(s,key)).map(s=>s.name);
+}
+const _workerGroupDeleteNote = {
+  project: 'Delete: project workers are removed when their project is approved',
+  expired: 'Delete: expired workers have no session left to delete'
+};
 function _workerGroupMenu(kind) {
   const items=(_workerGroupActions[kind]||[]).map(key=>{
     const count=_workerGroupActionNames(kind,key).length;
     return count?'<button type="button" onclick="event.stopPropagation();runWorkerGroupAction(\''+key+'\',\''+kind+'\')">'+esc(_VISIBLE_ACTIONS[key].label)+' '+count+'</button>':'';
-  }).filter(Boolean).join('');
+  }).filter(Boolean).join('')+(_workerGroupDeleteNote[kind]?'<span class="worker-group-note">'+esc(_workerGroupDeleteNote[kind])+'</span>':'');
   return '<details class="worker-group-menu"'+(_workerGroupMenuOpen.get(kind)?' open':'')+' ontoggle="_workerGroupMenuOpen.set(\''+kind+'\',this.open)"><summary aria-label="Actions for '+esc(kind)+' workers" title="Actions for this group">⋯</summary><div class="worker-group-dropdown">'+(items||'<span>No available actions</span>')+'</div></details>';
 }
 function _workerGroupFooter(kind,label,expanded,onclick) {
-  return '<div class="'+kind+'-footer worker-group-footer"><button type="button" class="worker-group-toggle" aria-expanded="'+expanded+'" onclick="'+onclick+'()"><span class="'+kind+'-chevron'+(expanded?' open':'')+'">&#x25B6;</span> '+label+'</button>'+_workerGroupMenu(kind)+'</div>';
+  const members=_workerGroupMembers(kind).map(s=>s.name);
+  const nSel=members.filter(n=>_workerSel.has(n)).length;
+  const all=members.length&&nSel===members.length;
+  const box=members.length?'<label class="wsel" onclick="event.stopPropagation()" title="'+(all?'Clear':'Select')+' every worker in this group"><input type="checkbox"'+(all?' checked':'')+' onchange="_wselGroup(\''+kind+'\',this.checked)" aria-label="Select all '+esc(kind)+' workers"></label>':'';
+  return '<div class="'+kind+'-footer worker-group-footer">'+box+'<button type="button" class="worker-group-toggle" aria-expanded="'+expanded+'" onclick="'+onclick+'()"><span class="'+kind+'-chevron'+(expanded?' open':'')+'">&#x25B6;</span> '+label+'</button>'+_workerGroupMenu(kind)+'</div>';
+}
+// Checked workers across every group (Ethan 2026-09-26: "add a way to bulk
+// delete for each accordion group and let me do checkboxes to do multiple
+// across all"). Rows and group headers toggle names here; the bar at the
+// bottom acts on the whole set with the same runner and confirmations.
+const _workerSel = new Set();
+function _wselBox(name) {
+  return '<label class="wsel" onclick="event.stopPropagation()" title="Select '+esc(name)+'"><input type="checkbox"'+(_workerSel.has(name)?' checked':'')+' onchange="_wselToggle(\''+escJs(name)+'\',this.checked)" aria-label="Select '+esc(name)+'"></label>';
+}
+function _wselRerender() {
+  _renderProjectWorkersSection(); _renderReviewSection(); _renderPausedSection(); _renderExpiredSection(); _renderArchivedSection();
+}
+function _wselToggle(name,on) { if(on) _workerSel.add(name); else _workerSel.delete(name); _wselRerender(); }
+function _wselGroup(kind,on) { _workerGroupMembers(kind).forEach(s=>{ if(on) _workerSel.add(s.name); else _workerSel.delete(s.name); }); _wselRerender(); }
+function _wselClear() { _workerSel.clear(); _wselRerender(); }
+function _wselWorker(name) {
+  const s=sessions.find(x=>x.name===name);
+  if(s) return s;
+  const w=_expiredWorkerInventory.get(name);
+  return w?{...w,name,lifecycle:'expired',archived:false,running:false}:null;
+}
+const _WSEL_ACTIONS=['resume','wake','archive','delete'];
+function _renderWorkerSelBar() {
+  [..._workerSel].forEach(n=>{ if(!_wselWorker(n)) _workerSel.delete(n); });
+  let bar=document.getElementById('worker-selbar');
+  if(!_workerSel.size) { if(bar) bar.remove(); return; }
+  if(!bar) { bar=document.createElement('div'); bar.id='worker-selbar'; bar.className='worker-selbar'; bar.setAttribute('role','toolbar'); bar.setAttribute('aria-label','Selected workers'); document.body.appendChild(bar); }
+  const picked=[..._workerSel].map(_wselWorker);
+  const btns=_WSEL_ACTIONS.map(k=>{
+    const n=picked.filter(s=>_workerActionEligible(s,k)).length;
+    return n?'<button type="button" class="btn'+(_VISIBLE_ACTIONS[k].danger?' danger':'')+'" onclick="_wselRun(\''+k+'\')">'+_VISIBLE_ACTIONS[k].label+' '+n+'</button>':'';
+  }).join('');
+  const html='<span class="worker-selbar-count">'+picked.length+' selected</span>'+(btns||'<span class="worker-selbar-note">No action applies to these</span>')+'<button type="button" class="btn" onclick="_wselClear()">Clear</button>';
+  if(bar.innerHTML!==html) bar.innerHTML=html;
+}
+async function _wselRun(key) {
+  const picked=[..._workerSel].map(_wselWorker).filter(Boolean);
+  const names=picked.filter(s=>_workerActionEligible(s,key)).map(s=>s.name);
+  if(!names.length) return;
+  const left=picked.length-names.length;
+  const note=left?left+' other selected worker'+(left===1?' is':'s are')+' not eligible and will be left alone.':'';
+  const out=await _runWorkerActionNames(key,names,note);
+  if(!out) return;
+  const failed=new Set(out.failed);
+  names.forEach(n=>{ if(!failed.has(n)) _workerSel.delete(n); });
+  _wselRerender();
 }
 async function runWorkerGroupAction(key,kind) {
   const names=_workerGroupActionNames(kind,key);
@@ -7750,7 +7810,7 @@ function _renderProjectWorkersSection() {
       const model=s.active_model||s.profile?.model||sessionConfiguredModel(s)||'';
       const title=s.task_name||s.preview||s.desc||'';
       const action=s.lifecycle==='expired'&&!registered.has(s.name)?'<button class="btn" onclick="resumeWorker(\''+escJs(s.name)+'\')">Resume worker</button>':'<button class="btn" onclick="openPeek(\''+escJs(s.name)+'\')">Open worker</button>';
-      html+='<article class="project-worker-row"><div class="project-worker-row-main"><strong>'+esc(s.name)+'</strong><span class="project-status-chip '+esc(s.lifecycle||'active')+'">'+esc(status)+'</span><span class="project-muted">'+esc(s.project)+(model?' · '+esc(model):'')+'</span></div>'+(title?'<p>'+esc(_projectClip(title,120))+'</p>':'')+action+'</article>';
+      html+='<article class="project-worker-row"><div class="project-worker-row-main">'+_wselBox(s.name)+'<strong>'+esc(s.name)+'</strong><span class="project-status-chip '+esc(s.lifecycle||'active')+'">'+esc(status)+'</span><span class="project-muted">'+esc(s.project)+(model?' · '+esc(model):'')+'</span></div>'+(title?'<p>'+esc(_projectClip(title,120))+'</p>':'')+action+'</article>';
     });
     if(!shown.length) html+='<p class="project-empty">No project workers match this search.</p>';
     html+='</div>';
@@ -7794,6 +7854,7 @@ function _renderReviewSection() {
       (s.tags || []).forEach(t => meta.push(`<span class="review-card-tag">#${esc(t)}</span>`));
       html += `<div class="review-card" data-session="${esc(s.name)}">
         <div class="review-card-top">
+          ${_wselBox(s.name)}
           <span class="review-card-name" onclick="openPeek('${esc(s.name)}')">${esc(s.name)}</span>
           ${model ? `<span class="review-card-chip model">${esc(model)}</span>` : ''}
           <span class="review-card-spacer"></span>
@@ -7847,6 +7908,7 @@ function _renderPausedSection() {
       (s.tags || []).forEach(t => meta.push(`<span class="paused-card-tag">#${esc(t)}</span>`));
       html += `<div class="paused-card" data-session="${esc(s.name)}">
         <div class="paused-card-top">
+          ${_wselBox(s.name)}
           <span class="paused-card-name" onclick="openPeek('${esc(s.name)}')">${esc(s.name)}</span>
           ${model ? `<span class="paused-card-chip model">${esc(model)}</span>` : ''}
           <span class="paused-card-spacer"></span>
@@ -7960,6 +8022,7 @@ function _renderExpiredSection() {
       const pending = _workerLifecyclePending.get(w.name);
       html += `<div class="paused-card" data-session="${esc(w.name)}">
         <div class="paused-card-top">
+          ${_wselBox(w.name)}
           <span class="paused-card-name">${esc(workerTitle)}</span>
           <span class="paused-card-chip model" style="opacity:0.6">${doneCt}/${total} done</span>
           <span class="paused-card-spacer"></span>
@@ -7994,6 +8057,10 @@ function toggleArchived() {
 }
 
 function _renderArchivedSection() {
+  _renderArchivedSectionBody();
+  _renderWorkerSelBar();
+}
+function _renderArchivedSectionBody() {
   const el = document.getElementById('archived-section');
   if (!el) return;
   const allArchived = sessions.filter(s => s.archived && !s.project);
@@ -8042,6 +8109,7 @@ function _renderArchivedSection() {
       (s.tags || []).forEach(t => meta.push(`<span class="archived-card-tag">#${esc(t)}</span>`));
       html += `<div class="archived-card" data-session="${esc(s.name)}">
         <div class="archived-card-top">
+          ${_wselBox(s.name)}
           <span class="archived-card-name" onclick="openPeek('${esc(s.name)}')">${esc(s.name)}</span>
           ${model ? `<span class="archived-card-chip model">${esc(model)}</span>` : ''}
           ${provider ? `<span class="archived-card-chip provider-${esc(provider)}">${esc(provider)}</span>` : ''}

@@ -18,11 +18,11 @@ export async function freePort() {
   return new Promise(res => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
 }
 
-export function request(base, method, p, body, timeoutMs = 30000) {
+export function request(base, method, p, body, timeoutMs = 30000, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     const r = https.request(base + p, { method, rejectUnauthorized: false, timeout: timeoutMs,
-      headers: { 'Content-Type': 'application/json', ...(data ? { 'Content-Length': data.length } : {}) } }, res => {
+      headers: { 'Content-Type': 'application/json', ...(data ? { 'Content-Length': data.length } : {}), ...extraHeaders } }, res => {
       let buf = ''; res.on('data', c => buf += c);
       res.on('end', () => { let j = {}; try { j = JSON.parse(buf || '{}'); } catch { j = { raw: buf }; } resolve({ status: res.statusCode, body: j }); });
     });
@@ -97,7 +97,7 @@ export async function startAmux({ binary, env: extra = {}, root } = {}) {
     }
   }
   return { get base() { return base; }, root, home, userHome, env, get port() { return port; }, serverLog, up, down, stop, tmux, fakeLog,
-    req: (m, p, b, t) => request(base, m, p, b, t) };
+    req: (m, p, b, t, h) => request(base, m, p, b, t, h) };
 }
 
 export function git(cwd, ...args) {
