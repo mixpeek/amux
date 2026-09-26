@@ -4100,23 +4100,105 @@ pub fn inspect_js(limit: usize, clear: bool) -> String {
 /// only when text was actually cut.
 const STATE_JS: &str = r#"
 (function(){
-  var SEL = 'a[href], button, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [onclick], [contenteditable="true"]';
-  var seen = [];
-  document.querySelectorAll(SEL).forEach(function(e){
-    var r = e.getBoundingClientRect();
-    if (!r.width && !r.height) return;
-    var st = getComputedStyle(e);
-    if (st.visibility === 'hidden' || st.display === 'none') return;
-    seen.push(e);
-  });
+  var SEL = 'a[href], button, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"], [role="combobox"], [role="textbox"], [onclick], [contenteditable="true"]';
+  // DOCUMENT GENERATION + OBSERVATION ID (grounded act). `gen` is minted once
+  // per document, so a navigation or reload gives a new one; the counter moves
+  // on every observation. /action with an `observation_id` refuses when either
+  // moved, so an index can never silently point at a different element after
+  // the page rerendered or navigated.
+  var gen = window.__amux_gen || (window.__amux_gen = Math.random().toString(36).slice(2, 10));
+  window.__amux_obs_n = (window.__amux_obs_n || 0) + 1;
+  var obs = gen + '.' + window.__amux_obs_n;
+  window.__amux_obs = obs;
+  var seen = [], meta = [], framesUnreachable = 0, shadowRoots = 0, frameCount = 0;
+  // Same-origin iframes and OPEN shadow roots are walked; a cross-origin frame
+  // cannot be read from page script and is COUNTED, never silently skipped.
+  function walk(root, frame, depth) {
+    var win = (root.ownerDocument || root).defaultView || window;
+    root.querySelectorAll(SEL).forEach(function(e){
+      var r = e.getBoundingClientRect();
+      if (!r.width && !r.height) return;
+      var st = win.getComputedStyle(e);
+      if (st.visibility === 'hidden' || st.display === 'none') return;
+      seen.push(e); meta.push(frame);
+    });
+    if (depth > 6) return;
+    root.querySelectorAll('*').forEach(function(h){
+      if (h.shadowRoot) { shadowRoots++; walk(h.shadowRoot, frame, depth + 1); }
+    });
+    root.querySelectorAll('iframe, frame').forEach(function(f, i){
+      frameCount++;
+      var d = null;
+      try { d = f.contentDocument; } catch (_) {}
+      if (!d || !d.documentElement) { framesUnreachable++; return; }
+      walk(d, frame.concat([f.getAttribute('name') || f.id || ('frame' + i)]), depth + 1);
+    });
+  }
+  walk(document, [], 0);
   window.__amux_els = seen;
+  window.__amux_meta = meta;
+  function frameOffset(e) {
+    var x = 0, y = 0, w = (e.ownerDocument && e.ownerDocument.defaultView) || window;
+    while (w && w !== window && w.frameElement) {
+      var fr = w.frameElement.getBoundingClientRect();
+      x += fr.left + w.frameElement.clientLeft; y += fr.top + w.frameElement.clientTop;
+      w = w.parent;
+    }
+    return [x, y];
+  }
+  function roleOf(e) {
+    var r = e.getAttribute('role');
+    if (r) return r;
+    var t = (e.tagName || '').toLowerCase(), ty = (e.getAttribute('type') || '').toLowerCase();
+    if (t === 'a') return 'link';
+    if (t === 'button' || t === 'summary') return 'button';
+    if (t === 'select') return 'combobox';
+    if (t === 'textarea') return 'textbox';
+    if (t === 'input') {
+      if (ty === 'checkbox' || ty === 'radio') return ty;
+      if (ty === 'submit' || ty === 'button' || ty === 'reset' || ty === 'image') return 'button';
+      if (ty === 'search') return 'searchbox';
+      if (ty === 'range') return 'slider';
+      return 'textbox';
+    }
+    if (e.isContentEditable) return 'textbox';
+    return 'generic';
+  }
+  function nameOf(e) {
+    var n = e.getAttribute('aria-label');
+    if (!n && e.getAttribute('aria-labelledby')) {
+      n = e.getAttribute('aria-labelledby').split(/\s+/).map(function(id){
+        var l = (e.ownerDocument || document).getElementById(id); return l ? l.innerText : '';
+      }).join(' ');
+    }
+    if (!n && e.labels && e.labels.length) n = e.labels[0].innerText;
+    n = n || e.getAttribute('alt') || e.innerText || e.getAttribute('title')
+        || (e.type !== 'password' ? e.value : '') || e.placeholder || e.getAttribute('name') || e.id || '';
+    return String(n).replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+  var vw = window.innerWidth, vh = window.innerHeight;
   var els = seen.slice(0, __EL_LIMIT__).map(function(e, i){
     var label = e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || e.name || e.id || '';
     label = String(label).replace(/\s+/g, ' ').trim().slice(0, 80);
-    return { index: i, tag: (e.tagName || '').toLowerCase(), label: label };
+    var r = e.getBoundingClientRect(), o = frameOffset(e);
+    var x = Math.round(r.left + o[0]), y = Math.round(r.top + o[1]);
+    var out = { index: i, ref: 'e' + i, tag: (e.tagName || '').toLowerCase(), label: label,
+                role: roleOf(e), name: nameOf(e),
+                rect: [x, y, Math.round(r.width), Math.round(r.height)],
+                in_viewport: x + r.width > 0 && y + r.height > 0 && x < vw && y < vh };
+    if (meta[i].length) out.frame = meta[i].join(' > ');
+    if (e.disabled || e.getAttribute('aria-disabled') === 'true') out.disabled = true;
+    if (e.type === 'checkbox' || e.type === 'radio') out.checked = !!e.checked;
+    else if (e.getAttribute('aria-checked')) out.checked = e.getAttribute('aria-checked') === 'true';
+    if (e.getAttribute('aria-expanded')) out.expanded = e.getAttribute('aria-expanded') === 'true';
+    if ((out.role === 'textbox' || out.role === 'searchbox' || out.role === 'combobox') && e.type !== 'password' && typeof e.value === 'string')
+      out.value = e.value.slice(0, 80);
+    return out;
   });
   return { url: location.href, title: document.title,
-           viewport: { w: window.innerWidth, h: window.innerHeight },
+           observation_id: obs,
+           document: { gen: gen, frames: frameCount, frames_unreachable: framesUnreachable, shadow_roots: shadowRoots },
+           viewport: { w: vw, h: vh },
            text: ((document.body && document.body.innerText) || '').slice(0, __TEXT_CAP__),
            elements: els,
            // NO SILENT CAPS (AMUX-3721). `seen` holds every visible match and is
@@ -4134,6 +4216,10 @@ const STATE_JS: &str = r#"
                 + 'so indices ' + els.length + '..' + (seen.length - 1) + ' work even though '
                 + 'they are not listed here. To find one, eval over window.__amux_els, or '
                 + 'click by CSS selector instead of index.')
+             : null,
+           frames_note: framesUnreachable
+             ? (framesUnreachable + ' cross-origin frame(s) could not be read from page script; '
+                + 'their elements are NOT in this list. Use a screenshot and click by x,y for those.')
              : null };
 })()
 "#;
@@ -4428,6 +4514,283 @@ pub async fn click_index(c: &mut CdpClient, index: usize) -> anyhow::Result<Valu
         o.insert("index".into(), json!(index));
     }
     Ok(v)
+}
+
+// ---- grounded act: observe -> act -> verify ------------------------------
+//
+// The old click path answered "OK" when `element.click()` RAN, which says
+// nothing about whether the page did anything, and it addressed elements by
+// an index that could point somewhere else after a rerender. A review of the
+// browser surface (2026-09-26) named both as the main gap for agents: the
+// model sees one thing and must act through another addressing scheme, and a
+// fired click reads the same as a working one.
+//
+// So a grounded click (a) resolves a `ref` from /state and refuses it when the
+// document or the observation it came from has moved on, (b) waits for the
+// element to stop moving, checks it is enabled and that nothing covers its
+// centre, (c) sends a REAL pointer click at that point, and (d) reports what
+// happened afterwards (`observed_effect`) separately from the dispatch, with an
+// optional caller-stated postcondition (`expect`).
+
+/// `e12` -> 12. The ref is the /state list position, spelled so it cannot be
+/// mistaken for a count.
+pub fn parse_ref(r: &str) -> Option<usize> {
+    r.trim().strip_prefix('e').and_then(|n| n.parse().ok())
+}
+
+/// Keys `expect` understands. Anything else is a 400 naming these, so a typo
+/// cannot read as a met expectation.
+pub const EXPECT_KEYS: &[&str] = &[
+    "url_contains", "url_changed", "text", "text_gone", "selector", "value", "timeout_ms",
+];
+
+pub fn validate_expect(expect: &Value) -> Result<(), String> {
+    let Some(o) = expect.as_object() else {
+        return Err("expect must be an object".into());
+    };
+    if o.is_empty() {
+        return Err(format!("expect is empty; give at least one of {}", EXPECT_KEYS[..6].join(", ")));
+    }
+    for k in o.keys() {
+        if !EXPECT_KEYS.contains(&k.as_str()) {
+            return Err(format!("unknown expect key {k:?} (supported: {})", EXPECT_KEYS.join(", ")));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve element `index` for a pointer click. Returns a JSON object whose
+/// `code` is OK, STALE_DOCUMENT, STALE_OBSERVATION, NOELEMENT, STALE,
+/// DISABLED or NOTVISIBLE. On OK it carries top-level viewport coordinates
+/// (frame offsets applied) and `obscured_by` when another element covers the
+/// centre.
+pub fn ground_js(index: usize, observation_id: Option<&str>) -> String {
+    let want = observation_id.map(|o| json!(o)).unwrap_or(Value::Null);
+    format!(
+        r#"(async function(){{
+  var want = {want}, gen = window.__amux_gen || '', cur = window.__amux_obs || '';
+  if (want) {{
+    if (String(want).split('.')[0] !== gen) return {{code:'STALE_DOCUMENT', current: cur}};
+    if (want !== cur) return {{code:'STALE_OBSERVATION', current: cur}};
+  }}
+  var e = (window.__amux_els || [])[{index}];
+  if (!e) return {{code:'NOELEMENT'}};
+  if (!e.isConnected) return {{code:'STALE'}};
+  if (e.disabled || e.getAttribute('aria-disabled') === 'true') return {{code:'DISABLED'}};
+  try {{ e.scrollIntoView({{block:'center', inline:'center'}}); }} catch (_) {{}}
+  var last = '', stable = 0, t0 = Date.now(), r;
+  while (Date.now() - t0 < 1500) {{
+    await new Promise(function(res){{ requestAnimationFrame(function(){{ res(); }}); setTimeout(res, 50); }});
+    r = e.getBoundingClientRect();
+    var k = [r.left, r.top, r.width, r.height].map(Math.round).join(',');
+    if (k === last) {{ if (++stable >= 2) break; }} else {{ stable = 0; last = k; }}
+  }}
+  r = e.getBoundingClientRect();
+  if (!r.width && !r.height) return {{code:'NOTVISIBLE'}};
+  var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  var doc = e.ownerDocument || document, root = e.getRootNode ? e.getRootNode() : doc;
+  var hit = root.elementFromPoint ? root.elementFromPoint(cx, cy) : doc.elementFromPoint(cx, cy);
+  function inside(h) {{ while (h) {{ if (h === e) return true; h = h.parentNode || h.host || null; }} return false; }}
+  var obscured = null;
+  if (hit && !inside(hit)) {{
+    var cls = (typeof hit.className === 'string' && hit.className.trim()) ? '.' + hit.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+    obscured = (hit.tagName || '').toLowerCase() + (hit.id ? '#' + hit.id : '') + cls
+      + ' "' + String(hit.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40) + '"';
+  }}
+  var x = 0, y = 0, w = doc.defaultView || window;
+  while (w && w !== window && w.frameElement) {{
+    var fr = w.frameElement.getBoundingClientRect();
+    x += fr.left + w.frameElement.clientLeft; y += fr.top + w.frameElement.clientTop; w = w.parent;
+  }}
+  return {{code:'OK', x: cx + x, y: cy + y, tag: (e.tagName || '').toLowerCase(),
+          name: String(e.getAttribute('aria-label') || e.innerText || e.value || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+          obscured_by: obscured, stable: stable >= 2}};
+}})()"#
+    )
+}
+
+/// Map a non-OK grounding code to (http status, body). STALE_* is a 409 the
+/// caller fixes by observing again; the rest are 400s about the element.
+pub fn ground_refusal(g: &Value, what: &str) -> Option<(u16, Value)> {
+    let code = g.get("code").and_then(Value::as_str).unwrap_or("");
+    let again = "call GET /api/browser/state again and act on its observation_id and refs";
+    Some(match code {
+        "OK" => return None,
+        "STALE_DOCUMENT" => (409, json!({"error": format!("{what} came from a document that is gone (the page navigated or reloaded)"), "code": "stale_document", "current_observation_id": g.get("current"), "hint": again})),
+        "STALE_OBSERVATION" => (409, json!({"error": format!("{what} came from an older observation; the element list was rebuilt since, so its refs may point elsewhere"), "code": "stale_observation", "current_observation_id": g.get("current"), "hint": again})),
+        "NOELEMENT" => (400, json!({"error": format!("no element matches {what}"), "code": "no_element", "hint": again})),
+        "STALE" => (409, json!({"error": format!("{what} is no longer in the page (it was removed or rerendered)"), "code": "stale_element", "hint": again})),
+        "DISABLED" => (409, json!({"error": format!("{what} is disabled"), "code": "disabled"})),
+        "NOTVISIBLE" => (400, json!({"error": format!("{what} has zero size (hidden or not laid out)"), "code": "not_visible"})),
+        _ => (502, json!({"error": format!("grounding {what} produced no result; the page may have navigated mid-call"), "raw": g})),
+    })
+}
+
+/// Snapshot taken just before a dispatch. Installs a mutation counter once
+/// per document so "did anything change" is a number, not a guess.
+pub const EFFECT_PRE_JS: &str = r#"(function(){
+  if (!window.__amux_gen) window.__amux_gen = Math.random().toString(36).slice(2, 10);
+  if (window.__amux_mc == null) window.__amux_mc = 0;
+  // One observer per root, counting into the top window. A document-level
+  // observer does not see inside shadow roots or iframes, so a click whose
+  // effect lands there would read as "nothing happened" without these.
+  function attach(root, depth) {
+    if (!root.__amux_mo) {
+      try {
+        root.__amux_mo = new MutationObserver(function(l){ window.__amux_mc += l.length; });
+        root.__amux_mo.observe(root, {subtree: true, childList: true, attributes: true, characterData: true});
+      } catch (_) {}
+    }
+    if (depth > 6) return;
+    root.querySelectorAll('*').forEach(function(h){ if (h.shadowRoot) attach(h.shadowRoot, depth + 1); });
+    root.querySelectorAll('iframe, frame').forEach(function(f){
+      var d = null; try { d = f.contentDocument; } catch (_) {}
+      if (d && d.documentElement) attach(d, depth + 1);
+    });
+  }
+  attach(document, 0);
+  return {url: location.href, title: document.title, gen: window.__amux_gen, mc: window.__amux_mc};
+})()"#;
+
+fn effect_post_js(expect: &Value, index: Option<usize>) -> String {
+    let idx = index.map(|i| i.to_string()).unwrap_or_else(|| "null".into());
+    format!(
+        r#"(function(){{
+  var E = {e}, I = {idx}, body = (document.body && document.body.innerText) || '';
+  var res = {{url: location.href, title: document.title, gen: window.__amux_gen || '', mc: window.__amux_mc || 0, ready: document.readyState}};
+  if (E.text != null) res.text = body.indexOf(String(E.text)) >= 0;
+  if (E.text_gone != null) res.text_gone = body.indexOf(String(E.text_gone)) < 0;
+  if (E.selector != null) {{
+    var q = null; try {{ q = document.querySelector(String(E.selector)); }} catch (_) {{}}
+    var b = q && q.getBoundingClientRect(); res.selector = !!(b && (b.width || b.height));
+  }}
+  if (E.value != null && I !== null) {{ var t = (window.__amux_els || [])[I]; res.value = t && 'value' in t ? String(t.value) : null; }}
+  return res;
+}})()"#,
+        e = expect
+    )
+}
+
+/// Which stated conditions hold in `post`, given `pre`. `timeout_ms` is not a
+/// condition.
+pub fn expect_results(expect: &Value, pre: &Value, post: &Value) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    let Some(o) = expect.as_object() else { return out };
+    let url = post.get("url").and_then(Value::as_str).unwrap_or("");
+    for (k, v) in o {
+        let met = match k.as_str() {
+            "url_contains" => v.as_str().is_some_and(|n| url.contains(n)),
+            "url_changed" => (url != pre.get("url").and_then(Value::as_str).unwrap_or("")) == v.as_bool().unwrap_or(true),
+            "text" | "text_gone" | "selector" => post.get(k).and_then(Value::as_bool).unwrap_or(false),
+            "value" => match (post.get("value").and_then(Value::as_str), v.as_str()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            },
+            _ => continue,
+        };
+        out.insert(k.clone(), json!(met));
+    }
+    out
+}
+
+/// What visibly happened between `pre` and `post`, whether or not the caller
+/// stated an expectation.
+pub fn observed_effect(pre: &Value, post: Option<&Value>) -> Value {
+    let Some(post) = post else {
+        return json!({"navigating": true, "none_observed": false,
+                      "note": "the page did not answer after the action; it is most likely mid-navigation"});
+    };
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let navigated = s(pre, "gen") != s(post, "gen");
+    let url_changed = s(pre, "url") != s(post, "url");
+    let title_changed = s(pre, "title") != s(post, "title");
+    let mutations = if navigated {
+        Value::Null
+    } else {
+        json!(post.get("mc").and_then(Value::as_i64).unwrap_or(0) - pre.get("mc").and_then(Value::as_i64).unwrap_or(0))
+    };
+    let none = !navigated && !url_changed && !title_changed && mutations.as_i64() == Some(0);
+    json!({"navigated": navigated, "url_changed": url_changed, "url": s(post, "url"),
+           "title_changed": title_changed, "dom_mutations": mutations, "none_observed": none})
+}
+
+/// Read the post-action state until `expect` holds or the time runs out. With
+/// no expectation it settles briefly and reads once, so `observed_effect` is
+/// still reported. Evals that fail (a navigation tears the context down) are
+/// retried, never read as success.
+pub async fn verify_effect(
+    c: &mut CdpClient,
+    pre: &Value,
+    expect: Option<&Value>,
+    index: Option<usize>,
+) -> Value {
+    let started = std::time::Instant::now();
+    let empty = json!({});
+    let exp = expect.unwrap_or(&empty);
+    let budget_ms = if expect.is_some() {
+        exp.get("timeout_ms").and_then(Value::as_u64).unwrap_or(3000).clamp(100, 15000)
+    } else {
+        600
+    };
+    let js = effect_post_js(exp, index);
+    let mut post: Option<Value> = None;
+    let mut results = serde_json::Map::new();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(if expect.is_some() { 150 } else { budget_ms })).await;
+        if let Ok(v) = c.eval(&js, 5).await {
+            if v.is_object() {
+                results = expect_results(exp, pre, &v);
+                post = Some(v);
+            }
+        }
+        let all_met = expect.is_some() && !results.is_empty() && results.values().all(|b| b == &json!(true));
+        if expect.is_none() && post.is_some() {
+            break;
+        }
+        if all_met || started.elapsed().as_millis() as u64 >= budget_ms {
+            break;
+        }
+    }
+    let waited = started.elapsed().as_millis() as u64;
+    let effect = observed_effect(pre, post.as_ref());
+    let mut out = json!({"observed_effect": effect, "waited_ms": waited});
+    if expect.is_some() {
+        let unmet: Vec<&String> = results.iter().filter(|(_, v)| *v != &json!(true)).map(|(k, _)| k).collect();
+        let met = post.is_some() && unmet.is_empty();
+        out["expect"] = json!({"met": met, "results": results, "unmet": unmet, "timeout_ms": budget_ms,
+            "timeout_reason": if met { Value::Null } else if post.is_none() {
+                json!("the page never answered after the action (still navigating?)")
+            } else {
+                json!(format!("not met within {budget_ms}ms: {}", unmet.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")))
+            }});
+    }
+    out
+}
+
+/// Grounded pointer click on /state element `index`. Returns `Ok(Err((status,
+/// body)))` for a refusal the caller can act on, `Err` for a transport fault.
+pub async fn click_grounded(
+    c: &mut CdpClient,
+    index: usize,
+    observation_id: Option<&str>,
+    force: bool,
+    what: &str,
+) -> anyhow::Result<Result<Value, (u16, Value)>> {
+    let g = c.eval(&ground_js(index, observation_id), 20).await?;
+    if let Some(refusal) = ground_refusal(&g, what) {
+        return Ok(Err(refusal));
+    }
+    if let (Some(by), false) = (g.get("obscured_by").and_then(Value::as_str), force) {
+        return Ok(Err((409, json!({
+            "error": format!("{what} is covered at its centre by {by}"),
+            "code": "obscured", "obscured_by": by,
+            "hint": "close the overlay or dialog first, or pass force:true to click the point anyway"
+        }))));
+    }
+    let (x, y) = (g["x"].as_f64().unwrap_or(0.0), g["y"].as_f64().unwrap_or(0.0));
+    click_xy(c, x, y).await?;
+    Ok(Ok(json!({"ref": format!("e{index}"), "tag": g["tag"], "name": g["name"],
+                 "x": x.round(), "y": y.round(), "stable": g["stable"], "obscured_by": g["obscured_by"]})))
 }
 
 /// Navigate the page and wait (bounded) for `document.readyState` to reach
@@ -6222,6 +6585,52 @@ mod tests {
     }
 
     #[test]
+    fn grounded_act_refs_and_expectations() {
+        assert_eq!(parse_ref("e12"), Some(12));
+        assert_eq!(parse_ref(" e0 "), Some(0));
+        assert_eq!(parse_ref("12"), None);
+        assert_eq!(parse_ref("ex"), None);
+        // An unknown expect key is refused by name, so a typo can never read
+        // as a met condition.
+        assert!(validate_expect(&json!({"url_contains": "/done"})).is_ok());
+        assert!(validate_expect(&json!({"urlcontains": "/done"})).unwrap_err().contains("urlcontains"));
+        assert!(validate_expect(&json!({})).is_err());
+        assert!(validate_expect(&json!("x")).is_err());
+        let pre = json!({"url": "https://a/1", "title": "A", "gen": "g1", "mc": 5});
+        // Same document, nothing changed: the one case that must say so.
+        let same = json!({"url": "https://a/1", "title": "A", "gen": "g1", "mc": 5});
+        let e = observed_effect(&pre, Some(&same));
+        assert_eq!(e["none_observed"], json!(true));
+        assert_eq!(e["dom_mutations"], json!(0));
+        // DOM changed in place.
+        let dom = json!({"url": "https://a/1", "title": "A", "gen": "g1", "mc": 9});
+        let e = observed_effect(&pre, Some(&dom));
+        assert_eq!((e["none_observed"].clone(), e["dom_mutations"].clone()), (json!(false), json!(4)));
+        // New document: mutations are not comparable across documents.
+        let nav = json!({"url": "https://a/2", "title": "B", "gen": "g2", "mc": 0});
+        let e = observed_effect(&pre, Some(&nav));
+        assert_eq!((e["navigated"].clone(), e["dom_mutations"].clone()), (json!(true), Value::Null));
+        // No answer at all is "navigating", never "nothing happened".
+        let e = observed_effect(&pre, None);
+        assert_eq!((e["navigating"].clone(), e["none_observed"].clone()), (json!(true), json!(false)));
+        let r = expect_results(&json!({"url_contains": "/2", "url_changed": true, "text": "hi", "timeout_ms": 5}), &pre,
+            &json!({"url": "https://a/2", "text": false}));
+        assert_eq!(r.get("url_contains"), Some(&json!(true)));
+        assert_eq!(r.get("url_changed"), Some(&json!(true)));
+        assert_eq!(r.get("text"), Some(&json!(false)));
+        assert!(!r.contains_key("timeout_ms"));
+        // Stale refs are 409s that point back at /state; OK is not a refusal.
+        assert!(ground_refusal(&json!({"code": "OK"}), "ref e1").is_none());
+        let (code, body) = ground_refusal(&json!({"code": "STALE_OBSERVATION", "current": "g.3"}), "ref e1").unwrap();
+        assert_eq!((code, body["code"].clone(), body["current_observation_id"].clone()), (409, json!("stale_observation"), json!("g.3")));
+        assert_eq!(ground_refusal(&json!({"code": "STALE_DOCUMENT"}), "ref e1").unwrap().0, 409);
+        assert_eq!(ground_refusal(&Value::Null, "ref e1").unwrap().0, 502);
+        let js = ground_js(3, Some("abc.2"));
+        assert!(js.contains("[3]") && js.contains("\"abc.2\""), "{js}");
+        assert!(ground_js(0, None).contains("var want = null"));
+    }
+
+    #[test]
     fn js_blob_substitution() {
         let js = inspect_js(300, true);
         assert!(js.contains("var L = 300;"));
@@ -6250,6 +6659,9 @@ mod tests {
             "elements_truncated",
             "elements_note",
             "seen.length > els.length",
+            "observation_id",
+            "frames_unreachable",
+            "ref: 'e' + i",
         ] {
             assert!(
                 js.contains(f),

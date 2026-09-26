@@ -3152,14 +3152,28 @@ async fn action_inner(
     let mut viewport_wh: Option<(u32, u32)> = None;
     match action.as_str() {
         "click" => {
-            if get_str("selector").is_none()
+            if get_str("ref").is_none()
+                && get_str("selector").is_none()
                 && get_usize("index").is_none()
                 && !(get_f64("x").is_some() && get_f64("y").is_some())
             {
                 return err(
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "click needs selector, index, or x,y" }),
+                    json!({ "error": "click needs ref (from GET /api/browser/state), selector, index, or x,y" }),
                 );
+            }
+            if let Some(r) = get_str("ref") {
+                if chrome::parse_ref(&r).is_none() {
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": format!("ref {r:?} is not an element ref; refs look like e12 and come from GET /api/browser/state") }),
+                    );
+                }
+            }
+            if let Some(e) = body.get("expect") {
+                if let Err(error) = chrome::validate_expect(e) {
+                    return err(StatusCode::BAD_REQUEST, json!({ "error": error }));
+                }
             }
         }
         "eval" => {
@@ -3174,10 +3188,11 @@ async fn action_inner(
             }
         }
         "input" => {
-            if get_usize("index").is_none() || get_str("text").is_none() {
+            let has_ref = get_str("ref").and_then(|r| chrome::parse_ref(&r)).is_some();
+            if (get_usize("index").is_none() && !has_ref) || get_str("text").is_none() {
                 return err(
                     StatusCode::BAD_REQUEST,
-                    json!({ "error": "input needs index and text" }),
+                    json!({ "error": "input needs ref (or index) and text" }),
                 );
             }
         }
@@ -3266,27 +3281,77 @@ async fn action_inner(
 
     let response = match action.as_str() {
         "click" => {
-            let out = if let Some(sel) = get_str("selector") {
-                // Selector first, matching Python's precedence (AMUX-2272).
-                chrome::click_selector(&mut cdp, &sel).await
-            } else if let Some(i) = get_usize("index") {
-                chrome::click_index(&mut cdp, i).await
+            // GROUNDED path: a ref (or an index carrying its observation_id)
+            // gets the stale check, the stability/hit test and a real pointer
+            // click. The legacy selector/index/x,y paths keep their behaviour
+            // but now report what the click did, too.
+            let obs = get_str("observation_id");
+            let grounded_index = get_str("ref")
+                .and_then(|r| chrome::parse_ref(&r))
+                .or_else(|| obs.as_ref().and(get_usize("index")));
+            let expect = body.get("expect").cloned();
+            let pre = cdp.eval(chrome::EFFECT_PRE_JS, 10).await.unwrap_or(Value::Null);
+            let dispatched: Result<Result<Value, (u16, Value)>, anyhow::Error> = if let Some(i) = grounded_index {
+                let what = match get_str("ref") { Some(r) => format!("ref {r}"), None => format!("element index {i}") };
+                chrome::click_grounded(
+                    &mut cdp, i, obs.as_deref(),
+                    body.get("force").and_then(Value::as_bool).unwrap_or(false), &what,
+                ).await.map(|r| r.map(|clicked| json!({ "ok": true, "dispatched": true, "method": "pointer", "clicked": clicked })))
             } else {
-                let (x, y) = (get_f64("x").unwrap_or(0.0), get_f64("y").unwrap_or(0.0));
-                chrome::click_xy(&mut cdp, x, y)
-                    .await
-                    .map(|()| json!({ "ok": true, "clicked": { "x": x, "y": y } }))
+                let out = if let Some(sel) = get_str("selector") {
+                    chrome::click_selector(&mut cdp, &sel).await
+                } else if let Some(i) = get_usize("index") {
+                    chrome::click_index(&mut cdp, i).await
+                } else {
+                    let (x, y) = (get_f64("x").unwrap_or(0.0), get_f64("y").unwrap_or(0.0));
+                    chrome::click_xy(&mut cdp, x, y)
+                        .await
+                        .map(|()| json!({ "ok": true, "clicked": { "x": x, "y": y } }))
+                };
+                out.map(|v| if v.get("error").is_some() { Err((400, v)) } else {
+                    let mut v = v;
+                    v["dispatched"] = json!(true);
+                    v["method"] = json!(if get_str("selector").is_some() || get_usize("index").is_some() { "element.click" } else { "pointer" });
+                    Ok(v)
+                })
             };
-            match out {
-                Ok(v) if v.get("error").is_some() => err(StatusCode::BAD_REQUEST, v),
-                Ok(v) => Json(v).into_response(),
-                // AMUX-98: a malformed selector (e.g. Playwright-style
-                // `text=...` reaching a native `querySelector`) throws
-                // INSIDE click_selector's own eval, before click_outcome
-                // ever sees a NOELEMENT/NOTVISIBLE/STALE string to classify
-                // — so this arm used to blanket-502 the caller's own typo.
-                // cdp_status now tells that PageException apart from a real
-                // transport failure by TYPE.
+            match dispatched {
+                Ok(Ok(mut v)) => {
+                    let verify = chrome::verify_effect(&mut cdp, &pre, expect.as_ref(), grounded_index.or(get_usize("index"))).await;
+                    let effect = verify["observed_effect"].clone();
+                    let met = verify.pointer("/expect/met").and_then(Value::as_bool);
+                    v["observed_effect"] = effect.clone();
+                    v["waited_ms"] = verify["waited_ms"].clone();
+                    if let Some(e) = verify.get("expect") { v["expect"] = e.clone(); }
+                    let kind = if effect["navigated"] == json!(true) { "navigated" }
+                        else if effect["url_changed"] == json!(true) { "url_changed" }
+                        else if effect["none_observed"] == json!(true) { "none_observed" }
+                        else if effect["navigating"] == json!(true) { "navigating" }
+                        else { "dom_changed" };
+                    let method = v["method"].as_str().unwrap_or("").to_string();
+                    tracing::info!(session = %session, verdict = "browser_act", method = %method,
+                        effect = kind, expect_met = ?met, measured = true, n_considered = 1,
+                        "browser click dispatched; effect {kind}");
+                    if body.get("observe_after").and_then(Value::as_bool).unwrap_or(false) {
+                        if let Ok(next) = state_payload(&mut cdp, &session).await { v["next"] = next; }
+                    }
+                    if met == Some(false) {
+                        v["ok"] = json!(false);
+                        v["error"] = v.pointer("/expect/timeout_reason").cloned().unwrap_or(json!("expectation not met"));
+                        let unmet = v.pointer("/expect/unmet").cloned().unwrap_or_default().to_string();
+                        tracing::warn!(session = %session, verdict = "browser_expect_unmet", measured = true, n_considered = 1,
+                            unmet = %unmet, "click dispatched but its stated postcondition did not hold");
+                        err(StatusCode::UNPROCESSABLE_ENTITY, v)
+                    } else {
+                        Json(v).into_response()
+                    }
+                }
+                Ok(Err((code, v))) => {
+                    let refusal = v.get("code").and_then(Value::as_str).unwrap_or("error").to_string();
+                    tracing::warn!(session = %session, verdict = "browser_act_refused", code = %refusal,
+                        measured = true, n_considered = 1, "browser click refused before dispatch");
+                    err(StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST), v)
+                }
                 Err(e) => err(cdp_status(&e), json!({ "error": with_cause(&e) })),
             }
         }
@@ -3304,8 +3369,29 @@ async fn action_inner(
             }
         }
         "input" => {
-            let idx = get_usize("index").unwrap_or(0);
+            let idx = get_str("ref")
+                .and_then(|r| chrome::parse_ref(&r))
+                .or(get_usize("index"))
+                .unwrap_or(0);
             let text = get_str("text").unwrap_or_default();
+            // Same staleness rule as a grounded click: an observation_id that
+            // no longer describes this document's list is refused, not guessed.
+            if let Some(obs) = get_str("observation_id") {
+                let check = format!(
+                    "(function(){{var w={o},g=window.__amux_gen||'',c=window.__amux_obs||'';\
+                     if(String(w).split('.')[0]!==g)return {{code:'STALE_DOCUMENT',current:c}};\
+                     if(w!==c)return {{code:'STALE_OBSERVATION',current:c}};return {{code:'OK'}};}})()",
+                    o = json!(obs)
+                );
+                match cdp.eval(&check, 10).await {
+                    Ok(g) => {
+                        if let Some((code, v)) = chrome::ground_refusal(&g, &format!("element e{idx}")) {
+                            audited_return!(err(StatusCode::from_u16(code).unwrap_or(StatusCode::CONFLICT), v));
+                        }
+                    }
+                    Err(e) => audited_return!(err(cdp_status(&e), json!({ "error": with_cause(&e) }))),
+                }
+            }
             // Focus + clear element[idx] of the /state list, then type.
             let js = format!(
                 "(function(){{var els=window.__amux_els||[];var e=els[{idx}];\
@@ -3329,8 +3415,26 @@ async fn action_inner(
                 .call("Input.insertText", json!({ "text": text }), ten)
                 .await
             {
-                Ok(_) => Json(json!({ "ok": true, "index": idx, "typed": text.chars().count() }))
-                    .into_response(),
+                Ok(_) => {
+                    // VERIFY, do not assume: a framework can reject or rewrite
+                    // what was typed (masking, maxlength, a controlled input
+                    // that resets). Read the field back and say whether it holds
+                    // the text.
+                    let back = cdp
+                        .eval(&format!("(function(){{var e=(window.__amux_els||[])[{idx}];return e&&('value' in e)?String(e.value):(e?String(e.innerText||''):null);}})()"), 10)
+                        .await
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string));
+                    let holds = back.as_deref().map(|b| b.contains(&text));
+                    if holds == Some(false) {
+                        tracing::warn!(session = %session, verdict = "browser_input_not_held", measured = true, n_considered = 1,
+                            "typed into e{idx} but the field does not contain the text afterwards");
+                    }
+                    Json(json!({ "ok": true, "index": idx, "ref": format!("e{idx}"), "typed": text.chars().count(),
+                                 "observed_effect": { "value_holds_text": holds,
+                                     "value_chars": back.as_ref().map(|b| b.chars().count()) } }))
+                        .into_response()
+                }
                 Err(e) => err(cdp_status(&e), json!({ "error": with_cause(&e) })),
             }
         }
@@ -3982,11 +4086,16 @@ fn catalog_body(path: &str) -> Response {
                 "GET /api/browser/import/discover (scan for installed browsers and their profiles)",
                 "POST /api/browser/import (import cookies from a browser profile)",
             ],
-            "actions": ["click (selector|index|x,y)", "type", "input", "key",
+            "actions": ["click (ref + observation_id from /state [grounded pointer click], or selector|index|x,y; optional expect, force, observe_after)",
+                        "type", "input (ref or index, + text; reads the field back)", "key",
                         "scroll", "eval", "wait", "extract", "back",
                         "viewport (width+height, or device=iphone|iphone-se|ipad|desktop)",
                         "files (selector + files[]: absolute paths, sets an <input type=file>)"],
             "eval_contract": "script must be a bare EXPRESSION; a `return` statement yields null",
+            "grounded_act": "GET /api/browser/state returns observation_id and elements with ref, role, name, frame, rect and state. \
+POST /api/browser/action {action:click, ref, observation_id, expect:{url_contains|url_changed|text|text_gone|selector|value, timeout_ms}} \
+refuses a stale ref (409 stale_document/stale_observation), a disabled or covered element (409 disabled/obscured; force:true clicks the point anyway), \
+sends a real pointer click, and reports dispatched separately from observed_effect. An unmet expect is a 422 naming what did not hold.",
         })),
     )
         .into_response()
@@ -5435,10 +5544,15 @@ mod tests {
         let app = app();
         for (body, needle) in [
             (r#"{"action":"click"}"#, "selector, index, or x,y"),
+            // Grounded act: a malformed ref and an unknown expect key are
+            // caller mistakes named before any browser is touched.
+            (r#"{"action":"click","ref":"12"}"#, "not an element ref"),
+            (r#"{"action":"click","ref":"e1","expect":{"urlcontains":"x"}}"#, "unknown expect key"),
+            (r#"{"action":"click","ref":"e1","expect":{}}"#, "expect is empty"),
             (r#"{"action":"eval"}"#, "script required"),
             (
                 r#"{"action":"input","text":"x"}"#,
-                "input needs index and text",
+                "input needs ref (or index) and text",
             ),
             (r#"{"action":"key","key":"F13"}"#, "unsupported key"),
             (

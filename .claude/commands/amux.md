@@ -416,7 +416,22 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 # Screenshot (returns JSON with path — use Read tool to view)
 curl -sk $AMUX_URL/api/browser/screenshot
 
-# Actions: click, type, key, scroll, eval
+# Observe: elements with ref, role, name, frame, rect and state, plus an observation_id
+curl -sk -H "X-Amux-Session: $AMUX_SESSION" $AMUX_URL/api/browser/state
+
+# Grounded click (preferred): act on a ref from that observation and say what should happen.
+# 409 stale_document/stale_observation -> observe again. 409 disabled/obscured -> fix the page
+# (force:true clicks the point anyway). 422 -> dispatched, but `expect` did not hold.
+# Every click reports `observed_effect` (navigated, url_changed, dom_mutations, none_observed).
+curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $AMUX_SESSION" \
+  -d '{"action":"click","ref":"e12","observation_id":"<from /state>","expect":{"url_contains":"/done","timeout_ms":5000}}' \
+  $AMUX_URL/api/browser/action
+# expect keys: url_contains, url_changed, text, text_gone, selector, value, timeout_ms
+# Fill a field by ref; the reply says whether the field holds the text afterwards
+curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $AMUX_SESSION" \
+  -d '{"action":"input","ref":"e5","observation_id":"<from /state>","text":"hello"}' $AMUX_URL/api/browser/action
+
+# Fallbacks: selector, index, or coordinates (for cross-origin frames and canvas)
 curl -sk -X POST -H 'Content-Type: application/json' \
   -d '{"action":"click","x":640,"y":400}' $AMUX_URL/api/browser/action
 
