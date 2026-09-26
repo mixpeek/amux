@@ -178,3 +178,35 @@ test('the GLOBAL tab customizer opens and its rows are visible on screen', async
 
   await page.screenshot({ path: `../test-results/tabcust-global-${info.project.name}.png` });
 });
+
+// DASHBOARD ZOOM (Ethan, 2026-09-26: "i click this it doesnt appear"). The
+// desktop zoom setting puts CSS `zoom` on <html>, and an inline left/top on the
+// fixed menu is multiplied by it while the button's rect is not. At 120% the
+// menu drew at x=1333 in a 1280px window, which is exactly what his
+// tabcust-geo beacons recorded. Every test above runs at 100%, where the two
+// coordinate systems coincide, so none of them could see it. Touch devices
+// scale font-size instead of zoom, so this only applies with a fine pointer.
+for (const zoom of [90, 120, 150]) {
+  test(`the tab customizer hangs under its button at ${zoom}% dashboard zoom`, async ({ page }) => {
+    const coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);
+    test.skip(coarse, 'touch devices scale font-size, not CSS zoom');
+    const vp = page.viewportSize()!;
+    test.skip(vp.width <= 600, 'the phone layout is a bottom sheet with no anchor');
+    await page.addInitScript(z => localStorage.setItem('amux_zoom', String(z)), zoom);
+    await openPeek(page);
+    await page.locator('#peek-tab-customize').click();
+    await expect(page.locator('#peek-tab-customizer-menu')).toBeVisible();
+    const g = await page.evaluate(() => {
+      const b = document.getElementById('peek-tab-customize')!.getBoundingClientRect();
+      const m = document.getElementById('peek-tab-customizer-menu')!.getBoundingClientRect();
+      return { b: [b.left, b.top, b.right, b.bottom], m: [m.left, m.top, m.right, m.bottom], vw: innerWidth, vh: innerHeight };
+    });
+    const [ml, mt, mr] = g.m;
+    expect(ml, `menu off-screen left: ${JSON.stringify(g)}`).toBeGreaterThanOrEqual(0);
+    expect(mr, `menu off-screen right: ${JSON.stringify(g)}`).toBeLessThanOrEqual(g.vw);
+    expect(mt, `menu below the fold: ${JSON.stringify(g)}`).toBeLessThan(g.vh);
+    // Same presentation as the worker-list ⊞: right edge under the button's.
+    expect(Math.abs(mr - g.b[2]), `menu not aligned under ⊞: ${JSON.stringify(g)}`).toBeLessThan(6);
+    expect(Math.abs(mt - g.b[3]), `menu not directly under ⊞: ${JSON.stringify(g)}`).toBeLessThan(12);
+  });
+}

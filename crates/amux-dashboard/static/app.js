@@ -7542,36 +7542,44 @@ function _watchPeekTabAnchor(on) {
 function _placePeekTabCustomizer() {
   const menu = document.getElementById('peek-tab-customizer-menu');
   const btn = document.getElementById('peek-tab-customize');
-  if (menu && btn) {
-    {
-      const r = btn.getBoundingClientRect();
-      const vw = document.documentElement.clientWidth || window.innerWidth;
-      const vh = document.documentElement.clientHeight || window.innerHeight;
-      const PAD = 8;
-      const mw = menu.offsetWidth || 230;
-      // LEFT-ANCHORED under the button (Ethan, 2026-08-14: "fixed to the left
-      // dropdown ... always visible on the screen"), then clamped so the right
-      // edge can never leave the viewport. Both clamps use the MEASURED width.
-      // NEUTRALISE `right` FIRST. .tab-customizer-menu sets `right: 0` (app.css),
-      // and this menu carries that class as well as its id, so an inline `left`
-      // alone does not anchor it — with left AND right both set and width:auto the
-      // box is pinned to the right edge and stretched, which is why it kept landing
-      // on the far side of the screen from its button no matter what `left` said.
-      // Setting right:auto is what makes `left` authoritative.
-      menu.style.right = 'auto';
-      menu.style.width = 'auto';
-      let left = Math.min(r.left, vw - mw - PAD);
-      if (left < PAD) left = PAD;
-      menu.style.left = left + 'px';
-      // Vertical: keep it on screen too. Cap the height to what is actually below
-      // the button and let the list scroll, rather than letting 15 rows run off
-      // the bottom where the last ones are unreachable.
-      const top = r.bottom + 4;
-      menu.style.top = top + 'px';
-      menu.style.maxHeight = Math.max(120, vh - top - PAD) + 'px';
-      menu.style.overflowY = 'auto';
+  if (!menu || !btn) return;
+  // ZOOM (Ethan, 2026-09-26: "i click this it doesnt appear"). The desktop
+  // zoom setting puts CSS `zoom` on <html>. Rects come back in SCREEN pixels,
+  // but an inline left/top on this fixed menu is multiplied by the zoom when
+  // it renders. So at 120% a left of 1111 drew at 1333 in a 1280px window,
+  // fully off-screen (his tabcust-geo beacons: l=1333 and l=1444 at winW
+  // 1280). Everything below is computed in screen pixels and divided by the
+  // zoom only when written.
+  const z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+  const r = btn.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const PAD = 8;
+  // NEUTRALISE `right` FIRST: .tab-customizer-menu sets `right: 0`, and with
+  // both left and right set the box stretches to the right edge.
+  menu.style.right = 'auto';
+  menu.style.width = 'auto';
+  const mw = (menu.offsetWidth || 230) * z;
+  // RIGHT-ALIGNED under the button, the same way the worker-list customizer
+  // hangs from its ⊞, then clamped so neither edge leaves the viewport.
+  let left = Math.min(r.right - mw, vw - mw - PAD);
+  if (left < PAD) left = PAD;
+  const top = r.bottom + 2;
+  menu.style.left = (left / z) + 'px';
+  menu.style.top = (top / z) + 'px';
+  // Cap the height to what is below the button and let the list scroll, so
+  // the last rows are never past the fold.
+  menu.style.maxHeight = (Math.max(120, vh - top - PAD) / z) + 'px';
+  menu.style.overflowY = 'auto';
+  // Surface a miss rather than trusting the arithmetic: if the menu still lands
+  // off-screen, say so in the server log (client-debug beacon).
+  try {
+    const m = menu.getBoundingClientRect();
+    if (m.width && (m.right > vw + 1 || m.left < -1 || m.top > vh)) {
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'tabcust-offscreen', ver: APP_VER, zoom: z, vw, vh,
+          menu: [Math.round(m.left), Math.round(m.top), Math.round(m.right), Math.round(m.bottom)] }) }).catch(() => {});
     }
-  }
+  } catch (e) {}
 }
 function _renderPeekTabCustomizer() {
   const menu = document.getElementById('peek-tab-customizer-menu');
@@ -12149,7 +12157,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1122';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1123';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
