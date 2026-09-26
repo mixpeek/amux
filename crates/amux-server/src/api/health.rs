@@ -899,6 +899,10 @@ pub async fn debug_tmux() -> axum::Json<serde_json::Value> {
             "pane_capture_timeouts": pane_timeouts,
             "pane_capture_last_timeout": pane_last,
             "pane_capture_last_timeout_detail": crate::api::sessions_legacy::PANE_CAPTURE_LAST_TIMEOUT_DETAIL.lock().ok().and_then(|last| last.clone()),
+            // MO-3622: how many tmux processes the backend starts, per window.
+            // A reconcile that probed every session once cost 26 spawns/s and
+            // left no trace; `last_window.top_verbs` names the loop.
+            "tmux_spawns": crate::backend::tmux::tmux_spawn_stats(),
             "pane_capture_note": "captures killed on AMUX_PANE_CAPTURE_TIMEOUT_S (default 3s). \
                                   In-memory, so a restart resets it; a non-zero count means \
                                   a probe missed its deadline and some lane previews may be missing. \
@@ -924,7 +928,8 @@ pub async fn debug_tmux() -> axum::Json<serde_json::Value> {
                 "socket_ownership": socket_ownership,
                 "pane_capture_timeouts": pane_timeouts,
                 "pane_capture_last_timeout": pane_last,
-                "pane_capture_last_timeout_detail": crate::api::sessions_legacy::PANE_CAPTURE_LAST_TIMEOUT_DETAIL.lock().ok().and_then(|last| last.clone())
+                "pane_capture_last_timeout_detail": crate::api::sessions_legacy::PANE_CAPTURE_LAST_TIMEOUT_DETAIL.lock().ok().and_then(|last| last.clone()),
+                "tmux_spawns": crate::backend::tmux::tmux_spawn_stats()
             }),
             "tmux could not be spawned or did not answer within 3s; the fleet was never listed",
         ),

@@ -7,7 +7,7 @@
 //!   `set-option remain-on-exit on`, then `send-keys -l` + Enter
 //! - terminate  -> `kill-session -t '=<ref>'`
 //! - status     -> `has-session` then `list-panes #{pane_dead}...`
-//! - reconcile  -> `list-sessions -F '#{session_name}'`, `amux-` prefix only
+//! - reconcile  -> ONE `list-panes -a` census, `amux-` prefix only (MO-3622)
 //! - capture    -> `capture-pane -p -S -<lines>`
 //!
 //! Every tmux target string is built by exactly two helpers below —
@@ -27,6 +27,154 @@ use super::{
 /// the server is wedged and we want the error, not the hang.
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// ---------------------------------------------------------------------------
+// Spawn accounting (MO-3622).
+//
+// Every `TmuxBackend` verb is a PROCESS SPAWN, and on macOS each spawn also
+// wakes trustd, syspolicyd and XProtect. `reconcile` used to cost 1 + 2N spawns
+// per pass and the bootstrap loop runs it every 2s: 26 spawns/s at N=28, half
+// of everything amux-server-rs forks, while the 15-minute load read 167% of the
+// machine's cores. Nothing in the logs could say so, because a spawn leaves no
+// trace once it exits. This is that trace: a rolling window, a per-verb tally,
+// and a WARN when the rate stays high.
+//
+// SCOPE, stated so the number is not read as more than it is: it counts what
+// `TmuxBackend::run` starts. Peek captures and the session-verb helpers spawn
+// tmux from their own call sites and are NOT in this count.
+// ---------------------------------------------------------------------------
+
+/// How long a rate is averaged over before it is reported and reset.
+const SPAWN_WINDOW: Duration = Duration::from_secs(60);
+/// WARN above this many `TmuxBackend` spawns per second, averaged over a
+/// window. Steady state after MO-3622 is well under 1/s.
+/// `AMUX_TMUX_SPAWN_WARN_PER_S` overrides it.
+const DEFAULT_SPAWN_WARN_PER_S: f64 = 15.0;
+
+/// One completed accounting window.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct SpawnRate {
+    pub spawns: u64,
+    pub window_s: f64,
+    pub per_s: f64,
+    /// Highest-volume verbs first, at most five.
+    pub top_verbs: Vec<(String, u64)>,
+}
+
+struct SpawnWindow {
+    started: std::time::Instant,
+    count: u64,
+    by_verb: std::collections::BTreeMap<String, u64>,
+}
+
+impl SpawnWindow {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            started: now,
+            count: 0,
+            by_verb: Default::default(),
+        }
+    }
+
+    /// Close the window when it is old enough, returning its rate. The caller
+    /// decides what to do with the rate; this only measures.
+    fn roll(&mut self, now: std::time::Instant) -> Option<SpawnRate> {
+        let elapsed = now.saturating_duration_since(self.started);
+        if elapsed < SPAWN_WINDOW {
+            return None;
+        }
+        let mut top: Vec<(String, u64)> = std::mem::take(&mut self.by_verb).into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top.truncate(5);
+        let rate = SpawnRate {
+            spawns: self.count,
+            window_s: elapsed.as_secs_f64(),
+            per_s: self.count as f64 / elapsed.as_secs_f64(),
+            top_verbs: top,
+        };
+        self.started = now;
+        self.count = 0;
+        Some(rate)
+    }
+
+    fn note(&mut self, verb: &str, now: std::time::Instant) -> Option<SpawnRate> {
+        let done = self.roll(now);
+        self.count += 1;
+        *self.by_verb.entry(verb.to_string()).or_default() += 1;
+        done
+    }
+}
+
+struct SpawnLedger {
+    total: u64,
+    window: Option<SpawnWindow>,
+    last: Option<SpawnRate>,
+}
+
+static SPAWN_LEDGER: std::sync::Mutex<SpawnLedger> = std::sync::Mutex::new(SpawnLedger {
+    total: 0,
+    window: None,
+    last: None,
+});
+
+fn spawn_warn_threshold() -> f64 {
+    std::env::var("AMUX_TMUX_SPAWN_WARN_PER_S")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(DEFAULT_SPAWN_WARN_PER_S)
+}
+
+/// The verb of a tmux argv: the first word that is not a flag (`-N`, `-L x` is
+/// not used here). Bounded so a pathological argv cannot grow the tally.
+fn tmux_verb(args: &[&str]) -> String {
+    args.iter()
+        .find(|a| !a.starts_with('-'))
+        .map(|a| a.chars().take(32).collect())
+        .unwrap_or_else(|| "?".into())
+}
+
+fn note_tmux_spawn(args: &[&str]) {
+    let now = std::time::Instant::now();
+    let verb = tmux_verb(args);
+    let Ok(mut ledger) = SPAWN_LEDGER.lock() else {
+        return;
+    };
+    ledger.total += 1;
+    let window = ledger.window.get_or_insert_with(|| SpawnWindow::new(now));
+    if let Some(rate) = window.note(&verb, now) {
+        if rate.per_s > spawn_warn_threshold() {
+            tracing::warn!(
+                target: "amux::tmux",
+                verdict = "tmux_spawn_rate_high",
+                measured = true,
+                n_considered = rate.spawns,
+                per_s = rate.per_s,
+                window_s = rate.window_s,
+                top_verbs = ?rate.top_verbs,
+                "TmuxBackend is starting tmux processes faster than a steady fleet needs; \
+                 each one also wakes trustd/syspolicyd/XProtect. Read top_verbs for the loop."
+            );
+        }
+        ledger.last = Some(rate);
+    }
+}
+
+/// `TmuxBackend` spawn accounting for `GET /api/debug/tmux`.
+///
+/// `last_window` is `null` until a full window has elapsed since the process
+/// started (a restart resets it), and `scope` says what is and is not counted,
+/// so a low number is never read as a statement about the whole server.
+pub fn tmux_spawn_stats() -> serde_json::Value {
+    let ledger = SPAWN_LEDGER.lock().ok();
+    serde_json::json!({
+        "scope": "TmuxBackend::run only; peek captures and session-verb helpers spawn tmux \
+                  from their own call sites and are not counted here",
+        "total_since_start": ledger.as_ref().map(|l| l.total),
+        "last_window": ledger.as_ref().and_then(|l| l.last.clone()),
+        "warn_per_s": spawn_warn_threshold(),
+    })
+}
 
 // ---------------------------------------------------------------------------
 // L2 — the two tmux target forms, encoded in ONE place each.
@@ -93,6 +241,7 @@ impl TmuxBackend {
     }
 
     async fn run(&self, args: &[&str], timeout: Duration) -> Result<std::process::Output> {
+        note_tmux_spawn(args);
         let mut cmd = tokio::process::Command::new(&self.bin);
         cmd.args(args)
             .stdin(Stdio::null())
@@ -479,8 +628,19 @@ impl SessionBackend for TmuxBackend {
         // READ-ONLY sweep: reconcile reports what exists under the amux-
         // prefix; acting on it (killing strays, adopting orphans) is the
         // orchestrator's decision, not the backend's.
+        //
+        // ONE spawn for the whole fleet (MO-3622). This used to run
+        // `list-sessions` and then `has-session` + `list-panes` per session:
+        // 1 + 2N processes per pass, on a loop that fires every 2s. At N=28
+        // that was 26 spawns/s of pure probing, and the bootstrap sweep that
+        // calls it reads only the ref, never the status. `list-panes -a` names
+        // every pane of every session with its dead/status/signal, which is
+        // exactly what `status_by_ref` asked for one session at a time.
         let out = self
-            .run(&["list-sessions", "-F", "#{session_name}"], OP_TIMEOUT)
+            .run(
+                &["list-panes", "-a", "-F", RECONCILE_CENSUS_FORMAT],
+                OP_TIMEOUT,
+            )
             .await?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -490,21 +650,43 @@ impl SessionBackend for TmuxBackend {
                 return Ok(Vec::new());
             }
             return Err(BackendError::CommandFailed(format!(
-                "tmux list-sessions failed: {}",
+                "tmux list-panes -a failed: {}",
                 stderr.trim()
             )));
         }
-        let names: Vec<String> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|n| n.starts_with("amux-"))
-            .map(str::to_string)
-            .collect();
-        // Probe all sessions concurrently (was sequential — 2 tmux calls per
-        // session × 50 sessions = 88s startup blackout, AMUX-3969b). Bounded
-        // to 10 at a time so we do not fork-bomb the tmux server.
+        let census = parse_reconcile_census(&String::from_utf8_lossy(&out.stdout))?;
+
+        let mut hosted = Vec::with_capacity(census.len());
+        let mut needs_probe = Vec::new();
+        for (name, status) in census {
+            match status {
+                // A dead pane with neither status nor signal is the AMUX-4636
+                // case: only `status_by_ref` knows how to read the exit code
+                // from the unreaped zombie. A session with no active-window
+                // pane in the census is not something to guess about either.
+                // Both are rare, and both keep the exact old per-session path.
+                Some(status) if status != (BackendStatus::Crashed { signal: None }) => {
+                    hosted.push(BackendSession {
+                        backend_ref: name,
+                        status,
+                    })
+                }
+                _ => needs_probe.push(name),
+            }
+        }
+        if !needs_probe.is_empty() {
+            tracing::debug!(
+                target: "amux::tmux",
+                verdict = "tmux_reconcile_per_session_probe",
+                measured = true,
+                n_considered = hosted.len() + needs_probe.len(),
+                probed = needs_probe.len(),
+                "reconcile census could not settle these sessions; probing each"
+            );
+        }
+        // Bounded to 10 at a time so we do not fork-bomb the tmux server.
         use futures::stream::{self, StreamExt};
-        let sessions: Vec<Result<BackendSession>> = stream::iter(names)
+        let probed: Vec<Result<BackendSession>> = stream::iter(needs_probe)
             .map(|name| async move {
                 let status = self.status_by_ref(&name).await?;
                 Ok(BackendSession {
@@ -515,7 +697,10 @@ impl SessionBackend for TmuxBackend {
             .buffer_unordered(10)
             .collect()
             .await;
-        sessions.into_iter().collect()
+        for session in probed {
+            hosted.push(session?);
+        }
+        Ok(hosted)
     }
 
     async fn capture(&self, proc: &ProcessRef, lines: u32) -> Result<String> {
@@ -564,6 +749,68 @@ fn parse_pane_dead(line: &str) -> BackendStatus {
         return BackendStatus::Completed { exit_code: code };
     }
     BackendStatus::Crashed { signal: None }
+}
+
+/// `list-panes -a` format for `reconcile`. `:`-separated for the reason
+/// `status_by_ref` gives (a LANG-less launchd env turns tabs into `_`); tmux
+/// never lets a session name contain `:`, so the name is whatever is left when
+/// the four trailing fields are split off the right.
+const RECONCILE_CENSUS_FORMAT: &str =
+    "#{session_name}:#{window_active}:#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}";
+
+/// Parse a `RECONCILE_CENSUS_FORMAT` census into one entry per `amux-` session,
+/// in first-seen order.
+///
+/// The status is that of the FIRST pane of the session's ACTIVE window, which
+/// is the line `list-panes -t =<name>:` printed first and the one
+/// `parse_pane_dead(stdout.lines().next())` read in `status_by_ref`. `None`
+/// means the census showed no active-window pane for the session.
+///
+/// Foreign (non-`amux-`) sessions are skipped before they are parsed, as
+/// `reconcile` always did. A malformed `amux-` line is an error rather than a
+/// missing session: a session that silently vanished from the census would read
+/// as "gone" to the sweep that reaps and interrupts.
+fn parse_reconcile_census(output: &str) -> Result<Vec<(String, Option<BackendStatus>)>> {
+    let mut order: Vec<String> = Vec::new();
+    let mut first_active: std::collections::BTreeMap<String, Option<BackendStatus>> =
+        Default::default();
+    for line in output.lines() {
+        if !line.starts_with("amux-") {
+            continue;
+        }
+        // Right to left: signal, status, dead, window_active, then the name.
+        let fields: Vec<_> = line.rsplitn(5, ':').collect();
+        if fields.len() != 5
+            || fields[4].is_empty()
+            || !matches!(fields[3], "0" | "1")
+            || !matches!(fields[2], "0" | "1")
+        {
+            return Err(BackendError::CommandFailed(format!(
+                "malformed tmux reconcile census line: {line:?}"
+            )));
+        }
+        let name = fields[4];
+        if !first_active.contains_key(name) {
+            order.push(name.to_string());
+            first_active.insert(name.to_string(), None);
+        }
+        if fields[3] == "1" {
+            let slot = first_active.get_mut(name).expect("inserted above");
+            if slot.is_none() {
+                *slot = Some(parse_pane_dead(&format!(
+                    "{}:{}:{}",
+                    fields[2], fields[1], fields[0]
+                )));
+            }
+        }
+    }
+    Ok(order
+        .into_iter()
+        .map(|name| {
+            let status = first_active.remove(&name).flatten();
+            (name, status)
+        })
+        .collect())
 }
 
 fn parse_process_exits(
@@ -813,6 +1060,232 @@ mod tests {
         assert_eq!(sh_quote("$(reboot)"), "'$(reboot)'");
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
         assert_eq!(sh_quote(""), "''");
+    }
+
+    // ---- MO-3622: reconcile is ONE spawn, and the accounting can fail -------
+
+    #[test]
+    fn reconcile_census_reads_the_first_pane_of_the_active_window() {
+        let census = parse_reconcile_census(
+            "amux-live:1:0::\n\
+             amux-done:1:1:3:\n\
+             amux-sig:1:1::9\n\
+             amux-bare:1:1::\n\
+             amux-multi:0:1:7:\n\
+             amux-multi:1:0::\n\
+             amux-multi:1:1:5:\n\
+             amux-inactive-only:0:0::\n\
+             foreign:1:1:1:\n",
+        )
+        .unwrap();
+        let by_name: std::collections::BTreeMap<_, _> = census.iter().cloned().collect();
+        assert_eq!(by_name["amux-live"], Some(BackendStatus::Running));
+        assert_eq!(
+            by_name["amux-done"],
+            Some(BackendStatus::Completed { exit_code: 3 })
+        );
+        assert_eq!(
+            by_name["amux-sig"],
+            Some(BackendStatus::Crashed { signal: Some(9) })
+        );
+        assert_eq!(
+            by_name["amux-bare"],
+            Some(BackendStatus::Crashed { signal: None })
+        );
+        // The dead pane in the INACTIVE window must not speak for the session,
+        // and only the first pane of the active window counts, exactly as
+        // `list-panes -t =name:` + `lines().next()` did.
+        assert_eq!(by_name["amux-multi"], Some(BackendStatus::Running));
+        // No active-window pane in the census: unknown, never guessed.
+        assert_eq!(by_name["amux-inactive-only"], None);
+        assert!(!by_name.contains_key("foreign"));
+        assert_eq!(census.len(), 6, "one entry per amux- session");
+        // First-seen order is kept, so the census is deterministic.
+        assert_eq!(census[0].0, "amux-live");
+    }
+
+    #[test]
+    fn reconcile_census_fails_loudly_on_a_malformed_amux_line() {
+        for bad in ["amux-x:1:0:", "amux-x:2:0::", "amux-x:1:9::", "amux-x"] {
+            assert!(
+                parse_reconcile_census(bad).is_err(),
+                "{bad:?} must be an error, not a session that quietly vanished"
+            );
+        }
+        // Foreign lines are never parsed, so their shape cannot break the sweep.
+        assert!(parse_reconcile_census("weird line\nother:junk\n:1:0::\n")
+            .unwrap()
+            .is_empty());
+        assert!(parse_reconcile_census("").unwrap().is_empty());
+    }
+
+    /// A `tmux` that logs every invocation and answers only the census (plus the
+    /// per-session probes when `probe` is set). Returns the backend and the log.
+    fn fake_tmux(
+        dir: &std::path::Path,
+        census: &str,
+        probe: bool,
+    ) -> (TmuxBackend, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join("calls.log");
+        let script = dir.join("tmux");
+        let probes = if probe {
+            "  \"has-session\"*) exit 0 ;;\n  \"list-panes -t\"*\"pane_pid\"*) echo 1:1 ;;\n  \"list-panes -t\"*) echo 1:: ;;\n"
+        } else {
+            ""
+        };
+        let text = format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$*\" in\n  \"list-panes -a\"*)\ncat <<'EOF'\n{census}EOF\n    ;;\n{probes}  *) echo \"unexpected tmux call: $*\" >&2; exit 1 ;;\nesac\n",
+            log = log.display(),
+        );
+        std::fs::write(&script, text).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (
+            TmuxBackend {
+                bin: script.display().to_string(),
+            },
+            log,
+        )
+    }
+
+    /// `cmd.spawn()` of a just-written executable can hit ETXTBSY when another
+    /// test thread forks in the window (see opencode::structured). Retry that
+    /// one error; anything else is a real failure.
+    async fn reconcile_retrying(b: &TmuxBackend) -> Vec<BackendSession> {
+        for _ in 0..20 {
+            match b.reconcile().await {
+                Ok(v) => return v,
+                Err(e) if e.to_string().contains("Text file busy") => {
+                    tokio::time::sleep(Duration::from_millis(50)).await
+                }
+                Err(e) => panic!("reconcile failed: {e}"),
+            }
+        }
+        panic!("reconcile kept hitting ETXTBSY");
+    }
+
+    fn calls(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// THE REGRESSION. Before MO-3622 a fleet of N sessions cost 1 + 2N spawns
+    /// per reconcile, every 2s. It is one, whatever N is.
+    #[tokio::test]
+    async fn reconcile_costs_one_spawn_for_the_whole_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut census = String::new();
+        for i in 0..40 {
+            census.push_str(&format!("amux-lane{i}:1:0::\n"));
+        }
+        census.push_str("amux-done:1:1:0:\nforeign:1:0::\n");
+        let (backend, log) = fake_tmux(dir.path(), &census, false);
+
+        let hosted = reconcile_retrying(&backend).await;
+
+        let seen = calls(&log);
+        assert_eq!(seen.len(), 1, "one spawn for 41 sessions, got: {seen:?}");
+        assert!(seen[0].starts_with("list-panes -a"), "{seen:?}");
+        assert_eq!(hosted.len(), 41, "every amux- session, no foreign one");
+        assert!(hosted.iter().any(|s| s.backend_ref == "amux-done"
+            && s.status == BackendStatus::Completed { exit_code: 0 }));
+        assert_eq!(
+            hosted
+                .iter()
+                .filter(|s| s.status == BackendStatus::Running)
+                .count(),
+            40
+        );
+    }
+
+    /// The census cannot read an exit code out of a dead pane that recorded
+    /// none (AMUX-4636), so ONLY that session pays for the per-session probe.
+    #[tokio::test]
+    async fn reconcile_probes_only_the_session_the_census_cannot_settle() {
+        let dir = tempfile::tempdir().unwrap();
+        let census = "amux-a:1:0::\namux-b:1:0::\namux-bare:1:1::\namux-c:1:0::\n";
+        let (backend, log) = fake_tmux(dir.path(), census, true);
+
+        let hosted = reconcile_retrying(&backend).await;
+
+        let seen = calls(&log);
+        assert_eq!(
+            seen.iter()
+                .filter(|c| c.starts_with("list-panes -a"))
+                .count(),
+            1
+        );
+        let probes: Vec<_> = seen
+            .iter()
+            .filter(|c| !c.starts_with("list-panes -a"))
+            .collect();
+        assert!(!probes.is_empty(), "the unsettled session must be probed");
+        assert!(
+            probes.iter().all(|c| c.contains("amux-bare")),
+            "only amux-bare may be probed, got: {probes:?}"
+        );
+        assert_eq!(hosted.len(), 4);
+        assert!(hosted
+            .iter()
+            .any(|s| s.backend_ref == "amux-bare"
+                && s.status == BackendStatus::Crashed { signal: None }));
+    }
+
+    #[tokio::test]
+    async fn reconcile_with_no_server_is_an_empty_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tmux");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'no server running on /tmp/tmux-501/default' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let backend = TmuxBackend {
+            bin: script.display().to_string(),
+        };
+        assert!(reconcile_retrying(&backend).await.is_empty());
+    }
+
+    #[test]
+    fn spawn_window_reports_rate_and_verbs_only_after_it_closes() {
+        let t0 = std::time::Instant::now();
+        let mut w = SpawnWindow::new(t0);
+        // 130 spawns inside the window: nothing is reported yet.
+        for i in 0..130u64 {
+            let verb = if i % 2 == 0 {
+                "has-session"
+            } else {
+                "list-panes"
+            };
+            assert_eq!(w.note(verb, t0 + Duration::from_millis(i * 100)), None);
+        }
+        w.note("capture-pane", t0 + Duration::from_secs(1));
+        // The next spawn after the window elapsed closes it.
+        let rate = w
+            .note("list-sessions", t0 + SPAWN_WINDOW + Duration::from_secs(1))
+            .expect("window must close once it is old enough");
+        assert_eq!(rate.spawns, 131);
+        assert!((rate.window_s - 61.0).abs() < 0.01);
+        assert!((rate.per_s - 131.0 / 61.0).abs() < 0.01);
+        assert_eq!(rate.top_verbs[0], ("has-session".to_string(), 65));
+        assert_eq!(rate.top_verbs[1], ("list-panes".to_string(), 65));
+        // The closing spawn opens the next window rather than being lost.
+        assert_eq!(w.count, 1);
+    }
+
+    #[test]
+    fn tmux_verb_skips_leading_flags() {
+        assert_eq!(
+            tmux_verb(&["-N", "display-message", "-p"]),
+            "display-message"
+        );
+        assert_eq!(tmux_verb(&["list-panes", "-a"]), "list-panes");
+        assert_eq!(tmux_verb(&[]), "?");
     }
 }
 
