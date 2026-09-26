@@ -2685,21 +2685,38 @@ const _workerGroupActions = {
   expired: ['resume','archive'],
   archived: ['wake','delete']
 };
+// THE LIST'S FILTERS, AS ONE PREDICATE (Ethan 2026-09-26: "when i click a
+// group tab, the paused, expired, archived etc. workers in the accordion should
+// reflect the filters"). The main list applied the group pill, hidden groups
+// and the provider/model facets inline, and every accordion section built its
+// own list from search alone, so picking a group narrowed the cards while the
+// sections below kept showing the whole fleet. The main list, every section,
+// and the group actions/checkboxes (_workerGroupMembers) all read this now.
+// The STATUS facet stays main-list only: it describes live state (working,
+// idle), which a paused, archived or expired worker does not have.
+function _workerListFilterPass(s) {
+  const tags = (s && s.tags) || [];
+  if (activeTag && !tags.includes(activeTag)) return false;
+  if (hiddenTags.size && !_workerVisibleWithHiddenTags(tags, activeTag, hiddenTags)) return false;
+  if (filterProviders.size && !filterProviders.has(sessionProvider(s))) return false;
+  if (filterModels.size && !filterModels.has(_modelClass(sessionConfiguredModel(s)))) return false;
+  return true;
+}
 function _workerGroupMembers(kind) {
   const q=searchQuery.toLowerCase().trim();
   if(kind==='project') {
     const registered=new Set(sessions.map(s=>s.name));
     const retired=[..._expiredWorkerInventory.values()].filter(w=>w.project && !registered.has(w.name)).map(w=>({...w,running:false,archived:false}));
-    return [...sessions.filter(s=>!!s.project),...retired].filter(s=>!q || [s.name,s.project,s.dir,s.desc,s.task_name,...(s.tags||[])].some(v=>String(v||'').toLowerCase().includes(q)));
+    return [...sessions.filter(s=>!!s.project),...retired].filter(_workerListFilterPass).filter(s=>!q || [s.name,s.project,s.dir,s.desc,s.task_name,...(s.tags||[])].some(v=>String(v||'').toLowerCase().includes(q)));
   }
   if(kind==='expired') {
     const registered=new Set(sessions.map(s=>s.name));
-    const names=new Set(boardItems.map(c=>c.session).filter(name=>name && !registered.has(name) && _expiredWorkerInventory.has(name) && !_expiredWorkerInventory.get(name)?.project));
+    const names=new Set(boardItems.map(c=>c.session).filter(name=>name && !registered.has(name) && _expiredWorkerInventory.has(name) && !_expiredWorkerInventory.get(name)?.project && _workerListFilterPass({name,..._expiredWorkerInventory.get(name)})));
     return [...names].map(name=>({name,lifecycle:'expired',archived:false})).filter(s=>!q || s.name.toLowerCase().includes(q));
   }
   return sessions.filter(s=>{
     const belongs=kind==='review'?s.lifecycle==='review'&&!s.archived&&!s.project:kind==='paused'?s.lifecycle==='paused'&&!s.archived&&!s.project:kind==='archived'?!!s.archived&&!s.project:false;
-    return belongs && (!q || [s.name,s.dir,s.desc,s.task_name,...(s.tags||[])].some(v=>String(v||'').toLowerCase().includes(q)));
+    return belongs && _workerListFilterPass(s) && (!q || [s.name,s.dir,s.desc,s.task_name,...(s.tags||[])].some(v=>String(v||'').toLowerCase().includes(q)));
   });
 }
 // One predicate for the group menus and the cross-group selection, so a count
@@ -6135,8 +6152,7 @@ function render() {
   }).join('');
 
   // Filter by tag (exclude archived from main view)
-  let list = (activeTag ? sessions.filter(s => (s.tags || []).includes(activeTag)) : sessions).filter(s => !s.project && !s.archived && !_workerLifecycleInactive(s));
-  if (hiddenTags.size) list = list.filter(s => _workerVisibleWithHiddenTags(s.tags || [], activeTag, hiddenTags));
+  let list = sessions.filter(s => !s.project && !s.archived && !_workerLifecycleInactive(s)).filter(_workerListFilterPass);
   // Filter by search query
   const q = searchQuery.toLowerCase().trim();
   let filtered = q ? list.filter(s =>
@@ -6147,8 +6163,6 @@ function render() {
     (logSearchMode && s.name in _logMatches)
   ) : list;
   // Filters modal: provider + model-type facets (multi-select, AND across facets)
-  if (filterProviders.size) filtered = filtered.filter(s => filterProviders.has(sessionProvider(s)));
-  if (filterModels.size) filtered = filtered.filter(s => filterModels.has(_modelClass(sessionConfiguredModel(s))));
   if (filterStatuses.size) filtered = filtered.filter(s => filterStatuses.has(_sessStatusKey(s)));
   if ((q || activeTag || hiddenTags.size || filterProviders.size || filterModels.size || filterStatuses.size) && !filtered.length) {
     el.innerHTML = '<div class="empty">No matching workers.</div>';
@@ -7807,7 +7821,7 @@ function _renderProjectWorkersSection() {
   const el=document.getElementById('project-workers-section');
   if(!el) return;
   const registered=new Set(sessions.map(s=>s.name));
-  const all=[...sessions.filter(s=>!!s.project),...[..._expiredWorkerInventory.values()].filter(w=>w.project && !registered.has(w.name))];
+  const all=[...sessions.filter(s=>!!s.project),...[..._expiredWorkerInventory.values()].filter(w=>w.project && !registered.has(w.name))].filter(_workerListFilterPass);
   if(!all.length) {el.innerHTML='';return;}
   const shown=_workerGroupMembers('project').sort((a,b)=>(b.last_activity||0)-(a.last_activity||0));
   const label=(shown.length!==all.length?shown.length+' of '+all.length:all.length)+' project workers';
@@ -7835,7 +7849,7 @@ function toggleReviewHeld() {
 function _renderReviewSection() {
   const el = document.getElementById('review-section');
   if (!el) return;
-  const allReview = sessions.filter(s => s.lifecycle === 'review' && !s.archived && !s.project);
+  const allReview = sessions.filter(s => s.lifecycle === 'review' && !s.archived && !s.project).filter(_workerListFilterPass);
   if (!allReview.length) { el.innerHTML = ''; return; }
   const q = searchQuery.toLowerCase().trim();
   const review = q ? allReview.filter(s =>
@@ -7889,7 +7903,7 @@ function togglePaused() {
 function _renderPausedSection() {
   const el = document.getElementById('paused-section');
   if (!el) return;
-  const allPaused = sessions.filter(s => s.lifecycle === 'paused' && !s.archived && !s.project);
+  const allPaused = sessions.filter(s => s.lifecycle === 'paused' && !s.archived && !s.project).filter(_workerListFilterPass);
   if (!allPaused.length) { el.innerHTML = ''; return; }
   const q = searchQuery.toLowerCase().trim();
   const paused = q ? allPaused.filter(s =>
@@ -7982,7 +7996,8 @@ function _renderExpiredSection() {
   const sessNames = new Set(sessions.map(s => s.name));
   const ephCards = boardItems.filter(c => {
     const worker = c.session || '';
-    return worker && !sessNames.has(worker) && _expiredWorkerInventory.has(worker) && !_expiredWorkerInventory.get(worker)?.project;
+    return worker && !sessNames.has(worker) && _expiredWorkerInventory.has(worker) && !_expiredWorkerInventory.get(worker)?.project
+      && _workerListFilterPass({ name: worker, ..._expiredWorkerInventory.get(worker) });
   });
   if (!ephCards.length) { el.innerHTML = ''; return; }
   const byWorker = {};
@@ -8072,7 +8087,7 @@ function _renderArchivedSection() {
 function _renderArchivedSectionBody() {
   const el = document.getElementById('archived-section');
   if (!el) return;
-  const allArchived = sessions.filter(s => s.archived && !s.project);
+  const allArchived = sessions.filter(s => s.archived && !s.project).filter(_workerListFilterPass);
   if (!allArchived.length) { el.innerHTML = ''; return; }
   const q = searchQuery.toLowerCase().trim();
   const archived = q ? allArchived.filter(s =>
@@ -12158,7 +12173,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1124';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1125';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
