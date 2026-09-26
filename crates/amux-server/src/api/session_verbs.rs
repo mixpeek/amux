@@ -1740,8 +1740,11 @@ pub(crate) fn observe_claude_limit_with(
         "credit-banner"
     };
     let reset_at = if menu || auto_resume.is_some() {
-        let parsed =
-            parse_rate_limit_reset_at(auto_resume.as_deref().unwrap_or(&footer), now).unwrap_or(0);
+        // The transcript's structured `resetsAt` backs up the screen: a banner
+        // wording this parser has not met yet still gets a reset time.
+        let parsed = parse_rate_limit_reset_at(auto_resume.as_deref().unwrap_or(&footer), now)
+            .or(transcript_reset.filter(|t| *t > 0))
+            .unwrap_or(0);
         effective_rate_limit_reset(recorded_reset, parsed, now.timestamp())
     } else {
         0
@@ -1845,11 +1848,30 @@ pub(crate) fn parse_rate_limit_reset_at(
     // both and they agree. Most specific FIRST, and each candidate is parsed
     // rather than merely located: "resets at 8pm" matches the bare "resets "
     // too, leaving "at 8pm", which must lose to the marker that leaves "8pm".
-    let (h24, minute) = ["continuing automatically at ", "resets at ", "resets "]
-        .iter()
-        .filter_map(|m| clean.find(m).map(|i| &clean[i + m.len()..]))
-        .find_map(parse_clock12)?;
-    let (h, minute) = (h24, minute);
+    //
+    // A WEEKLY limit names a date as well: "resets Oct 2 at 3am", and the menu
+    // option "continue automatically at Oct 2 at 3am". Reading only a bare clock
+    // there returned None, so a weekly-limited lane kept `rate_limited_until = 0`
+    // and every bulk "continue" control, which selects on a future reset, left
+    // it out without a word (2026-09-26, gs-3-bucket-objects).
+    let (date, h, minute) = [
+        "continuing automatically at ",
+        "continue automatically at ",
+        "resets at ",
+        "resets ",
+    ]
+    .iter()
+    .filter_map(|m| clean.find(m).map(|i| &clean[i + m.len()..]))
+    .find_map(|rest| {
+        if let Some((h, m)) = parse_clock12(rest) {
+            return Some((None, h, m));
+        }
+        let (month, day, rest) = parse_month_day(rest)?;
+        let rest = rest.trim_start_matches(',').trim_start();
+        let rest = rest.strip_prefix("at ").unwrap_or(rest);
+        let (h, m) = parse_clock12(rest)?;
+        Some((Some((month, day)), h, m))
+    })?;
 
     let today = now.date_naive();
     let at = |d: chrono::NaiveDate| -> Option<i64> {
@@ -1869,11 +1891,44 @@ pub(crate) fn parse_rate_limit_reset_at(
             ),
         }
     };
+    if let Some((month, day)) = date {
+        // A named date is this year's unless that is more than a day gone, in
+        // which case it is next year's ("resets Jan 2" read on Dec 30).
+        use chrono::Datelike;
+        let this_year = chrono::NaiveDate::from_ymd_opt(today.year(), month, day)?;
+        let d = if this_year < today.pred_opt()? {
+            chrono::NaiveDate::from_ymd_opt(today.year() + 1, month, day)?
+        } else {
+            this_year
+        };
+        return at(d);
+    }
     let ts = at(today)?;
     if ts < now.timestamp() - 120 {
         return at(today.succ_opt()?);
     }
     Some(ts)
+}
+
+/// `oct 2` / `october 2` at the head of `s` (already lowercased), as
+/// (month, day, rest).
+fn parse_month_day(s: &str) -> Option<(u32, u32, &str)> {
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let word_end = s.find(|c: char| !c.is_ascii_alphabetic())?;
+    let word = &s[..word_end];
+    if word.len() < 3 {
+        return None;
+    }
+    let month = MONTHS.iter().position(|m| word.starts_with(m))? as u32 + 1;
+    let rest = s[word_end..].trim_start_matches('.').trim_start();
+    let digits_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    if digits_end == 0 || digits_end > 2 {
+        return None;
+    }
+    let day: u32 = rest[..digits_end].parse().ok()?;
+    Some((month, day, rest[digits_end..].trim_start()))
 }
 
 /// The policy for what amux does with a rate-limit menu (ethos D2).
@@ -43957,6 +44012,36 @@ mod steer_max_age_tests {
             parse_rate_limit_reset_at("continuing automatically at 2am", eleven_pm),
             Some(at(2, 0) + 86_400)
         );
+
+        // A WEEKLY limit names the day (2026-09-26, gs-3-bucket-objects): the
+        // banner line and the menu option both carry "Oct 2 at 3am".
+        let oct2_3am = chrono::Local
+            .with_ymd_and_hms(2026, 10, 2, 3, 0, 0)
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            parse_rate_limit_reset_at(
+                "You've hit your weekly limit \u{b7} resets Oct 2 at 3am (America/New_York)",
+                noon
+            ),
+            Some(oct2_3am)
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("2. Wait here, then continue automatically at Oct 2 at 3am", noon),
+            Some(oct2_3am)
+        );
+        assert_eq!(
+            parse_rate_limit_reset_at("resets October 2, 3am", noon),
+            Some(oct2_3am)
+        );
+        // A named date already well past is next year's, never months overdue.
+        let dec30 = chrono::Local.with_ymd_and_hms(2026, 12, 30, 12, 0, 0).unwrap();
+        assert_eq!(
+            parse_rate_limit_reset_at("resets Jan 2 at 9am", dec30),
+            Some(chrono::Local.with_ymd_and_hms(2027, 1, 2, 9, 0, 0).unwrap().timestamp())
+        );
+        // A month word with no day is not a date.
+        assert_eq!(parse_rate_limit_reset_at("resets soon", noon), None);
 
         // THE CONTROLS. `None` must stay distinguishable from a time, because
         // the steering detector suppresses a card on a known future reset and

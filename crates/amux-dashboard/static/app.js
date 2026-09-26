@@ -2484,9 +2484,17 @@ function _clRow(s) {
     ? `<span style="margin-left:auto;color:var(--dim);font-size:0.76rem;white-space:nowrap;">${esc(s.credit_limit_model)}</span>` : '';
   return `<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,0.04);"><span style="color:#e0555b;flex-shrink:0;">&#x25CF;</span> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}</span>${model}</div>`;
 }
+// Limited NOW: a future reset time, or the server's `rate_limited` status with no
+// reset time it could read. The second case used to be dropped by every bulk
+// "continue" control below, silently: a weekly limit ("resets Oct 2 at 3am") left
+// `rate_limited_until` at 0 and the click reached no worker (2026-09-26).
+function _isLimitedNow(s, now) {
+  return (s.rate_limited_until && s.rate_limited_until > now)
+    || (s.status === 'rate_limited' && !s.rate_limited_until);
+}
 function openBulkActions() {
   const now = Date.now() / 1000;
-  const limited = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now);
+  const limited = sessions.filter(s => _isLimitedNow(s, now));
   const creditLimited = sessions.filter(s => s.credit_limited);
   // Transient API errors (529 Overloaded / 5xx). Retryable immediately — no reset
   // to wait for, no model to switch — so "continue" IS the fix. These were
@@ -2817,7 +2825,7 @@ async function bulkContinueLimited() {
   const now = Date.now() / 1000;
   const seen = new Set();
   const targets = sessions.filter(s => {
-    const lim = (s.rate_limited_until && s.rate_limited_until > now) || s.credit_limited;
+    const lim = _isLimitedNow(s, now) || s.credit_limited;
     if (!lim || seen.has(s.name)) return false;
     seen.add(s.name); return true;
   });
@@ -2838,9 +2846,9 @@ async function bulkContinueLimited() {
 async function bulkSendContinue(cappedOnly) {
   const now = Date.now() / 1000;
   const isCapped = s => s.rate_limit_banner || s.rate_limit_weekly;
-  const matched = sessions.filter(s => s.rate_limited_until && s.rate_limited_until > now
+  const matched = sessions.filter(s => _isLimitedNow(s, now)
     && (cappedOnly ? isCapped(s) : !isCapped(s)));
-  if (!matched.length) { closeBulkActions(); return; }
+  if (!matched.length) { closeBulkActions(); showToast('No limited workers to continue'); return; }
   closeBulkActions();
   let sent = 0;
   for (const s of matched) {
@@ -12173,7 +12181,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1126';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1127';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
