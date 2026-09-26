@@ -1656,6 +1656,35 @@ pub(crate) struct ClaudeLimitObservation {
     pub reset_at: i64,
 }
 
+/// Is a CONFIRMED limit the weekly one? Only called once the sweep has already
+/// observed a limit, so this classifies a known limit and never detects one.
+///
+/// Either signal is enough. A reset more than six hours out cannot be the
+/// five-hour session limit, and needs no text at all. Otherwise the provider's
+/// own sentence ("You've hit your weekly limit") in the last 40 lines of the
+/// pane; the newest "hit your ... limit" line wins, so an earlier session-limit
+/// line above a weekly one (or the reverse) reads as the current kind.
+pub(crate) fn is_weekly_limit(pane: &str, reset_at: i64, now: i64) -> bool {
+    if reset_at > now + 6 * 3600 {
+        return true;
+    }
+    let clean = strip_ansi(pane).to_lowercase().replace('\u{2019}', "'");
+    let lines: Vec<_> = clean.lines().collect();
+    lines[lines.len().saturating_sub(40)..]
+        .iter()
+        .rev()
+        .find_map(|l| {
+            if l.contains("you've hit your weekly limit") {
+                Some(true)
+            } else if l.contains("you've hit your session limit") {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
+}
+
 /// The provider's own record of a limit: the conversation ended on Claude
 /// Code's synthetic 429 (`error: "rate_limit"`, `isApiErrorMessage`,
 /// `quotaLimits.status: "rejected"`). Returns the reset epoch (0 when absent).
@@ -20857,6 +20886,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                         ("rate_limited_since", json!(0)),
                         ("rate_limited_until", json!(0)),
                         ("rate_limited_by", json!("")),
+                        ("rate_limited_weekly", json!(false)),
                         ("rate_limit_resume_announced_for", json!(0)),
                     ],
                 );
@@ -20888,6 +20918,14 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         let kind = observation.kind;
         if meta_str(&load_meta(name), "rate_limited_by") != kind {
             update_meta(name, &[("rate_limited_by", json!(kind))]);
+        }
+        // WEEKLY OR NOT, PERSISTED. The list has always projected
+        // `rate_limit_weekly` from this key and the dashboard badge reads it
+        // ("Weekly limit until ..."), but nothing wrote it, so the badge never
+        // showed. Written every tick for the same reason as `rate_limited_by`.
+        let weekly = is_weekly_limit(&pane, reset, observed_now);
+        if load_meta(name).get("rate_limited_weekly").and_then(|v| v.as_bool()) != Some(weekly) {
+            update_meta(name, &[("rate_limited_weekly", json!(weekly))]);
         }
         if meta_i64(&load_meta(name), "rate_limited_since") == 0 {
             update_meta(
@@ -43951,6 +43989,35 @@ mod steer_max_age_tests {
         assert!(!is_rate_limited_credit_banner(
             "clean.contains(\"usage limit reached\") // continuing automatically"
         ));
+    }
+
+    #[test]
+    fn a_confirmed_limit_is_classified_weekly_or_not() {
+        let now = 1_790_000_000;
+        // Reset far out: weekly with no text at all.
+        assert!(is_weekly_limit("", now + 5 * 86_400, now));
+        // The live specimen (2026-09-26, gs-3-bucket-objects), reset unknown.
+        let pane = "\u{23fa} You've hit your weekly limit \u{b7} resets Oct 2 at 3am (America/New_York)\n\
+                    \u{2139} Goal paused \u{b7} usage limit reached\n\
+                    What do you want to do?\n\
+                    \u{276f} 1. Stop and wait for limit to reset";
+        assert!(is_weekly_limit(pane, 0, now));
+        // A session limit resetting soon is not weekly.
+        assert!(!is_weekly_limit(
+            "You've hit your session limit \u{b7} resets 8:30pm",
+            now + 2 * 3600,
+            now
+        ));
+        // The newest sentence wins: a later session-limit line supersedes an
+        // older weekly one still on screen.
+        assert!(!is_weekly_limit(
+            "You've hit your weekly limit \u{b7} resets Oct 2 at 3am\nlater\nYou've hit your session limit \u{b7} resets 8pm",
+            now + 3600,
+            now
+        ));
+        // Beyond the 40-line tail, scrollback does not count.
+        let old = format!("You've hit your weekly limit\n{}", "x\n".repeat(60));
+        assert!(!is_weekly_limit(&old, now + 3600, now));
     }
 
     /// AMUX-3815: the banner that says a lane IS limited also says WHEN it
