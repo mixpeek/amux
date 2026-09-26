@@ -30,6 +30,14 @@ Ask what changed, not only what is large.
 - **CPU:** `ps -Ao pid,pcpu,etime,command` sorted by CPU. A long-lived process
   at high CPU with no matching lane work is the usual cause (a busy-loop
   watcher, a crash-restart loop, a VM running a workload nobody is using).
+- **CPU, when no process explains the load:** high sys time with idle cores
+  means process churn. Measure the spawn rate (`sh -c 'echo $$'` twice, N
+  seconds apart; pids are sequential) and what share of it is translated:
+  `sysctl -n sysctl.proc_translated` in a lane shell prints 1 when the tree runs
+  under Rosetta, where each spawn costs about 12x a native one. The mac-health
+  tick logs `translated_procs` and WARNs `rosetta_translated_tree`. Then rank
+  spawners by parent program. Worked example:
+  `docs/incidents/2026-09-26-mac-cpu-rosetta-spawn-storm.md`.
 
 Write down the owner. Every consumer on this box belongs to a lane, a launchd
 agent, an app, or macOS.
