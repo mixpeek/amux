@@ -9292,6 +9292,21 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
                     "unstyled Codex footer beside a dim empty prompt is chrome, not a pending draft");
             }
         }
+        // A PANEL CAN HIDE THE COMPOSER, and then the last `❯` is the
+        // transcript's echo of an earlier prompt (Claude Code's /btw answer
+        // panel mid-turn, 2026-09-25). A real composer never continues into a
+        // tool bullet `⏺`, a tool result `⎿` or a panel's top border `▔`, so
+        // reaching one means there is no composer to read. Reading on made the
+        // whole transcript "typed", and a /btw that was answering on screen
+        // was reported "not submitted".
+        if matches!(t.chars().next(), Some('\u{23fa}') | Some('\u{23bf}') | Some('\u{2594}')) {
+            static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !HIDDEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(measured = true, n_considered = 1, verdict = "composer_hidden_prompt_is_transcript_echo",
+                    "last prompt glyph is followed by transcript or a panel border; the composer is not visible");
+            }
+            return ComposerState::NotVisible;
+        }
         if matches!(t.chars().next(), Some('\u{2500}') | Some('\u{23f5}'))
             || plain_footer
             || codex_model_footer_chrome(raw_lines[i], s)
@@ -11000,7 +11015,9 @@ async fn submit_project_execution_draft_if_owned(
     let sent_at = now_f64();
     send_key(name, "Enter").await;
     let generating = detect_claude_status(&raw) == "active";
-    let (submission, retried) = verify_submitted(name, text, sent_at, !generating).await;
+    // No retry Enter on a slash command: it would act inside its panel.
+    let (submission, retried) =
+        verify_submitted(name, text, sent_at, !generating && !is_slash_command(text)).await;
     Some(send_outcome(submission, generating, retried))
 }
 
@@ -11058,7 +11075,8 @@ async fn submit_own_steering_draft(
     .await;
     let sent_at = now_f64();
     send_key(name, "Enter").await;
-    let (submission, retried) = verify_submitted(name, text, sent_at, true).await;
+    let (submission, retried) =
+        verify_submitted(name, text, sent_at, !is_slash_command(text)).await;
     Some(send_outcome(submission, false, retried))
 }
 
@@ -12063,7 +12081,31 @@ async fn send_text_inner_bound(
     // also use bare Enter: picker-shaped input was pasted, so Escape would only
     // risk interrupting a newly accepted turn.
     // ------------------------------------------------------------------
-    let (first, retried) = verify_submitted(name, &text, sent_at, !generating).await;
+    // A SLASH COMMAND GETS EXACTLY ONE ENTER (Ethan 2026-09-25: "i tried to do
+    // a /btw command it didnt work"). Many slash commands open a panel or a
+    // picker in place of the composer: Claude Code's /btw answer panel, /model,
+    // /status, /context; codex's /model and /approvals. There a second Enter is
+    // not a retry, it is an ACTION: reproduced live, a second Enter closes the
+    // /btw panel and the answer is gone, which is what the retry below did to
+    // launch-videos at 21:30:36Z. So no retry and no idle watcher for them.
+    let is_slash = is_slash_command(&text);
+    let (first, retried) = verify_submitted(name, &text, sent_at, !generating && !is_slash).await;
+    if is_slash {
+        // The verifier reads "stuck" whenever it never saw the composer come
+        // back empty. A panel (/btw, /status) HIDES the composer, so that read
+        // said "text is sitting in the input box" while the answer was on
+        // screen. Re-read once: only our text visibly back in the box is stuck.
+        let after = if first == Submission::Stuck {
+            Some(read_frame(&tmux_capture(name, 25).await, &send_tail_squashed(&text)))
+        } else {
+            None
+        };
+        let (ok, msg) = slash_outcome(first, after, generating);
+        tracing::info!(session = %name, submission = ?first, frame_after = ?after, ok,
+            measured = true, n_considered = 1, verdict = "slash_command_single_enter",
+            "slash command sent with one Enter; no retry, because a second Enter acts inside its panel or picker");
+        return (ok, msg);
+    }
     if first == Submission::Stuck && generating {
         // One bare-Enter retry, then re-read the evidence. No sleep-tuning: the
         // retry is gated on the OBSERVED composer contents, not on a guess
@@ -12109,7 +12151,36 @@ fn direct_draft_watches() -> &'static std::sync::Mutex<std::collections::HashSet
 /// `grace_s`: for this long an EMPTY box does not end the watch (Claude Code
 /// can clear the box and restore the text a second or more later); only the
 /// transcript recording the message, or the grace running out, does.
+/// A message that is a CLI slash command (`/btw …`, `/model`, `/status`):
+/// the first token starts with `/` and is a bare word, so a pasted path such as
+/// `/Users/x/file.md` is not mistaken for one.
+pub(crate) fn is_slash_command(text: &str) -> bool {
+    let t = text.trim_start();
+    let first = t.split_whitespace().next().unwrap_or("");
+    first.len() > 1
+        && first.starts_with('/')
+        && first[1..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':')
+}
+
+/// The send outcome for a slash command, given the verifier's verdict and one
+/// frame read taken after it. Pure so the panel case is pinned by a test.
+pub(crate) fn slash_outcome(first: Submission, after: Option<FrameRead>, generating: bool) -> (bool, String) {
+    match (first, after) {
+        (Submission::Stuck, Some(FrameRead::NoUi | FrameRead::Cleared)) => (
+            true,
+            "sent (slash command; submission could not be verified: its panel or picker replaced the input box)"
+                .into(),
+        ),
+        _ => send_outcome(first, generating, false),
+    }
+}
+
 fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s: f64) {
+    if is_slash_command(text) {
+        // Never press Enter on a slash command later: its panel or picker may be
+        // open, and Enter there selects or closes (see send_text).
+        return;
+    }
     let key = format!("{name}\u{0}{}", text.split_whitespace().collect::<String>());
     if let Ok(mut w) = direct_draft_watches().lock() {
         if !w.insert(key.clone()) {
@@ -42722,6 +42793,56 @@ mod composer_state_tests {
         assert_eq!(empty_send_plan(frame), EmptySendPlan::Nothing);
         let src = include_str!("session_verbs.rs");
         assert!(src.contains("for line in composer_line.into_iter()"), "extraction must read the composer line only");
+    }
+
+    #[test]
+    fn slash_commands_are_recognised_and_paths_are_not() {
+        for c in ["/btw should the tagline be x?", "/model", "  /status", "/context", "/compact please", "/mcp:tools", "/review-pr 12"] {
+            assert!(is_slash_command(c), "{c}");
+        }
+        for m in ["/Users/ethan/x.md is here", "/tmp/a.txt", "hello /btw", "/", "//comment", "./x.sh"] {
+            assert!(!is_slash_command(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn a_slash_command_is_never_retried() {
+        let src = include_str!("session_verbs.rs");
+        let i = src.find("let is_slash = is_slash_command(&text);").expect("send path");
+        let body = &src[i..i + 1400];
+        assert!(body.contains("!generating && !is_slash"), "no idle retry keys for slash commands:\n{body}");
+        assert!(body.contains("return (ok, msg);"), "returns before the mid-turn retry:\n{body}");
+    }
+
+    #[test]
+    fn a_panel_over_the_composer_leaves_only_the_transcript_echo() {
+        // Shape of the live mid-turn /btw frame (Claude Code 2.1.283): the
+        // composer is replaced by the answer panel, so the last ❯ is the echo
+        // of the running turn's prompt.
+        let frame = "\u{276f} count slowly from 1 to 60\n\u{23fa} Counting from 1 to 60 \u{b7} 4s\n  \u{23bf}  $ for i in $(seq 1 60); do echo $i; done\n\u{b7} Metamorphosing\u{2026} (9s)\n\u{2594}\u{2594}\u{2594}\u{2594}\n    /btw what is 3+3\n      3 + 3 = 6\n    Esc to close\n";
+        assert_eq!(composer_state(frame), ComposerState::NotVisible);
+        assert_eq!(read_frame(frame, &send_tail_squashed("/btw what is 3+3")), FrameRead::NoUi);
+        // Panel alone, no tool output between: the border still ends it.
+        let frame2 = "\u{276f} hello there\n\u{2594}\u{2594}\u{2594}\n    /btw hi\n    Esc to close\n";
+        assert_eq!(composer_state(frame2), ComposerState::NotVisible);
+    }
+
+    #[test]
+    fn a_slash_panel_hiding_the_composer_is_not_reported_stuck() {
+        // Live 2026-09-25: /btw, /status and /help each opened their panel and
+        // amux answered ok:false "text is sitting in the input box".
+        for gen in [false, true] {
+            for f in [FrameRead::NoUi, FrameRead::Cleared] {
+                let (ok, msg) = slash_outcome(Submission::Stuck, Some(f), gen);
+                assert!(ok, "{f:?} gen={gen}: {msg}");
+                assert_eq!(submit_verdict_of(&msg), Some("unverified"), "{msg}");
+            }
+            for f in [FrameRead::StillThereIdle, FrameRead::StillThereGenerating] {
+                let (ok, msg) = slash_outcome(Submission::Stuck, Some(f), gen);
+                assert!(!ok, "our text back in the box is stuck: {msg}");
+            }
+        }
+        assert_eq!(slash_outcome(Submission::Confirmed, None, false), send_outcome(Submission::Confirmed, false, false));
     }
 
     #[test]
