@@ -4982,3 +4982,14 @@ CARD: ACW-1
 SYMPTOM: I ran a test server from a worktree with its own AMUX_HOME and port (TMUX_TMPDIR set, but $TMUX from my pane still pointed at the real tmux server). Its first `pipe_reconcile_tick` logged `re-armed pipe-pane session=<lane> writer_changed=true` for 20 real fleet lanes: its `.pipe-writer-version` marker did not exist yet, so every `amux-*` pane on the machine looked like it needed the new writer. For ~2 hours those lanes' pane output went to the test home's logs dir. The live server never noticed, because its own marker was current.
 COST: ~2 hours of pane logs for 20 lanes written to a scratch dir (recovered to ~/.amux/logs/recovered-acw-2026-09-24/), and 30 minutes to find and restore. Nothing in the live server's view showed it: pane_pipe stayed 1.
 FIX: pipe_reconcile_tick now skips any `amux-<name>` pane with no `<name>.env` in its own sessions dir and counts them (`pipe_reconcile_foreign_panes_skipped`). Restoring was the server's own path: move `.pipe-writer-version` aside so the live reconciler re-arms. Branch feature/worker-type.
+
+## Idle Codex 0.157 worker never passes boot readiness
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-26
+SESSION: codex-desktop-01a0db8e-cdb1-73a2-b228-b2482646d615
+CARD: AMUX-14 (local Mac mini board)
+SYMPTOM: Two owner probes remained queued for over 1500 seconds while the Codex pane was idle; steering reported not-at-turn-boundary (background work hard hold). Codex 0.157 renders a shortcuts row below its model/path bar, which the structured parser required to be the final row.
+COST: Local setup validation blocked for more than 25 minutes.
+FIX: Recognize the optional current shortcuts footer while preserving model/path identity and active/background checks; local runtime adoption and original queue delivery must still be verified.

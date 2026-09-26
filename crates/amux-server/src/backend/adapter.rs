@@ -1277,11 +1277,29 @@ fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
     let tail = &lines[start..];
     // Provider identity must be the CURRENT footer, not a Codex-looking frame
     // pasted into another provider's prompt. The model/path bar is Codex's
-    // final non-empty row and its prompt glyph is `›` (not Claude's `❯`).
-    let model_i = tail
-        .len()
-        .checked_sub(1)
-        .filter(|i| codex_model_bar(tail[*i]))?;
+    // final row, optionally followed by its shortcuts row in Codex 0.157.
+    // Its prompt glyph is `›` (not Claude's `❯`).
+    let last = tail.len().checked_sub(1)?;
+    let model_i = if let Some(rest) = tail[last].strip_prefix("← for agents · ? for shortcuts") {
+        if !rest.trim().is_empty() && !rest.trim().starts_with('⚠') {
+            return None;
+        }
+        let index = last.checked_sub(1)?;
+        if !codex_model_bar(tail[index]) {
+            return None;
+        }
+        static ANNOUNCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !ANNOUNCED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(measured = true, n_considered = 1, verdict = "codex_help_footer_recognized",
+                "Codex model bar followed by shortcuts footer recognized; active-row checks remain in force");
+        }
+        index
+    } else {
+        last
+    };
+    if !codex_model_bar(tail[model_i]) {
+        return None;
+    }
     let prompt_i = tail[..model_i].iter().rposition(|s| s.starts_with('›'))?;
     // Current Codex paints the active row immediately before its disabled
     // prompt. Older builds painted it immediately after the submitted prompt,
@@ -1617,6 +1635,28 @@ gemini-2.5-pro";
     const FX_OLLAMA_NO_MODEL: &str = "Error: model 'llama3:70b' not found, try pulling it first";
 
     // -- ANSI stripping ------------------------------------------------------
+
+    #[test]
+    fn codex_shortcuts_footer_preserves_idle_busy_and_background_states() {
+        let footer = "› Ask Codex to do anything\n\n  GPT-5.5 high · ~/project\n  ← for agents · ? for shortcuts   ⚠ 1 warning · f2 to view\n";
+        assert_eq!(codex_pane_generation_state(footer), Some(false));
+        let busy = format!("• Working (4s • esc to interrupt)\n{footer}");
+        assert_eq!(codex_pane_generation_state(&busy), Some(true));
+        let background =
+            format!("• Waiting for background terminal (4s • esc to interrupt)\n{footer}");
+        assert!(codex_pane_background_working(&background));
+        assert!(!codex_pane_background_working(footer));
+        assert_eq!(
+            codex_pane_generation_state(&format!("{footer}ordinary text\n")),
+            None
+        );
+        assert_eq!(
+            codex_pane_generation_state(
+                &footer.replace("GPT-5.5 high · ~/project", "ordinary text")
+            ),
+            None
+        );
+    }
 
     #[test]
     fn strip_ansi_removes_real_escape_sequences() {
