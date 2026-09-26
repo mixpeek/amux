@@ -161,11 +161,14 @@ if [ -d "$REPO/.git" ] || [ -f "$REPO/.git" ]; then
       wt_dirty=$((wt_dirty+1)); continue
     fi
     # Clean is not the same as safe. A detached worktree can hold the ONLY ref
-    # to its commits, and removing it strands them for gc. Require HEAD to be
-    # reachable from a remote-tracking ref (DESKT-39 found 9 clean local-only
-    # worktrees on 2026-09-14).
+    # to its commits, and removing it strands them for gc (DESKT-39 found 9 clean
+    # local-only worktrees on 2026-09-14). So HEAD must be contained in a branch,
+    # a tag or a remote-tracking ref of the repo, all of which outlive the
+    # worktree. Requiring a REMOTE ref alone was stricter than losslessness: on
+    # 2026-09-26 every scheduled run kept the same 8 clean scratch worktrees whose
+    # HEADs sat on local branches, and reclaimed 0 of 14 (DESKT-56).
     head=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
-    if [ -z "$head" ] || [ -z "$(git -C "$REPO" for-each-ref --count=1 --contains "$head" refs/remotes 2>/dev/null)" ]; then
+    if [ -z "$head" ] || [ -z "$(git -C "$REPO" for-each-ref --count=1 --contains "$head" refs/heads refs/tags refs/remotes 2>/dev/null)" ]; then
       wt_local_only=$((wt_local_only+1)); continue
     fi
     if [ -z "$cwds" ]; then
@@ -242,7 +245,7 @@ mode=$([ "$APPLY" = "1" ] && echo applied || echo "dry-run (pass --apply to recl
 mb=$((dirs_bytes / 1024))
 echo "amux-debris: mode=$mode age_floor=${AGE_HOURS}h"
 echo "amux-debris: temp dirs ${dirs_removed} (${mb} MB), kept ${dirs_kept_fresh} younger than the floor"
-echo "amux-debris: worktrees ${wt_removed} of ${wt_considered} considered, ${wt_dirty} left alone as dirty, ${wt_local_only} kept because HEAD is on no remote, ${wt_in_use} kept in use"
+echo "amux-debris: worktrees ${wt_removed} of ${wt_considered} considered, ${wt_dirty} left alone as dirty, ${wt_local_only} kept because no branch, tag or remote holds HEAD, ${wt_in_use} kept in use"
 echo "amux-debris: side cargo targets ${targets_removed} ($((targets_kb / 1024)) MB), ${targets_kept} kept as busy or fresh (idle floor ${TARGET_IDLE_HOURS}h; the shared target is never a candidate)"
 echo "amux-debris: side-target root ${target_root} ${targets_root_state}"
 [ -n "$cwds" ] || echo "amux-debris: cwd probe unavailable (lsof missing or empty), so ${wt_unprobed} worktree(s) were not removed"

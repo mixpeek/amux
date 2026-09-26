@@ -83,7 +83,7 @@ check "dirty worktree still present" "yes" "$([ -d "$WT" ] && echo yes || echo n
 case "$out" in *"considered, 1 left alone as dirty"*) echo "  ok   report counts exactly one dirty skip" ;;
   *) echo "  FAIL report does not count exactly one dirty skip: $out"; fails=$((fails+1)) ;; esac
 
-echo "5. a clean worktree whose HEAD is on no remote is kept"
+echo "5. a clean worktree whose HEAD no ref holds is kept"
 # A detached worktree can hold the only ref to its commits. Removing it because
 # `git status` is clean strands them for gc (DESKT-39: 9 such worktrees were
 # live on 2026-09-14). Asserts the COUNT, so the label alone cannot pass.
@@ -98,8 +98,22 @@ git -C "$WTL" -c user.email=t@t -c user.name=t commit -q --allow-empty -m local-
 touch -t 202501010000 "$WTL" 2>/dev/null
 out=$(AMUX_DEBRIS_ROOTS="$FIX" "$REAPER" --apply --repo "$WTREPO" 2>&1)
 check "local-only worktree still present" "yes" "$([ -d "$WTL" ] && echo yes || echo no)"
-case "$out" in *", 1 kept because HEAD is on no remote"*) echo "  ok   report counts the local-only skip" ;;
+case "$out" in *", 1 kept because no branch, tag or remote holds HEAD"*) echo "  ok   report counts the local-only skip" ;;
   *) echo "  FAIL report does not count exactly one local-only skip: $out"; fails=$((fails+1)) ;; esac
+
+echo "5b. a clean worktree whose HEAD only a LOCAL branch holds is reclaimed, and the branch survives"
+# The branch outlives the worktree, so nothing is stranded. Positive control for
+# cell 5: the same shape of commit, now named by a branch, must be taken.
+WTB="$FIX/wt-local-branch"
+git -C "$WTREPO" worktree add --detach "$WTB" -q 2>/dev/null
+git -C "$WTB" -c user.email=t@t -c user.name=t commit -q --allow-empty -m on-a-local-branch 2>/dev/null
+tip=$(git -C "$WTB" rev-parse HEAD)
+git -C "$WTREPO" branch keep-me "$tip" 2>/dev/null
+touch -t 202501010000 "$WTB" 2>/dev/null
+AMUX_DEBRIS_ROOTS="$FIX" "$REAPER" --apply --repo "$WTREPO" >/dev/null 2>&1
+check "worktree held only by a local branch is removed" "no"  "$([ -d "$WTB" ] && echo yes || echo no)"
+check "and its branch still points at the commit"     "$tip" "$(git -C "$WTREPO" rev-parse -q --verify refs/heads/keep-me 2>/dev/null || echo gone)"
+check "the unheld worktree from cell 5 is still kept" "yes" "$([ -d "$WTL" ] && echo yes || echo no)"
 
 echo "6. a clean on-origin worktree under \$REPO/scratch is reclaimed"
 # Temp roots disabled, so only the scratch-root rule can select it.
