@@ -19,6 +19,9 @@ check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expec
 # tick for real, so point the arm at a root that does not exist: a test of the purge arm must
 # never reap a build directory on the machine running it, or spend minutes scanning ~/Dev.
 export AMUX_CLEANUP_TARGET_ROOTS="$FIX/no-such-root"
+# Same reason for the assess stage (DESKT-57): its end-to-end runs must neither
+# message a real lane nor move the real burn-rate state file.
+export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true"
 
 # Library mode must define the decisions without running a single probe.
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"

@@ -21,6 +21,15 @@
 #      unmeasurable directory is kept and the line says so), and the shared
 #      target is never a candidate.
 #
+#   5. ASSESS after acting (DESKT-57). Re-measure, name each resource that is
+#      still constrained or trending toward it (disk floor or hours-to-full at
+#      the measured burn rate, memory pressure or swap, CPU share, a runaway
+#      process family), write an RCA bundle with the evidence, and hand every
+#      still-constrained class to a model turn on the desktop lane, at most
+#      once per cooldown per class. The shell fixes symptoms because that is
+#      computable; finding and fixing the underlying cause is judgment, so it
+#      goes to a model with the evidence already gathered (ethos rule 2).
+#
 # WHAT IT ONLY REPORTS, however large it gets:
 #   Everything else. fseventsd held 96 GB on this box and macOS protects it; a
 #   peer lane's colima VM held 16 GB plus 31 GB compressed and that lane was
@@ -104,6 +113,25 @@ TARGET_SCAN_S=${AMUX_CLEANUP_TARGET_SCAN_S:-120}
 TARGET_WALK_S=${AMUX_CLEANUP_TARGET_WALK_S:-60}
 TARGET_BUDGET_S=${AMUX_CLEANUP_TARGET_BUDGET_S:-300}
 LSOF_CMD=${AMUX_CLEANUP_LSOF_CMD:-lsof -nP}
+# Assessment (DESKT-57). A disk is constrained under DISK_FLOOR_GB, or when the
+# burn since the previous tick would fill it within HOURS_TO_FULL. Memory is
+# constrained when the kernel still reports pressure after the purge arm ran,
+# or swap has under SWAP_FREE_FLOOR_MB left. CPU is constrained when the 15-min
+# load average exceeds CPU_SHARE of the cores.
+DISK_FLOOR_GB=${AMUX_CLEANUP_DISK_FLOOR_GB:-150}
+HOURS_TO_FULL=${AMUX_CLEANUP_HOURS_TO_FULL:-24}
+BURN_MIN_GBH=${AMUX_CLEANUP_BURN_MIN_GBH:-1}
+SWAP_FREE_FLOOR_MB=${AMUX_CLEANUP_SWAP_FREE_FLOOR_MB:-512}
+CPU_SHARE=${AMUX_CLEANUP_CPU_SHARE:-0.9}
+STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
+# Not the desktop lane: it is ISOLATED, and amux refuses automated sends into an
+# isolated worker by design (round 1 of DESKT-57 measured exactly that refusal).
+# mac-ops is a non-isolated sonnet worker whose brief is the runbook below.
+ESCALATE_TO=${AMUX_CLEANUP_ESCALATE_TO:-mac-ops}
+ESCALATE_COOLDOWN_H=${AMUX_CLEANUP_ESCALATE_COOLDOWN_H:-6}
+# Seam: FILE is replaced with the message path. The test points this at a recorder.
+ESCALATE_CMD=${AMUX_CLEANUP_ESCALATE_CMD:-amux send TARGET --file FILE}
+RUNBOOK=docs/runbooks/mac-resource-rca.md
 # Seams: the tests point these at a recorder so an action can be observed
 # without running it. Defaults are what the scheduler actually runs.
 PURGE_CMD=${AMUX_CLEANUP_PURGE_CMD:-sudo -n /usr/sbin/purge}
@@ -457,6 +485,100 @@ reap_idle_cargo_targets() { # <roots> <idle_hours> <dry:0|1>
   rm -f -- "${cands:?}" "${eligible:?}" "${lsofsnap:?}"
 }
 
+# ── assessment (DESKT-57) ────────────────────────────────────────────────────
+# Burn rate and hours to full from two readings. Prints "<burn_gbh> <hours|->".
+# A disk that is not losing space (or lost less than BURN_MIN_GBH) has no ETA,
+# printed as "-" rather than a large number that reads as measured.
+disk_trend() { # <prev_ts> <prev_free_gb> <now_ts> <now_free_gb> <min_gbh>
+  awk -v pt="$1" -v pf="$2" -v nt="$3" -v nf="$4" -v m="$5" 'BEGIN{
+    dt=(nt-pt)/3600; if (pt<=0 || dt<=0.01) { print "- -"; exit }
+    b=(pf-nf)/dt
+    if (b < m) printf "%.1f -\n", b; else printf "%.1f %.1f\n", b, nf/b }'
+}
+
+# One line per constrained class, "<class> <reason>". Nothing printed means
+# nothing is constrained. -1 inputs mean "not measured" and never trip a class.
+classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1>
+  awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" \
+      -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" 'BEGIN{
+    if (df >= 0 && df < floor) printf "disk free %.1fG is under the %dG floor\n", df, floor
+    else if (h != "-" && h+0 < htf) printf "disk burning %.1fG/h, full in %.1fh (under %dh)\n", b, h, htf
+    if (pr >= 2) printf "memory kernel pressure %d after the purge arm\n", pr
+    else if (sw >= 0 && sw < swf) printf "memory swap has %dMB free (under %dMB)\n", sw, swf
+    if (l >= 0 && n > 0 && l/n > cs) printf "cpu 15-min load %.1f is %.0f%% of %d cores (over %.0f%%)\n", l, l/n*100, n, cs*100
+    if (fam == 1) print "family a process family is over its share of RAM"
+  }'
+}
+
+# Burn rate from the host-metrics history (5-minute samples), by least squares
+# over the window. Two readings 15 minutes apart are noise: round 2 of DESKT-57
+# read 65 G/h off exactly that while a peer's delete sat in the window. Prints
+# "<burn_gbh> <hours|-> <n> <span_h>", or "- - <n> <span_h>" when there are fewer
+# than 6 samples or under an hour of span, so the caller falls back and says so.
+burn_from_history() { # <history json on stdin> <min_gbh>
+  python3 -c '
+import json,sys
+m=float(sys.argv[1])
+try:
+    d=json.load(sys.stdin); rows=[(r["ts"],r["disk_free_gb"]) for r in d.get("samples",[]) if r.get("measured") and r.get("disk_free_gb") is not None]
+except Exception:
+    rows=[]
+n=len(rows); span=(max(r[0] for r in rows)-min(r[0] for r in rows))/3600 if n else 0
+if n<6 or span<1: print("- - %d %.1f"%(n,span)); sys.exit()
+xs=[(t-rows[0][0])/3600 for t,_ in rows]; ys=[f for _,f in rows]
+mx=sum(xs)/n; my=sum(ys)/n
+slope=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/max(1e-9,sum((x-mx)**2 for x in xs))
+burn=-slope; last=ys[-1] if xs[-1]==max(xs) else ys[xs.index(max(xs))]
+print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), n, "%.1f"%span)
+' "$1" 2>/dev/null || echo "- - 0 0.0"
+}
+
+# Read a key from the state file; empty if absent.
+state_get() { # <file> <key>
+  [ -f "$1" ] && sed -n "s/^$2=//p" "$1" | tail -1
+}
+# Write keys to the state file atomically (rename), keeping the other keys.
+state_put() { # <file> <key=value>...
+  local f=$1 tmp k; shift
+  mkdir -p "$(dirname "$f")"
+  tmp=$(mktemp "$f.XXXXXX")
+  [ -f "$f" ] && cp "$f" "$tmp"
+  for kv in "$@"; do k=${kv%%=*}; grep -v "^$k=" "$tmp" > "$tmp.n" || true; mv "$tmp.n" "$tmp"; printf '%s\n' "$kv" >> "$tmp"; done
+  mv "$tmp" "$f"
+}
+# 0 if <class> may escalate now: never escalated, or the last one is older than the cooldown.
+escalation_due() { # <state_file> <class> <now> <cooldown_h>
+  local last; last=$(state_get "$1" "esc_$2")
+  [ -z "$last" ] && return 0
+  [ $(( $3 - last )) -ge $(( $4 * 3600 )) ]
+}
+
+# The amux lane a process belongs to: walk its parent chain to a tmux PANE and
+# name that pane's session. "user process" says nothing about who can act; a
+# lane name does. Two tempting shortcuts are both wrong on this Mac: macOS does
+# not expose another process's environment to `ps eww`, so AMUX_SESSION cannot
+# be read, and walking past the pane reaches the ONE tmux server whose own
+# argv names whichever lane happened to start it (round 2 of DESKT-57 got
+# "amux-chat-worker" for every process that way).
+# Seam: AMUX_CLEANUP_PANE_MAP ("<pane_pid> <session>" lines) replaces tmux.
+pane_map() {
+  if [ "${AMUX_CLEANUP_PANE_MAP+set}" = set ]; then printf '%s\n' "$AMUX_CLEANUP_PANE_MAP"; return 0; fi
+  tmux list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null
+  # launchd agents too, so the builder, the server and app helpers are named
+  # instead of reading "no lane" (round 2 left 8 of the top 10 CPU unowned).
+  launchctl list 2>/dev/null | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1, "launchd:" $3}'
+}
+lane_for_pid() { # <pid> [pane map text]
+  local p=$1 map=${2:-} i=0 hit
+  [ -n "$map" ] || map=$(pane_map)
+  while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ $i -lt 30 ]; do
+    hit=$(printf '%s\n' "$map" | awk -v p="$p" '$1==p{print $2; exit}')
+    if [ -n "$hit" ]; then printf '%s' "${hit#amux-}"; return 0; fi
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' '); i=$((i+1))
+  done
+  printf 'no lane'
+}
+
 [ "${AMUX_CLEANUP_LIB_ONLY:-0}" = "1" ] && return 0 2>/dev/null
 
 # ── measure ──────────────────────────────────────────────────────────────────
@@ -638,5 +760,91 @@ if [ -n "$fse_pid" ]; then
   fi
 fi
 
-echo "mac-cleanup: done purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} targets_reaped=${TARGETS_REAPED} reported=${reported}"
+# ── assess: what is still constrained, why, and who fixes the cause ──────────
+fam_over=0
+if [ -n "${fam_kb:-}" ] && family_exceeds "$fam_kb" "$phys_kb" "$FAMILY_SHARE_PCT"; then fam_over=1; fi
+now=$(date +%s)
+disk_now=$(df -k /System/Volumes/Data 2>/dev/null | awk 'NR==2{ printf "%.1f", $4/1048576 }')
+case "$disk_now" in ''|*[!0-9.]*) disk_now=-1 ;; esac
+level_now=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null); case "$level_now" in ''|*[!0-9]*) level_now=-1 ;; esac
+swap_free_now=$(sysctl -n vm.swapusage 2>/dev/null | sed -E 's/.*free = ([0-9.]+)M.*/\1/'); case "$swap_free_now" in ''|*[!0-9.]*) swap_free_now=-1 ;; esac
+load15=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $4}'); case "$load15" in ''|*[!0-9.]*) load15=-1 ;; esac
+ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
+STATE="$STATE_DIR/state"
+prev_ts=$(state_get "$STATE" last_ts); prev_free=$(state_get "$STATE" last_disk_free_gb)
+HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=2}
+read -r burn htf hist_n hist_span <<EOF
+$($HISTORY_CMD 2>/dev/null | burn_from_history "$BURN_MIN_GBH")
+EOF
+burn_src="history ${hist_n} samples over ${hist_span}h"
+if [ "$htf" = "-" ] && [ "$burn" = "-" ]; then
+read -r burn htf <<EOF
+$(disk_trend "${prev_ts:-0}" "${prev_free:-0}" "$now" "$disk_now" "$BURN_MIN_GBH")
+EOF
+  burn_src="2 readings (history had ${hist_n} samples over ${hist_span}h)"
+fi
+if [ "$burn" = "-" ]; then burn_txt="unmeasured (no previous reading)"; else burn_txt="${burn}G/h from ${burn_src}"; fi
+if [ "$htf" = "-" ]; then htf_txt="not filling"; else htf_txt="full in ${htf}h"; fi
+[ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now"
+verdicts=$(classify_constraints "$disk_now" "$burn" "$htf" "$level_now" "$swap_free_now" "$load15" "$ncpu" "$fam_over")
+echo "mac-cleanup: assess disk=${disk_now}G burn=${burn_txt} ${htf_txt} pressure=${level_now} swap_free=${swap_free_now}MB load15=${load15}/${ncpu}"
+escalated=0
+if [ -z "$verdicts" ]; then
+  echo "mac-cleanup: constraints none"
+else
+  stamp=$(date +%Y%m%d-%H%M%S)
+  bundle="$STATE_DIR/rca/$stamp.md"
+  mkdir -p "$STATE_DIR/rca"
+  pmap=$(pane_map)
+  {
+    echo "# Mac resource RCA bundle $stamp"
+    echo; echo "## Still constrained after the tick's symptom fixes"; printf '%s\n' "$verdicts" | sed 's/^/- /'
+    echo; echo "## What the tick already did"
+    echo "- purge: $purged"; echo "- cargo targets reaped: ${TARGETS_REAPED:-0} ($(fmt_kb "${TARGETS_REAPED_KB:-0}"))"
+    echo "- stale shells killed: $stale_killed; agents restarted: $agents_restarted"
+    echo; echo "## Top memory (with owner)"
+    top -l 1 -o mem -n 10 -stats pid,mem,command 2>/dev/null | awk 'f{print} /^PID/{f=1}' | sed 's/\*//' | while read -r pid mem cmd; do
+      echo "- $mem pid=$pid $cmd — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
+    echo; echo "## Top CPU (with owner)"
+    ps -Ao pid=,pcpu=,comm= 2>/dev/null | sort -k2 -rn | head -10 | while read -r pid cpu cmd; do
+      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
+    if printf '%s\n' "$verdicts" | grep -q '^disk '; then
+      echo; echo "## Files over 500M written in the last hour (the writers)"
+      IFS=':' read -r -a wroots <<< "$TARGET_ROOTS"
+      for r in ${wroots[@]+"${wroots[@]}"} "$HOME/.amux" "$HOME/.colima"; do
+        r=${r%@*}; [ -d "$r" ] || continue
+        perl -e 'alarm 45; exec @ARGV' find "$r" -xdev -type f -size +500M -mmin -60 -exec stat -f '%b %z %N' {} + 2>/dev/null
+      done | sort -u | sort -rn | head -15 | awk '{a=$1*512/2^30; z=$2/2^30; $1=$2=""; sub(/^  /,""); printf "- %.1fG allocated (%.1fG apparent) %s\n", a, z, $0}'
+      echo "(allocated is what the disk actually holds; a sparse VM disk's apparent size is its ceiling, not its use)"
+    fi
+    echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
+  } > "$bundle"
+  while IFS= read -r v; do
+    cls=${v%% *}
+    if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi
+    if ! escalation_due "$STATE" "$cls" "$now" "$ESCALATE_COOLDOWN_H"; then
+      echo "mac-cleanup: constraint $v — escalation suppressed (last $cls escalation under ${ESCALATE_COOLDOWN_H}h ago)"; continue
+    fi
+    msg="$STATE_DIR/rca/$stamp.$cls.msg"
+    {
+      echo "Ask: RCA and fix the root cause of this Mac $cls constraint; the tick has already fixed what it can."
+      echo "Constraint: $v"
+      echo "Evidence: $bundle"
+      echo "Runbook: git -C ${AMUX_REPO_DIR:-$HOME/Dev/amux} show origin/main:$RUNBOOK (the committed copy; a checkout may be behind)"
+    } > "$msg"
+    cmd=${ESCALATE_CMD//TARGET/$ESCALATE_TO}; cmd=${cmd//FILE/$msg}
+    if sendout=$($cmd 2>&1); then
+      state_put "$STATE" "esc_$cls=$now"; escalated=$((escalated+1))
+      echo "mac-cleanup: constraint $v — escalated to $ESCALATE_TO (bundle $bundle)"
+    else
+      # The reason, not just the word: round 1 printed FAILED and the cause (an
+      # isolated target) was only findable by re-running the send by hand.
+      echo "mac-cleanup: constraint $v — escalation to $ESCALATE_TO FAILED: $(printf '%s' "$sendout" | tail -1 | cut -c1-160) (bundle $bundle)"
+    fi
+  done <<EOF
+$verdicts
+EOF
+fi
+
+echo "mac-cleanup: done purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} targets_reaped=${TARGETS_REAPED} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0

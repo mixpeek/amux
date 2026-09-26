@@ -20,6 +20,7 @@ fails=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: expected '$2', got '$3'"; fails=$((fails+1)); fi; }
 yn() { if "$@"; then echo yes; else echo no; fi; }
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
+export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true"   # never page a real lane from a test (DESKT-57)
 DEFAULT_KEEP=$TARGET_KEEP; DEFAULT_ROOTS=$TARGET_ROOTS      # what the scheduler actually runs with, before this file overrides the knobs
 
 # Knobs the arm reads. Small budgets: nothing here should ever wait on them.

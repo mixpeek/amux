@@ -369,6 +369,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-targets.sh
+      - name: the assess stage names what is still constrained and escalates it once per cooldown (DESKT-57)
+        run: |
+          set -uo pipefail
+          ./scripts/test-mac-cleanup-assess.sh
       # AF-677. AF-346's ratchet (above) recorded 31 harnesses as unwired rather
       # than wiring them blind, because that decision belongs to each one's
       # owner (ethos rule 8). This is that decision, made for 28 of the 31:
