@@ -12080,7 +12080,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1119';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1120';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -16347,6 +16347,8 @@ async function peekQuickSend(text) {
 // markdown tables to fit this screen (cells wrap; nothing is cut). Measured
 // from the rendered font, not guessed from the viewport.
 let _peekColsCache = { w: 0, cols: 100 };
+// Re-measure when the window changes size, so wide blocks follow the screen.
+window.addEventListener('resize', () => { _peekColsCache = { w: 0, cols: _peekColsCache.cols }; try { _peekVisibleCols(); } catch (e) {} });
 function _peekVisibleCols() {
   const body = document.getElementById('peek-body');
   const w = body ? body.clientWidth : 0;
@@ -16362,6 +16364,8 @@ function _peekVisibleCols() {
   const inner = w - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
   const cols = ch > 0 ? Math.max(24, Math.min(400, Math.floor(inner / ch))) : 100;
   _peekColsCache = { w, cols };
+  // Tables and code blocks may use the whole body width (app.css, #pk-hist .peek-box).
+  body.style.setProperty('--peek-body-w', Math.floor(inner) + 'px');
   return cols;
 }
 async function peekQuickKeys(keys) {

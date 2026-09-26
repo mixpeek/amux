@@ -1050,7 +1050,16 @@
      a 154-column terminal re-wraps at ~224 characters on a wide desktop and the
      author's line breaks and spacing stop making sense. Falls back to 220, the
      spawn width, when a frame carries no pane_cols. */
-  #pk-earlier, #pk-hist, #pk-live { max-width: calc(var(--peek-cols, 220) * 1ch); }
+  #pk-live { max-width: calc(var(--peek-cols, 220) * 1ch); }
+  /* HISTORY IS FORMATTED FOR THE SCREEN (Ethan 2026-09-25: "shit should be
+     formatted for the screen based on the screen resolution", with tables cut
+     at 599px on a 1876px desktop). The transcript is not tmux output any more:
+     the server lays its tables out at the viewer's measured columns. Prose keeps
+     a readable measure (the pane width, never under 120 characters, which is
+     what the cap above protected); tables and code blocks break out of it to
+     the full width of the peek body (--peek-body-w, measured per render). */
+  #pk-earlier, #pk-hist { max-width: calc(max(var(--peek-cols, 220), 120) * 1ch); }
+  #pk-earlier .peek-box, #pk-hist .peek-box { width: max-content; max-width: var(--peek-body-w, 100%); }
   .peek-rule {
     display: inline-flex; width: 100%; align-items: center; gap: 6px;
     height: 1.15em; vertical-align: middle;
