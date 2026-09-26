@@ -9232,7 +9232,9 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
     // frames still need dim proof so a real typed prompt cannot be hidden.
     let plain_codex_placeholder = !raw_frame.contains('\u{1b}')
         && stripped[idx].trim() == "› Ask Codex to do anything"
-        && idx + 2 == stripped.len()
+        && (idx + 2 == stripped.len()
+            || (idx + 3 == stripped.len()
+                && crate::backend::adapter::codex_shortcuts_footer(&stripped[idx + 2])))
         && possible_codex_footer_chrome(raw_lines[idx + 1])
         && crate::backend::adapter::codex_pane_generation_state(raw_frame).is_some();
     if plain_codex_placeholder {
@@ -42839,6 +42841,21 @@ mod composer_state_tests {
             composer_state(&plain_prompt).typed().is_some(),
             "no dim placeholder proof means keep the draft"
         );
+    }
+
+    #[test]
+    fn codex_0157_plain_shortcuts_footer_preserves_delivery_boundary() {
+        let idle = "› Ask Codex to do anything\n\n  GPT-6-Astra high · ~/work/proof\n  ? for shortcuts    ⚠ 1 warning · f2 to view\n";
+        assert!(matches!(composer_state(idle), ComposerState::Placeholder(_)));
+        assert!(pane_is_at_boundary(idle));
+        let busy = format!("• Working (4s • esc to interrupt)\n{idle}");
+        assert!(!pane_is_at_boundary(&busy));
+        let draft = idle.replace("Ask Codex to do anything", "do not send yet");
+        assert!(composer_state(&draft).typed().is_some());
+        assert!(!pane_is_at_boundary(&draft));
+        let unknown = format!("{idle}ordinary text\n");
+        assert!(composer_state(&unknown).typed().is_some());
+        assert!(!pane_is_at_boundary(&unknown));
     }
 
     #[test]

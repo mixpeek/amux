@@ -1260,6 +1260,13 @@ fn codex_generation_state_clean(clean: &str) -> Option<bool> {
     None
 }
 
+pub(crate) fn codex_shortcuts_footer(line: &str) -> bool {
+    let line = line.trim();
+    let line = line.strip_prefix("← for agents · ").unwrap_or(line);
+    line.strip_prefix("? for shortcuts")
+        .is_some_and(|rest| rest.trim().is_empty() || rest.trim().starts_with('⚠'))
+}
+
 /// Parse the current Codex footer and return its structurally attached active
 /// row. `Some(None)` is an identifiable idle Codex frame; `None` is not a
 /// current Codex frame at all. Keeping that distinction lets consumers ask a
@@ -1280,10 +1287,7 @@ fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
     // final row, optionally followed by its shortcuts row in Codex 0.157.
     // Its prompt glyph is `›` (not Claude's `❯`).
     let last = tail.len().checked_sub(1)?;
-    let model_i = if let Some(rest) = tail[last].strip_prefix("← for agents · ? for shortcuts") {
-        if !rest.trim().is_empty() && !rest.trim().starts_with('⚠') {
-            return None;
-        }
+    let model_i = if codex_shortcuts_footer(tail[last]) {
         let index = last.checked_sub(1)?;
         if !codex_model_bar(tail[index]) {
             return None;
@@ -1640,6 +1644,17 @@ gemini-2.5-pro";
     fn codex_shortcuts_footer_preserves_idle_busy_and_background_states() {
         let footer = "› Ask Codex to do anything\n\n  GPT-5.5 high · ~/project\n  ← for agents · ? for shortcuts   ⚠ 1 warning · f2 to view\n";
         assert_eq!(codex_pane_generation_state(footer), Some(false));
+        let minimal_help = footer.replace("← for agents · ", "");
+        assert_eq!(codex_pane_generation_state(&minimal_help), Some(false));
+        assert_eq!(
+            codex_pane_generation_state(&format!("• Working (4s • esc to interrupt)\n{minimal_help}")),
+            Some(true)
+        );
+        assert_eq!(
+            codex_pane_generation_state(&minimal_help.replace("? for shortcuts", "? for shortcuts ordinary text")),
+            None
+        );
+
         let busy = format!("• Working (4s • esc to interrupt)\n{footer}");
         assert_eq!(codex_pane_generation_state(&busy), Some(true));
         let background =
