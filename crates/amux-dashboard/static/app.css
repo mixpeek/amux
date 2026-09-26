@@ -6195,6 +6195,10 @@
 .mdai-row-meta { font-size: 0.7rem; color: var(--dim); margin-top: 3px; }
 .mdai-row-go { flex: 0 0 auto; color: var(--dim); font-size: 1.1rem; line-height: 1; }
 
+/* Viewer header actions: always visible, unlike the .file-actions dropdown. */
+.mdai-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+@media (max-width: 600px) { .mdai-actions .file-view-tab, .mdai-actions .file-menu-btn { min-height: 44px; min-width: 44px; } }
+
 /* Node overlay body (reuses .file-overlay chrome, but normal prose, not mono). */
 .mdai-node-body {
   flex: 1; overflow: auto; background: var(--bg);

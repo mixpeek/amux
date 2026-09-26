@@ -3136,10 +3136,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <h2 id="mdai-title">node</h2>
       <div id="mdai-subpath" class="file-subpath"></div>
     </div>
-    <div class="file-actions">
+    <!-- NOT .file-actions: that container is display:none until the file
+         viewer's own toggle opens it, so Run, Raw and the menu were never shown. -->
+    <div class="mdai-actions">
       <button id="mdai-run-btn" class="file-view-tab" onclick="_mdaiRun()" title="Run the DAG chain">Run</button>
-      <button id="mdai-raw-btn" class="file-view-tab" onclick="_mdaiOpenRaw()" title="Open the raw .mdai file">Raw</button>
-      <button id="mdai-menu-btn" class="file-view-tab" onclick="event.stopPropagation();_mdaiMenu(this)" title="Download, copy, read aloud">&#x22EF;</button>
+      <button id="mdai-menu-btn" class="file-menu-btn" onclick="event.stopPropagation();_mdaiMenu(this)" title="Copy, export, raw file, read aloud" aria-label="More actions">&#x22EF;</button>
     </div>
     <button class="btn" onclick="closeMdaiNode()" style="flex-shrink:0;">&#x2715;</button>
   </div>

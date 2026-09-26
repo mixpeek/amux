@@ -12173,7 +12173,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1125';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1126';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -23970,11 +23970,99 @@ function _mdaiHistNav(delta) {
   _mdaiHistIdx = n; _mdaiRender();
 }
 
-// Ellipsis menu on the MDAI viewer: download / copy / read aloud the currently
-// shown rendered version (Ethan, AMUX-3320). Read-aloud reuses _ttsSpeak.
+// Ellipsis menu on the MDAI viewer: copy / export / read aloud the currently
+// shown version (Ethan, AMUX-3320). Read-aloud reuses _ttsSpeak.
+//
+// "Copy" puts the RENDERED output on the clipboard as text/html with the markdown
+// as text/plain, so pasting into Docs, Mail or Notion keeps headings, lists and
+// tables while a terminal or editor still gets markdown. The export items write
+// the same rendered HTML as a standalone page (Ethan, 2026-09-26: "copy/export
+// the rendered mdai contents").
 function _mdaiCurrentText() {
   const cur = _mdaiHist[_mdaiHistIdx] || null;
   return (cur && cur.output) ? cur.output : '';
+}
+// The rendered HTML of the shown version: the on-screen output when it is there,
+// else the same renderMarkdown call _mdaiRender makes.
+function _mdaiCurrentHtml() {
+  const shown = document.querySelector('#mdai-body .mdai-output');
+  const text = _mdaiCurrentText();
+  if (!text) return '';
+  if (shown && shown.innerHTML.trim()) return shown.innerHTML;
+  return renderMarkdown(text, _mdaiCur ? _mdaiCur.abs : '');
+}
+function _mdaiBaseName() {
+  const title = (document.getElementById('mdai-title') || {}).textContent || 'mdai';
+  return title.replace(/\.mdai$/i, '') || 'mdai';
+}
+// A self-contained page: print-friendly light styles, no dashboard CSS needed.
+function _mdaiStandaloneHtml() {
+  const cur = _mdaiHist[_mdaiHistIdx] || null;
+  const when = (cur && cur.ts) ? new Date(cur.ts * (cur.ts < 1e12 ? 1000 : 1)).toLocaleString() : '';
+  const name = _mdaiBaseName();
+  return '<!doctype html><html><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>' + esc(name) + '</title><style>'
+    + 'body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1f2328;max-width:820px;margin:32px auto;padding:0 20px;}'
+    + 'h1,h2,h3,h4{line-height:1.25;margin:1.4em 0 .5em}h1{font-size:1.7em}h2{font-size:1.35em}h3{font-size:1.12em}'
+    + 'table{border-collapse:collapse;margin:12px 0}th,td{border:1px solid #d0d7de;padding:6px 10px;text-align:left;vertical-align:top}th{background:#f6f8fa}'
+    + 'code{font-family:"SF Mono",Menlo,monospace;font-size:.88em;background:#f6f8fa;padding:1px 4px;border-radius:4px}'
+    + 'pre{background:#f6f8fa;padding:12px;border-radius:6px;overflow:auto}pre code{background:none;padding:0}'
+    + 'blockquote{border-left:3px solid #d0d7de;margin:0;padding:0 12px;color:#57606a}a{color:#0969da}img{max-width:100%}'
+    + '.mdai-export-meta{color:#57606a;font-size:12px;border-bottom:1px solid #d0d7de;padding-bottom:8px;margin-bottom:16px}'
+    + '@media print{body{margin:0;max-width:none}}'
+    + '</style></head><body>'
+    + '<div class="mdai-export-meta">' + esc(name) + '.mdai' + (when ? ' &middot; ' + esc(when) : '') + (cur && cur.model ? ' &middot; ' + esc(cur.model) : '') + '</div>'
+    + _mdaiCurrentHtml()
+    + '</body></html>';
+}
+function _mdaiCopyRendered() {
+  const text = _mdaiCurrentText();
+  if (!text) { showToast('Nothing to copy — run the node first'); return; }
+  const html = _mdaiCurrentHtml();
+  // ClipboardItem must be built inside the click gesture (Safari), so no await first.
+  if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+    const item = new ClipboardItem({
+      'text/html': new Blob([html], { type: 'text/html' }),
+      'text/plain': new Blob([text], { type: 'text/plain' })
+    });
+    navigator.clipboard.write([item]).then(() => showToast('Copied (formatted)'),
+      () => navigator.clipboard.writeText(text).then(() => showToast('Copied as markdown'), () => showToast('Copy failed')));
+    return;
+  }
+  navigator.clipboard.writeText(text).then(() => showToast('Copied as markdown'), () => showToast('Copy failed'));
+}
+function _mdaiSaveBlob(content, type, name) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  showToast('Downloaded ' + name);
+}
+// Print in a hidden iframe so the browser's "Save as PDF" gets the clean page,
+// not the dashboard. An iframe avoids the popup blocker window.open would hit.
+function _mdaiPrint() {
+  if (!_mdaiCurrentText()) { showToast('Nothing to export — run the node first'); return; }
+  const f = document.createElement('iframe');
+  f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(f);
+  const d = f.contentWindow.document;
+  d.open(); d.write(_mdaiStandaloneHtml()); d.close();
+  setTimeout(() => {
+    try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { showToast('Print failed'); }
+    setTimeout(() => f.remove(), 60000);
+  }, 250);
+}
+// iOS/Android share sheet with the rendered page as a file (Files, Mail, AirDrop).
+async function _mdaiShare() {
+  if (!_mdaiCurrentText()) { showToast('Nothing to share — run the node first'); return; }
+  const file = new File([_mdaiStandaloneHtml()], _mdaiBaseName() + '.html', { type: 'text/html' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: _mdaiBaseName() });
+    else await navigator.share({ title: _mdaiBaseName(), text: _mdaiCurrentText() });
+  } catch (e) { if (!e || e.name !== 'AbortError') showToast('Share failed'); }
 }
 function _mdaiMenu(btn) {
   document.querySelectorAll('.explore-menu-popup').forEach(el => el.remove());
@@ -23988,15 +24076,23 @@ function _mdaiMenu(btn) {
     b.onclick = () => { popup.remove(); fn(); };
     popup.appendChild(b);
   };
-  item('Download', () => _mdaiDownload(text));
-  item('Copy', () => {
+  item('Copy', _mdaiCopyRendered);
+  item('Copy as markdown', () => {
     if (!text) { showToast('Nothing to copy — run the node first'); return; }
     navigator.clipboard.writeText(text).then(() => showToast('Copied'), () => showToast('Copy failed'));
   });
+  item('Download .md', () => _mdaiDownload(text));
+  item('Download .html', () => {
+    if (!text) { showToast('Nothing to download — run the node first'); return; }
+    _mdaiSaveBlob(_mdaiStandaloneHtml(), 'text/html', _mdaiBaseName() + '.html');
+  });
+  item('Print / Save as PDF', _mdaiPrint);
+  if (navigator.share) item('Share…', _mdaiShare);
   item('Read aloud', () => {
     if (!text) { showToast('Nothing to read — run the node first'); return; }
     _ttsSpeak(text);
   });
+  item('Open raw .mdai file', _mdaiOpenRaw);
   document.body.appendChild(popup);
   const r = btn.getBoundingClientRect();
   popup.style.position = 'fixed';
@@ -24015,15 +24111,7 @@ function _mdaiMenu(btn) {
 }
 function _mdaiDownload(text) {
   if (!text) { showToast('Nothing to download — run the node first'); return; }
-  const title = (document.getElementById('mdai-title') || {}).textContent || 'mdai';
-  const name = title.replace(/\.mdai$/i, '') + '.md';
-  const blob = new Blob([text], { type: 'text/markdown' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  showToast('Downloaded ' + name);
+  _mdaiSaveBlob(text, 'text/markdown', _mdaiBaseName() + '.md');
 }
 // Write the current parsed state back to disk (used by every structured edit).
 // Uses the upload endpoint (see _mdaiRootRel) because PUT /api/file rejects .mdai.
