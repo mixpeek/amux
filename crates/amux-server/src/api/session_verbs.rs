@@ -7750,7 +7750,12 @@ async fn steer_enqueue_precond_with_id(
         return Err("project controller owns executor prompts");
     }
     let automation = !guard.is_empty() && !(guard == "project-steering" && sender.is_empty());
-    if automation && session_is_isolated(name) {
+    // SCHEDULES REACH ISOLATED WORKERS (Ethan, 2026-09-26: "isolated workers
+    // can still have schedulers they should"). A schedule is standing
+    // configuration of that worker, not amux steering it, so it is exempt
+    // here; board nudges, callbacks and peer relays still are not.
+    let isolated_schedule = is_schedule_guard(guard) && session_is_isolated(name);
+    if automation && !isolated_schedule && session_is_isolated(name) {
         return Err(
             "target is an isolated (raw-agent) worker: amux automation is not \
                     delivered into it. The owner's own send still works.",
@@ -10666,12 +10671,26 @@ pub(crate) struct AutoDelivery {
 /// Three outcomes and no fourth: delivered (verified), queued (with the row id),
 /// or refused (with the reason). `ok == true` never means "delivered" on its
 /// own — read `submitted`.
+/// A schedule's delivery guard (`sched:<id>`, set by the scheduler).
+pub(crate) fn is_schedule_guard(guard: &str) -> bool {
+    guard.starts_with("sched:")
+}
+
 pub(crate) async fn deliver_automated(
     state: &AppState,
     name: &str,
     text: &str,
     guard: &str,
 ) -> AutoDelivery {
+    // A schedule into an isolated worker is delivered as owner input; see
+    // `is_schedule_guard` and the queue's isolation gate.
+    let origin = if is_schedule_guard(guard) && session_is_isolated(name) {
+        tracing::info!(session = %name, guard, verdict = "isolated_schedule_delivered",
+            "schedule delivering into an isolated worker as owner configuration");
+        SendOrigin::Owner
+    } else {
+        SendOrigin::Automation
+    };
     let refuse = |why: String| AutoDelivery {
         message: why,
         submitted: Some(false),
@@ -10741,7 +10760,7 @@ pub(crate) async fn deliver_automated(
         // says "this is an automated producer, and `guard` already names which
         // one". This branch skipped the queue for a stopped lane, and with it
         // the queue's isolation gate (AMUX-3764).
-        let (ok, msg) = send_text(state, name, text, false, SendOrigin::Automation).await;
+        let (ok, msg) = send_text(state, name, text, false, origin).await;
         return classify(ok, msg);
     }
 
@@ -10772,7 +10791,7 @@ pub(crate) async fn deliver_automated(
             from_steering: true,
             allow_mid_turn: false,
             hook_confirmed_idle: false,
-            origin: SendOrigin::Automation,
+            origin,
         };
         let mut queue_id = None;
         let (ok, msg) = send_text_inner(state, name, text, mode, &mut queue_id).await;
@@ -32156,6 +32175,20 @@ mod tests {
     /// NEVER the queue wait — GE-626 (done before delivery) drops; MS-1188
     /// (still `doing` at delivery after 578s) delivers.
     #[test]
+    fn a_schedule_is_the_only_automation_an_isolated_worker_accepts() {
+        assert!(is_schedule_guard("sched:SCHED-12"));
+        assert!(!is_schedule_guard("board-drive"));
+        assert!(!is_schedule_guard(""));
+        let src = include_str!("session_verbs.rs");
+        assert!(src.contains("if automation && !isolated_schedule && session_is_isolated(name) {"));
+        let body = src.split_once("pub(crate) async fn deliver_automated(").unwrap().1;
+        let body = body.split_once("\n}\n").unwrap().0;
+        assert!(body.contains("if is_schedule_guard(guard) && session_is_isolated(name)"));
+        assert!(!body.contains("send_text(state, name, text, false, SendOrigin::Automation)"),
+            "the direct send must use the computed origin");
+    }
+
+    #[test]
     fn stale_pickup_voids_iff_card_left_doing_not_by_how_long_it_waited() {
         use crate::runtime_jobs::board_drive::PICKUP_ANCHOR;
         let pick = &format!("{PICKUP_ANCHOR}GE-626 — work it now.");
@@ -32387,11 +32420,15 @@ mod tests {
              queue, and drained() hardcodes origin: Owner, which is how a schedule fired straight \
              into an isolated lane's pane"
         );
+        // Policy changed 2026-09-26 (Ethan: "isolated workers can still have
+        // schedulers they should"): the origin is computed, and is Owner ONLY
+        // for a schedule into an isolated worker. Every other automated
+        // delivery still reaches isolation_refusal as Automation.
         assert!(
-            body.contains("origin: SendOrigin::Automation"),
-            "the at-boundary fast path must construct its own SendMode with an Automation origin \
-             so isolation_refusal actually sees it"
+            body.contains("            origin,\n") && body.contains("SendOrigin::Automation\n    };"),
+            "the at-boundary fast path must use the computed origin, whose default is Automation"
         );
+        assert!(body.contains("if is_schedule_guard(guard) && session_is_isolated(name)"));
     }
 
     /// The test above spawned real sessions, so this pins the property that

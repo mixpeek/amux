@@ -7352,13 +7352,14 @@ function _applyPeekTabVisibility() {
   PEEK_TABS.forEach(t => {
     const el = document.getElementById('peek-tab-' + t.id);
     if (el) {
-      const raw = sessions.find(s => s.name === peekSession)?.isolated;
       // Board is always shown, isolated workers included: it only views the
       // worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
       const alwaysShown = PEEK_REQUIRED_TABS.has(t.id);
       // A type with no worktree has no Worktree tab to show.
       const typeHides = t.id === 'git' && _peekType.worktree === 'unsupported';
-      el.style.display = !alwaysShown && (peekHiddenTabs.has(t.id) || (raw && t.id === 'schedules') || typeHides) ? 'none' : '';
+      // Schedules are shown for isolated workers too: a schedule is owner
+      // configuration and delivers into them (Ethan, 2026-09-26).
+      el.style.display = !alwaysShown && (peekHiddenTabs.has(t.id) || typeHides) ? 'none' : '';
     }
   });
 }
@@ -12080,7 +12081,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1120';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1121';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
