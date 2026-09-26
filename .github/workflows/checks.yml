@@ -261,6 +261,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-cli-worktree-dirty-warn.sh
+      - name: amux start makes no worktree for a start the server owns (DESKT-55)
+        run: |
+          set -uo pipefail
+          ./scripts/test-cli-start-no-orphan-worktree.sh
       # AMUX-4823. The pre-push refusal for an unwired harness. Its first cell
       # is the control that makes the other five mean anything: the fixture's
       # own wired-check always exits non-zero, so an ALLOWED push can only mean

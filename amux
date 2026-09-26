@@ -444,6 +444,20 @@ need_herdr() {
   command -v herdr &>/dev/null || die "herdr is required for herdr-backend workers. Install herdr or set AMUX_BACKEND=tmux"
 }
 
+# Does the SERVER own this worker's start, and with it the worker's workspace?
+# True for the providers whose launch is delegated (AMUX-3164), and for every
+# project or ephemeral worker whatever its provider: the server gives those the
+# project's single checkout or a <repo>/.worktrees/<name> fan-out workspace and
+# enforces the project's start permit. Both `cmd_start` branches read this one
+# function, so the CLI can never create a worktree for a start it hands away
+# (DESKT-55: 8 detached 3.6 GB worktrees under ~/.amux/worktrees, made by
+# `amux start` for project workers whose server-side start was then refused,
+# and never used or removed).
+server_owns_start() { # <provider> <CC_PROJECT> <CC_EPHEMERAL>
+  case "$1" in codex|ollama|gemini|muse) return 0 ;; esac
+  [[ -n "${2:-}" || "${3:-}" == "1" ]]
+}
+
 _start_via_api() {
   local name="$1"
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
@@ -861,7 +875,10 @@ cmd_start() {
   # removed at stop; it shares the .git object store (no disk duplication).
   # Skip for dry-run: no tmux session follows, so the worktree would be orphaned.
   local worktree_dir=""
-  if ! $dry_run && [[ "${CC_WORKTREE:-}" == "1" ]] && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+  local _provider="${CC_PROVIDER:-claude}"
+  if ! $dry_run && [[ "${CC_WORKTREE:-}" == "1" ]] \
+     && ! server_owns_start "$_provider" "${CC_PROJECT:-}" "${CC_EPHEMERAL:-}" \
+     && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     worktree_dir="$CC_HOME/worktrees/$name"
     if [[ -d "$worktree_dir" ]]; then
       # Stale worktree from a previous run that wasn't cleaned up
@@ -901,13 +918,12 @@ cmd_start() {
   # This is D6 (two launch constructions) leaking through the door the server
   # does not own. Delegating means the provider->binary map has one home.
   local resume_fallback=""
-  local _provider="${CC_PROVIDER:-claude}"
   # muse belongs in this list for the reason the comment above gives: the server owns the
   # provider->binary map. Left out, `amux start` on a muse worker fell through to the claude
   # builder below and launched `claude --model sonnet --continue` -- the WRONG AGENT, silently,
   # because the fallback is a default rather than a failure. The server-side arm was correct the
   # whole time; only this door was. Observed live before the fix (muse-hooks-probe).
-  if [[ "$_provider" == "codex" || "$_provider" == "ollama" || "$_provider" == "gemini" || "$_provider" == "muse" ]]; then
+  if server_owns_start "$_provider" "${CC_PROJECT:-}" "${CC_EPHEMERAL:-}"; then
     if $dry_run; then
       echo "${BOLD}$name${RESET} ($_provider — started via server API: POST /api/sessions/$name/start; the server owns the provider→binary map and the provider-specific setup)"
       return
