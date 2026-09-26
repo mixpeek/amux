@@ -344,8 +344,23 @@ load_session() {
   local name="$1"
   local file="$CC_SESSIONS/$name.env"
   [[ -f "$file" ]] || die "worker '$name' not found"
+  # The worker's own file decides where and how it runs. `source` only ADDS,
+  # so a CC_WORKTREE=1 exported by whatever shell ran `amux start` survived for
+  # a worker whose file never set it: the amux lane came back from a fleet
+  # restore (2026-09-25 17:50) inside ~/.amux/worktrees/amux instead of its
+  # repo. Drop inherited values of the keys that pick the checkout and lifecycle.
+  local _k _dropped=""
+  for _k in CC_WORKTREE CC_WORKTREE_REPO CC_PROJECT CC_EPHEMERAL CC_DIR CC_PROVIDER; do
+    if [[ -n "${!_k+x}" ]]; then _dropped+=" $_k=${!_k}"; unset "$_k"; fi
+  done
   # shellcheck disable=SC1090
   source "$file"
+  # Values left by an earlier load_session in this process (cmd_ls loops over
+  # every worker) are cleared too, silently: only an OUTSIDE value is news.
+  if [[ -n "$_dropped" && -z "${_AMUX_WORKER_LOADED:-}" ]]; then
+    echo "${DIM}amux: ignored inherited${_dropped} for $name; its own file decides (verdict=inherited_worker_env_ignored)${RESET}" >&2
+  fi
+  _AMUX_WORKER_LOADED="$name"
 }
 
 # Load global defaults
