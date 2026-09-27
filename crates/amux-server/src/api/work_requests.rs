@@ -295,8 +295,10 @@ async fn import_request(state: &AppState, instance: &str, v: Value) -> ApiResult
     state.store.write_async(move|c|{
         let existing:Option<String>=c.query_row("SELECT task_id FROM _amux_source_bindings WHERE instance_id=?1 AND candidate_id=?2",params![instance,candidate],|r|r.get(0)).optional()?;
         if let Some(ref id)=existing {
-            let prior:String=c.query_row("SELECT snapshot FROM _amux_source_bindings WHERE task_id=?1",[id],|r|r.get(0))?;
-            if prior==snapshot{return Ok(WriteOutcome{applied:false,events:vec![]});}
+            let (prior,verified):(String,Option<i64>)=c.query_row("SELECT b.snapshot,i.last_verified_at FROM _amux_source_bindings b JOIN issues i ON i.id=b.task_id WHERE b.task_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if prior==snapshot && verified.is_some_and(|at| now()-at<3600) {
+                return Ok(WriteOutcome{applied:false,events:vec![]});
+            }
         }
         let mut row=if let Some(id)=existing {bs::get_issue(c,&id)?.ok_or(rusqlite::Error::InvalidQuery)?}else{
             bs::create_issue(c,&bs::NewIssue{title:title.clone(),desc:"Source request managed through its native request actions.".into(),status:"backlog".into(),session:None,item_type:"task".into(),creator:"workdesk".into(),owner_type:"human".into(),due:None,due_time:None,reviewer:None,shepherd:None,gate:vec![],depends_on:vec![],tags:vec!["workdesk".into()],ask_type:None,next_action:None,acceptance_criteria:None,ask_question:None,ask_unblocks:None,ask_actor:None,source:Some("workdesk".into()),requested_by:None,callback_session:None,callback_prompt:None},now())?
@@ -307,6 +309,7 @@ async fn import_request(state: &AppState, instance: &str, v: Value) -> ApiResult
         row.due=due.get(..10).filter(|date|chrono::NaiveDate::parse_from_str(date,"%Y-%m-%d").is_ok()).map(str::to_string);
         row.desc=format!("Requester: {}\nSource: {}\n{}",text(issue,"requester_name"),text(issue,"evidence_permalink"),text(issue,"title"));
         row.title=title; row.source_ref=Some(format!("{instance}:{candidate}"));row.updated=now();
+        row.last_verified_at=Some(now());
         // Persist refreshed facts and lifecycle under one writer transaction.
         bs::save_patched(c,&mut row)?;
         let target=domain_status(&v);
@@ -790,6 +793,48 @@ mod tests {
             })
             .await
             .is_err());
+    }
+    #[tokio::test]
+    async fn unchanged_source_refreshes_missing_or_aged_verification_without_new_card() {
+        let (state, _dir) = test_state();
+        let request = json!({"candidate_id":4,"title":"Source provenance","status":"awaiting_draft","source_fingerprint":"v1","detail":{}});
+        import_request(&state, "instance", request.clone())
+            .await
+            .unwrap();
+        for prior in [None, Some(now() - 3601)] {
+            state
+                .store
+                .write_async(move |c| {
+                    c.execute(
+                        "UPDATE issues SET last_verified_at=?1 WHERE source='workdesk'",
+                        [prior],
+                    )?;
+                    Ok(WriteOutcome {
+                        applied: true,
+                        events: vec![],
+                    })
+                })
+                .await
+                .unwrap();
+            let before = now();
+            import_request(&state, "instance", request.clone())
+                .await
+                .unwrap();
+            let c = state.store.read().unwrap();
+            let verified: i64 = c
+                .query_row(
+                    "SELECT last_verified_at FROM issues WHERE source='workdesk'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(verified >= before);
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
     }
     #[tokio::test]
     async fn stale_source_edit_reopens_review_without_fabricating_delivery() {
