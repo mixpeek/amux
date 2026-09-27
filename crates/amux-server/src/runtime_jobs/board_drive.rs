@@ -1346,9 +1346,125 @@ fn claimed_since_sql(param: u8) -> String {
     )
 }
 
+/// Bind idle lease retries to the actual work contract, not lifecycle fields
+/// such as status, owner, timestamps, or lease generation. Two unchanged idle
+/// lease expiries by the current owner park this card for that owner while
+/// other work remains selectable; a new owner or actionable-contract edit
+/// makes it eligible again.
+fn actionable_task_fingerprint(row: &bs::IssueRow) -> String {
+    use sha2::Digest;
+    let bytes = serde_json::to_vec(&(
+        &row.title,
+        &row.desc,
+        &row.next_action,
+        &row.acceptance_criteria,
+        &row.depends_on,
+        &row.source_ref,
+        &row.source,
+        &row.item_type,
+        &row.tags,
+        &row.gate,
+    ))
+    .unwrap_or_default();
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+fn lease_retry_fingerprints(conn: &Connection, session: &str) -> HashMap<String, HashMap<String, usize>> {
+    let mut counts = HashMap::<String, HashMap<String, usize>>::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT data FROM session_events WHERE session=?1 AND type='task.lease_reclaimed' AND json_valid(data)",
+    ) else {
+        return counts;
+    };
+    let Ok(rows) = stmt.query_map([session], |row| row.get::<_, String>(0)) else {
+        return counts;
+    };
+    for data in rows.flatten() {
+        let Ok(value) = serde_json::from_str::<Value>(&data) else { continue };
+        let (Some(issue), Some(fingerprint)) = (
+            value.get("issue").and_then(Value::as_str),
+            value.get("fingerprint").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        *counts
+            .entry(issue.to_owned())
+            .or_default()
+            .entry(fingerprint.to_owned())
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn lease_retry_suppressed(
+    row: &bs::IssueRow,
+    lease_retries: &HashMap<String, HashMap<String, usize>>,
+) -> bool {
+    lease_retries
+        .get(&row.id)
+        .and_then(|by_fingerprint| by_fingerprint.get(&actionable_task_fingerprint(row)))
+        .is_some_and(|count| *count >= 2)
+}
+
+/// Return eligible candidates plus the number parked by the unchanged-work
+/// lease breaker. The count is surfaced when pickup finds no other work, so
+/// an idle lane can distinguish an empty queue from retry suppression.
+fn dispatchable_candidate_ids(
+    conn: &Connection,
+    session: &str,
+    fresh_cut: i64,
+    reclaim_cut: f64,
+    limit: usize,
+    order: &str,
+) -> (Vec<String>, usize) {
+    let lease_retries = lease_retry_fingerprints(conn, session);
+    let mut ids = Vec::with_capacity(limit);
+    let mut suppressed = 0;
+    let mut offset = 0_i64;
+    while ids.len() < limit {
+        let page: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT i.id FROM issues i WHERE {dw} \
+                 ORDER BY {order} LIMIT 256 OFFSET ?4",
+                dw = dispatchable_where()
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(
+                    rusqlite::params![session, fresh_cut, reclaim_cut, offset],
+                    |row| row.get(0),
+                )
+                .map(|rows| rows.flatten().collect())
+            })
+            .unwrap_or_default();
+        let page_len = page.len();
+        for id in page {
+            if lease_retries.contains_key(id.as_str()) {
+                let Ok(Some(row)) = bs::get_issue(conn, &id) else { continue };
+                if lease_retry_suppressed(&row, &lease_retries) {
+                    suppressed += 1;
+                    continue;
+                }
+            }
+            ids.push(id);
+            if ids.len() >= limit {
+                break;
+            }
+        }
+        if page_len < 256 || ids.len() >= limit {
+            break;
+        }
+        offset += page_len as i64;
+    }
+    (ids, suppressed)
+}
+
 fn dispatchable_where() -> String {
+    dispatchable_where_for("i.session=?1")
+}
+
+fn dispatchable_where_for(owner_predicate: &str) -> String {
     format!(
-        "i.session=?1 AND i.status='todo' \
+        "{owner_predicate} AND i.status='todo' \
          AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
          AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
          AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=i.id \
@@ -1359,6 +1475,91 @@ fn dispatchable_where() -> String {
     )
 }
 
+fn pool_dispatchable_where() -> String {
+    dispatchable_where_for(
+        "NOT EXISTS (SELECT 1 FROM issue_tags p WHERE p.issue_id=i.id AND lower(p.tag)='dispatch:local')",
+    )
+}
+
+pub(crate) fn pool_worker_ready(home: &std::path::Path, lane: &str) -> bool {
+    let env = crate::config::parse_env_file(&home.join("sessions").join(format!("{lane}.env")));
+    // Sharing compatible work is automatic. A worker can opt out explicitly
+    // with any false value; absence preserves the default-on pool behavior.
+    env.get("AMUX_REDISTRIBUTE_READY").is_none_or(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
+fn pool_worker_isolated(home: &std::path::Path, lane: &str) -> bool {
+    let env = crate::config::parse_env_file(&home.join("sessions").join(format!("{lane}.env")));
+    env.get("CC_ISOLATED").is_some_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
+fn worker_groups(home: &std::path::Path, lane: &str) -> HashSet<String> {
+    let env = crate::config::parse_env_file(&home.join("sessions").join(format!("{lane}.env")));
+    env.get("CC_TAGS")
+        .map(|tags| {
+            tags.split(',')
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn pool_dispatch_allowed(
+    conn: &Connection,
+    row: &bs::IssueRow,
+    receiver: &str,
+    home: &std::path::Path,
+) -> bool {
+    let Some(owner) = row.session.as_deref().filter(|owner| !owner.is_empty()) else {
+        return false;
+    };
+    if owner == receiver
+        || row.status != "todo"
+        || row.owner_type != "agent"
+        || row.archived != 0
+        || row.pinned != 0
+        || row.blocked_on.as_deref().is_some_and(|v| !v.trim().is_empty())
+        || row.waiting_on.as_deref().is_some_and(|v| !v.trim().is_empty())
+        || fresh_source_ref_trigger(row, now_f64() as i64)
+        || row.reviewer.as_deref() == Some(receiver)
+        || row.creator == receiver
+        || row.lease_expires_at.is_some_and(|expiry| expiry > now_f64() as i64)
+        || !crate::api::session_verbs::standing_orders_on_in(home, owner, "CC_AUTO_PICKUP")
+        || !crate::api::session_verbs::standing_orders_on_in(home, receiver, "CC_AUTO_PICKUP")
+        || !pool_worker_ready(home, owner)
+        || !pool_worker_ready(home, receiver)
+        || pool_worker_isolated(home, owner)
+        || pool_worker_isolated(home, receiver)
+    {
+        return false;
+    }
+    let safe_board_state = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM issues i WHERE i.id=?1 AND i.status='todo' \
+                 AND i.owner_type='agent' AND i.deleted IS NULL AND COALESCE(i.archived,0)=0 \
+                 AND COALESCE(i.type,'') NOT IN ('tripwire','watch','epic') \
+                 AND NOT EXISTS (SELECT 1 FROM issue_tags h WHERE h.issue_id=i.id \
+                                 AND lower(h.tag) LIKE 'needs:you%') \
+                 AND NOT EXISTS (SELECT 1 FROM issue_tags p WHERE p.issue_id=i.id \
+                                 AND lower(p.tag)='dispatch:local'))",
+            [&row.id],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if !safe_board_state {
+        return false;
+    }
+    let owners = worker_groups(home, owner);
+    let receivers = worker_groups(home, receiver);
+    !owners.is_empty() && owners.iter().any(|group| receivers.contains(group))
+}
+
 /// py:14403 — the count over EXACTLY the rows pickup selects from, via
 /// [`DISPATCHABLE_WHERE`]. Per-card refusals (junk shells, structured deps) still
 /// happen inside the loop and surface as `all-candidates-refused` — an honest
@@ -1366,12 +1567,75 @@ fn dispatchable_where() -> String {
 fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
     let fresh_cut = pickup_fresh_cut(now);
     let reclaim_cut = now - reclaim_cooldown_s();
-    conn.query_row(
-        &format!("SELECT COUNT(*) FROM issues i WHERE {dw}", dw = dispatchable_where()),
-        rusqlite::params![session, fresh_cut, reclaim_cut],
-        |r| r.get(0),
-    )
-    .unwrap_or(0)
+    let ids: Vec<String> = conn
+        .prepare(&format!(
+            "SELECT i.id FROM issues i WHERE {dw}",
+            dw = dispatchable_where()
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |row| {
+                row.get(0)
+            })
+            .map(|rows| rows.flatten().collect())
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return 0;
+    }
+    let lease_retries = lease_retry_fingerprints(conn, session);
+    ids.iter()
+        .filter(|id| {
+            if !lease_retries.contains_key(id.as_str()) {
+                return true;
+            }
+            bs::get_issue(conn, id)
+                .ok()
+                .flatten()
+                .is_some_and(|row| !lease_retry_suppressed(&row, &lease_retries))
+        })
+        .count() as i64
+}
+
+fn eligible_todo_count_with_home(
+    conn: &Connection,
+    session: &str,
+    now: f64,
+    home: &std::path::Path,
+) -> i64 {
+    let owned = eligible_todo_count(conn, session, now);
+    if !pool_worker_ready(home, session) {
+        return owned;
+    }
+    let fresh_cut = pickup_fresh_cut(now);
+    let reclaim_cut = now - reclaim_cooldown_s();
+    let candidates: Vec<String> = conn
+        .prepare(&format!(
+            "SELECT i.id FROM issues i WHERE {dw}",
+            dw = pool_dispatchable_where()
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |row| {
+                row.get(0)
+            })
+            .map(|rows| rows.flatten().collect())
+        })
+        .unwrap_or_default();
+    let mut pool_counts = HashMap::<String, HashMap<String, HashMap<String, usize>>>::new();
+    candidates
+        .iter()
+        .filter(|id| {
+            let Ok(Some(row)) = bs::get_issue(conn, id) else { return false };
+            if !pool_dispatch_allowed(conn, &row, session, home) {
+                return false;
+            }
+            let owner = row.session.as_deref().unwrap_or_default();
+            let retries = pool_counts
+                .entry(owner.to_string())
+                .or_insert_with(|| lease_retry_fingerprints(conn, owner));
+            !lease_retry_suppressed(&row, retries)
+        })
+        .count() as i64
+        + owned
 }
 
 fn open_card_count(conn: &Connection, session: &str) -> i64 {
@@ -3347,7 +3611,13 @@ fn stale_gate_excluded_todos(conn: &Connection, session: &str, fresh_cut: i64) -
 /// The production entry point. Tests use the `_with` form so a lane's ON-DISK
 /// scope env cannot decide whether a unit test passes.
 pub fn select_pickup(conn: &Connection, session: &str, now: f64) -> Pickup {
-    select_pickup_with(conn, session, now, bs::continuation_required(Some(session)))
+    select_pickup_with_home(
+        conn,
+        session,
+        now,
+        bs::continuation_required(Some(session)),
+        Some(&crate::config::amux_home()),
+    )
 }
 
 /// [`select_pickup`] with the continuation gate passed in rather than read from
@@ -3369,6 +3639,16 @@ pub fn select_pickup_with(
     session: &str,
     now: f64,
     continuation_gate: bool,
+) -> Pickup {
+    select_pickup_with_home(conn, session, now, continuation_gate, None)
+}
+
+fn select_pickup_with_home(
+    conn: &Connection,
+    session: &str,
+    now: f64,
+    continuation_gate: bool,
+    home: Option<&std::path::Path>,
 ) -> Pickup {
     // WIP cap (py:14449). Pickup claimed via raw UPDATE, bypassing the limit the
     // PATCH path enforces — one session accumulated TWELVE doing cards, a lie
@@ -3423,9 +3703,12 @@ pub fn select_pickup_with(
         // it back. Ordered AFTER the promotion on purpose — promoting is
         // reversible and touches only a parked card, so it gets first refusal;
         // reclaiming moves someone's claimed card and is the last resort.
-        if let Some(p) =
-            reclaim_stale_doing(conn, now, &holding, eligible_todo_count(conn, session, now))
-        {
+        let eligible = if let Some(home) = home {
+            eligible_todo_count_with_home(conn, session, now, home)
+        } else {
+            eligible_todo_count(conn, session, now)
+        };
+        if let Some(p) = reclaim_stale_doing(conn, now, &holding, eligible) {
             return p;
         }
         return Pickup::None {
@@ -3454,24 +3737,19 @@ pub fn select_pickup_with(
     // can score), then order by `pickup_score` — age surfaces starved cards, type
     // and tag severity lift P0s, dependents lift critical-path work, and drag
     // position / pin stay as human overrides.
-    let ids: Vec<String> = if pickup_scoring_enabled() {
-        let raw: Vec<String> = conn
-            .prepare(&format!(
-                // Pinned first so a newer pinned card is never truncated out of
-                // the 256-card scoring window before its pin boost applies; then
-                // oldest-first so a deep queue never drops the oldest before it
-                // can score.
-                "SELECT i.id FROM issues i WHERE {dw} \
-                 ORDER BY COALESCE(i.pinned,0) DESC, i.created ASC LIMIT 256",
-                dw = dispatchable_where()
-            ))
-            .and_then(|mut st| {
-                st.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |r| {
-                    r.get::<_, String>(0)
-                })
-                .map(|rows| rows.flatten().collect())
-            })
-            .unwrap_or_default();
+    let mut retry_suppressed = 0_usize;
+    let mut ids: Vec<String> = if pickup_scoring_enabled() {
+        // Pinned first, then page until 256 eligible candidates survive the
+        // current-owner repeated idle-lease retry breaker.
+        let (raw, suppressed) = dispatchable_candidate_ids(
+            conn,
+            session,
+            fresh_cut,
+            reclaim_cut,
+            256,
+            "COALESCE(i.pinned,0) DESC, i.created ASC",
+        );
+        retry_suppressed += suppressed;
         let rows: Vec<bs::IssueRow> = raw
             .iter()
             .filter_map(|id| bs::get_issue(conn, id).ok().flatten())
@@ -3503,20 +3781,73 @@ pub fn select_pickup_with(
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         scored.into_iter().map(|(_, _, id)| id).collect()
     } else {
-        conn.prepare(&format!(
-            "SELECT i.id FROM issues i WHERE {dw} \
-             ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.pos, 0) ASC, i.created ASC LIMIT 16",
-            dw = dispatchable_where()
-        ))
-        .and_then(|mut st| {
-            st.query_map(rusqlite::params![session, fresh_cut, reclaim_cut], |r| {
-                r.get::<_, String>(0)
-            })
-            .map(|rows| rows.flatten().collect())
-        })
-        .unwrap_or_default()
+        let (ids, suppressed) = dispatchable_candidate_ids(
+            conn,
+            session,
+            fresh_cut,
+            reclaim_cut,
+            16,
+            "COALESCE(i.pinned,0) DESC, COALESCE(i.pos, 0) ASC, i.created ASC",
+        );
+        retry_suppressed += suppressed;
+        ids
     };
+    if let Some(home) = home.filter(|home| pool_worker_ready(home, session)) {
+        let mut offset = 0_i64;
+        let mut lease_retries = HashMap::<String, HashMap<String, HashMap<String, usize>>>::new();
+        // Keep each query bounded, but scan the full finite pool. Later refusal
+        // guards (dependencies, continuation, capture shells) can reject a
+        // compatible row, so capping accepted rows here can hide runnable work
+        // behind a large compatible-but-blocked prefix forever.
+        loop {
+            let page: Vec<String> = conn
+                .prepare(&format!(
+                    "SELECT i.id FROM issues i WHERE {dw} \
+                     ORDER BY COALESCE(i.pinned,0) DESC, COALESCE(i.pos,0) ASC, i.created ASC \
+                     LIMIT 256 OFFSET ?4",
+                    dw = pool_dispatchable_where()
+                ))
+                .and_then(|mut stmt| {
+                    stmt.query_map(
+                        rusqlite::params![session, fresh_cut, reclaim_cut, offset],
+                        |row| row.get(0),
+                    )
+                    .map(|rows| rows.flatten().collect())
+                })
+                .unwrap_or_default();
+            let page_len = page.len();
+            for id in page {
+                let Ok(Some(row)) = bs::get_issue(conn, &id) else { continue };
+                if !pool_dispatch_allowed(conn, &row, session, home) {
+                    continue;
+                }
+                let owner = row.session.as_deref().unwrap_or_default();
+                let retries = lease_retries
+                    .entry(owner.to_owned())
+                    .or_insert_with(|| lease_retry_fingerprints(conn, owner));
+                if lease_retry_suppressed(&row, retries) {
+                    retry_suppressed += 1;
+                    continue;
+                }
+                ids.push(id);
+            }
+            if page_len < 256 {
+                break;
+            }
+            offset += page_len as i64;
+        }
+    }
     if ids.is_empty() {
+        if retry_suppressed > 0 {
+            tracing::info!(
+                target: "amux::board_drive",
+                session,
+                measured = true,
+                n_considered = retry_suppressed,
+                verdict = "idle_lease_retry_suppressed",
+                "pickup parked unchanged To Do cards after repeated idle lease reclaims"
+            );
+        }
         // Name the aged-out cards rather than reporting an empty queue: the
         // freshness gate silently withholds stale todos, and "nothing
         // dispatchable" read identically to "no cards" before this (AMUX-3779).
@@ -3531,6 +3862,13 @@ pub fn select_pickup_with(
             String::new()
         };
         let freshness_note = if days > 0 { format!(", stale >{days}d") } else { String::new() };
+        let retry_note = if retry_suppressed > 0 {
+            format!(
+                "; lease retry breaker paused {retry_suppressed} unchanged To Do card(s) after 2 idle lease reclaims; revise the work contract to re-arm"
+            )
+        } else {
+            String::new()
+        };
         let cooldown_s = reclaim_cooldown_s();
         let cooldown = if cooldown_s >= 3600.0 {
             format!("{:.1}h", cooldown_s / 3600.0)
@@ -3590,7 +3928,7 @@ pub fn select_pickup_with(
             reason: "no-eligible-card",
             detail: format!(
                 "queue holds nothing dispatchable (needs:you, archived, dormant, \
-                 cards claimed in the last {cooldown} are exempt{freshness_note}){aged_note}{drain_note}"
+                 cards claimed in the last {cooldown} are exempt{freshness_note}){aged_note}{retry_note}{drain_note}"
             ),
         };
     }
@@ -3692,9 +4030,22 @@ pub fn select_pickup_with(
     if let Some(pickup) = backlog_drain_pickup(conn, session, now, skipped.len(), continuation_gate) {
         return pickup;
     }
+    let retry_note = if retry_suppressed > 0 {
+        tracing::info!(
+            target: "amux::board_drive",
+            session,
+            measured = true,
+            n_considered = retry_suppressed,
+            verdict = "idle_lease_retry_suppressed",
+            "pickup refused all remaining cards while unchanged lease retries were parked"
+        );
+        format!("; lease retry breaker parked {retry_suppressed} unchanged To Do card(s)")
+    } else {
+        String::new()
+    };
     Pickup::None {
         reason: "all-candidates-refused",
-        detail: skipped.join("; "),
+        detail: format!("{}{retry_note}", skipped.join("; ")),
     }
 }
 
@@ -6014,6 +6365,7 @@ pub(crate) async fn reclaim_expired_leases<F: Fleet>(state: &AppState, fleet: &F
                     )?;
                     return Ok(crate::db::WriteOutcome { applied: true, events: vec![] });
                 }
+                let fingerprint = actionable_task_fingerprint(&row);
                 let idle_s = now - row.lease_heartbeat_at.unwrap_or(now);
                 let opts = crate::db::advance::AdvanceOpts {
                     expected_from: Some("doing".into()),
@@ -6035,7 +6387,8 @@ pub(crate) async fn reclaim_expired_leases<F: Fleet>(state: &AppState, fleet: &F
                             rusqlite::params![
                                 now_f64(), &owner_w, "task.lease_reclaimed",
                                 json!({"issue": &card_w, "holder": &owner_w, "generation": generation,
-                                       "reason": reason, "silent_s": idle_s, "ttl_s": ttl}).to_string(),
+                                       "reason": reason, "silent_s": idle_s, "ttl_s": ttl,
+                                       "fingerprint": fingerprint}).to_string(),
                                 "board-drive"
                             ],
                         )?;
@@ -7786,7 +8139,10 @@ pub async fn lease_next(state: &AppState, lane: &str) -> LeaseNext {
 }
 
 pub async fn claim_card(state: &AppState, session: &str, card: &str) -> bool {
-    claim_card_from(state, session, card, "todo").await
+    matches!(
+        claim_card_from_outcome_with_pool(state, session, card, "todo", true).await,
+        ClaimCardOutcome::Claimed
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7810,7 +8166,7 @@ pub async fn claim_card_from(
     from: &'static str,
 ) -> bool {
     matches!(
-        claim_card_from_outcome(state, session, card, from).await,
+        claim_card_from_outcome_with_pool(state, session, card, from, false).await,
         ClaimCardOutcome::Claimed
     )
 }
@@ -7825,11 +8181,26 @@ pub(crate) async fn claim_card_from_outcome(
     card: &str,
     from: &'static str,
 ) -> ClaimCardOutcome {
-    claim_card_from_expected_owner(state,session,card,from,None).await
+    claim_card_from_outcome_with_pool(state, session, card, from, false).await
+}
+
+async fn claim_card_from_outcome_with_pool(
+    state: &AppState,
+    session: &str,
+    card: &str,
+    from: &'static str,
+    allow_pool_dispatch: bool,
+) -> ClaimCardOutcome {
+    claim_card_from_expected_owner_with_pool(state,session,card,from,None,allow_pool_dispatch).await
 }
 
 async fn claim_card_from_expected_owner(state:&AppState,session:&str,card:&str,from:&'static str,
     expected_owner:Option<&str>)->ClaimCardOutcome {
+    claim_card_from_expected_owner_with_pool(state,session,card,from,expected_owner,true).await
+}
+
+async fn claim_card_from_expected_owner_with_pool(state:&AppState,session:&str,card:&str,from:&'static str,
+    expected_owner:Option<&str>, allow_pool_dispatch:bool)->ClaimCardOutcome {
     let card_s = card.to_string();
     // Assign the claimer as part of the swap. For auto-pickup this is a no-op
     // (the card is already `i.session=lane`), but it makes a MANUAL claim
@@ -7838,6 +8209,7 @@ async fn claim_card_from_expected_owner(state:&AppState,session:&str,card:&str,f
     // owner.
     let session_s = session.to_string();
     let expected_owner=expected_owner.map(str::to_string);
+    let home = crate::config::amux_home();
     // THE GUARD'S VERDICT HAS TO ESCAPE THE CLOSURE (AMUX-3776). `reassigned`
     // is computed inside the write, where it can be read in the same
     // transaction as the swap — which is correct and is why it lives there —
@@ -7870,6 +8242,12 @@ async fn claim_card_from_expected_owner(state:&AppState,session:&str,card:&str,f
             if expected_owner.as_deref().is_some_and(|owner|row.session.as_deref()!=Some(owner)) {
                 return Ok(crate::db::WriteOutcome { applied:false,events:vec![] });
             }
+            let retry_owner = row.session.as_deref().unwrap_or_default();
+            if lease_retry_suppressed(&row, &lease_retry_fingerprints(conn, retry_owner)) {
+                tracing::info!(measured=true, n_considered=1, issue=%row.id,
+                    verdict="idle_lease_retry_suppressed", "atomic claim retained unchanged exhausted work");
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            }
             let blockers = deps_blocking(conn, &row);
             if !blockers.is_empty() {
                 if let Ok(mut g) = dependency_blockers_w.lock() {
@@ -7877,9 +8255,14 @@ async fn claim_card_from_expected_owner(state:&AppState,session:&str,card:&str,f
                 }
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             }
-            let prior_owner = row.session.unwrap_or_default();
-
+            let prior_owner = row.session.clone().unwrap_or_default();
             let reassigned = !prior_owner.is_empty() && prior_owner != session_s;
+            if reassigned
+                && (!allow_pool_dispatch
+                    || !pool_dispatch_allowed(conn, &row, &session_s, &home))
+            {
+                return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+            }
             let entry = if reassigned {
                 format!("Auto-picked up from queue by {session_s} (reassigned from {prior_owner})")
             } else if from == "backlog" {
@@ -9746,11 +10129,23 @@ mod tests {
     async fn an_expired_lease_on_an_idle_holder_is_reclaimed_with_an_audit_row() {
         let (_dir, state, store) = drive_state();
         expired_lease_card(&store, "T-IDLE");
+        let fingerprint = {
+            let conn = store.read().unwrap();
+            let row = bs::get_issue(&conn, "T-IDLE").unwrap().unwrap();
+            actionable_task_fingerprint(&row)
+        };
         let fleet = BoundaryFleet::default(); // running, at boundary, no child work
         let r = reclaim_expired_leases(&state, &fleet).await;
         assert_eq!((r.n_considered, r.reclaimed, r.extended), (1, 1, 0));
         assert_eq!(drive_status(&store, "T-IDLE"), "todo");
         assert_eq!(drive_events(&store, "task.lease_reclaimed"), 1);
+        let event_data: String = store.read().unwrap().query_row(
+            "SELECT data FROM session_events WHERE type='task.lease_reclaimed' AND json_extract(data,'$.issue')='T-IDLE'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let event: Value = serde_json::from_str(&event_data).unwrap();
+        assert_eq!(event["fingerprint"], json!(fingerprint));
         let (owner, gen): (Option<String>, i64) = store.read().unwrap()
             .query_row("SELECT lease_owner, lease_generation FROM issues WHERE id='T-IDLE'", [],
                 |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -10054,6 +10449,12 @@ mod tests {
         store.write(|c|{c.execute("UPDATE issues SET session='busy' WHERE id='SHARED'",[])?;
             c.execute("INSERT INTO issue_tags(issue_id,tag) VALUES('SHARED','dispatch:pool')",[])?;
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})}).unwrap();
+        let _home = crate::api::settings::test_env::set_home(_d.path());
+        std::fs::create_dir_all(_d.path().join("sessions")).unwrap();
+        for lane in ["busy", "idle-a", "idle-b"] {
+            std::fs::write(_d.path().join("sessions").join(format!("{lane}.env")), "CC_TAGS=test-pool\n").unwrap();
+        }
+
         let fleet=PoolFleet{delivered:std::sync::Mutex::new(vec![])};
         let (a,b)=tokio::join!(drive_lane(&state,&fleet,"idle-a"),drive_lane(&state,&fleet,"idle-b"));
         assert_eq!([a.outcome.as_str(),b.outcome.as_str()].iter().filter(|v|**v=="assigned").count(),1);
@@ -11874,6 +12275,12 @@ mod tests {
     #[tokio::test]
     async fn claim_log_names_the_lane_and_records_a_reassignment() {
         let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        for lane in ["amux", "amux-frustrations"] {
+            std::fs::write(dir.path().join("sessions").join(format!("{lane}.env")), "CC_TAGS=shared-pool-test\n").unwrap();
+        }
+
         let store =
             std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let state = crate::api::AppState {
@@ -14103,6 +14510,257 @@ mod tests {
         assert_cli_verbs_exist("amux board show X, amux board done X, amux board reviewer X y");
     }
 
+    #[test]
+    fn repeated_idle_lease_reclaims_park_unchanged_card_and_release_next_work() {
+        let conn = board_db();
+        add_card(&conn, "LEASE-LOOP-A", "lane", "todo", "first", "SCOPE: original\n- [ ] do it");
+        add_card(&conn, "LEASE-LOOP-B", "lane", "todo", "second", "SCOPE: second\n- [ ] do it");
+        conn.execute("UPDATE issues SET pos=-1 WHERE id='LEASE-LOOP-A'", []).unwrap();
+        conn.execute("UPDATE issues SET pos=0 WHERE id='LEASE-LOOP-B'", []).unwrap();
+        let first = bs::get_issue(&conn, "LEASE-LOOP-A").unwrap().unwrap();
+        let fingerprint = actionable_task_fingerprint(&first);
+        for ts in [now_f64() - 3600.0, now_f64() - 1800.0] {
+            conn.execute(
+                "INSERT INTO session_events (ts,session,type,data,source) VALUES (?1,'lane','task.lease_reclaimed',?2,'test')",
+                rusqlite::params![ts, json!({"issue":"LEASE-LOOP-A", "fingerprint":fingerprint}).to_string()],
+            ).unwrap();
+        }
+
+        assert_eq!(eligible_todo_count(&conn, "lane", now_f64()), 1);
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("LEASE-LOOP-B"),
+            "two unchanged idle lease expiries must free the WIP slot for the next card"
+        );
+        conn.execute("UPDATE issues SET status='done' WHERE id='LEASE-LOOP-B'", []).unwrap();
+        #[derive(Clone)]
+        struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let output = bytes.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || Sink(output.clone()))
+            .finish();
+        let stopped = tracing::subscriber::with_default(subscriber, || {
+            select_pickup_with(&conn, "lane", now_f64(), false)
+        });
+        let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("idle_lease_retry_suppressed") && log.contains("n_considered=1"),
+            "retry suppression must be visible to log sweeps: {log}"
+        );
+        match stopped {
+            Pickup::None { detail, .. } => assert!(
+                detail.contains("lease retry breaker paused 1 unchanged To Do card(s)"),
+                "an idle lane must report when retry suppression, rather than an empty queue, explains the pause: {detail}"
+            ),
+            other => panic!("expected retry suppression to explain the empty pickup, got {other:?}"),
+        }
+
+        // Editing the work contract re-arms the card. Lifecycle changes alone
+        // are deliberately excluded from its fingerprint.
+        conn.execute("UPDATE issues SET desc='SCOPE: revised\n- [ ] do it' WHERE id='LEASE-LOOP-A'", []).unwrap();
+        assert_eq!(
+            claimed(&select_pickup_with(&conn, "lane", now_f64(), false)),
+            Some("LEASE-LOOP-A"),
+            "a meaningful task edit must make the parked card eligible again"
+        );
+    }
+
+    #[test]
+    fn shared_pool_pickup_defaults_on_and_honors_opt_out_and_shared_group() {
+        let conn = board_db();
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("owner.env"), "CC_TAGS=backend\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "CC_TAGS=backend\n").unwrap();
+        add_card(&conn, "POOL-1", "owner", "todo", "shared task", "SCOPE: real\n- [ ] do it");
+
+        assert_eq!(
+            claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))),
+            Some("POOL-1")
+        );
+        std::fs::write(sessions.join("peer.env"), "AMUX_REDISTRIBUTE_READY=0\nCC_TAGS=backend\n").unwrap();
+        assert!(claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))).is_none());
+        std::fs::write(sessions.join("peer.env"), "CC_TAGS=backend\n").unwrap();
+        std::fs::write(sessions.join("owner.env"), "AMUX_REDISTRIBUTE_READY=off\nCC_TAGS=backend\n").unwrap();
+        assert!(claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))).is_none());
+        std::fs::write(sessions.join("owner.env"), "CC_TAGS=backend\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "CC_TAGS=research\n").unwrap();
+        assert!(claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))).is_none());
+        std::fs::write(sessions.join("peer.env"), "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n").unwrap();
+        tag(&conn, "POOL-1", "needs:you:decision", now_f64());
+        assert!(claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))).is_none());
+        conn.execute("DELETE FROM issue_tags WHERE issue_id='POOL-1' AND tag='needs:you:decision'", []).unwrap();
+        tag(&conn, "POOL-1", "dispatch:local", now_f64());
+        assert!(claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))).is_none());
+    }
+
+    #[test]
+    fn incompatible_shared_pool_prefix_does_not_starve_later_compatible_work() {
+        let conn = board_db();
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("unready.env"), "AMUX_REDISTRIBUTE_READY=0\nCC_TAGS=backend\n").unwrap();
+        std::fs::write(sessions.join("ready.env"), "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n").unwrap();
+        for index in 0..257 {
+            let id = format!("POOL-INCOMPATIBLE-{index:03}");
+            add_card(&conn, &id, "unready", "todo", "not eligible", "SCOPE: real\n- [ ] do it");
+        }
+        add_card(&conn, "POOL-LATE", "ready", "todo", "compatible task", "SCOPE: real\n- [ ] do it");
+
+        assert_eq!(
+            claimed(&select_pickup_with_home(&conn, "peer", now_f64(), false, Some(home.path()))),
+            Some("POOL-LATE"),
+            "worker-incompatible owners must not consume the bounded pool candidate window"
+        );
+    }
+
+    #[test]
+    fn compatible_blocked_pool_prefix_does_not_starve_later_ready_work() {
+        let conn = board_db();
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("owner.env"),
+            "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sessions.join("peer.env"),
+            "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n",
+        )
+        .unwrap();
+        for index in 0..257 {
+            let id = format!("POOL-BLOCKED-{index:03}");
+            add_card(
+                &conn,
+                &id,
+                "owner",
+                "todo",
+                "blocked compatible task",
+                "SCOPE: real\n- [ ] do it",
+            );
+            conn.execute(
+                "UPDATE issues SET pos=?1, depends_on='[\"MISSING\"]' WHERE id=?2",
+                rusqlite::params![index as i64, id],
+            )
+            .unwrap();
+        }
+        add_card(
+            &conn,
+            "POOL-LATE-READY",
+            "owner",
+            "todo",
+            "compatible task",
+            "SCOPE: real\n- [ ] do it",
+        );
+        conn.execute(
+            "UPDATE issues SET pos=257 WHERE id='POOL-LATE-READY'",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            claimed(&select_pickup_with_home(
+                &conn,
+                "peer",
+                now_f64(),
+                false,
+                Some(home.path())
+            )),
+            Some("POOL-LATE-READY"),
+            "a compatible blocked prefix must not hide later runnable work"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pool_claim_rechecks_worker_opt_out_and_card_tag_inside_the_writer() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("owner.env"), "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "AMUX_REDISTRIBUTE_READY=1\nCC_TAGS=backend\n").unwrap();
+        let (_dir, state, store) = drive_state();
+        drive_card(&store, "POOL-CLAIM", "todo", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET session='owner' WHERE id='POOL-CLAIM'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+
+        assert!(claim_card(&state, "peer", "POOL-CLAIM").await);
+        let owner: String = store.read().unwrap().query_row("SELECT session FROM issues WHERE id='POOL-CLAIM'", [], |row| row.get(0)).unwrap();
+        assert_eq!(owner, "peer");
+
+        // Defeat each commissioned guard at the atomic claim door; a
+        // selection preflight alone must not authorize cross-owner work.
+        for (id, mutation) in [
+            ("POOL-PIN", "pinned=1"),
+            ("POOL-HOLD", "blocked_on='explicit hold'"),
+            ("POOL-WAIT", "waiting_on='external dependency'"),
+            ("POOL-REVIEWER", "reviewer='peer'"),
+            ("POOL-AUTHOR", "creator='peer'"),
+            ("POOL-LEASE", "lease_expires_at=9999999999"),
+        ] {
+            drive_card(&store, id, "todo", "agent", "code");
+            let (id_s, mutation_s) = (id.to_string(), mutation.to_string());
+            store.write(move |conn| {
+                conn.execute(&format!("UPDATE issues SET session='owner', {mutation_s} WHERE id=?1"), [&id_s])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            assert!(!claim_card(&state, "peer", id).await, "atomic pool claim must retain {id}");
+            assert_eq!(drive_status(&store, id), "todo");
+        }
+
+        drive_card(&store, "POOL-MANUAL-RACE", "todo", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET session='owner' WHERE id='POOL-MANUAL-RACE'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(
+            claim_card_from_outcome(&state, "peer", "POOL-MANUAL-RACE", "todo").await,
+            ClaimCardOutcome::NotApplied,
+            "manual claim must fail closed if ownership changes after its HTTP preflight"
+        );
+        let owner: String = store.read().unwrap().query_row("SELECT session FROM issues WHERE id='POOL-MANUAL-RACE'", [], |row| row.get(0)).unwrap();
+        assert_eq!(owner, "owner");
+
+        drive_card(&store, "POOL-REVOKED", "todo", "agent", "code");
+        store.write(|conn| {
+            conn.execute("UPDATE issues SET session='owner' WHERE id='POOL-REVOKED'", [])?;
+            conn.execute("INSERT INTO issue_tags(issue_id,tag,added_at) VALUES('POOL-REVOKED','dispatch:local',?1)", [now_f64()])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(!claim_card(&state, "peer", "POOL-REVOKED").await);
+        assert_eq!(drive_status(&store, "POOL-REVOKED"), "todo");
+        store.write(|conn| {
+            conn.execute("DELETE FROM issue_tags WHERE issue_id='POOL-REVOKED' AND tag='dispatch:local'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        std::fs::write(sessions.join("peer.env"), "AMUX_REDISTRIBUTE_READY=0\nCC_TAGS=backend\n").unwrap();
+        assert!(!claim_card(&state, "peer", "POOL-REVOKED").await);
+        assert_eq!(drive_status(&store, "POOL-REVOKED"), "todo");
+    }
+
+
 }
 
 #[cfg(test)]
@@ -14176,4 +14834,5 @@ mod af579_decline_exit_tests {
             "pickup_prompt must call decline_exit, or the exit reaches no lane"
         );
     }
+
 }

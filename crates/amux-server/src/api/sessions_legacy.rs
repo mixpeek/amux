@@ -2237,6 +2237,7 @@ pub fn active_python_sessions(conn: &rusqlite::Connection) -> BTreeSet<String> {
         let running = signals.agent_running(&format!("amux-{name}"));
         if signals.derive_status(name, running) == "active" {
             out.insert(name.to_string());
+
         }
     }
     out
@@ -3931,6 +3932,8 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "spans_groups_explicit_deny": cross_group.explicit_deny,
             "spans_groups_own": cross_group.worker_defined,
             "steering_queue": [],
+            "redistribute_ready": crate::runtime_jobs::board_drive::pool_worker_ready(&crate::config::amux_home(), &name),
+            "redistribute_ready_own": env.contains_key("AMUX_REDISTRIBUTE_READY"),
             "managed_by": "python",
         }));
     }
