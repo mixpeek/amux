@@ -1,5 +1,59 @@
 [
   {
+    "hash": "66ace7f7",
+    "short": "66ace7f7",
+    "title": "Pinned notes: floating macOS overlays from the dashboard",
+    "date": "2026-09-26",
+    "type": "feat",
+    "tags": ["dashboard", "pinned", "macos"],
+    "description": "A new Pinned tab in the dashboard lets you push any text note to a floating macOS window that stays on top of every other application. The overlay uses a frosted-glass effect, is always-on-top, and can be dismissed or repositioned without leaving the dashboard. Useful for keeping acceptance criteria, sprint context, or agent instructions visible while working in other apps. Controlled via the 'amux pin' CLI command and the POST /api/pinned endpoint."
+  },
+  {
+    "hash": "412e1d93",
+    "short": "412e1d93",
+    "title": "Claude workers started through the server get a session identity",
+    "date": "2026-09-26",
+    "type": "fix",
+    "tags": ["cli", "sessions", "identity"],
+    "description": "Workers launched via 'amux start' now go through the server's session-start path, which stamps the AMUX_SESSION environment variable and registers the session in the database before the Claude process starts. Previously, directly launched workers had no session identity until their first check-in, which caused attribution gaps in the board and message history during the first few turns."
+  },
+  {
+    "hash": "473b0af5",
+    "short": "473b0af5",
+    "title": "Idle re-prompt when a lane promised a next step (AMUX-5236)",
+    "date": "2026-09-26",
+    "type": "fix",
+    "tags": ["sessions", "reliability", "turn-end"],
+    "description": "When a session's turn ends with a message like 'I'll add tests next' or 'I'll commit this shortly' and the session then goes idle without acting, amux now re-prompts it once with the outstanding commitment. This prevents the common failure mode where an agent announces a follow-up step, context closes, and the step never happens. The re-prompt fires at the next idle detection cycle and is rate-limited to once per commitment to avoid loops."
+  },
+  {
+    "hash": "03c2d3d4",
+    "short": "03c2d3d4",
+    "title": "Shell scheduler runs now store exit code and output tail (AMUX-5241)",
+    "date": "2026-09-26",
+    "type": "fix",
+    "tags": ["scheduler", "shell", "observability"],
+    "description": "Schedule runs with kind=shell now persist the process exit code and a noise-filtered tail of stdout/stderr in the run record. The tail is deduped and truncated to the last 20 meaningful lines (blank lines, repeated separators, and progress bars filtered out). Exit codes are visible in GET /api/schedules/runs and in the dashboard Scheduler tab — a failed shell run now shows the actual error rather than just 'non-zero exit'."
+  },
+  {
+    "hash": "99da3838",
+    "short": "99da3838",
+    "title": "Prompts typed directly into a pane are recorded in Messages",
+    "date": "2026-09-26",
+    "type": "fix",
+    "tags": ["history", "messages", "pane"],
+    "description": "Text entered directly into a tmux pane by the owner (outside the dashboard's message input) is now captured and stored as a Messages row attributed to the owner. Previously, only messages sent via the API or dashboard were recorded; direct pane input was invisible to the message history, search, and the per-session message count in the sessions view."
+  },
+  {
+    "hash": "6bfb7e18",
+    "short": "6bfb7e18",
+    "title": "Resume fallback triggers only when --resume fails immediately",
+    "date": "2026-09-26",
+    "type": "fix",
+    "tags": ["cli", "resume", "reliability"],
+    "description": "The 'amux start' CLI previously fell back to starting a new conversation whenever --resume returned a non-zero exit, including mid-run failures that had nothing to do with the resume attempt itself. The fallback now fires only when --resume fails on the first invocation with no prior output, ensuring that a crash during an established run does not silently discard context by starting fresh."
+  },
+  {
     "hash": "447ca486",
     "short": "447ca486",
     "title": "Browser automation: grounded observe → act → verify loop",

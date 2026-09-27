@@ -15600,7 +15600,7 @@ pub(crate) async fn stop_verified_worker(state: &AppState, name: &str) -> Result
         .await
         .ok_or("could not measure worker activity before retirement")?;
     let (_, explain) =
-        signals.derive_status_explain(name, signals.agent_running(&format!("amux-{name}")));
+        signals.derive_status_explain(name, signals.worker_running(name));
     if explain["subagents_working"] == true || explain["provider_background_working"] == true {
         return Err("worker still has live child work".into());
     }
@@ -22484,13 +22484,24 @@ async fn get_dispatch(
             // (derive_status_explain IS the derivation; the list discards the
             // explanation). When a badge is wrong, this is one GET instead of
             // a screenshot investigation (AMUX-3426; ethos rule 4).
+            //
+            // `running` must go through `worker_running` (ACW-6), not
+            // `agent_running` directly: this comment claimed "the SAME code
+            // path the session list uses" while computing `running` from the
+            // tmux pane alone, which a chat worker never has. Measured live
+            // 2026-09-26: `amux-chatbot` mid-turn (`/chat` reported
+            // `busy: true`) explained itself here as `decided_by:
+            // "not_running"`, while the session list — which already used
+            // the type-aware adapter — correctly showed `running: true`. Two
+            // answers to "is this worker running" is the exact drift this
+            // endpoint exists to make visible, not commit.
             let store = state.store.clone();
             let nm = name.to_string();
             let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
                 let conn = store.read()?;
                 let mut fs = crate::api::sessions_legacy::FleetSignals::load(&conn);
                 fs.capture_panes();
-                let running = fs.agent_running(&format!("amux-{nm}"));
+                let running = fs.worker_running(&nm);
                 let (status, explain) = fs.derive_status_explain(&nm, running);
                 // THE RETROSPECTIVE HALF (AMUX-3761). Everything above answers
                 // "why is this lane's badge what it is RIGHT NOW", and every

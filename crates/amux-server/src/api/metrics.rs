@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/host/history", axum::routing::get(host_history))
         .route("/host/pressure", axum::routing::get(host_pressure))
         .route("/fleet", axum::routing::get(fleet))
+        .route("/telemetry", axum::routing::get(telemetry))
         .route("/replay", axum::routing::get(replay))
 }
 
@@ -139,6 +140,53 @@ async fn host_pressure() -> Response {
         }))
         .into_response(),
     }
+}
+
+/// GET /api/metrics/telemetry — fleet status-channel coverage (MSG-69352
+/// item 1). For every running worker: the health of its status channel, the
+/// authority of the rule that decided its status, and `agent_state` (which
+/// is `unknown` when only a screen guess remains). `coverage_pct` counts
+/// `healthy` over workers whose provider has hooks, so a fleet silently
+/// falling back to screen-reading shows as a number, not as wrong labels.
+async fn telemetry(State(state): State<AppState>) -> Response {
+    let sessions = match crate::api::sessions_legacy::legacy_sessions_values(state.store.clone()).await {
+        Ok(v) => v,
+        Err(e) => {
+            return Json(json!({"measured": false, "n_considered": 0,
+                "why_unmeasured": format!("sessions could not be built: {e}")})).into_response()
+        }
+    };
+    let mut counts = serde_json::Map::new();
+    let mut workers = Vec::new();
+    let (mut hooked, mut healthy) = (0usize, 0usize);
+    for s in &sessions {
+        if s["running"] != true || s["archived"] == true {
+            continue;
+        }
+        let health = s["telemetry"]["health"].as_str().unwrap_or("unmeasured").to_string();
+        *counts.entry(health.clone()).or_insert(json!(0)) =
+            json!(counts.get(&health).and_then(|v| v.as_u64()).unwrap_or(0) + 1);
+        if health != "unsupported" {
+            hooked += 1;
+            if health == "healthy" {
+                healthy += 1;
+            }
+        }
+        workers.push(json!({
+            "name": s["name"], "status": s["status"], "agent_state": s["agent_state"],
+            "turn_state": s["turn_state"], "activity": s["activity"],
+            "authority": s["status_authority"], "decided_by": s["status_evidence"]["source"],
+            "telemetry": s["telemetry"], "last_progress_at": s["last_progress_at"],
+        }));
+    }
+    Json(json!({
+        "measured": true,
+        "n_considered": workers.len(),
+        "counts": counts,
+        "coverage_pct": (healthy * 1000).checked_div(hooked).map(|v| v as f64 / 10.0),
+        "workers": workers,
+    }))
+    .into_response()
 }
 
 async fn host_history(

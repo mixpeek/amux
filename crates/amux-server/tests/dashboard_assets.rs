@@ -1666,14 +1666,20 @@ fn reconnect_shows_the_sync_checklist() {
         js[so..so_end].contains("runSyncBanner(false)"),
         "reconnect must raise the sync banner non-quiet so the checklist is visible"
     );
-    // A multi-item batch shows even from a quiet caller. Uncertain sends are
-    // not counted toward the two (AMUX-4594): they stay in the replay list so
-    // they keep being re-checked, and counting them popped the checklist on
-    // every new send (Ethan, 2026-09-14: "this shouldn't be appearing when I
-    // send, too invasive").
+    // Superseded 2026-09-24 by two owner decisions: routine syncs stay in the
+    // connection pill ("this keeps popping up ... just keep it in the
+    // pending/live status at the top"), and a RECONNECT with a backlog raises
+    // the checklist on the home page ("bring the animation up that goes thru
+    // each one by one with check boxes ... on the homepage visible"). So the
+    // reconnect edge arms the auto flag, and the show rule honours it only
+    // outside a worker terminal, or when the pill was tapped.
     assert!(
-        js.contains("const show = !quiet || items.filter(i => !(i.type === 'queue' && _outboxUncertainMessage(i.item))).length >= 2;"),
-        "a 2+ item batch of non-uncertain items must show the checklist even when the caller is quiet"
+        js[so..so_end].contains("_syncBannerAuto = true;"),
+        "reconnect must arm the auto-show so the checklist appears on the home page"
+    );
+    assert!(
+        js.contains("const show = _syncBannerRequested || (_syncBannerAuto && !peekSession);"),
+        "the checklist shows on a pill tap, or on reconnect outside a worker terminal, and not for routine syncs"
     );
     // The per-item checkmark states must still exist.
     assert!(

@@ -42,7 +42,7 @@
     "description": "Product managers use amux to assign work to AI coding agents via a shared kanban board, track progress from their phone, and ship features without waiting on engineering bandwidth.",
     "url": "https://amux.io/for/product-managers/",
     "datePublished": "2026-07-30",
-    "dateModified": "2026-07-30",
+    "dateModified": "2026-09-26",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -108,7 +108,15 @@
         "name": "How many AI agents can work in parallel on a product roadmap?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux supports dozens of parallel sessions. In practice, teams run 5–20 parallel agents on a product roadmap: one per feature, one for bug triage, one for documentation, one for test coverage. Each has its own git worktree so they do not conflict on the same codebase. The PM views all of them from one board, assigns new work as slots open up, and reviews merged output at the end of the day — or the next morning after an overnight run."
+          "text": "amux supports dozens of parallel sessions. In practice, teams run 5-20 parallel agents on a product roadmap: one per feature, one for bug triage, one for documentation, one for test coverage. Each has its own git worktree so they do not conflict on the same codebase. The PM views all of them from one board, assigns new work as slots open up, and reviews merged output at the end of the day or the next morning after an overnight run."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I gate a task on my approval before the agent marks it done?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Use named clearance signals. Set a 'wait' signal on the board card (for example, 'design-approved'). The agent pauses when it finishes its implementation work and waits for you to raise that signal from the dashboard. You review the output, raise the signal, and the agent proceeds to mark the card done. No polling, no back-and-forth messages — the gate is built into the card lifecycle."
         }
       }
     ]
@@ -131,8 +139,13 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For Teams</a> <span class="sep">›</span> <span>Product Managers</span></div>
 
+    <div style="background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem">
+      <span style="font-size:.95rem">Queue a full sprint. Agents run overnight. Review the done column at 9am.</span>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="window.plausible&&plausible('exp098_pm_topofpage_cta_click')" style="white-space:nowrap">View on GitHub →</a>
+    </div>
+
     <h1>amux for Product Managers</h1>
-    <p class="subtitle">Assign tasks to an AI coding team via a shared kanban board. Track progress from your phone. Ship features without waiting on engineering bandwidth. <em style="font-size:.85rem;color:var(--muted)">Updated July 2026.</em></p>
+    <p class="subtitle">Assign tasks to an AI coding team via a shared kanban board. Track progress from your phone. Ship features without waiting on engineering bandwidth. <em style="font-size:.85rem;color:var(--muted)">Updated September 2026.</em></p>
 
     <p>amux is an open-source control plane for running an AI engineering team from a single dashboard or your phone. For product managers, it means a shared kanban board where you add tasks in plain English and a fleet of Claude Code, Codex, or Gemini CLI agents picks them up, works them, and reports back — while you watch from mobile.</p>
 
@@ -224,6 +237,33 @@
     <p>amux is not a replacement for the engineering team — it is an additional channel. Engineers set up sessions, maintain <code>CLAUDE.md</code> quality gates, and review agent output for architectural decisions. PMs handle task assignment, priority, steering, and acceptance. The division is the same as a human team; what changes is that the "engineers" available for straightforward implementation tasks are available immediately, around the clock, and at zero cost per seat.</p>
 
     <p>For high-stakes or architectural work, engineers stay in the loop. For well-scoped implementation tasks — CRUD endpoints, UI components, test coverage, documentation — agents handle the first pass and engineers review the PR.</p>
+
+    <h2>What's new — September 2026</h2>
+
+    <p>Recent releases that directly affect the PM workflow:</p>
+
+    <div style="display:grid;gap:.875rem;margin:1.25rem 0">
+      <div style="border-left:3px solid var(--accent);padding:.75rem 1rem;background:var(--surface);border-radius:0 6px 6px 0">
+        <strong>Named clearance signals</strong>
+        <p style="margin:.35rem 0 0;font-size:.9rem;color:var(--muted)">Board cards can now wait on a named signal — for example, <code>legal-approved</code> or <code>design-signed-off</code>. The agent pauses until you raise the signal from the dashboard. No more "reviewer" dance where an agent finishes and marks done before the PM has seen it.</p>
+      </div>
+      <div style="border-left:3px solid var(--accent);padding:.75rem 1rem;background:var(--surface);border-radius:0 6px 6px 0">
+        <strong>Deploy-wake (AMUX-5239)</strong>
+        <p style="margin:.35rem 0 0;font-size:.9rem;color:var(--muted)">Agents can now suspend after pushing a PR and wake when the deploy lands. The session status shows "waiting for deploy" rather than idle, and the board card advances automatically when the deploy confirms. PMs see the real state without chasing the engineer for a "is it out yet?"</p>
+      </div>
+      <div style="border-left:3px solid var(--accent);padding:.75rem 1rem;background:var(--surface);border-radius:0 6px 6px 0">
+        <strong>Browser observe-act-verify</strong>
+        <p style="margin:.35rem 0 0;font-size:.9rem;color:var(--muted)">Agents now ground their work against a real browser before reporting a task done. They open the page, verify the feature works as specified, and attach a screenshot to the board card. PMs get visual proof, not just a "tests pass" claim.</p>
+      </div>
+      <div style="border-left:3px solid var(--accent);padding:.75rem 1rem;background:var(--surface);border-radius:0 6px 6px 0">
+        <strong>Idle re-prompt (AMUX-5236)</strong>
+        <p style="margin:.35rem 0 0;font-size:.9rem;color:var(--muted)">When an agent says "I'll do X next" and then sits idle, amux re-prompts it automatically. PMs no longer need to nudge sessions that went quiet after announcing a follow-up step.</p>
+      </div>
+      <div style="border-left:3px solid var(--accent);padding:.75rem 1rem;background:var(--surface);border-radius:0 6px 6px 0">
+        <strong>Pinned notes overlay</strong>
+        <p style="margin:.35rem 0 0;font-size:.9rem;color:var(--muted)">The new Pinned tab lets you push sticky notes from any board card to a floating macOS overlay that stays on top of every other window — useful for acceptance criteria you want visible while reviewing agent output, or sprint context that should travel with you across apps.</p>
+      </div>
+    </div>
 
     <h2>Getting started</h2>
 

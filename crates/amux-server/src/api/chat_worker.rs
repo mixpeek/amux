@@ -897,6 +897,18 @@ pub(crate) fn read_messages(
     let Ok(conn) = state.store.read() else {
         return vec![];
     };
+    read_messages_conn(&conn, name, limit, before)
+}
+
+/// Same query as [`read_messages`], taking an already-open connection — for
+/// callers that hold one (the fleet-list preview builder, `build_array`)
+/// rather than going through `AppState::store`.
+pub(crate) fn read_messages_conn(
+    conn: &rusqlite::Connection,
+    name: &str,
+    limit: i64,
+    before: Option<i64>,
+) -> Vec<Value> {
     let before = before.unwrap_or(i64::MAX);
     let Ok(mut st) = conn.prepare(
         "SELECT id, ts, data FROM session_events WHERE session=?1 AND type=?2 AND id<?3 \
@@ -927,6 +939,18 @@ pub(crate) fn read_messages(
     };
     out.reverse();
     out
+}
+
+/// Raw-text surrogate for the fleet-list card preview (ACW-9): a coding
+/// worker's preview is a tmux capture; a chat worker has no pane at all, so
+/// it gets the tail of its own transcript instead, rendered through
+/// [`render_transcript`] — the SAME formatter the full chat history uses —
+/// and fed into the SAME `preview_of` line-picker every other worker's
+/// preview goes through (`sessions_legacy.rs`). One raw string in, one
+/// mechanism, no second preview renderer to keep in sync.
+pub(crate) fn preview_raw(conn: &rusqlite::Connection, name: &str) -> String {
+    let messages = read_messages_conn(conn, name, 6, None);
+    render_transcript(&messages)
 }
 
 fn render_transcript(messages: &[Value]) -> String {
@@ -1112,5 +1136,63 @@ mod tests {
         let codex = turn_args("codex", "--model gpt-5", "", "th-1", false);
         assert_eq!(codex.last().unwrap(), "-");
         assert!(codex.windows(2).any(|w| w == ["resume", "th-1"]));
+    }
+
+    /// A bare `session_events` table with only the columns `read_messages_conn`
+    /// actually reads — the fixture stays self-contained rather than pulling in
+    /// the full migration set for one indexed SELECT.
+    fn chat_events_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, session TEXT, type TEXT, data TEXT);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_chat_event(conn: &rusqlite::Connection, session: &str, ts: f64, data: &Value) {
+        conn.execute(
+            "INSERT INTO session_events(ts, session, type, data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![ts, session, CHAT_EVENT, data.to_string()],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn read_messages_conn_returns_oldest_first() {
+        let conn = chat_events_conn();
+        insert_chat_event(&conn, "w1", 2.0, &json!({"role": "assistant", "text": "second"}));
+        insert_chat_event(&conn, "w1", 1.0, &json!({"role": "user", "text": "first"}));
+        // A different session's row must never leak into this worker's tail.
+        insert_chat_event(&conn, "w2", 3.0, &json!({"role": "user", "text": "not mine"}));
+        let msgs = read_messages_conn(&conn, "w1", 10, None);
+        let texts: Vec<&str> = msgs.iter().map(|m| m["text"].as_str().unwrap()).collect();
+        // Rows are inserted DESC-id, so id 1 ("second") precedes id 2
+        // ("first") in insertion order but the QUERY is `ORDER BY id DESC`
+        // then reversed — chronological (insertion) order out, id 1 first.
+        assert_eq!(texts, vec!["second", "first"], "{msgs:?}");
+    }
+
+    #[test]
+    fn preview_raw_renders_the_transcript_tail_for_the_card_preview() {
+        // ACW-9: a chat worker has no tmux pane, so its fleet-list card
+        // preview comes from here instead of a pane capture — this is the
+        // raw text `preview_of` (sessions_legacy.rs) then picks a line from,
+        // exactly the same as any terminal worker's captured pane text.
+        let conn = chat_events_conn();
+        insert_chat_event(&conn, "chatty", 1.0, &json!({"role": "user", "text": "how many LOC?"}));
+        insert_chat_event(
+            &conn,
+            "chatty",
+            2.0,
+            &json!({"role": "assistant", "text": "About 400,000 lines."}),
+        );
+        let raw = preview_raw(&conn, "chatty");
+        assert!(raw.contains("user:\nhow many LOC?"), "{raw}");
+        assert!(raw.contains("assistant:\nAbout 400,000 lines."), "{raw}");
+        // Empty for a worker with no chat history at all — the caller
+        // (`sessions_legacy.rs`) treats blank as "nothing to show", not as a
+        // worker that failed to answer.
+        assert_eq!(preview_raw(&conn, "no-such-worker"), "");
     }
 }

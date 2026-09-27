@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2226,
+  "n_considered": 2231,
   "command_handlers": {
     "_applyEmbedView": {
       "kind": "command._applyEmbedView",
@@ -478,6 +478,12 @@
     },
     "_changeWorkerPaused": {
       "kind": "command._changeWorkerPaused",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chatRetryTurn": {
+      "kind": "command._chatRetryTurn",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

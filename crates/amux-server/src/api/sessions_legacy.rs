@@ -122,6 +122,19 @@ fn env_secs(name: &str, default: f64) -> f64 {
 ///
 /// Pure and parameterised so both callers can be tested on the same cells.
 pub fn report_applies(state: &str, ts: f64, started: f64, now: f64) -> bool {
+    report_applies_event(state, "", ts, started, now)
+}
+
+/// [`report_applies`] with the hook event that produced the report.
+///
+/// PROGRESS IS AN EVENT, NOT A REDRAW. An `active` report goes stale after
+/// `AMUX_ACTIVE_HEARTBEAT_S` of silence because a turn in flight normally
+/// keeps reporting. A tool call does not: between its `PreToolUse` and its
+/// `PostToolUse` there are no hook events at all, so a ten-minute build read
+/// as a silent, stale claim and status fell to reading the screen. An active
+/// report whose last event OPENED a tool call is a fact about work in
+/// progress, trusted for `AMUX_OPEN_TOOL_S` (default 1800).
+pub fn report_applies_event(state: &str, event: &str, ts: f64, started: f64, now: f64) -> bool {
     // A report from BEFORE the session's last (re)start describes a PREVIOUS
     // LIFE. A restarted claude lane loses nothing: its hooks re-report on the
     // first turn, and until then the pane and activity decide.
@@ -130,7 +143,12 @@ pub fn report_applies(state: &str, ts: f64, started: f64, now: f64) -> bool {
     // An `active` report is a claim about a turn in flight, and a turn in
     // flight paints. Silence past the heartbeat means the claim outlived its
     // evidence — a Stop hook that never fired, a crashed turn, an interrupt.
-    let stale_active = state == "active" && age > env_secs("AMUX_ACTIVE_HEARTBEAT_S", 120.0);
+    let heartbeat = if event == "PreToolUse" {
+        env_secs("AMUX_OPEN_TOOL_S", 1800.0)
+    } else {
+        env_secs("AMUX_ACTIVE_HEARTBEAT_S", 120.0)
+    };
+    let stale_active = state == "active" && age > heartbeat;
     // `idle` survives silence (an idle lane has nothing to report until its
     // next prompt). `blocked` gets a shorter window: a permission dialog is
     // transient (seconds to minutes), and a stale blocked report that outlives
@@ -1413,10 +1431,25 @@ impl FleetSignals {
     /// fallback can label a silent/missing probe idle for display, never grant
     /// permission to send into an unknown worker.
     pub(crate) fn turn_boundary_status(&self, name: &str) -> Option<String> {
-        if !self.agent_running(&format!("amux-{name}")) {
+        if !self.worker_running(name) {
             return None;
         }
         let (status, ex) = self.derive_status_explain(name, true);
+        // NOTHING AUTOMATED ACTS ON A GUESS. `unknown` means the only evidence
+        // is an inferred screen read while this worker's status channel is not
+        // healthy; dispatch and nudges wait for real evidence.
+        // Only a guessed IDLE can trigger delivery; a guessed active already holds.
+        if ex["projection"]["agent_state"] == "unknown" && status == "idle" {
+            let key = format!("unknown-agent-state-boundary:{name}");
+            if crate::log_dedupe::first_this_bucket(&key, crate::log_dedupe::hour_bucket(self.now)) {
+                tracing::warn!(target: "status_truth", session = name, measured = true, n_considered = 1,
+                    verdict = "boundary_refused_unknown_state",
+                    telemetry = %ex["projection"]["telemetry"]["health"].as_str().unwrap_or(""),
+                    decided_by = %ex["decided_by"].as_str().unwrap_or(""),
+                    "no automated delivery: agent state is unknown (inferred evidence, unhealthy telemetry)");
+            }
+            return None;
+        }
         let structured =
             ex["report"]["applied"] == true || ex["codex_rollout"]["from_this_life"] == true;
         let pane_boundary = self
@@ -1452,6 +1485,31 @@ impl FleetSignals {
             }
         }
         measured.then_some(status)
+    }
+
+    /// Is `name`'s worker alive, through its OWN type's execution adapter
+    /// (ACW-6) — the same dispatch `python_fleet_sessions` uses for the
+    /// `running` field the fleet list shows.
+    ///
+    /// `agent_running(&format!("amux-{name}"))` answers a narrower, TERMINAL
+    /// question: is there a live process inside this tmux pane. A chat
+    /// worker has no tmux session at all (`chat_worker.rs`: "No tmux pane, no
+    /// worktree"), so that call always reads `false` for one, regardless of
+    /// whether its provider turn is genuinely running. Every caller that
+    /// means "is this worker alive" — status derivation, the turn-boundary
+    /// gate, steering delivery, stop verification — needs THIS function, not
+    /// `agent_running` directly, or a chat worker reads `not_running` and
+    /// `idle` no matter what it is actually doing (measured live 2026-09-26:
+    /// `amux-chatbot` mid-turn, `/chat` reporting `busy: true`, while
+    /// `/status-explain` — which called `agent_running` directly — said
+    /// `decided_by: "not_running"`).
+    pub fn worker_running(&self, name: &str) -> bool {
+        match crate::api::worker_exec::adapter_for_session(name).running(name) {
+            crate::api::worker_exec::Dispatch::Handled(r) => r,
+            crate::api::worker_exec::Dispatch::Terminal => {
+                self.agent_running(&format!("amux-{name}"))
+            }
+        }
     }
 
     /// Is there a WORKER in this tmux session, not merely a tmux session?
@@ -1843,11 +1901,126 @@ impl FleetSignals {
     /// investigation: nothing could answer "which rule decided, over what
     /// evidence, inside which trust window". Served by
     /// GET /api/sessions/{name}/status-explain.
+    /// Process, turn and activity as separate facts, plus the authority of the
+    /// status and the health of the channel that produced it (MSG-69352 items
+    /// 1-5). `agent_state` is `status` unless the only evidence is an
+    /// `inferred` guess while telemetry is not healthy: then it is `unknown`,
+    /// and nothing automated acts on it (`turn_boundary_status`).
+    fn status_projection(
+        &self,
+        name: &str,
+        status: &str,
+        decided: &str,
+        ex: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Value {
+        use serde_json::json;
+        let cfg = crate::api::session_verbs::parse_env(name);
+        let provider = crate::api::session_verbs::provider_of(&cfg);
+        let report = ex.get("report").filter(|r| r.is_object());
+        let rep_tuple = report.map(|r| {
+            (
+                r["state"].as_str().unwrap_or(""),
+                r["from_this_life"].as_bool().unwrap_or(false),
+                r["applied"].as_bool().unwrap_or(false),
+                r["age_s"].as_f64().unwrap_or(f64::MAX),
+            )
+        });
+        let codex_live = ex.get("codex_rollout").is_some_and(|c| c["applied"] == true);
+        let started = self.started.get(name).copied().unwrap_or(0.0);
+        let started_age = (started > 0.0).then_some(self.now - started);
+        let (health, reason) = telemetry_health(&provider, rep_tuple, codex_live, started_age);
+        // A pane read backed by a RECOGNISED empty composer is more than a guess.
+        let decided_eff = if decided == "pane"
+            && status == "idle"
+            && self
+                .pane_of(name)
+                .is_some_and(crate::api::session_verbs::pane_is_at_boundary)
+        {
+            "pane_boundary"
+        } else {
+            decided
+        };
+        let authority = authority_of(decided_eff).unwrap_or("inferred");
+        // TURN: from authoritative or corroborated evidence only.
+        let map_state = |st: &str| match st {
+            "active" => "running",
+            "idle" => "completed",
+            "waiting" | "blocked" => "waiting",
+            "error" => "failed",
+            _ => "unknown",
+        };
+        let rep_applied = rep_tuple.is_some_and(|t| t.2);
+        let turn_state = if decided == "claude_transcript_interrupt" {
+            "interrupted"
+        } else if codex_live {
+            map_state(ex["codex_rollout"]["state"].as_str().unwrap_or(""))
+        } else if rep_applied {
+            map_state(rep_tuple.map(|t| t.0).unwrap_or(""))
+        } else if authority != "inferred" {
+            map_state(status)
+        } else {
+            "unknown"
+        };
+        let background = ex.get("provider_background_working").is_some_and(|v| v == true);
+        let subagents = ex.get("subagents_working").is_some_and(|v| v == true);
+        let event = report.and_then(|r| r["event"].as_str()).unwrap_or("");
+        let activity = match (status, turn_state) {
+            ("rate_limited", _) => "rate_limited",
+            ("api_error", _) => "error",
+            ("blocked", _) => "waiting_for_approval",
+            ("waiting", _) => "waiting_for_input",
+            _ if subagents => "subagents",
+            (_, "completed") if background => "background_shell",
+            (_, "running") if event == "PreToolUse" => "tool",
+            (_, "running") => "working",
+            (_, "completed") | (_, "interrupted") => "none",
+            ("active", "unknown") if background => "background_shell",
+            _ => "unknown",
+        };
+        let agent_state = if authority == "inferred"
+            && health != "healthy"
+            && matches!(status, "active" | "idle")
+        {
+            "unknown"
+        } else {
+            status
+        };
+        // PROGRESS: the newest real event from this run. Pane redraws are not
+        // progress and never count here.
+        let mut progress: Option<f64> = report
+            .filter(|r| r["from_this_life"] == true)
+            .and_then(|r| r["observed_at"].as_f64());
+        if codex_live {
+            let ts = self.now - ex["codex_rollout"]["age_s"].as_f64().unwrap_or(0.0);
+            progress = Some(progress.map_or(ts, |p| p.max(ts)));
+        }
+        json!({
+            "process_state": "running",
+            "turn_state": turn_state,
+            "activity": activity,
+            "authority": authority,
+            "agent_state": agent_state,
+            "telemetry": {
+                "health": health,
+                "reason": reason,
+                "provider": provider,
+                "last_report_age_s": rep_tuple.map(|t| t.3).filter(|a| a.is_finite()),
+            },
+            "last_progress_at": progress,
+        })
+    }
+
     pub fn derive_status_explain(&self, name: &str, running: bool) -> (String, serde_json::Value) {
         use serde_json::json;
         let mut ex = serde_json::Map::new();
         if !running {
             ex.insert("decided_by".into(), json!("not_running"));
+            ex.insert("projection".into(), json!({
+                "process_state": "absent", "turn_state": "none", "activity": "none",
+                "authority": "authoritative", "agent_state": "stopped",
+                "telemetry": {"health": "stopped", "reason": "the worker is not running"},
+                "last_progress_at": null,
+            }));
             return (String::new(), serde_json::Value::Object(ex));
         }
         let mut decided = "activity_fallback";
@@ -1981,7 +2154,9 @@ impl FleetSignals {
             let started = self.started.get(name).copied().unwrap_or(0.0);
             let from_this_life = started <= ts;
             let age = self.now - ts;
-            let stale_active = st == "active" && age > heartbeat;
+            let ev = rep["event"].as_str().unwrap_or("");
+            let stale_active = st == "active"
+                && age > if ev == "PreToolUse" { env_secs("AMUX_OPEN_TOOL_S", 1800.0) } else { heartbeat };
             let trust_window = if st == "idle" {
                 env_secs("AMUX_HOOKS_LIVE_IDLE_S", 86400.0)
             } else {
@@ -1991,7 +2166,7 @@ impl FleetSignals {
             // locals above — those exist only to publish the evidence. The
             // steering/pickup gate calls the same function, so the display and
             // the mechanism cannot drift (AMUX-3756, ethos rule 1).
-            let applied = report_applies(st, ts, started, self.now);
+            let applied = report_applies_event(st, ev, ts, started, self.now);
             ex.insert(
                 "report".into(),
                 json!({
@@ -2211,8 +2386,9 @@ impl FleetSignals {
         // cannot undo a newer permission, interrupt, or completion hook.
         let native = self.reports.get(name).filter(|rep| {
             rep["native_status"].as_bool() == Some(true)
-                && report_applies(
+                && report_applies_event(
                     rep["state"].as_str().unwrap_or(""),
+                    rep["event"].as_str().unwrap_or(""),
                     rep["ts"].as_f64().unwrap_or(0.0),
                     self.started.get(name).copied().unwrap_or(0.0),
                     self.now,
@@ -2349,6 +2525,8 @@ impl FleetSignals {
             status = "rate_limited".into();
             decided = "provider_auto_resume_quota";
         }
+        let projection = self.status_projection(name, &status, decided, &ex);
+        ex.insert("projection".into(), projection);
         ex.insert("decided_by".into(), json!(decided));
         (status, serde_json::Value::Object(ex))
     }
@@ -4306,6 +4484,9 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
                     home.join("worktrees").join(&name)
                 }
             });
+        let projection = status_evidence["projection"].clone();
+        note_telemetry_transition(&name, projection["telemetry"]["health"].as_str().unwrap_or(""),
+            projection["telemetry"]["reason"].as_str().unwrap_or(""));
         out.push(json!({
             "status_evidence": {
                 "source": status_evidence["decided_by"],
@@ -4513,6 +4694,17 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
                 env.get("CC_BACKEND").map(String::as_str),
             ),
         }));
+        // The projection is set outside the literal above, which is at the
+        // json! macro's recursion limit.
+        if let Some(last) = out.last_mut() {
+            last["agent_state"] = projection["agent_state"].clone();
+            last["turn_state"] = projection["turn_state"].clone();
+            last["activity"] = projection["activity"].clone();
+            last["status_authority"] = projection["authority"].clone();
+            last["telemetry"] = projection["telemetry"].clone();
+            last["last_progress_at"] = projection["last_progress_at"].clone();
+            last["status_evidence"]["projection"] = projection;
+        }
         // Outside the literal above, which sits at json!'s recursion limit.
         if let Some(row) = out.last_mut() {
             row["worker_type"] = json!(worker_type);
@@ -5404,6 +5596,16 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 .filter_map(|v| {
                     let n = v["name"].as_str()?.to_string();
                     let running = v["running"].as_bool().unwrap_or(false);
+                    // A chat worker has no tmux pane at all (chat_worker.rs:
+                    // "No tmux pane, no worktree"), so it never belongs in the
+                    // tmux-capture pool below — every name that reaches it is
+                    // spent on `pane_target`/`stopped_session_raw` for a pane
+                    // that cannot exist, and always comes back empty. It gets
+                    // its own raw-text source, synchronously, further down.
+                    if v["worker_type"].as_str() == Some(amux_core::worker_type::WorkerTypeId::CHAT)
+                    {
+                        return None;
+                    }
                     Some((n, running))
                 })
                 .collect();
@@ -5414,6 +5616,20 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                 .filter(|(_, raw)| !raw.trim().is_empty())
                 .map(|(n, raw)| (n.clone(), raw.clone()))
                 .collect();
+            // Chat workers: the tail of their own transcript stands in for a
+            // pane capture (ACW-9). Synchronous — one small indexed SELECT
+            // per worker on the connection this function already holds, not
+            // a subprocess, so it needs no thread of its own.
+            for v in out.iter() {
+                if v["worker_type"].as_str() != Some(amux_core::worker_type::WorkerTypeId::CHAT) {
+                    continue;
+                }
+                let Some(n) = v["name"].as_str() else { continue };
+                let raw = crate::api::chat_worker::preview_raw(conn, n);
+                if !raw.trim().is_empty() {
+                    raws.insert(n.to_string(), raw);
+                }
+            }
             let names: Vec<(String, bool)> = names
                 .into_iter()
                 .filter(|(n, _)| !raws.contains_key(n))
@@ -5469,7 +5685,20 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
                         v["preview"] = json!(sp);
                         v["preview_lines"] = json!(sl);
                     }
-                    apply_preview_waiting_status(v, raw);
+                    // Banner/picker text detection is a TERMINAL-UI reading of
+                    // `raw` (rate-limit banners, permission prompts, dingbat
+                    // pickers) — a chat worker's `raw` here is its own
+                    // transcript prose, which can *quote* or *discuss* that
+                    // same language without being in that state, and its real
+                    // status already comes from `native_status`/`derive_status`
+                    // (the same self-report harness a coding worker uses, per
+                    // `FleetSignals::worker_running`). Applying a terminal-only
+                    // overlay to prose would be a NEW status-inaccuracy source,
+                    // not a fix for one.
+                    if v["worker_type"].as_str() != Some(amux_core::worker_type::WorkerTypeId::CHAT)
+                    {
+                        apply_preview_waiting_status(v, raw);
+                    }
                 }
             }
         }
@@ -5495,6 +5724,143 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         key(a).cmp(&key(b))
     });
     Ok(out)
+}
+
+/// Log when a worker's status channel changes health, once per change, so a
+/// fleet losing its hooks shows up in the log sweep instead of as slightly
+/// wrong labels (2026-09-26: 22 of 32 workers were screen-only for a day).
+fn note_telemetry_transition(name: &str, health: &str, reason: &str) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    if health.is_empty() {
+        return;
+    }
+    let Ok(mut g) = LAST.lock() else { return };
+    let map = g.get_or_insert_with(HashMap::new);
+    let prev = map.insert(name.to_string(), health.to_string());
+    if prev.as_deref() == Some(health) {
+        return;
+    }
+    let from = prev.unwrap_or_else(|| "unseen".into());
+    if matches!(health, "degraded" | "missing") {
+        tracing::warn!(target: "status_truth", session = name, from = %from, to = health, %reason,
+            verdict = "telemetry_degraded", measured = true, n_considered = 1,
+            "worker status channel is {health}: {reason}");
+    } else if matches!(from.as_str(), "degraded" | "missing") {
+        tracing::info!(target: "status_truth", session = name, from = %from, to = health,
+            verdict = "telemetry_recovered", measured = true, n_considered = 1,
+            "worker status channel recovered");
+    }
+}
+
+/// AUTHORITY OF EACH STATUS RULE (MSG-69352: "treating observations of
+/// radically different epistemic quality as candidates for the same truth").
+/// Every `decided_by` value `derive_status_explain` can stamp is classed here,
+/// and `every_status_rule_has_an_authority` fails when a new rule is added
+/// without one.
+///
+/// - `authoritative`: the provider or amux said so (a hook report, a Codex
+///   rollout record, the transcript, the process being gone).
+/// - `corroborated`: a structured probe or an unambiguous provider screen (a
+///   live child process, reported subagents, a permission dialog, an API error
+///   or quota banner, a recognised empty composer).
+/// - `inferred`: a guess from generic screen shape or pane activity.
+pub(crate) fn authority_of(decided: &str) -> Option<&'static str> {
+    Some(match decided {
+        "report" | "native_hook" | "codex_rollout" | "codex_rollout_with_picker"
+        | "claude_transcript_interrupt" | "not_running" | "codex_stale_active_refused" => "authoritative",
+        "structured_live_children" | "contradiction_subagents_working"
+        | "contradiction_subagents_reported_live" | "transition" | "provider_picker"
+        | "contradiction_picker_waiting" | "api_error_banner" | "provider_auto_resume_quota"
+        | "pane_boundary" => "corroborated",
+        "pane" | "activity_fallback" | "contradiction_pane_generating"
+        | "contradiction_pane_redrew_since_claim" | "contradiction_provider_background_working"
+        | "codex_child_probe_unmeasured" => "inferred",
+        _ => return None,
+    })
+}
+
+/// Health of a worker's status channel, independent of what the worker is
+/// doing. `healthy`: a report from this run applies (or the last one is so
+/// old that nothing has happened since). `degraded`: this run's last report
+/// is not being applied, e.g. an `active` claim that went silent. `missing`:
+/// no report from this run at all after the start window. `starting`: under
+/// 10 minutes since start. `unsupported`: a provider with no hook channel.
+pub(crate) fn telemetry_health(
+    provider: &str,
+    report: Option<(&str, bool, bool, f64)>, // (state, from_this_life, applied, age_s)
+    codex_live: bool,
+    started_age_s: Option<f64>,
+) -> (&'static str, &'static str) {
+    if !matches!(provider, "claude" | "codex") {
+        return ("unsupported", "this provider has no status hooks; status comes from the screen");
+    }
+    if codex_live {
+        return ("healthy", "Codex rollout record from this run");
+    }
+    match report {
+        Some((_, true, true, _)) => ("healthy", "a report from this run applies"),
+        Some(("active", true, false, _)) => (
+            "degraded",
+            "the last report claimed an active turn and then went silent (lost Stop hook or crashed turn)",
+        ),
+        Some((_, true, false, age)) if age > 3600.0 => ("healthy", "quiet: no event for a long time"),
+        Some((_, true, false, _)) => ("degraded", "this run's last report is not being applied"),
+        _ if started_age_s.is_some_and(|a| a < 600.0) => ("starting", "no report yet from this run"),
+        _ => ("missing", "no status report from this run; hooks are not reaching amux"),
+    }
+}
+
+#[cfg(test)]
+mod status_authority_tests {
+    use super::*;
+
+    /// Every rule `derive_status_explain` can stamp must have an authority
+    /// class, read from the source so a new rule cannot be added unclassed.
+    #[test]
+    fn every_status_rule_has_an_authority() {
+        let src = include_str!("sessions_legacy.rs");
+        // Every string literal inside a `decided = ...;` statement, so rules
+        // assigned through `if .. { "a" } else { "b" }` are caught too.
+        let stmt = regex::Regex::new(r#"(?s)\bdecided = ([^;]*);"#).unwrap();
+        let lit = regex::Regex::new(r#""([a-z_]+)""#).unwrap();
+        let mut rules: Vec<String> = stmt
+            .captures_iter(src)
+            .flat_map(|c| lit.captures_iter(&c[1]).map(|l| l[1].to_string()).collect::<Vec<_>>())
+            .collect();
+        rules.push("not_running".into());
+        rules.push("pane_boundary".into());
+        rules.sort();
+        rules.dedup();
+        assert!(rules.len() >= 20, "rule scan found too few rules: {rules:?}");
+        for r in &rules {
+            assert!(authority_of(r).is_some(), "status rule `{r}` has no authority class");
+        }
+    }
+
+    #[test]
+    fn telemetry_health_names_the_failure() {
+        assert_eq!(telemetry_health("claude", Some(("idle", true, true, 5.0)), false, Some(900.0)).0, "healthy");
+        assert_eq!(telemetry_health("claude", Some(("active", true, false, 400.0)), false, Some(900.0)).0, "degraded");
+        assert_eq!(telemetry_health("claude", Some(("idle", false, false, 93_000.0)), false, Some(9_000.0)).0, "missing");
+        assert_eq!(telemetry_health("claude", None, false, Some(100.0)).0, "starting");
+        assert_eq!(telemetry_health("claude", Some(("idle", true, false, 90_000.0)), false, Some(99_000.0)).0, "healthy");
+        assert_eq!(telemetry_health("codex", None, true, Some(9_000.0)).0, "healthy");
+        assert_eq!(telemetry_health("gemini", None, false, Some(9_000.0)).0, "unsupported");
+    }
+
+    #[test]
+    fn an_open_tool_call_keeps_an_active_report_trusted() {
+        let now = 10_000.0;
+        // Ten minutes into a tool call: PreToolUse was the last event.
+        assert!(report_applies_event("active", "PreToolUse", now - 600.0, 0.0, now));
+        // The same silence after any other event is a stale claim.
+        assert!(!report_applies_event("active", "PostToolUse", now - 600.0, 0.0, now));
+        assert!(!report_applies("active", now - 600.0, 0.0, now));
+        // Past the open-tool window it goes stale too.
+        assert!(!report_applies_event("active", "PreToolUse", now - 4000.0, 0.0, now));
+    }
 }
 
 #[cfg(test)]

@@ -217,6 +217,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
   <div class="header-actions" style="display:flex;gap:8px;align-items:center;">
     <div id="org-switcher-wrap" style="display:none;"></div>
+    <button class="btn-rate-limit btn-telemetry" id="telemetry-pill" title="Status coverage" onclick="event.stopPropagation();showTelemetryDetail()">
+      <span id="telemetry-pill-text">Status</span>
+      <span id="telemetry-pill-count" aria-hidden="true">?</span>
+    </button>
     <button class="btn-rate-limit" id="rate-limit-pill" title="Continue all limited workers" onclick="event.stopPropagation();openBulkActions()">
       <span id="rate-limit-pill-text">0 limited</span>
       <span id="rate-limit-pill-count" aria-hidden="true">0</span>

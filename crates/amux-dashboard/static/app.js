@@ -613,6 +613,7 @@ let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle'
 function _sessStatusKey(s) {
   if (s.status === 'starting') return 'starting';
   if (!s.running) return 'stopped';
+  if (s.agent_state === 'unknown') return 'unknown';
   if (s.status === 'rate_limited') return 'rate_limited';
   if (s.status === 'api_error') return 'api_error';
   if (s.status === 'error') return 'error';
@@ -5340,6 +5341,17 @@ async function _openStatusDetail(name) {
         + (report.sequence ? ' · event ' + esc(String(report.sequence)) : '')
         + (report.applied && ['native_hook','report'].includes(reason.decided_by) ? '' : ' · fallback in use') + '</p>';
       if (!report.native && evidence.running) html += '<p>Native hook evidence is unavailable; process, transcript and terminal observations are the fallback.</p>';
+      const pr = reason.projection;
+      if (pr) {
+        const t = pr.telemetry || {};
+        const row = (k, v) => '<tr><th style="text-align:left;padding:2px 12px 2px 0;font-weight:500;color:var(--dim)">' + k + '</th><td>' + esc(String(v ?? '—')) + '</td></tr>';
+        html += '<table class="status-projection" style="margin:6px 0 10px;font-size:0.85rem">'
+          + row('Agent', pr.agent_state) + row('Process', pr.process_state) + row('Turn', pr.turn_state)
+          + row('Activity', (pr.activity || '').replaceAll('_', ' ')) + row('Authority', pr.authority)
+          + row('Telemetry', (t.health || '') + (t.reason ? ' · ' + t.reason : ''))
+          + row('Last progress', pr.last_progress_at ? timeAgo(pr.last_progress_at) : 'no event from this run')
+          + '</table>';
+      }
       if (evidence.native_events?.length) html += '<details><summary>Recent native events (' + evidence.native_events.length + ')</summary><ol>' + evidence.native_events.slice(0,12).map(e => '<li>' + esc(e.event) + ' → ' + esc(e.state) + ' · ' + esc(new Date(e.event_ts * 1000).toLocaleTimeString()) + '</li>').join('') + '</ol></details>';
     } else html += '<p role="alert">Live status could not be verified. Retry when connected.</p>';
     const cards = Array.isArray(boardRes) ? boardRes : [];
@@ -5381,7 +5393,15 @@ function _workerExecutionBadge(s, runtimeBoard, opts) {
     ? '<span class="status-badge blocked" title="Pause has not finished stopping this worker. Retry Pause.">pause incomplete</span>'
     : '<span class="status-badge paused">paused</span>';
   let badge = '';
-  if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
+  const tele = s.telemetry || {};
+  // MSG-69352 items 2 and 4: a guess on an unhealthy status channel is shown
+  // as a guess, and a finished turn waiting on its own background shell is
+  // not "working".
+  if (s.running && s.agent_state === 'unknown') badge = '<button type="button" class="status-badge unknown" title="'
+    + esc('Agent state unknown: only a screen guess (' + (s.status || '?') + ') is available and the status channel is ' + (tele.health || 'unmeasured') + '. ' + (tele.reason || '') + ' Automation will not act on it.')
+    + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">unknown ▾</button>';
+  else if (s.running && s.status === 'active' && s.activity === 'background_shell') badge = '<span class="status-badge background" title="The turn is finished; a background shell it started is still running. The agent resumes on its own when that ends.">background job</span>';
+  else if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
   else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
   else if (!s.running) badge = '<span class="status-badge idle">stopped</span>';
   else if (s.status === 'error') badge = '<button type="button" class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">error ▾</button>';
@@ -5395,6 +5415,8 @@ function _workerExecutionBadge(s, runtimeBoard, opts) {
   else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
   else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
 
+  if (s.running && (tele.health === 'degraded' || tele.health === 'missing')) badge += '<span class="status-badge telemetry-warn" title="'
+    + esc('Status channel ' + tele.health + ': ' + (tele.reason || '') + ' The status shown is ' + (s.status_authority || 'inferred') + '.') + '">⚠ telemetry</span>';
   // The worker-details header makes the pill itself the entry to this
   // evidence (updatePeekStatus), so it asks for no separate ⓘ button.
   if (opts && opts.inspect === false) return badge;
@@ -6002,6 +6024,7 @@ function render() {
   const focusedId = _active && _active.id ? _active.id : null;
   updateActiveCount();
   updateRateLimitPill();
+  updateTelemetryPill();
   // Active-filter preview chips (provider/model/log-search) + Filters button badge
   renderActiveFilters();
   // Build tag filter bar
@@ -8242,6 +8265,28 @@ function showHostPressure() {
 }
 setInterval(refreshHostPressure, 60000);
 setTimeout(refreshHostPressure, 3000);
+// STATUS COVERAGE CHIP (MSG-69352 item 1). How many running workers have a
+// healthy status channel. Hidden while every hooked worker is healthy;
+// computed from the session list, so it costs no request.
+function updateTelemetryPill() {
+  const pill = document.getElementById('telemetry-pill');
+  const txt = document.getElementById('telemetry-pill-text');
+  if (!pill || !txt) return;
+  const live = sessions.filter(s => s.running && !s.archived && s.telemetry && s.telemetry.health && s.telemetry.health !== 'unsupported');
+  const bad = live.filter(s => s.telemetry.health === 'degraded' || s.telemetry.health === 'missing');
+  if (!bad.length) { pill.classList.remove('show'); return; }
+  txt.textContent = 'Status ' + (live.length - bad.length) + '/' + live.length;
+  const cnt = document.getElementById('telemetry-pill-count');
+  if (cnt) cnt.textContent = String(bad.length);
+  pill.title = bad.map(s => s.name + ': ' + s.telemetry.health).join('\n') + '\n(status for these is a screen guess; tap for detail)';
+  pill.setAttribute('aria-label', bad.length + ' workers without a healthy status channel');
+  pill.classList.add('show');
+}
+function showTelemetryDetail() {
+  const bad = sessions.filter(s => s.running && s.telemetry && (s.telemetry.health === 'degraded' || s.telemetry.health === 'missing'));
+  if (!bad.length) { showToast('Every running worker has a healthy status channel'); return; }
+  showToast(bad.length + ' without a healthy status channel: ' + bad.slice(0, 6).map(s => s.name + ' (' + s.telemetry.health + ')').join(', ') + (bad.length > 6 ? ', …' : ''));
+}
 function _scrollToFirstRateLimited() {
   const target = sessions.find(s => s.rate_limited_until) || sessions.find(s => s.credit_limited);
   if (!target) return;
@@ -12190,7 +12235,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1138';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1140';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12558,6 +12603,15 @@ function _chatRefresh(name) {
   return Promise.resolve();
 }
 
+// Re-send the exact text an interrupted turn never got to answer (see the
+// `m.interrupted` branch in `_chatRender`). Plain `doSend` — the same path
+// the compose box uses — not a new endpoint.
+async function _chatRetryTurn(name, text) {
+  if (!text) return;
+  await doSend(name, text);
+  if (_chat.name === name) _chatLoad(name);
+}
+
 function _chatBubble(role, html, meta, cls) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '">'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -12614,9 +12668,21 @@ function _chatRender(errorText) {
       const shown = _hasSendTimeStamp(m.text) ? (m.text || '').replace(/^\[[^\]]*\]\s/, '') : (m.text || '');
       html += _chatBubble('user', esc(shown).replace(/\n/g, '<br>'), esc(who) + ' · ' + _chatTime(m.ts));
     } else if (m.error) {
+      // A restart-interrupted turn (chat_worker.rs::recover) tells the user
+      // to resend, but the exact text they sent is already sitting right
+      // above this bubble in the transcript — making them retype it is the
+      // gap, not the recovery message itself. `_stampSendTime` is idempotent
+      // (see its own doc), so resending the ALREADY-stamped stored text
+      // cannot double-stamp it.
+      const original = m.interrupted
+        ? (_chat.messages.find(x => x.role === 'user' && x.turn_id === m.turn_id) || {}).text
+        : '';
+      const retryBtn = original
+        ? '<button type="button" class="btn chat-retry-btn" onclick="_chatRetryTurn(\'' + escJs(_chat.name) + '\',\'' + escJs(original) + '\')">Retry</button>'
+        : '';
       html += _chatBubble('assistant', _chatToolsHtml(m.turn_id, m.tools, false)
         + '<span class="chat-error">' + esc(m.error) + '</span>'
-        + (m.text ? renderMarkdown(m.text) : ''), 'failed · ' + _chatTime(m.ts), 'is-error');
+        + (m.text ? renderMarkdown(m.text) : '') + retryBtn, 'failed · ' + _chatTime(m.ts), 'is-error');
     } else {
       const bits = [_chatTime(m.ts)];
       if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
@@ -14044,7 +14110,47 @@ function _linkifyPaths(safeHtml) {
 // adding a stage meant finding all of them — which is how the path linkifier
 // would have been half-wired.
 function _peekHtml(raw) {
-  return _hangIndent(wrapBoxBlocks(_fitRules(highlightPrompts(_linkifyPaths(ansiToHtml(raw))))));
+  return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
+}
+
+const _peekToolCollapsed = {};
+function _peekToggleTool(id) {
+  _peekToolCollapsed[id] = !_peekToolCollapsed[id];
+  const el = document.getElementById('ptc-' + id);
+  if (!el) return;
+  el.classList.toggle('collapsed', !!_peekToolCollapsed[id]);
+}
+let _peekToolSeq = 0;
+function _wrapToolCalls(html) {
+  const lines = html.split('\n');
+  const strip = s => s.replace(/<[^>]*>/g, '');
+  const out = [];
+  _peekToolSeq = 0;
+  for (let i = 0; i < lines.length;) {
+    const t = strip(lines[i]);
+    if (!/^\s*⏺\s/.test(t)) { out.push(lines[i]); i++; continue; }
+    const id = _peekToolSeq++;
+    let end = i + 1;
+    while (end < lines.length) {
+      const next = strip(lines[end]);
+      if (/^\s*⏺\s/.test(next)) break;
+      if (/^\s*[❯›](?:\s|$)/.test(next)) break;
+      if (/^\s*⎿/.test(next) || /^\s{2,}\S/.test(next) || !next.trim()) { end++; continue; }
+      break;
+    }
+    const hasBody = end > i + 1;
+    const collapsed = _peekToolCollapsed[id];
+    if (hasBody) {
+      out.push('<div class="ptc' + (collapsed ? ' collapsed' : '') + '" id="ptc-' + id + '">'
+        + '<div class="ptc-head" onclick="_peekToggleTool(' + id + ')">'
+        + '<span class="ptc-caret"></span>' + lines[i] + '</div>'
+        + '<div class="ptc-body">' + lines.slice(i + 1, end).join('\n') + '</div></div>');
+    } else {
+      out.push(lines[i]);
+    }
+    i = end;
+  }
+  return out.join('\n');
 }
 // FORMAT FOR THE SCREEN LIKE A TERMINAL (Ethan, 2026-09-24: "make peek look
 // like the underlying terminal but format for the screen"). The browser wraps
@@ -20819,13 +20925,13 @@ function closeFiltersModal() {
 const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
-const _STATUS_LABELS = { starting: 'Starting', error: 'Error', working: 'Working', blocked: 'Blocked', waiting: 'Waiting', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped' };
+const _STATUS_LABELS = { starting: 'Starting', error: 'Error', working: 'Working', blocked: 'Blocked', waiting: 'Waiting', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped', unknown: 'Unknown' };
 function renderFilterOptions() {
   const live = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s));
   // Status chips — fixed order, only states that exist (or are selected)
   const sEl = document.getElementById('filter-statuses');
   if (sEl) {
-    const opts = ['working', 'blocked', 'waiting', 'rate_limited', 'api_error', 'idle', 'stopped']
+    const opts = ['working', 'blocked', 'waiting', 'rate_limited', 'api_error', 'idle', 'unknown', 'stopped']
       .filter(k => filterStatuses.has(k) || live.some(x => _sessStatusKey(x) === k));
     sEl.innerHTML = opts.length ? opts.map(k => {
       const on = filterStatuses.has(k);

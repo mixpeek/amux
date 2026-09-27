@@ -616,6 +616,7 @@
   .chat-meta { font-size: 0.7rem; color: var(--dim); margin-top: 3px; padding: 0 4px; }
   .chat-msg.is-error .chat-bubble { border-color: var(--red, #f85149); }
   .chat-error { display: block; color: var(--red, #f85149); font-weight: 600; margin-bottom: 4px; white-space: pre-wrap; }
+  .chat-retry-btn { display: block; margin-top: 8px; font-size: 0.78rem; padding: 6px 14px; }
   .chat-tools { margin-bottom: 6px; }
   .chat-tools:last-child { margin-bottom: 0; }
   .chat-tools-toggle {
@@ -1127,6 +1128,15 @@
   /* Emoji occupy exactly 2 monospace cells inside tables so borders stay aligned
      (browsers render them ~2.1ch, which otherwise detaches the right border). */
   .overlay-body .peek-box .pemoji { display: inline-block; width: 2ch; text-align: center; overflow: hidden; }
+  /* Collapsible tool-call blocks in peek */
+  .ptc { margin: 2px 0; }
+  .ptc-head { cursor: pointer; display: flex; align-items: baseline; gap: 0; user-select: none; }
+  .ptc-head:hover { background: rgba(255,255,255,0.04); border-radius: 4px; }
+  .ptc-caret { display: inline-block; width: 1.2em; flex-shrink: 0; text-align: center; font-size: 0.7em; color: var(--dim); transition: transform 0.15s; }
+  .ptc-caret::before { content: '\25BE'; }
+  .ptc.collapsed .ptc-caret { transform: rotate(-90deg); }
+  .ptc-body { overflow: hidden; }
+  .ptc.collapsed .ptc-body { display: none; }
   .overlay-status { color: var(--dim); font-size: 0.68rem; margin-top: 2px; flex-shrink: 0; text-align: center; }
   /* The first successful peek response fills this after the terminal has
      painted. Reserve its one line up front so "Updated …" cannot steal 13px
@@ -7088,6 +7098,12 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 .header-row #notif-badge { top:0; right:0; border:2px solid var(--bg); height:18px; min-width:18px; border-radius:10px; font-size:9px; }
 .header-row .btn-active .active-dot { box-shadow:none; width:6px; height:6px; }
 .header-row .btn-rate-limit { color:var(--red); border:1px solid rgba(248,81,73,0.45); background:rgba(248,81,73,0.12); }
+/* Status coverage (MSG-69352): amber, it is a confidence warning, not an outage. */
+.header-row .btn-telemetry { color:var(--yellow, #d29922); border-color:rgba(210,153,34,0.5); background:rgba(210,153,34,0.12); }
+/* Agent state unknown: neutral grey, deliberately not the green of "working". */
+.status-badge.unknown { background:rgba(139,148,158,0.18); color:var(--dim); border:1px dashed rgba(139,148,158,0.6); cursor:pointer; }
+.status-badge.background { background:rgba(88,166,255,0.14); color:#58a6ff; }
+.status-badge.telemetry-warn { background:rgba(210,153,34,0.14); color:var(--yellow, #d29922); margin-left:4px; }
 /* Host guard (runtime_jobs/host_guard.rs): same chip as "N limited", amber
    while strained, red at critical, hidden when the host is ok. */
 .header-row .btn-host-pressure.strained { color:var(--yellow, #d29922); border-color:rgba(210,153,34,0.5); background:rgba(210,153,34,0.12); }
