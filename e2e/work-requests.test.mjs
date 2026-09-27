@@ -136,6 +136,24 @@ test('delivery is a separate explicit action for the approved version', {timeout
   assert.equal(h.calls[0].body.content_hash, 'a'.repeat(64));
 });
 
+test('held request overrides stale advertised artifact actions and only offers restore', {timeout: 15000}, async t => {
+  const value = detail(); value.status = 'held'; value.allowed_actions = ['restore', 'generate', 'revise', 'approve', 'deliver'];
+  const h = await harness(t, {value, action: async (route, body) => {
+    await route.fulfill({json: {...detail(), operation: {state: 'completed', operation_id: body.operation_id}}});
+  }});
+  await h.open();
+  await expect(h.page.locator('.wr-state')).toHaveText('보류');
+  await expect(h.page.locator('.wr-artifact')).toContainText('This is the complete reviewable artifact.');
+  await expect(h.page.locator('.wr-actions button')).toHaveText(['다시 진행']);
+  assert.equal(await h.page.getByRole('button', {name: '이 버전 승인', exact: true}).count(), 0);
+  assert.equal(await h.page.getByRole('button', {name: '수정 요청', exact: true}).count(), 0);
+  await h.page.getByRole('button', {name: '다시 진행', exact: true}).click();
+  await expect(h.page.locator('.wr-state')).toHaveText('검토 필요');
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].body.kind, 'restore');
+  assert.equal(h.calls[0].body.expected_source_fingerprint, 'source-v1');
+});
+
 test('stale source conflict is visible and refresh requires fresh confirmation', {timeout: 15000}, async t => {
   let value = detail();
   const h = await harness(t, {read: route => route.fulfill({json: value}), action: async route => {
@@ -174,7 +192,13 @@ for (const state of ['pending', 'unknown', 'response-lost']) {
       await route.fulfill({json: {...value, operation: {state: count === 1 ? state : 'completed', operation_id: body.operation_id}}});
     }});
     await h.open(); const button = h.page.getByRole('button', {name: '초안 다시 작성', exact: true});
-    await button.click(); await expect.poll(() => h.calls.length).toBe(1); await expect(button).toBeEnabled();
+    await button.click(); await expect.poll(() => h.calls.length).toBe(1);
+    if (state !== 'response-lost') {
+      await expect(button).toHaveCount(0);
+      await expect(h.page.locator('#wr-feedback')).not.toContainText('요청이 반영됐습니다.');
+      await h.page.getByRole('button', {name: '새로고침', exact: true}).click();
+    }
+    await expect(button).toBeEnabled();
     await expect(h.page.locator('#wr-feedback')).not.toContainText('요청이 반영됐습니다.');
     await button.click(); await expect.poll(() => h.calls.length).toBe(2);
     assert.equal(h.calls[1].body.operation_id, h.calls[0].body.operation_id);

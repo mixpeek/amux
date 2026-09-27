@@ -10,7 +10,7 @@ window.AmuxWorkRequests = (() => {
     if (cls) n.className = cls;
     return n;
   };
-  const labels = {backlog:'접수',todo:'대기',doing:'진행 중',review:'검토 필요',needsyou:'확인 필요',blocked:'보류',done:'완료',verified:'확인 완료',discarded:'제외',ready_for_review:'검토 필요',approved:'승인됨',delivered:'전달 완료',stale:'원문 변경 · 재작성 필요',pending:'대기',queued:'대기',claimed:'작성 중',accepted:'접수됨',imported:'초안 반영됨',failed:'실패',unknown:'결과 확인 필요',held:'보류',awaiting_draft:'초안 작성 가능',drafting:'초안 작성 중',needs_review:'요청 검토',review_ready:'검토 필요',draft_failed:'초안 작성 실패',waiting_information:'정보 확인 필요',not_actionable:'처리 대상 아님'};
+  const labels = {backlog:'접수',todo:'대기',doing:'진행 중',review:'검토 필요',needsyou:'확인 필요',blocked:'보류',done:'완료',verified:'확인 완료',discarded:'제외',dismissed:'제외',ready_for_review:'검토 필요',approved:'승인됨',delivered:'전달 완료',stale:'원문 변경 · 재작성 필요',pending:'대기',queued:'대기',claimed:'작성 중',accepted:'접수됨',imported:'초안 반영됨',failed:'실패',unknown:'결과 확인 필요',held:'보류',awaiting_draft:'초안 작성 가능',drafting:'초안 작성 중',needs_review:'요청 검토',review_ready:'검토 필요',draft_failed:'초안 작성 실패',waiting_information:'정보 확인 필요',needs_input:'정보 확인 필요',already_resolved:'이미 해결됨',not_owner:'담당 대상 아님',not_actionable:'처리 대상 아님'};
   function label(value) { return labels[value] || value || '접수'; }
   async function read(url, options) {
     const response = await apiCall(API + url, options);
@@ -53,11 +53,13 @@ window.AmuxWorkRequests = (() => {
     const detail = value.detail || {}, issue = detail.issue || detail.request || {};
     const artifact = detail.artifact, approval = detail.approval, job = detail.automation || detail.assessment;
     const allowed = detail.allowed_actions || value.allowed_actions;
-    const can = kind => Array.isArray(allowed) ? allowed.includes(kind) : true;
+    const actionsBlocked = ['held','done','dismissed','drafting'].includes(value.status) || ['pending','unknown'].includes(value.operation?.state);
+    const can = kind => (Array.isArray(allowed) ? allowed.includes(kind) : true) && (!actionsBlocked || ['hold','restore'].includes(kind));
     current = value;
     panel.replaceChildren();
     const heading = node('div', null, 'wr-heading');
-    heading.append(node('h2', '업무 요청'), node('span', label(artifact?.status || value.status), 'wr-state'));
+    const headingState = ['held','dismissed','drafting','draft_failed'].includes(value.status) ? value.status : artifact?.status || value.status;
+    heading.append(node('h2', '업무 요청'), node('span', label(headingState), 'wr-state'));
     heading.append(button('새로고침', () => refresh(true)));
     panel.append(heading);
     const source = node('div', null, 'wr-source');
