@@ -537,6 +537,7 @@ async fn async_main() {
     // boundary and survives a restart; `/api/debug/board-drive` is the trace
     // whose absence is why the outage went unnoticed for hours.
     drop(runtime_jobs::board_drive::spawn(state.clone()));
+    drop(api::work_requests::spawn(state.clone()));
 
     // RESUME STARTS A RESTART CUT OFF. Deploys exec() this process on every
     // commit; a worker start (a large worktree checkout takes over a minute)

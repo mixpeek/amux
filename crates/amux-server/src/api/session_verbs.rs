@@ -8073,7 +8073,7 @@ pub(crate) async fn enqueue_board_conversation(
     .map_err(str::to_string)
 }
 
-async fn steer_enqueue_precond_with_id(
+pub(crate) async fn steer_enqueue_precond_with_id(
     store: &crate::db::SharedStore,
     name: &str,
     text: &str,
@@ -8277,7 +8277,7 @@ async fn steer_enqueue_precond_with_id(
                     )
                     .unwrap_or(false);
                 if queued {
-                    if guard_s=="project-steering" {
+                    if guard_s=="project-steering" || guard_s=="work-request" {
                         let (old_session,old_text,old_card):(String,String,Option<String>)=conn.query_row("SELECT session,text,precond_card FROM steering_queue WHERE id=?1",[fixed],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
                         if old_session!=session || old_text!=text_s || old_card.as_deref()!=precond_w.as_ref().map(|(c,_)|c.as_str()) {return Err(rusqlite::Error::InvalidQuery);}
                     }
@@ -19194,7 +19194,7 @@ fn stale_delivery_stamp(
     ))
 }
 
-async fn capture_delivered_steering(
+pub(crate) async fn capture_delivered_steering(
     state: &AppState,
     session: String,
     text: String,
@@ -19202,6 +19202,22 @@ async fn capture_delivered_steering(
     sender: String,
     id: String,
 ) {
+    if guard == "work-request" {
+        use rusqlite::OptionalExtension;
+        let result = state.store.write_async(move |conn| {
+            let binding: Option<(String, Option<i64>)> = conn.query_row(
+                "SELECT task_id,cmd_history_id FROM _amux_source_dispatch WHERE message_id=?1 AND worker=?2",
+                rusqlite::params![id,session], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((task,None)) = binding {
+                conn.execute("INSERT INTO cmd_history(text,type,session,ts,origin,card_id,capture_pending) VALUES(?1,'steering',?2,?3,'workdesk',?4,0)", rusqlite::params![text,session,(now_f64()*1000.0) as i64,task])?;
+                conn.execute("UPDATE _amux_source_dispatch SET cmd_history_id=?2 WHERE message_id=?1",rusqlite::params![id,conn.last_insert_rowid()])?;
+                return Ok(crate::db::WriteOutcome{applied:true,events:vec![]});
+            }
+            Ok(crate::db::WriteOutcome{applied:false,events:vec![]})
+        }).await;
+        if let Err(error)=result {tracing::warn!(%error,verdict="source_dispatch_attribution_failed");}
+        return;
+    }
     if session_is_isolated(&session) {
         tracing::info!(
             session,
@@ -24725,6 +24741,7 @@ pub(crate) fn held_send_message(name: &str, hold: &PeerHold) -> String {
 ///
 /// `Ok(None)` passes, `Ok(Some(hold))` queues for resume (AMUX-5237),
 /// `Err(response)` refuses.
+#[allow(clippy::result_large_err, reason = "HTTP adapter preserves the response returned directly by its callers")]
 async fn lifecycle_peer_gate(
     state: &AppState,
     name: &str,
@@ -30016,19 +30033,13 @@ async fn config_patch_with_liveness(
     {
         let provider = provider_of(&cfg);
         let flags = cfg.get_or("CC_FLAGS", "").to_string();
-        let enabled;
-        let new_flags;
-        if is_yolo_enabled(&flags, &cfg) {
-            new_flags = strip_provider_yolo_flags(&flags);
+        let (enabled, new_flags) = if is_yolo_enabled(&flags, &cfg) {
             cfg.set("CC_AUTO_CONTINUE", "0");
-            enabled = false;
+            (false, strip_provider_yolo_flags(&flags))
         } else {
-            new_flags = format!("{flags} {}", provider_yolo_flag(&provider))
-                .trim()
-                .to_string();
             cfg.set("CC_AUTO_CONTINUE", "1");
-            enabled = true;
-        }
+            (true, format!("{flags} {}", provider_yolo_flag(&provider)).trim().to_string())
+        };
         cfg.set("CC_FLAGS", &new_flags);
         let was_running = running;
         if let Err((status, error)) =

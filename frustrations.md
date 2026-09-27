@@ -5015,3 +5015,11 @@ CARD: MO-3622
 SYMPTOM: amux-server-rs forked about 50 processes per second, 26 of them the bootstrap loop's per-session `has-session` and `list-panes` (13.0/s of each at 28 sessions). The one sweep that calls reconcile reads only the session name.
 COST: half of the server's spawns and about 0.5 core of translated tmux clients, invisible in the logs because a process that has exited leaves nothing to grep.
 FIX: 63c2614d makes reconcile one `list-panes -a` census, and TmuxBackend spawns are now counted per 60 s window with a WARN (`tmux_spawn_rate_high`) and `tmux_spawns` in GET /api/debug/tmux. The count covers TmuxBackend::run only; peek captures and the session-verb helpers spawn tmux from their own call sites and are not counted.
+
+### 2026-09-27 — native request integration exposed undefined dashboard helpers
+
+On origin/main 461c2693, `bash scripts/spa-lint.sh` failed on four `_escHtml` calls in pinned notes and an undeclared `remend` global in chat streaming. Pinned-note rendering would throw rather than show user data. Reused the existing `esc` renderer and explicitly read `window.remend`; no new escaping implementation. Static no-undef diagnostics are the detection signal.
+
+### 2026-09-27 — mandatory Clippy gate found pre-existing response adapter warnings
+
+The native WorkDesk integration's workspace gate reported seven warnings on unchanged origin/main helpers: a constant `format!`, late boolean initialization, and five HTTP helpers returning ready-to-send Axum responses. Removed the unnecessary formatting/initialization. Scoped `result_large_err` allowances to those five adapter functions with a rationale; no crate-wide lint suppression or changed response behavior. `cargo clippy --workspace --all-targets -- -D warnings` remains the detection signal.

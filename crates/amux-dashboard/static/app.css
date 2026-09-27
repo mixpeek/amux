@@ -7456,3 +7456,28 @@ select.input { height:var(--control-height); }
 @media (max-width: 600px) { .peek-shell-actions .btn, .peek-shell-actions select { min-height: 44px; } }
 .peek-shell-out { margin: 0; max-height: 360px; overflow: auto; background: #010409; color: #c9d1d9; border-radius: 6px; padding: 8px 10px; font-size: 0.74rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 @keyframes peek-shell-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* Source-backed requests share the board and its responsive detail drawer. */
+.wr-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0; }
+.wr-toolbar[hidden], .wr-detail[hidden] { display:none; }
+.wr-toolbar [aria-pressed="true"] { border-color:var(--accent); color:var(--accent); }
+.wr-toolbar span,.wr-muted { color:var(--dim); font-size:.83rem; }
+.wr-detail { width:100%; min-width:0; margin:12px 0; }
+.wr-heading,.wr-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.wr-heading h2 { margin:0; font-size:1.1rem; }
+.wr-heading > button { margin-left:auto; }
+.wr-state { border:1px solid var(--border); border-radius:20px; padding:3px 9px; font-size:.8rem; }
+.wr-section { margin:18px 0; padding:14px; border:1px solid var(--border); border-radius:10px; min-width:0; }
+.wr-section h3 { margin:0 0 10px; font-size:.93rem; }
+.wr-section p { white-space:pre-wrap; overflow-wrap:anywhere; }
+.wr-section pre { white-space:pre-wrap; overflow-wrap:anywhere; font-family:inherit; line-height:1.6; font-size:.9rem; max-width:100%; margin:8px 0; }
+.wr-artifact { max-height:60vh; overflow-y:auto; padding:10px; background:var(--bg); border-radius:6px; }
+.wr-section textarea { box-sizing:border-box; width:100%; margin:12px 0 6px; padding:10px; resize:vertical; background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:6px; font:inherit; }
+.wr-confirm { display:grid; gap:10px; margin-top:14px; padding:12px; border:1px solid var(--border); border-radius:8px; }
+.wr-confirm label { display:flex; align-items:flex-start; gap:9px; font-size:.88rem; line-height:1.5; }
+.wr-confirm input { flex:none; margin-top:4px; }
+.wr-destination { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+.wr-evidence + .wr-evidence { margin-top:12px; border-top:1px solid var(--border); }
+.wr-error { color:var(--red); }.wr-progress { color:var(--accent); }.wr-feedback { overflow-wrap:anywhere; }
+.wr-managed #bd-status-row,.wr-managed #bd-tab-edit,.wr-managed #bd-edit-fields,.wr-managed #bd-edit-footer { display:none !important; }
+@media(max-width:480px) { .wr-section { padding:11px; }.wr-actions .btn { flex:1; }.wr-heading { gap:6px; }.wr-toolbar { margin:8px; }.wr-confirm .btn { width:100%; } }

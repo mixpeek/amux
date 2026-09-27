@@ -1957,6 +1957,7 @@ pub async fn send_worker(
 /// Factored out because every promoted verb needs it identically, and five
 /// copies of a resolution rule is five places for the id/name split to be
 /// fixed in only four of them.
+#[allow(clippy::result_large_err, reason = "HTTP adapter preserves the response returned directly by its callers")]
 async fn resolve_key(state: &AppState, key: String) -> Result<String, Response> {
     let store = state.store.clone();
     let k = key.clone();

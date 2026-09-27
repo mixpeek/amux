@@ -8822,7 +8822,7 @@ pub(crate) async fn claim_card_from_outcome(
             let Some(row) = bs::get_issue(conn, &card_s)? else {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             };
-            if row.project_group.is_some() || row.status != from {
+            if row.source.as_deref() == Some("workdesk") || row.project_group.is_some() || row.status != from {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
             }
             let blockers = deps_blocking(conn, &row);

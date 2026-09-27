@@ -12190,7 +12190,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1137';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1138';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.
@@ -12630,7 +12630,7 @@ function _chatRender(errorText) {
     // link or a dangling ** that would flash as raw markup or swallow the rest
     // of the bubble. remend (Streamdown's healing step) closes them for this
     // frame only; the finished message renders from its own complete text.
-    const t = (typeof remend === 'function') ? remend(_chat.streaming.text) : _chat.streaming.text;
+    const t = (typeof window.remend === 'function') ? window.remend(_chat.streaming.text) : _chat.streaming.text;
     const tools = _chatToolsHtml(_chat.streaming.turn_id, _chat.streaming.tools, true);
     html += _chatBubble('assistant', tools + (t ? renderMarkdown(t) : (tools ? '' : '<span class="chat-typing"><i></i><i></i><i></i></span>')),
       'responding…', 'is-streaming');
@@ -30032,6 +30032,7 @@ let _boardEtag = null;
 let _boardReadGeneration = 0;
 let _boardReadAppliedGeneration = 0;
 async function fetchBoard() {
+  window.AmuxWorkRequests?.status();
   const readGeneration = ++_boardReadGeneration;
   // Saved views sync via /api/prefs so a view made on the desktop is on the
   // phone. Fetched once, not on every board poll.
@@ -32661,6 +32662,7 @@ function renderBoard() {
   // is on screen" drift the moment either side gains a facet, and the drift is
   // invisible: the file looks fine, it is just not what you were looking at.
   // Captured at the one point where `visible` is final for every view mode.
+  if (window.AmuxWorkRequests?.filtered) visible = visible.filter(i => i.source === 'workdesk');
   _boardLastVisible = visible;
 
   if (boardViewMode === 'list') {
@@ -33768,6 +33770,7 @@ async function openBoardDetail(id) {
   _bdRenderMeta(item);
   document.getElementById('bd-save-status').textContent = '';
   document.getElementById('board-detail-overlay').classList.add('active');
+  window.AmuxWorkRequests?.open(item);
 }
 
 // ── Improved detail: status banner, typed History, permalink (AMUX-2178) ───
@@ -33937,6 +33940,7 @@ function boardDetailSetStatus(st) {
 }
 
 function closeBoardDetail() {
+  window.AmuxWorkRequests?.close();
   // Save unsaved edits as draft
   if (boardDetailId && _bdLoadedIdentity?.generation === _boardDetailOpenGeneration) {
     const item = boardItems.find(i => i.id === boardDetailId);
@@ -47430,8 +47434,8 @@ function _pinnedRender() {
       html += '<div class="pinned-card" style="padding:12px;margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;">'
         + '<div>'
-        + '<div style="font-weight:600;font-size:.95rem;">📌 ' + _escHtml(name) + '</div>'
-        + '<div style="font-size:.78rem;color:var(--dim);margin-top:2px;">' + _escHtml(n.file_path) + '</div>'
+        + '<div style="font-weight:600;font-size:.95rem;">📌 ' + esc(name) + '</div>'
+        + '<div style="font-size:.78rem;color:var(--dim);margin-top:2px;">' + esc(n.file_path) + '</div>'
         + '</div>'
         + '<div style="display:flex;gap:6px;align-items:center;">'
         + '<span style="font-size:.75rem;color:var(--dim);">' + opPct + '% opacity</span>'
@@ -47476,11 +47480,11 @@ async function _pinnedBrowse() {
       html += '<div class="pinned-browse-item" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);" '
         + 'onmouseover="this.style.background=\'var(--hover)\'" onmouseout="this.style.background=\'\'" '
         + 'onclick="_pinnedPickPath(\'' + _escJs(full) + '\',' + isDir + ')">'
-        + (isDir ? '📁 ' : '📄 ') + _escHtml(name) + '</div>';
+        + (isDir ? '📁 ' : '📄 ') + esc(name) + '</div>';
     }
     list.innerHTML = html || '<div style="padding:8px;color:var(--dim);">Empty directory</div>';
   } catch (e) {
-    list.innerHTML = '<div style="padding:8px;color:var(--danger);">Error listing: ' + _escHtml(e.message) + '</div>';
+    list.innerHTML = '<div style="padding:8px;color:var(--danger);">Error listing: ' + esc(e.message) + '</div>';
   }
 }
 

@@ -91,6 +91,9 @@ pub fn routes() -> Router<AppState> {
         // before the /{id} wildcard like clear-done.
         .route("/lease-next", post(lease_next_item))
         .route("/{id}", get(get_item).patch(patch_item).delete(delete_item))
+        .route("/{id}/source", get(super::work_requests::detail))
+        .route("/{id}/source/actions", post(super::work_requests::action))
+        .route("/{id}/source/artifacts/{aid}/download", get(super::work_requests::download))
         .route("/{id}/archive", post(archive_item))
         .route("/{id}/restore", post(restore_item))
         // The inverse of DELETE (AF-922) — see undelete_item's own doc comment.
@@ -5210,6 +5213,10 @@ pub async fn create_item(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    if body.get("source").and_then(Value::as_str) == Some("workdesk") {
+        return err(StatusCode::CONFLICT, json!({"error":"source-owned tasks are created by source synchronization"}));
+    }
+
     let Some(map) = body.as_object().cloned() else {
         return err(
             StatusCode::BAD_REQUEST,
@@ -10015,7 +10022,7 @@ pub async fn clear_done(State(state): State<AppState>, headers: HeaderMap) -> Re
         .write_async(move |conn| {
             let n = conn.execute(
                 "UPDATE issues SET archived = 1, updated = strftime('%s','now') \
-                 WHERE status = 'done' AND COALESCE(archived,0) = 0 AND deleted IS NULL",
+                 WHERE status = 'done' AND COALESCE(archived,0) = 0 AND deleted IS NULL AND COALESCE(source,'') <> 'workdesk'",
                 [],
             )?;
             *slot_w.lock().unwrap() = Some(n as i64);
@@ -10169,6 +10176,17 @@ pub async fn patch_item(
             json!({ "error": "body must be a JSON object" }),
         );
     };
+    if ["status","session","owner_type","source","source_ref","project_group","archived","deleted","lease_owner"].iter().any(|key|map.contains_key(*key)) {
+        let source_id=id.clone();
+        let bound=state.store.read_async(move |c|Ok(bs::get_issue(c,&source_id)?.is_some_and(|row|row.source.as_deref()==Some("workdesk")))).await.unwrap_or(true);
+        if bound {
+            tracing::warn!(task=%id,verdict="source_lifecycle_bypass_refused");
+            return err(StatusCode::CONFLICT,json!({"error":"source-owned task: use source actions"}));
+        }
+    }
+    if body.get("source").and_then(Value::as_str)==Some("workdesk") {
+        return err(StatusCode::CONFLICT,json!({"error":"source binding cannot be assigned by generic board edits"}));
+    }
     if let Some(scope) = super::org::local_member_scope(&headers).filter(|scope| !scope.is_global())
     {
         if map.contains_key("session") {
@@ -12584,7 +12602,7 @@ pub async fn patch_item(
                                             "already_undispatchable": *days >= 7,
                                         })).collect::<Vec<_>>(),
                                         "how_to_fix": {
-                                            "not_next": format!("amux board backlog <ID> --trigger \"<what re-arms it>\" — `backlog` is unbounded on purpose and is where a real card that is not NEXT belongs"),
+                                            "not_next": "amux board backlog <ID> --trigger \"<what re-arms it>\" — `backlog` is unbounded on purpose and is where a real card that is not NEXT belongs",
                                             "not_a_unit_of_work": "amux board discard <ID>",
                                             "finish_one": "amux board done <ID> --evidence-stdin",
                                             "raise_it": "set AMUX_TODO_WIP_LIMIT=<n> in this worker's / group's / global configuration; 0 disables it",

@@ -1098,6 +1098,7 @@ fn cdp_status(e: &anyhow::Error) -> StatusCode {
 }
 
 /// Resolve session → page → connected CDP client, or the mapped error.
+#[allow(clippy::result_large_err, reason = "HTTP adapter preserves the response returned directly by its callers")]
 pub(crate) async fn connect_session(
     session: &str,
     create_url: Option<&str>,
@@ -2916,6 +2917,7 @@ struct SessionQuery {
 
 /// The state payload both `/state` and `action:extract` serve: url/title/
 /// viewport/indexed elements plus capped page text.
+#[allow(clippy::result_large_err, reason = "HTTP adapter preserves the response returned directly by its callers")]
 async fn state_payload(cdp: &mut chrome::CdpClient, session: &str) -> Result<Value, Response> {
     let mut v = cdp
         .eval(&chrome::state_js(), 20)
@@ -3682,6 +3684,7 @@ async fn inspect(headers: HeaderMap, Query(q): Query<InspectQuery>) -> Response 
     }
 }
 
+#[allow(clippy::result_large_err, reason = "HTTP adapter preserves the response returned directly by its callers")]
 async fn inspect_payload(
     cdp: &mut chrome::CdpClient,
     clear: bool,

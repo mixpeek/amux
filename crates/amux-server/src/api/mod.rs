@@ -8,6 +8,7 @@ pub mod alerts;
 pub mod aliases;
 pub mod auth;
 pub mod board;
+pub mod work_requests;
 pub mod board_intake;
 pub mod board_lifecycle;
 pub mod board_themes;
@@ -149,6 +150,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sync", axum::routing::get(sync::delta_sync))
         .route("/api/events", axum::routing::get(sse::events))
         .nest("/api/board", board::routes())
+        .nest("/api/work-requests", work_requests::routes())
         // Dead-letter routes merge into the workers nest (RR-0068): same
         // /api/workers prefix, second nest at one path is an axum conflict.
         .nest(

@@ -685,6 +685,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <div id="board-view" style="display:none;">
   <div class="board-page-heading"><div><h1>Board <span class="board-legacy-badge">Legacy</span></h1><p>Legacy board/history · start new work in <button class="btn compact" type="button" onclick="switchView('projects')">Projects</button></p></div><button class="btn primary" onclick="openBoardAdd('todo')" aria-label="Create board task">+</button></div>
   <!-- No launch surface here: new work starts in Projects. Existing boards below remain for legacy maintenance. -->
+  <div id="wr-toolbar" class="wr-toolbar" hidden><button class="btn" id="wr-filter" type="button" aria-pressed="false">Slack 업무 요청</button><button class="btn" id="wr-sync" type="button">동기화</button><span id="wr-connection" role="status"></span></div>
   <div class="board-control-row" aria-label="Board controls">
     <div class="board-quick-filters" aria-label="Quick board filters"><button onclick="_boardQuick('')">All</button><button onclick="_boardQuick('owner:human is:open')">My tasks</button><button onclick="_boardQuick('status:doing')">In progress</button><button onclick="_boardQuick('is:needsyou')">Needs you</button><button onclick="_boardQuick('status:review')">Review</button></div>
     <div class="board-toolbar">
@@ -2068,6 +2069,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="board-detail-status-row" id="bd-status-row"></div>
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <div id="bd-record-summary"></div>
+    <section id="wr-detail" class="wr-detail" hidden aria-label="업무 요청과 초안"></section>
     <div class="board-detail-tabs">
       <button class="board-detail-tab active" id="bd-tab-preview" onclick="boardDetailTab('preview')">Details</button>
       <button class="board-detail-tab" id="bd-tab-subtasks" onclick="boardDetailTab('subtasks')">Subtasks <span id="bd-count-subtasks">0</span></button>
@@ -3191,6 +3193,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <script src="/state/kernel.js"></script>
 <script src="/app.js"></script>
+<script src="/work-requests.js"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <!-- marked + DOMPurify + remend, served by amux so markdown renders offline (scripts/build-md.mjs) -->
