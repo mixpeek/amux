@@ -7479,5 +7479,5 @@ select.input { height:var(--control-height); }
 .wr-destination { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
 .wr-evidence + .wr-evidence { margin-top:12px; border-top:1px solid var(--border); }
 .wr-error { color:var(--red); }.wr-progress { color:var(--accent); }.wr-feedback { overflow-wrap:anywhere; }
-.wr-managed #bd-status-row,.wr-managed #bd-tab-edit,.wr-managed #bd-edit-fields,.wr-managed #bd-edit-footer { display:none !important; }
+.wr-managed #bd-status-row,.wr-managed #bd-tab-edit,.wr-managed #bd-edit-fields,.wr-managed #bd-edit-footer,.wr-managed #bd-delete,.wr-managed #bd-description-card { display:none !important; }
 @media(max-width:480px) { .wr-section { padding:11px; }.wr-actions .btn { flex:1; }.wr-heading { gap:6px; }.wr-toolbar { margin:8px; }.wr-confirm .btn { width:100%; } }

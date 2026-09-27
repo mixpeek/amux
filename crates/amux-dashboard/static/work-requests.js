@@ -158,6 +158,7 @@ window.AmuxWorkRequests = (() => {
   function open(item) {
     close(); const panel = $('wr-detail'), overlay = $('board-detail-overlay');
     const managed = item.source === 'workdesk'; overlay?.classList.toggle('wr-managed',managed);
+    const title = $('bd-title'); if (title) title.readOnly = managed;
     if (!panel) return; panel.hidden = !managed; panel.replaceChildren();
     if (!managed) return;
     current = {task_id:item.id}; panel.append(node('p','요청과 초안을 불러오는 중입니다.','wr-muted'));
