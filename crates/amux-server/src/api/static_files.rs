@@ -309,7 +309,7 @@ async fn serve_shell(
     serve_index(state, legacy, headers, uri, peer)
 }
 
-fn request_authority(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+pub(crate) fn request_authority(headers: &HeaderMap, uri: &Uri) -> Option<String> {
     headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())

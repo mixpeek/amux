@@ -5048,3 +5048,14 @@ CARD: none
 SYMPTOM: The full suite found vault routes missing from the diagnostic table, an unclassified composer-clear refusal, and a source dispatch returning accepted for a key already bound to another task. Upstream board access is unavailable to this fork contributor.
 COST: A conflicting execution key could enqueue the wrong task despite its uniqueness constraint; required full-suite verification stopped the integration.
 FIX: Pending targeted verification. The serialized writer now validates the key's immutable task/worker/prompt binding before a plain INSERT; it rejects mismatch before enqueue. Registered actual vault/source routes and classified the existing composer-clear refusal as 409, retaining its WARN. The source fixture also takes the shared temporary-home guard as preventive isolation, not as the diagnosed cause. Route inventory, refusal classification, and bound-dispatch tests remain the detectors.
+
+## Native source owner actions rejected HTTP/2 authority
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-09-27
+SESSION: macmini-workdesk-native
+CARD: none
+SYMPTOM: The deployed native source action returned 403 in the HTTPS UI while the same Origin/body over HTTP/1.1 reached action validation (400). HTTP/2 supplied URI authority without a Host header. Upstream board access is unavailable to this fork contributor.
+COST: The owner could inspect synchronized requests but could not request a draft from the actual dashboard.
+FIX: Pending targeted and live verification. Reuse the existing request-authority resolver (Host then URI authority) and pass the request URI into the source owner-intent check. Reject cross-origin, cross-scheme, conflicting Host/authority, absent origin/authority and declared worker requests. A router-level H1/H2 regression covers these cases; the existing work_request_refused WARN exposes refusal without logging request headers.

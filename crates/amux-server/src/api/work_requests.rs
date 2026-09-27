@@ -5,7 +5,7 @@ use crate::db::{board_store as bs, PendingEvent, WriteOutcome};
 use amux_core::revision::{EntityType, MutationKind};
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -456,7 +456,7 @@ fn valid_operation_id(id: &str) -> bool {
         })
 }
 
-fn owner_action(headers: &HeaderMap) -> ApiResult<()> {
+fn owner_action(headers: &HeaderMap, uri: &Uri) -> ApiResult<()> {
     if ["x-amux-session", "x-amux-worker"]
         .iter()
         .any(|name| headers.get(*name).is_some_and(|v| !v.as_bytes().is_empty()))
@@ -472,13 +472,22 @@ fn owner_action(headers: &HeaderMap) -> ApiResult<()> {
         .get("origin")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| reqwest::Url::parse(v).ok());
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let host = super::static_files::request_authority(headers, uri);
     if !origin.is_some_and(|o| {
+        if !matches!(o.scheme(), "http" | "https")
+            || uri.scheme_str().is_some_and(|scheme| scheme != o.scheme())
+            || uri.authority().is_some_and(|authority| {
+                host.as_deref()
+                    .is_none_or(|host| !host.eq_ignore_ascii_case(authority.as_str()))
+            })
+        {
+            return false;
+        }
         let authority = match o.port() {
             Some(p) => format!("{}:{p}", o.host_str().unwrap_or("")),
             None => o.host_str().unwrap_or("").into(),
         };
-        Some(authority.as_str()) == host
+        Some(authority.as_str()) == host.as_deref()
     }) {
         return Err(failure(
             StatusCode::FORBIDDEN,
@@ -490,10 +499,11 @@ fn owner_action(headers: &HeaderMap) -> ApiResult<()> {
 pub async fn action(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    uri: Uri,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    owner_action(&headers)?;
+    owner_action(&headers, &uri)?;
     let kind = text(&body, "kind");
     if matches!(kind, "approve" | "deliver")
         && headers
@@ -998,13 +1008,119 @@ mod tests {
         assert_eq!(message_id("A", "b"), message_id("A", "b"));
         assert_ne!(message_id("Ab", "c"), message_id("A", "bc"));
     }
+    #[tokio::test]
+    async fn owner_action_accepts_h2_authority_and_keeps_origin_refusals() {
+        use tower::ServiceExt;
+        let (state, _dir) = test_state();
+        let app = super::super::router(state);
+        let cases = [
+            (
+                "http://localhost:8824/api/board/SOURCE-1/source/actions",
+                Some("localhost:8824"),
+                Some("http://localhost:8824"),
+                None,
+                axum::http::Version::HTTP_11,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                None,
+                Some("https://mini.example:8844"),
+                None,
+                axum::http::Version::HTTP_2,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                None,
+                Some("https://other.example:8844"),
+                None,
+                axum::http::Version::HTTP_2,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                None,
+                Some("http://mini.example:8844"),
+                None,
+                axum::http::Version::HTTP_2,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                None,
+                None,
+                None,
+                axum::http::Version::HTTP_2,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                None,
+                Some("https://mini.example:8844"),
+                Some("x-amux-worker"),
+                axum::http::Version::HTTP_2,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                None,
+                Some("https://mini.example:8844"),
+                Some("x-amux-session"),
+                axum::http::Version::HTTP_2,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "https://mini.example:8844/api/board/SOURCE-1/source/actions",
+                Some("other.example:8844"),
+                Some("https://other.example:8844"),
+                None,
+                axum::http::Version::HTTP_2,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "/api/board/SOURCE-1/source/actions",
+                None,
+                Some("https://mini.example:8844"),
+                None,
+                axum::http::Version::HTTP_11,
+                StatusCode::FORBIDDEN,
+            ),
+        ];
+        for (uri, host, origin, worker, version, expected) in cases {
+            let mut request = axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .version(version)
+                .header("content-type", "application/json");
+            if let Some(host) = host {
+                request = request.header("host", host);
+            }
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            if let Some(worker) = worker {
+                request = request.header(worker, "declared-worker");
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(axum::body::Body::from("{}")).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                expected,
+                "uri={uri}, host={host:?}, origin={origin:?}, worker={worker:?}"
+            );
+        }
+    }
     #[test]
     fn declared_worker_origin_is_refused_by_owner_intent_guard() {
         let mut h = HeaderMap::new();
         h.insert("host", "localhost:8824".parse().unwrap());
         h.insert("origin", "http://localhost:8824".parse().unwrap());
-        assert!(owner_action(&h).is_ok());
+        assert!(owner_action(&h, &Uri::from_static("/")).is_ok());
         h.insert("x-amux-session", "worker".parse().unwrap());
-        assert!(owner_action(&h).is_err());
+        assert!(owner_action(&h, &Uri::from_static("/")).is_err());
     }
 }
