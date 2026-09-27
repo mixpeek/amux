@@ -18,6 +18,7 @@ pub mod browser;
 pub mod browser_import;
 pub mod calendar;
 pub mod channels;
+pub mod chat_stream;
 pub mod chat_worker;
 pub mod commit_mentions;
 pub mod config_iac;

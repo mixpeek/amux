@@ -25,7 +25,7 @@ use super::session_verbs::{parse_env, SendOrigin};
 use super::AppState;
 use amux_core::worker_type::{WorkerTypeId, REGISTRY};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
@@ -58,6 +58,11 @@ pub(crate) trait ExecutionAdapter: Send + Sync {
     fn running(&self, name: &str) -> Dispatch<bool>;
     /// The `/peek` payload, same keys as the terminal shape.
     async fn peek(&self, state: &AppState, name: &str, lines: i64) -> Dispatch<Value>;
+    /// Stop the in-flight turn but keep the worker and its queue (the
+    /// Escape key of a terminal worker). Terminal workers take real keys.
+    async fn interrupt(&self, _name: &str) -> Dispatch<(bool, String)> {
+        Dispatch::Terminal
+    }
 }
 
 /// The coding worker: the terminal pipeline, untouched.
@@ -131,6 +136,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/sessions/{name}/chat/stream",
             get(super::chat_worker::stream_route),
+        )
+        .route(
+            "/api/sessions/{name}/chat/interrupt",
+            post(super::chat_worker::interrupt_route),
         )
 }
 

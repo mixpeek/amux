@@ -15,15 +15,22 @@
 //! is reported through `native_status`, the channel provider hooks use, so
 //! the fleet list, SSE projection and lease heartbeat need no chat branch.
 //!
-//! Streaming: token deltas go to a per-worker broadcast channel served as SSE
-//! at `/api/sessions/{name}/chat/stream`. Only the finished message is
-//! persisted; a client that connects mid-turn gets the partial text from the
-//! history endpoint's `streaming` field.
+//! Streaming (AMUX-5263): provider output is parsed into typed events (text
+//! and thinking deltas, tool start/args/input/result, usage, rate-limit
+//! state, errors, turn start/end) by `chat_stream`, stamped with a per-lane
+//! `seq` and `epoch`, and broadcast as SSE at
+//! `/api/sessions/{name}/chat/stream`. The SSE `id` is `epoch:seq`, so a
+//! reconnecting client (EventSource's `Last-Event-ID`, or `?after=`) gets
+//! exactly the events it missed from a bounded ring, or an explicit `gap`
+//! telling it to refetch history. Only the finished message is persisted; a
+//! client that connects mid-turn gets the assembled partial turn and the
+//! cursor it corresponds to from the history endpoint's `streaming`/`cursor`.
 //!
 //! Log signals: `verdict="chat_turn_completed"` / `"chat_turn_failed"` per
 //! turn with duration and the provider exit, and
 //! `verdict="chat_conversation_reset"` when a stale resume id is replaced.
 
+use super::chat_stream::{parse_cursor, Assembly, Journal, Parser, Replay};
 use super::session_verbs::{
     emit_event, env_path, home, load_meta, meta_i64, meta_str, parse_env, sh_quote, update_meta,
     SendOrigin,
@@ -39,7 +46,7 @@ use axum::Json;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -51,6 +58,9 @@ const SOURCE: &str = "chat-adapter";
 /// A turn that has produced nothing for this long is killed and recorded as
 /// failed, so a hung provider cannot pin a worker `working` forever.
 const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(900);
+/// How often a running turn re-asserts `active` (well under the 120s the
+/// status projection trusts a native report for).
+const HEARTBEAT: Duration = Duration::from_secs(45);
 
 pub(crate) struct ChatAdapter;
 
@@ -106,11 +116,31 @@ fn load_queue(name: &str) -> Vec<Queued> {
 struct Lane {
     busy: AtomicBool,
     queue: Mutex<VecDeque<Queued>>,
-    tx: broadcast::Sender<Value>,
+    /// Serialized, seq-stamped events. Sent while the journal lock is held so
+    /// broadcast order is seq order.
+    tx: broadcast::Sender<String>,
     pid: Mutex<Option<u32>>,
-    /// (turn_id, text so far) of the turn in flight.
-    partial: Mutex<(String, String)>,
+    /// Ordered, resumable event log plus the assembled in-flight turn.
+    journal: Mutex<Journal>,
+    /// Set by the interrupt route; the running turn ends as `interrupted`.
+    interrupt: AtomicBool,
+    /// Last native_status sequence sent, so two reports in one millisecond
+    /// are not refused as duplicates.
+    status_seq: AtomicU64,
 }
+
+impl Lane {
+    /// Stamp, retain and broadcast one event.
+    fn publish(&self, ev: Value) {
+        let mut j = self.journal.lock().unwrap();
+        let s = j.push(ev);
+        let _ = self.tx.send(s);
+    }
+}
+
+/// Per-process epoch: a cursor from a previous server process cannot be
+/// served from this one's ring, and the epoch is how the client learns that.
+static EPOCH: LazyLock<String> = LazyLock::new(|| ulid::Ulid::new().to_string());
 
 static LANES: LazyLock<Mutex<HashMap<String, Arc<Lane>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -122,9 +152,11 @@ fn lane(name: &str) -> Arc<Lane> {
             Arc::new(Lane {
                 busy: AtomicBool::new(false),
                 queue: Mutex::new(VecDeque::new()),
-                tx: broadcast::channel(512).0,
+                tx: broadcast::channel(1024).0,
                 pid: Mutex::new(None),
-                partial: Mutex::new((String::new(), String::new())),
+                journal: Mutex::new(Journal::new(&format!("{}-{name}", *EPOCH))),
+                interrupt: AtomicBool::new(false),
+                status_seq: AtomicU64::new(0),
             })
         })
         .clone()
@@ -172,23 +204,42 @@ fn new_conversation_id() -> String {
 
 /// Report turn state through the provider-hook channel (`native_status`).
 async fn report_state(state: &AppState, name: &str, st: &str, event: &str, turn: &str) {
+    report_state_with(state, name, st, event, turn, Value::Null).await
+}
+
+/// `extra` keys (tool name, model, conversation id) ride along the way a
+/// provider hook's payload would carry them.
+async fn report_state_with(state: &AppState, name: &str, st: &str, event: &str, turn: &str, extra: Value) {
     let meta = load_meta(name);
     let run_id = meta_str(&meta, "chat_run_id");
     if run_id.is_empty() {
         return;
     }
     let now = crate::config::now_f64();
-    let body = json!({
+    // Strictly increasing per lane: native_status refuses a sequence it has
+    // already seen, and tool events can land in the same millisecond.
+    let now_ms = (now * 1000.0) as u64;
+    let seq_cell = &lane(name).status_seq;
+    let prev = seq_cell
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| Some(now_ms.max(p + 1)))
+        .unwrap_or(0);
+    let sequence = now_ms.max(prev + 1);
+    let mut body = json!({
         "native_status": true,
         "run_id": run_id,
         "provider": provider_of(name),
-        "sequence": (now * 1000.0) as u64,
+        "sequence": sequence,
         "event_ts": now,
         "state": st,
         "event": event,
         "turn_id": turn,
         "worker_type": WorkerTypeId::CHAT,
     });
+    if let (Some(b), Some(x)) = (body.as_object_mut(), extra.as_object()) {
+        for (k, v) in x {
+            b.insert(k.clone(), v.clone());
+        }
+    }
     let _ = super::native_status::post(state, name, &body).await;
 }
 
@@ -256,7 +307,7 @@ impl ExecutionAdapter for ChatAdapter {
             }
         }
         update_meta(name, &[("chat_running", json!(false))]);
-        let _ = lane.tx.send(json!({"type": "stopped", "dropped_queued": dropped}));
+        lane.publish(json!({"type": "stopped", "dropped_queued": dropped}));
         crate::api::sessions_legacy::invalidate_sessions_cache();
         tracing::info!(
             session = %name, dropped_queued = dropped, interrupted = pid.is_some(),
@@ -309,9 +360,7 @@ impl ExecutionAdapter for ChatAdapter {
         // `waiting` = messages queued behind the running turn, which is what
         // the view shows; `ahead` alone read 0 for the first queued message.
         let waiting = if turn_running { ahead + 1 } else { 0 };
-        let _ = lane
-            .tx
-            .send(json!({"type": "queued", "ahead": ahead, "waiting": waiting, "busy": turn_running}));
+        lane.publish(json!({"type": "queued", "ahead": ahead, "waiting": waiting, "busy": turn_running}));
         Dispatch::Handled((
             true,
             if turn_running {
@@ -326,13 +375,24 @@ impl ExecutionAdapter for ChatAdapter {
         Dispatch::Handled(running(name))
     }
 
+    async fn interrupt(&self, name: &str) -> Dispatch<(bool, String)> {
+        Dispatch::Handled(interrupt_turn(name))
+    }
+
     async fn peek(&self, state: &AppState, name: &str, lines: i64) -> Dispatch<Value> {
         let messages = read_messages(state, name, 200, None);
         let history = render_transcript(&messages);
-        let (turn, partial) = lane(name).partial.lock().unwrap().clone();
+        let partial = lane(name)
+            .journal
+            .lock()
+            .unwrap()
+            .live
+            .as_ref()
+            .map(|a| a.text.clone())
+            .unwrap_or_default();
         let mut all: Vec<&str> = history.lines().collect();
         let history_lines = all.len();
-        if !turn.is_empty() && !partial.is_empty() {
+        if !partial.is_empty() {
             all.push("");
             all.push("assistant (streaming):");
             all.extend(partial.lines());
@@ -382,113 +442,27 @@ async fn pump(state: AppState, name: String) {
     super::session_verbs::steer_deliver_for_session(&state, &name).await;
 }
 
-/// What one provider invocation produced.
-#[derive(Default)]
+/// What one provider invocation produced: the same assembly the stream
+/// built, so the persisted message cannot disagree with what was shown.
 struct TurnOutcome {
-    text: String,
-    tools: Vec<String>,
+    asm: Assembly,
     conversation_id: String,
-    cost_usd: Option<f64>,
-    error: Option<String>,
     model: String,
 }
 
-/// Parse one stdout line into the outcome; returns a text delta to stream.
-fn absorb_line(provider: &str, line: &str, out: &mut TurnOutcome, block: &mut i64) -> Option<String> {
-    let v: Value = serde_json::from_str(line).ok()?;
-    if provider == "codex" {
-        match v["type"].as_str()? {
-            "thread.started" => {
-                out.conversation_id = v["thread_id"].as_str().unwrap_or("").to_string();
-            }
-            "item.started" | "item.completed" => {
-                let item = &v["item"];
-                match item["type"].as_str().unwrap_or("") {
-                    "agent_message" if v["type"] == "item.completed" => {
-                        let t = item["text"].as_str().unwrap_or("");
-                        let delta = if out.text.is_empty() {
-                            t.to_string()
-                        } else {
-                            format!("\n\n{t}")
-                        };
-                        out.text.push_str(&delta);
-                        return Some(delta);
-                    }
-                    "command_execution" if v["type"] == "item.started" => {
-                        out.tools.push("shell".into());
-                    }
-                    "mcp_tool_call" | "web_search" if v["type"] == "item.started" => {
-                        out.tools.push(item["type"].as_str().unwrap_or("").to_string());
-                    }
-                    _ => {}
-                }
-            }
-            "turn.failed" | "error" => {
-                let msg = v["error"]["message"]
-                    .as_str()
-                    .or_else(|| v["message"].as_str())
-                    .unwrap_or("codex turn failed");
-                out.error = Some(msg.to_string());
-            }
-            _ => {}
+impl TurnOutcome {
+    fn new(turn_id: &str) -> Self {
+        TurnOutcome {
+            asm: Assembly::new(turn_id),
+            conversation_id: String::new(),
+            model: String::new(),
         }
-        return None;
     }
-    match v["type"].as_str()? {
-        "system" if v["subtype"] == "init" => {
-            out.conversation_id = v["session_id"].as_str().unwrap_or("").to_string();
-            out.model = v["model"].as_str().unwrap_or("").to_string();
-        }
-        "stream_event" => {
-            let ev = &v["event"];
-            match ev["type"].as_str().unwrap_or("") {
-                "content_block_start" => {
-                    let cb = &ev["content_block"];
-                    if cb["type"] == "tool_use" {
-                        out.tools.push(cb["name"].as_str().unwrap_or("tool").to_string());
-                    }
-                }
-                "content_block_delta" if ev["delta"]["type"] == "text_delta" => {
-                    let t = ev["delta"]["text"].as_str().unwrap_or("");
-                    // Separate text blocks (e.g. before and after a tool call)
-                    // with a blank line, the way a transcript would show them.
-                    let idx = ev["index"].as_i64().unwrap_or(0);
-                    let mut delta = String::new();
-                    if !out.text.is_empty() && idx != *block {
-                        delta.push_str("\n\n");
-                    }
-                    *block = idx;
-                    delta.push_str(t);
-                    out.text.push_str(&delta);
-                    return Some(delta);
-                }
-                "message_start" => {
-                    // New message: its block indexes restart at 0.
-                    *block = -1;
-                }
-                _ => {}
-            }
-        }
-        "result" => {
-            if let Some(id) = v["session_id"].as_str() {
-                out.conversation_id = id.to_string();
-            }
-            out.cost_usd = v["total_cost_usd"].as_f64();
-            if v["is_error"].as_bool() == Some(true) {
-                out.error = Some(
-                    v["result"]
-                        .as_str()
-                        .unwrap_or("provider reported an error")
-                        .to_string(),
-                );
-            } else if out.text.is_empty() {
-                // Non-streaming provider build: the result carries the text.
-                out.text = v["result"].as_str().unwrap_or("").to_string();
-            }
-        }
-        _ => {}
+    fn failed(turn_id: &str, why: String) -> Self {
+        let mut o = Self::new(turn_id);
+        o.asm.error = Some(why);
+        o
     }
-    None
 }
 
 fn model_flag(flags: &str) -> Option<String> {
@@ -561,6 +535,7 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
     let turn_id = ulid::Ulid::new().to_string();
     let started = std::time::Instant::now();
     let provider = provider_of(name);
+    lane.interrupt.store(false, Ordering::SeqCst);
     emit_event(
         state,
         name,
@@ -571,26 +546,27 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
     )
     .await;
     let waiting = lane.queue.lock().unwrap().len();
-    let _ = lane.tx.send(json!({
+    lane.publish(json!({
         "type": "user", "turn_id": turn_id, "text": q.text, "origin": q.origin,
         "ts": crate::config::now_f64(), "waiting": waiting,
     }));
-    *lane.partial.lock().unwrap() = (turn_id.clone(), String::new());
     update_meta(name, &[("chat_inflight_turn", json!(turn_id))]);
     report_state(state, name, "active", "UserPromptSubmit", &turn_id).await;
     update_meta(name, &[("last_send", json!(crate::config::now_f64() as i64))]);
 
-    let mut out = execute(name, &provider, &q.text, lane, &turn_id, false).await;
+    let mut out = execute(state, name, &provider, &q.text, lane, &turn_id, false).await;
     // A resume id the provider no longer has (conversation deleted, new
     // machine): start a fresh conversation once rather than failing forever.
     if out
+        .asm
         .error
         .as_deref()
         .is_some_and(|e| e.contains("No conversation found") || e.contains("not found"))
-        && out.text.is_empty()
+        && out.asm.text.is_empty()
+        && !lane.interrupt.load(Ordering::SeqCst)
     {
         tracing::warn!(session = %name, verdict = "chat_conversation_reset",
-            reason = out.error.as_deref().unwrap_or(""),
+            reason = out.asm.error.as_deref().unwrap_or(""),
             "chat worker's stored conversation could not be resumed; starting a new one");
         update_meta(
             name,
@@ -600,8 +576,11 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
                 ("chat_codex_thread", json!("")),
             ],
         );
-        out = execute(name, &provider, &q.text, lane, &turn_id, true).await;
+        // The failed attempt's error must not linger in the live view.
+        lane.publish(json!({"type": "retry", "turn_id": turn_id}));
+        out = execute(state, name, &provider, &q.text, lane, &turn_id, true).await;
     }
+    let interrupted = lane.interrupt.swap(false, Ordering::SeqCst);
     if !out.conversation_id.is_empty() {
         let turns = meta_i64(&load_meta(name), "chat_turns");
         let id = json!(out.conversation_id);
@@ -619,16 +598,28 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
         }
     }
     let duration_ms = started.elapsed().as_millis() as u64;
+    let a = &out.asm;
+    // An owner interrupt is a choice, not a failure: the partial reply is
+    // kept and marked, and the worker goes idle rather than error.
+    let error = if interrupted { None } else { a.error.clone() };
+    let limited = a.limited();
+    let tools: Vec<&str> = a.tools.iter().map(|t| t.name.as_str()).collect();
     let msg = json!({
         "role": "assistant",
-        "text": out.text,
+        "text": a.text,
         "turn_id": turn_id,
         "provider": provider,
         "model": out.model,
-        "tools": out.tools,
-        "cost_usd": out.cost_usd,
+        "tools": tools,
+        "tool_calls": a.tools,
+        "thinking": a.thinking,
+        "thinking_truncated": a.thinking_truncated,
+        "usage": a.usage,
+        "limit": if limited { a.limit.clone() } else { Value::Null },
+        "cost_usd": a.usage["cost_usd"],
         "duration_ms": duration_ms,
-        "error": out.error,
+        "error": error,
+        "interrupted": interrupted,
         "conversation_id": out.conversation_id,
     });
     emit_event(
@@ -641,26 +632,34 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
     )
     .await;
     update_meta(name, &[("chat_inflight_turn", json!(""))]);
-    *lane.partial.lock().unwrap() = (String::new(), String::new());
-    let _ = lane.tx.send(json!({"type": "done", "turn_id": turn_id, "message": msg}));
-    match &out.error {
+    lane.publish(json!({"type": "done", "turn_id": turn_id, "message": msg}));
+    match &error {
         None => tracing::info!(session = %name, turn = %turn_id, duration_ms,
-            chars = out.text.len(), tools = out.tools.len(), measured = true, n_considered = 1,
-            verdict = "chat_turn_completed", "chat turn completed"),
+            chars = a.text.len(), tools = a.tools.len(), interrupted, measured = true,
+            n_considered = 1, verdict = if interrupted { "chat_turn_interrupted_by_owner" } else { "chat_turn_completed" },
+            "chat turn completed"),
         Some(e) => tracing::warn!(session = %name, turn = %turn_id, duration_ms, error = %e,
-            measured = true, n_considered = 1, verdict = "chat_turn_failed", "chat turn failed"),
+            limited, measured = true, n_considered = 1, verdict = "chat_turn_failed", "chat turn failed"),
     }
-    let (st, ev) = if out.error.is_some() {
+    // Turn end: the same edge a provider Stop hook reports, carrying the
+    // conversation id so turn-end features (owner-ask, promise nudge) can
+    // resolve the transcript.
+    let (st, ev) = if error.is_some() {
         ("error", "StopFailure")
     } else {
         ("idle", "Stop")
     };
-    report_state(state, name, st, ev, &turn_id).await;
+    let mut extra = json!({"session_id": out.conversation_id, "model": out.model});
+    if limited {
+        extra["limit"] = a.limit.clone();
+    }
+    report_state_with(state, name, st, ev, &turn_id, extra).await;
     crate::api::sessions_legacy::invalidate_sessions_cache();
 }
 
 /// Spawn one provider turn and stream its output.
 async fn execute(
+    state: &AppState,
     name: &str,
     provider: &str,
     text: &str,
@@ -726,14 +725,16 @@ async fn execute(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut out = TurnOutcome::default();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            out.error = Some(format!("could not start {provider}: {e}"));
-            return out;
+            let why = format!("could not start {provider}: {e}");
+            lane.publish(json!({"type": "error", "turn_id": turn_id, "text": why}));
+            return TurnOutcome::failed(turn_id, why);
         }
     };
+    let mut out = TurnOutcome::new(turn_id);
+    let mut parser = Parser::new(provider);
     *lane.pid.lock().unwrap() = child.id();
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes()).await;
@@ -747,32 +748,66 @@ async fn execute(
         }
         buf
     });
-    let mut block = -1i64;
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
+        let mut last_output = std::time::Instant::now();
+        // Status heartbeat: the fleet list trusts an `active` native report
+        // for 120s only, and a long tool run or a long answer can go that
+        // long with no lifecycle edge, which read as idle mid-turn.
+        let mut beat = tokio::time::interval(HEARTBEAT);
+        beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        beat.tick().await;
         loop {
-            match tokio::time::timeout(TURN_IDLE_TIMEOUT, lines.next_line()).await {
-                Ok(Ok(Some(line))) => {
-                    let tools_before = out.tools.len();
-                    if let Some(delta) = absorb_line(provider, &line, &mut out, &mut block) {
-                        lane.partial.lock().unwrap().1.push_str(&delta);
-                        let _ = lane
-                            .tx
-                            .send(json!({"type": "delta", "turn_id": turn_id, "text": delta}));
+            let next = tokio::select! {
+                // `next_line` is cancel-safe, so losing the race to a tick
+                // drops no bytes.
+                l = lines.next_line() => Ok(l),
+                _ = beat.tick() => Err(()),
+            };
+            let next = match next {
+                Err(()) => {
+                    if last_output.elapsed() >= TURN_IDLE_TIMEOUT {
+                        Err(())
+                    } else {
+                        report_state_with(state, name, "active", "Heartbeat", turn_id,
+                            json!({"silent_s": last_output.elapsed().as_secs()})).await;
+                        continue;
                     }
-                    for tool in &out.tools[tools_before..] {
-                        let _ = lane
-                            .tx
-                            .send(json!({"type": "tool", "turn_id": turn_id, "name": tool}));
+                }
+                Ok(l) => Ok(l),
+            };
+            match next {
+                Ok(Ok(Some(line))) => {
+                    last_output = std::time::Instant::now();
+                    for mut ev in parser.line(&line) {
+                        ev["turn_id"] = json!(turn_id);
+                        out.asm.apply(&ev);
+                        // Hooks-equivalent tool lifecycle, so the fleet sees a
+                        // chat worker's tool activity the way a terminal
+                        // worker's PreToolUse/PostToolUse hooks report it.
+                        match ev["type"].as_str() {
+                            Some("tool_start") => {
+                                report_state_with(state, name, "active", "PreToolUse", turn_id,
+                                    json!({"tool_name": ev["name"]})).await;
+                            }
+                            Some("tool_result") => {
+                                let tool = out.asm.tools.iter().rev()
+                                    .find(|t| Some(t.id.as_str()) == ev["id"].as_str())
+                                    .map(|t| t.name.clone()).unwrap_or_default();
+                                report_state_with(state, name, "active", "PostToolUse", turn_id,
+                                    json!({"tool_name": tool, "is_error": ev["is_error"]})).await;
+                            }
+                            _ => {}
+                        }
+                        lane.publish(ev);
                     }
                 }
                 Ok(_) => break,
                 Err(_) => {
                     let _ = child.start_kill();
-                    out.error = Some(format!(
-                        "no output for {}s; turn killed",
-                        TURN_IDLE_TIMEOUT.as_secs()
-                    ));
+                    let why = format!("no output for {}s; turn killed", TURN_IDLE_TIMEOUT.as_secs());
+                    lane.publish(json!({"type": "error", "turn_id": turn_id, "text": why}));
+                    out.asm.error = Some(why);
                     break;
                 }
             }
@@ -780,8 +815,12 @@ async fn execute(
     }
     let status = child.wait().await.ok();
     *lane.pid.lock().unwrap() = None;
+    out.conversation_id = parser.conversation_id.clone();
+    out.model = parser.model.clone();
     let err_text = stderr_task.await.unwrap_or_default();
-    if out.error.is_none() && !status.is_some_and(|s| s.success()) {
+    if lane.interrupt.load(Ordering::SeqCst) {
+        lane.publish(json!({"type": "interrupted", "turn_id": turn_id}));
+    } else if out.asm.error.is_none() && !status.is_some_and(|s| s.success()) {
         let tail: String = err_text
             .lines()
             .rev()
@@ -791,11 +830,13 @@ async fn execute(
             .rev()
             .collect::<Vec<_>>()
             .join("\n");
-        out.error = Some(if tail.trim().is_empty() {
+        let why = if tail.trim().is_empty() {
             format!("{provider} exited with {:?}", status.and_then(|s| s.code()))
         } else {
             tail
-        });
+        };
+        lane.publish(json!({"type": "error", "turn_id": turn_id, "text": why}));
+        out.asm.error = Some(why);
     }
     out
 }
@@ -808,6 +849,18 @@ async fn execute(
 /// unanswered question. Queued messages were never started, so they run.
 /// Returns (interrupted turns reported, queued messages resumed).
 pub async fn recover(state: &AppState, name: &str) -> (usize, usize) {
+    // Recovery runs a few seconds after boot, and a message sent in that
+    // window has already started a turn IN THIS PROCESS. Measured 2026-09-26
+    // (AMUX-5263 e2e): that live turn was reported as "cut off by a server
+    // restart", and the error row took the `chat:{turn}:assistant` dedupe key
+    // the real reply needed. A busy lane is this process's own work; its
+    // queue is in memory too, so reloading the disk copy would duplicate it.
+    if lane(name).busy.load(Ordering::SeqCst) {
+        tracing::info!(session = %name, measured = true, n_considered = 1,
+            verdict = "chat_recovery_skipped_live_turn",
+            "chat worker already running a turn in this process; nothing to recover");
+        return (0, 0);
+    }
     let meta = load_meta(name);
     let mut interrupted = 0;
     let turn = meta_str(&meta, "chat_inflight_turn");
@@ -998,7 +1051,17 @@ pub(crate) async fn history_route(
         messages
     };
     let lane = lane(&name);
-    let (turn, partial) = lane.partial.lock().unwrap().clone();
+    // Snapshot and cursor under one lock: the client resumes the stream from
+    // exactly this point, so it neither misses nor repeats a delta.
+    let (live, cursor, ring) = {
+        let j = lane.journal.lock().unwrap();
+        let (events, bytes) = j.retained();
+        (
+            j.live.clone(),
+            format!("{}:{}", j.epoch, j.seq),
+            json!({"retained_events": events, "retained_bytes": bytes, "evicted": j.evicted}),
+        )
+    };
     let queued = lane.queue.lock().unwrap().len();
     let wt = super::worker_exec::worker_type_of(&name);
     Json(json!({
@@ -1008,7 +1071,9 @@ pub(crate) async fn history_route(
         "running": running(&name),
         "busy": lane.busy.load(Ordering::SeqCst),
         "queued": queued,
-        "streaming": if turn.is_empty() { Value::Null } else { json!({"turn_id": turn, "text": partial}) },
+        "streaming": live.map(|a| json!(a)).unwrap_or(Value::Null),
+        "cursor": cursor,
+        "stream_ring": ring,
         "conversation_id": meta_str(&load_meta(&name), "chat_conversation_id"),
         "messages": messages,
         "has_more": has_more,
@@ -1018,33 +1083,127 @@ pub(crate) async fn history_route(
     .into_response()
 }
 
-/// `GET /api/sessions/{name}/chat/stream` — live deltas for one worker (SSE).
-pub(crate) async fn stream_route(AxumPath(name): AxumPath<String>) -> Response {
+/// `GET /api/sessions/{name}/chat/stream?after=<epoch:seq>`: live events
+/// for one worker (SSE). Each event's SSE `id` is its `epoch:seq` cursor, so
+/// a browser's automatic reconnect sends `Last-Event-ID` and resumes here
+/// without duplicates. `?after=` does the same for a client that reconnects
+/// by hand (the history endpoint returns the cursor its snapshot matches).
+/// A cursor this process cannot serve yields a `gap` event: the client
+/// refetches history instead of silently missing events.
+pub(crate) async fn stream_route(
+    AxumPath(name): AxumPath<String>,
+    RawQuery(q): RawQuery,
+    headers: axum::http::HeaderMap,
+) -> Response {
     if !super::session_verbs::valid_session_name(&name) || !env_path(&name).exists() {
         return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown worker"}))).into_response();
     }
-    let rx = lane(&name).tx.subscribe();
-    let hello = futures::stream::once(async move {
-        Ok::<_, std::convert::Infallible>(Event::default().data(json!({"type": "hello"}).to_string()))
-    });
-    let live = futures::stream::unfold(rx, |mut rx| async move {
-        let v = match rx.recv().await {
-            Ok(v) => v,
-            // Told, with the count: the client refetches history.
-            Err(broadcast::error::RecvError::Lagged(missed)) => {
-                json!({"type": "lagged", "missed": missed})
-            }
-            Err(broadcast::error::RecvError::Closed) => return None,
+    let params = super::fs::parse_qs(q.as_deref().unwrap_or(""));
+    // Last-Event-ID wins: on an automatic reconnect the browser sends the
+    // last event it applied, while the URL still carries the older `after`
+    // the connection was first opened with.
+    let cursor = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| super::fs::qs_get(&params, "after").map(str::to_string))
+        .and_then(|c| parse_cursor(&c));
+    let lane = lane(&name);
+    // Subscribe and read the ring under the journal lock: nothing can be
+    // published between the replay and the live subscription.
+    let (rx, replay, head, epoch) = {
+        let j = lane.journal.lock().unwrap();
+        let rx = lane.tx.subscribe();
+        let replay = match &cursor {
+            Some((epoch, after)) => j.replay_after(epoch, *after),
+            None => Replay::Events(vec![]),
         };
-        Some((Ok(Event::default().data(v.to_string())), rx))
+        (rx, replay, j.seq, j.epoch.clone())
+    };
+    let mut first: Vec<Event> = vec![Event::default()
+        .data(json!({"type": "hello", "cursor": format!("{epoch}:{head}")}).to_string())];
+    match replay {
+        Replay::Events(evs) => {
+            if !evs.is_empty() {
+                tracing::debug!(session = %name, replayed = evs.len(), measured = true,
+                    n_considered = evs.len(), verdict = "chat_stream_resumed",
+                    "chat stream reconnect replayed missed events");
+            }
+            first.extend(evs.into_iter().map(|e| sse_event(&e)));
+        }
+        Replay::Gap(reason) => {
+            tracing::info!(session = %name, reason, head, measured = true, n_considered = 1,
+                verdict = "chat_stream_resume_gap",
+                "chat stream reconnect could not be replayed; client told to refetch history");
+            first.push(Event::default().data(json!({"type": "gap", "reason": reason}).to_string()));
+        }
+    }
+    let n = name.clone();
+    let live = futures::stream::unfold(rx, move |mut rx| {
+        let n = n.clone();
+        async move {
+            let ev = match rx.recv().await {
+                Ok(s) => sse_event(&s),
+                // Told, with the count: the client refetches history.
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(session = %n, missed, measured = true, n_considered = missed,
+                        verdict = "chat_stream_lagged", "chat stream subscriber fell behind");
+                    Event::default()
+                        .data(json!({"type": "gap", "reason": "lagged", "missed": missed}).to_string())
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            };
+            Some((Ok::<_, std::convert::Infallible>(ev), rx))
+        }
     });
-    Sse::new(hello.chain(live))
+    let head = futures::stream::iter(first.into_iter().map(Ok::<_, std::convert::Infallible>));
+    Sse::new(head.chain(live))
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(10))
                 .event(Event::default().data(json!({"type": "ping"}).to_string())),
         )
         .into_response()
+}
+
+/// One stamped event as SSE, with its cursor as the event id.
+fn sse_event(serialized: &str) -> Event {
+    let id = serde_json::from_str::<Value>(serialized)
+        .ok()
+        .map(|v| format!("{}:{}", v["epoch"].as_str().unwrap_or(""), v["seq"].as_u64().unwrap_or(0)));
+    let ev = Event::default().data(serialized);
+    match id {
+        Some(id) => ev.id(id),
+        None => ev,
+    }
+}
+
+/// `POST /api/sessions/{name}/chat/interrupt`: stop the running turn and
+/// keep the worker (and its queue). The chat equivalent of pressing Escape in
+/// a terminal worker. The partial reply is kept and marked interrupted.
+pub(crate) async fn interrupt_route(AxumPath(name): AxumPath<String>) -> Response {
+    if !super::session_verbs::valid_session_name(&name) || !env_path(&name).exists() {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "unknown worker"}))).into_response();
+    }
+    let (interrupted, detail) = interrupt_turn(&name);
+    Json(json!({"ok": true, "interrupted": interrupted, "detail": detail})).into_response()
+}
+
+/// Signal the running turn's provider; the turn ends as `interrupted`.
+fn interrupt_turn(name: &str) -> (bool, String) {
+    let lane = lane(name);
+    let pid = *lane.pid.lock().unwrap();
+    let Some(pid) = pid else {
+        return (false, "no turn running".into());
+    };
+    lane.interrupt.store(true, Ordering::SeqCst);
+    // SAFETY: plain signal to a child this process spawned.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    tracing::info!(session = %name, pid, measured = true, n_considered = 1,
+        verdict = "chat_turn_interrupt_requested", "owner interrupted a chat turn");
+    (true, "turn interrupted".into())
 }
 
 #[cfg(test)]
@@ -1059,66 +1218,6 @@ mod tests {
         )
         .unwrap();
         assert!(re.is_match(&id), "{id}");
-    }
-
-    #[test]
-    fn claude_stream_json_streams_text_and_captures_the_turn() {
-        let mut out = TurnOutcome::default();
-        let mut block = -1;
-        let lines = [
-            r#"{"type":"system","subtype":"init","session_id":"s-1","model":"claude-haiku-4-5"}"#,
-            r#"{"type":"stream_event","event":{"type":"message_start"}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"x"}}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hi "}}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"there"}}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","name":"Bash"}}}"#,
-            r#"{"type":"stream_event","event":{"type":"message_start"}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}}"#,
-            r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s-1","total_cost_usd":0.01,"result":"done"}"#,
-        ];
-        let deltas: Vec<String> = lines
-            .iter()
-            .filter_map(|l| absorb_line("claude", l, &mut out, &mut block))
-            .collect();
-        assert_eq!(deltas, vec!["hi ", "there", "\n\ndone"]);
-        assert_eq!(out.text, "hi there\n\ndone");
-        assert_eq!(out.tools, vec!["Bash"]);
-        assert_eq!(out.conversation_id, "s-1");
-        assert_eq!(out.model, "claude-haiku-4-5");
-        assert_eq!(out.cost_usd, Some(0.01));
-        assert!(out.error.is_none());
-    }
-
-    #[test]
-    fn claude_error_result_is_an_error_not_a_reply() {
-        let mut out = TurnOutcome::default();
-        let mut block = -1;
-        absorb_line(
-            "claude",
-            r#"{"type":"result","is_error":true,"result":"No conversation found with session ID: x"}"#,
-            &mut out,
-            &mut block,
-        );
-        assert!(out.text.is_empty());
-        assert!(out.error.unwrap().contains("No conversation found"));
-    }
-
-    #[test]
-    fn codex_json_events_map_to_the_same_outcome() {
-        let mut out = TurnOutcome::default();
-        let mut block = -1;
-        let lines = [
-            r#"{"type":"thread.started","thread_id":"th-9"}"#,
-            r#"{"type":"item.started","item":{"type":"command_execution","command":"ls"}}"#,
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"first"}}"#,
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"second"}}"#,
-        ];
-        for l in lines {
-            absorb_line("codex", l, &mut out, &mut block);
-        }
-        assert_eq!(out.text, "first\n\nsecond");
-        assert_eq!(out.conversation_id, "th-9");
-        assert_eq!(out.tools, vec!["shell"]);
     }
 
     #[test]

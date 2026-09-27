@@ -617,25 +617,67 @@
   .chat-msg.is-error .chat-bubble { border-color: var(--red, #f85149); }
   .chat-error { display: block; color: var(--red, #f85149); font-weight: 600; margin-bottom: 4px; white-space: pre-wrap; }
   .chat-retry-btn { display: block; margin-top: 8px; font-size: 0.78rem; padding: 6px 14px; }
-  .chat-tools { margin-bottom: 6px; }
-  .chat-tools:last-child { margin-bottom: 0; }
-  .chat-tools-toggle {
-    display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
-    background: none; border: none; padding: 6px 4px; margin: -6px -4px 0; cursor: pointer;
-    font-size: 0.75rem; color: var(--dim); font-style: italic; min-height: 32px;
-    /* Full-width row, so a 32px hit area (not the 44px css-mobile.md asks for)
-       is a deliberate width-for-height trade in a narrow chat bubble, not an
-       oversight — same precedent as .sched-toggle-label above. */
+  /* Tool calls (AMUX-5263): one collapsible card per call, filled in live.
+     The summary row is the 44px mobile hit area. */
+  .chat-tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  .chat-tools:empty { display: none; }
+  .chat-tool { border: 1px solid var(--border); border-radius: 8px; background: rgba(127,127,127,0.05); min-width: 0; }
+  .chat-tool > summary {
+    display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 10px; cursor: pointer;
+    list-style: none; font-size: 0.78rem; color: var(--dim); min-width: 0;
   }
-  .chat-tools-toggle:hover, .chat-tools-toggle:active { color: var(--text); }
-  .chat-tools-caret { flex-shrink: 0; font-size: 0.65rem; }
-  .chat-tools-list { margin-top: 4px; padding-left: 4px; border-left: 2px solid var(--border); }
-  .chat-tool-item {
-    font-size: 0.78rem; color: var(--dim); font-family: var(--font-mono, monospace);
-    padding: 2px 0 2px 8px; overflow-wrap: anywhere;
+  .chat-tool > summary::-webkit-details-marker { display: none; }
+  .chat-tool-name { font-weight: 600; color: var(--text); flex-shrink: 0; }
+  .chat-tool-sum { font-family: var(--font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .chat-tool-icon { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--dim); }
+  .chat-tool.is-running .chat-tool-icon { background: none; border: 2px solid var(--accent); border-right-color: transparent; animation: chat-spin 0.8s linear infinite; }
+  .chat-tool.is-done .chat-tool-icon { background: var(--green, #3fb950); }
+  .chat-tool.is-error .chat-tool-icon { background: var(--red, #f85149); }
+  .chat-tool-body { padding: 0 10px 8px; }
+  .chat-tool-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); margin: 4px 0 2px; }
+  .chat-bubble .chat-tool-pre { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: 0.75rem; }
+  .chat-tool-trunc { font-size: 0.7rem; color: var(--dim); font-style: italic; margin-top: 2px; }
+  @keyframes chat-spin { to { transform: rotate(360deg); } }
+  /* Thinking: collapsed by default; the label shimmers while it is live. */
+  .chat-thinking { margin-bottom: 6px; font-size: 0.8rem; color: var(--dim); }
+  .chat-thinking > summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; font-style: italic; list-style: none; }
+  .chat-thinking > summary::before { content: '\25b8'; font-size: 0.65rem; margin-right: 6px; font-style: normal; }
+  .chat-thinking[open] > summary::before { content: '\25be'; }
+  .chat-thinking.is-live > summary { animation: chat-dot 1.4s infinite ease-in-out; }
+  .chat-thinking-body { white-space: pre-wrap; border-left: 2px solid var(--border); padding: 2px 0 2px 8px; max-height: 240px; overflow: auto; }
+  .chat-live-thinking:empty, .chat-live-limit:empty { display: none; }
+  .chat-limit { border: 1px solid var(--yellow, #d29922); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; font-size: 0.8rem; }
+  /* The live reply: a caret after the last streamed text. */
+  /* After the last text, not after a block: inside the last list item, not
+     on a new line below the list. */
+  .is-streaming.has-text .md-tail > :last-child:not(ul):not(ol):not(table):not(pre)::after,
+  .is-streaming.has-text .md-tail > :is(ul, ol):last-child > li:last-child::after,
+  .is-streaming.has-text .md-tail:empty::after {
+    content: ''; display: inline-block; width: 0.45em; height: 1em; margin-left: 2px; vertical-align: text-bottom;
+    background: var(--accent); border-radius: 1px; animation: chat-caret 1s steps(2, start) infinite;
   }
-  .chat-tool-item.is-active { color: var(--accent); }
-  .chat-tool-item.is-active::after { content: '\2026'; }
+  .is-streaming.has-text .chat-typing { display: none; }
+  .chat-typing[hidden] { display: none; }
+  @keyframes chat-caret { to { visibility: hidden; } }
+  .md-blk > :last-child, .md-tail > :last-child { margin-bottom: 0; }
+  .md-blk { margin-bottom: 8px; animation: chat-blk-in 0.25s ease-out; }
+  @keyframes chat-blk-in { from { opacity: 0.35; } to { opacity: 1; } }
+  .chat-meta .chat-stop {
+    margin-left: 6px; min-height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-size: 0.75rem; cursor: pointer;
+  }
+  .chat-meta .chat-stop:disabled { opacity: 0.6; }
+  .chat-msg.is-interrupted .chat-bubble { border-style: dashed; }
+  .chat-jump {
+    position: sticky; bottom: 8px; left: 50%; transform: translateX(-50%); display: block; margin: 8px auto 0;
+    min-height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font-size: 0.78rem; box-shadow: 0 2px 8px rgba(0,0,0,0.25); cursor: pointer;
+  }
+  .chat-jump[hidden] { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-tool.is-running .chat-tool-icon, .chat-thinking.is-live > summary,
+    .is-streaming.has-text .md-tail *::after, .is-streaming.has-text .md-tail::after, .md-blk { animation: none; }
+  }
   .chat-empty, .chat-queued { text-align: center; color: var(--dim); font-size: 0.85rem; padding: 16px 8px; }
   .chat-queued { padding: 4px; font-size: 0.75rem; }
   .chat-typing { display: inline-flex; gap: 4px; padding: 4px 0; }
@@ -1729,7 +1771,10 @@
     align-items: center; gap: 6px; font-variant-numeric: tabular-nums;
     -webkit-tap-highlight-color: transparent;
   }
-  #rate-limit-pill-count { display:none; }
+  /* The header chips share one shape: text on desktop, count only on phones.
+     The status and host chips were added without these rules and showed a
+     stray count on desktop and overflowing text at 390px. */
+  #rate-limit-pill-count, #telemetry-pill-count, #host-pressure-pill-count { display:none; }
   .btn-rate-limit.show { display: flex; }
   .btn-rate-limit:active { background: rgba(248,81,73,0.22); }
   .active-dropdown {
@@ -1853,8 +1898,8 @@
     .header-row .active-wrap, .header-row .header-add-wrap, .header-row .settings-wrap { flex:0 0 auto; }
     .header-row .btn-active { gap:3px; font-size:0.85rem; }
     .header-row .btn-rate-limit { max-width:44px; overflow:visible; white-space:nowrap; }
-    .header-row #rate-limit-pill-text { display:none; }
-    .header-row #rate-limit-pill-count { display:inline-block; font-size:0.85rem; font-weight:600; }
+    .header-row #rate-limit-pill-text, .header-row #telemetry-pill-text, .header-row #host-pressure-pill-text { display:none; }
+    .header-row #rate-limit-pill-count, .header-row #telemetry-pill-count, .header-row #host-pressure-pill-count { display:inline-block; font-size:0.85rem; font-weight:600; }
     .header-row > #interaction-feedback { flex:0 0 44px; margin-left:auto; }
     .header-row > #interaction-feedback > summary { box-sizing:border-box; width:44px; height:44px; min-height:44px; padding:0; justify-content:center; }
     .header-row > #interaction-feedback > summary > span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }

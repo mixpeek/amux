@@ -1916,7 +1916,12 @@ impl FleetSignals {
         use serde_json::json;
         let cfg = crate::api::session_verbs::parse_env(name);
         let provider = crate::api::session_verbs::provider_of(&cfg);
-        let report = ex.get("report").filter(|r| r.is_object());
+        // A SessionEnd cannot have come from the process running now: it is the
+        // previous run's last word (gtm-ticker 2026-09-26 read "healthy, quiet"
+        // on a 28h-old SessionEnd when its start time was unrecorded).
+        let report = ex
+            .get("report")
+            .filter(|r| r.is_object() && r["event"].as_str() != Some("SessionEnd"));
         let rep_tuple = report.map(|r| {
             (
                 r["state"].as_str().unwrap_or(""),
@@ -1929,7 +1934,10 @@ impl FleetSignals {
         let started = self.started.get(name).copied().unwrap_or(0.0);
         let started_age = (started > 0.0).then_some(self.now - started);
         let (health, reason) = telemetry_health(&provider, rep_tuple, codex_live, started_age);
-        // A pane read backed by a RECOGNISED empty composer is more than a guess.
+        // A pane read backed by the provider's own explicit chrome is more
+        // than a guess: a RECOGNISED empty composer for idle, and Claude's
+        // "esc to interrupt" footer (drawn only while a turn is in flight) for
+        // active. Generic spinner shapes and redraws stay inferred.
         let decided_eff = if decided == "pane"
             && status == "idle"
             && self
@@ -1937,6 +1945,17 @@ impl FleetSignals {
                 .is_some_and(crate::api::session_verbs::pane_is_at_boundary)
         {
             "pane_boundary"
+        } else if decided == "pane"
+            && status == "active"
+            && self.pane_of(name).is_some_and(|raw| {
+                let clean = crate::backend::adapter::strip_ansi(raw);
+                let lines: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
+                lines[lines.len().saturating_sub(3)..]
+                    .iter()
+                    .any(|l| l.to_lowercase().contains("esc to interrupt"))
+            })
+        {
+            "pane_interruptible"
         } else {
             decided
         };
@@ -5773,7 +5792,7 @@ pub(crate) fn authority_of(decided: &str) -> Option<&'static str> {
         "structured_live_children" | "contradiction_subagents_working"
         | "contradiction_subagents_reported_live" | "transition" | "provider_picker"
         | "contradiction_picker_waiting" | "api_error_banner" | "provider_auto_resume_quota"
-        | "pane_boundary" => "corroborated",
+        | "pane_boundary" | "pane_interruptible" => "corroborated",
         "pane" | "activity_fallback" | "contradiction_pane_generating"
         | "contradiction_pane_redrew_since_claim" | "contradiction_provider_background_working"
         | "codex_child_probe_unmeasured" => "inferred",
@@ -5831,6 +5850,7 @@ mod status_authority_tests {
             .collect();
         rules.push("not_running".into());
         rules.push("pane_boundary".into());
+        rules.push("pane_interruptible".into());
         rules.sort();
         rules.dedup();
         assert!(rules.len() >= 20, "rule scan found too few rules: {rules:?}");

@@ -3620,7 +3620,18 @@ pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
 /// conv-id first, then title match, then the single unclaimed candidate.
 pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let cfg = parse_env(name);
-    let wd = cfg.get_or("CC_DIR", "").trim().to_string();
+    let mut wd = cfg.get_or("CC_DIR", "").trim().to_string();
+    // A chat worker with no configured dir runs its turns in a private
+    // scratch dir (chat_worker::chat_work_dir), and its provider writes the
+    // transcript under THAT cwd. Without this, every transcript reader
+    // (rate-limit sweep, transcript history, owner-ask fallback) saw no
+    // transcript for a default chat worker (AMUX-5263 parity audit).
+    if wd.is_empty()
+        && super::worker_exec::worker_type_of_env(cfg.get("CC_WORKER_TYPE")).as_str()
+            == amux_core::worker_type::WorkerTypeId::CHAT
+    {
+        wd = super::chat_worker::default_chat_dir(name);
+    }
     if wd.is_empty() {
         return None;
     }
@@ -25860,6 +25871,21 @@ pub(crate) async fn keys_verb(name: &str, body: &Value) -> Response {
     let keys = body_str(body, "keys");
     if keys.is_empty() {
         return jresp(StatusCode::BAD_REQUEST, json!({"error": "missing 'keys'"}));
+    }
+    // A chat worker has no pane: Escape / C-c mean "stop this turn", which
+    // its adapter does by signalling the provider (AMUX-5263). Any other key
+    // falls through and is refused as "not running" like before.
+    if matches!(keys.trim(), "Escape" | "C-c") {
+        if let super::worker_exec::Dispatch::Handled((ok, msg)) =
+            super::worker_exec::adapter_for_session(name).interrupt(name).await
+        {
+            tracing::info!(session = %name, keys = %keys, ok, detail = %msg, measured = true,
+                n_considered = 1, verdict = "keys_routed_to_adapter_interrupt", "keys verb");
+            return jresp(
+                StatusCode::OK,
+                json!({"ok": ok, "accepted": ok, "effect": if ok { "interrupted" } else { "no_turn" }, "message": msg}),
+            );
+        }
     }
     let (ok, msg) = send_keys_op(name, &keys).await;
     // A key press had no log line at all, so "no Enter in the log" could not
