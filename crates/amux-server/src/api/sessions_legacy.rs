@@ -385,7 +385,8 @@ fn derive_waiting_reason(raw: &str) -> &'static str {
     }
     let clean = strip_ansi(raw);
     let lines: Vec<_> = clean.lines().collect();
-    let start = lines.iter().rposition(|l| matches!(l.trim(), "❯" | "›"))
+    let codex_identified = crate::backend::adapter::codex_pane_generation_state(&clean).is_some();
+    let start = lines.iter().rposition(|l| crate::api::session_verbs::current_composer_line(l, codex_identified))
         .unwrap_or_else(|| lines.len().saturating_sub(12));
     let current = lines[start..].join("\n");
     // Cancellation is also offered during generation, retry and quota waits.

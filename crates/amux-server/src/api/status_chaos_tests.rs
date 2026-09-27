@@ -171,3 +171,60 @@ fn all_core_states_project_by_tag_not_model_output_or_reason() {
         }
     }
 }
+
+
+// Badschaff/amux#1: a completed Codex session retained its old trust picker
+// above a populated current composer; native status/preview then said waiting.
+const HISTORICAL_CODEX_PICKER: &str = "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No\nPress enter to continue";
+const CURRENT_CODEX_COMPOSER: &str = "› Ask Codex to do anything\n  GPT-6-Sol high · ~ · CW-225\n  ← for agents · ? for shortcuts · ⚠ 1 warning · f2 to view";
+
+#[test]
+fn cw225_current_codex_composer_closes_historical_selector_across_projections() {
+    let raw = format!("{HISTORICAL_CODEX_PICKER}\nCompleted.\n{CURRENT_CODEX_COMPOSER}");
+    assert_eq!(crate::backend::adapter::codex_pane_generation_state(&raw), Some(false));
+    assert_eq!(crate::api::session_verbs::detect_claude_status(&raw), "idle");
+    assert_eq!(derive_waiting_reason(&raw), "");
+    let events = TerminalAdapter::new(ProviderId::new("codex")).scan(&raw);
+    assert!(events.iter().any(|e| matches!(e, WorkerEvent::Waiting(w) if w.reason == "idle_prompt")), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, WorkerEvent::Waiting(w) if w.reason != "idle_prompt")), "{events:?}");
+    let mut preview = json!({"running":true, "status":"idle"});
+    apply_preview_waiting_status(&mut preview, &raw);
+    assert_eq!(preview["status"], "idle");
+
+    let lane = "cw225-current-composer";
+    let mut fleet = signals();
+    fleet.activity.insert(format!("amux-{lane}"), (fleet.now - 1.0) as i64);
+    fleet.running.insert(format!("amux-{lane}"));
+    fleet.panes.insert(lane.into(), raw);
+    let (status, evidence) = fleet.derive_status_explain(lane, true);
+    assert_eq!(status, "idle", "{evidence}");
+    assert_eq!(evidence["pane"]["detect"], "idle");
+}
+
+#[test]
+fn cw225_current_picker_and_working_controls_remain_held() {
+    let current_picker = format!("{CURRENT_CODEX_COMPOSER}\n{HISTORICAL_CODEX_PICKER}");
+    assert_eq!(crate::api::session_verbs::detect_claude_status(&current_picker), "waiting");
+    assert_eq!(derive_waiting_reason(&current_picker), "user_input");
+    let events = TerminalAdapter::new(ProviderId::new("codex")).scan(&current_picker);
+    assert!(events.iter().any(|e| matches!(e, WorkerEvent::Waiting(w) if w.reason == "trust_prompt")), "{events:?}");
+    // A selector may retain the model/footer chrome without a newer composer.
+    let picker_footer = format!("{HISTORICAL_CODEX_PICKER}\n  GPT-6-Sol high · ~\n  ← for agents · ? for shortcuts");
+    assert_eq!(crate::api::session_verbs::detect_claude_status(&picker_footer), "waiting");
+    assert_eq!(derive_waiting_reason(&picker_footer), "user_input");
+    let second_option = picker_footer.replace("› 1. Yes, continue", "  1. Yes, continue").replace("  2. No", "› 2. No");
+    assert_eq!(crate::api::session_verbs::detect_claude_status(&second_option), "waiting");
+    assert_eq!(derive_waiting_reason(&second_option), "user_input");
+    let events = TerminalAdapter::new(ProviderId::new("codex")).scan(&second_option);
+    assert!(events.iter().any(|e| matches!(e, WorkerEvent::Waiting(w) if w.reason == "trust_prompt")), "{events:?}");
+    for activity in ["• Working (12s • esc to interrupt)", "• Waiting for background terminal (12s • esc to interrupt)"] {
+        let raw = format!("{HISTORICAL_CODEX_PICKER}\n{activity}\n{CURRENT_CODEX_COMPOSER}");
+        assert_eq!(crate::backend::adapter::codex_pane_generation_state(&raw), Some(true));
+        assert_eq!(crate::api::session_verbs::detect_claude_status(&raw), "active");
+        assert_eq!(derive_waiting_reason(&raw), "");
+    }
+    assert_eq!(crate::api::session_verbs::detect_claude_status("› Ask Codex to do anything"), "");
+    let foreign = format!("Quoted Codex output:\n{CURRENT_CODEX_COMPOSER}\n⏵⏵ bypass permissions on · esc to interrupt");
+    assert_eq!(crate::backend::adapter::codex_pane_generation_state(&foreign), None);
+    assert_eq!(crate::api::session_verbs::detect_claude_status(&foreign), "active");
+}

@@ -1639,6 +1639,17 @@ fn warn_once_on_unrecognized_spinner(lines: &[&str]) {
     }
 }
 
+/// A populated Codex composer closes historical pickers only when the current
+/// footer identifies this as Codex. Numbered selector rows are never composers;
+/// unknown/foreign panes retain their existing bare-prompt boundary rules.
+pub(crate) fn current_composer_line(line: &str, codex_identified: bool) -> bool {
+    let line = line.trim();
+    matches!(line, "❯" | "›")
+        || line.contains("Type your message")
+        || (codex_identified && line.starts_with('›')
+            && !crate::backend::adapter::codex_picker_option(line))
+}
+
 pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     if raw_output.is_empty() {
         return String::new();
@@ -1649,17 +1660,34 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         return String::new();
     }
     let n = lines.len();
-    let current_start = lines.iter().rposition(|line| {
-        matches!(line.trim(), "❯" | "›") || line.contains("Type your message")
-    }).unwrap_or(0);
+    let codex_state = crate::backend::adapter::codex_pane_generation_state(&clean);
+    let current_start = lines.iter()
+        .rposition(|line| current_composer_line(line, codex_state.is_some()))
+        .unwrap_or(0);
     let current_lines = &lines[current_start..];
     let current = current_lines.join("\n");
     // Codex keeps an apparently empty prompt shell on screen while a command
     // continues in its background terminal. Its provider-owned active row is
     // already parsed structurally by the adapter (including adjacency to the
     // newest prompt); reuse it so quoted prose cannot become activity.
-    if crate::backend::adapter::codex_pane_generation_state(&clean) == Some(true) {
+    if codex_state == Some(true) {
         return "active".into();
+    }
+    if codex_state == Some(false) && current_start > 0 {
+        let history = lines[..current_start].join("\n");
+        if history.contains("› 1.")
+            && (history.to_ascii_lowercase().contains("press enter to continue")
+                || history.to_ascii_lowercase().contains("enter to select"))
+        {
+            // Report once per process: a retained scrollback picker otherwise
+            // repeats this diagnostic on every dashboard/driver read.
+            static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(target: "amux::steering", measured=true, n_considered=1,
+                    verdict="current_codex_composer_over_stale_picker",
+                    "historical selector excluded by the structurally current Codex composer");
+            }
+        }
     }
     let reading_re = cached_re!(r"^Reading \d+ file");
     // Claude Code yields the main composer while background agents continue,
@@ -1670,7 +1698,8 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
         return "active".into();
     }
     // 0. Active spinner, wide window.
-    for l in lines[n.saturating_sub(30)..].iter().rev() {
+    let active_lines = if codex_state.is_some() { current_lines } else { &lines[n.saturating_sub(30)..] };
+    for l in active_lines.iter().rev() {
         let s = l.trim();
         if is_prompt_line(s) {
             continue;
@@ -1764,7 +1793,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // prose that merely QUOTES a numbered list cannot read as a picker (the
     // AMUX-2642 self-block class).
     let lower = current.to_lowercase();
-    if current.contains("\u{203a} 1.")
+    if current_lines.iter().any(|line| crate::backend::adapter::codex_picker_option(line.trim()))
         && (lower.contains("press enter to continue") || lower.contains("enter to select"))
     {
         return "waiting".into();
@@ -1779,12 +1808,15 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // picker. Reading that old box as current blocks automatic steering.
     if let Some(picker) = lines.iter().rposition(|line| line.contains("\u{2502} \u{25cf} 1.")) {
         let newer_prompt = lines[picker + 1..].iter()
-            .any(|line| matches!(line.trim(), "❯" | "›"));
+            .any(|line| current_composer_line(line, codex_state.is_some()));
         if !newer_prompt {
             return "waiting".into();
         }
         tracing::debug!(target: "amux::steering", verdict = "stale_picker_ignored",
             "historical boxed picker precedes the current empty composer");
+    }
+    if codex_state == Some(false) {
+        return "idle".into();
     }
     let raw_lines: Vec<&str> = raw_output.lines().filter(|l| !strip_ansi(l).trim().is_empty()).collect();
     let stripped: Vec<String> = raw_lines.iter().map(|l| strip_ansi(l)).collect();

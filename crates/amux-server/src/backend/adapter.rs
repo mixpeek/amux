@@ -1050,7 +1050,7 @@ fn provider_picker_reason(clean: &str, provider: &str) -> Option<&'static str> {
         else { "user_input" })
 }
 
-fn codex_picker_option(line: &str) -> bool {
+pub(crate) fn codex_picker_option(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("› ") else { return false; };
     let Some((number, _)) = rest.split_once('.') else { return false; };
     !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
@@ -1296,8 +1296,12 @@ fn scan_codex(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
     // Detect by the question text or the selected option bullet so the delivery
     // path can see the block (AMUX-3159; auto-dismiss is a separate action there).
     let tail8 = last_n_raw_lines(clean, 8);
-    if tail8.contains("Do you trust the contents of this directory")
-        || tail8.contains("1. Yes, continue")
+    // A current structured idle composer closes historical trust text. The
+    // actual current selector was handled above; retain this fallback only
+    // for short/unidentified captures, not old dialog prose behind the footer.
+    if codex_structured_generation_state_clean(clean) != Some(false)
+        && (tail8.contains("Do you trust the contents of this directory")
+            || tail8.contains("1. Yes, continue"))
     {
         events.push(WorkerEvent::Waiting(WaitReason {
             reason: "trust_prompt".to_string(),
