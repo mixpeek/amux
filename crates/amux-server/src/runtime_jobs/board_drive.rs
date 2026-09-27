@@ -15073,6 +15073,16 @@ mod tests {
     #[tokio::test]
     async fn claim_log_names_the_lane_and_records_a_reassignment() {
         let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for lane in ["amux", "amux-frustrations"] {
+            std::fs::write(
+                sessions.join(format!("{lane}.env")),
+                "CC_TAGS=shared-pool-test\n",
+            )
+            .unwrap();
+        }
         let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
         let state = crate::api::AppState {
             store: store.clone(),
