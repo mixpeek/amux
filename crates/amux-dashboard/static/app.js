@@ -10004,6 +10004,8 @@ const _WORKER_BOARD_CONFIGS = [
     label: 'To Do → In Progress', note: 'Claim the next eligible To Do card when the worker is idle.' },
   { field: 'board_auto_continue', value: 'auto_continue', own: 'auto_continue_own',
     label: 'Continue non-terminal work', note: 'Re-check actionable blocked work instead of stopping early.' },
+  { field: 'board_redistribute_ready', value: 'redistribute_ready', own: 'redistribute_ready_own',
+    label: 'Share To Do work with compatible workers', note: 'On by default for compatible workers in the same group. Set off to keep this worker’s cards local; tag one card dispatch:local to exclude only that card.' },
   { field: 'board_standing_orders', value: 'standing_orders', own: 'standing_orders_own',
     label: 'Pickup / continue master', note: 'Master switch for To Do pickup and non-terminal continuation.' },
 ];
@@ -12280,7 +12282,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1142';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1143';   // bump together with the sw.js CACHE version
 // Warm the shared catalog so model-type filters are exact on first use. A
 // failure is non-fatal (custom ids and the open-string fallback still work)
 // and is already reported by _loadModelCatalog.

@@ -100,9 +100,7 @@ const MAX_LOG_BYTES: usize = 10 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 pub(crate) fn home() -> PathBuf {
-    std::env::var("AMUX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"))
+    crate::config::amux_home()
 }
 /// Shell prelude for a HEADLESS provider turn (worker types whose adapter
 /// runs turns outside a terminal, ACW-4). Same environment a tmux launch
@@ -29591,8 +29589,13 @@ async fn config_patch_with_liveness(
             json!({"error": "payload must be a JSON object"}),
         );
     }
+    let shared_pool_toggle = body.get("board_redistribute_ready").is_some();
     let f = env_path(name);
-    let mut cfg = parse_env(name);
+    let mut cfg = if shared_pool_toggle {
+        EnvFile::load(&f)
+    } else {
+        parse_env(name)
+    };
 
     // Fan-out integration configuration is durable and takes effect at the
     // next boundary; changing it never restarts a worker or weakens its gates.
@@ -30261,6 +30264,11 @@ async fn config_patch_with_liveness(
             "Non-terminal continuation",
         ),
         (
+            "board_redistribute_ready",
+            "AMUX_REDISTRIBUTE_READY",
+            "Shared To Do pool",
+        ),
+        (
             "board_standing_orders",
             "CC_STANDING_ORDERS",
             "Pickup / continue master",
@@ -30294,6 +30302,8 @@ async fn config_patch_with_liveness(
         }
         let effective = if key == crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY {
             crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(name)
+        } else if key == "AMUX_REDISTRIBUTE_READY" {
+            crate::runtime_jobs::board_drive::pool_worker_ready(&crate::config::amux_home(), name)
         } else if key == super::board_lifecycle::DECOMPOSE_KEY {
             super::board_lifecycle::enabled(name)
         } else if key == super::board_lifecycle::FORCE_ADHERENCE_KEY {
@@ -41123,6 +41133,61 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert_eq!(st, StatusCode::NOT_FOUND);
         let (st, _) = call(&app, "PUT", "/api/sessions/sib/config", Some(json!({}))).await;
         assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn shared_pool_config_toggle_persists_worker_opt_in() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state);
+        let (status, body) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_redistribute_ready": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(parse_env("probe").get("AMUX_REDISTRIBUTE_READY"), Some("1"));
+        assert_eq!(body["board_redistribute_ready"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn shared_pool_opt_out_uses_cc_home_for_write_and_effective_value() {
+        struct RestoreCcHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreCcHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_HOME", value),
+                    None => std::env::remove_var("CC_HOME"),
+                }
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/probe.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let _restore_cc_home = RestoreCcHome(std::env::var_os("CC_HOME"));
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::env::remove_var("AMUX_HOME");
+        std::env::set_var("CC_HOME", home.path());
+        let (state, _dir) = state();
+        let app: Router = routes().with_state(state);
+        let (status, body) = call(
+            &app,
+            "PATCH",
+            "/api/sessions/probe/config",
+            Some(json!({"board_redistribute_ready": false})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let env = crate::config::parse_env_file(&home.path().join("sessions/probe.env"));
+        assert_eq!(env.get("AMUX_REDISTRIBUTE_READY").map(String::as_str), Some("0"));
+        assert_eq!(body["effective"], json!(false));
+        assert!(!crate::runtime_jobs::board_drive::pool_worker_ready(home.path(), "probe"));
     }
     /// The owner-addendum rename matrix: noop, happy-path cascade with
     /// attached rows, retry-after-partial convergence, target collision.
