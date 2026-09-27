@@ -639,9 +639,14 @@ async fn dispatch_to(state: &AppState, body: Dispatch, worker: &str) -> ApiResul
     );
     state.store.write_async(move|c|{
         super::session_verbs::ensure_fleet_tables(c)?;
-        let prior:Option<(String,String)>=c.query_row("SELECT worker,text FROM _amux_source_dispatch WHERE task_id=?1 AND key=?2",params![task,key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if prior.is_some_and(|(w,t)|w!=worker_w||t!=prompt){return Err(rusqlite::Error::InvalidQuery);}
-        c.execute("INSERT OR IGNORE INTO _amux_source_dispatch(task_id,key,message_id,worker,text) VALUES(?1,?2,?3,?4,?5)",params![task,key,msg_w,worker_w,prompt])?;
+        let prior:Option<(String,String,String)>=c.query_row("SELECT task_id,worker,text FROM _amux_source_dispatch WHERE key=?1",[&key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        if let Some((prior_task,prior_worker,prior_text))=prior {
+            if prior_task!=task || prior_worker!=worker_w || prior_text!=prompt {
+                return Err(rusqlite::Error::InvalidParameterName("dispatch key is already bound to a different task, worker or prompt".into()));
+            }
+            return Ok(WriteOutcome{applied:false,events:vec![]});
+        }
+        c.execute("INSERT INTO _amux_source_dispatch(task_id,key,message_id,worker,text) VALUES(?1,?2,?3,?4,?5)",params![task,key,msg_w,worker_w,prompt])?;
         Ok(WriteOutcome{applied:true,events:vec![]})
     }).await.map_err(db_error)?;
     // Stable transport ID and nonempty guard avoid semantic intake. Binding is
@@ -791,6 +796,7 @@ mod tests {
     #[tokio::test]
     async fn bound_dispatch_replay_keeps_one_queue_and_one_card_without_semantic_capture() {
         let (state, _dir) = test_state();
+        let _home = crate::api::settings::test_env::set_home(_dir.path());
         import_request(&state,"instance",json!({"candidate_id":1,"title":"Source","status":"drafting","source_fingerprint":"v1","detail":{}})).await.unwrap();
         let id: String = state
             .store

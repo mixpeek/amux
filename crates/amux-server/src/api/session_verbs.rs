@@ -9874,6 +9874,7 @@ pub(crate) fn send_failure_status(msg: &str) -> (StatusCode, Option<&'static str
         ("boot readiness not freshly observed", "message remains queued; wait for the new provider's idle empty composer, inspect startup if it does not become ready; do not send a duplicate"),
         ("worker is not ready; durable message remains queued", "message remains queued; start or recover the worker and wait for its idle empty composer; do not send a duplicate"),
         ("composer contains a draft", "message remains queued; inspect and submit or deliberately discard the existing draft in the pane before delivery can resume"),
+        ("composer could not be cleared before pasting", "No new prompt was pasted. Inspect the existing composer and retry after it is empty."),
         ("composer draft appeared before paste", "existing draft was preserved; inspect and submit or deliberately discard it in the pane before the queued delivery resumes"),
         ("not running", "POST /api/sessions/<name>/start, or send again to auto-wake it"),
         ("worker is still starting", "wait for the provider terminal to be ready, then retry the retained message"),

@@ -1456,6 +1456,43 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/events",
         methods: &["GET"],
     },
+    // -- native request sources and vault
+    RouteEntry {
+        path: "/api/vault",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/vault/{id}",
+        methods: &["PATCH", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/vault/{id}/fill",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/work-requests/status",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/work-requests/sync",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/work-requests/dispatch",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/board/{id}/source",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/board/{id}/source/actions",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/board/{id}/source/artifacts/{aid}/download",
+        methods: &["GET"],
+    },
     // -- board
     RouteEntry {
         path: "/api/board",

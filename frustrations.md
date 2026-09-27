@@ -5037,3 +5037,14 @@ CARD: none
 SYMPTOM: Workspace Clippy reported seven warnings on unchanged helpers: constant format, late initialization, and five HTTP response adapters. Upstream board access is unavailable to this fork contributor.
 COST: The required deny-warnings gate stopped the integration before push.
 FIX: 704db554 removes unnecessary formatting and initialization and scopes result_large_err allowances to five existing HTTP adapter functions with rationale. Workspace Clippy now exits zero.
+
+## Source dispatch conflict was ignored and full-suite inventories were incomplete
+AREA: instruments
+SEVERITY: breaks
+STATUS: open
+DATE: 2026-09-27
+SESSION: macmini-workdesk-native
+CARD: none
+SYMPTOM: The full suite found vault routes missing from the diagnostic table, an unclassified composer-clear refusal, and a source dispatch returning accepted for a key already bound to another task. Upstream board access is unavailable to this fork contributor.
+COST: A conflicting execution key could enqueue the wrong task despite its uniqueness constraint; required full-suite verification stopped the integration.
+FIX: Pending targeted verification. The serialized writer now validates the key's immutable task/worker/prompt binding before a plain INSERT; it rejects mismatch before enqueue. Registered actual vault/source routes and classified the existing composer-clear refusal as 409, retaining its WARN. The source fixture also takes the shared temporary-home guard as preventive isolation, not as the diagnosed cause. Route inventory, refusal classification, and bound-dispatch tests remain the detectors.
