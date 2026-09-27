@@ -10,8 +10,12 @@ window.AmuxWorkRequests = (() => {
     if (cls) n.className = cls;
     return n;
   };
-  const labels = {backlog:'접수',todo:'대기',doing:'진행 중',review:'검토 필요',needsyou:'확인 필요',blocked:'보류',done:'완료',verified:'확인 완료',discarded:'제외',dismissed:'제외',ready_for_review:'검토 필요',approved:'승인됨',delivered:'전달 완료',stale:'원문 변경 · 재작성 필요',pending:'대기',queued:'대기',claimed:'작성 중',accepted:'접수됨',imported:'초안 반영됨',failed:'실패',unknown:'결과 확인 필요',held:'보류',awaiting_draft:'초안 작성 가능',drafting:'초안 작성 중',needs_review:'요청 검토',review_ready:'검토 필요',draft_failed:'초안 작성 실패',waiting_information:'정보 확인 필요',needs_input:'정보 확인 필요',already_resolved:'이미 해결됨',not_owner:'담당 대상 아님',not_actionable:'처리 대상 아님'};
+  const labels = {backlog:'접수',todo:'대기',doing:'진행 중',review:'검토 필요',needsyou:'확인 필요',blocked:'보류',done:'완료',verified:'확인 완료',discarded:'제외',dismissed:'제외',ready_for_review:'검토 필요',approved:'승인됨',delivered:'전달 완료',stale:'현재 사용 불가',pending:'대기',queued:'대기',claimed:'작성 중',accepted:'접수됨',imported:'초안 반영됨',failed:'실패',unknown:'결과 확인 필요',held:'보류',awaiting_draft:'초안 작성 가능',drafting:'초안 작성 중',needs_review:'요청 검토',review_ready:'검토 필요',draft_failed:'초안 작성 실패',waiting_information:'정보 확인 필요',needs_input:'정보 확인 필요',already_resolved:'이미 해결됨',not_owner:'담당 대상 아님',not_actionable:'처리 대상 아님'};
   function label(value) { return labels[value] || value || '접수'; }
+  function artifactLabel(artifact) {
+    const reasons = {source_changed:'원문 변경 · 재작성 필요', held:'보류 중 · 다시 진행 후 상태 확인', closed:'종료된 요청', not_current:'현재 작업 상태 확인 필요'};
+    return artifact.status === 'stale' ? reasons[artifact.unavailable_reason] || label('stale') : label(artifact.status);
+  }
   async function read(url, options) {
     const response = await apiCall(API + url, options);
     if (!response) throw new Error('연결 상태를 확인해 주세요.');
@@ -59,7 +63,7 @@ window.AmuxWorkRequests = (() => {
     panel.replaceChildren();
     const heading = node('div', null, 'wr-heading');
     const headingState = ['held','dismissed','drafting','draft_failed'].includes(value.status) ? value.status : artifact?.status || value.status;
-    heading.append(node('h2', '업무 요청'), node('span', label(headingState), 'wr-state'));
+    heading.append(node('h2', '업무 요청'), node('span', headingState === 'stale' ? artifactLabel(artifact) : label(headingState), 'wr-state'));
     heading.append(button('새로고침', () => refresh(true)));
     panel.append(heading);
     const source = node('div', null, 'wr-source');
@@ -77,6 +81,7 @@ window.AmuxWorkRequests = (() => {
       panel.append(section('처리 상태', assessment));
     }
     const request = detail.draft_request, execution = detail.execution;
+    if (request?.state === 'failed') panel.append(node('p', '초안 작성 실패: ' + (request.last_error || execution?.error || '원인 확인 필요'), 'wr-error'));
     if (request && ['queued','claimed'].includes(request.state)) panel.append(node('p', '초안 ' + label(request.state) + (execution ? ' · ' + label(execution.status) : ''), 'wr-progress'));
     const controls = node('div', null, 'wr-actions');
     if (can('generate')) controls.append(button(artifact ? '초안 다시 작성' : '초안 작성', () => act('generate'), true));
@@ -85,7 +90,7 @@ window.AmuxWorkRequests = (() => {
     panel.append(controls);
     if (artifact) {
       const content = node('div');
-      content.append(node('p', '버전 ' + artifact.version + ' · ' + label(artifact.status), 'wr-muted'));
+      content.append(node('p', '버전 ' + artifact.version + ' · ' + artifactLabel(artifact), 'wr-muted'));
       content.append(node('pre', artifact.content || '', 'wr-artifact'));
       if (artifact.output_path || artifact.download_available) {
         const a = node('a', '파일 다운로드', 'btn');

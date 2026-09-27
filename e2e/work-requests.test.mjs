@@ -157,7 +157,7 @@ test('held request overrides stale advertised artifact actions and only offers r
 test('stale source conflict is visible and refresh requires fresh confirmation', {timeout: 15000}, async t => {
   let value = detail();
   const h = await harness(t, {read: route => route.fulfill({json: value}), action: async route => {
-    value = detail(); value.source_fingerprint = 'source-v2'; value.detail.artifact.status = 'stale'; value.allowed_actions = ['generate'];
+    value = detail(); value.source_fingerprint = 'source-v2'; value.detail.artifact.status = 'stale'; value.detail.artifact.unavailable_reason = 'source_changed'; value.allowed_actions = ['generate'];
     await route.fulfill({status: 409, json: {error: 'source_changed'}});
   }});
   await h.open(); await h.page.getByRole('checkbox').check();
@@ -230,4 +230,22 @@ test('375px native component wraps long content without horizontal overflow', {t
   assert.ok(sizes.document <= sizes.viewport, JSON.stringify(sizes));
   assert.ok(sizes.panelScroll <= sizes.panelWidth + 1, JSON.stringify(sizes));
   mkdirSync(shots, {recursive: true}); await h.page.screenshot({path: resolve(shots, 'work-requests-component-mobile.png'), fullPage: true});
+});
+
+test('held artifact explains the pause without claiming source changed', async t => {
+  const value = detail(); value.status = 'held'; value.allowed_actions = ['restore'];
+  value.detail.artifact.status = 'stale'; value.detail.artifact.unavailable_reason = 'held';
+  const h = await harness(t, {value}); await h.open();
+  await expect(h.page.locator('#wr-detail')).toContainText('보류 중 · 다시 진행 후 상태 확인');
+  await expect(h.page.locator('#wr-detail')).not.toContainText('원문 변경');
+  await expect(h.page.getByRole('button', {name:'다시 진행', exact:true})).toBeVisible();
+  assert.equal(await h.page.getByRole('checkbox').count(), 0);
+});
+
+test('failed draft exposes the current failure reason alongside retained artifact', async t => {
+  const value = detail(); value.status = 'draft_failed';
+  value.detail.draft_request = {state:'failed', last_error:'spreadsheet_data_for_non_spreadsheet'};
+  const h = await harness(t, {value}); await h.open();
+  await expect(h.page.locator('#wr-detail')).toContainText('초안 작성 실패: spreadsheet_data_for_non_spreadsheet');
+  await expect(h.page.locator('.wr-artifact')).toContainText('complete reviewable artifact');
 });

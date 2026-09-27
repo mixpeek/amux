@@ -326,6 +326,12 @@ async fn import_request(state: &AppState, instance: &str, v: Value) -> ApiResult
         c.execute("DELETE FROM _amux_source_write_permits WHERE task_id=?1",[&row.id])?;
         c.execute("INSERT INTO _amux_source_bindings(task_id,instance_id,candidate_id,fingerprint,snapshot,synced_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(task_id) DO UPDATE SET fingerprint=excluded.fingerprint,snapshot=excluded.snapshot,synced_at=excluded.synced_at",params![row.id,instance,candidate,fingerprint,snapshot,now()])?;
         let artifact=&v["detail"]["artifact"];
+        if text(artifact,"status")=="stale" {
+            tracing::info!(task=%row.id,reason=%text(artifact,"unavailable_reason"),verdict="source_artifact_unavailable");
+        }
+        if text(&v,"status")=="draft_failed" {
+            tracing::warn!(task=%row.id,error=%text(&v["detail"]["draft_request"],"last_error"),verdict="source_draft_failed");
+        }
         if let Some(aid)=artifact["id"].as_i64() {
             let reference=format!("/api/board/{}/source/artifacts/{aid}/download",row.id);
             let artifact_state=match text(artifact,"status") {"delivered"=>"submitted","stale"=>"invalid",_=>"created"};

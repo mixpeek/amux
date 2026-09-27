@@ -5059,3 +5059,14 @@ CARD: none
 SYMPTOM: The deployed native source action returned 403 in the HTTPS UI while the same Origin/body over HTTP/1.1 reached action validation (400). HTTP/2 supplied URI authority without a Host header. Upstream board access is unavailable to this fork contributor.
 COST: The owner could inspect synchronized requests but could not request a draft from the actual dashboard.
 FIX: Pending targeted and live verification. Reuse the existing request-authority resolver (Host then URI authority) and pass the request URI into the source owner-intent check. Reject cross-origin, cross-scheme, conflicting Host/authority, absent origin/authority and declared worker requests. A router-level H1/H2 regression covers these cases; the existing work_request_refused WARN exposes refusal without logging request headers.
+
+## Held source artifact claimed that unchanged source had changed
+AREA: instruments
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-09-27
+SESSION: macmini-workdesk-native
+CARD: none
+SYMPTOM: Holding AMUX-120 retained the same source fingerprint but the artifact label asserted source change. A queued new draft could also display the previous execution failure. Upstream frustration board access is unavailable to this fork contributor.
+COST: The goal audit required API and receipt inspection to distinguish a user pause from changed evidence.
+FIX: Carry the connector unavailable_reason into both heading and artifact labels, expose current draft last_error, and select only the current request execution in the connector. Native sync emits source_artifact_unavailable and source_draft_failed verdicts. Browser regressions cover held/source-changed labels and current failure visibility.
