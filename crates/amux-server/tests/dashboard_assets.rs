@@ -715,9 +715,18 @@ fn only_the_explicitly_claimed_card_is_live_without_a_synthetic_unclaimed_state(
     let badge_tail = &app[badge_start..];
     let badge = &badge_tail[..badge_tail.find("function updatePeekStatus()").unwrap()];
     assert!(badge.contains("runtimeBoard.syncing") && badge.contains("_runtimeBoardSyncBadge()"));
+    let card_desc = render
+        .find("const cardDesc = doingCard && doingCard.desc")
+        .expect("a board snapshot may supply passive card-description text");
+    let doing_card = render
+        .find("const doingCard = hasBoard ? _cardDoingItem(s.name) : null")
+        .expect("board lookup is limited to descriptive card text");
+    assert!(doing_card < card_desc, "the board lookup should feed only cardDesc");
+    assert_eq!(render.matches("_cardDoingItem(s.name)").count(), 1);
+    let card_desc_end = card_desc + render[card_desc..].find('\n').unwrap();
     assert!(
-        !render.contains("_cardDoingItem(s.name)"),
-        "the worker card must not rebuild runtime truth from an independently refreshed boardItems snapshot"
+        !render[card_desc_end..].contains("doingCard"),
+        "board snapshot data may decorate the card, but must not decide runtime task truth"
     );
     assert!(
         app.contains("board-card-live-label\"><span class=\"board-live-dot\"></span>Working now"),
@@ -1270,7 +1279,7 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
 
     let app = asset("app.js");
     assert!(
-        app.contains("const _visCaps = (lvl === 'worker') ? d.capabilities"),
+        app.contains("const _visCaps = _visibleScopeCapabilities(lvl, sessions.find(s => s.name === w)?.isolated, d.capabilities)"),
         "worker Configurations must show every capability returned by the server"
     );
     assert!(
@@ -1297,6 +1306,7 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "Backlog → To Do",
         "To Do → In Progress",
         "Continue non-terminal work",
+        "Share To Do work with compatible workers",
         "Pickup / continue master",
         "On by default; parked and human-owned cards stay put",
         "Status availability and Board gates below define transition requirements",
@@ -1309,6 +1319,7 @@ fn worker_configurations_are_editable_from_backlog_through_terminal_states() {
         "auto_drain_backlog",
         "board_auto_pickup",
         "board_auto_continue",
+        "board_redistribute_ready",
         "board_standing_orders",
     ] {
         assert!(

@@ -4728,6 +4728,11 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         if let Some(row) = out.last_mut() {
             row["worker_type"] = json!(worker_type);
             row["renderer"] = json!(worker_type.descriptor().renderer);
+            row["redistribute_ready"] = json!(crate::runtime_jobs::board_drive::pool_worker_ready(
+                &crate::config::amux_home(),
+                &name,
+            ));
+            row["redistribute_ready_own"] = json!(env.contains_key("AMUX_REDISTRIBUTE_READY"));
         }
     }
     out
