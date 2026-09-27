@@ -5016,10 +5016,24 @@ SYMPTOM: amux-server-rs forked about 50 processes per second, 26 of them the boo
 COST: half of the server's spawns and about 0.5 core of translated tmux clients, invisible in the logs because a process that has exited leaves nothing to grep.
 FIX: 63c2614d makes reconcile one `list-panes -a` census, and TmuxBackend spawns are now counted per 60 s window with a WARN (`tmux_spawn_rate_high`) and `tmux_spawns` in GET /api/debug/tmux. The count covers TmuxBackend::run only; peek captures and the session-verb helpers spawn tmux from their own call sites and are not counted.
 
-### 2026-09-27 — native request integration exposed undefined dashboard helpers
+## Native request integration exposed undefined dashboard helpers
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-27
+SESSION: macmini-workdesk-native
+CARD: none
+SYMPTOM: On origin/main 461c2693, spa-lint failed on four nonexistent _escHtml calls and an undeclared remend global. This fork contributor has no upstream board access to file a shared card.
+COST: The mandatory SPA gate blocked the native request integration until unrelated undefined helpers were corrected.
+FIX: 704db554 reuses existing esc and explicitly reads window.remend. spa-lint reports zero errors; its no-undef rule detects recurrence.
 
-On origin/main 461c2693, `bash scripts/spa-lint.sh` failed on four `_escHtml` calls in pinned notes and an undeclared `remend` global in chat streaming. Pinned-note rendering would throw rather than show user data. Reused the existing `esc` renderer and explicitly read `window.remend`; no new escaping implementation. Static no-undef diagnostics are the detection signal.
-
-### 2026-09-27 — mandatory Clippy gate found pre-existing response adapter warnings
-
-The native WorkDesk integration's workspace gate reported seven warnings on unchanged origin/main helpers: a constant `format!`, late boolean initialization, and five HTTP helpers returning ready-to-send Axum responses. Removed the unnecessary formatting/initialization. Scoped `result_large_err` allowances to those five adapter functions with a rationale; no crate-wide lint suppression or changed response behavior. `cargo clippy --workspace --all-targets -- -D warnings` remains the detection signal.
+## Mandatory Clippy gate found pre-existing response adapter warnings
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-09-27
+SESSION: macmini-workdesk-native
+CARD: none
+SYMPTOM: Workspace Clippy reported seven warnings on unchanged helpers: constant format, late initialization, and five HTTP response adapters. Upstream board access is unavailable to this fork contributor.
+COST: The required deny-warnings gate stopped the integration before push.
+FIX: 704db554 removes unnecessary formatting and initialization and scopes result_large_err allowances to five existing HTTP adapter functions with rationale. Workspace Clippy now exits zero.
