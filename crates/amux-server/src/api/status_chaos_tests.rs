@@ -228,3 +228,84 @@ fn cw225_current_picker_and_working_controls_remain_held() {
     assert_eq!(crate::backend::adapter::codex_pane_generation_state(&foreign), None);
     assert_eq!(crate::api::session_verbs::detect_claude_status(&foreign), "active");
 }
+
+// Scrubbed minimal current-frame derivation of the measured W3 ANSI capture.
+// Separator/task segment have normal foreground styling, not SGR-2 dim.
+const CURRENT_CODEX_ANSI: &str = "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m\n\n  \x1b[38;5;223mGPT-6-Sol high\x1b[39m · \x1b[38;5;151m~\x1b[39m · \x1b[38;5;225mReview task\x1b[39m\n  \x1b[1m←\x1b[0m for agents · \x1b[1m?\x1b[0m for shortcuts";
+
+#[test]
+fn cw225_actual_ansi_frame_survives_sweep_and_final_metadata_projection() {
+    use crate::api::session_verbs::{composer_state, sweep_input_observation, ComposerState};
+    let idle = format!("{HISTORICAL_CODEX_PICKER}\nCompleted.\n{CURRENT_CODEX_ANSI}");
+    let typed = idle.replace("\x1b[2mAsk Codex to do anything\x1b[0m", "run next task");
+    for (frame, expected_pending, final_status) in [
+        (&idle, None, "idle"), (&typed, Some("runnexttask"), "waiting")
+    ] {
+        assert_eq!(crate::api::session_verbs::detect_claude_status(frame), "idle");
+        if expected_pending.is_none() {
+            assert_eq!(composer_state(frame), ComposerState::Placeholder("AskCodextodoanything".into()));
+        } else { assert_eq!(composer_state(frame), ComposerState::Typed("runnexttask".into())); }
+        let (selector, pending) = sweep_input_observation(frame, false);
+        assert!(!selector);
+        assert_eq!(pending.as_deref(), expected_pending);
+        // The production sweep writes these stamps from those exact decisions;
+        // then the production fleet list applies this shared final override.
+        let meta = json!({"input_required_since": if selector { 1 } else { 0 },
+            "composer_stuck_since": if pending.is_some() { 1 } else { 0 }});
+        let mut sig = signals();
+        sig.activity.insert("amux-ansi".into(), (sig.now - 1.0) as i64);
+        sig.reports = json!({"ansi":{"state":"idle","ts":sig.now - 1.0}});
+        sig.panes.insert("ansi".into(), frame.clone());
+        let derived = sig.derive_status("ansi", true);
+        assert_eq!(apply_input_metadata_status(&derived, true, &meta), final_status);
+        assert_eq!(apply_input_metadata_status("active", true, &meta), "active");
+        assert_eq!(apply_input_metadata_status("", false, &meta), "");
+    }
+    for row in ["• Working (12s • esc to interrupt)", "• Waiting for background terminal (12s • esc to interrupt)"] {
+        let active = format!("{HISTORICAL_CODEX_PICKER}\n{row}\n{CURRENT_CODEX_ANSI}");
+        assert_eq!(crate::api::session_verbs::detect_claude_status(&active), "active");
+        assert_eq!(sweep_input_observation(&active, false), (false, None));
+    }
+    for option in [1, 2] {
+        let picker = format!("{CURRENT_CODEX_ANSI}\nDo you trust this directory?\n› {option}. Yes\nPress enter to continue");
+        assert_eq!(sweep_input_observation(&picker, false), (true, None));
+    }
+    let unknown = "› run next task";
+    assert_eq!(crate::api::session_verbs::detect_claude_status(unknown), "");
+    assert_eq!(composer_state(unknown).typed(), Some("runnexttask"));
+    let foreign = format!("{CURRENT_CODEX_ANSI}\n⏵⏵ bypass permissions on");
+    assert_eq!(crate::backend::adapter::codex_pane_generation_state(&foreign), None);
+    assert!(composer_state(&foreign).typed().is_some(), "nonterminal Codex-looking prose is not current footer chrome");
+}
+
+#[test]
+fn cw225_gemini_current_picker_preserves_all_projections() {
+    for frame in [
+        include_str!("../../tests/fixtures/boundary/gemini-0.58-idle.txt"),
+        include_str!("../../tests/fixtures/boundary/gemini-0.59-yolo-idle.txt")
+    ] {
+        let picker = format!("│ ● 1. Yes\n{frame}");
+        assert_eq!(crate::api::session_verbs::detect_claude_status(&picker), "waiting");
+        assert!(!crate::api::session_verbs::pane_is_at_boundary(&picker));
+        // Baseline last-12-raw-line preview fallback drops the leading selector
+        // in these long captures; preserve the already-derived waiting state.
+        assert_eq!(derive_waiting_reason(&picker), "");
+        let mut preview = json!({"running":true,"status":"waiting"});
+        apply_preview_waiting_status(&mut preview, &picker);
+        assert_eq!(preview["status"], "waiting");
+        assert!(preview["waiting_reason"].is_null());
+
+        // A compact capture retains the genuine selector in that baseline
+        // window; placeholder text must not slice it out of enrichment.
+        let nonempty: Vec<_> = frame.lines().filter(|line| !line.trim().is_empty()).collect();
+        let compact = format!("│ ● 1. Yes\n{}\n{}", nonempty[0], nonempty[nonempty.len()-8..].join("\n"));
+        assert!(compact.lines().count() <= 12);
+        assert_eq!(crate::api::session_verbs::detect_claude_status(&compact), "waiting");
+        assert!(!crate::api::session_verbs::pane_is_at_boundary(&compact));
+        assert_eq!(derive_waiting_reason(&compact), "user_input");
+        let mut preview = json!({"running":true,"status":"idle"});
+        apply_preview_waiting_status(&mut preview, &compact);
+        assert_eq!(preview["status"], "waiting");
+        assert_eq!(preview["waiting_reason"], "user_input");
+    }
+}

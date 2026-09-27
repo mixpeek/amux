@@ -1173,6 +1173,20 @@ fn codex_generation_state_clean(clean: &str) -> Option<bool> {
     None
 }
 
+/// Absolute nonempty-row index of the CURRENT Codex model/path footer.
+/// The same terminal-position proof is used by generation and composer parsing.
+pub(crate) fn codex_current_model_footer_index(clean: &str) -> Option<usize> {
+    let lines = nonempty_trimmed(clean);
+    let n = lines.len();
+    let model_i = n.checked_sub(1).filter(|&i| codex_model_bar(lines[i]))
+        .or_else(|| n.checked_sub(2).filter(|&i| {
+            codex_model_bar(lines[i]) && codex_footer_hint_row(lines[n - 1])
+        }))?;
+    lines[n.saturating_sub(12)..model_i].iter()
+        .rposition(|line| line.starts_with('›'))?;
+    Some(model_i)
+}
+
 /// Parse the current Codex footer and return its structurally attached active
 /// row. `Some(None)` is an identifiable idle Codex frame; `None` is not a
 /// current Codex frame at all. Keeping that distinction lets consumers ask a
@@ -1198,15 +1212,7 @@ fn codex_structured_active_line_clean(clean: &str) -> Option<Option<&str>> {
     // Codex-shaped bar pasted into another provider's pane, with that OTHER
     // provider's own single chrome row landing last, must NOT anchor here —
     // that pane's real last row decides, and it is not Codex's.
-    let n = tail.len();
-    let model_i = n
-        .checked_sub(1)
-        .filter(|&i| codex_model_bar(tail[i]))
-        .or_else(|| {
-            n.checked_sub(2).filter(|&i| {
-                codex_model_bar(tail[i]) && n.checked_sub(1).is_some_and(|last| codex_footer_hint_row(tail[last]))
-            })
-        })?;
+    let model_i = codex_current_model_footer_index(clean)?.checked_sub(start)?;
     let prompt_i = tail[..model_i].iter().rposition(|s| s.starts_with('›'))?;
     // Current Codex paints the active row immediately before its disabled
     // prompt. Older builds painted it immediately after the submitted prompt,

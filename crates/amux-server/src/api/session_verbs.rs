@@ -1645,7 +1645,6 @@ fn warn_once_on_unrecognized_spinner(lines: &[&str]) {
 pub(crate) fn current_composer_line(line: &str, codex_identified: bool) -> bool {
     let line = line.trim();
     matches!(line, "❯" | "›")
-        || line.contains("Type your message")
         || (codex_identified && line.starts_with('›')
             && !crate::backend::adapter::codex_picker_option(line))
 }
@@ -1662,7 +1661,8 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     let n = lines.len();
     let codex_state = crate::backend::adapter::codex_pane_generation_state(&clean);
     let current_start = lines.iter()
-        .rposition(|line| current_composer_line(line, codex_state.is_some()))
+        .rposition(|line| current_composer_line(line, codex_state.is_some())
+            || line.contains("Type your message"))
         .unwrap_or(0);
     let current_lines = &lines[current_start..];
     let current = current_lines.join("\n");
@@ -1808,7 +1808,7 @@ pub(crate) fn detect_claude_status(raw_output: &str) -> String {
     // picker. Reading that old box as current blocks automatic steering.
     if let Some(picker) = lines.iter().rposition(|line| line.contains("\u{2502} \u{25cf} 1.")) {
         let newer_prompt = lines[picker + 1..].iter()
-            .any(|line| current_composer_line(line, codex_state.is_some()));
+            .any(|line| matches!(line.trim(), "❯" | "›"));
         if !newer_prompt {
             return "waiting".into();
         }
@@ -7207,10 +7207,15 @@ pub(crate) fn composer_state(raw_frame: &str) -> ComposerState {
             stripped[idx].trim().trim_start_matches(['\u{276f}', ' ', '\u{a0}']).split_whitespace().collect(),
         );
     }
+    // Current Codex footer ownership comes from terminal position, not SGR
+    // styling: recent TUI versions no longer dim its separators/task segment.
+    let codex_footer = crate::backend::adapter::codex_current_model_footer_index(&clean)
+        .filter(|&footer| footer > idx && stripped[idx].trim().starts_with('›'));
     let mut block: Vec<&str> = vec![raw_lines[idx]];
     for (i, s) in stripped.iter().enumerate().skip(idx + 1) {
         let t = s.trim();
         if matches!(t.chars().next(), Some('\u{2500}') | Some('\u{23f5}'))
+            || codex_footer == Some(i)
             || codex_model_footer_chrome(raw_lines[i], s)
             || (is_muse && muse_popup_row(t))
         {
@@ -15547,6 +15552,16 @@ fn rate_limit_sweep_secs() -> f64 {
         .unwrap_or(60.0)
 }
 
+/// Production sweep decision, shared with forcing tests without live tmux I/O.
+pub(crate) fn sweep_input_observation(pane: &str, agents_live: bool) -> (bool, Option<String>) {
+    let selector = !is_rate_limit_menu(pane) && detect_claude_status(pane) == "waiting";
+    let typed = (!is_rate_limit_menu(pane) && !selector
+        && !pane_bar_says_generating(pane) && detect_claude_status(pane) != "active"
+        && !agents_live)
+        .then(|| composer_state(pane).typed().map(str::to_string)).flatten();
+    (selector, typed)
+}
+
 /// Stamp (and, unless the policy says otherwise, ANSWER) every lane sitting on a
 /// rate-limit menu.
 ///
@@ -15636,7 +15651,10 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         // A rate-limit menu is EXCLUDED: it is also a selector, but amux owns it
         // and answers it below, so flagging it would ask a human for something
         // nobody needs to decide.
-        let selector_now = !is_rate_limit_menu(&pane) && detect_claude_status(&pane) == "waiting";
+        let agents_live = sub_activity
+            .get(name)
+            .is_some_and(|m| now_f64() - m < 180.0);
+        let (selector_now, typed_pending) = sweep_input_observation(&pane, agents_live);
         let selector_was = meta_i64(&load_meta(name), "input_required_since") > 0;
         if selector_now != selector_was {
             update_meta(
@@ -15675,16 +15693,6 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
         // composer_state_tests pin that discrimination; this caller inherits
         // it. Text while GENERATING or while agents are hot is the legitimate
         // queue doing its job and is not stamped.
-        let agents_live = sub_activity
-            .get(name)
-            .is_some_and(|m| now_f64() - m < 180.0);
-        let typed_pending = (!is_rate_limit_menu(&pane)
-            && !selector_now
-            && !pane_bar_says_generating(&pane)
-            && detect_claude_status(&pane) != "active"
-            && !agents_live)
-            .then(|| composer_state(&pane).typed().map(|t| t.to_string()))
-            .flatten();
         let stuck_now = typed_pending.is_some();
         let meta_now = load_meta(name);
         let stuck_was = meta_i64(&meta_now, "composer_stuck_since") > 0;
@@ -15694,7 +15702,9 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 .map(|t| chars_truncate(t, 120))
                 .unwrap_or_default();
             let possible_codex_footer_drift =
-                stuck_now && pane.lines().any(possible_codex_footer_chrome);
+                stuck_now
+                    && crate::backend::adapter::codex_current_model_footer_index(&strip_ansi(&pane)).is_none()
+                    && pane.lines().any(possible_codex_footer_chrome);
             update_meta(
                 name,
                 &[
@@ -32044,14 +32054,15 @@ mod composer_state_tests {
         );
         assert_eq!(composer_state(&typed).typed(), Some("shipthecurrenttask"));
 
-        // Observability control: path-bearing prose without Codex's raw style
-        // proof stays typed, but is called out as possible footer drift by the
-        // existing session.composer_stuck WARN/event.
+        // Current terminal-position proof survives removal of footer dim SGR.
+        // The same row before foreign terminal chrome remains unowned prose.
         let unstyled = "\u{1b}[1m\u{203a}\u{1b}[0m \u{1b}[2mAsk Codex to do anything\u{1b}[0m\n\n  gpt-5.6-sol xhigh \u{b7} ~/Dev/amux \u{b7} Main [default]\n";
         assert!(possible_codex_footer_chrome(unstyled.lines().last().unwrap()));
+        let foreign = format!("{unstyled}⏵⏵ bypass permissions on\n");
+        assert!(composer_state(&foreign).typed().is_some());
         assert_eq!(
-            composer_state(unstyled).typed(),
-            Some("gpt-5.6-solxhigh\u{b7}~/Dev/amux\u{b7}Main[default]")
+            composer_state(unstyled),
+            ComposerState::Placeholder("AskCodextodoanything".into())
         );
     }
 

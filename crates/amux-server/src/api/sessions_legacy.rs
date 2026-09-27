@@ -3662,6 +3662,16 @@ fn last_human_ts_from_user_messages(
     out
 }
 
+/// Apply the sweep's durable input stamps to the final fleet display.
+/// A real active turn and stopped lane retain precedence over retained stamps.
+pub(crate) fn apply_input_metadata_status(status: &str, running: bool, meta: &serde_json::Value) -> String {
+    if running && matches!(status, "idle" | "waiting")
+        && (meta["input_required_since"].as_i64().unwrap_or(0) > 0
+            || meta["composer_stuck_since"].as_i64().unwrap_or(0) > 0) {
+        "waiting".into()
+    } else { status.into() }
+}
+
 fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
     #[cfg(test)]
     if fleet_suppressed() {
@@ -3721,31 +3731,7 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             if send != 0 { send } else { meta["last_started"].as_i64().unwrap_or(0) }
         };
         let mut status = signals.derive_status(&name, is_running);
-        // A lane parked on a real picker is WAITING, never idle (AMUX-2834). The
-        // derivation above cannot see a picker — it reads self-reports and tmux
-        // activity, and a lane at a prompt is producing neither. The sweep in
-        // session_verbs stamps this after a pane capture; read it here rather
-        // than capturing again, which would be ~113 tmux calls per request.
-        // Only overrides a NON-active status: if the lane is genuinely
-        // generating, that is the more urgent truth and the picker reading is
-        // stale by definition.
-        if is_running && matches!(status.as_str(), "idle" | "waiting") && meta["input_required_since"].as_i64().unwrap_or(0) > 0
-        {
-            status = "waiting".to_string();
-        }
-        // STUCK COMPOSER (AMUX-2904): genuinely TYPED text sits under `❯`
-        // with no live turn and no live agents — an Enter that never landed,
-        // or a human's committed-but-unsubmitted command. Same shape as the
-        // picker above: blocked on a human, the opposite of idle. The sweep
-        // stamps it (through composer_state's dim-vs-typed discrimination —
-        // NOT a stripped read of the ❯ line, which is the 2026-08-09
-        // 13-lane false positive); here it becomes the state the fleet list
-        // shows. Ghost-rescue auto-submits the amux-prefixed subset; this
-        // surfaces the rest instead of deciding for a human.
-        if is_running && matches!(status.as_str(), "idle" | "waiting") && meta["composer_stuck_since"].as_i64().unwrap_or(0) > 0
-        {
-            status = "waiting".to_string();
-        }
+        status = apply_input_metadata_status(&status, is_running, &meta);
         let cross_group = crate::api::session_verbs::cross_group_allow_resolution_in(
             &crate::config::amux_home(),
             &name,
