@@ -1048,6 +1048,12 @@ pub fn reviewer_is_independent(cards: &[(String, String, String)]) -> Vec<Invari
 /// the numeric ones lack. Declared type rather than a sampled value, so an empty
 /// table is still in scope.
 pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
+    // WorkDesk source writes use api/work_requests.rs now(): Utc::timestamp().
+    ("_amux_source_bindings", "synced_at", false),
+    ("_amux_source_operations", "created_at", false),
+    // Pinned-note create/update writers use SystemTime::duration_since(...).as_secs().
+    ("pinned_notes", "created_at", false),
+    ("pinned_notes", "updated_at", false),
     // (table, column, is_millis) — MEASURED against the live database, not read
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.

@@ -110,6 +110,7 @@ pub mod ids {
     // can name them without a bare literal.
     pub const AUTOFIX: &str = "autofix";
     pub const BOARD_DRIVE: &str = "board-drive";
+    pub const WORK_REQUESTS: &str = "work-requests";
     pub const CDC_POLLER: &str = "cdc-poller";
     pub const PANE_SIZE: &str = "pane_size";
     pub const STORAGE: &str = "storage";
@@ -155,6 +156,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::BROWSER_REAPER,
     ids::AUTOFIX,
     ids::BOARD_DRIVE,
+    ids::WORK_REQUESTS,
     ids::CDC_POLLER,
     ids::PANE_SIZE,
     ids::STORAGE,
@@ -227,6 +229,17 @@ pub struct Doc {
 const NO_ENV: &[EnvControl] = &[];
 
 pub const CATALOG: &[Doc] = &[
+    Doc {
+        id: ids::WORK_REQUESTS,
+        name: "Work request source synchronization",
+        purpose: "Refreshes native source cards and reconciles durable connector operations; failures remain visible in the source status endpoint.",
+        env: &[
+            EnvControl { var: "AMUX_WORKDESK_URL", effect: "loopback connector origin; absent means no source requests are made", off: None },
+            EnvControl { var: "AMUX_WORK_REQUESTS_SECS", effect: "0 disables the job", off: Some("0") },
+        ],
+        pref: None,
+        detail: Some("/api/work-requests/status"),
+    },
     Doc {
         id: ids::SCHEDULER,
         name: "Schedule firing",
@@ -1245,6 +1258,7 @@ pub fn health_issues(now: f64) -> Vec<HealthIssue> {
 /// of quietly rendering an empty field forever.
 pub fn outcome_for(id: &str) -> Option<String> {
     match id {
+        ids::WORK_REQUESTS => crate::api::work_requests::last_outcome(),
         ids::AUTOFIX => super::autofix::last_report().map(|r| {
             if !r.errors.is_empty() {
                 format!("{} error(s): {}", r.errors.len(), r.errors.join("; "))

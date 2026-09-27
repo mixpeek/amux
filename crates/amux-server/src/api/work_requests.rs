@@ -171,17 +171,37 @@ async fn sync(State(state): State<AppState>) -> ApiResult<Json<Value>> {
         }
     }
 }
+pub(crate) fn last_outcome() -> Option<String> {
+    if std::env::var_os("AMUX_WORKDESK_URL").is_none() {
+        return Some("connector not configured; no source requests made".into());
+    }
+    let report = LAST_SYNC.get()?.lock().ok()?;
+    if report.get("error").is_some_and(|error| !error.is_null()) {
+        Some("source synchronization failed; see /api/work-requests/status".into())
+    } else if report["measured"].as_bool() == Some(true) {
+        Some(format!(
+            "{} source requests synchronized",
+            report["count"].as_u64().unwrap_or(0)
+        ))
+    } else {
+        None
+    }
+}
 pub fn spawn(state: AppState) -> crate::runtime_jobs::PeriodicTask {
-    crate::runtime_jobs::spawn_periodic("work-requests", 60, move || {
-        let state = state.clone();
-        async move {
-            if std::env::var_os("AMUX_WORKDESK_URL").is_some() {
-                if let Err((_, Json(error))) = sync_all(&state).await {
-                    record_sync_error(error);
+    crate::runtime_jobs::spawn_periodic(
+        crate::runtime_jobs::registry::ids::WORK_REQUESTS,
+        60,
+        move || {
+            let state = state.clone();
+            async move {
+                if std::env::var_os("AMUX_WORKDESK_URL").is_some() {
+                    if let Err((_, Json(error))) = sync_all(&state).await {
+                        record_sync_error(error);
+                    }
                 }
             }
-        }
-    })
+        },
+    )
 }
 async fn snapshot_lock() -> ApiResult<tokio::sync::MutexGuard<'static, ()>> {
     tokio::time::timeout(Duration::from_secs(30), SYNC_LOCK.lock())
