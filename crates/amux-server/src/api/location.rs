@@ -210,6 +210,16 @@ fn server_error(e: anyhow::Error) -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response()
 }
 
+/// First iPhone build with the live-stream restart (b86760b2, AMUX-5549).
+/// Build numbers are the git commit count at the build's commit.
+const LIVE_RESTART_BUILD: u64 = 6964;
+
+/// The iPhone app's build number from its User-Agent ("AmuxApp/6925 CFNetwork/...").
+fn app_build(headers: &HeaderMap) -> Option<u64> {
+    let ua = headers.get(axum::http::header::USER_AGENT)?.to_str().ok()?;
+    ua.split_whitespace().find_map(|t| t.strip_prefix("AmuxApp/"))?.parse().ok()
+}
+
 async fn ingest_points(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -232,6 +242,7 @@ async fn ingest_points(
     let wake_newest = batch.points.iter().filter(|p| p.source.as_deref() == Some("manager")).map(|p| p.ts).fold(f64::NAN, f64::max);
     let batch_has_live = batch.points.iter().any(|p| p.source.as_deref() == Some("live"));
     let dev = device.clone();
+    let build = app_build(&headers);
     match write_value(&state, move |c| {
         let out = db_ingest_points(c, &device, &batch.points, t)?;
         let last_live: Option<f64> = if batch_has_live || wake_newest.is_nan() {
@@ -245,9 +256,14 @@ async fn ingest_points(
     {
         Ok(((accepted, duplicate, rejected), last_live)) => {
             if let Some(live) = last_live.filter(|l| wake_newest - l > LIVE_STALL_S) {
+                // Name the app build: on 2026-10-05 the stall ran 48 h because the
+                // phone was still on build 6925, older than the restart fix, and
+                // nothing said so.
+                let has_fix = build.map(|b| b >= LIVE_RESTART_BUILD);
                 tracing::warn!(target: "amux::location", verdict = "location_live_stalled", device = %dev,
-                    stalled_s = (wake_newest - live).round(), measured = true, n_considered = n,
-                    "location: phone sends only wake-up fixes; its live stream stopped (expected only in battery saver mode)");
+                    stalled_s = (wake_newest - live).round(), app_build = ?build, app_has_restart_fix = ?has_fix,
+                    measured = true, n_considered = n,
+                    "location: phone sends only wake-up fixes; its live stream stopped (expected only in battery saver mode; app_has_restart_fix=false means update the iPhone app from TestFlight)");
             }
             tracing::info!(target: "amux::location", verdict = "location_ingest", accepted, duplicate,
                 rejected = rejected.len(), measured = true, n_considered = n, "location points ingested");
@@ -1915,6 +1931,16 @@ mod tests {
         let b = vs1.iter().find(|v| v.id == "b-open-no-twin").expect("open row kept");
         assert_eq!(b.departure, Some(day1 + 30_000.0), "{vs1:#?}");
         assert!(!vs1.iter().any(|v| v.id == "a-open"), "an arrival report with a closed twin is dropped: {vs1:#?}");
+    }
+
+    #[test]
+    fn the_app_build_is_read_from_the_user_agent() {
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::USER_AGENT, "AmuxApp/6925 CFNetwork/3860.700.1 Darwin/25.6.0".parse().unwrap());
+        assert_eq!(app_build(&h), Some(6925));
+        assert!(app_build(&h).unwrap() < LIVE_RESTART_BUILD, "the 2026-10-05 phone lacked the fix");
+        h.insert(axum::http::header::USER_AGENT, "Python-urllib/3.11".parse().unwrap());
+        assert_eq!(app_build(&h), None);
     }
 
     #[test]
