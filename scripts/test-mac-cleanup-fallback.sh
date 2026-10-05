@@ -7,6 +7,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 FB="$HERE/mac-cleanup-fallback.sh"
 FIX=$(mktemp -d)                      # never a fixed name: /tmp is shared by every lane
+export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a test (DESKT-81)
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"   # never the live session temp tree (DESKT-77)
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0

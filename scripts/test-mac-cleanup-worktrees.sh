@@ -21,6 +21,7 @@ TICK="$HERE/mac-cleanup-tick.sh"
 # exists to enforce (scenario 2 below) correctly refuses to look, and every
 # scenario past it would silently find nothing.
 FIX=$(mktemp -d /tmp/mac-cleanup-wt-test.XXXXXX)
+export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a test (DESKT-81)
 trap 'rm -rf -- "${FIX:?}"' EXIT
 mkdir -p "$FIX/tmp"
 export TMPDIR="$FIX/tmp"

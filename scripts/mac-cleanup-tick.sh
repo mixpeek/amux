@@ -114,6 +114,21 @@ AGENTS=${AMUX_CLEANUP_AGENTS:-com.procwarden.menubar}
 REPORT_GB=${AMUX_CLEANUP_REPORT_GB:-10}
 FSEVENTSD_REBOOT_GB=${AMUX_CLEANUP_FSEVENTSD_REBOOT_GB:-5}
 FSEVENTSD_CPU_PCT=${AMUX_CLEANUP_FSEVENTSD_CPU_PCT:-80}
+# When fseventsd is hot, name what is feeding it (DESKT-81). On 2026-10-03 it grew
+# from under 10G to 20G between 03:00 and 10:00, and to 76G before the owner
+# rebooted on 10-05. The tick printed the size every half hour and never the
+# cause; a manual census found one lane scratchpad writing 14,708 files in five
+# minutes by re-extracting a source tree before every check. The census counts
+# files modified in the last CHURN_MIN minutes under each root, groups them three
+# directory levels down, and names the groups over CHURN_FILES. It cannot see
+# deletions, which feed fseventsd too (the 10-04 lane-tmp pass), so it says so.
+CHURN_ROOTS=${AMUX_CLEANUP_CHURN_ROOTS:-/private/tmp/claude-$(id -u):$HOME/Dev:$HOME/.amux}   # not overlapping: an overlap counts a file twice
+CHURN_MIN=${AMUX_CLEANUP_CHURN_MIN:-5}
+CHURN_FILES=${AMUX_CLEANUP_CHURN_FILES:-2000}
+CHURN_BUDGET_S=${AMUX_CLEANUP_CHURN_BUDGET_S:-60}
+# Seam: prints "<gb> <cpu_pct>" for fseventsd, or nothing when it is not running.
+# The suites stub it so the live daemon cannot decide a test (as PRESSURE_CMD does).
+FSEVENTSD_CMD=${AMUX_CLEANUP_FSEVENTSD_CMD:-fseventsd_reading}
 # APFS local snapshots pin deleted blocks, so a reaper can delete 50 GB and free
 # nothing until they expire (DESKT-26 measured exactly that: a thin returned
 # 68.7 GB). Thinning is BOUNDED and disk-triggered because these snapshots are
@@ -635,6 +650,31 @@ find_cargo_targets() { # <colon-roots> <maxdepth> <budget_s>
     done < "$tmp"
     rm -f -- "${tmp:?}"
   done
+}
+
+# Print "<count> <dir>" for the busiest directories (three levels under a root)
+# with at least <min_files> files modified in the last <minutes>, busiest first, at
+# most three. Call it in the caller's shell with stdout redirected, never $(...):
+# it sets CHURN_COMPLETE=no when the budget cut a root short, so a short
+# list is not read as a quiet disk.
+churn_census() { # <colon-roots> <minutes> <budget_s> <min_files>
+  local roots=$1 mins=$2 budget=$3 minf=$4 deadline left r rc out
+  local -a rootarr
+  CHURN_COMPLETE=yes
+  deadline=$(( $(date +%s) + budget ))
+  out=$(mktemp "${TMPDIR:-/tmp}/churn.XXXXXX")
+  IFS=':' read -r -a rootarr <<< "$roots"
+  for r in ${rootarr[@]+"${rootarr[@]}"}; do
+    [ -n "$r" ] && [ -d "$r" ] || continue
+    left=$(( deadline - $(date +%s) ))
+    if [ "$left" -le 0 ]; then CHURN_COMPLETE=no; continue; fi
+    rc=0
+    { perl -e 'alarm shift; exec @ARGV' "$left" find "$r" -xdev \( -name .git -o -name node_modules \) -prune -o -type f -mmin "-$mins" -print 2>/dev/null; } 2>/dev/null \
+      | awk -v r="${r%/}" '{ p=substr($0, length(r)+2); n=split(p, a, "/"); k=r; for (i=1; i<=3 && i<n; i++) k=k "/" a[i]; c[k]++ } END { for (k in c) print c[k], k }' >> "$out" || rc=$?
+    if [ "$rc" = 142 ]; then CHURN_COMPLETE=no; fi
+  done
+  awk -v m="$minf" '$1 >= m' "$out" | sort -rn | head -3
+  rm -f -- "${out:?}"
 }
 
 # 0 = nothing inside was written in the last <hours>; 1 = something was; 2 = the
@@ -1596,16 +1636,33 @@ else
   echo "mac-cleanup: family scan produced no rows (ps unavailable?)"
 fi
 
-fse_pid=$(pgrep -x fseventsd 2>/dev/null | head -1)
-if [ -n "$fse_pid" ]; then
-  fse_gb=$(to_gb "$(top -l 1 -pid "$fse_pid" -stats mem 2>/dev/null | tail -1 | tr -d ' ')")
-  fse_cpu=$(ps -o pcpu= -p "$fse_pid" 2>/dev/null | tr -d ' ')
+fseventsd_reading() {
+  local pid; pid=$(pgrep -x fseventsd 2>/dev/null | head -1)
+  [ -n "$pid" ] || return 0
+  echo "$(to_gb "$(top -l 1 -pid "$pid" -stats mem 2>/dev/null | tail -1 | tr -d ' ')") $(ps -o pcpu= -p "$pid" 2>/dev/null | tr -d ' ')"
+}
+fse_reading=$($FSEVENTSD_CMD 2>/dev/null)
+fse_verdict=""
+if [ -n "$fse_reading" ]; then
+  fse_gb=${fse_reading%% *}; fse_cpu=${fse_reading#* }
   fse_cpu_int=${fse_cpu%%.*}
   fse_hot=0
   if needs_reboot "$fse_gb" "$FSEVENTSD_REBOOT_GB"; then fse_hot=1; fi
   if [ "${fse_cpu_int:-0}" -ge "$FSEVENTSD_CPU_PCT" ] 2>/dev/null; then fse_hot=1; fi
   if [ "$fse_hot" = 1 ]; then
     echo "mac-cleanup: fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU and is SIP-protected — a reboot is the only remedy (owner runs: sudo fdesetup authrestart)"
+    # In this shell, not $(...): churn_census sets CHURN_COMPLETE, which a subshell would lose.
+    churn_f=$(mktemp "${TMPDIR:-/tmp}/churn-out.XXXXXX")
+    churn_census "$CHURN_ROOTS" "$CHURN_MIN" "$CHURN_BUDGET_S" "$CHURN_FILES" > "$churn_f"
+    churn=$(cat "$churn_f"); rm -f -- "${churn_f:?}"
+    if [ -n "$churn" ]; then
+      printf '%s\n' "$churn" | while read -r n d; do echo "mac-cleanup:   fseventsd feed: $n files modified in ${CHURN_MIN}m under $d"; done
+      fse_top=$(printf '%s\n' "$churn" | head -1 | awk '{print $1" files in '"${CHURN_MIN}"'m under "$2}')
+    else
+      fse_top="no directory over ${CHURN_FILES} modified files in ${CHURN_MIN}m (scan complete=${CHURN_COMPLETE}; deletions are not counted)"
+      echo "mac-cleanup:   fseventsd feed: $fse_top"
+    fi
+    fse_verdict="fseventsd holds ${fse_gb}G at ${fse_cpu:-?}% CPU (over ${FSEVENTSD_REBOOT_GB}G or ${FSEVENTSD_CPU_PCT}%); stop the file churn feeding it, then only a reboot returns the memory. Top feed: $fse_top"
   else
     echo "mac-cleanup: fseventsd ${fse_gb}G ${fse_cpu:-?}% CPU, under the ${FSEVENTSD_REBOOT_GB}G/${FSEVENTSD_CPU_PCT}% thresholds"
   fi
@@ -1639,6 +1696,7 @@ if [ "$burn" = "-" ]; then burn_txt="unmeasured (no previous reading)"; else bur
 if [ "$htf" = "-" ]; then htf_txt="not filling"; else htf_txt="full in ${htf}h"; fi
 [ "$DRY" = "1" ] || state_put "$STATE" "last_ts=$now" "last_disk_free_gb=$disk_now"
 verdicts=$(classify_constraints "$disk_now" "$burn" "$htf" "$level_now" "$swap_free_now" "$load15" "$ncpu" "$fam_over" "$swap_total_now")
+if [ -n "${fse_verdict:-}" ]; then verdicts=$(printf '%s\n%s\n' "$verdicts" "$fse_verdict" | grep . || true); fi
 echo "mac-cleanup: assess disk=${disk_now}G burn=${burn_txt} ${htf_txt} pressure=${level_now} swap_free=${swap_free_now}MB swap_total=${swap_total_now}MB load15=${load15}/${ncpu}"
 escalated=0
 if [ -z "$verdicts" ]; then
