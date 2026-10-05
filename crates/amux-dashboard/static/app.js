@@ -13844,7 +13844,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1249';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1250';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -31541,10 +31541,13 @@ function _locRender(d) {
   const trips = _locSegments.filter(s => s.kind === 'trip');
   const dist = trips.reduce((a, s) => a + (s.distance_m || 0), 0);
   const moving = trips.reduce((a, s) => a + (s.duration_s || 0), 0);
-  const gaps = _locSegments.filter(s => s.kind === 'gap').length;
+  const gapSegs = _locSegments.filter(s => s.kind === 'gap');
+  const gaps = gapSegs.length;
+  // Unrecorded moves still covered ground: say how much, straight-line.
+  const gapDist = gapSegs.reduce((a, s) => a + (s.distance_m || 0), 0);
   if (summary) summary.textContent = (d.n_considered || _locSegments.length)
     ? d.n_considered + ' points · ' + trips.length + ' trip' + (trips.length === 1 ? '' : 's') + ' · ' + (_locFmtDist(dist) || (_locMiles ? '0 mi' : '0 km')) + ' · ' + _locFmtDur(moving) + ' moving'
-      + (gaps ? ' · ' + gaps + ' move' + (gaps === 1 ? '' : 's') + ' not recorded' : '')
+      + (gaps ? ' · ' + gaps + ' move' + (gaps === 1 ? '' : 's') + ' not recorded' + (gapDist ? ' (~' + _locFmtDist(gapDist) + ')' : '') : '')
     : 'No points recorded' + (_locRange ? ' in this range.' : ' this day.');
   if (!_locSegments.length) {
     list.innerHTML = '<div class="map-loc-empty">' + _locEmptyHint() + '</div>';
@@ -31553,8 +31556,13 @@ function _locRender(d) {
   list.innerHTML = _locSegments.map((s, i) => {
     const m = _LOC_MODE[s.kind === 'stop' || s.kind === 'gap' ? s.kind : (s.mode || 'unknown')] || _LOC_MODE.unknown;
     const title = s.kind === 'stop' ? 'Stop' : m.label + (s.mode_confidence === 'inferred' ? ' (inferred)' : '');
-    const meta = _locFmtSpan(s.start, s.end) + ' · ' + _locFmtDur(s.duration_s)
+    // A move with nothing to time it has an instant, not a duration: "0 min"
+    // there was a claim the data could not make (Ethan, 2026-10-05).
+    const untimed = s.kind === 'gap' && s.duration_known === false;
+    const meta = (untimed ? 'around ' + _locFmtTime(s.start) + ' · time not recorded' : _locFmtSpan(s.start, s.end) + ' · ' + _locFmtDur(s.duration_s))
+      + (s.kind === 'stop' && s.end_inferred ? ' · departure not reported' : '')
       + (s.kind === 'trip' && s.distance_m ? ' · ' + _locFmtDist(s.distance_m) : '')
+      + (s.kind === 'gap' && s.timed_by === 'motion' && s.mode ? ' · ' + s.mode + ' (motion sensor)' : '')
       + (s.kind === 'gap' && s.distance_m ? ' · ~' + _locFmtDist(s.distance_m) + ' apart, phone sent no GPS' : '');
     return '<button type="button" class="map-loc-row" data-loc-i="' + i + '" onclick="_locFocus(' + i + ')">'
       + '<span class="map-loc-dot" style="background:' + m.color + '"></span>'

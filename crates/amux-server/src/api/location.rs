@@ -388,6 +388,17 @@ pub(crate) struct Visit {
     pub departure: Option<f64>,
     pub lat: f64,
     pub lon: f64,
+    /// The phone never reported a departure: the end is the next visit's
+    /// arrival, or now. An inference, and the timeline says so.
+    pub open: bool,
+}
+
+/// One motion-coprocessor sample. `mode` is None when the phone was still or
+/// could not tell, which ends a moving run.
+#[derive(Debug, Clone)]
+pub(crate) struct Motion {
+    pub ts: f64,
+    pub mode: Option<&'static str>,
 }
 
 pub(crate) fn haversine_m(a_lat: f64, a_lon: f64, b_lat: f64, b_lon: f64) -> f64 {
@@ -438,8 +449,8 @@ fn count_raw(c: &Connection, from: f64, to: f64) -> rusqlite::Result<i64> {
 /// Read-time only: the stored rows are the phone's raw reports and stay.
 fn load_visits(c: &Connection, from: f64, to: f64) -> rusqlite::Result<Vec<Visit>> {
     let mut stmt = c.prepare(
-        "SELECT id, arrival, dep, lat, lon FROM (
-           SELECT v.id, v.arrival, v.lat, v.lon,
+        "SELECT id, arrival, dep, lat, lon, open FROM (
+           SELECT v.id, v.arrival, v.lat, v.lon, v.departure IS NULL AS open,
                   COALESCE(v.departure,
                     (SELECT MIN(n.arrival) FROM location_visits n
                       WHERE n.device = v.device AND n.arrival > v.arrival + 5.0)) AS dep
@@ -451,7 +462,32 @@ fn load_visits(c: &Connection, from: f64, to: f64) -> rusqlite::Result<Vec<Visit
           WHERE arrival < ?2 AND COALESCE(dep, ?2) >= ?1 ORDER BY arrival",
     )?;
     let rows = stmt.query_map(params![from, to], |r| {
-        Ok(Visit { id: r.get(0)?, arrival: r.get(1)?, departure: r.get(2)?, lat: r.get(3)?, lon: r.get(4)? })
+        Ok(Visit { id: r.get(0)?, arrival: r.get(1)?, departure: r.get(2)?, lat: r.get(3)?, lon: r.get(4)?, open: r.get(5)? })
+    })?;
+    rows.collect()
+}
+
+/// Motion samples around a range, oldest first. Read wider than the range so
+/// a move that began just before the first stop can still be timed.
+fn load_motion(c: &Connection, from: f64, to: f64) -> rusqlite::Result<Vec<Motion>> {
+    let mut stmt = c.prepare(
+        "SELECT ts, walking, running, cycling, automotive FROM location_motion
+          WHERE ts >= ?1 AND ts < ?2 ORDER BY ts",
+    )?;
+    let rows = stmt.query_map(params![from - 3600.0, to + 3600.0], |r| {
+        let on = |k: usize| r.get::<_, Option<i64>>(k).map(|v| v.unwrap_or(0) != 0);
+        let mode = if on(1)? {
+            Some("walking")
+        } else if on(2)? {
+            Some("running")
+        } else if on(3)? {
+            Some("cycling")
+        } else if on(4)? {
+            Some("driving")
+        } else {
+            None
+        };
+        Ok(Motion { ts: r.get(0)?, mode })
     })?;
     rows.collect()
 }
@@ -477,12 +513,18 @@ fn speed_mode(mps: f64) -> &'static str {
     }
 }
 
-/// (start, end, lat, lon, id, point_count) of one stop while segmenting.
-type StopRow = (f64, f64, f64, f64, String, usize);
+/// (start, end, lat, lon, id, point_count, end_inferred) of one stop while segmenting.
+type StopRow = (f64, f64, f64, f64, String, usize, bool);
 
 /// Stops and trips over points sorted by time, merged with iOS visits.
 /// Pure, so the tests drive it with fixtures.
+#[cfg(test)]
 pub(crate) fn segment(points: &[Pt], visits: &[Visit], now: f64) -> Vec<Value> {
+    segment_with_motion(points, visits, &[], now)
+}
+
+/// [`segment`], with unrecorded moves timed from the phone's motion samples.
+pub(crate) fn segment_with_motion(points: &[Pt], visits: &[Visit], motion: &[Motion], now: f64) -> Vec<Value> {
     let n = points.len();
     // 1. Stop ranges over point indexes: an anchor point and every later fix
     //    within STOP_RADIUS_M of it, if that run lasts STOP_MIN_S. Live updates
@@ -521,7 +563,7 @@ pub(crate) fn segment(points: &[Pt], visits: &[Visit], now: f64) -> Vec<Value> {
             let k = (b - a) as f64;
             let lat = points[a..b].iter().map(|p| p.lat).sum::<f64>() / k;
             let lon = points[a..b].iter().map(|p| p.lon).sum::<f64>() / k;
-            (points[a].ts, points[b - 1].ts, lat, lon, format!("stop_{}", points[a].id), b - a)
+            (points[a].ts, points[b - 1].ts, lat, lon, format!("stop_{}", points[a].id), b - a, false)
         })
         .collect();
     for v in visits {
@@ -533,7 +575,7 @@ pub(crate) fn segment(points: &[Pt], visits: &[Visit], now: f64) -> Vec<Value> {
             continue; // already found from points
         }
         let inside = points.iter().filter(|p| p.ts >= v.arrival && p.ts <= end).count();
-        stops.push((v.arrival, end, v.lat, v.lon, format!("stop_visit_{}", v.id), inside));
+        stops.push((v.arrival, end, v.lat, v.lon, format!("stop_visit_{}", v.id), inside, v.open || v.departure.is_none()));
     }
     stops.sort_by(|a, b| a.0.total_cmp(&b.0));
 
@@ -567,7 +609,7 @@ pub(crate) fn segment(points: &[Pt], visits: &[Visit], now: f64) -> Vec<Value> {
     for s in &stops {
         out.push(json!({
             "id": s.4, "kind": "stop", "start": s.0, "end": s.1, "duration_s": (s.1 - s.0).max(0.0),
-            "lat": s.2, "lon": s.3, "point_count": s.5,
+            "lat": s.2, "lon": s.3, "point_count": s.5, "end_inferred": s.6,
         }));
     }
     out.sort_by(|a, b| a["start"].as_f64().unwrap_or(0.0).total_cmp(&b["start"].as_f64().unwrap_or(0.0)));
@@ -611,8 +653,108 @@ pub(crate) fn segment(points: &[Pt], visits: &[Visit], now: f64) -> Vec<Value> {
         // start with the next stop and must sort before it.
         let key = |v: &Value, k: &str| v[k].as_f64().unwrap_or(0.0);
         out.sort_by(|a, b| key(a, "start").total_cmp(&key(b, "start")).then(key(a, "end").total_cmp(&key(b, "end"))));
+        time_gaps(&mut out, motion, now);
     }
     out
+}
+
+/// Moving runs in the motion stream: (start, end, dominant mode). A run starts
+/// at a moving sample and ends at the next still or unknown one; time between
+/// samples is credited to the earlier sample's mode.
+fn moving_runs(motion: &[Motion]) -> Vec<(f64, f64, &'static str)> {
+    let mut runs = Vec::new();
+    let mut cur: Option<(f64, std::collections::BTreeMap<&'static str, f64>)> = None;
+    for (i, m) in motion.iter().enumerate() {
+        match (m.mode, cur.as_mut()) {
+            (Some(mode), None) => {
+                let mut w = std::collections::BTreeMap::new();
+                w.insert(mode, 0.0);
+                cur = Some((m.ts, w));
+            }
+            (Some(_), Some(_)) => {}
+            (None, Some(_)) => {
+                let (start, w) = cur.take().unwrap_or_default();
+                let mode = w.iter().max_by(|a, b| a.1.total_cmp(b.1)).map(|(k, _)| *k).unwrap_or("unknown");
+                runs.push((start, m.ts, mode));
+            }
+            (None, None) => {}
+        }
+        if let (Some(mode), Some((_, w)), Some(next)) = (m.mode, cur.as_mut(), motion.get(i + 1)) {
+            *w.entry(mode).or_default() += (next.ts - m.ts).max(0.0);
+        }
+    }
+    if let (Some((start, w)), Some(last)) = (cur, motion.last()) {
+        let mode = w.iter().max_by(|a, b| a.1.total_cmp(b.1)).map(|(k, _)| *k).unwrap_or("unknown");
+        runs.push((start, last.ts, mode));
+    }
+    runs
+}
+
+/// Give each unrecorded move the time the phone's motion sensor says it took
+/// (Ethan, 2026-10-05, "inaccurate": iOS stamped an arrival one second after the
+/// previous departure, 0.3 mi away, and the day read "Moved · 0 min" between
+/// stops that were really walking time). The move takes the moving run nearest
+/// its boundary, and the stops on either side shrink to make room. A move with
+/// no motion to time it keeps its instant but says the duration is unknown.
+fn time_gaps(out: &mut [Value], motion: &[Motion], now: f64) {
+    let runs = moving_runs(motion);
+    let f = |v: &Value, k: &str| v[k].as_f64().unwrap_or(0.0);
+    for i in 0..out.len() {
+        if out[i]["kind"] != "gap" {
+            continue;
+        }
+        let (s, e) = (f(&out[i], "start"), f(&out[i], "end"));
+        // Never eat a neighbour whole: each keeps at least a minute.
+        let lo = if i > 0 { f(&out[i - 1], "start") + 60.0 } else { s - 1200.0 };
+        let hi = if i + 1 < out.len() { f(&out[i + 1], "end") - 60.0 } else { now };
+        let (lo, hi) = (lo.min(s), hi.max(e));
+        let near: Vec<&(f64, f64, &str)> =
+            runs.iter().filter(|r| r.1 > lo.max(s - 1200.0) && r.0 < hi.min(e + 2700.0)).collect();
+        // Chain outward from the run nearest the boundary, across pauses under 10 min.
+        let dist = |r: &(f64, f64, &str)| if r.1 < s { s - r.1 } else if r.0 > e { r.0 - e } else { 0.0 };
+        let Some(k) = (0..near.len()).min_by(|&a, &b| dist(near[a]).total_cmp(&dist(near[b]))) else {
+            if let Some(o) = out[i].as_object_mut() {
+                o.insert("duration_known".into(), json!(false));
+            }
+            continue;
+        };
+        let (mut a, mut b) = (k, k);
+        while a > 0 && near[a].0 - near[a - 1].1 < 600.0 {
+            a -= 1;
+        }
+        while b + 1 < near.len() && near[b + 1].0 - near[b].1 < 600.0 {
+            b += 1;
+        }
+        let start = near[a].0.min(s).max(lo);
+        let end = near[b].1.max(e).min(hi);
+        let mut w: std::collections::BTreeMap<&str, f64> = Default::default();
+        for r in &near[a..=b] {
+            *w.entry(r.2).or_default() += (r.1 - r.0).max(1.0);
+        }
+        let mode = w.iter().max_by(|x, y| x.1.total_cmp(y.1)).map(|(m, _)| *m).unwrap_or("unknown");
+        if let Some(o) = out[i].as_object_mut() {
+            o.insert("start".into(), json!(start));
+            o.insert("end".into(), json!(end));
+            o.insert("duration_s".into(), json!(end - start));
+            o.insert("duration_known".into(), json!(true));
+            o.insert("timed_by".into(), json!("motion"));
+            o.insert("mode".into(), json!(mode));
+        }
+        if i > 0 && out[i - 1]["kind"] == "stop" {
+            let st = f(&out[i - 1], "start");
+            if let Some(o) = out[i - 1].as_object_mut() {
+                o.insert("end".into(), json!(start));
+                o.insert("duration_s".into(), json!((start - st).max(0.0)));
+            }
+        }
+        if i + 1 < out.len() && out[i + 1]["kind"] == "stop" {
+            let en = f(&out[i + 1], "end");
+            if let Some(o) = out[i + 1].as_object_mut() {
+                o.insert("start".into(), json!(end));
+                o.insert("duration_s".into(), json!((en - end).max(0.0)));
+            }
+        }
+    }
 }
 
 fn trip_json(pts: &[Pt]) -> Value {
@@ -697,8 +839,9 @@ async fn timeline(State(state): State<AppState>, Query(q): Query<TimelineQ>) -> 
         .read_async(move |c| {
             let pts = load_points(c, from, to)?;
             let visits = load_visits(c, from, to)?;
+            let motion = load_motion(c, from, to)?;
             let raw = count_raw(c, from, to)?;
-            let segs = segment(&pts, &visits, t);
+            let segs = segment_with_motion(&pts, &visits, &motion, t);
             Ok((pts.len(), visits.len(), raw, segs))
         })
         .await
@@ -728,7 +871,7 @@ async fn segment_one(State(state): State<AppState>, Path(id): Path<String>) -> R
             };
             let Some(ts) = anchor_ts else { return Ok(None) };
             let (from, to) = (ts - 12.0 * 3600.0, ts + 36.0 * 3600.0);
-            let segs = segment(&load_points(c, from, to)?, &load_visits(c, from, to)?, t);
+            let segs = segment_with_motion(&load_points(c, from, to)?, &load_visits(c, from, to)?, &load_motion(c, from, to)?, t);
             Ok(segs.into_iter().find(|s| s["id"] == key.as_str()))
         })
         .await
@@ -1235,8 +1378,9 @@ pub(crate) fn compute_stats(c: &Connection, from: f64, to: f64, bucket: &str, of
         let pts = load_points(c, lo, hi)?;
         n_points += pts.len();
         let visits = load_visits(c, lo, hi)?;
+        let motion = load_motion(c, lo, hi)?;
         let label = bucket_label(*day, bucket);
-        for s in segment(&pts, &visits, now) {
+        for s in segment_with_motion(&pts, &visits, &motion, now) {
             if s["kind"] == "trip" {
                 let mode: &'static str = match s["mode"].as_str().unwrap_or("unknown") {
                     "walking" => "walking", "running" => "running", "cycling" => "cycling",
@@ -1714,7 +1858,7 @@ mod tests {
             pt("x1", t + 10.0, 40.7, -74.0, Some(0.2), None),
             pt("x2", t + 20.0, 40.7001, -74.0, Some(0.2), None),
         ];
-        let visits = vec![Visit { id: "v1".into(), arrival: t, departure: Some(t + 100.0), lat: 40.7, lon: -74.0 }];
+        let visits = vec![Visit { id: "v1".into(), arrival: t, departure: Some(t + 100.0), lat: 40.7, lon: -74.0, open: false }];
         let segs = segment(&pts, &visits, t + 1000.0);
         assert_eq!(segs.len(), 1, "{segs:#?}");
         assert_eq!(segs[0]["id"], "stop_visit_v1");
@@ -1778,10 +1922,10 @@ mod tests {
         // The 2026-10-03 shape: live fixes stop, then only iOS visits arrive.
         let t = 1_790_000_000.0;
         let visits = vec![
-            Visit { id: "a".into(), arrival: t, departure: Some(t + 3600.0), lat: 40.73492, lon: -74.00258 },
-            Visit { id: "b".into(), arrival: t + 3601.0, departure: Some(t + 4300.0), lat: 40.73852, lon: -74.00286 },
+            Visit { id: "a".into(), arrival: t, departure: Some(t + 3600.0), lat: 40.73492, lon: -74.00258, open: false },
+            Visit { id: "b".into(), arrival: t + 3601.0, departure: Some(t + 4300.0), lat: 40.73852, lon: -74.00286, open: false },
             // Same place as b: no move, so no gap.
-            Visit { id: "c".into(), arrival: t + 5000.0, departure: Some(t + 6000.0), lat: 40.73853, lon: -74.00287 },
+            Visit { id: "c".into(), arrival: t + 5000.0, departure: Some(t + 6000.0), lat: 40.73853, lon: -74.00287, open: false },
         ];
         let segs = segment(&[], &visits, t + 7000.0);
         let kinds: Vec<&str> = segs.iter().map(|s| s["kind"].as_str().unwrap()).collect();
@@ -1789,6 +1933,68 @@ mod tests {
         let d = segs[1]["distance_m"].as_f64().unwrap();
         assert!((350.0..450.0).contains(&d), "straight-line gap distance {d}");
         assert_eq!(segs[1]["start"], json!(t + 3600.0));
+    }
+
+    #[test]
+    fn an_unrecorded_move_takes_its_time_from_motion_and_an_untimed_one_says_so() {
+        // 2026-10-05, Ethan: "inaccurate". iOS closed the overnight visit at
+        // 07:48:20 and opened the next one 0.3 mi away at 07:48:21, so the day
+        // read "Moved · 0 min". The motion sensor had running from 07:47:41
+        // and walking until 07:53:02. The 08:06 move had no motion at all.
+        let t = 1_791_200_000.0; // 07:33:20 local on the day
+        let v = |id: &str, a: f64, d: Option<f64>, lat: f64, lon: f64, open: bool| Visit {
+            id: id.into(), arrival: t + a, departure: d.map(|d| t + d), lat, lon, open,
+        };
+        let visits = vec![
+            v("home", -42_000.0, Some(900.0), 40.73730, -74.00850, false),
+            v("cafe", 901.0, Some(2001.0), 40.73325, -74.01056, true), // open: ended by the next arrival
+            v("home2", 2001.0, Some(8940.0), 40.73729, -74.00876, false),
+        ];
+        let m = |a: f64, mode: Option<&'static str>| Motion { ts: t + a, mode };
+        let motion = vec![
+            m(-2000.0, None),
+            m(861.0, Some("running")),
+            m(998.0, Some("walking")),
+            m(1182.0, None),
+            m(2925.0, None),
+        ];
+        let segs = segment_with_motion(&[], &visits, &motion, t + 9000.0);
+        let kinds: Vec<&str> = segs.iter().map(|s| s["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["stop", "gap", "stop", "gap", "stop"], "{segs:#?}");
+        let first_move = &segs[1];
+        assert_eq!(first_move["timed_by"], json!("motion"), "{first_move:#?}");
+        assert_eq!(first_move["start"], json!(t + 861.0), "the move starts when running starts");
+        assert_eq!(first_move["end"], json!(t + 1182.0), "and ends when walking ends");
+        assert_eq!(first_move["mode"], json!("walking"), "184 s walking outweighs 137 s running");
+        assert_eq!(segs[0]["end"], json!(t + 861.0), "the stop before shrinks to the move");
+        assert_eq!(segs[2]["start"], json!(t + 1182.0), "the stop after starts on arrival");
+        assert_eq!(segs[2]["end_inferred"], json!(true), "the phone never reported leaving the cafe");
+        assert_eq!(segs[0]["end_inferred"], json!(false));
+        // The second move: no motion near it, so its duration is unknown, not 0.
+        assert_eq!(segs[3]["duration_known"], json!(false), "{:#?}", segs[3]);
+        assert!(segs[3].get("timed_by").is_none());
+    }
+
+    #[test]
+    fn a_motion_run_is_used_once_and_never_swallows_a_whole_stop() {
+        let t = 1_791_200_000.0;
+        let visits = vec![
+            Visit { id: "a".into(), arrival: t, departure: Some(t + 1000.0), lat: 40.70, lon: -74.00, open: false },
+            Visit { id: "b".into(), arrival: t + 1001.0, departure: Some(t + 1300.0), lat: 40.71, lon: -74.00, open: false },
+            Visit { id: "c".into(), arrival: t + 1301.0, departure: Some(t + 5000.0), lat: 40.72, lon: -74.00, open: false },
+        ];
+        // One long walk that straddles all of stop b.
+        let motion = vec![Motion { ts: t + 900.0, mode: Some("walking") }, Motion { ts: t + 1500.0, mode: None }];
+        let segs = segment_with_motion(&[], &visits, &motion, t + 6000.0);
+        let f = |i: usize, k: &str| segs[i][k].as_f64().unwrap();
+        for i in 0..segs.len() {
+            if segs[i]["kind"] == "stop" {
+                assert!(f(i, "duration_s") >= 59.0, "stop {i} kept a minute: {segs:#?}");
+            }
+            if i + 1 < segs.len() {
+                assert!(f(i, "end") <= f(i + 1, "start") + 0.001, "segments overlap at {i}: {segs:#?}");
+            }
+        }
     }
 
     #[test]
