@@ -45,7 +45,7 @@
     "description": "Software agencies use amux to run parallel AI coding agents across multiple client projects simultaneously — with per-project cost tracking, built-in CRM, Gmail integration, and iOS monitoring between client calls.",
     "url": "https://amux.io/for/agencies/",
     "datePublished": "2026-07-15",
-    "dateModified": "2026-09-03",
+    "dateModified": "2026-10-05",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}},
     "image": "https://amux.io/og-image.png",
@@ -111,7 +111,7 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/for/">For</a> <span class="sep">›</span> <span>Agencies</span></div>
 
     <h1>amux for Software Agencies</h1>
-    <p class="subtitle">Run an AI engineering team across all your client projects. Monitor progress between client calls. Manage client contacts, emails, and notes in one tool. Ship overnight while your team sleeps. <em>Updated September 2026.</em></p>
+    <p class="subtitle">Run an AI engineering team across all your client projects. Monitor progress between client calls. Manage client contacts, emails, and notes in one tool. Ship overnight while your team sleeps. <em>Updated October 2026.</em></p>
 
     <div class="cta-top" style="background:var(--green,#22c55e10);border:1px solid var(--green,#22c55e);border-radius:8px;padding:1rem 1.4rem;margin:1.5rem 0 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
       <span style="font-size:14px;color:var(--fg);">Run client projects with an AI engineering team, managed from one dashboard.</span>
@@ -214,11 +214,25 @@
             <td style="padding:10px 16px;">No</td>
             <td style="padding:10px 16px;">No</td>
           </tr>
-          <tr>
+          <tr style="border-bottom:1px solid var(--border);">
             <td style="padding:10px 16px;">Overnight unattended</td>
             <td style="padding:10px 16px;">Yes</td>
             <td style="padding:10px 16px;">N/A</td>
             <td style="padding:10px 16px;">Fragile</td>
+            <td style="padding:10px 16px;">No</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px 16px;">Per-client secret scoping</td>
+            <td style="padding:10px 16px;">Yes — vault secrets per worker/group</td>
+            <td style="padding:10px 16px;">No</td>
+            <td style="padding:10px 16px;">Manual .env juggling</td>
+            <td style="padding:10px 16px;">No</td>
+          </tr>
+          <tr>
+            <td style="padding:10px 16px;">Agent chat from phone mid-call</td>
+            <td style="padding:10px 16px;">Yes — companion chat with activity log</td>
+            <td style="padding:10px 16px;">No</td>
+            <td style="padding:10px 16px;">No</td>
             <td style="padding:10px 16px;">No</td>
           </tr>
         </tbody>
@@ -260,6 +274,23 @@ amux board add "Fix checkout redirect on mobile Safari" --session client-b</code
     <p>If you want the team set up for you, <a href="/concierge/">amux Concierge</a> is a managed onboarding service where the amux team configures your first client project, wires up your agent fleet, and runs your first overnight automation alongside you.</p>
 
     <p>Install the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> so you can check in and approve actions without opening a laptop. The amux cloud tunnel gives you a stable public HTTPS URL for your dashboard — useful at client sites where you may not be on your home network.</p>
+
+    <h2>What's new for agencies in October 2026</h2>
+    <p>Three additions in the October 2026 release are particularly relevant for agencies running agents across multiple client projects:</p>
+    <ul>
+      <li>
+        <strong>Workspace isolation per worker</strong> — set <code>AMUX_WORKSPACE_ISOLATION=1</code> at the group or worker level. Each worker gets its own git worktree at <code>origin/main</code> and its own <code>TMPDIR</code>. In a multi-client setup, this is a hard guarantee that a client-A agent cannot accidentally read or write files in a client-B worktree. The setting is per-group, so you can enforce isolation for all workers in a client's group with one switch. See the <a href="/guides/running-10-plus-agents/">parallel agents guide</a> for the full worktree configuration.
+      </li>
+      <li>
+        <strong>Vault secrets with per-worker scoping</strong> — the Connectors tab now allows assigning API credentials at worker granularity, not just global or group level. A client-A worker can receive client A's staging API keys; a client-B worker gets client B's. No key bleed across projects, no manual .env file management per client directory. Credentials are stored encrypted in <code>~/.amux/server.env</code> and never logged or returned by any API response.
+      </li>
+      <li>
+        <strong>Standing approvals for agency workflows</strong> — pre-approve repeating agent actions with optional rate or dollar limits. If your standard agency workflow always approves "deploy to staging" or "run the test suite", encode that approval once. Agents run through overnight without pausing; you only see alerts for decisions outside the approved envelope. This removes a major source of early-morning catch-up for agencies whose clients span multiple time zones.
+      </li>
+      <li>
+        <strong>Companion chat mid-call status check</strong> — on the iOS app, tap any session's chat icon to ask it what it's doing in plain language. The companion loads the agent's last 15 recorded actions automatically, so you can answer a client's "where are we on the integration?" question with accurate specifics rather than "let me check later." See the <a href="/guides/ai-agent-companion-chat/">companion chat guide</a>.
+      </li>
+    </ul>
 
     <h2>Frequently asked questions</h2>
 

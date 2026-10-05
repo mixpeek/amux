@@ -24,7 +24,7 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Cursor","item":"https://amux.io/compare/amux-vs-cursor/"}]}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Cursor (2026): AI Agent Orchestration vs AI Coding IDE","description":"Cursor is the leading AI coding IDE. amux runs dozens of Claude Code agents overnight in parallel. Here's the key difference — and why many teams use both.","url":"https://amux.io/compare/amux-vs-cursor/","datePublished":"2026-07-16","dateModified":"2026-08-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Cursor (2026): AI Agent Orchestration vs AI Coding IDE","description":"Cursor is the leading AI coding IDE. amux runs dozens of Claude Code agents overnight in parallel. Here's the key difference — and why many teams use both.","url":"https://amux.io/compare/amux-vs-cursor/","datePublished":"2026-07-16","dateModified":"2026-10-05","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a Cursor alternative?","acceptedAnswer":{"@type":"Answer","text":"amux is not a direct replacement for Cursor — they solve different problems. Cursor is an AI-powered IDE for interactive coding (completions, chat, single-agent refactoring). amux is a headless orchestrator for running 10–50 AI coding agents in parallel, overnight, unattended. Most developers who use amux also use an IDE like Cursor for interactive work."}},{"@type":"Question","name":"Can Cursor run multiple agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent runs one autonomous agent per window. To run 10 agents in parallel, you would need 10 open Cursor windows with no shared coordination. amux is purpose-built for parallel agents: it launches dozens of Claude Code, Codex CLI, or Gemini CLI sessions simultaneously, with a shared kanban board for task coordination and a self-healing watchdog that keeps them running overnight."}},{"@type":"Question","name":"Does amux work with Cursor?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux and Cursor complement each other. Many developers use Cursor for interactive coding during the day (Tab completions, Cursor Chat, quick agent fixes) and amux for overnight batch work (running 10–50 agents to generate tests, refactor modules, or review PRs across a large codebase). They operate at different moments in the development workflow."}},{"@type":"Question","name":"What is the difference between amux and Cursor Agent?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent is a single autonomous agent per Cursor window. It can plan, edit files, and run terminal commands, but it requires Cursor to be open and running, supports only one agent at a time, and has no self-healing — if the agent crashes overnight, it stays crashed until you restart it manually. amux runs agents as persistent tmux sessions — 10, 20, or 50 simultaneously — with a watchdog that auto-compacts context, restarts crashed sessions, and replays the last message, so they keep running while you sleep."}},{"@type":"Question","name":"Which is better for overnight batch coding jobs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its core use case is running AI coding agents overnight while you sleep. The self-healing watchdog auto-compacts context when agents near their limit, restarts crashed sessions, and replays the last message so no work is lost. Cursor Agent is not designed for unattended overnight operation — it requires the IDE to be open and running. amux lets you queue 50 tasks, close your laptop, and wake up to finished pull requests."}}]}</script>
 
@@ -47,15 +47,21 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Cursor</span></div>
 
     <h1>amux vs Cursor (2026)</h1>
-    <p class="subtitle">AI Agent Orchestration vs AI Coding IDE — different tools for different workflows, and why many teams use both. <span style="font-size:0.85em;color:var(--text-muted)">Updated August 2026.</span></p>
+    <p class="subtitle">AI Agent Orchestration vs AI Coding IDE — different tools for different workflows, and why many teams use both. <span style="font-size:0.85em;color:var(--text-muted)">Updated October 2026.</span></p>
 
-    <!-- EXP-007: compare pages GitHub CTA -->
-    <div style="display:flex;align-items:center;gap:1rem;background:var(--bg-2,#1a1f2e);border:1px solid var(--line,#2a3040);border-radius:8px;padding:0.875rem 1.125rem;margin:1.5rem 0;flex-wrap:wrap">
-      <span style="font-size:13px;color:var(--fg-mute,#8892a4);flex:1;min-width:180px">Considering amux? See it in action before deciding →</span>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="if(window.posthog) posthog.capture('exp007_compare_github_cta_click', {page: window.location.pathname})" style="display:inline-flex;align-items:center;gap:0.5rem;background:#24292e;color:#fff;text-decoration:none;padding:0.5rem 1rem;border-radius:6px;font-size:13px;font-weight:600;white-space:nowrap">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/></svg>
-        ⭐ Star amux on GitHub
-      </a>
+    <!-- EXP-114: cursor compare top-of-page CTA -->
+    <div style="display:flex;align-items:center;gap:1rem;background:oklch(0.22 0.04 65 / 0.15);border:1px solid oklch(0.55 0.18 65 / 0.35);border-radius:8px;padding:0.875rem 1.25rem;margin:1.5rem 0;flex-wrap:wrap" onclick="if(window.posthog) posthog.capture('exp114_cursor_compare_topofpage_cta_click')">
+      <div style="flex:1;min-width:200px">
+        <div style="font-size:13px;font-weight:600;color:var(--fg,#e2e8f0);margin-bottom:2px">Run 10 agents overnight while Cursor sleeps</div>
+        <div style="font-size:12px;color:var(--fg-2,#94a3b8)">Free, open source, 30-second install — works alongside Cursor.</div>
+      </div>
+      <div style="display:flex;gap:0.625rem;flex-shrink:0;flex-wrap:wrap">
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:0.4rem;background:var(--accent,oklch(0.65 0.18 65));color:#fff;text-decoration:none;padding:0.45rem 0.9rem;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.7 1.2 3.4.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.7.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.5 5.7 18.3.5 12 .5z"/></svg>
+          View on GitHub (514 stars)
+        </a>
+        <a href="/guides/getting-started/" style="display:inline-flex;align-items:center;background:transparent;color:var(--fg-2,#94a3b8);text-decoration:none;padding:0.45rem 0.9rem;border-radius:6px;font-size:12px;font-weight:500;border:1px solid var(--line,#2a3040);white-space:nowrap">Quick start →</a>
+      </div>
     </div>
 
     <!-- One-paragraph direct answer -->
@@ -172,8 +178,18 @@
               <td>No alerting — must watch IDE</td>
             </tr>
             <tr>
+              <td><strong>Standing approvals</strong></td>
+              <td>Yes — pre-approve repeating agent actions with optional limits; agents don't pause for confirmation</td>
+              <td>No — each action requires active supervision in the IDE window</td>
+            </tr>
+            <tr>
+              <td><strong>Phone companion chat</strong></td>
+              <td>Chat with any agent in natural language; sees the agent's recent activity log automatically</td>
+              <td>No companion — must watch the IDE</td>
+            </tr>
+            <tr>
               <td><strong>GitHub stars</strong></td>
-              <td>353+ (MIT)</td>
+              <td>514+ (MIT)</td>
               <td>~50,000+ (proprietary)</td>
             </tr>
           </tbody>
@@ -530,6 +546,23 @@
         <li><strong>TTS cancel</strong> — stop audio generation or playback mid-session. Improves the voice-first mobile workflow on iOS.</li>
       </ul>
       <p>None of these features are available in Cursor — they are specific to the multi-session, server-side orchestration model amux provides.</p>
+    </section>
+
+    <!-- October 2026 amux updates -->
+    <section>
+      <h2>What's new in amux (October 2026)</h2>
+      <p>The October 2026 release cycle adds several capabilities that are particularly relevant for teams comparing amux with IDE-based agent workflows:</p>
+      <ul>
+        <li><strong>Standing approvals</strong> — pre-approve repeating agent actions with optional dollar or rate limits. An agent that has your approval for a class of action (spinning up a VM, running a deployment, calling an external API) executes it without pausing. Set approvals in the dashboard's Approvals tab or via <code>amux approvals</code>; the approval record is audited. Cursor requires active supervision for every action — there is no equivalent for overnight runs where the developer is offline.</li>
+        <li><strong>Workspace isolation</strong> — set <code>AMUX_WORKSPACE_ISOLATION=1</code> per worker, group, or globally. Each worker gets its own git worktree at <code>origin/main</code>, its own <code>TMPDIR</code>, and a rebase push strategy so parallel workers never clobber each other's commits. Particularly useful when running 10+ agents across a shared codebase.</li>
+        <li><strong>Vault secrets</strong> — the Connectors tab now supports secret scoping at worker granularity. An agent running a customer's workload gets only that customer's API keys — no key bleed across workers. Cursor stores credentials in .env files or IDE settings with no scoping mechanism.</li>
+        <li><strong>Companion chat with activity log</strong> — open a chat window for any running agent from the iOS app or web dashboard. The companion automatically sees the agent's most recent 15 actions so you can ask "what are you working on right now?" and get a grounded answer. See <a href="/guides/ai-agent-companion-chat/">companion chat guide</a>.</li>
+        <li><strong>Pinned notes overlay</strong> — press ⌥N in any session to open a floating markdown notes panel. Notes persist across session restarts and are visible to other workers in the same group. Useful for recording decisions, constraints, or context that agents and humans share.</li>
+        <li><strong>Goal keeper</strong> — define a goal string with <code>/goal</code> in a session. amux's goal keeper monitors the session and resumes it with the original goal if it drifts or stalls, without manual intervention.</li>
+      </ul>
+      <p>
+        The pattern across these additions: Cursor requires you to be present. amux is designed for the hours you are not.
+      </p>
     </section>
 
     <!-- Install / CTA box -->
