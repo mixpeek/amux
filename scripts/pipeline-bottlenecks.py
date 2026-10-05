@@ -45,13 +45,13 @@ core >= 2.0, swap >= 90 percent, disk >= 95 percent. A trip logs
 verdict=host_bottleneck and routes one message to --host-route (default
 mac-ops, the Mac resource lane) under the same cooldown.
 """
-import argparse, glob, json, os, re, statistics, subprocess, sys, time
+import argparse, glob, json, os, re, ssl, statistics, subprocess, sys, time, urllib.request
 
 HOME = os.path.expanduser("~")
 LOCKS = os.path.join(HOME, ".amux", "locks")
 LAND_LOG = os.path.join(HOME, ".amux", "logs", "land.log")
-OUT = os.path.join(HOME, ".amux", "logs", "bottlenecks.jsonl")
-STATE = os.path.join(HOME, ".amux", "bottlenecks-state.json")
+OUT = os.environ.get("AMUX_BOTTLENECKS_OUT") or os.path.join(HOME, ".amux", "logs", "bottlenecks.jsonl")
+STATE = os.environ.get("AMUX_BOTTLENECKS_STATE") or os.path.join(HOME, ".amux", "bottlenecks-state.json")
 TS = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (\S+) (.*?)(?: \[([0-9a-f]{16})\])?$")
 
 
@@ -156,6 +156,134 @@ def host_measure():
             "swap_pct": swap_pct, "disk_pct": disk_pct, "top_cpu": top_cpu, "top_mem": top_mem}
 
 
+# THROUGHPUT (2026-10-05, Ethan: "figure out why these optimizations weren't
+# discovered via one of the schedulers"). On 2026-10-05 the landing queue was
+# healthy all afternoon (this script said pipeline_ok) while the real
+# constraints sat downstream of it: production deploys succeeded about once in
+# 20 dispatches, lanes sat idle with no eligible card, and decisions aged in the
+# owner's column. Each check below is computed, optional (off unless its flag is
+# given) and fixture-driven for tests.
+def _get_json(url_path, fixture):
+    if fixture:
+        return json.load(open(fixture))
+    base = subprocess.run(["amux", "url"], capture_output=True, text=True).stdout.strip()
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(base + url_path, context=ctx, timeout=60) as r:
+        return json.load(r)
+
+
+def deploy_measure(repo, workflow, since, runs_fixture=None):
+    """Dispatched runs of the deploy workflow since `since`: conclusions and the
+    failing job/step names. None when it cannot be read (unmeasured)."""
+    try:
+        if runs_fixture:
+            runs = json.load(open(runs_fixture))
+        else:
+            env = dict(os.environ)
+            tok = subprocess.run(["bash", "-c", os.path.join(HOME, ".amux/github-app/get-token.sh") + " | sed -n 's/^export GH_TOKEN=//p'"],
+                                 capture_output=True, text=True).stdout.strip().strip("'\"")
+            if tok:
+                env["GH_TOKEN"] = tok
+            iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+            r = subprocess.run(["gh", "api", f"repos/{repo}/actions/workflows/{workflow}/runs?per_page=50&event=workflow_dispatch&created=>{iso}",
+                                "--jq", "[.workflow_runs[] | {id, status, conclusion}]"], capture_output=True, text=True, env=env, timeout=60)
+            if r.returncode:
+                return None
+            runs = json.loads(r.stdout or "[]")
+            for run in [x for x in runs if x.get("conclusion") == "failure"][:6]:
+                j = subprocess.run(["gh", "api", f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100", "--jq",
+                                    '[.jobs[] | select(.conclusion=="failure") | .name + ": " + ([.steps[] | select(.conclusion=="failure") | .name] | join(", "))]'],
+                                   capture_output=True, text=True, env=env, timeout=60)
+                run["failed"] = json.loads(j.stdout or "[]") if j.returncode == 0 else []
+    except Exception:
+        return None
+    done = [x for x in runs if x.get("status") == "completed"]
+    ok = sum(1 for x in done if x.get("conclusion") == "success")
+    steps = {}
+    for x in done:
+        for f in x.get("failed") or []:
+            steps[f] = steps.get(f, 0) + 1
+    return {"dispatched": len(runs), "concluded": len(done), "succeeded": ok,
+            "failed": sum(1 for x in done if x.get("conclusion") == "failure"),
+            "cancelled": sum(1 for x in done if x.get("conclusion") == "cancelled"),
+            "top_failing_steps": sorted(steps.items(), key=lambda kv: -kv[1])[:4]}
+
+
+def idle_lanes(prefix, drive_fixture=None):
+    """Lanes board-drive found with no card and nothing eligible: working
+    capacity with no work. None when unmeasured."""
+    try:
+        d = _get_json("/api/debug/board-drive", drive_fixture)
+    except Exception:
+        return None
+    out = []
+    for l in ((d.get("last") or {}).get("lanes") or []):
+        name = l.get("session") or ""
+        if not name.startswith(prefix) or l.get("card"):
+            continue
+        reason = l.get("reason") or ""
+        if reason in ("mid-turn", "opted-out") or reason.startswith("active"):
+            continue
+        if int(l.get("eligible_todos") or 0) == 0:
+            out.append({"lane": name, "reason": reason})
+    return out
+
+
+def aged_owner_asks(actor, min_age_h, now, needsyou_fixture=None):
+    """needsyou cards addressed to the owner older than min_age_h. None when
+    unmeasured."""
+    try:
+        rows = _get_json("/api/board?status=needsyou&slim=0", needsyou_fixture)
+    except Exception:
+        return None
+    out = []
+    for i in rows:
+        if i.get("archived") or i.get("status") != "needsyou":
+            continue
+        if (i.get("ask_actor") or "").strip().lower() != actor.lower():
+            continue
+        try:
+            age = (now - float(i.get("entered_state_at") or 0)) / 3600
+        except (TypeError, ValueError):
+            continue
+        if age >= min_age_h:
+            out.append({"id": i.get("id"), "session": i.get("session"), "age_h": round(age, 1)})
+    return sorted(out, key=lambda x: -x["age_h"])
+
+
+def throughput(a, now):
+    """Run the enabled throughput checks; return (record, levers)."""
+    rec = {"ts": int(now), "measured": True}
+    why, levers, n = [], [], 0
+    if a.deploy_repo and a.deploy_workflow:
+        dm = deploy_measure(a.deploy_repo, a.deploy_workflow, now - 6 * 3600, a.runs_file)
+        rec["deploy"] = dm if dm is not None else "unmeasured"
+        if dm:
+            n += dm["concluded"]
+            if dm["concluded"] >= a.deploy_min_runs and dm["succeeded"] / dm["concluded"] < a.deploy_success:
+                why.append(f"deploys: {dm['succeeded']} of {dm['concluded']} {a.deploy_workflow} dispatches succeeded in 6 h")
+                steps = "; ".join(f"{k} (x{v})" for k, v in dm["top_failing_steps"])
+                levers.append("make promotes green before anything else: one owner on the failing steps"
+                              + (f" ({steps})" if steps else "") + "; finished cards wait on a deploy to verify")
+    if a.lane_prefix:
+        il = idle_lanes(a.lane_prefix, a.drive_file)
+        rec["idle_lanes"] = il if il is not None else "unmeasured"
+        if il is not None:
+            n += len(il)
+            if len(il) >= a.idle_min:
+                why.append(f"idle lanes: {len(il)} {a.lane_prefix}* lanes have no card and nothing eligible")
+                levers.append("route work to idle lanes now: " + ", ".join(x["lane"] for x in il[:8]))
+    if a.owner:
+        oa = aged_owner_asks(a.owner, a.owner_age_h, now, a.needsyou_file)
+        rec["owner_asks_aged"] = oa if oa is not None else "unmeasured"
+        if oa is not None:
+            n += len(oa)
+            if len(oa) >= a.owner_min:
+                why.append(f"owner asks: {len(oa)} needsyou cards to {a.owner} older than {a.owner_age_h} h")
+    rec.update({"verdict": "throughput_bottleneck" if why else "throughput_ok", "why": why, "n_considered": n})
+    return rec, levers
+
+
 def holds_by_repo(since):
     """{repo_key: [minutes per completed hold]}, {repo_key: landings} since `since`."""
     holds, landed, open_ = {}, {}, {}
@@ -195,9 +323,44 @@ def main():
     ap.add_argument("--load-per-core", type=float, default=2.0)
     ap.add_argument("--swap-pct", type=float, default=90)
     ap.add_argument("--disk-pct", type=float, default=95)
+    ap.add_argument("--deploy-repo", default="", help="owner/repo whose deploy workflow to measure (empty: skip)")
+    ap.add_argument("--deploy-workflow", default="")
+    ap.add_argument("--deploy-min-runs", type=int, default=4)
+    ap.add_argument("--deploy-success", type=float, default=0.5)
+    ap.add_argument("--lane-prefix", default="", help="lanes to check for idleness (empty: skip)")
+    ap.add_argument("--idle-min", type=int, default=2)
+    ap.add_argument("--owner", default="", help="ask_actor whose aged needsyou cards to count (empty: skip)")
+    ap.add_argument("--owner-age-h", type=float, default=2)
+    ap.add_argument("--owner-min", type=int, default=3)
+    ap.add_argument("--runs-file", help=argparse.SUPPRESS)
+    ap.add_argument("--drive-file", help=argparse.SUPPRESS)
+    ap.add_argument("--needsyou-file", help=argparse.SUPPRESS)
+    ap.add_argument("--throughput-only", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
 
     now = time.time()
+    if a.deploy_repo or a.lane_prefix or a.owner:
+        trec, tlevers = throughput(a, now)
+        with open(OUT, "a") as f:
+            f.write(json.dumps(trec) + "\n")
+        print(json.dumps(trec))
+        try:
+            tstate = json.load(open(STATE))
+        except Exception:
+            tstate = {}
+        last = tstate.get("_throughput", {})
+        if tlevers and a.route and not a.dry_run and now - last.get("sent", 0) >= a.cooldown_min * 60:
+            msg = ("Throughput (amux pipeline-bottlenecks): " + "; ".join(trec["why"]) + ".\nLevers: " + " | ".join(tlevers))
+            r = subprocess.run(["amux", "send", a.route, "--stdin"], input=msg, capture_output=True, text=True)
+            with open(OUT, "a") as f:
+                f.write(json.dumps({"ts": int(now), "verdict": "throughput_routed" if r.returncode == 0 else "throughput_route_failed",
+                                    "route": a.route, "measured": True, "n_considered": 1,
+                                    "detail": (r.stdout or r.stderr).strip()[:200]}) + "\n")
+            if r.returncode == 0:
+                tstate["_throughput"] = {"sent": now}
+                json.dump(tstate, open(STATE, "w"))
+        if a.throughput_only:
+            return 0
     holds, landed = holds_by_repo(now - 6 * 3600)
     installed_ver = ""
     try:
