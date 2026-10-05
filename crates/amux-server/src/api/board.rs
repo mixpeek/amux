@@ -10512,6 +10512,57 @@ async fn patch_item_route(
     Json(body): Json<Value>,
 ) -> Response {
     let owner = super::standing_approvals::is_owner_request(&headers);
+    // Orchestration contract rules 1 and 2 for code cards (AH-375, AH-376),
+    // behind the scoped AMUX_CONTRACT_DONE switch.
+    let mut body = body;
+    let mut freeze: Option<super::contract::Contract> = None;
+    {
+        let id2 = id.clone();
+        let facts = state
+            .store
+            .read_async(move |c| {
+                let row = bs::get_issue(c, &id2)?;
+                let contract = match &row {
+                    Some(_) => super::contract::load(c, &id2)?,
+                    None => None,
+                };
+                Ok((row, contract))
+            })
+            .await
+            .ok();
+        if let Some((Some(row), existing)) = facts {
+            let lane = row.session.clone().unwrap_or_default();
+            let home = crate::config::amux_home();
+            if super::contract::enabled_for(&home, &lane) {
+                let card = super::contract::Card {
+                    id: id.clone(),
+                    lane: lane.clone(),
+                    status: row.status.clone(),
+                    item_type: row.item_type.clone(),
+                    acceptance: row.acceptance_criteria.clone(),
+                };
+                let default_cmd = super::contract::lane_setting(&home, &lane, super::contract::DEFAULT_VERIFY);
+                match super::contract::decide(&card, &body, owner, existing.as_ref(), default_cmd.as_deref()) {
+                    super::contract::Action::Respond(r) => return r,
+                    super::contract::Action::Rewrite(v) => body = v,
+                    super::contract::Action::PassThenFreeze(c) => {
+                        // The frozen contract is the doing gate (rule 1),
+                        // in place of the free-text checklist.
+                        if let Some(m) = body.as_object_mut() {
+                            m.insert("gate_ack".into(), json!(true));
+                        }
+                        freeze = Some(c);
+                    }
+                    super::contract::Action::Pass => {
+                        let wants_done = body.get("status").and_then(Value::as_str) == Some("done");
+                        if wants_done && !owner && row.status == "doing" && row.item_type == "code" && existing.is_some() {
+                            return super::contract::start_verification(&state, &id, &lane).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
     let was_needsyou = owner && {
         let id2 = id.clone();
         state
@@ -10524,6 +10575,11 @@ async fn patch_item_route(
     };
     let note = body.get("desc_append").and_then(Value::as_str).unwrap_or("").to_string();
     let resp = patch_item(State(state.clone()), Path(id.clone()), headers, Json(body)).await;
+    if let Some(c) = freeze {
+        if resp.status().is_success() {
+            super::contract::freeze(&state, c).await;
+        }
+    }
     if was_needsyou && resp.status().is_success() {
         super::standing_approvals::learn_after_owner_approval(&state, &id, &note).await;
     }
@@ -15294,6 +15350,81 @@ mod af701_archive_guard_tests {
         set_ask(&store, &policy, "decision", "Should the rollout of the replica rebalancer wait for the soak harness verdict?");
         let _ = patch_item(State(state.clone()), Path(policy.clone()), HeaderMap::new(), Json(json!({"status": "todo", "authorized_by": "owner policy (needs-input auto-approve)"}))).await;
         assert_eq!(learned(&store).len(), 2, "{:?}", learned(&store));
+    }
+
+    /// Orchestration contract rules 1 and 2 through the real route (AH-375,
+    /// AH-376): doing needs a contract and freezes it; done is granted only when
+    /// the server's own run of the frozen command passes at the lane's HEAD.
+    #[tokio::test]
+    async fn contract_done_is_granted_only_by_a_server_run_check() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").arg("-C").arg(&repo)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).status().unwrap().success();
+            assert!(ok, "git {args:?}");
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "-q"]);
+        std::fs::write(repo.join("README"), "x").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(
+            h.join("sessions/lane-c.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nCC_VERIFY=\"test -f ok.txt\"\n", repo.display()),
+        ).unwrap();
+        let as_code = |id: &str| {
+            let id = id.to_string();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [id])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        };
+        let id = seed(&store, "lane-c", "todo");
+        as_code(&id);
+        let me = || owner_headers("lane-c");
+
+        assert_eq!(route(&state, &id, me(), json!({"status": "doing"})).await, StatusCode::CONFLICT, "rule 1: no acceptance criteria");
+        assert_eq!(route(&state, &id, me(), json!({"status": "doing", "acceptance_criteria": ["ok.txt exists"]})).await, StatusCode::OK);
+        let frozen = super::super::contract::load(&store.read().unwrap(), &id).unwrap().expect("contract frozen at doing");
+        assert_eq!(frozen.command, "test -f ok.txt");
+        assert_eq!(route(&state, &id, me(), json!({"verify_cmd": "true"})).await, StatusCode::CONFLICT, "a worker cannot edit a frozen contract");
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "force": true, "reason": "x"})).await, StatusCode::FORBIDDEN);
+
+        let settle = |store: crate::db::SharedStore, id: String| async move {
+            for _ in 0..200 {
+                let st = super::super::contract::load(&store.read().unwrap(), &id).unwrap().unwrap().state;
+                if st == "passed" || st == "failed" {
+                    return st;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("verification never finished");
+        };
+        // Pasted evidence is ignored: the server runs the check, which fails.
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "evidence": "`cargo test` -> ok"})).await, StatusCode::ACCEPTED);
+        assert_eq!(settle(store.clone(), id.clone()).await, "failed");
+        assert_eq!(current(&store, &id).status, "doing", "a failed check leaves the card in doing");
+
+        std::fs::write(repo.join("ok.txt"), "y").unwrap();
+        git(&["add", "ok.txt"]);
+        git(&["commit", "-qm", "fix"]);
+        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+        assert_eq!(settle(store.clone(), id.clone()).await, "passed");
+        let row = current(&store, &id);
+        assert_eq!(row.status, "done");
+        assert!(row.evidence.as_deref().unwrap_or("").contains("Server-verified (contract rule 2)"), "{:?}", row.evidence);
+
+        // The switch off leaves the ordinary path untouched.
+        std::fs::write(h.join("sessions/lane-c.env"), format!("CC_DIR=\"{}\"\n", repo.display())).unwrap();
+        let plain = seed(&store, "lane-c", "todo");
+        as_code(&plain);
+        assert_eq!(route(&state, &plain, me(), json!({"status": "doing"})).await, StatusCode::CONFLICT,
+            "with the switch off the ordinary gate applies again (it asks for its checklist)");
     }
 
     #[tokio::test]

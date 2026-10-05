@@ -8,6 +8,7 @@ pub mod alerts;
 pub mod aliases;
 pub mod auth;
 pub mod board;
+pub mod contract;
 pub mod board_intake;
 pub mod board_lifecycle;
 pub mod board_themes;
