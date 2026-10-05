@@ -18568,20 +18568,9 @@ const MEM_TOPIC_FILE: &str = "amux-api.md";
 /// shipped indented by nine spaces, and so did the table HEADER, which in
 /// markdown is an indented code block and breaks the table it heads (AMUX-3810).
 const FLEET_ROSTER_HEADER: &str = "\n## Fleet — who else is running (auto-generated, do not edit)\n\n\
-     Every live worker is listed, INCLUDING YOU — this file is shared by every lane in \
-     this directory, so it cannot omit the reader. You are the one whose name matches \
-     $AMUX_SESSION.\n\n\
-     Use `amux send <name> --stdin` for coordination and existing evidence. \
-     Own the complete outcome on YOUR board, including missing components in other \
-     directories. Do not create assignments or depends_on edges on other workers' \
-     boards. Peer messages do not automatically become recipient tasks. Reuse \
-     artifacts without waiting for their author's availability.\n\n\
-     When YOUR card truly needs an event only another lane can produce (a clearance, an \
-     approval), park it with `amux signal wait <CARD> <name>` instead of polling their pane. \
-     The lane that produces it runs `amux signal raise <name> --note <text>`, which clears \
-     every wait on that name and wakes you. A send to a paused or stopped lane is queued \
-     until it resumes, and you own that work meanwhile.\n\n\
-     | worker | groups | description | provider / model | workspace / branch |\n|---|---|---|---|---|\n";
+     Every live worker, INCLUDING YOU ($AMUX_SESSION). Message a peer with `amux send <name> --stdin`; \
+     wait on a peer's event with `amux signal wait <CARD> <name>` (the peer clears it with `amux signal raise <name>`). Models and workspaces: `amux ls`.\n\n\
+     | worker | groups | description |\n|---|---|---|\n";
 
 /// The fleet roster every worker gets, regenerated on each write.
 ///
@@ -18685,7 +18674,7 @@ fn credential_preflight_from(n: usize, gaps: &[(&'static str, Vec<&'static str>)
 }
 
 fn fleet_roster() -> String {
-    let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
+    let mut rows: Vec<(String, String, String)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
         let mut names: Vec<String> = rd
             .flatten()
@@ -18727,54 +18716,14 @@ fn fleet_roster() -> String {
                 })
                 .unwrap_or_default();
             let desc = env.get("CC_DESC").cloned().unwrap_or_default();
-            let provider = env
-                .get("CC_PROVIDER")
-                .cloned()
-                .unwrap_or_else(|| "claude".into());
-            // AMUX-4728. This read CC_MODEL with no provider test, and the model
-            // only lives there for ollama: every agent CLI carries it as
-            // `--model X` inside CC_FLAGS. Measured 2026-09-16 over all 140 files
-            // in ~/.amux/sessions, 0 set CC_MODEL and 0 ran provider=ollama, so
-            // the column headed `provider / model` resolved the model for the one
-            // provider nobody runs and printed a bare provider on all 140 rows.
-            //
-            // NO DEFAULT IS SUPPLIED HERE, and that is the point of passing "".
-            // The view resolves an unset model to `default_model_for_provider`,
-            // which bottoms out in a hardcoded "sonnet" when defaults.env carries
-            // no flags. Measured on this box: defaults.env is
-            // CC_DEFAULT_FLAGS="", and 35 of 140 workers set no --model at all.
-            // Those 35 launch with no --model on the command line, so the CLI
-            // picks and amux does not know the answer. Printing "claude / sonnet"
-            // for them would put a guess in every lane's memory wearing the same
-            // shape as the 105 rows that are measured. An unset model stays
-            // empty and `runtime` below renders the bare provider, which is the
-            // true statement.
-            let model = configured_model_with_default(
-                &provider,
-                env.get("CC_MODEL").map(String::as_str).unwrap_or(""),
-                env.get("CC_FLAGS").map(String::as_str).unwrap_or(""),
-                "",
-            );
-            let runtime = if model.is_empty() {
-                provider
-            } else {
-                format!("{provider} / {model}")
-            };
-            let dir = env.get("CC_DIR").cloned().unwrap_or_default();
-            let branch = env.get("CC_BRANCH").cloned().unwrap_or_default();
-            let workspace = if branch.is_empty() {
-                dir
-            } else {
-                format!("{dir} @ {branch}")
-            };
-            rows.push((other, groups, desc, runtime, workspace));
+            rows.push((other, groups, desc));
         }
     }
     if rows.is_empty() {
         return String::new();
     }
     let mut out = String::from(FLEET_ROSTER_HEADER);
-    for (n, g, d, r, w) in rows.iter().take(120) {
+    for (n, g, d) in rows.iter().take(120) {
         let cell = |s: &str, max: usize| {
             let escaped = s.replace('|', "\\|").replace('\n', " ");
             let trimmed = escaped.chars().take(max).collect::<String>();
@@ -18784,14 +18733,10 @@ fn fleet_roster() -> String {
                 trimmed
             }
         };
-        out.push_str(&format!(
-            "| `{}` | {} | {} | {} | {} |\n",
-            cell(n, 64),
-            cell(g, 80),
-            cell(d, 110),
-            cell(r, 80),
-            cell(w, 140)
-        ));
+        // Three columns (orchestration contract rule 13, AH-385): the
+        // provider/model and workspace columns doubled the roster for facts a
+        // lane rarely needs and can read from `amux ls`.
+        out.push_str(&format!("| `{}` | {} | {} |\n", cell(n, 64), cell(g, 60), cell(d, 90)));
     }
     out.push_str(&format!(
         "\n{} discoverable peer worker(s). Cross-group messaging is open by default; \
@@ -19047,39 +18992,84 @@ fn compose_memory_doc(name: &str, global_content: &str, session_content: &str) -
         ));
     }
     parts.push(MEM_MARKER.to_string());
-    // GROUP MEMORY, between global and worker (AF-296).
-    //
-    // `/api/scope` advertises `memory` at [global, group, worker] and the scope
-    // UI writes all three, but this composer read only two — so a group-level
-    // write saved `memory/tags/<group>.md` and nothing ever consulted it. The
-    // setting appeared to save and changed nothing, which is ethos rule 1's
-    // exact shape and the SAME defect the docstring on `scope_env_layers`
-    // records for env. env was fixed; memory was not.
-    //
-    // Groups come from `lane_groups`, the same CC_TAGS source `scope_env_layers`
-    // uses, rather than a second spelling. BTreeSet gives a stable order, so a
-    // lane in two groups composes the same way on every write.
-    //
-    // A lane with no groups, or whose group files do not exist, appends NOTHING
-    // and the output is byte-identical to before this change. That is what makes
-    // a fleet-wide composition change safe to land: today no `memory/tags/`
-    // directory exists at all, so this is inert until someone uses the level.
+    // Lane-specific memory (group, worker, standing approvals) is NOT composed
+    // here: this file is shared by every lane in the directory, so it carried
+    // whichever lane wrote last (2026-10-05: ~/Dev/mixpeek's file held
+    // mixpeek-cicd's 17.9 KB worker memory for 17 lanes). It reaches each lane
+    // through its own launch instead: `compose_lane_context`.
+    let _ = (name, session_content);
+    parts.join("\n\n") + "\n"
+}
+
+/// A lane's own memory: its groups' memory, its worker memory and its standing
+/// approvals, delivered with its launch (`worker_rules_args`) rather than in
+/// the directory-shared MEMORY.md (orchestration contract rule 13, AH-385).
+/// Group memory precedes worker memory, matching /api/scope's precedence.
+pub(crate) fn compose_lane_context(name: &str, session_content: &str) -> String {
+    let mut parts = Vec::new();
     for g in lane_groups(name) {
         let gf = memory_dir().join("tags").join(format!("{g}.md"));
         let gc = std::fs::read_to_string(&gf).unwrap_or_default();
         if !gc.trim().is_empty() {
-            parts.push(format!(
-                "## Group memory — `{g}`\n\n                 <!-- Written at the GROUP level in the scope UI. It reaches every lane \
-                 tagged `{g}`, so it is shared context rather than any one lane's notes. -->\n\n{}",
-                gc.trim()
-            ));
+            parts.push(format!("## Group memory — `{g}`\n\n{}", gc.trim()));
         }
     }
     let worker_block = compose_worker_block(name, session_content);
     if !worker_block.is_empty() {
         parts.push(worker_block);
     }
-    parts.join("\n\n") + "\n"
+    // Only when the lane HAS approvals: with none (or an unreadable table) the
+    // safe default, escalate, needs no text in every launch.
+    let approvals = super::standing_approvals::memory_section(name);
+    if approvals.contains("| SA-") {
+        parts.push(approvals.trim().to_string());
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("# Your lane's memory (notes, not rules)\n\n{}\n", parts.join("\n\n"))
+}
+
+/// Byte budget for the directory-shared MEMORY.md (contract rule 13). Claude
+/// reads about the first 200 lines; past that a section is never seen.
+const MEMORY_BUDGET_BYTES: usize = 12_000;
+/// Session-written pointer lines kept inline; older ones move to an archive
+/// topic file that stays readable on demand.
+const POINTERS_INLINE_MAX: usize = 25;
+
+/// Keep the newest `POINTERS_INLINE_MAX` pointer lines inline and append the
+/// rest to `pointers-archive.md` (deduplicated), returning the inline section.
+fn budget_pointers(mem_dir: &std::path::Path, section: &str) -> String {
+    let lines: Vec<&str> = section.lines().filter(|l| l.starts_with("- [")).collect();
+    if lines.len() <= POINTERS_INLINE_MAX {
+        return section.to_string();
+    }
+    let (old, keep) = lines.split_at(lines.len() - POINTERS_INLINE_MAX);
+    let archive = mem_dir.join("pointers-archive.md");
+    let existing = std::fs::read_to_string(&archive).unwrap_or_default();
+    let mut add = String::new();
+    for l in old {
+        if !existing.contains(*l) {
+            add.push_str(l);
+            add.push('\n');
+        }
+    }
+    if !add.is_empty() {
+        let body = if existing.is_empty() {
+            format!("# Older session-written pointers\n\nMoved out of MEMORY.md to keep it inside its budget.\n\n{add}")
+        } else {
+            existing + &add
+        };
+        let _ = std::fs::write(&archive, body);
+    }
+    tracing::info!(dir = %mem_dir.display(), archived = old.len(), kept = keep.len(), measured = true,
+        n_considered = lines.len(), verdict = "memory_pointers_archived", "moved older pointers to pointers-archive.md");
+    format!(
+        "\n## Session-written pointers (newest {})\n\n- [Older pointers](pointers-archive.md) — {} more\n{}\n",
+        keep.len(),
+        old.len(),
+        keep.join("\n")
+    )
 }
 
 fn write_claude_memory(name: &str, work_dir: &str) {
@@ -19111,19 +19101,23 @@ fn write_claude_memory(name: &str, work_dir: &str) {
     // roster is auto-generated and re-derivable while a memory pointer is not
     // (ts-gke's option 3, which their mixpeek file violates with 122 lines after
     // the roster).
-    let preserved = preserved_agent_pointers(&claude_mem_dir, &composed);
-    // BEFORE the roster, deliberately. The comment above says the tail is what a
-    // read ceiling drops and the roster is the re-derivable thing; a credential
-    // gap is the more actionable of the two, so it sits above it (AF-372).
-    // Standing approvals sit with the credential gaps, above the roster, for
-    // the same reason: they change what a lane should DO before it escalates
-    // (AMUX-5270: two owner pages on 2026-09-27 for asks he had already
-    // approved, one of them approved only in another lane's terminal).
-    let composed = composed
-        + &preserved
-        + &credential_preflight()
-        + &super::standing_approvals::memory_section(name)
-        + &fleet_roster();
+    let preserved = budget_pointers(&claude_mem_dir, &preserved_agent_pointers(&claude_mem_dir, &composed));
+    // Credentials above the roster: a credential gap is the more actionable of
+    // the two (AF-372). Standing approvals now travel with each lane's launch
+    // (`compose_lane_context`), so each lane sees its own rather than the last
+    // writer's (AMUX-5270's purpose, without the shared-file defect).
+    let creds = credential_preflight();
+    let roster = fleet_roster();
+    let composed = composed + &preserved + &creds + &roster;
+    let bytes = composed.len();
+    if bytes > MEMORY_BUDGET_BYTES {
+        tracing::warn!(dir = %claude_mem_dir.display(), bytes, budget = MEMORY_BUDGET_BYTES,
+            pointers = preserved.len(), credentials = creds.len(), roster = roster.len(), measured = true,
+            n_considered = 1, verdict = "memory_over_budget", "shared MEMORY.md is over its byte budget (contract rule 13)");
+    } else {
+        tracing::debug!(dir = %claude_mem_dir.display(), bytes, budget = MEMORY_BUDGET_BYTES, measured = true,
+            n_considered = 1, verdict = "memory_within_budget", "shared MEMORY.md composed");
+    }
     let _ = std::fs::write(&claude_mem_file, &composed);
 }
 
@@ -28647,7 +28641,14 @@ pub(crate) fn worker_rules_file(name: &str) -> PathBuf {
 ///
 /// Every launch logs verdict=rules_delivered|rules_not_delivered.
 pub(crate) fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> Vec<String> {
-    let block = compose_rules_block(name);
+    let lane = compose_lane_context(name, &std::fs::read_to_string(mem_file(name)).unwrap_or_default());
+    let rules = compose_rules_block(name);
+    let block = match (rules.is_empty(), lane.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => rules,
+        (true, false) => lane,
+        (false, false) => format!("{rules}\n\n{lane}"),
+    };
     let file = worker_rules_file(name);
     if block.is_empty() {
         let _ = std::fs::remove_file(&file);
@@ -49251,61 +49252,6 @@ mod roster_tests {
         assert_eq!(compose_worker_block("amux", ""), "");
     }
 
-    /// AMUX-4728. The roster's column is headed `provider / model` and read
-    /// CC_MODEL with no provider test. The model only lives there for ollama;
-    /// every agent CLI carries it as `--model X` in CC_FLAGS. Measured over all
-    /// 140 files in ~/.amux/sessions on 2026-09-16: 0 set CC_MODEL and 0 ran
-    /// provider=ollama, so the column resolved the model for the one provider
-    /// nobody runs and printed a bare provider on all 140 rows.
-    ///
-    /// Hermetic, unlike its neighbour below, which early-returns when the box
-    /// has no live workers and so asserts nothing on a clean machine.
-    #[test]
-    fn the_roster_resolves_a_model_for_every_provider_not_just_ollama() {
-        let home = tempfile::tempdir().unwrap();
-        let _home = crate::api::settings::test_env::set_home(home.path());
-        let sessions = home.path().join("sessions");
-        std::fs::create_dir_all(&sessions).unwrap();
-        // The shape 140 of 140 real files use: an agent CLI with --model in CC_FLAGS.
-        std::fs::write(
-            sessions.join("claude-lane.env"),
-            "CC_DIR=\"/tmp\"\nCC_FLAGS=\"--model opus\"\n",
-        )
-        .unwrap();
-        // POSITIVE CONTROL for the path that already worked. Without it this
-        // cell passes for a fix that simply swapped one key for the other.
-        std::fs::write(
-            sessions.join("ollama-lane.env"),
-            "CC_DIR=\"/tmp\"\nCC_PROVIDER=\"ollama\"\nCC_MODEL=\"qwen3:4b\"\n",
-        )
-        .unwrap();
-        // No model chosen anywhere: the row must still say what it runs.
-        std::fs::write(sessions.join("bare-lane.env"), "CC_DIR=\"/tmp\"\n").unwrap();
-
-        let r = super::fleet_roster();
-        assert!(
-            r.contains("claude / opus"),
-            "a claude worker's model lives in CC_FLAGS and must reach the column: {r}"
-        );
-        assert!(
-            r.contains("ollama / qwen3:4b"),
-            "the ollama path must keep working: {r}"
-        );
-        // AND NO INVENTED MODEL for the worker that chose none. The view's
-        // resolver falls back to `default_model_for_provider`, which bottoms out
-        // in a hardcoded "sonnet"; a worker with no --model launches without one
-        // and the CLI picks, so amux does not know. A guess rendered in the same
-        // shape as the measured rows is worse than a blank.
-        assert!(
-            !r.contains("claude / sonnet"),
-            "an unconfigured worker must not be given a model it never chose: {r}"
-        );
-        assert!(
-            r.contains("| `bare-lane` |") && r.contains("| claude |"),
-            "the unconfigured row should name the provider alone: {r}"
-        );
-    }
-
     #[test]
     fn the_roster_lists_every_live_worker_because_the_file_is_shared() {
         let r = super::fleet_roster();
@@ -49963,7 +49909,7 @@ mod commit_shape_tests {
 
         // CONTROL FIRST: no group file yet, so the composition must be exactly
         // what it was before this change.
-        let before = super::compose_memory_doc("memtest", "GLOBALTEXT", "WORKERTEXT");
+        let before = super::compose_lane_context("memtest", "WORKERTEXT");
         assert!(
             before.contains("WORKERTEXT"),
             "premise gone — the worker block is missing, so the absence check below would \
@@ -49975,7 +49921,15 @@ mod commit_shape_tests {
         );
 
         std::fs::write(h.join("memory/tags/alpha.md"), "GROUPTEXT").unwrap();
-        let after = super::compose_memory_doc("memtest", "GLOBALTEXT", "WORKERTEXT");
+        let after = super::compose_lane_context("memtest", "WORKERTEXT");
+        // The directory-shared file carries neither: 17 lanes share
+        // ~/Dev/mixpeek's MEMORY.md, so lane memory there was the last
+        // writer's (contract rule 13, AH-385).
+        let shared = super::compose_memory_doc("memtest", "GLOBALTEXT", "WORKERTEXT");
+        assert!(
+            !shared.contains("WORKERTEXT") && !shared.contains("GROUPTEXT"),
+            "lane memory must not be composed into the directory-shared MEMORY.md: {shared}"
+        );
         let gi = after
             .find("GROUPTEXT")
             .expect("group memory must reach the document");
@@ -49991,6 +49945,45 @@ mod commit_shape_tests {
             after.contains("alpha"),
             "the group must be named in its block: {after}"
         );
+    }
+
+    /// Contract rule 13 (AH-385): the shared MEMORY.md keeps the newest pointer
+    /// lines inline and moves the rest to pointers-archive.md, once.
+    #[test]
+    fn pointers_over_the_inline_cap_move_to_the_archive_once() {
+        let d = tempfile::tempdir().unwrap();
+        let lines: Vec<String> = (0..40).map(|i| format!("- [P{i}](p{i}.md) — note {i}")).collect();
+        let section = format!("\n## Session-written pointers\n\n{}\n", lines.join("\n"));
+        let out = super::budget_pointers(d.path(), &section);
+        assert!(out.contains("- [P39](p39.md)") && out.contains("- [P15](p15.md)"), "newest 25 stay inline: {out}");
+        assert!(!out.contains("- [P14](p14.md)"), "older ones leave the inline section: {out}");
+        assert!(out.contains("(pointers-archive.md) — 15 more"), "the inline section points at the archive: {out}");
+        let arch = std::fs::read_to_string(d.path().join("pointers-archive.md")).unwrap();
+        assert!(arch.contains("- [P0](p0.md)") && arch.contains("- [P14](p14.md)"), "{arch}");
+        super::budget_pointers(d.path(), &section);
+        let again = std::fs::read_to_string(d.path().join("pointers-archive.md")).unwrap();
+        assert_eq!(again.matches("- [P0](p0.md)").count(), 1, "archiving twice must not duplicate lines");
+        let small = "\n## Session-written pointers\n\n- [A](a.md)\n";
+        assert_eq!(super::budget_pointers(d.path(), small), small, "under the cap nothing changes");
+    }
+
+    /// Contract rule 13 (AH-385): a lane's own memory reaches its launch even
+    /// when it has no binding rules.
+    #[tokio::test]
+    async fn a_lanes_memory_rides_its_launch_without_rules() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("memory")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/lanemem.env"), "CC_TAGS=\"\"\n").unwrap();
+        assert!(super::worker_rules_args("lanemem", "claude", false).is_empty(), "no rules and no memory: no file");
+        std::fs::write(super::mem_file("lanemem"), "LANEONLY note").unwrap();
+        let args = super::worker_rules_args("lanemem", "claude", false);
+        assert_eq!(args.first().map(String::as_str), Some("--append-system-prompt-file"), "{args:?}");
+        let body = std::fs::read_to_string(&args[1]).unwrap();
+        assert!(body.contains("LANEONLY note") && body.contains("notes, not rules"), "{body}");
+        assert!(super::worker_rules_args("lanemem", "claude", true).is_empty(), "isolated lanes get nothing injected");
     }
 
     /// AF-297: binding rules compose from all three layers, labelled, and FIRST.
@@ -50072,8 +50065,9 @@ mod commit_shape_tests {
         std::fs::write(h.join("memory/ruled.rules.md"), "WORKERRULE").unwrap();
         std::fs::write(h.join("memory/peer.rules.md"), "PEERRULE").unwrap();
 
+        let lane = super::compose_lane_context("ruled", "WORKERTEXT");
+        assert!(lane.contains("WORKERTEXT"), "premise: the lane context composed: {lane}");
         let doc = super::compose_memory_doc("ruled", "GLOBALTEXT", "WORKERTEXT");
-        assert!(doc.contains("WORKERTEXT"), "premise: the memory doc composed: {doc}");
         assert!(!doc.contains("RULE"), "rules must not ride in the shared per-directory doc: {doc}");
 
         let read = |args: &[String]| {
