@@ -66,6 +66,8 @@ pub const KEEP_S: f64 = 30.0 * 86_400.0;
 /// Named in the card note, the send-audit ledger and the board log.
 pub const APPROVER: &str = "owner policy (needs-input auto-approve)";
 pub const DEFAULT_CAP_USD: f64 = 50.0;
+/// The source reported for categories the contract keeps with the owner.
+pub const CONTRACT_RULE_11: &str = "contract rule 11 (never auto-approved)";
 /// A `pending` row older than this was claimed by a tick that never finished
 /// (a restart mid-batch): it is re-evaluated under the current policy.
 /// Measured 2026-09-27: ten 18:52 claims sat pending for 90 minutes after a
@@ -77,7 +79,7 @@ pub const FIELDS: [(&str, &str, &str); 7] = [
     ("enabled", KILL_SWITCH, "1"),
     ("send_back", "AMUX_NEEDS_INPUT_AUTO_SEND_BACK", "1"),
     ("other", "AMUX_NEEDS_INPUT_AUTO_OTHER", "1"),
-    ("money", "AMUX_NEEDS_INPUT_AUTO_MONEY", "1"),
+    ("money", "AMUX_NEEDS_INPUT_AUTO_MONEY", "0"),
     ("money_cap_usd", "AMUX_NEEDS_INPUT_AUTO_MONEY_CAP", "50"),
     ("prod_data", "AMUX_NEEDS_INPUT_AUTO_PROD_DATA", "0"),
     ("outbound", "AMUX_NEEDS_INPUT_AUTO_OUTBOUND", "0"),
@@ -170,13 +172,20 @@ impl Policy {
             .ok()
             .filter(|c| c.is_finite() && *c >= 0.0)
             .unwrap_or(DEFAULT_CAP_USD);
+        // Orchestration contract rule 11 (AH-386): auto-approve never covers
+        // money, production data or outside parties, whatever a scope sets.
+        // Forced here, where the policy resolves, so the decision, the summary
+        // and the dashboard all report the same thing.
+        for f in ["money", "prod_data", "outbound"] {
+            sources.insert(f.to_string(), CONTRACT_RULE_11.to_string());
+        }
         Policy {
             enabled: b("enabled"),
             other: b("other"),
-            money: b("money"),
+            money: false,
             money_cap_usd: cap,
-            prod_data: b("prod_data"),
-            outbound: b("outbound"),
+            prod_data: false,
+            outbound: false,
             send_back: b("send_back"),
             sources,
         }
@@ -216,6 +225,7 @@ impl Policy {
         if parts.is_empty() {
             return format!("Auto-approve is ON for {who}, but every category is off, so nothing is approved.");
         }
+        parts.push("never money, production data, outside parties or scope".to_string());
         let list = match parts.len() {
             1 => parts[0].clone(),
             n => format!("{} and {}", parts[..n - 1].join(", "), parts[n - 1]),
@@ -486,7 +496,6 @@ pub enum Decision {
     /// The category's switch is off.
     SkipCategory(String),
     /// Money: over the cap, or no figure to compare (None).
-    SkipCap(Option<f64>),
     /// Return it to the worker: the work is the worker's to do through the
     /// access ladder (Ethan, 2026-09-27 20:23: "63 is unacceptable it needs
     /// to push the workers to do them on their own").
@@ -520,6 +529,12 @@ pub fn category_of(item: &Value) -> String {
 /// (TubeScience ts-api replicas) and MO-4160 (promote through the TubeScience
 /// production ring), all filed as "other".
 fn effective_category(item: &Value) -> String {
+    // The structured ask_type outranks keyword scoring (contract rule 11).
+    match item["ask_type"].as_str().unwrap_or("") {
+        "budget" => return "money".to_string(),
+        "customer_outbound" => return "outbound".to_string(),
+        _ => {}
+    }
     let cat = category_of(item);
     if matches!(cat.as_str(), "money" | "prod_data" | "outbound") {
         return cat;
@@ -536,9 +551,25 @@ fn effective_category(item: &Value) -> String {
     cat
 }
 
+/// A decision about a project's scope or deadline: deferring, cutting or
+/// moving work. Contract rule 11 keeps these with the owner (2026-10-05: an
+/// auto-approval that named no list deferred seven GS-12 plan items).
+pub fn is_scope_decision(item: &Value) -> bool {
+    let t = ask_text(item).to_ascii_lowercase();
+    let re = r"\b(defer\w*|descope\w*|de-scope\w*|out of (the )?scope|scope (cut|change|reduction)|cut list|done[- ]by|deadline|postpone\w*|(drop|remove) (it |them |these |those )?from (the )?(plan|scope|done))\b";
+    regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false)
+}
+
 pub fn decide(policy: &Policy, item: &Value) -> Decision {
     if !policy.enabled {
         return Decision::Off;
+    }
+    let boundary = effective_category(item);
+    if matches!(boundary.as_str(), "money" | "prod_data" | "outbound") {
+        return Decision::SkipCategory(boundary);
+    }
+    if is_scope_decision(item) {
+        return Decision::Never("scope_decision");
     }
     if let Some(why) = never_reason(item) {
         if policy.send_back && why != "public_surface" && can_send_back(item) {
@@ -555,12 +586,6 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
     };
     if !on {
         return Decision::SkipCategory(cat);
-    }
-    if cat == "money" {
-        return match max_dollar_figure(&ask_text(item)) {
-            Some(v) if v <= policy.money_cap_usd => Decision::Approve,
-            other => Decision::SkipCap(other),
-        };
     }
     Decision::Approve
 }
@@ -1067,6 +1092,7 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                     "owner_must_act" => "only you can do this (it asks you to act)",
                     "public_surface" => "a new endpoint or public surface: yours by the repo rule",
                     "sent_back_once" => "sent back once already; the worker re-asked, so it is yours",
+                    "scope_decision" => "a scope or deadline decision stays with you (contract rule 11)",
                     _ => "credential or access: only you can do it",
                 };
                 skips.push(entry_for(item, &dk, "never", label_why.into(), now));
@@ -1076,19 +1102,8 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                 tracing::info!(verdict = "needs_input_auto_skipped_category", key = %key, worker = %worker,
                     category = %c, reason = "category_off",
                     "needs-input auto-approve: this category's switch is off");
-                skips.push(entry_for(item, &dk, "skipped_category", format!("{c} is off"), now));
+                skips.push(entry_for(item, &dk, "skipped_category", format!("{c} stays with you (contract rule 11)"), now));
                 rep.skipped_category.push(label);
-            }
-            Decision::SkipCap(fig) => {
-                let why = match fig {
-                    Some(v) => format!("${} is over the ${} cap", fmt_usd(v), fmt_usd(policy.money_cap_usd)),
-                    None => "no dollar figure in the ask".to_string(),
-                };
-                tracing::info!(verdict = "needs_input_auto_skipped_cap", key = %key, worker = %worker,
-                    figure = ?fig, cap = policy.money_cap_usd, reason = %why,
-                    "needs-input auto-approve: spend over the cap or unpriced");
-                skips.push(entry_for(item, &dk, "skipped_cap", why, now));
-                rep.skipped_cap.push(label);
             }
         }
     }

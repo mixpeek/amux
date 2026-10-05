@@ -22,27 +22,21 @@ fn money_cap_parser_reads_live_specimens() {
     // A bare $ with no digit, and numbers that are not money.
     assert_eq!(max_dollar_figure("set $AMUX_URL first; 3 lanes, 400 cards"), None);
 
+    // Contract rule 11: spend is never auto-approved, whatever the figure.
     let p = Policy::default();
-    assert_eq!(decide(&p, &item("card", "money", "budget", over)), Decision::SkipCap(Some(425.0)));
-    assert_eq!(decide(&p, &item("card", "money", "budget", "Approve about $16 of Gemini embedding?")), Decision::Approve);
-    assert_eq!(decide(&p, &item("card", "money", "budget", "$40 of GPU for the backfill?")), Decision::Approve);
-    assert_eq!(
-        decide(&p, &item("card", "money", "budget", "Do you approve GPU spend on-demand?")),
-        Decision::SkipCap(None),
-        "no figure = not auto-approved"
-    );
-    // Exactly at the cap is inside it.
-    assert_eq!(decide(&p, &item("card", "money", "budget", "Spend $50?")), Decision::Approve);
+    for q in [over, "Approve about $16 of Gemini embedding?", "Spend $50?", "Do you approve GPU spend on-demand?"] {
+        assert_eq!(decide(&p, &item("card", "money", "budget", q)), Decision::SkipCategory("money".into()), "{q}");
+    }
 }
 
 // ---- policy matching per category -----------------------------------------
 
 #[test]
-fn defaults_approve_judgment_and_small_spend_only() {
+fn defaults_approve_judgment_only() {
     let p = Policy::default();
-    assert!(p.enabled && p.other && p.money && !p.prod_data && !p.outbound);
+    assert!(p.enabled && p.other && !p.money && !p.prod_data && !p.outbound);
     assert_eq!(p.money_cap_usd, 50.0);
-    assert!(p.sources.values().all(|s| s == "default"));
+    assert!(p.sources.iter().all(|(k, s)| s == "default" || (matches!(k.as_str(), "money" | "prod_data" | "outbound") && s == CONTRACT_RULE_11)));
     assert_eq!(decide(&p, &item("card", "other", "decision", "Which option?")), Decision::Approve);
     assert_eq!(
         decide(&p, &item("card", "prod_data", "decision", "Migrate prod data?")),
@@ -59,12 +53,14 @@ fn defaults_approve_judgment_and_small_spend_only() {
     );
     assert_eq!(
         p.summary("all workers"),
-        "Auto-approve is ON for all workers: judgment asks and spend up to $50. Key, sign-in and grant asks go back to the worker to do itself."
+        "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties or scope. Key, sign-in and grant asks go back to the worker to do itself."
     );
 
-    let all = Policy { prod_data: true, outbound: true, ..Policy::default() };
-    assert_eq!(decide(&all, &item("card", "prod_data", "decision", "Migrate prod data?")), Decision::Approve);
-    assert_eq!(decide(&all, &item("email", "outbound", "", "Send this email?")), Decision::Approve);
+    // Even a policy struct with them switched on cannot approve these.
+    let all = Policy { prod_data: true, outbound: true, money: true, ..Policy::default() };
+    assert_eq!(decide(&all, &item("card", "prod_data", "decision", "Migrate prod data?")), Decision::SkipCategory("prod_data".into()));
+    assert_eq!(decide(&all, &item("email", "outbound", "", "Send this email?")), Decision::SkipCategory("outbound".into()));
+    assert_eq!(decide(&all, &item("card", "other", "budget", "Raise the usage limit?")), Decision::SkipCategory("money".into()), "ask_type budget is money");
     let off = Policy { enabled: false, ..all.clone() };
     assert_eq!(decide(&off, &item("card", "other", "decision", "Which option?")), Decision::Off);
     let no_other = Policy { other: false, ..Policy::default() };
@@ -102,8 +98,8 @@ fn policy_resolves_worker_over_group_over_global_with_sources() {
     assert_eq!(a.sources["enabled"], "worker");
     assert_eq!(a.money_cap_usd, 10.0);
     assert_eq!(a.sources["money_cap_usd"], "group:gtm");
-    assert!(a.outbound);
-    assert_eq!(a.sources["outbound"], "global");
+    assert!(!a.outbound, "contract rule 11: a scope cannot switch outbound on");
+    assert_eq!(a.sources["outbound"], CONTRACT_RULE_11);
     assert_eq!(a.sources["other"], "default");
     assert!(a.summary("lane-a").starts_with("Auto-approve is OFF for lane-a"));
 
@@ -245,32 +241,34 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     let mut approved = rep.approved.clone();
     approved.sort();
     // A paused lane gets the answer on its card (RH-131, 2026-09-27).
-    assert_eq!(approved, ["NEW-16", "NEW-OTHER", "NEW-PAUSED"]);
+    assert_eq!(approved, ["NEW-OTHER", "NEW-PAUSED"]);
     assert_eq!(rep.refused, ["NEW-REFUSE"]);
     // The credential ask goes back to its worker instead of waiting.
     assert_eq!(rep.sent_back, ["NEW-CRED"]);
     let sends = mock.sends.lock().unwrap().clone();
-    assert_eq!(sends.len(), 3, "{sends:?}");
-    assert_eq!(sends.iter().filter(|(w, t)| w == "lane-a" && t.starts_with("Approved (NEW-") && t.contains(". Proceed.")).count(), 2);
+    assert_eq!(sends.len(), 2, "{sends:?}");
+    assert_eq!(sends.iter().filter(|(w, t)| w == "lane-a" && t.starts_with("Approved (NEW-") && t.contains(". Proceed.")).count(), 1);
     assert!(sends.iter().any(|(w, t)| w == "lane-a" && t.starts_with("Sent back (NEW-CRED)")));
     assert!(mock.emails.lock().unwrap().is_empty(), "outbound is off by default");
     assert_eq!(mock.fyis.lock().unwrap().len(), 1, "one FYI per batch");
 
     // The approve moved the card out of needsyou and noted it, through the
     // real board PATCH.
-    for id in ["NEW-OTHER", "NEW-16", "NEW-PAUSED", "NEW-CRED"] {
+    for id in ["NEW-OTHER", "NEW-PAUSED", "NEW-CRED"] {
         let c = card(&st, id);
         assert_eq!(c.status, "todo", "{id}");
         assert!(c.desc.contains("Approved automatically by owner policy") || c.desc.contains("Sent back to lane-a"), "{id}: {}", c.desc);
     }
     // Everything else is untouched and still waiting on the owner.
-    for id in ["OLD-1", "NEW-425", "NEW-NOFIG", "NEW-PROD", "NEW-SNOOZE", "NEW-OFFLANE", "NEW-REFUSE"] {
+    for id in ["OLD-1", "NEW-16", "NEW-425", "NEW-NOFIG", "NEW-PROD", "NEW-SNOOZE", "NEW-OFFLANE", "NEW-REFUSE"] {
         assert_eq!(card(&st, id).status, "needsyou", "{id}");
     }
     let o = outcomes(&st);
     assert_eq!(o["OLD-1"], "baseline");
-    assert_eq!(o["NEW-425"], "skipped_cap");
-    assert_eq!(o["NEW-NOFIG"], "skipped_cap");
+    // Contract rule 11: spend stays with the owner at any figure.
+    assert_eq!(o["NEW-16"], "skipped_category");
+    assert_eq!(o["NEW-425"], "skipped_category");
+    assert_eq!(o["NEW-NOFIG"], "skipped_category");
     assert_eq!(o["NEW-CRED"], "sent_back");
     assert_eq!(o["NEW-PAUSED"], "approved");
     assert_eq!(o["NEW-PROD"], "skipped_category");
@@ -282,15 +280,15 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     // Dedupe: the next tick does nothing, including no retry of the refusal.
     let rep = tick_with(&mock, &st, &home, now + 120.0).await;
     assert!(rep.approved.is_empty() && rep.refused.is_empty() && rep.sent_back.is_empty(), "{rep:?}");
-    assert_eq!(mock.sends.lock().unwrap().len(), 3);
+    assert_eq!(mock.sends.lock().unwrap().len(), 2);
     assert_eq!(mock.fyis.lock().unwrap().len(), 1);
 
     // The GET view lists approved and refused only, newest first.
     let led = load_ledger(&st.store.read().unwrap()).unwrap();
     let v = view(&home, "", &led, &[], now + 120.0);
-    // Three approvals (one to a paused lane), one send-back, one refusal.
-    assert_eq!(v["recent_count"], 5);
-    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and spend up to $50. Key, sign-in and grant asks go back to the worker to do itself.");
+    // Two approvals (one to a paused lane), one send-back, one refusal.
+    assert_eq!(v["recent_count"], 4);
+    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties or scope. Key, sign-in and grant asks go back to the worker to do itself.");
 
     // The owner's explicit sweep, with outbound switched on globally: the
     // baseline item and the held email are re-evaluated; the credential ask,
@@ -300,8 +298,8 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     assert!(n >= 6, "{n}");
     let mut approved = rep.approved.clone();
     approved.sort();
-    assert_eq!(approved, ["OLD-1", "apr_00000000000000bb"]);
-    assert_eq!(mock.emails.lock().unwrap().as_slice(), ["apr_00000000000000bb"]);
+    assert_eq!(approved, ["OLD-1"], "outbound stays with the owner even when a scope switches it on");
+    assert!(mock.emails.lock().unwrap().is_empty());
     assert_eq!(card(&st, "NEW-CRED").status, "todo", "sent back, not re-evaluated");
     assert_eq!(card(&st, "NEW-SNOOZE").status, "needsyou");
     assert_eq!(card(&st, "NEW-REFUSE").status, "needsyou");
@@ -351,7 +349,7 @@ fn owner_action_asks_go_back_to_the_worker_unless_the_boundary_holds_them() {
     assert!(matches!(d("other", "access", "Can you run `! gcloud auth login info@mixpeek.com` in the gs-5-one-click session?"), Decision::SendBack(_)));
     // The boundary keeps these with the owner: spend, outside, prod data,
     // his own approvals, and the repo's public-surface rule.
-    assert!(matches!(d("money", "credential", "Anthropic API credit balance is exhausted; can you top it up?"), Decision::Never(_)));
+    assert!(matches!(d("money", "credential", "Anthropic API credit balance is exhausted; can you top it up?"), Decision::SkipCategory(_) | Decision::Never(_)));
     assert!(matches!(d("other", "decision", "Will you run `! ~/.amux/seed-standing-approvals.sh` once to record the two standing approvals?"), Decision::Never(_)));
     assert!(matches!(d("other", "decision", "Should POST /v1/organizations/billing/estimate be reachable without an API key?"), Decision::Never("public_surface")));
     let off = Policy { send_back: false, ..Policy::default() };
@@ -474,4 +472,21 @@ fn production_and_customer_changes_are_judged_as_prod_data() {
     }
     let local = item("card", "decision", "decision", "Want me to scale the local kind cluster to three nodes for the soak, or keep one?");
     assert_eq!(decide(&Policy::default(), &local), Decision::Approve, "a local change names no production or customer target");
+}
+
+#[test]
+fn a_scope_or_deadline_decision_is_never_auto_approved() {
+    // 2026-10-05: an auto-approval that named no list deferred seven GS-12 plan
+    // items. Contract rule 11 keeps scope with the owner.
+    let p = Policy::default();
+    for q in [
+        "Defer docs and second cloud providers out of the done-by path?",
+        "May I cut these five items from the plan to hit the deadline?",
+        "Move the deadline to Friday?",
+        "Descope 4.11 sharding for now?",
+    ] {
+        assert_eq!(decide(&p, &item("card", "other", "decision", q)), Decision::Never("scope_decision"), "{q}");
+    }
+    // An ordinary judgment ask is still approved.
+    assert_eq!(decide(&p, &item("card", "other", "decision", "Option A or B for the cache key? I recommend A.")), Decision::Approve);
 }
