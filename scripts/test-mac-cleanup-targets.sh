@@ -309,6 +309,18 @@ check "dry run stops nothing" "0" "$(grep -c . "$FIX/stops" | tr -d ' ')"
 check "and names what it would stop" "yes" "$(grep -q 'would stop idle colima VM idle' "$FIX/out.txt" && echo yes || echo no)"
 check "the default stop is a stop, never a delete" "yes" "$(printf '%s' "$DEFAULT_VM_STOP" | grep -q '^colima stop -p PROFILE$' && echo yes || echo no)"
 
+echo "12c2. every running VM is trimmed every tick, not only when the disk is tight (escalation 20261005-013827)"
+printf '#!/bin/bash\necho "$1" >> %s\n' "$FIX/trims" > "$FIX/vmtrim.sh"; chmod +x "$FIX/vmtrim.sh"
+printf '%s\n' '{"name":"a","status":"Running"}' '{"name":"b","status":"Running"}' '{"name":"off","status":"Stopped"}' > "$FIX/vmst.json"
+_lc=$VM_LIST_CMD; _tc=$VM_TRIM_CMD; VM_LIST_CMD="cat $FIX/vmst.json"; VM_TRIM_CMD="$FIX/vmtrim.sh PROFILE"; : > "$FIX/trims"
+trim_vms 0 > "$FIX/out.txt"
+check "both running VMs are trimmed, the stopped one is not" "a b" "$(tr '\n' ' ' < "$FIX/trims" | sed 's/ $//')"
+check "and the line counts them" "yes" "$(grep -q 'vm trim: trimmed 2 running VM(s), failed 0' "$FIX/out.txt" && echo yes || echo no)"
+: > "$FIX/trims"; trim_vms 1 > "$FIX/out.txt"
+check "a dry run trims nothing" "0" "$(grep -c . "$FIX/trims" | tr -d ' ')"
+check "the tick calls trim_vms when the disk is not tight" "yes" "$(grep -q 'then prune_vm_build_caches "$DRY"; else trim_vms "$DRY"; fi' "$TICK" && echo yes || echo no)"
+VM_LIST_CMD=$_lc; VM_TRIM_CMD=$_tc
+
 echo "12d2. Docker Desktop is quit under pressure only when idle the whole window (escalation 20261004-213936)"
 printf '#!/bin/bash\necho dd >> %s\n' "$FIX/ddstops" > "$FIX/ddstop.sh"; chmod +x "$FIX/ddstop.sh"
 DD_STOP_CMD="$FIX/ddstop.sh"; DD_PID_CMD="echo 4242"; DD_UP_CMD="echo 3-00:00:00"; DD_PS_CMD="true"; DD_EVENTS_CMD="printf exec_start\\n"

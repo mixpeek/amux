@@ -39,6 +39,11 @@ print(json.dumps({"measured":True,"samples":list(reversed(rows))}))' "$@"; }
 check "13 samples (1h) losing 1G per 5 min burn 12G/h"     "12.0" "$(mkhist 13 1 | burn_from_history 1 | awk '{print $1}')"
 check "full-in uses the NEWEST reading (488G / 12 = 40.7h)" "40.7" "$(mkhist 13 1 | burn_from_history 1 | awk '{print $2}')"
 check "oldest-first order gives the same answer"          "12.0" "$(mkhist 13 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); d["samples"].reverse(); print(json.dumps(d))' | burn_from_history 1 | awk '{print $1}')"
+check "a dip that has recovered is not a burn (2026-10-05 05:00Z, 12.1 G/h read off it)" "yes" "$(python3 -c '
+import json
+f=[268]*16+[223]*5+[269.7]*3   # the shape the old slope read as 14.7 G/h, full in 18 h
+rows=[{"ts":10000+i*300,"disk_free_gb":v,"measured":True} for i,v in enumerate(f)]
+print(json.dumps({"samples":rows}))' | burn_from_history 1 | awk '{print ($2=="-") ? "yes" : "no"}')"
 check "fewer than 6 samples is unmeasured"                 "- -"  "$(mkhist 5 1 | burn_from_history 1 | awk '{print $1, $2}')"
 check "12 samples (55 min) is under an hour: unmeasured"   "- -"  "$(mkhist 12 1 | burn_from_history 1 | awk '{print $1, $2}')"
 check "unmeasured rows (free 0) do not drag the slope"     "12.0" "$(mkhist 13 1 5 | burn_from_history 1 | awk '{print $1}')"

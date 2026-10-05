@@ -1024,6 +1024,10 @@ classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swa
 # read 65 G/h off exactly that while a peer's delete sat in the window. Prints
 # "<burn_gbh> <hours|-> <n> <span_h>", or "- - <n> <span_h>" when there are fewer
 # than 6 samples or under an hour of span, so the caller falls back and says so.
+# The burn is capped at the window's NET loss (oldest minus newest over the
+# span): a dip that has already recovered is not burning. On 2026-10-05 the
+# disk fell 46 G at 05:00Z and was back to 269.7 G by 05:30Z, yet the slope
+# across that dip read 12.1 G/h, "full in 22h" (escalation 20261005-013827).
 burn_from_history() { # <history json on stdin> <min_gbh>
   python3 -c '
 import json,sys
@@ -1037,7 +1041,8 @@ if n<6 or span<1: print("- - %d %.1f"%(n,span)); sys.exit()
 xs=[(t-rows[0][0])/3600 for t,_ in rows]; ys=[f for _,f in rows]
 mx=sum(xs)/n; my=sum(ys)/n
 slope=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/max(1e-9,sum((x-mx)**2 for x in xs))
-burn=-slope; last=ys[-1] if xs[-1]==max(xs) else ys[xs.index(max(xs))]
+o=sorted(zip(xs,ys)); net=(o[0][1]-o[-1][1])/max(1e-9,o[-1][0]-o[0][0])
+burn=min(-slope,net); last=ys[-1] if xs[-1]==max(xs) else ys[xs.index(max(xs))]
 print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), n, "%.1f"%span)
 ' "$1" 2>/dev/null || echo "- - 0 0.0"
 }
@@ -1338,6 +1343,30 @@ stop_idle_docker_desktop() { # <dry:0|1> <why>
   fi
 }
 
+# Trim every running VM's filesystems every tick, whatever the disk reads.
+# A colima data disk (/dev/vdb1) is mounted without discard and is not in the
+# guest's fstab, so its weekly fstrim.timer never trims it: blocks a build or
+# prune frees inside the VM stay allocated on the Mac until something trims.
+# Gated on a tight disk, that left goal-shared's disk file swinging 40 to 50 G
+# (2026-10-05: 269 -> 223 G at 05:00Z, back to 270 G only when the tight arm
+# trimmed at 05:26Z), and the dip read as a 12 G/h burn (escalation
+# 20261005-013827). fstrim only discards unused blocks. Sets VMS_TRIMMED.
+trim_vms() { # <dry:0|1>
+  local dry=$1 p cmd n_fail=0
+  VMS_TRIMMED=0
+  local profiles; profiles=$(running_vm_profiles)
+  [ -n "$profiles" ] || { echo "mac-cleanup: vm trim: no running colima VM"; return 0; }
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ "$dry" = 1 ]; then echo "mac-cleanup:   would trim colima VM $p (dry run)"; continue; fi
+    cmd=${VM_TRIM_CMD//PROFILE/$p}
+    if perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd >/dev/null 2>&1; then VMS_TRIMMED=$((VMS_TRIMMED+1)); else n_fail=$((n_fail+1)); fi
+  done <<EOF
+$profiles
+EOF
+  echo "mac-cleanup: vm trim: trimmed ${VMS_TRIMMED} running VM(s), failed ${n_fail}"
+}
+
 effective_target_idle_h() { # <disk_free_gb> <normal_h> <tight_free_gb> <tight_h>
   awk -v f="$1" -v n="$2" -v t="$3" -v h="$4" 'BEGIN{ if (f >= 0 && f < t && h < n) print h; else print n }'
 }
@@ -1508,7 +1537,7 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
 fi
 reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
 VMS_PRUNED=0
-if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY"; fi
+if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY"; else trim_vms "$DRY"; fi
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && prune_vm_images "$DRY"
 [ "${AMUX_CLEANUP_USER_TMP:-1}" = 1 ] && reap_user_tmp "$DRY"
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && reap_lane_tmp "$DRY"
