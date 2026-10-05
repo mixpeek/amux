@@ -643,6 +643,12 @@ let _lastDataTime = null;  // timestamp of last successful data
 const _pageLoadTime = Date.now();
 let _debugLog = [];        // recent connection events (capped at 12)
 let _liveSSE = false;      // true only when SSE is actively receiving messages
+// A server rebuild ends every stream, then the port answers again within a
+// second (the listener is handed across the exec). Until this time the pill
+// keeps reading Live while the first reconnect runs, so a change to amux does
+// not flash the dashboard into a disconnected state. 0 when not in a grace.
+let _sseGraceUntil = 0;
+const _SSE_GRACE_MS = 5000;
 let expanded = new Set();
 let searchQuery = '';
 let activeTag = '';
@@ -3141,7 +3147,8 @@ function updateConnectionStatus() {
   const noNetwork = navigator.onLine === false;
   const readState = _sessionLoadError ? (_sessionLoadError.status === 401 ? 'auth' : (noNetwork ? null : 'error'))
     : (!noNetwork && (_boardReadError || _syncReadError) ? 'error' : null);
-  _recordConnState(readState || (!online ? 'offline' : (_liveSSE ? 'live' : 'polling')));
+  const sseLive = _liveSSE || (online && _sseGraceUntil > Date.now());
+  _recordConnState(readState || (!online ? 'offline' : (sseLive ? 'live' : 'polling')));
   // Update all connection status indicators (main + peek)
   document.querySelectorAll('#conn-status, #conn-modal-status').forEach(el => {
     if (el.id === 'conn-modal-status') el.style.color = '';
@@ -3162,7 +3169,7 @@ function updateConnectionStatus() {
     } else if (_syncPillText) {
       el.className = 'conn-status polling';
       el.textContent = _syncPillText;
-    } else if (_liveSSE) {
+    } else if (sseLive) {
       el.className = 'conn-status online';
       el.textContent = 'Live';
     } else {
@@ -13837,7 +13844,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1248';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1249';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39758,6 +39765,7 @@ function connectSSE() {
     _sseRetries = 0;
     _lastDataTime = Date.now();
     if (_initialLoad) { _initialLoad = false; render(); }
+    if (_sseGraceUntil) _sseGraceUntil = 0;
     if (!_liveSSE) { _liveSSE = true; updateConnectionStatus(); }
     if (!online) setOnline(true);
     // On reconnect after being offline / zombie: catch up on anything we missed.
@@ -39913,16 +39921,31 @@ function connectSSE() {
 
   _sse.onerror = function() {
     _sseRetries++;
+    // A stream that WAS live and just dropped is most often a server rebuild:
+    // reconnect almost at once and keep the pill on Live for a short grace.
+    // Only a reconnect still failing after the grace shows Polling.
+    const wasLive = _liveSSE;
     _liveSSE = false;
     _sse.close();
     _sse = null;
     _dbgLog('SSE error (retry ' + _sseRetries + ')');
+    if (wasLive && _sseRetries === 1) {
+      _sseGraceUntil = Date.now() + _SSE_GRACE_MS;
+      setTimeout(() => {
+        if (_sseGraceUntil && Date.now() >= _sseGraceUntil) {
+          _sseGraceUntil = 0;
+          if (!_liveSSE) _dbgLog('SSE reconnect outlasted the ' + _SSE_GRACE_MS + 'ms grace');
+          updateConnectionStatus();
+        }
+      }, _SSE_GRACE_MS + 50);
+    }
     updateConnectionStatus();
     if (_sseRetries >= 3) {
       _dbgLog('SSE failed — switching to polling');
+      _sseGraceUntil = 0;
       enablePollingFallback();
     } else {
-      setTimeout(connectSSE, 2000 * _sseRetries);
+      setTimeout(connectSSE, (_sseGraceUntil && _sseRetries === 1) ? 300 : 2000 * _sseRetries);
     }
   };
 }

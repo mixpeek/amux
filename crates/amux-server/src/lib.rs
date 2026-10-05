@@ -12,6 +12,7 @@ pub mod config;
 mod fanout_retirement;
 pub mod fanout_workspace;
 pub mod legacy_port;
+pub mod listener_handoff;
 pub mod log_dedupe;
 pub mod project_execution;
 
@@ -1016,11 +1017,15 @@ async fn async_main() {
                     // know whether it arrived by self-adoption or because the
                     // previous process died — and those look identical in the
                     // log: 28 starts on 2026-08-23, 27 of them routine.
-                    let err = std::os::unix::process::CommandExt::exec(
-                        std::process::Command::new(&exe).env("AMUX_SELF_ADOPTED", "1"),
-                    );
+                    let mut next = std::process::Command::new(&exe);
+                    next.env("AMUX_SELF_ADOPTED", "1");
+                    // Hand the listening socket to the new image so clients
+                    // never see the port closed (listener_handoff.rs).
+                    listener_handoff::prepare_exec(&mut next);
+                    let err = std::os::unix::process::CommandExt::exec(&mut next);
                     // Only reachable when exec FAILED. Fall back to the old
                     // exit-for-relaunch path — slower (throttle) but correct.
+                    listener_handoff::exec_failed();
                     tracing::warn!(%err, "exec failed — falling back to exit-for-relaunch");
                     std::process::exit(0);
                 }
@@ -1102,12 +1107,20 @@ async fn async_main() {
             "ready: binding the listener; no request can be stamped before this instant"
         );
     }
-    tracing::info!(%addr, "listening (https, plain-http redirected)");
+    // Inherited from the previous image on a self-adoption, so the port never
+    // closes across a rebuild; bound fresh on a cold start.
+    let (listener, listener_source) =
+        listener_handoff::adopt_or_bind(addr).expect("bind listener");
+    tracing::info!(%addr, listener_source, verdict = if listener_source == "inherited" {
+        "listener_inherited"
+    } else {
+        "listener_bound"
+    }, "listening (https, plain-http redirected)");
     let acceptor = tls::RedirectingAcceptor::new(
         axum_server::tls_rustls::RustlsAcceptor::new(rustls_cfg),
         format!("localhost:{}", cfg.port),
     );
-    axum_server::bind(addr)
+    axum_server::from_tcp(listener)
         .acceptor(acceptor)
         // with_connect_info: the auth middleware's localhost bypass (Python
         // parity) needs the PEER address; without this every request looks
