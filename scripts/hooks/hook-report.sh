@@ -259,6 +259,9 @@ C=$(sed -n 's/.*"canonical_url":"\([^"]*\)".*/\1/p' "$E" 2>/dev/null)
 L=$(sed -n 's/.*"legacy_port":\([0-9]*\).*/\1/p' "$E" 2>/dev/null)
 U="${AMUX_URL:-$C}"
 case "$U" in *localhost:$L|*127.0.0.1:$L) U="${C:-$U}";; esac
+# Any other localhost port endpoint.json does not name is stale too (a reboot
+# race left every lane on 8823, 2026-10-05); the CLI heals and logs the same.
+case "$U" in *://localhost:*|*://127.0.0.1:*) [ -n "$C" ] && U="$C";; esac
 U="${U%/}"
 REPORT_URL="$U/api/sessions/$AMUX_SESSION/report"
 # AMUX-4024: THE SUBAGENT LIFECYCLE PRODUCER.

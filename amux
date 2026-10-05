@@ -84,6 +84,36 @@ CC_HOME="${CC_HOME:-$HOME/.amux}"
 CC_SESSIONS="$CC_HOME/sessions"
 CC_DEFAULTS="$CC_HOME/defaults.env"
 
+# A localhost AMUX_API or AMUX_URL on a port that endpoint.json does not name is
+# stale: the server rewrites endpoint.json on every boot, while a lane's env is
+# fixed for its life. On 2026-10-05 a reboot raced two servers; the one on the
+# compiled-in default 8823 won the database for two minutes, restarted the
+# fleet, and every lane kept AMUX_URL=AMUX_API=8823 after the real server took
+# 8824 back. Every CLI verb then failed with curl exit 7 (mixpeek-finances,
+# 11:4xZ) while `amux url` (which already reads endpoint.json) answered 8824.
+# A remote override (cloud) is left alone. Logged once per lane and port to
+# cli-transport.jsonl, which the next reachable call ships to the server log.
+_amux_heal_url() {
+  local ep="$CC_HOME/endpoint.json" c v name mark
+  [ -r "$ep" ] || return 0
+  c=$(sed -n 's/.*"canonical_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ep" | head -1)
+  [ -n "$c" ] || return 0
+  for name in AMUX_API AMUX_URL; do
+    v="${!name:-}"
+    [ -n "$v" ] || continue
+    case "$v" in https://localhost:*|http://localhost:*|https://127.0.0.1:*|http://127.0.0.1:*) ;; *) continue ;; esac
+    [ "${v%/}" = "${c%/}" ] && continue
+    printf -v "$name" '%s' "$c"; export "${name?}"
+    mark="$CC_HOME/state/url-healed.${AMUX_SESSION:-${AMUX_WORKER:-none}}.${v##*:}"
+    if [ ! -e "$mark" ]; then
+      mkdir -p "$CC_HOME/state" 2>/dev/null && : > "$mark" 2>/dev/null
+      printf '{"ts":%s,"event":"stale_env_url_healed","var":"%s","from":"%s","to":"%s","session":"%s","cli":"bash"}\n' \
+        "$(date -u +%s)" "$name" "$v" "$c" "${AMUX_SESSION:-${AMUX_WORKER:-}}" >> "$CC_HOME/cli-transport.jsonl" 2>/dev/null || true
+    fi
+  done
+}
+_amux_heal_url
+
 # MR-43: recover AMUX_SESSION from the tmux pane name when it is empty inside
 # a lane that IS running in its amux-launched pane (spawn always injects it —
 # session_verbs.rs — so this is loss in-process, not absence at launch).
