@@ -321,6 +321,7 @@ pub fn router(state: AppState) -> Router {
         // AMUX-5286: the owner's one-at-a-time triage queue.
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
+        .merge(contract::routes())
         .merge(vault::routes())
         .merge(vault_secrets::routes())
         .merge(chatgpt_app::routes())

@@ -345,6 +345,76 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rule 14: per-rule counters (AH-379)
+// ---------------------------------------------------------------------------
+
+/// Each live rule and the verdicts it already logs. A rule is counted by the
+/// lines it writes, so a counter cannot claim activity the rule did not log.
+pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
+    ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused"]),
+    ("2", &["contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
+    ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
+    ("13", &["memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
+];
+
+/// Count each rule's verdicts in `log` text with a timestamp at or after
+/// `since` (epoch seconds). Pure, for tests; returns (counts, lines scanned).
+pub fn count_verdicts(log: &str, since: f64) -> (std::collections::BTreeMap<String, u64>, u64) {
+    let mut counts = std::collections::BTreeMap::new();
+    let mut scanned = 0u64;
+    for line in log.lines() {
+        let Some(ts) = line.split_whitespace().next().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else {
+            continue;
+        };
+        if (ts.timestamp() as f64) < since {
+            continue;
+        }
+        scanned += 1;
+        let Some(i) = line.find("verdict=") else { continue };
+        let v = line[i + 8..].trim_start_matches('"');
+        let v: String = v.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        if RULE_VERDICTS.iter().any(|(_, vs)| vs.contains(&v.as_str())) {
+            *counts.entry(v).or_insert(0) += 1;
+        }
+    }
+    (counts, scanned)
+}
+
+pub fn routes() -> axum::Router<AppState> {
+    axum::Router::new().route("/api/contract/counters", axum::routing::get(counters_route))
+}
+
+async fn counters_route(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    let since_h = q.get("since_h").and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0 && *v <= 168.0).unwrap_or(24.0);
+    let since = crate::config::now_f64() - since_h * 3600.0;
+    let path = crate::config::amux_home().join("logs").join("server-rs.log");
+    // The tail only: the log rotates and can be large; 256 MB covers days.
+    let text = match std::fs::File::open(&path) {
+        Ok(mut f) => {
+            use std::io::{Read, Seek, SeekFrom};
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let _ = f.seek(SeekFrom::Start(len.saturating_sub(256 << 20)));
+            let mut buf = Vec::new();
+            let _ = f.read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+        Err(e) => {
+            return Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": format!("cannot read {}: {e}", path.display())})).into_response();
+        }
+    };
+    let (counts, scanned) = count_verdicts(&text, since);
+    let rules: Vec<Value> = RULE_VERDICTS
+        .iter()
+        .map(|(rule, vs)| {
+            let per: serde_json::Map<String, Value> = vs.iter().map(|v| (v.to_string(), json!(counts.get(*v).copied().unwrap_or(0)))).collect();
+            json!({"rule": rule, "total": per.values().filter_map(Value::as_u64).sum::<u64>(), "verdicts": per})
+        })
+        .collect();
+    Json(json!({"since_h": since_h, "measured": true, "n_considered": scanned, "rules": rules,
+        "contract": "docs/orchestration-contract.md (rule 14)"})).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +472,21 @@ mod tests {
             }
             _ => panic!("cannot_satisfy becomes an owner ask"),
         }
+    }
+
+    #[test]
+    fn rule_counters_count_only_mapped_verdicts_inside_the_window() {
+        let log = "2026-10-05T10:00:00.0Z  INFO x: contract_frozen verdict=\"contract_frozen\" n=1\n\
+2026-10-05T10:00:01.0Z  INFO x: verdict=\"contract_verify_failed\"\n\
+2026-10-05T10:00:02.0Z  INFO x: verdict=\"something_else\"\n\
+2026-10-05T09:00:00.0Z  INFO x: verdict=\"contract_frozen\"\n\
+not a log line\n";
+        let since = chrono::DateTime::parse_from_rfc3339("2026-10-05T09:30:00Z").unwrap().timestamp() as f64;
+        let (c, scanned) = count_verdicts(log, since);
+        assert_eq!(c.get("contract_frozen"), Some(&1), "the 09:00 line is outside the window");
+        assert_eq!(c.get("contract_verify_failed"), Some(&1));
+        assert!(!c.contains_key("something_else"), "unmapped verdicts are not counted");
+        assert_eq!(scanned, 3, "lines inside the window are what was considered");
     }
 
     #[test]
