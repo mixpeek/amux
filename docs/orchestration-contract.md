@@ -52,5 +52,35 @@ Additions from goal spec 12:
 | 2, take mechanical load off the model | 5, A2, 6, 7, 8, 4 | orchestrator messages halve; land wait p95 < 15 min; no lane idle with work available |
 | 3, boundaries | A1, 11, 10, 13, 9 | zero unannounced production restarts; zero scope changes without a bound owner approval |
 
+## Acceptance: measured on goal spec 12
+
+Ethan, 2026-10-05: "make sure you monitor gs12 work as the acceptance criteria
+for these rules". A rule is accepted when GS-12 shows its effect, not when its
+code merges. Rollout per rule: a short dogfood on the `amux` lanes, then the
+`gs12-platform` group, then the fleet. The hourly GS-12 check (SCHED-543)
+reports each measure that applies, with its baseline from 2026-10-05.
+
+| Rule | GS-12 measure | Baseline (10-05) | Target |
+|---|---|---|---|
+| 1 | gs12 code cards entering `doing` with a frozen contract | not measured | 100% |
+| 2 | gs12 `done` granted by a server check; verified cards reopened on audit | 0%; 15% (65 of 438) | 100%; under 5% |
+| 3 | gs12 `verified` with a harness reviewer | 0 of 373 | 100% of code cards over the size threshold |
+| 4 | shared-checkout incidents in gs12 lanes | gs12 lanes already isolated | 0 |
+| 5 | land wait p95; worker pushes to main; batches refused for another lane's change | 45 min; all; 15 min of refusals | under 15 min; 0; 0 |
+| 6 | nudges per gs12 lane per day; cards moved to needs-split | about 8 KB/lane/day | down; counted |
+| 7 | median compaction generations per gs12 lane | lanes run for days | under 3 |
+| 8 | open gs12 cards; closes with a left-undone list | about 675 | under 200; 100% |
+| 9 | peer messages with no ask | 82% (09-14 sample) | under 20% |
+| 10 | gs12 lanes with credentials in env; bypass lanes outside a sandbox | 20 of 20; 20 of 20 | 0; 0 |
+| 11 | scope, money or production-data auto-approvals | 7 deferrals on 10-05 | 0 |
+| 12 | kills, merges or pushes decided by a model | 0 | 0 |
+| 13 | shared MEMORY.md bytes in ~/Dev/mixpeek; launch bytes per lane | 61,012 B; about 125 KB | under 12,000 B; down |
+| 14 | rules with live counters | 0 of 19 | 19 of 19 |
+| A1 | unannounced production restarts; bad restores that took traffic | 1; 1 (about 7 h) | 0; 0 |
+| A2 | orchestrator queue stalls per day; lanes idle with work available | 81; 2 | under 5; 0 |
+| A3 | proof cards verified per day | about 1.4 | rising to finish |
+| A4 | MVS restore, replay and crash tests run on the test bed before production | 0 | all |
+| A5 | lanes dispatched into a usage cap or host pressure | 7 to 15 lanes, 5 times on 10-04/05 | 0 |
+
 Progress and evidence for each rule live on its card on `amux-helper`'s board,
 tagged `contract`. This file changes only when a rule changes.
