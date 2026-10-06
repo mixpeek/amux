@@ -631,12 +631,34 @@ pub fn verify_path_prefix(tree: &Path, lane: &str) -> String {
 static LIVE_VERIFY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(Default::default);
 
+/// How many server checks run at once, fleet-wide (server.env
+/// AMUX_CONTRACT_VERIFY_CONCURRENCY, default 3). Each is a clean checkout plus
+/// a test command; unbounded, about sixty of them took the host to load 36
+/// during the 2026-10-06 gs12 rollout.
+fn verify_slots() -> &'static tokio::sync::Semaphore {
+    static S: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        let n = std::env::var("AMUX_CONTRACT_VERIFY_CONCURRENCY").ok().and_then(|v| v.trim().parse::<usize>().ok())
+            .or_else(|| crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
+                .get("AMUX_CONTRACT_VERIFY_CONCURRENCY").and_then(|v| v.trim().trim_matches('"').parse::<usize>().ok()))
+            // Tests share this process-wide semaphore across parallel cases.
+            .unwrap_or(if cfg!(test) { 32 } else { 3 }).clamp(1, 32);
+        tokio::sync::Semaphore::new(n)
+    })
+}
+
+/// Reviews running in this process, and the most that run at once.
+static LIVE_REVIEW: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+const REVIEWS_AT_ONCE: usize = 2;
+
 fn spawn_verification(state: &AppState, card: &str, lane: &str) {
     if let Ok(mut live) = LIVE_VERIFY.lock() {
         live.insert(card.to_string());
     }
     let (st, c, l) = (state.clone(), card.to_string(), lane.to_string());
     tokio::spawn(async move {
+        let _slot = verify_slots().acquire().await;
         run_verification(&st, &c, &l).await;
         if let Ok(mut live) = LIVE_VERIFY.lock() {
             live.remove(&c);
@@ -1158,9 +1180,19 @@ async fn review_one(state: &AppState, card: String) {
 /// background. Returns (pending before the pass, claimed).
 pub async fn run_reviews(state: &AppState) -> (usize, usize) {
     let now = crate::config::now_f64();
+    let live: Vec<String> = LIVE_REVIEW.lock().map(|l| l.iter().cloned().collect()).unwrap_or_default();
     let _ = state.store.write_async(move |conn| {
-        let n = conn.execute("UPDATE card_contracts SET review_state = 'pending' WHERE review_state = 'running' AND review_at < ?1",
+        let mut n = conn.execute("UPDATE card_contracts SET review_state = 'pending' WHERE review_state = 'running' AND review_at < ?1",
             [now - REVIEW_STALE_S])?;
+        // A review whose task a restart ended goes back to pending now, not
+        // after REVIEW_STALE_S.
+        let running: Vec<String> = conn.prepare("SELECT card FROM card_contracts WHERE review_state = 'running'")?
+            .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        for c in running.iter().filter(|c| !live.contains(*c)) {
+            n += conn.execute("UPDATE card_contracts SET review_state = 'pending' WHERE card = ?1 AND review_state = 'running'", [c])?;
+            tracing::warn!(card = %c, measured = true, n_considered = 1, verdict = "contract_review_recovered",
+                "a review lost its task (server restarted mid-run); it goes back to pending");
+        }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
     let pending: Vec<String> = state.store.read_async(|conn| {
@@ -1169,8 +1201,10 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         Ok(v)
     }).await.unwrap_or_default();
     let mut claimed = 0;
-    for card in pending.iter().cloned() {
-        if claimed >= REVIEWS_PER_PASS {
+    let free = REVIEWS_AT_ONCE.saturating_sub(LIVE_REVIEW.lock().map(|l| l.len()).unwrap_or(0)).min(REVIEWS_PER_PASS);
+    let n_pending = pending.len();
+    for card in pending {
+        if claimed >= free {
             break;
         }
         let c = card.clone();
@@ -1182,11 +1216,19 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         if matches!(won, Ok(ref o) if o.applied) {
             claimed += 1;
             let st = state.clone();
-            tokio::spawn(async move { review_one(&st, card).await });
+            if let Ok(mut live) = LIVE_REVIEW.lock() {
+                live.insert(card.clone());
+            }
+            tokio::spawn(async move {
+                review_one(&st, card.clone()).await;
+                if let Ok(mut live) = LIVE_REVIEW.lock() {
+                    live.remove(&card);
+                }
+            });
         }
     }
-    tracing::info!(measured = true, n_considered = pending.len(), claimed, "contract review pass");
-    (pending.len(), claimed)
+    tracing::info!(measured = true, n_considered = n_pending, claimed, "contract review pass");
+    (n_pending, claimed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,7 +1241,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
-    ("3", &["contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("3", &["contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),

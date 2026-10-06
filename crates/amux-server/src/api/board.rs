@@ -15999,6 +15999,24 @@ mod af701_archive_guard_tests {
         assert!(go(&c, "done", "board_drive", false), "with rule 2 held back the engine is unchanged");
     }
 
+    /// A review whose task a restart ended is picked up on the next pass,
+    /// not after the two-hour stale window.
+    #[tokio::test]
+    async fn a_review_lost_to_a_restart_runs_again_on_the_next_pass() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let id = seed(&store, "lane-rv", "done");
+        let id2 = id.clone();
+        let now = crate::config::now_f64();
+        store.write(move |conn| {
+            conn.execute("INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, review_state, review_at) VALUES (?1, 'a', 'true', 'h', 0, 'passed', 'running', ?2)",
+                rusqlite::params![id2, now])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(super::super::contract::run_reviews(&state).await, (1, 1), "the orphaned review is pending again and claimed");
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();
