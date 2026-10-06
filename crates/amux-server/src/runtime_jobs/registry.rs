@@ -127,6 +127,7 @@ pub mod ids {
     pub const CONTEXT_HEALTH: &str = "context-health";
     pub const DISK_WATCH: &str = "disk-watch";
     pub const STATUS_HISTORY: &str = "status-history";
+    pub const EPISODES: &str = "episodes";
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
     pub const RECORDINGS_TRANSCRIBE: &str = "recordings-transcribe";
@@ -181,6 +182,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::HOST_GUARD,
     ids::GOAL_KEEPER,
     ids::STATUS_HISTORY,
+    ids::EPISODES,
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
     ids::RECORDINGS_TRANSCRIBE,
@@ -740,6 +742,18 @@ pub const CATALOG: &[Doc] = &[
                 off: None,
             },
         ],
+        pref: None,
+        detail: None,
+    },
+    Doc {
+        id: ids::EPISODES,
+        name: "Episode records",
+        purpose: "Writes one self-contained row per task attempt: the card, git sha, conversation and configuration at claim, then the outcome, end sha and transcripts at close, so pruning other tables cannot erase what an attempt started from.",
+        env: &[EnvControl {
+            var: "AMUX_EPISODES_SECS",
+            effect: "capture interval in seconds (default 15, minimum 5)",
+            off: None,
+        }],
         pref: None,
         detail: None,
     },

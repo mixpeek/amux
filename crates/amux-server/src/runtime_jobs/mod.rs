@@ -83,6 +83,7 @@ mod poll_watch;
 pub mod recordings_transcribe;
 pub mod registry;
 pub mod scheduler;
+pub mod episodes;
 pub mod status_history;
 pub mod storage;
 pub mod trace_archive;
