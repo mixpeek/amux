@@ -2734,6 +2734,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/contract/counters",
         methods: &["GET"],
     },
+    // The land queue (e52a4aef).
+    RouteEntry {
+        path: "/api/land",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/land/policy",
+        methods: &["GET"],
+    },
     RouteEntry {
         path: "/api/contract/done-line/{epic}",
         methods: &["GET", "POST"],

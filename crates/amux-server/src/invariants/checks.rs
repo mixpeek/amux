@@ -1054,6 +1054,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_incident", "resolved_at", false),
     ("_amux_invariant_result", "ts", false),
     ("card_contracts", "deploy_at", false),
+    ("land_queue", "done_at", false), // land_queue.rs: now_f64(); live 1791295108.5
+    ("land_queue", "queued_at", false),
+    ("land_queue", "started_at", false),
     ("card_contracts", "frozen_at", false), // measured: 1791242852.2 on 2026-10-06
     ("card_contracts", "review_at", false),
     ("prod_change_notices", "raised_at", false), // prod_change.rs: now + NOTICE_LEAD_S, epoch seconds
