@@ -8297,6 +8297,17 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             .with_counts(eligible, open)
         }
         Pickup::None { reason, detail } => {
+            // CONTRACT A2 (phase 2): a lane with nothing to claim pulls the
+            // next ready card its hub released to the pool, before any nudge.
+            // 2026-10-06 21:10Z: six gs12 lanes sat idle while 24 ready proof
+            // cards waited on the orchestrator's own board.
+            if let crate::api::runner::PoolPull::Assigned { card, hub } =
+                crate::api::runner::pull_from_pool(&state.store, lane).await
+            {
+                return LaneTrace::acted(lane, "a2-pool-assigned", &card,
+                    format!("pulled from {hub}'s pool; pickup dispatches it next pass"))
+                    .with_counts(eligible, open);
+            }
             // Before generic verification/triage: missing continuations and
             // parked Backlog were invisible to the old blocked-only nudge.
             let mut unchanged_recoveries = 0;

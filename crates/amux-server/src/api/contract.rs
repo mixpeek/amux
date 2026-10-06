@@ -1390,7 +1390,8 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
-    ("A5", &["contract_dispatch_held"]),
+    ("A5", &["contract_dispatch_held", "a2_pool_held"]),
+    ("A2", &["a2_pool_assigned", "a2_pool_empty"]),
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),
@@ -1430,7 +1431,7 @@ pub fn routes() -> axum::Router<AppState> {
         .merge(crate::api::done_line::routes())
 }
 
-async fn counters_route(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+async fn counters_route(axum::extract::State(state): axum::extract::State<AppState>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
     let since_h = q.get("since_h").and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0 && *v <= 168.0).unwrap_or(24.0);
     let since = crate::config::now_f64() - since_h * 3600.0;
     let path = crate::config::amux_home().join("logs").join("server-rs.log");
@@ -1460,8 +1461,15 @@ async fn counters_route(axum::extract::Query(q): axum::extract::Query<std::colle
     let lanes: Vec<String> = std::fs::read_dir(home.join("sessions")).map(|d| {
         d.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".env")).map(String::from)).collect()
     }).unwrap_or_default();
+    // A2: each hub's pool (cards tagged `pool`) and how many are ready now.
+    let pool = match state.store.read_async(|c| Ok(super::runner::pool_census(c)?)).await {
+        Ok(rows) => json!({"measured": true, "n_considered": rows.len(),
+            "hubs": rows.into_iter().map(|(hub, size, ready)| json!({"hub": hub, "pool": size, "ready": ready})).collect::<Vec<_>>()}),
+        Err(e) => json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}),
+    };
     Json(json!({"since_h": since_h, "measured": true, "n_considered": scanned, "rules": rules,
         "rule10": super::worker_identity::report(&home, &lanes),
+        "a2_pool": pool,
         "contract": "docs/orchestration-contract.md (rule 14)"})).into_response()
 }
 
