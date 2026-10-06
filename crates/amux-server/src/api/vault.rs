@@ -373,11 +373,19 @@ pub(crate) fn login_fill_script(username: &str, password: &str, submit: bool) ->
   if (pass) {{ set(pass, P); filled.push('password'); }} else not_found.push('password');
   let submitted = false;
   if (SUBMIT && filled.length) {{
-    const form = (pass || user).form;
-    const btn = (form && form.querySelector('button[type="submit"], input[type="submit"]'))
-      || pick(['button[type="submit"]', 'input[type="submit"]', 'button[id*="login" i]', 'button[id*="submit" i]']);
+    // Pick by the .type PROPERTY, not a [type=submit] selector: a <button> with
+    // no type attribute is a submit button by default and the selector misses
+    // it (Oracle's sign-in, 2026-10-06). Visible only, the field's own form
+    // first: pages carry hidden forms whose buttons do nothing useful.
+    const field = pass || user;
+    const isSubmit = el => el.tagName === 'BUTTON' ? el.type === 'submit' : (el.tagName === 'INPUT' && el.type === 'submit');
+    const words = /^(next|continue|sign ?in|log ?in|submit|verify)$/i;
+    const all = [...document.querySelectorAll('button, input[type="submit"]')].filter(vis);
+    const own = field.form ? all.filter(b => b.form === field.form && isSubmit(b)) : [];
+    const btn = own[0] || all.find(b => isSubmit(b) && words.test((b.innerText || b.value || '').trim()))
+      || all.find(b => words.test((b.innerText || b.value || '').trim())) || all.find(isSubmit);
     if (btn) {{ btn.click(); submitted = true; }}
-    else if (form) {{ form.requestSubmit ? form.requestSubmit() : form.submit(); submitted = true; }}
+    else if (field.form && vis(field)) {{ field.form.requestSubmit ? field.form.requestSubmit() : field.form.submit(); submitted = true; }}
   }}
   return {{ filled, not_found, submitted, url: location.href }};
 }})()"#

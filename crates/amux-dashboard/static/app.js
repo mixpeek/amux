@@ -1886,6 +1886,39 @@ function _saveConnections(list) {
   localStorage.setItem(_CONNECTIONS_KEY, JSON.stringify(_connectionEntries(list)));
 }
 
+// Username/password for a connection that sits behind a sign-in (an
+// amux-door host, cloud/desktop/door.py). Kept per ORIGIN in its own
+// device-only key: the connection list itself travels to every other server
+// in the ?_sync= payload, so a password must never be part of it.
+const _CONN_LOGINS_KEY = 'amux_conn_logins';
+function _connLogins() {
+  try { const v = JSON.parse(localStorage.getItem(_CONN_LOGINS_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; }
+  catch { return {}; }
+}
+function _connLoginFor(url) {
+  try { const l = _connLogins()[new URL(url).origin]; return l && l.user && l.pass ? l : null; } catch { return null; }
+}
+function _connLoginSet(url, login) {
+  const all = _connLogins();
+  const origin = new URL(url).origin;
+  if (login) all[origin] = {user: login.user, pass: login.pass}; else delete all[origin];
+  localStorage.setItem(_CONN_LOGINS_KEY, JSON.stringify(all));
+}
+// Sign in to a door-protected server and land on its dashboard: a top-level
+// form POST (cookies set by the response belong to that server, and no CORS
+// is involved), with the usual ?_sync= handoff as the destination.
+function _connSignInAndGo(serverUrl, login, nextPath) {
+  const f = document.createElement('form');
+  f.method = 'POST';
+  f.action = serverUrl.replace(/\/+$/, '') + '/_door/login';
+  f.style.display = 'none';
+  for (const [k, v] of [['username', login.user], ['password', login.pass], ['next', nextPath]]) {
+    const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.appendChild(i);
+  }
+  document.body.appendChild(f);
+  f.submit();
+}
+
 function _renderInstanceSwitcher() {
   const conns = _loadConnections();
   const origin = window.location.origin;
@@ -1921,7 +1954,7 @@ function _renderInstanceSwitcher() {
           return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
             <div style="flex:1;min-width:0;">
               <div style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</div>
-              <div style="font-size:0.7rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}</div>
+              <div style="font-size:0.7rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}${_connLoginFor(c.url) ? ' &middot; signs in as ' + esc(_connLoginFor(c.url).user) : ''}</div>
             </div>
             ${isCurr
               ? '<span style="font-size:0.68rem;color:var(--accent);flex-shrink:0;">current</span>'
@@ -1939,6 +1972,7 @@ function _switchInstance(i) {
 
 function _removeConnection(i) {
   const conns = _loadConnections();
+  if (conns[i]) { try { _connLoginSet(conns[i].url, null); } catch (e) {} }
   conns.splice(i, 1);
   _saveConnections(conns);
   _renderInstanceSwitcher();
@@ -1966,15 +2000,21 @@ function _addConnPreset(name, url) {
 function _addConnectionSave() {
   const ni = document.getElementById('add-conn-name');
   const ui = document.getElementById('add-conn-url');
+  const usr = document.getElementById('add-conn-user');
+  const pwd = document.getElementById('add-conn-pass');
   const name = (ni ? ni.value : '').trim();
   const url = (ui ? ui.value : '').trim().replace(/\/$/, '');
+  const user = (usr ? usr.value : '').trim();
+  const pass = pwd ? pwd.value : '';
   if (!name || !url) return;
-  if (!_connectionEntries([{name,url}]).length) { _connectionSecurityError('Use an HTTPS origin only, without credentials, path, query or fragment.'); return; }
+  if (!_connectionEntries([{name,url}]).length) { _connectionSecurityError('Use an HTTPS origin only, without credentials, path, query or fragment. Put a username and password in their own fields.'); return; }
+  if (!!user !== !!pass) { _connectionSecurityError('Enter both a username and a password, or neither.'); return; }
   const conns = _loadConnections();
   conns.push({ name, url });
   _saveConnections(conns);
+  _connLoginSet(url, user ? {user, pass} : null);
   _toggleAddConnectionForm(false);
-  if(ni) ni.value=''; if(ui) ui.value='';
+  if(ni) ni.value=''; if(ui) ui.value=''; if(usr) usr.value=''; if(pwd) pwd.value='';
   _renderInstanceSwitcher();
 }
 
@@ -13922,7 +13962,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1256';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1257';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -41139,6 +41179,8 @@ function _switchServerUrl(idx, evt) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url.replace(/\/+$/, '') + '/?_sync=' + encodeURIComponent(payload);
+  const login = _connLoginFor(s.url);
+  if (login) { _connSignInAndGo(s.url, login, '/?_sync=' + encodeURIComponent(payload)); return; }
   location.href = url;
 }
 
@@ -41157,6 +41199,8 @@ function switchServer(idx) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url + '/?_sync=' + encodeURIComponent(payload);
+  const login = _connLoginFor(s.url);
+  if (login) { _connSignInAndGo(s.url, login, '/?_sync=' + encodeURIComponent(payload)); return; }
   location.href = url;
 }
 

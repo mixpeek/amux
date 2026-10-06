@@ -549,7 +549,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
               style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
             <input id="add-conn-url" type="text" placeholder="URL (e.g. https://cloud.amux.io)" autocomplete="off"
               onkeydown="if(event.key==='Enter')_addConnectionSave()"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
+            <input id="add-conn-user" type="text" placeholder="Username (only for a password-protected host)" autocomplete="off" autocapitalize="none" spellcheck="false"
+              style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:5px;outline:none;">
+            <input id="add-conn-pass" type="password" placeholder="Password" autocomplete="new-password"
+              onkeydown="if(event.key==='Enter')_addConnectionSave()"
               style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 7px;font-size:0.78rem;color:var(--fg);margin-bottom:6px;outline:none;">
+            <div style="font-size:0.68rem;color:var(--dim);margin-bottom:6px;">A username and password are kept on this device only and are never sent to your other amux servers.</div>
             <div style="display:flex;gap:6px;">
               <button onclick="event.stopPropagation();_addConnectionSave()" style="flex:1;background:var(--accent);color:#000;border:none;border-radius:4px;padding:3px 0;font-size:0.75rem;cursor:pointer;font-weight:600;">Add</button>
               <button onclick="event.stopPropagation();_toggleAddConnectionForm(false)" style="flex:1;background:none;border:1px solid var(--border);border-radius:4px;padding:3px 0;font-size:0.75rem;color:var(--dim);cursor:pointer;">Cancel</button>
