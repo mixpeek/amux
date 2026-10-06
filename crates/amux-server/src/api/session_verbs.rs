@@ -20426,6 +20426,24 @@ pub(crate) fn steer_background_max_age_s() -> f64 {
 /// `amux land` in a background shell, often an hour, and nine messages in one
 /// hour sat 30 minutes each behind that wait, orchestrator assignments among
 /// them. Logged as verdict=steer_background_turn_ended.
+/// True once per (key, lane) per `every_s`: the dedupe the ceiling's log
+/// lines share. 2026-10-06: steer_background_hold_released logged 434 times
+/// in an hour for gs12-mvs, every pass re-releasing the same rows.
+fn first_in_window(key: &str, name: &str, every_s: f64) -> bool {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f64>>> =
+        std::sync::OnceLock::new();
+    let map = LAST.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut seen = map.lock().unwrap_or_else(|e| e.into_inner());
+    let now = now_f64();
+    let k = format!("{key}:{name}");
+    if seen.get(&k).is_none_or(|t| now - t >= every_s) {
+        seen.insert(k, now);
+        true
+    } else {
+        false
+    }
+}
+
 pub(crate) fn steer_background_ceiling(
     name: &str,
     held: SteerDelivery,
@@ -20444,13 +20462,7 @@ pub(crate) fn steer_background_ceiling(
         // every tick while its background agents kept it generating, 339 times
         // in an hour, and the early return also skipped the ceiling below. A
         // paste is queued by Claude Code whatever the pane is doing.
-        static LAST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f64>>> =
-            std::sync::OnceLock::new();
-        let map = LAST.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-        let mut seen = map.lock().unwrap_or_else(|e| e.into_inner());
-        let now = now_f64();
-        if seen.get(name).is_none_or(|t| now - t >= 600.0) {
-            seen.insert(name.to_string(), now);
+        if first_in_window("turn_ended", name, 600.0) {
             tracing::info!(
                 session = %name, age_s = age_s as i64, measured = true, n_considered = 1,
                 verdict = "steer_background_turn_ended",
@@ -20462,13 +20474,15 @@ pub(crate) fn steer_background_ceiling(
     if ceiling_s <= 0.0 || age_s < ceiling_s {
         return held;
     }
-    tracing::warn!(
-        session = %name, age_s = age_s as i64, ceiling_s = ceiling_s as i64,
-        measured = true, n_considered = 1,
-        verdict = "steer_background_hold_released",
-        "steering held past AMUX_STEER_BACKGROUND_MAX_AGE_S behind live background work; \
-         delivering by paste, which Claude Code queues to the end of the turn"
-    );
+    if first_in_window("hold_released", name, 600.0) {
+        tracing::warn!(
+            session = %name, age_s = age_s as i64, ceiling_s = ceiling_s as i64,
+            measured = true, n_considered = 1,
+            verdict = "steer_background_hold_released",
+            "steering held past AMUX_STEER_BACKGROUND_MAX_AGE_S behind live background work; \
+             delivering by paste, which Claude Code queues to the end of the turn"
+        );
+    }
     SteerDelivery::OverdueMidTurn
 }
 
@@ -21468,6 +21482,17 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
         };
         if !ok {
             skip(&session, &id, &format!("send-refused: {msg}"));
+            // A row the pass decided to deliver mid-turn and could not is the
+            // state that hid for an hour on 2026-10-06; name its reason where
+            // the hourly delivery count looks.
+            if mid_turn && first_in_window("release_not_delivered", &session, 600.0) {
+                tracing::warn!(
+                    session = %session, delivery_id = %id, age_s = age as i64,
+                    measured = true, n_considered = 1,
+                    verdict = "steer_release_not_delivered", reason = %chars_truncate(&msg, 160),
+                    "a steering row released for mid-turn delivery was refused by the send path; it stays queued"
+                );
+            }
             continue; // NEXT ROW for this lane, not the next lane
         }
         if mid_turn {
@@ -22007,17 +22032,40 @@ async fn send_claimed_steering(
         );
         return None;
     }
-    let mode = if id.starts_with("boot-delivery:") {
-        SendMode::drained(false, false)
-    } else {
-        mode
-    };
+    // A boot prompt waits for a turn boundary while its lane is still
+    // starting, so it never lands in a startup picker. After that it is a
+    // queued message like any other: 2026-10-06 three gs12-mvs boot prompts
+    // were released mid-turn by the background ceiling every pass for up to
+    // 64 minutes, and each release was turned back into a boundary send the
+    // generating lane refused.
+    let mode = boot_delivery_mode(id, mode, lane_still_booting(&load_meta(session), now_i64()));
     let mut queue_id = None;
     let result = send_text_inner_bound(state, session, text, mode, Some(id), &mut queue_id).await;
     if !result.0 {
         unclaim_steering_row(&state.store, id).await;
     }
     Some(result)
+}
+
+/// How long after a start a lane counts as booting for boot-prompt delivery.
+const BOOT_DELIVERY_WINDOW_S: i64 = 300;
+
+/// Whether a lane is still starting: a boot is scheduled or its readiness is
+/// pending, or it started within BOOT_DELIVERY_WINDOW_S.
+fn lane_still_booting(meta: &Map<String, Value>, now: i64) -> bool {
+    meta.get("boot_start_scheduled").and_then(Value::as_bool) == Some(true)
+        || meta.get("boot_readiness_pending").and_then(Value::as_bool) == Some(true)
+        || now - meta_i64(meta, "last_started") < BOOT_DELIVERY_WINDOW_S
+}
+
+/// The send mode for a claimed row: a boot prompt goes only at a boundary
+/// while its lane is booting, and is otherwise delivered as decided.
+fn boot_delivery_mode(id: &str, mode: SendMode, booting: bool) -> SendMode {
+    if booting && id.starts_with("boot-delivery:") {
+        SendMode::drained(false, false)
+    } else {
+        mode
+    }
 }
 
 /// Release a claim so the row stays eligible for retry (AMUX-2629): a
@@ -48246,6 +48294,36 @@ mod steer_max_age_tests {
         for stalled in ["busy-past-deadline", "not-running", "archived", ""] {
             assert!(!is_designed_hold(stalled), "{stalled} is a stall");
         }
+    }
+
+    /// 2026-10-06, gs12-mvs: three boot prompts were released for mid-turn
+    /// delivery every pass for up to 64 minutes, and each release was turned
+    /// back into a boundary-only send the generating lane refused. A boot
+    /// prompt waits for a boundary only while its lane is still starting.
+    #[test]
+    fn a_boot_prompt_waits_for_a_boundary_only_while_its_lane_is_booting() {
+        let now = 10_000;
+        let mut m = Map::new();
+        m.insert("last_started".into(), json!(now - 60));
+        assert!(lane_still_booting(&m, now), "just started");
+        m.insert("last_started".into(), json!(now - 3600));
+        assert!(!lane_still_booting(&m, now), "an hour in is not booting");
+        m.insert("boot_readiness_pending".into(), json!(true));
+        assert!(lane_still_booting(&m, now), "readiness pending is booting at any age");
+        let boot = "boot-delivery:x:1:Automation:h";
+        assert!(!boot_delivery_mode(boot, SendMode::drained(true, false), true).allow_mid_turn);
+        assert!(
+            boot_delivery_mode(boot, SendMode::drained(true, false), false).allow_mid_turn,
+            "a started lane's boot prompt takes the released mid-turn paste"
+        );
+        assert!(boot_delivery_mode("steer-1", SendMode::drained(true, false), true).allow_mid_turn, "only boot rows");
+    }
+
+    #[test]
+    fn the_ceiling_logs_once_per_lane_per_window() {
+        assert!(first_in_window("t-dedupe", "lane-a", 600.0));
+        assert!(!first_in_window("t-dedupe", "lane-a", 600.0), "the second release in the window is quiet");
+        assert!(first_in_window("t-dedupe", "lane-b", 600.0), "another lane is unaffected");
     }
 
     #[test]
