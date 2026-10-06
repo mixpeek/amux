@@ -651,10 +651,23 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
         Err((sha, why)) => {
             let short = tail(&why, 1500);
             let (c, s2, log) = (card.to_string(), sha.clone(), short.clone());
-            let _ = state.store.write_async(move |conn| {
+            // A1: a prod-change card's failed positive control is a hold for
+            // the owner and a rollback for the lane (`applied` reports it).
+            let held = state.store.write_async(move |conn| {
                 set_state(conn, &c, "failed", s2.as_deref(), &log, now)?;
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-            }).await;
+                let held = crate::api::prod_change::hold_on_failed_control(conn, &c, &log)?;
+                Ok(crate::db::WriteOutcome { applied: held, events: vec![] })
+            }).await.is_ok_and(|o| o.applied);
+            if held {
+                tracing::warn!(card, lane, sha = ?sha, measured = true, n_considered = 1, verdict = "a1_positive_control_failed",
+                    reason = %tail(&why, 300), "a planned production change failed its positive control; held for the owner");
+                let text = format!(
+                    "[amux contract A1] {card}'s positive control failed after the production change. Roll the change back now, then record what you did on the card; the owner decides what happens next.\n\n{}",
+                    tail(&why, 800)
+                );
+                let _ = crate::api::session_verbs::steer_enqueue(state, lane, &text, "contract-a1", ACTOR).await;
+                return;
+            }
             tracing::warn!(card, lane, sha = ?sha, measured = true, n_considered = 1,
                 verdict = "contract_verify_failed", reason = %tail(&why, 300), "server verification failed; the card stays in doing");
             let text = format!(
@@ -1086,6 +1099,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("A5", &["contract_dispatch_held"]),
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
+    ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
 ];

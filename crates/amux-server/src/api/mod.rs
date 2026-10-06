@@ -10,6 +10,7 @@ pub mod auth;
 pub mod board;
 pub mod contract;
 pub mod contract_fresh;
+pub mod prod_change;
 pub mod runner;
 pub mod done_line;
 pub mod board_intake;

@@ -10547,6 +10547,16 @@ async fn patch_item_route(
             let lane = row.session.clone().unwrap_or_default();
             let home = crate::config::amux_home();
             if super::contract::enabled_for(&home, &lane) {
+                // Contract A1: a planned production change starts only after its owner notice.
+                if !owner
+                    && row.status != "doing"
+                    && body.get("status").and_then(Value::as_str) == Some("doing")
+                    && super::prod_change::is_prod_change(&row.tags)
+                {
+                    if let Some(r) = super::prod_change::guard(&state, &id, &lane, &row.title).await {
+                        return r;
+                    }
+                }
                 let card = super::contract::Card {
                     id: id.clone(),
                     lane: lane.clone(),
@@ -15799,6 +15809,76 @@ mod af701_archive_guard_tests {
         assert_eq!(m["revisions"].as_array().map(Vec::len), Some(2), "every version is kept");
         assert_eq!(m["outside_line"].as_array().map(|v| v.len()), Some(1), "the dropped card is now outside the line");
         assert_eq!(route(&state, &a, worker(), json!({"status": "discarded"})).await, StatusCode::OK, "off the line, ordinary rules apply");
+    }
+
+    /// Contract A1 through the real route (AH-388): a prod-change card raises
+    /// an owner notice and waits for it; an owner hold keeps it out of doing;
+    /// a failed positive control at done holds it for the owner.
+    #[tokio::test]
+    async fn a_prod_change_waits_for_its_notice_and_holds_on_a_failed_control() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).status().unwrap().success());
+        }
+        std::fs::write(
+            h.join("sessions/lane-p.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nCC_VERIFY=\"false\"\n", repo.display()),
+        ).unwrap();
+        let me = || owner_headers("lane-p");
+        let prod_card = || {
+            let id = seed(&store, "lane-p", "todo");
+            let id2 = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [&id2])?;
+                conn.execute("INSERT INTO issue_tags (issue_id, tag, added_at) VALUES (?1, 'prod-change', 0)", [&id2])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let notice_of = |id: &str| -> String {
+            store.read().unwrap().query_row("SELECT notice FROM prod_change_notices WHERE card = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        let set_status = |id: String, st: &'static str| {
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET status=?2 WHERE id=?1", rusqlite::params![id, st])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        };
+        let doing = json!({"status": "doing", "acceptance_criteria": ["the api answers 200 after the restart"]});
+
+        let a = prod_card();
+        assert_eq!(route(&state, &a, me(), doing.clone()).await, StatusCode::CONFLICT, "the first request raises the notice");
+        let n = notice_of(&a);
+        let notice = current(&store, &n);
+        assert_eq!((notice.status.as_str(), notice.ask_type.as_deref()), ("needsyou", Some("decision")));
+        assert_eq!(route(&state, &a, me(), doing.clone()).await, StatusCode::CONFLICT, "inside the 30 minutes");
+        assert_eq!(current(&store, &a).status, "todo");
+        set_status(n.clone(), "todo"); // the owner approves early
+        assert_eq!(route(&state, &a, me(), doing.clone()).await, StatusCode::OK);
+        // The positive control (CC_VERIFY=false) fails: held for the owner.
+        assert_eq!(route(&state, &a, me(), json!({"status": "done", "left_undone": []})).await, StatusCode::ACCEPTED);
+        for _ in 0..200 {
+            if current(&store, &a).status == "needsyou" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let row = current(&store, &a);
+        assert_eq!(row.status, "needsyou", "a failed control is an owner hold, not a quiet doing");
+        assert!(row.desc.contains("A1 hold"), "{}", row.desc);
+
+        let b = prod_card();
+        assert_eq!(route(&state, &b, me(), doing.clone()).await, StatusCode::CONFLICT);
+        set_status(notice_of(&b), "blocked"); // the owner holds it
+        assert_eq!(route(&state, &b, me(), doing.clone()).await, StatusCode::CONFLICT);
+        assert_eq!(current(&store, &b).status, "todo");
     }
 
     #[tokio::test]
