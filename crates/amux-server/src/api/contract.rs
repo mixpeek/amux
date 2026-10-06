@@ -566,9 +566,32 @@ pub async fn freeze(state: &AppState, c: Contract) -> bool {
 async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = tokio::process::Command::new("git").arg("-C").arg(dir).args(args).output().await.map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        // The exit status rides along: git's progress lines go to stderr too,
+        // so "Preparing worktree" alone read as the whole failure (GO-79).
+        return Err(format!("git exit {:?}: {}", out.status.code(), tail(String::from_utf8_lossy(&out.stderr).trim(), 600)));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A clean detached checkout of `sha` at `tmp`, for a server check or a
+/// review. 2026-10-06: a review killed by a server restart left its directory
+/// behind unregistered, so every later `worktree remove` failed quietly and
+/// `worktree add` refused the existing path, pass after pass (GO-79, 8 times
+/// in an hour). The directory lives under our own ~/.amux/tmp/contract, so a
+/// leftover is ours to clear. The repo's own hooks do not run here: they are
+/// for lanes' checkouts, and Mixpeek's cost time on 39k files.
+async fn fresh_checkout(tree: &Path, tmp: &Path, sha: &str) -> Result<(), String> {
+    let t = tmp.to_string_lossy().into_owned();
+    let _ = git(tree, &["worktree", "remove", "--force", &t]).await;
+    let _ = git(tree, &["worktree", "prune"]).await;
+    if tmp.exists() && tmp.starts_with(crate::config::amux_home().join("tmp").join("contract")) {
+        let _ = std::fs::remove_dir_all(tmp);
+        tracing::info!(path = %t, measured = true, n_considered = 1, verdict = "contract_checkout_leftover_cleared",
+            "cleared a checkout directory a killed check or review left behind");
+    }
+    git(tree, &["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", &t, sha]).await
+        .map(|_| ())
+        .map_err(|e| format!("could not check out {sha}: {e}"))
 }
 
 fn tail(s: &str, n: usize) -> String {
@@ -715,8 +738,7 @@ async fn verify(state: &AppState, card: &str, lane: &str, timeout: Duration) -> 
     let sha = git(&tree, &["rev-parse", "HEAD"]).await.map_err(|e| (None, format!("could not read HEAD: {e}")))?;
     let tmp = crate::config::amux_home().join("tmp").join("contract").join(format!("{card}-{}", &sha[..12.min(sha.len())]));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
-    let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
-    git(&tree, &["worktree", "add", "--detach", &tmp.to_string_lossy(), &sha]).await.map_err(|e| (Some(sha.clone()), format!("could not check out {sha}: {e}")))?;
+    fresh_checkout(&tree, &tmp, &sha).await.map_err(|e| (Some(sha.clone()), e))?;
     let ws = crate::fanout_workspace::Workspace {
         repo: tree.to_string_lossy().into_owned(),
         path: tree.to_string_lossy().into_owned(),
@@ -1048,8 +1070,7 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
     let sha = c.sha.clone().ok_or("the contract has no verified sha")?;
     let tmp = home.join("tmp").join("contract").join(format!("{card}-review-{}", &sha[..12.min(sha.len())]));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
-    let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
-    git(&tree, &["worktree", "add", "--detach", &tmp.to_string_lossy(), &sha]).await.map_err(|e| format!("could not check out {sha}: {e}"))?;
+    fresh_checkout(&tree, &tmp, &sha).await?;
     let model = reviewer_model(&home, lane);
     let cli = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_CLI").map(|v| v.trim().trim_matches('"').to_string())
         .filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into());
@@ -1497,6 +1518,28 @@ mod tests {
         assert!(reviewer_model(h, "s").contains("opus"));
         std::fs::write(h.join("sessions/o.env"), "CC_MODEL=\"claude-opus-5-5\"\nAMUX_CONTRACT_REVIEW_MODEL=\"x\"\n").unwrap();
         assert_eq!(reviewer_model(h, "o"), "x");
+    }
+
+    #[tokio::test]
+    async fn a_checkout_clears_a_leftover_directory_a_killed_run_left_behind() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let tmp = home.path().join("tmp/contract/X-1-review-abc");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".git"), "gitdir: /nowhere\n").unwrap();
+        fresh_checkout(&repo, &tmp, &sha).await.expect("a leftover unregistered directory must not block the checkout");
+        assert!(tmp.join(".git").exists());
+        let outside = home.path().join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), "x").unwrap();
+        assert!(fresh_checkout(&repo, &outside, &sha).await.is_err(), "a directory outside tmp/contract is never cleared");
+        assert!(outside.join("keep").exists());
     }
 
     #[test]
