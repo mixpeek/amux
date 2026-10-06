@@ -58,7 +58,7 @@ pub mod cdc_poller;
 pub mod codex_ledger;
 pub mod commit_mention_notes;
 pub mod context_health;
-pub mod contract_deploy;
+pub mod contract_watch;
 pub mod deploy_wake;
 pub mod disk_watch;
 pub mod email_approval_digest;

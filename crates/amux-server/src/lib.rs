@@ -666,8 +666,8 @@ async fn async_main() {
     // worse than raw claude" was invisible for months is that nothing counted
     // how many times a lane's conversation had been summarized away.
     drop(runtime_jobs::context_health::spawn());
-    // Contract rule 2b (AH-377): post-deploy checks for deploy cards.
-    drop(runtime_jobs::contract_deploy::spawn(state.clone()));
+    // Contract rules 2b and 3 (AH-377, AH-378): post-deploy checks and reviewers.
+    drop(runtime_jobs::contract_watch::spawn(state.clone()));
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));

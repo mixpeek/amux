@@ -15522,6 +15522,93 @@ mod af701_archive_guard_tests {
         assert_eq!(super::super::contract::watch_deploys(&state).await, (0, 0), "a passed card is no longer watched");
     }
 
+    /// Contract rule 3 through the real route and the real job (AH-378):
+    /// verified comes only from the harness reviewer; a failed review reopens
+    /// the card, three fail rounds go to the owner, a pass grants verified.
+    #[tokio::test]
+    async fn verified_is_granted_only_by_the_harness_reviewer() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").arg("-C").arg(&repo)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).status().unwrap().success();
+            assert!(ok, "git {args:?}");
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "-q"]);
+        std::fs::write(repo.join("README"), "x").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "-qm", "base"]);
+        // A stand-in reviewer: its verdict is whatever `verdict` holds.
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, format!("#!/bin/sh\ncat >/dev/null\necho thinking\ncat '{}'\n", h.join("verdict").display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(
+            h.join("sessions/lane-r.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nCC_VERIFY=\"true\"\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display()),
+        ).unwrap();
+        let me = || owner_headers("lane-r");
+        let review = |store: &crate::db::SharedStore, id: &str| -> (Option<String>, i64) {
+            store.read().unwrap().query_row("SELECT review_state, review_rounds FROM card_contracts WHERE card = ?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        async fn until<F: Fn() -> bool>(f: F, what: &str) {
+            for _ in 0..300 {
+                if f() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            panic!("never: {what}");
+        }
+        let new_card = || {
+            let id = seed(&store, "lane-r", "todo");
+            let id2 = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [id2])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        // Done, then wait for the server's check to make the card review-eligible.
+        let to_done = |id: String| {
+            let (state, store) = (state.clone(), store.clone());
+            async move {
+                assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+                until(|| review(&store, &id).0.as_deref() == Some("pending"), "review pending").await;
+            }
+        };
+
+        let a = new_card();
+        assert_eq!(route(&state, &a, me(), json!({"status": "doing", "acceptance_criteria": ["it works"]})).await, StatusCode::OK);
+        std::fs::write(h.join("verdict"), "{\"verdict\": \"fail\", \"findings\": [\"x.rs:1 the test asserts nothing\"]}\n").unwrap();
+        for round in 1..=3i64 {
+            to_done(a.clone()).await;
+            assert_eq!(route(&state, &a, me(), json!({"status": "verified"})).await, StatusCode::CONFLICT, "the lane cannot self-verify");
+            assert_eq!(super::super::contract::run_reviews(&state).await.1, 1);
+            until(|| review(&store, &a).1 == round, "round recorded").await;
+            let want = if round < 3 { "doing" } else { "needsyou" };
+            until(|| current(&store, &a).status == want, want).await;
+        }
+        let row = current(&store, &a);
+        assert!(row.desc.contains("x.rs:1 the test asserts nothing"), "{}", row.desc);
+        assert_eq!(review(&store, &a).0.as_deref(), Some("escalated"));
+
+        let b = new_card();
+        assert_eq!(route(&state, &b, me(), json!({"status": "doing", "acceptance_criteria": ["it works"]})).await, StatusCode::OK);
+        std::fs::write(h.join("verdict"), "{\"verdict\": \"pass\", \"findings\": []}\n").unwrap();
+        to_done(b.clone()).await;
+        super::super::contract::run_reviews(&state).await;
+        until(|| current(&store, &b).status == "verified", "verified").await;
+        let row = current(&store, &b);
+        assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
+        assert_eq!(super::super::contract::run_reviews(&state).await, (0, 0), "nothing left to review");
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();

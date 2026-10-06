@@ -134,7 +134,7 @@ pub mod ids {
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
-    pub const CONTRACT_DEPLOY: &str = "contract-deploy";
+    pub const CONTRACT_WATCH: &str = "contract-watch";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -187,7 +187,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
     ids::NEEDS_INPUT_AUTO,
-    ids::CONTRACT_DEPLOY,
+    ids::CONTRACT_WATCH,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -872,11 +872,12 @@ pub const CATALOG: &[Doc] = &[
         detail: Some("/api/needs-input/auto"),
     },
     Doc {
-        id: ids::CONTRACT_DEPLOY,
-        name: "Contract deploy watch",
-        purpose: "Every 5 minutes, for each deploy card (contract rule 2b) whose server-verified \
-                  commit production now contains, runs its frozen post-deploy check and records \
-                  the result on the card; three failures reopen it to doing.",
+        id: ids::CONTRACT_WATCH,
+        name: "Contract watch",
+        purpose: "Every 5 minutes: runs the frozen post-deploy check of each deploy card whose \
+                  server-verified commit production now contains (contract rule 2b), and starts \
+                  a fresh read-only reviewer on a different model for each card eligible for \
+                  verified (rule 3). Three failures of either reopen or escalate the card.",
         env: NO_ENV,
         pref: None,
         detail: Some("/api/contract/counters"),

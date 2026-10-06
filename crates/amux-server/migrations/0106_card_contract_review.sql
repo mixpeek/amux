@@ -1,0 +1,6 @@
+-- Contract rule 3 (AH-378): the harness-spawned reviewer that grants verified.
+-- review_state: pending (eligible), running, passed, escalated (3 failed rounds).
+-- ADDCOL: card_contracts review_state TEXT
+-- ADDCOL: card_contracts review_rounds INTEGER NOT NULL DEFAULT 0
+-- ADDCOL: card_contracts review_log TEXT
+-- ADDCOL: card_contracts review_at REAL
