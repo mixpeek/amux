@@ -1,0 +1,10 @@
+-- Contract rule 2b (AH-377): a card's verification kind. `code` is checked at
+-- done by running its command; `deploy` is also watched after done until
+-- production contains the verified commit, then its frozen post-deploy check
+-- runs and the result is recorded on the card.
+-- ADDCOL: card_contracts kind TEXT NOT NULL DEFAULT 'code'
+-- ADDCOL: card_contracts deploy_check TEXT
+-- ADDCOL: card_contracts deploy_state TEXT
+-- ADDCOL: card_contracts deploy_tries INTEGER NOT NULL DEFAULT 0
+-- ADDCOL: card_contracts deploy_log TEXT
+-- ADDCOL: card_contracts deploy_at REAL

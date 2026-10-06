@@ -10541,8 +10541,8 @@ async fn patch_item_route(
                     item_type: row.item_type.clone(),
                     acceptance: row.acceptance_criteria.clone(),
                 };
-                let default_cmd = super::contract::lane_setting(&home, &lane, super::contract::DEFAULT_VERIFY);
-                match super::contract::decide(&card, &body, owner, existing.as_ref(), default_cmd.as_deref()) {
+                let defaults = super::contract::Defaults::for_lane(&home, &lane);
+                match super::contract::decide(&card, &body, owner, existing.as_ref(), &defaults) {
                     super::contract::Action::Respond(r) => return r,
                     super::contract::Action::Amend(cmd, why) => {
                         let actor = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).unwrap_or("api-anonymous").to_string();
@@ -15429,6 +15429,97 @@ mod af701_archive_guard_tests {
         as_code(&plain);
         assert_eq!(route(&state, &plain, me(), json!({"status": "doing"})).await, StatusCode::CONFLICT,
             "with the switch off the ordinary gate applies again (it asks for its checklist)");
+    }
+
+    /// Contract rule 2b through the real route and the real watcher (AH-377):
+    /// a deploy card's post-deploy check runs only once production contains
+    /// the verified commit, three failures reopen it, and a pass is recorded.
+    #[tokio::test]
+    async fn a_deploy_card_is_checked_only_once_production_contains_it() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        let git = |args: &[&str]| -> String {
+            let o = std::process::Command::new("git").arg("-C").arg(&repo)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "-q"]);
+        std::fs::write(repo.join("README"), "x").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("feature"), "y").unwrap();
+        git(&["add", "feature"]);
+        git(&["commit", "-qm", "feature"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        std::fs::write(
+            h.join("sessions/lane-d.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nCC_VERIFY=\"true\"\nAMUX_DEPLOY_SHA_CMD=\"cat prod.sha\"\n", repo.display()),
+        ).unwrap();
+        let id = seed(&store, "lane-d", "todo");
+        {
+            let id = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [id])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        let me = || owner_headers("lane-d");
+        let contract = |store: &crate::db::SharedStore, id: &str| -> (String, Option<String>, i64) {
+            store.read().unwrap().query_row("SELECT state, deploy_state, deploy_tries FROM card_contracts WHERE card = ?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        let done = |store: crate::db::SharedStore, id: String| async move {
+            for _ in 0..200 {
+                if contract(&store, &id).0 == "passed" {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("verification never passed");
+        };
+
+        assert_eq!(route(&state, &id, me(), json!({"status": "doing", "acceptance_criteria": ["works in prod"], "verify_kind": "deploy"})).await,
+            StatusCode::CONFLICT, "a deploy card needs a post-deploy check");
+        assert_eq!(route(&state, &id, me(), json!({"status": "doing", "acceptance_criteria": ["works in prod"],
+            "verify_kind": "deploy", "deploy_check": "test -f deployed-ok"})).await, StatusCode::OK);
+        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+        done(store.clone(), id.clone()).await;
+        assert_eq!(current(&store, &id).status, "done");
+        assert_eq!(contract(&store, &id).1.as_deref(), Some("waiting"));
+
+        // Production is behind the verified commit: nothing runs.
+        std::fs::write(repo.join("prod.sha"), &base).unwrap();
+        assert_eq!(super::super::contract::watch_deploys(&state).await, (1, 0));
+        assert_eq!(contract(&store, &id), ("passed".into(), Some("waiting".into()), 0));
+
+        // Production contains it and the check fails: retries, then reopens.
+        std::fs::write(repo.join("prod.sha"), &head).unwrap();
+        for tries in 1..=2 {
+            super::super::contract::watch_deploys(&state).await;
+            assert_eq!(contract(&store, &id).1.as_deref(), Some("retry"));
+            assert_eq!(contract(&store, &id).2, tries);
+        }
+        super::super::contract::watch_deploys(&state).await;
+        assert_eq!(current(&store, &id).status, "doing", "three failures reopen the card");
+        assert_eq!(contract(&store, &id).0, "frozen");
+
+        // Fixed: done again, and the check passes in production.
+        std::fs::write(repo.join("deployed-ok"), "z").unwrap();
+        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+        done(store.clone(), id.clone()).await;
+        super::super::contract::watch_deploys(&state).await;
+        assert_eq!(contract(&store, &id).1.as_deref(), Some("passed"));
+        let row = current(&store, &id);
+        assert_eq!(row.status, "done");
+        assert!(row.desc.contains("Deploy-verified (contract rule 2b)"), "{}", row.desc);
+        assert_eq!(super::super::contract::watch_deploys(&state).await, (0, 0), "a passed card is no longer watched");
     }
 
     #[tokio::test]

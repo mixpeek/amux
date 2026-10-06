@@ -14,6 +14,16 @@
 //! Log verdicts (rule 14 counters): contract_doing_refused, contract_frozen,
 //! contract_frozen_edit_refused, contract_force_refused, contract_verify_started,
 //! contract_verify_passed, contract_verify_failed, contract_cannot_satisfy.
+//!
+//! Rule 2b (AH-377): every contract has a verification kind. `code`, `proof`
+//! and `artifact` are all checked the same way at done (the frozen command
+//! names the test, the proof run's result or the artifact), so they share one
+//! path. `deploy` adds a frozen post-deploy check: after done, the server
+//! watches production's deployed sha (the lane's `AMUX_DEPLOY_SHA_CMD`), and
+//! once production contains the verified commit it runs the check and records
+//! the result on the card. Three failures reopen the card to doing. Verdicts:
+//! contract_deploy_passed, contract_deploy_retry, contract_deploy_failed,
+//! contract_deploy_stale, contract_deploy_unmeasured.
 use crate::api::AppState;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -28,6 +38,35 @@ pub const SWITCH: &str = "AMUX_CONTRACT_DONE";
 pub const DEFAULT_VERIFY: &str = "CC_VERIFY";
 pub const ACTOR: &str = "harness:contract";
 const DEFAULT_TIMEOUT_S: u64 = 1800;
+/// Verification kinds (rule 1). Only `deploy` has a path of its own.
+pub const KINDS: &[&str] = &["code", "deploy", "proof", "artifact"];
+/// A lane's command that prints production's deployed sha, e.g.
+/// `curl -s https://api.mixpeek.com/version | jq -r .deploy_sha`.
+pub const DEPLOY_SHA_CMD: &str = "AMUX_DEPLOY_SHA_CMD";
+/// A lane's default post-deploy check when a deploy card names none.
+pub const DEFAULT_DEPLOY_CHECK: &str = "CC_DEPLOY_CHECK";
+const DEPLOY_TRIES: i64 = 3;
+const DEPLOY_CHECK_TIMEOUT_S: u64 = 600;
+const DEPLOY_STALE_S: f64 = 24.0 * 3600.0;
+
+/// A lane's contract defaults, read from its scoped settings.
+#[derive(Default)]
+pub struct Defaults {
+    pub verify: Option<String>,
+    pub deploy_check: Option<String>,
+    /// Whether the lane can observe production's sha at all.
+    pub deploy_probe: bool,
+}
+
+impl Defaults {
+    pub fn for_lane(home: &Path, lane: &str) -> Self {
+        Defaults {
+            verify: lane_setting(home, lane, DEFAULT_VERIFY),
+            deploy_check: lane_setting(home, lane, DEFAULT_DEPLOY_CHECK),
+            deploy_probe: lane_setting(home, lane, DEPLOY_SHA_CMD).is_some_and(|v| !v.trim().trim_matches('"').is_empty()),
+        }
+    }
+}
 
 /// What the PATCH route should do with a request.
 pub enum Action {
@@ -52,6 +91,8 @@ pub struct Contract {
     pub state: String,
     pub sha: Option<String>,
     pub amended: bool,
+    pub kind: String,
+    pub deploy_check: Option<String>,
 }
 
 fn truthy(v: &str) -> bool {
@@ -76,12 +117,16 @@ pub fn enabled_for(home: &Path, lane: &str) -> bool {
     !lane.is_empty() && lane_setting(home, lane, SWITCH).is_some_and(|v| truthy(&v))
 }
 
-fn hash_of(acceptance: &str, command: &str) -> String {
+fn hash_of(acceptance: &str, command: &str, deploy_check: Option<&str>) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(acceptance.as_bytes());
     h.update([0u8]);
     h.update(command.as_bytes());
+    if let Some(d) = deploy_check {
+        h.update([0u8]);
+        h.update(d.as_bytes());
+    }
     format!("{:x}", h.finalize())[..16].to_string()
 }
 
@@ -91,7 +136,7 @@ fn nonempty(v: Option<&str>) -> Option<String> {
 
 pub fn load(conn: &Connection, card: &str) -> rusqlite::Result<Option<Contract>> {
     conn.query_row(
-        "SELECT card, acceptance, command, hash, state, sha, amended FROM card_contracts WHERE card = ?1",
+        "SELECT card, acceptance, command, hash, state, sha, amended, kind, deploy_check FROM card_contracts WHERE card = ?1",
         [card],
         |r| {
             Ok(Contract {
@@ -102,6 +147,8 @@ pub fn load(conn: &Connection, card: &str) -> rusqlite::Result<Option<Contract>>
                 state: r.get(4)?,
                 sha: r.get(5)?,
                 amended: r.get::<_, i64>(6)? != 0,
+                kind: r.get(7)?,
+                deploy_check: r.get(8)?,
             })
         },
     )
@@ -110,9 +157,9 @@ pub fn load(conn: &Connection, card: &str) -> rusqlite::Result<Option<Contract>>
 
 fn save(conn: &Connection, c: &Contract, now: f64) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(card) DO UPDATE SET acceptance = ?2, command = ?3, hash = ?4, frozen_at = ?5, state = ?6",
-        rusqlite::params![c.card, c.acceptance, c.command, c.hash, now, c.state],
+        "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, kind, deploy_check) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(card) DO UPDATE SET acceptance = ?2, command = ?3, hash = ?4, frozen_at = ?5, state = ?6, kind = ?7, deploy_check = ?8",
+        rusqlite::params![c.card, c.acceptance, c.command, c.hash, now, c.state, c.kind, c.deploy_check],
     )
     .map(|_| ())
 }
@@ -140,7 +187,7 @@ pub struct Card {
 
 /// Rules 1 and 2 as a pure decision, so each branch is testable without a
 /// server. `existing` is the card's frozen contract, if any.
-pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract>, default_cmd: Option<&str>) -> Action {
+pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract>, defaults: &Defaults) -> Action {
     if card.item_type != "code" {
         return Action::Pass;
     }
@@ -162,7 +209,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             };
         }
     }
-    let edits_contract = ["acceptance_criteria", "verify_cmd"].iter().any(|k| body.get(*k).is_some());
+    let edits_contract = ["acceptance_criteria", "verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some());
     if edits_contract && existing.is_some() && !owner {
         tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
             verdict = "contract_frozen_edit_refused", "a frozen contract was edited by a worker");
@@ -198,16 +245,43 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                 .or_else(|| nonempty(card.acceptance.as_deref()));
             let command = nonempty(body.get("verify_cmd").and_then(Value::as_str))
                 .or_else(|| existing.map(|c| c.command.clone()))
-                .or_else(|| nonempty(default_cmd));
+                .or_else(|| nonempty(defaults.verify.as_deref()));
+            let kind = nonempty(body.get("verify_kind").and_then(Value::as_str))
+                .or_else(|| existing.map(|c| c.kind.clone()))
+                .unwrap_or_else(|| "code".into());
+            if !KINDS.contains(&kind.as_str()) {
+                return Action::Respond(refuse(StatusCode::CONFLICT, "contract_unknown_kind",
+                    format!("verify_kind {kind:?} is not one of {KINDS:?}"), json!({"verify_kind": KINDS})));
+            }
+            let deploy_check = if kind == "deploy" {
+                let d = nonempty(body.get("deploy_check").and_then(Value::as_str))
+                    .or_else(|| existing.and_then(|c| c.deploy_check.clone()))
+                    .or_else(|| nonempty(defaults.deploy_check.as_deref()));
+                if d.is_none() || !defaults.deploy_probe {
+                    tracing::info!(card = %card.id, lane = %card.lane, missing_check = d.is_none(), missing_probe = !defaults.deploy_probe,
+                        measured = true, n_considered = 1, verdict = "contract_doing_refused", "a deploy card had no way to be checked in production");
+                    return Action::Respond(refuse(StatusCode::CONFLICT, "contract_deploy_unobservable",
+                        format!("{} is a deploy card, so it needs a post-deploy check and a lane that can read production's sha (contract rule 2b)", card.id),
+                        json!({
+                            "deploy_check": format!("a command that exits 0 when the change works in production, in this PATCH or the lane's {DEFAULT_DEPLOY_CHECK} setting"),
+                            DEPLOY_SHA_CMD: if defaults.deploy_probe { json!("set") } else { json!("unset: the lane's scope needs a command that prints production's deployed sha") },
+                        })));
+                }
+                d
+            } else {
+                None
+            };
             match (acceptance, command) {
                 (Some(a), Some(c)) => Action::PassThenFreeze(Contract {
                     card: card.id.clone(),
-                    hash: hash_of(&a, &c),
+                    hash: hash_of(&a, &c, deploy_check.as_deref()),
                     acceptance: a,
                     command: c,
                     state: "frozen".into(),
                     sha: None,
                     amended: false,
+                    kind,
+                    deploy_check,
                 }),
                 (a, c) => {
                     tracing::info!(card = %card.id, lane = %card.lane, missing_acceptance = a.is_none(),
@@ -244,7 +318,7 @@ pub async fn amend(state: &AppState, card: &str, actor: &str, command: String, r
             return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
         };
         let old = k.command.clone();
-        k.hash = hash_of(&k.acceptance, &cmd);
+        k.hash = hash_of(&k.acceptance, &cmd, k.deploy_check.as_deref());
         k.command = cmd.clone();
         k.state = "frozen".into();
         save(conn, &k, now)?;
@@ -382,6 +456,9 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
             let (c, ev, sha2) = (card.to_string(), evidence.clone(), sha.clone());
             let r = state.store.write_async(move |conn| {
                 set_state(conn, &c, "passed", Some(&sha2), "exit 0", now)?;
+                // A deploy card is watched from here until production holds sha2.
+                conn.execute("UPDATE card_contracts SET deploy_state = 'waiting', deploy_tries = 0, deploy_log = NULL, deploy_at = ?2
+                              WHERE card = ?1 AND kind = 'deploy'", rusqlite::params![c, now])?;
                 let Some(mut row) = crate::db::board_store::get_issue(conn, &c)? else {
                     return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
                 };
@@ -423,6 +500,177 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
 }
 
 // ---------------------------------------------------------------------------
+// Rule 2b: the post-deploy check (AH-377)
+// ---------------------------------------------------------------------------
+
+/// The first full 40-hex sha in a probe's output, lowercased. A probe that
+/// prints no full sha is UNMEASURED, never "not deployed yet".
+pub fn parse_sha(out: &str) -> Option<String> {
+    out.split(|c: char| !c.is_ascii_hexdigit())
+        .find(|t| t.len() == 40)
+        .map(str::to_ascii_lowercase)
+}
+
+/// The lane's checkout: its worktree, else its work dir if that is a repo.
+fn lane_tree(lane: &str) -> Option<PathBuf> {
+    crate::api::session_verbs::worker_worktree(lane)
+        .or_else(|| Some(PathBuf::from(crate::api::session_verbs::session_work_dir(lane))).filter(|p| p.join(".git").exists()))
+}
+
+/// Run `cmd` with `sh -c` in `dir`, the lane's interpreters first on PATH.
+/// Returns (exit 0, combined output tail).
+async fn sh(dir: &Path, cmd: &str, prefix: &str, timeout: Duration) -> (bool, String) {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let path = if prefix.is_empty() { path } else { format!("{prefix}:{path}") };
+    let fut = tokio::process::Command::new("sh").arg("-c").arg(cmd).current_dir(dir).env("PATH", path)
+        .kill_on_drop(true).output();
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(Ok(o)) => {
+            let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+            t.push_str(&String::from_utf8_lossy(&o.stderr));
+            (o.status.success(), tail(t.trim(), 1500))
+        }
+        Ok(Err(e)) => (false, format!("could not run: {e}")),
+        Err(_) => (false, format!("timed out after {}s", timeout.as_secs())),
+    }
+}
+
+/// Some(true) when `deployed` contains `sha`, Some(false) when it does not,
+/// None when git cannot tell (an object it does not have, even after a fetch).
+async fn contains(tree: &Path, sha: &str, deployed: &str) -> Option<bool> {
+    for attempt in 0..2 {
+        let st = tokio::process::Command::new("git").arg("-C").arg(tree)
+            .args(["merge-base", "--is-ancestor", sha, deployed]).output().await.ok()?;
+        match st.status.code() {
+            Some(0) => return Some(true),
+            Some(1) => return Some(false),
+            _ if attempt == 0 => {
+                let _ = git(tree, &["fetch", "-q", "origin"]).await;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+async fn note_on_card(state: &AppState, card: &str, note: String, deploy_state: &str, tries: i64, log: &str, reopen: bool) -> bool {
+    let (c, st, lg, now) = (card.to_string(), deploy_state.to_string(), log.to_string(), crate::config::now_f64());
+    let r = state.store.write_async(move |conn| {
+        conn.execute("UPDATE card_contracts SET deploy_state = ?2, deploy_tries = ?3, deploy_log = ?4 WHERE card = ?1",
+            rusqlite::params![c, st, tries, lg])?;
+        let Some(mut row) = crate::db::board_store::get_issue(conn, &c)? else {
+            return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+        };
+        row.desc.push_str(&note);
+        let from = row.status.clone();
+        crate::db::board_store::save_patched(conn, &mut row)?;
+        if reopen && from == "done" {
+            conn.execute("UPDATE card_contracts SET state = 'frozen', deploy_state = NULL, at = ?2 WHERE card = ?1", rusqlite::params![c, now])?;
+            let opts = crate::db::advance::AdvanceOpts {
+                expected_from: Some(from),
+                gate_ack: true,
+                skip_continuation: true,
+                reason: Some(note.trim().to_string()),
+                ..Default::default()
+            };
+            if let Ok(Ok(out)) = crate::db::advance::advance(conn, &c, "doing", ACTOR, &opts) {
+                return Ok(crate::db::WriteOutcome { applied: true, events: out.events });
+            }
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    r.is_ok()
+}
+
+/// One pass of the deploy watch. Returns (cards considered, lanes whose
+/// production sha could not be read).
+pub async fn watch_deploys(state: &AppState) -> (usize, usize) {
+    type Row = (String, Option<String>, Option<String>, String, i64, f64);
+    let rows: Vec<Row> = state.store.read_async(|c| {
+        let mut st = c.prepare("SELECT card, sha, deploy_check, deploy_state, deploy_tries, COALESCE(deploy_at, at, frozen_at)
+                                FROM card_contracts WHERE kind = 'deploy' AND deploy_state IN ('waiting', 'retry', 'stale')")?;
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+            .collect::<rusqlite::Result<Vec<Row>>>()?;
+        Ok(v)
+    }).await.unwrap_or_default();
+    let home = crate::config::amux_home();
+    let now = crate::config::now_f64();
+    let mut deployed: std::collections::HashMap<String, Option<String>> = Default::default();
+    let mut unmeasured_lanes = 0usize;
+    for (card, sha, check, dstate, tries, since) in &rows {
+        let card_s = card.clone();
+        let lane = state.store.read_async(move |c| Ok(crate::db::board_store::get_issue(c, &card_s)?)).await
+            .ok().flatten().and_then(|r| r.session).unwrap_or_default();
+        let (Some(sha), Some(check), Some(tree)) = (sha, check, lane_tree(&lane)) else {
+            tracing::warn!(card, lane, measured = false, n_considered = 1, verdict = "contract_deploy_unmeasured",
+                why_unmeasured = "no verified sha, post-deploy check or lane checkout", "a deploy card cannot be watched");
+            continue;
+        };
+        if !deployed.contains_key(&lane) {
+            let prod = match lane_setting(&home, &lane, DEPLOY_SHA_CMD).map(|v| v.trim().trim_matches('"').to_string()).filter(|v| !v.is_empty()) {
+                Some(cmd) => {
+                    let (ok, out) = sh(&tree, &cmd, "", Duration::from_secs(60)).await;
+                    if ok { parse_sha(&out) } else { None }
+                }
+                None => None,
+            };
+            if prod.is_none() {
+                unmeasured_lanes += 1;
+                tracing::warn!(lane, measured = false, n_considered = 1, verdict = "contract_deploy_unmeasured",
+                    why_unmeasured = "the lane's AMUX_DEPLOY_SHA_CMD printed no full sha", "could not read production's deployed sha");
+            }
+            deployed.insert(lane.clone(), prod);
+        }
+        let Some(prod) = deployed.get(&lane).cloned().flatten() else { continue };
+        match contains(&tree, sha, &prod).await {
+            Some(true) => {}
+            Some(false) => {
+                if dstate != "stale" && now - since > DEPLOY_STALE_S {
+                    let note = format!("\nContract rule 2b: verified commit {sha} has not reached production (at {prod}) {:.0} h after done. The post-deploy check runs when it does.", (now - since) / 3600.0);
+                    note_on_card(state, card, note, "stale", *tries, &format!("production at {prod}"), false).await;
+                    tracing::warn!(card, lane, sha, prod, measured = true, n_considered = 1, verdict = "contract_deploy_stale",
+                        "a deploy card's verified commit has waited over 24 h for production");
+                }
+                continue;
+            }
+            None => {
+                tracing::warn!(card, lane, sha, prod, measured = false, n_considered = 1, verdict = "contract_deploy_unmeasured",
+                    why_unmeasured = "git could not compare the verified and deployed shas", "deploy ancestry unknown");
+                continue;
+            }
+        }
+        let timeout = lane_setting(&home, &lane, "AMUX_CONTRACT_DEPLOY_TIMEOUT_S")
+            .and_then(|v| v.trim().trim_matches('"').parse::<u64>().ok()).unwrap_or(DEPLOY_CHECK_TIMEOUT_S).clamp(1, 3600);
+        let (ok, out) = sh(&tree, check, &verify_path_prefix(&tree, &lane), Duration::from_secs(timeout)).await;
+        if ok {
+            let note = format!("\nDeploy-verified (contract rule 2b): production at {prod} contains {sha}; post-deploy check `{check}` exited 0.");
+            note_on_card(state, card, note, "passed", tries + 1, &tail(&out, 500), false).await;
+            tracing::info!(card, lane, sha, prod, measured = true, n_considered = 1, verdict = "contract_deploy_passed",
+                "the post-deploy check passed in production");
+            continue;
+        }
+        let tries = tries + 1;
+        if tries < DEPLOY_TRIES {
+            note_on_card(state, card, String::new(), "retry", tries, &out, false).await;
+            tracing::info!(card, lane, sha, prod, tries, measured = true, n_considered = 1, verdict = "contract_deploy_retry",
+                reason = %tail(&out, 300), "the post-deploy check failed; retrying next pass");
+            continue;
+        }
+        let note = format!("\nContract rule 2b: post-deploy check `{check}` failed {tries} times in production at {prod}; reopened to doing.");
+        note_on_card(state, card, note, "failed", tries, &out, true).await;
+        tracing::warn!(card, lane, sha, prod, tries, measured = true, n_considered = 1, verdict = "contract_deploy_failed",
+            reason = %tail(&out, 300), "the post-deploy check failed in production; the card is back in doing");
+        let text = format!(
+            "[amux contract] {card} is back in doing: its post-deploy check failed {tries} times in production at {prod}.\n\n{}\n\nFix and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\"}}.",
+            tail(&out, 800)
+        );
+        let _ = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-deploy", ACTOR).await;
+    }
+    tracing::info!(measured = true, n_considered = rows.len(), unmeasured_lanes, "contract deploy watch pass");
+    (rows.len(), unmeasured_lanes)
+}
+
+// ---------------------------------------------------------------------------
 // Rule 14: per-rule counters (AH-379)
 // ---------------------------------------------------------------------------
 
@@ -431,6 +679,7 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
 pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
+    ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
 ];
@@ -500,7 +749,10 @@ mod tests {
         Card { id: "T-1".into(), lane: "lane".into(), status: status.into(), item_type: ty.into(), acceptance: acceptance.map(String::from) }
     }
     fn frozen() -> Contract {
-        Contract { card: "T-1".into(), acceptance: "it works".into(), command: "make test".into(), hash: "h".into(), state: "frozen".into(), sha: None, amended: false }
+        Contract { card: "T-1".into(), acceptance: "it works".into(), command: "make test".into(), hash: "h".into(), state: "frozen".into(), sha: None, amended: false, kind: "code".into(), deploy_check: None }
+    }
+    fn dflt(verify: Option<&str>) -> Defaults {
+        Defaults { verify: verify.map(String::from), ..Default::default() }
     }
     fn code(a: &Action) -> String {
         match a {
@@ -515,35 +767,35 @@ mod tests {
     #[test]
     fn a_code_card_needs_acceptance_and_a_command_to_enter_doing() {
         let b = json!({"status": "doing"});
-        assert_eq!(code(&decide(&card("todo", "code", None), &b, false, None, Some("make test"))), "409", "no acceptance");
-        assert_eq!(code(&decide(&card("todo", "code", Some("it works")), &b, false, None, None)), "409", "no command");
-        assert_eq!(code(&decide(&card("todo", "code", Some("[]")), &b, false, None, Some("x"))), "409", "an empty list is not acceptance");
-        match decide(&card("todo", "code", Some("it works")), &b, false, None, Some("make test")) {
+        assert_eq!(code(&decide(&card("todo", "code", None), &b, false, None, &dflt(Some("make test")))), "409", "no acceptance");
+        assert_eq!(code(&decide(&card("todo", "code", Some("it works")), &b, false, None, &dflt(None))), "409", "no command");
+        assert_eq!(code(&decide(&card("todo", "code", Some("[]")), &b, false, None, &dflt(Some("x")))), "409", "an empty list is not acceptance");
+        match decide(&card("todo", "code", Some("it works")), &b, false, None, &dflt(Some("make test"))) {
             Action::PassThenFreeze(c) => assert_eq!((c.command.as_str(), c.acceptance.as_str()), ("make test", "it works")),
             _ => panic!("a complete contract freezes"),
         }
         let inline = json!({"status": "doing", "acceptance_criteria": ["it works"], "verify_cmd": "cargo test"});
-        assert_eq!(code(&decide(&card("todo", "code", None), &inline, false, None, None)), "freeze", "fields in the PATCH count");
-        assert_eq!(code(&decide(&card("todo", "chore", None), &b, false, None, None)), "pass", "only code cards");
+        assert_eq!(code(&decide(&card("todo", "code", None), &inline, false, None, &dflt(None))), "freeze", "fields in the PATCH count");
+        assert_eq!(code(&decide(&card("todo", "chore", None), &b, false, None, &dflt(None))), "pass", "only code cards");
     }
 
     #[test]
     fn a_frozen_contract_and_force_belong_to_the_owner() {
         let edit = json!({"verify_cmd": "true"});
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &edit, false, Some(&frozen()), None)), "409");
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &edit, true, Some(&frozen()), None)), "pass", "the owner may edit");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &edit, false, Some(&frozen()), &dflt(None))), "409");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &edit, true, Some(&frozen()), &dflt(None))), "pass", "the owner may edit");
         let force = json!({"status": "done", "force": true, "reason": "x"});
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &force, false, Some(&frozen()), None)), "403");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &force, false, Some(&frozen()), &dflt(None))), "403");
     }
 
     #[test]
     fn done_is_verified_by_the_server_and_cannot_satisfy_goes_to_the_owner() {
         let done = json!({"status": "done", "evidence": "trust me", "gate_checked": ["x"]});
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, Some(&frozen()), None)), "pass", "the route starts verification");
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, None, None)), "409", "nothing frozen to verify");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, Some(&frozen()), &dflt(None))), "pass", "the route starts verification");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, None, &dflt(None))), "409", "nothing frozen to verify");
         let running = Contract { state: "verifying".into(), ..frozen() };
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, Some(&running), None)), "202");
-        match decide(&card("doing", "code", Some("a")), &json!({"status": "cannot_satisfy", "reason": "the fixture is gone"}), false, Some(&frozen()), None) {
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, Some(&running), &dflt(None))), "202");
+        match decide(&card("doing", "code", Some("a")), &json!({"status": "cannot_satisfy", "reason": "the fixture is gone"}), false, Some(&frozen()), &dflt(None)) {
             Action::Rewrite(v) => {
                 assert_eq!(v["status"], "needsyou");
                 assert!(v["ask_question"].as_str().unwrap().contains("the fixture is gone"));
@@ -555,13 +807,43 @@ mod tests {
     #[test]
     fn a_frozen_verify_command_can_be_amended_once_with_a_reason() {
         let amend = json!({"verify_cmd": "cd server && .venv/bin/python -m pytest -q", "reason": "bare python lacks deps"});
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &amend, false, Some(&frozen()), None)), "amend");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &amend, false, Some(&frozen()), &dflt(None))), "amend");
         let no_reason = json!({"verify_cmd": "x"});
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &no_reason, false, Some(&frozen()), None)), "409");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &no_reason, false, Some(&frozen()), &dflt(None))), "409");
         let twice = Contract { amended: true, state: "failed".into(), ..frozen() };
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &amend, false, Some(&twice), None)), "409", "only once");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &amend, false, Some(&twice), &dflt(None))), "409", "only once");
         let acceptance = json!({"acceptance_criteria": ["weaker"], "verify_cmd": "x", "reason": "r"});
-        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &acceptance, false, Some(&frozen()), None)), "409", "acceptance stays owner-only");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &acceptance, false, Some(&frozen()), &dflt(None))), "409", "acceptance stays owner-only");
+    }
+
+    #[test]
+    fn a_deploy_card_freezes_a_post_deploy_check_only_when_production_is_observable() {
+        let b = json!({"status": "doing", "verify_kind": "deploy", "deploy_check": "curl -fsS https://x/health"});
+        let probe = Defaults { verify: Some("make test".into()), deploy_probe: true, ..Default::default() };
+        match decide(&card("todo", "code", Some("a")), &b, false, None, &probe) {
+            Action::PassThenFreeze(c) => {
+                assert_eq!((c.kind.as_str(), c.deploy_check.as_deref()), ("deploy", Some("curl -fsS https://x/health")));
+                assert_ne!(c.hash, hash_of(&c.acceptance, &c.command, None), "the post-deploy check is part of the frozen hash");
+            }
+            _ => panic!("a deploy card with a check and a probe freezes"),
+        }
+        assert_eq!(code(&decide(&card("todo", "code", Some("a")), &b, false, None, &dflt(Some("make test")))), "409", "no production probe on the lane");
+        let no_check = json!({"status": "doing", "verify_kind": "deploy"});
+        assert_eq!(code(&decide(&card("todo", "code", Some("a")), &no_check, false, None, &probe)), "409", "no check");
+        let lane_check = Defaults { deploy_check: Some("make smoke".into()), ..probe };
+        assert_eq!(code(&decide(&card("todo", "code", Some("a")), &no_check, false, None, &lane_check)), "freeze", "the lane's CC_DEPLOY_CHECK counts");
+        let bogus = json!({"status": "doing", "verify_kind": "vibes"});
+        assert_eq!(code(&decide(&card("todo", "code", Some("a")), &bogus, false, None, &lane_check)), "409", "unknown kind");
+        let edit = json!({"deploy_check": "true"});
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &edit, false, Some(&frozen()), &lane_check)), "409", "the check is frozen too");
+    }
+
+    #[test]
+    fn the_deployed_sha_is_the_first_full_hex_token() {
+        assert_eq!(parse_sha("eaa27b3cddd44cc1205b59a7985b6f13935cb814\n").as_deref(), Some("eaa27b3cddd44cc1205b59a7985b6f13935cb814"));
+        assert_eq!(parse_sha("deploy_sha: \"EAA27B3CDDD44CC1205B59A7985B6F13935CB814\"").as_deref(), Some("eaa27b3cddd44cc1205b59a7985b6f13935cb814"));
+        assert_eq!(parse_sha("unknown"), None, "a probe that names no sha is unmeasured, not 'not deployed'");
+        assert_eq!(parse_sha("abc1234"), None, "short shas are ambiguous");
     }
 
     #[test]

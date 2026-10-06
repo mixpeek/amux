@@ -134,6 +134,7 @@ pub mod ids {
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
+    pub const CONTRACT_DEPLOY: &str = "contract-deploy";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -186,6 +187,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
     ids::NEEDS_INPUT_AUTO,
+    ids::CONTRACT_DEPLOY,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -845,9 +847,9 @@ pub const CATALOG: &[Doc] = &[
         id: ids::NEEDS_INPUT_AUTO,
         name: "Needs-input auto-approve",
         purpose: "Every minute, approves each NEW needs-input item that its worker's policy \
-                  covers (judgment asks and spend up to $50 by default; production data and \
-                  outbound sends off), exactly as the triage sheet's Approve does, once per \
-                  item. Credential and access asks are never approved. AMUX-5301.",
+                  covers, exactly as the triage sheet's Approve does, once per item. Never \
+                  money, production data, outside parties, credentials or scope decisions \
+                  (contract rule 11). AMUX-5301.",
         env: &[
             EnvControl {
                 var: "AMUX_NEEDS_INPUT_AUTO",
@@ -868,6 +870,16 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/needs-input/auto"),
+    },
+    Doc {
+        id: ids::CONTRACT_DEPLOY,
+        name: "Contract deploy watch",
+        purpose: "Every 5 minutes, for each deploy card (contract rule 2b) whose server-verified \
+                  commit production now contains, runs its frozen post-deploy check and records \
+                  the result on the card; three failures reopen it to doing.",
+        env: NO_ENV,
+        pref: None,
+        detail: Some("/api/contract/counters"),
     },
 ];
 
