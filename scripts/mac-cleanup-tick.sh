@@ -1272,21 +1272,46 @@ keep_docker_context() { # <profile>
 # it changed for LANE_TMP_IDLE_MIN minutes (the newest file decides, so a cargo
 # target dir in use is kept even if its top-level mtime is old) and no running
 # process has its cwd at or under it.
+#
+# Two more keeps (gs12-data, 2026-10-06): the 12 h sweep deleted a private
+# kubeconfig and four scripts, one of them run by enabled schedules SCHED-598
+# and SCHED-599. A lane's TMPDIR is also where its shell schedules live.
+#  - An entry an enabled schedule's command names is kept. If the schedules
+#    cannot be read, nothing is reaped this tick: a sweep that cannot see what
+#    is in use must not guess.
+#  - A plain file under LANE_TMP_KEEP_FILE_KB is kept. Those are hand-written
+#    scripts and configs; the space this reaper exists for (101 GB on
+#    2026-10-04) was build trees and extracts, never small files.
 reap_lane_tmp() { # <dry:0|1>
-  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0
+  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0
+  local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
   [ -d "$root" ] || { echo "mac-cleanup: lane tmp: no $root"; return 0; }
+  db=${LANE_TMP_SCHED_DB:-${AMUX_HOME:-$HOME/.amux}/amux.db}
+  # Every ~/.amux/tmp/<worker>/<entry> an enabled schedule names, as
+  # "<worker>/<entry>" lines. `~`, $HOME and the literal home all count.
+  if ! named=$(sqlite3 -readonly -cmd '.timeout 5000' "$db" \
+      "SELECT command FROM schedules WHERE enabled=1 AND deleted IS NULL" 2>/dev/null); then
+    echo "mac-cleanup: lane tmp: WARN schedules unreadable ($db), reaped nothing this tick (verdict=lane_tmp_schedules_unmeasured)"
+    return 0
+  fi
+  named=$(printf '%s\n' "$named" | grep -oE '(~|\$HOME|\$\{HOME\}|'"$HOME"')/\.amux/tmp/[^/[:space:]"'"'"';,`)|&<>]+/[^/[:space:]"'"'"';,`)|&<>]+' \
+    | sed -E 's#^.*/\.amux/tmp/##' | sort -u)
   inuse=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed 's|^/private||')
   for e in "$root"/*/*; do
     [ -e "$e" ] || continue
     if [ "$n" -ge "${LANE_TMP_MAX:-300}" ]; then capped=1; break; fi
     [ -n "$(find "$e" -mmin -"$LANE_TMP_IDLE_MIN" -print -quit 2>/dev/null)" ] && continue
+    if printf '%s\n' "$named" | grep -qxF "${e#"$root"/}"; then n_named=$((n_named+1)); continue; fi
+    if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
+      n_small=$((n_small+1)); continue
+    fi
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
     k=$(du -sk "$e" 2>/dev/null | cut -f1)
     if [ "$dry" = 1 ]; then n=$((n+1)); kb=$((kb+${k:-0})); continue; fi
     rm -rf -- "${e:?}" 2>/dev/null && { n=$((n+1)); kb=$((kb+${k:-0})); }
   done
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root)$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")"
 }
 
 reap_user_tmp() { # <dry:0|1>
