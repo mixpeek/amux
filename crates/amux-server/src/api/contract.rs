@@ -644,6 +644,9 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
             }).await;
             tracing::info!(card, lane, sha = %sha, ok = r.is_ok(), measured = true, n_considered = 1,
                 verdict = "contract_verify_passed", "server verification passed; done granted");
+            if r.is_ok() {
+                crate::api::contract_fresh::mark_pending(lane, card); // rule 7
+            }
         }
         Err((sha, why)) => {
             let short = tail(&why, 1500);
@@ -1078,6 +1081,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
     ("3", &["contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
+    ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
     ("A5", &["contract_dispatch_held"]),
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),

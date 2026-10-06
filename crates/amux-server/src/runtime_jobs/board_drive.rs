@@ -1309,6 +1309,9 @@ impl LiveFleet {
         if !crate::api::session_verbs::is_running(lane).await {
             return Err("worker vanished before work delivery could be queued".into());
         }
+        // Contract rule 7: a pending card boundary recycles the conversation
+        // and prefixes a brief (no-op for lanes outside the contract).
+        let text = &crate::api::contract_fresh::at_dispatch(&self.state, lane, text).await;
         crate::api::session_verbs::steer_enqueue(&self.state, lane, text, GUARD, "")
             .await
             .map_err(str::to_string)?;
