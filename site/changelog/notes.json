@@ -1,5 +1,32 @@
 [
   {
+    "hash": "f714f5af",
+    "short": "f714f5a",
+    "title": "Board writer unblocked; orphaned verifications resume automatically",
+    "date": "2026-10-06",
+    "type": "fix",
+    "tags": ["board", "reliability"],
+    "description": "A frozen PATCH that left the board writer wedged now self-heals: orphaned verification tasks resume, and the dashboard reports exactly which card froze the write and why."
+  },
+  {
+    "hash": "1374cc81",
+    "short": "1374cc8",
+    "title": "File shortcuts are now scoped: global, group, or worker — all server-side",
+    "date": "2026-10-06",
+    "type": "feat",
+    "tags": ["files", "shortcuts"],
+    "description": "Keyboard shortcuts in the Files panel are now stored server-side at three scopes: global (every session), group (workers sharing a group), or individual worker. Shortcuts no longer reset on browser refresh and are shared across all dashboard clients for the same session."
+  },
+  {
+    "hash": "37e53163",
+    "short": "37e5316",
+    "title": "Contract rule 4: each rule-4 lane launches in its own isolated worktree",
+    "date": "2026-10-06",
+    "type": "feat",
+    "tags": ["contract", "workspace-isolation"],
+    "description": "Workers operating under contract rule 4 now automatically get their own git worktree, preventing shared-checkout race conditions between parallel agents working on the same repository."
+  },
+  {
     "hash": "3b8b7d63",
     "short": "3b8b7d6",
     "title": "Dashboard stays connected when the server rebuilds",
