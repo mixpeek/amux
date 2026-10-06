@@ -185,7 +185,7 @@ test('connection status follows reads while pending write errors remain visible 
   const connection = element('connection');
   ctx.document.querySelectorAll = () => [connection];
   Object.assign(ctx, {_sessionLoadError:null, _boardReadError:'', _syncReadError:'',
-    _liveSSE:true, _recordConnState() {}, _sessionReadNotice:() => ''});
+    _liveSSE:true, _sseGraceUntil:0, _recordConnState() {}, _sessionReadNotice:() => ''});
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Live');
   ctx._writeError = '500: pool timeout';
   ctx.updateConnectionStatus(); assert.equal(connection.textContent, 'Live');
@@ -398,7 +398,7 @@ test('a newly queued send stays quiet while a stuck send shows its waiting state
   const badge = element('conn-status'); badge.id = 'conn-status';
   ctx.document.querySelectorAll = () => [badge];
   Object.assign(ctx, {_sessionLoadError:null, _boardReadError:'', _syncReadError:'',
-    _liveSSE:true, _recordConnState() {}, _sessionReadNotice:() => '', _workersAsOfNote:() => ''});
+    _liveSSE:true, _sseGraceUntil:0, _recordConnState() {}, _sessionReadNotice:() => '', _workersAsOfNote:() => ''});
   const classes = new Set();
   element('offline-banner').classList = {add: x=>classes.add(x), remove:x=>classes.delete(x)};
   ctx.offlineQueue = [{url:'/api/sessions/worker/send',timestamp:Date.now()}];
@@ -613,6 +613,25 @@ test('distinct fast taps fire while synthetic click echoes remain suppressed', (
 });
 
 
+test('a dropped stream reads Live during the reconnect grace, then Polling', () => {
+  // A server rebuild ends every stream; the pill must not flash a disconnect
+  // while the first reconnect runs (3b8b7d63).
+  const {ctx, element} = fixture(['updateConnectionStatus']);
+  const badge = element('conn-status'); badge.id = 'conn-status';
+  ctx.document.querySelectorAll = () => [badge];
+  Object.assign(ctx, {_sessionLoadError:null, _boardReadError:'', _syncReadError:'', _liveSSE:false,
+    _sseGraceUntil:Date.now() + 5000, _recordConnState() {}, _sessionReadNotice:() => '', _workersAsOfNote:() => '', online:true});
+  ctx.offlineQueue = [];
+  ctx.updateConnectionStatus();
+  assert.equal(badge.textContent, 'Live', 'inside the grace a dropped stream still reads Live');
+  ctx._sseGraceUntil = Date.now() - 1;
+  ctx.updateConnectionStatus();
+  assert.equal(badge.textContent, 'Polling', 'after the grace the true state shows');
+  ctx._sseGraceUntil = Date.now() + 5000; ctx.online = false;
+  ctx.updateConnectionStatus();
+  assert.equal(badge.textContent, 'Offline', 'the grace never hides a real offline');
+});
+
 test('offline banner distinguishes blocked work from changes that will retry', () => {
   // The distinction now lives in the status badge (blocked wins: "N failed")
   // and the status modal; the homepage banner is always hidden (07b42586).
@@ -620,7 +639,7 @@ test('offline banner distinguishes blocked work from changes that will retry', (
   const badge = element('conn-status'); badge.id = 'conn-status';
   ctx.document.querySelectorAll = () => [badge];
   Object.assign(ctx, {_sessionLoadError:null, _boardReadError:'', _syncReadError:'',
-    _liveSSE:false, _recordConnState() {}, _sessionReadNotice:() => '', _workersAsOfNote:() => '', online:false});
+    _liveSSE:false, _sseGraceUntil:0, _recordConnState() {}, _sessionReadNotice:() => '', _workersAsOfNote:() => '', online:false});
   ctx.offlineQueue = [{id:'blocked',state:'blocked',error:'409: revision conflict',url:'/api/board/TASK-1',timestamp:Date.now()}];
   ctx.updateConnectionStatus();
   assert.equal(badge.textContent, '1 failed');
