@@ -20,7 +20,10 @@ git clone -q origin.git lane 2>/dev/null; cd lane || exit 1
 git config user.email t@t; git config user.name t
 echo a > f; git add f; git commit -qm base; git push -q origin HEAD:main 2>/dev/null
 fail=0
-run() { HOME="$H" AMUX_URL="http://127.0.0.1:$port" AMUX_LAND_NOTIFY=0 AMUX_WORKER="$1" bash "$AM" land --tries 1 --no-batch --priority --reason "$2" >/dev/null 2>&1; }
+# CC_HOME/AMUX_HOME pinned to the fixture: inherited from an amux pane they
+# point at the real ~/.amux, whose endpoint.json heals AMUX_URL to the live
+# server, and the fixture card is never read.
+run() { HOME="$H" CC_HOME="$H/.amux" AMUX_HOME="$H/.amux" AMUX_URL="http://127.0.0.1:$port" AMUX_LAND_NOTIFY=0 AMUX_WORKER="$1" bash "$AM" land --tries 1 --no-batch --priority --reason "$2" >/dev/null 2>&1; }
 echo b > f; git commit -qm one -- f
 run lane-spend "fix forward of a Fast Checks red on main (GG-41)"; rc=$?
 git fetch -q origin
