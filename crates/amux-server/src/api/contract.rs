@@ -1217,6 +1217,22 @@ async fn review_one(state: &AppState, card: String) {
     }).await.ok();
     let Some((Some(k), Some(row), rounds)) = facts else { return };
     let lane = row.session.clone().unwrap_or_default();
+    // A card that left done while its review waited (verified another way,
+    // reopened, discarded) has nothing to review. 2026-10-06: GS-230 was
+    // already verified, its review's move to verified was refused, the
+    // refusal rolled back the review's own state, and it was reviewed again
+    // every pass: 12 paid reviews of one card in an hour.
+    if row.status != "done" {
+        let (c, st) = (card.clone(), row.status.clone());
+        let _ = state.store.write_async(move |conn| {
+            conn.execute("UPDATE card_contracts SET review_state = 'superseded', review_log = ?2 WHERE card = ?1",
+                rusqlite::params![c, format!("card left done (now {st}) before its review ran")])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await;
+        tracing::info!(card, lane, status = %row.status, measured = true, n_considered = 1, verdict = "contract_review_superseded",
+            "the card left done before its review ran; no review is spent on it");
+        return;
+    }
     let round = rounds + 1;
     tracing::info!(card, lane, round, measured = true, n_considered = 1, verdict = "contract_review_started",
         "a fresh reviewer started for a verified-eligible card");
@@ -1248,6 +1264,8 @@ async fn review_one(state: &AppState, card: String) {
     };
     let (c, n, rv, ts) = (card.clone(), note.clone(), reviewer.clone(), target.to_string());
     let owner = crate::api::turn_end::owner_name();
+    let refused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refused2 = refused.clone();
     let r = state.store.write_async(move |conn| {
         conn.execute("UPDATE card_contracts SET review_state = ?2, review_rounds = ?3, review_log = ?4, review_at = ?5 WHERE card = ?1",
             rusqlite::params![c, rstate, round, n, now])?;
@@ -1278,10 +1296,17 @@ async fn review_one(state: &AppState, card: String) {
         };
         match crate::db::advance::advance(conn, &c, &ts, ACTOR, &opts)? {
             Ok(out) => Ok(crate::db::WriteOutcome { applied: true, events: out.events }),
-            Err(why) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("{why:?}"))))),
+            // Keep the review's record even when the card's move is refused;
+            // rolling it back left the review "running" and it ran again.
+            Err(why) => {
+                tracing::warn!(card = %c, to = %ts, reason = ?why, measured = true, n_considered = 1,
+                    verdict = "contract_review_transition_refused", "the review is recorded but the card's move was refused");
+                refused2.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }
         }
     }).await;
-    let ok = r.is_ok();
+    let ok = r.is_ok() && !refused.load(std::sync::atomic::Ordering::Relaxed);
     match target {
         "verified" => tracing::info!(card, lane, round, model, ok, measured = true, n_considered = 1, verdict = "contract_review_passed",
             "the harness reviewer passed the card; verified granted"),
@@ -1361,7 +1386,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
-    ("3", &["contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("3", &["contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),

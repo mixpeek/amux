@@ -16083,6 +16083,44 @@ mod af701_archive_guard_tests {
         let _ = child.wait();
     }
 
+    /// GS-230, 2026-10-06: a card verified another way while its review
+    /// waited was reviewed again every pass (12 paid reviews in an hour),
+    /// because the refused move rolled back the review's own state. A card
+    /// that left done gets no review, and its review state settles.
+    #[tokio::test]
+    async fn a_card_that_left_done_is_not_reviewed_again() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let marker = h.join("cli-ran");
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, format!("#!/bin/sh\ncat >/dev/null\ntouch '{}'\necho '{{\"verdict\": \"pass\", \"findings\": []}}'\n", marker.display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(h.join("sessions/lane-lv.env"), format!("AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", cli.display())).unwrap();
+        let id = seed(&store, "lane-lv", "verified");
+        let id2 = id.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE issues SET type='code' WHERE id=?1", [&id2])?;
+            conn.execute("INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, review_state, review_at) VALUES (?1, 'a', 'true', 'h', 0, 'passed', 'abc', 'pending', 0)", [&id2])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let rs = |id: &str| -> Option<String> {
+            store.read().unwrap().query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(super::super::contract::run_reviews(&state).await.1, 1);
+        for _ in 0..100 {
+            if rs(&id).as_deref() == Some("superseded") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(rs(&id).as_deref(), Some("superseded"));
+        assert_eq!(super::super::contract::run_reviews(&state).await, (0, 0), "nothing left to review");
+        assert!(!marker.exists(), "no reviewer ran for a card that left done");
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();
