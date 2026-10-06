@@ -16017,6 +16017,72 @@ mod af701_archive_guard_tests {
         assert_eq!(super::super::contract::run_reviews(&state).await, (1, 1), "the orphaned review is pending again and claimed");
     }
 
+    /// Rule 3 restart safety: a reviewer that finished while the server was
+    /// down is read, not rerun; one still running is waited on, not duplicated.
+    /// The stand-in CLI would FAIL the card and leaves a marker, so a rerun is
+    /// visible both ways.
+    #[tokio::test]
+    async fn a_review_that_outlived_a_restart_is_adopted_not_rerun() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let out = std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap();
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let marker = h.join("cli-ran");
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, format!("#!/bin/sh\ncat >/dev/null\ntouch '{}'\necho '{{\"verdict\": \"fail\", \"findings\": [\"rerun\"]}}'\n", marker.display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(h.join("sessions/lane-ad.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        let now = crate::config::now_f64();
+        let card = |sha: String| {
+            let id = seed(&store, "lane-ad", "done");
+            let id2 = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [&id2])?;
+                conn.execute("INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, review_state, review_at) VALUES (?1, 'a', 'true', 'h', 0, 'passed', ?2, 'running', ?3)",
+                    rusqlite::params![id2, sha, now])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let dir = |id: &str| h.join("tmp/contract").join(format!("{id}-review-{}", &sha[..12]));
+        let pass = r#"{"verdict": "pass", "findings": []}"#;
+
+        // Finished while the server was down.
+        let a = card(sha.clone());
+        std::fs::create_dir_all(dir(&a)).unwrap();
+        std::fs::write(dir(&a).join(".amux-review.out"), format!("thinking\n{pass}\n")).unwrap();
+        std::fs::write(dir(&a).join(".amux-review.exit"), "0\n").unwrap();
+        // Still running: a detached stand-in that finishes in a moment.
+        let b = card(sha.clone());
+        std::fs::create_dir_all(dir(&b)).unwrap();
+        let mut child = std::process::Command::new("sh").arg("-c")
+            .arg(format!("sleep 1; echo '{pass}' > .amux-review.out; echo 0 > .amux-review.exit"))
+            .current_dir(dir(&b)).spawn().unwrap();
+        std::fs::write(dir(&b).join(".amux-review.pid"), child.id().to_string()).unwrap();
+
+        assert_eq!(super::super::contract::run_reviews(&state).await, (2, 2));
+        for _ in 0..200 {
+            if current(&store, &a).status == "verified" && current(&store, &b).status == "verified" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(current(&store, &a).status, "verified", "the finished result was consumed");
+        assert_eq!(current(&store, &b).status, "verified", "the running reviewer was waited on");
+        assert!(!marker.exists(), "no reviewer was started again");
+        assert!(!dir(&a).exists() && !dir(&b).exists(), "consumed review directories are cleared");
+        let _ = child.wait();
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();

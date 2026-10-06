@@ -582,6 +582,11 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// for lanes' checkouts, and Mixpeek's cost time on 39k files.
 async fn fresh_checkout(tree: &Path, tmp: &Path, sha: &str) -> Result<(), String> {
     let t = tmp.to_string_lossy().into_owned();
+    // A detached reviewer still running here, or a result nobody has read yet,
+    // is not a leftover (rule 3 restart safety).
+    if !matches!(review_job(tmp), ReviewJob::None) {
+        return Err(format!("{t} holds a reviewer run that is still live or unread"));
+    }
     let _ = git(tree, &["worktree", "remove", "--force", &t]).await;
     let _ = git(tree, &["worktree", "prune"]).await;
     if tmp.exists() && tmp.starts_with(crate::config::amux_home().join("tmp").join("contract")) {
@@ -673,7 +678,8 @@ fn verify_slots() -> &'static tokio::sync::Semaphore {
 /// Reviews running in this process, and the most that run at once.
 static LIVE_REVIEW: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(Default::default);
-const REVIEWS_AT_ONCE: usize = 2;
+// Tests share the process-wide LIVE_REVIEW set across parallel cases.
+const REVIEWS_AT_ONCE: usize = if cfg!(test) { 32 } else { 2 };
 
 fn spawn_verification(state: &AppState, card: &str, lane: &str) {
     if let Ok(mut live) = LIVE_VERIFY.lock() {
@@ -1063,49 +1069,142 @@ Finish with exactly one line of JSON and nothing after it:
     )
 }
 
-/// Run one reviewer. Ok((pass, findings, model)) or Err(why unmeasured).
+/// The reviewer runs DETACHED (its own process group, not killed with the
+/// server) and writes into its own checkout directory, so a server restart
+/// no longer throws a review away. 2026-10-06: the builder restarts the server
+/// on many commits and contract_review_recovered fired 10 to 13 times an
+/// hour, each one a review started over from scratch (up to its $2 budget).
+const REVIEW_OUT: &str = ".amux-review.out";
+const REVIEW_ERR: &str = ".amux-review.err";
+const REVIEW_PID: &str = ".amux-review.pid";
+const REVIEW_EXIT: &str = ".amux-review.exit";
+const REVIEW_PROMPT: &str = ".amux-review.prompt";
+
+#[derive(Debug, PartialEq)]
+enum ReviewJob {
+    /// No reviewer run in this directory.
+    None,
+    /// The reviewer's process is alive (pid, seconds since it started).
+    Running(u32, f64),
+    /// The reviewer exited; its output is waiting to be read.
+    Finished,
+}
+
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill").args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().is_ok_and(|s| s.success())
+}
+
+fn review_job(dir: &Path) -> ReviewJob {
+    if dir.join(REVIEW_EXIT).exists() {
+        return ReviewJob::Finished;
+    }
+    let Some(pid) = std::fs::read_to_string(dir.join(REVIEW_PID)).ok().and_then(|s| s.trim().parse::<u32>().ok()) else {
+        return ReviewJob::None;
+    };
+    if !pid_alive(pid) {
+        return ReviewJob::None;
+    }
+    let age = std::fs::metadata(dir.join(REVIEW_PID)).and_then(|m| m.modified()).ok()
+        .and_then(|t| t.elapsed().ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    ReviewJob::Running(pid, age)
+}
+
+/// Start the reviewer detached: `sh` runs the CLI with the prompt on stdin
+/// and writes stdout, stderr and finally the exit code into `dir`.
+fn launch_review(dir: &Path, cli: &str, args: &[String], prompt: &str) -> Result<u32, String> {
+    use std::os::unix::process::CommandExt;
+    std::fs::write(dir.join(REVIEW_PROMPT), prompt).map_err(|e| e.to_string())?;
+    let script = format!(
+        "\"$0\" \"$@\" < {REVIEW_PROMPT} > {REVIEW_OUT} 2> {REVIEW_ERR}; echo $? > {REVIEW_EXIT}.tmp && mv {REVIEW_EXIT}.tmp {REVIEW_EXIT}"
+    );
+    let mut child = std::process::Command::new("sh")
+        .arg("-c").arg(script).arg(cli).args(args)
+        .current_dir(dir)
+        .env_remove("CLAUDECODE").env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .env_remove("AMUX_SESSION").env_remove("AMUX_WORKER")
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn().map_err(|e| format!("could not run {cli}: {e}"))?;
+    let pid = child.id();
+    std::fs::write(dir.join(REVIEW_PID), pid.to_string()).map_err(|e| e.to_string())?;
+    // Reap it if this process is still here when it exits; after a restart
+    // the reviewer is reparented and the next pass reads its files instead.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(pid)
+}
+
+/// Wait for a reviewer run in `dir` to finish, up to REVIEW_TIMEOUT_S from its
+/// start, then read its verdict.
+async fn collect_review(dir: &Path, model: &str) -> Result<(bool, Vec<String>, String), String> {
+    loop {
+        match review_job(dir) {
+            ReviewJob::Finished => break,
+            ReviewJob::Running(pid, age) if age >= REVIEW_TIMEOUT_S as f64 => {
+                let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+                let _ = std::fs::write(dir.join(REVIEW_EXIT), "timeout");
+                return Err(format!("reviewer timed out after {REVIEW_TIMEOUT_S}s"));
+            }
+            ReviewJob::Running(..) => tokio::time::sleep(Duration::from_millis(500)).await,
+            ReviewJob::None => return Err("the reviewer exited without writing its result".into()),
+        }
+    }
+    let text = std::fs::read_to_string(dir.join(REVIEW_OUT)).unwrap_or_default();
+    let code = std::fs::read_to_string(dir.join(REVIEW_EXIT)).unwrap_or_default();
+    match parse_review(&text) {
+        Some((pass, findings)) => Ok((pass, findings, model.to_string())),
+        None => Err(format!("reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(),
+            tail(&format!("{text}{}", std::fs::read_to_string(dir.join(REVIEW_ERR)).unwrap_or_default()), 400))),
+    }
+}
+
+/// The directory a card's review runs in, for its verified sha.
+fn review_dir(card: &str, sha: &str) -> PathBuf {
+    crate::config::amux_home().join("tmp").join("contract").join(format!("{card}-review-{}", &sha[..12.min(sha.len())]))
+}
+
+/// Run one reviewer, or adopt the one a restarted server left behind.
+/// Ok((pass, findings, model)) or Err(why unmeasured).
 async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &str, round: i64) -> Result<(bool, Vec<String>, String), String> {
     let home = crate::config::amux_home();
     let tree = lane_tree(lane).ok_or_else(|| format!("lane {lane} has no checkout"))?;
     let sha = c.sha.clone().ok_or("the contract has no verified sha")?;
-    let tmp = home.join("tmp").join("contract").join(format!("{card}-review-{}", &sha[..12.min(sha.len())]));
+    let tmp = review_dir(card, &sha);
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
-    fresh_checkout(&tree, &tmp, &sha).await?;
     let model = reviewer_model(&home, lane);
-    let cli = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_CLI").map(|v| v.trim().trim_matches('"').to_string())
-        .filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into());
-    let budget = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_BUDGET_USD").and_then(|v| v.trim().trim_matches('"').parse::<f64>().ok())
-        .filter(|b| b.is_finite() && *b > 0.0).unwrap_or(2.0);
-    let mut cmd = tokio::process::Command::new(&cli);
-    cmd.args(["--print", "--model", &model, "--no-session-persistence",
-        "--allowedTools", "Read Grep Glob Bash(git log:*) Bash(git show:*) Bash(git diff:*)",
-        "--disallowedTools", "Edit Write NotebookEdit",
-        "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
-        "--settings", "{\"disableAllHooks\":true}",
-        "--max-budget-usd", &budget.to_string()])
-        .current_dir(&tmp)
-        .env_remove("CLAUDECODE").env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .env_remove("AMUX_SESSION").env_remove("AMUX_WORKER")
-        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let prompt = review_prompt(card, title, c, evidence, round);
-    let run = async {
-        use tokio::io::AsyncWriteExt;
-        let mut child = cmd.spawn().map_err(|e| format!("could not run {cli}: {e}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(prompt.as_bytes()).await.map_err(|e| e.to_string())?;
+    match review_job(&tmp) {
+        ReviewJob::Finished => {
+            tracing::info!(card, lane, measured = true, n_considered = 1, verdict = "contract_review_resumed_result",
+                "a reviewer finished while the server was down; its result is read, not rerun");
         }
-        child.wait_with_output().await.map_err(|e| e.to_string())
-    };
-    let out = tokio::time::timeout(Duration::from_secs(REVIEW_TIMEOUT_S), run).await;
-    let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
-    let out = out.map_err(|_| format!("reviewer timed out after {REVIEW_TIMEOUT_S}s"))??;
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    match parse_review(&text) {
-        Some((pass, findings)) => Ok((pass, findings, model)),
-        None => Err(format!("reviewer ({model}, exit {:?}) gave no verdict line: {}", out.status.code(),
-            tail(&format!("{text}{}", String::from_utf8_lossy(&out.stderr)), 400))),
+        ReviewJob::Running(pid, age) => {
+            tracing::info!(card, lane, pid, age_s = age as i64, measured = true, n_considered = 1, verdict = "contract_review_still_running",
+                "a reviewer outlived a server restart; waiting for it instead of starting another");
+        }
+        ReviewJob::None => {
+            fresh_checkout(&tree, &tmp, &sha).await?;
+            let cli = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_CLI").map(|v| v.trim().trim_matches('"').to_string())
+                .filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into());
+            let budget = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_BUDGET_USD").and_then(|v| v.trim().trim_matches('"').parse::<f64>().ok())
+                .filter(|b| b.is_finite() && *b > 0.0).unwrap_or(2.0);
+            let args: Vec<String> = ["--print", "--model", model.as_str(), "--no-session-persistence",
+                "--allowedTools", "Read Grep Glob Bash(git log:*) Bash(git show:*) Bash(git diff:*)",
+                "--disallowedTools", "Edit Write NotebookEdit",
+                "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+                "--settings", "{\"disableAllHooks\":true}",
+                "--max-budget-usd", &budget.to_string()].iter().map(|s| s.to_string()).collect();
+            launch_review(&tmp, &cli, &args, &review_prompt(card, title, c, evidence, round))?;
+        }
     }
+    let result = collect_review(&tmp, &model).await;
+    let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
+    if tmp.exists() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    result
 }
 
 async fn review_one(state: &AppState, card: String) {
@@ -1262,7 +1361,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
-    ("3", &["contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("3", &["contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
