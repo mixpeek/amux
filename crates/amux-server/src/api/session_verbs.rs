@@ -21605,6 +21605,15 @@ fn stall_log_first_this_bucket(key: &str, bucket: i64) -> bool {
 /// lane whose recorded skip reason changed inside one hour bucket produced no
 /// new warning — the key did not include the value the human actually reads,
 /// which made a change in it invisible by construction.
+/// A queue held by design rather than stalled: a rate limit, or a pause the
+/// owner set (the sender was already told "queued while paused" at send time).
+/// 2026-10-06: ten paused lanes logged "STALLED" 8 times an hour each, which
+/// made the hourly delivery count, the instrument that finds real stalls,
+/// read as a fleet-wide fault.
+fn is_designed_hold(cond: &str) -> bool {
+    matches!(cond, "rate-limited" | "paused")
+}
+
 fn stall_dedupe_key(session: &str, cond: &str, last_skip: &str) -> String {
     format!("{session}:{cond}:{last_skip}")
 }
@@ -21694,7 +21703,7 @@ async fn warn_on_stalled_lanes(state: &AppState) {
         // Deliberately NOT a duration threshold. "Warn if the limit lasts more
         // than N hours" is a tuned parameter guarding a state amux can already
         // observe directly, and picking N at all is the tell.
-        let held_by_limit = cond == "rate-limited";
+        let held_by_limit = is_designed_hold(cond);
         if stall_log_first_this_bucket(&stall_dedupe_key(&session, cond, &reason), bucket) {
             if held_by_limit {
                 tracing::info!(
@@ -21702,9 +21711,10 @@ async fn warn_on_stalled_lanes(state: &AppState) {
                     queued = count,
                     oldest_min = (age / 60.0) as i64,
                     last_skip = %reason,
-                    "steering queue HELD — the lane is rate-limited; delivery resumes at its \
-                     provider-reported reset, or after a clockless cap clears (AMUX-4154). This is the designed \
-                     behaviour, not a stall."
+                    held_by = %cond,
+                    "steering queue HELD — the lane is rate-limited (delivery resumes at its \
+                     provider-reported reset, or after a clockless cap clears, AMUX-4154) or paused by its \
+                     owner (delivery resumes on unpause). This is the designed behaviour, not a stall."
                 );
             } else {
                 tracing::warn!(
@@ -48117,6 +48127,17 @@ mod steer_max_age_tests {
     /// THE CELL THAT MATTERS IS THE SECOND. Same session, same live condition,
     /// different recorded skip: those must be different keys, or a change in the
     /// value the human reads is suppressed for the rest of the hour bucket.
+    /// A pause and a rate limit hold the queue by design; every other block
+    /// (busy past deadline, not running, archived) is still a stall.
+    #[test]
+    fn a_paused_or_rate_limited_queue_is_held_not_stalled() {
+        assert!(is_designed_hold("paused"));
+        assert!(is_designed_hold("rate-limited"));
+        for stalled in ["busy-past-deadline", "not-running", "archived", ""] {
+            assert!(!is_designed_hold(stalled), "{stalled} is a stall");
+        }
+    }
+
     #[test]
     fn the_stall_dedupe_key_contains_both_reasons_not_just_the_live_one() {
         let a = stall_dedupe_key("orch", "busy-past-deadline", "archived");
