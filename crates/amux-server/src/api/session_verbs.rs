@@ -8518,6 +8518,11 @@ async fn steer_enqueue_precond_with_id(
                     Resume it first (amux resume); the owner's own send still works.",
         );
     }
+    // Contract rule 6 and A5 (AH-382): per-card budgets and capacity holds,
+    // applied here once for every automated producer on a contract lane.
+    if automation && super::runner::applies(guard, stable_id) {
+        super::runner::gate(store, name, guard, text).await?;
+    }
     // REFUSE A PERMANENT BLOCK HERE, not in the handlers (AF-188).
     //
     // `steer_mutate` and `auto_deliver` each refused archived targets; this
