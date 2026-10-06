@@ -1053,6 +1053,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
     ("_amux_invariant_result", "ts", false),
+    ("card_contracts", "deploy_at", false),
+    ("card_contracts", "frozen_at", false), // measured: 1791242852.2 on 2026-10-06
+    ("card_contracts", "review_at", false),
     ("_amux_media_jobs", "created_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
     ("_amux_media_jobs", "updated_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
     // AMUX-3974's two tables. Both are EMPTY, so there is nothing to measure and

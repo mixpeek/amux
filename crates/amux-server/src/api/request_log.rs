@@ -2729,6 +2729,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/board/contract",
         methods: &["GET"],
     },
+    // Per-rule verdict counts (contract rule 14, 52e13648).
+    RouteEntry {
+        path: "/api/contract/counters",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/contract/done-line/{epic}",
+        methods: &["GET", "POST"],
+    },
     RouteEntry {
         path: "/api/board/orchestrations",
         methods: &["GET"],
