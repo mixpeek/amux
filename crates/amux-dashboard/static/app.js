@@ -10605,7 +10605,85 @@ function _draftSave(session, text) {
   const record = previous.t === text ? previous : {t:text, ts:Date.now(), rev:crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()};
   _draftPersist(session, record);
   _draftSyncInputs(session, text);
+  if (previous.t !== text) _typingPing(session, !!text);
   return record.rev;
+}
+
+// ── Multiplayer typing presence (AC-474, server: api/typing.rs) ──
+// Another account typing to a worker shows as "elliot is typing…" under that
+// worker's composers. The server owns identity (member email, lane, owner)
+// and expires entries after ttl_ms; this client re-arms on every event and
+// drops anything not refreshed in time, so a lost "stopped" can leave an
+// indicator up for one TTL at most. Our own actor is learned from our own
+// ping's response and never shown back to us.
+const _typingState = new Map();          // session -> Map(actor -> {label, until})
+const _typingSent = new Map();           // session -> {active, at}
+let _typingSelf = '';
+let _typingTimer = null;
+function _typingPing(session, active) {
+  if (!session) return;
+  const last = _typingSent.get(session);
+  const now = Date.now();
+  // Starts and stops go out at once; a continuing stream re-arms every 3s.
+  if (active && last && last.active && now - last.at < 3000) return;
+  if (!active && (!last || !last.active)) return;
+  _typingSent.set(session, {active, at: now});
+  fetch('/api/sessions/' + encodeURIComponent(session) + '/typing', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active}),
+  }).then(r => r.ok ? r.json() : null).then(d => { if (d && d.actor) _typingSelf = d.actor; }).catch(() => {});
+}
+function _typingOnEvent(msg) {
+  if (!msg || !msg.session) return;
+  const until = Date.now() + (msg.ttl_ms || 8000);
+  const next = new Map();
+  for (const w of (msg.who || [])) {
+    if (!w || !w.actor || w.actor === _typingSelf) continue;
+    next.set(w.actor, {label: w.label || w.actor, until});
+  }
+  if (next.size) _typingState.set(msg.session, next); else _typingState.delete(msg.session);
+  _typingRender();
+}
+function _typingText(session) {
+  const who = _typingState.get(session);
+  if (!who) return '';
+  const now = Date.now();
+  for (const [a, v] of who) if (v.until <= now) who.delete(a);
+  if (!who.size) { _typingState.delete(session); return ''; }
+  const names = [...who.values()].map(v => v.label);
+  return names.length === 1 ? names[0] + ' is typing\u2026'
+    : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + ' are typing\u2026';
+}
+function _typingPlace(anchor, id, text) {
+  let el = document.getElementById(id);
+  if (!text) { if (el) el.remove(); return; }
+  if (!anchor) return;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = id;
+    el.className = 'typing-ind';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    anchor.insertAdjacentElement('afterend', el);
+  }
+  if (el.textContent !== text) el.textContent = text;
+}
+// Idempotent: card templates are rebuilt on SSE re-renders, so this re-applies
+// from state rather than trusting an element to survive.
+function _typingRender() {
+  const sessions = new Set([..._typingState.keys()]);
+  document.querySelectorAll('.typing-ind[data-typing-session]').forEach(el => sessions.add(el.dataset.typingSession));
+  for (const s of sessions) {
+    const text = _typingText(s);
+    const cardInput = document.getElementById('input-' + s);
+    _typingPlace(cardInput && cardInput.closest('.send-row'), 'typing-card-' + s, text);
+    const c = document.getElementById('typing-card-' + s); if (c) c.dataset.typingSession = s;
+  }
+  const peekT = typeof _peekComposerTarget === 'function' ? _peekComposerTarget() : null;
+  const peekInput = document.getElementById('peek-cmd-input');
+  _typingPlace(peekInput && (peekInput.closest('.send-row') || peekInput.parentElement), 'typing-peek', peekT ? _typingText(peekT) : '');
+  if (_typingState.size && !_typingTimer) {
+    _typingTimer = setInterval(() => { _typingRender(); if (!_typingState.size) { clearInterval(_typingTimer); _typingTimer = null; _typingRender(); } }, 1000);
+  }
 }
 function _liveComposerValue(session) {
   if (typeof peekSession !== 'undefined' && _peekComposerTarget() === session) {
@@ -13844,7 +13922,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1254';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1255';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39962,6 +40040,8 @@ function connectSSE() {
           _fireAmuxAlert(a);
           if (a.type === 'steering_delivered' && a.session === peekSession) _steeringUpdateBadge();
         }
+      } else if (msg.type === 'typing') {
+        _typingOnEvent(msg);
       } else if (msg.type === 'invalidate') {
         _stateSync.invalidate(msg).catch(error => _interactionDiagnostic({verdict:'query_invalidation_failed', error:String(error), measured:true, n_considered:1}));
         for (const key of (msg.keys || [])) {

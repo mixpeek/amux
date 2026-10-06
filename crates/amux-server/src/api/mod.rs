@@ -117,6 +117,7 @@ pub mod skin;
 pub mod speedtest;
 pub mod sql;
 pub mod sse;
+pub mod typing;
 pub mod static_files;
 pub mod stats;
 pub mod sync;
@@ -246,6 +247,7 @@ pub fn router(state: AppState) -> Router {
         // Was PROXIED_FAMILIES' SessionVerbs row; the rust-worker 501 pointer
         // guard moved into the module's dispatch.
         .merge(session_verbs::routes())
+        .merge(typing::routes())
         // Identity is config-introspection over server.env + ~/.claude.json
         // this server already reads — NATIVE, not a fleet capability
         // (AMUX-2597 addendum: the SPA's _initIdentity boot call 404'd here).
