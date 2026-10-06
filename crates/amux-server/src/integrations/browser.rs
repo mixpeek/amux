@@ -3844,6 +3844,35 @@ pub(crate) fn choose_target(
     }
 }
 
+/// The browser `session` started MOST RECENTLY, for rule 1 below.
+///
+/// A lane can start more than one browser (a Console profile, then a NetSuite
+/// profile). This used to take the FIRST match in HashMap order, which is
+/// arbitrary: on 2026-10-06 a lane started `netsuite` and its very next
+/// `eval` ran on the still-open `claude` profile's Console page. The lane's
+/// latest `start` is the browser it means. Ties on the second-resolution
+/// `started_at` break on pid. Ambiguity is logged so a sweep sees lanes
+/// holding several browsers.
+fn latest_started_by<'a>(
+    g: &'a std::collections::HashMap<String, RunningBrowser>,
+    session: &str,
+) -> Option<&'a RunningBrowser> {
+    if session.is_empty() {
+        return None;
+    }
+    let mine: Vec<&RunningBrowser> = g.values().filter(|r| r.started_by == session).collect();
+    if mine.len() > 1 {
+        tracing::warn!(
+            verdict = "session_owns_multiple_browsers",
+            session,
+            n = mine.len(),
+            profiles = ?mine.iter().map(|r| r.profile.as_str()).collect::<Vec<_>>(),
+            "a session started several browsers; driving the most recently started one"
+        );
+    }
+    mine.into_iter().max_by_key(|r| (r.started_at, r.pid))
+}
+
 /// WHICH BROWSER A SESSION MEANS (AMUX-3828).
 ///
 /// 1. The one it STARTED. That is what a lane means by "my browser", and it is
@@ -3860,10 +3889,8 @@ pub(crate) fn choose_target(
 /// being refused.
 pub fn port_for_session(session: &str) -> Option<u16> {
     let g = RUNNING.lock().expect("browser registry poisoned");
-    if !session.is_empty() {
-        if let Some(r) = g.values().find(|r| r.started_by == session) {
-            return Some(r.cdp_port);
-        }
+    if let Some(r) = latest_started_by(&g, session) {
+        return Some(r.cdp_port);
     }
     if g.len() == 1 {
         return g.values().next().map(|r| r.cdp_port);
@@ -3876,10 +3903,8 @@ pub fn port_for_session(session: &str) -> Option<u16> {
 /// driver verb is about to drive.
 pub fn profile_for_session(session: &str) -> Option<String> {
     let g = RUNNING.lock().expect("browser registry poisoned");
-    if !session.is_empty() {
-        if let Some(r) = g.values().find(|r| r.started_by == session) {
-            return Some(r.profile.clone());
-        }
+    if let Some(r) = latest_started_by(&g, session) {
+        return Some(r.profile.clone());
     }
     if g.len() == 1 {
         return g.values().next().map(|r| r.profile.clone());
@@ -3931,6 +3956,31 @@ mod multi_browser_tests {
     /// `blocking_lock` because this is a plain `#[test]` with no runtime, where
     /// it is the correct call. Inside an async test it would panic, which is
     /// why the others `.await` it.
+    /// A lane that started TWO browsers means the one it started last
+    /// (2026-10-06: `start netsuite` then `eval` ran on the older `claude`
+    /// profile's Console page). Pid is set against the expected answer so a
+    /// pid-only tie-break cannot pass, and both insertion orders are tried
+    /// so HashMap order cannot pass it either.
+    #[test]
+    fn a_lane_with_two_browsers_drives_the_one_it_started_last() {
+        let _reg = TEST_REGISTRY.blocking_lock();
+        for order in [["claude", "netsuite"], ["netsuite", "claude"]] {
+            test_clear_running();
+            for p in order {
+                let (pid, port) = if p == "claude" { (900, 9101) } else { (10, 9102) };
+                test_seed_running_port(p, "lane", pid, port);
+            }
+            {
+                let mut g = RUNNING.lock().expect("browser registry poisoned");
+                g.get_mut("claude").unwrap().started_at = 100;
+                g.get_mut("netsuite").unwrap().started_at = 200;
+            }
+            assert_eq!(port_for_session("lane"), Some(9102), "order {order:?}");
+            assert_eq!(profile_for_session("lane").as_deref(), Some("netsuite"), "order {order:?}");
+        }
+        test_clear_running();
+    }
+
     #[test]
     fn multiple_workers_can_use_same_and_different_browsers() {
         let _reg = TEST_REGISTRY.blocking_lock();
