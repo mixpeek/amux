@@ -357,6 +357,24 @@ pub(crate) fn headless_turn_prelude(name: &str, provider: &str, work_dir: &str) 
     rc
 }
 
+/// Where a lane's own worktree lives: under its registered root (CC_DIR, or
+/// the launch dir when unset), and never under another worktree. Any path
+/// inside a `.worktrees` tree is cut back to the directory that holds the
+/// FIRST `.worktrees`, so a worktree can never be created inside another.
+pub(crate) fn worktree_base(cc_dir: &str, fallback: &str) -> String {
+    let raw = if cc_dir.trim().is_empty() { fallback } else { cc_dir.trim() };
+    let p = expanduser(raw);
+    let p = p.canonicalize().unwrap_or(p);
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        if c.as_os_str() == ".worktrees" {
+            break;
+        }
+        out.push(c);
+    }
+    out.to_string_lossy().into_owned()
+}
+
 /// The CLI reads CC_HOME/AMUX_API while hooks read AMUX_HOME/AMUX_URL.
 /// Keep all consumers attached to the server that launched this worker.
 fn worker_harness_env(name: &str, root: &Path, endpoint: &str) -> Vec<(String, String)> {
@@ -14496,6 +14514,20 @@ pub(crate) async fn start_session(
             }
         }
     } else if worktree_enabled {
+        // THE LANE'S REGISTERED ROOT, NEVER ITS RUNTIME CWD. A pending resume
+        // hands work_dir the cwd the lane last ran in, which for an isolated
+        // lane IS its worktree, so the new worktree nested inside it on every
+        // restart (mixpeek-override, 2026-10-06 16:33Z fleet restart: 11 gs12
+        // lanes resumed in nested origin/main checkouts without their unlanded
+        // commits; gs12-mvs three deep). The base is CC_DIR, cut back to the
+        // repo root if it sits inside any `.worktrees` tree.
+        let base = worktree_base(cfg.get_or("CC_DIR", ""), &work_dir);
+        if base != work_dir {
+            tracing::warn!(session = name, from = %work_dir, base = %base, measured = true, n_considered = 1,
+                verdict = "worktree_base_from_registered_root",
+                "isolated worktree is placed under the lane's registered root, not its runtime cwd");
+            work_dir = base;
+        }
         let wt_dir = std::path::Path::new(&work_dir).join(".worktrees").join(name);
         let wt_path = wt_dir.to_string_lossy().into_owned();
         // Clean up stale worktree from a previous run.
@@ -41454,6 +41486,22 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             load_meta(name)["pending_structured_resume_context"]["cwd"],
             json!(dir.path())
         );
+    }
+
+    #[test]
+    fn an_isolated_worktree_never_nests_inside_another() {
+        // 2026-10-06 16:33Z: the resume cwd was the lane's own worktree, and
+        // the new one went inside it.
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().canonicalize().unwrap().join("mixpeek");
+        let wt = repo.join(".worktrees/gs12-mvs");
+        let nested = wt.join(".worktrees/gs12-mvs/server");
+        std::fs::create_dir_all(&nested).unwrap();
+        let r = repo.to_string_lossy().into_owned();
+        assert_eq!(worktree_base(&r, nested.to_str().unwrap()), r, "CC_DIR wins over the runtime cwd");
+        assert_eq!(worktree_base(wt.to_str().unwrap(), "/x"), r, "a CC_DIR inside a worktree is cut back to the repo");
+        assert_eq!(worktree_base(nested.to_str().unwrap(), "/x"), r, "three deep is cut back to the first .worktrees");
+        assert_eq!(worktree_base("", &r), r, "no CC_DIR: the launch dir");
     }
 
     #[test]
