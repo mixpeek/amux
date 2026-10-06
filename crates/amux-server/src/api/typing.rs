@@ -53,7 +53,7 @@ pub fn channel() -> &'static tokio::sync::broadcast::Sender<String> {
 }
 
 /// Who is acting, from server-verified identity first.
-fn actor(headers: &HeaderMap) -> String {
+pub(crate) fn actor(headers: &HeaderMap) -> String {
     if let Some(a) = super::org::local_member_actor(headers) {
         return if a.starts_with("member:") { a.to_string() } else { format!("member:{a}") };
     }
@@ -171,6 +171,18 @@ async fn get_typing(Path(name): Path<String>) -> Response {
     .into_response()
 }
 
+/// One connection's view of a typing event: the same event minus the
+/// viewer's own entry. A person must never see themself typing, and the
+/// client cannot filter reliably because its own ping's echo can arrive
+/// before the ping's response tells it who it is (seen live 2026-10-06).
+/// `None` means the payload was not a typing event and passes through.
+pub(crate) fn without_viewer(payload: &str, viewer: &str) -> Option<String> {
+    let mut v: Value = serde_json::from_str(payload).ok()?;
+    let who = v.get_mut("who")?.as_array_mut()?;
+    who.retain(|w| w.get("actor").and_then(Value::as_str) != Some(viewer));
+    Some(v.to_string())
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/sessions/{name}/typing", get(get_typing).post(post_typing))
 }
@@ -190,6 +202,15 @@ mod tests {
         assert!(set(s, "member:e@x.com", true, t0 + TTL + Duration::from_secs(3)));
         assert!(set(s, "member:e@x.com", false, t0 + TTL + Duration::from_secs(4)), "stop is a change");
         assert!(live(s, t0 + TTL + Duration::from_secs(4)).is_empty());
+    }
+
+    #[test]
+    fn a_viewer_never_receives_their_own_entry() {
+        let ev = json!({"type": "typing", "session": "w", "who": [
+            {"actor": "member:a@x.com", "label": "a"}, {"actor": "member:b@x.com", "label": "b"}]}).to_string();
+        let seen: Value = serde_json::from_str(&without_viewer(&ev, "member:a@x.com").unwrap()).unwrap();
+        let actors: Vec<&str> = seen["who"].as_array().unwrap().iter().map(|w| w["actor"].as_str().unwrap()).collect();
+        assert_eq!(actors, vec!["member:b@x.com"]);
     }
 
     #[test]

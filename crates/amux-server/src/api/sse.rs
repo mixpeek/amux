@@ -93,6 +93,7 @@ pub async fn events(
     // Ephemeral composer presence (api/typing.rs): never stored, so it has its
     // own channel beside the revisioned store events.
     let mut typing_rx = super::typing::channel().subscribe();
+    let viewer = super::typing::actor(&headers);
     let current = state.store.current_rev().map(|r| r.0).unwrap_or(0);
     let scoped_member =
         super::org::local_member_scope(&headers).is_some_and(|scope| !scope.is_global());
@@ -110,6 +111,7 @@ pub async fn events(
                         // A scoped member may not learn about workers outside
                         // their grant, so presence is not sent to them at all.
                         if let (Ok(payload), false) = (t, scoped_member) {
+                            let payload = super::typing::without_viewer(&payload, &viewer).unwrap_or(payload);
                             if yielder.send(Event::default().data(payload)).await.is_err() {
                                 break;
                             }
