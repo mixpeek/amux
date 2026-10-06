@@ -16,8 +16,15 @@
 //! On the same lanes a direct `git push` to main is refused by the shared git
 //! guard, which asks `GET /api/land/policy`.
 //!
+//! The server takes the same land lock `amux land` and the repository's
+//! pre-push land-lock leg use (~/.amux/locks/land-<16 hex of sha1("<url>
+//! main")>, holder pid in `pid`), and pushes with AMUX_LAND_HOLDER_PID set to
+//! its own pid, so a client land and a server land never push past each
+//! other (MO-4396, 2026-10-06: land 5 was refused while gs12-data held it).
+//!
 //! Verdicts (rule 5 at /api/contract/counters): land_queued, land_merged,
-//! land_refused, land_batch_bisected, worker_push_refused.
+//! land_refused, land_batch_bisected, worker_push_refused, land_lock_acquired,
+//! land_lock_waited, land_lock_timeout_requeued.
 use crate::api::AppState;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -79,6 +86,124 @@ async fn repo_key(tree: &Path) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// The client land lock (MO-4396)
+// ---------------------------------------------------------------------------
+
+pub const LOCK_WHO: &str = "amux-server (land queue)";
+const LOCK_WAIT_S: u64 = 600;
+const LOCK_POLL: Duration = Duration::from_secs(5);
+/// A lock directory with no pid yet is a holder between its mkdir and its
+/// first write; only this old is it abandoned.
+const LOCK_NO_PID_STALE_S: u64 = 60;
+
+/// The lock `amux land` names: first 16 hex of sha1("<remote url> <branch>").
+pub fn lock_path(url: &str, branch: &str) -> PathBuf {
+    use sha1::{Digest, Sha1};
+    let h = hex::encode(Sha1::digest(format!("{url} {branch}").as_bytes()));
+    home().join("locks").join(format!("land-{}", &h[..16]))
+}
+
+fn pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal 0 only checks that the process exists.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn read_pid(lock: &Path) -> Option<i32> {
+    let t = std::fs::read_to_string(lock.join("pid")).ok()?;
+    t.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok()
+}
+
+/// A held land lock. Dropping it removes the lock only while this process
+/// still owns it, on every path out of a land, an error or a panic included.
+pub struct LandLock {
+    pub path: PathBuf,
+    pub pid: u32,
+}
+
+impl Drop for LandLock {
+    fn drop(&mut self) {
+        if read_pid(&self.path) == Some(self.pid as i32) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+pub enum LockWait {
+    Acquired(LandLock),
+    TimedOut(String),
+}
+
+/// Take the land lock the way `amux land` does (mkdir, then pid, since, who),
+/// taking over a lock whose holder is gone, and waiting up to `wait` for a
+/// live holder.
+pub async fn acquire_lock(path: &Path, wait: Duration, poll: Duration) -> LockWait {
+    let me = std::process::id();
+    let deadline = std::time::Instant::now() + wait;
+    let mut announced = false;
+    loop {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::create_dir(path).is_ok() {
+            let now = crate::config::now_f64() as u64;
+            let _ = std::fs::write(path.join("pid"), format!("{me}\n"));
+            let _ = std::fs::write(path.join("since"), format!("{now}\n"));
+            let _ = std::fs::write(path.join("who"), format!("{LOCK_WHO}\n"));
+            tracing::info!(lock = %path.display(), pid = me, measured = true, n_considered = 1,
+                verdict = "land_lock_acquired", "the server took the land lock");
+            return LockWait::Acquired(LandLock { path: path.to_path_buf(), pid: me });
+        }
+        let hpid = read_pid(path);
+        let who = std::fs::read_to_string(path.join("who")).unwrap_or_default().trim().to_string();
+        let age = std::fs::metadata(path).and_then(|m| m.modified()).ok()
+            .and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
+        let stale = match hpid {
+            Some(p) => !pid_alive(p),
+            None => age > LOCK_NO_PID_STALE_S,
+        };
+        if stale {
+            tracing::warn!(lock = %path.display(), holder = %who, holder_pid = ?hpid, measured = true, n_considered = 1,
+                "taking over a stale land lock (its holder is gone)");
+            let _ = std::fs::remove_dir_all(path);
+            continue;
+        }
+        let holder = format!("{} (pid {})", if who.is_empty() { "?" } else { &who }, hpid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()));
+        if !announced {
+            tracing::info!(lock = %path.display(), holder = %holder, measured = true, n_considered = 1,
+                verdict = "land_lock_waited", "the land lock is held; the server waits for it");
+            announced = true;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(lock = %path.display(), holder = %holder, waited_s = wait.as_secs(), measured = true, n_considered = 1,
+                verdict = "land_lock_timeout_requeued", "the land lock stayed held; the batch goes back to the queue");
+            return LockWait::TimedOut(holder);
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// Push as the lock holder, so the repository's pre-push land-lock leg
+/// recognises this push as the holder's own.
+async fn push(dir: &Path, refspec: &str, lock: Option<&LandLock>) -> Result<String, String> {
+    let Some(l) = lock else {
+        return git(dir, &["push", "-q", "origin", refspec]).await;
+    };
+    let run = tokio::process::Command::new("git").arg("-C").arg(dir).args(["push", "-q", "origin", refspec])
+        .env("AMUX_LAND_HOLDER_PID", l.pid.to_string()).env("AMUX_LAND_LOCK", &l.path)
+        .kill_on_drop(true).output();
+    match tokio::time::timeout(Duration::from_secs(1800), run).await {
+        Ok(Ok(o)) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(Ok(o)) => Err(format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string()),
+        Ok(Err(e)) => Err(format!("could not run git push: {e}")),
+        Err(_) => Err("git push timed out after 1800s".into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Composing and pushing
 // ---------------------------------------------------------------------------
 
@@ -91,7 +216,7 @@ enum Attempt {
 
 /// Compose `entries` onto origin/main in a fresh worktree of `tree`'s repo,
 /// gate it, and push. Retries when main moves under the push.
-async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str) -> Result<Attempt, String> {
+async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>) -> Result<Attempt, String> {
     for _ in 0..PUSH_TRIES {
         git(tree, &["fetch", "-q", "origin", "main"]).await?;
         let main = git(tree, &["rev-parse", "origin/main"]).await?;
@@ -144,7 +269,7 @@ async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &st
             }
         }
         let merged = git(&dir, &["rev-parse", "HEAD"]).await?;
-        match git(&dir, &["push", "-q", "origin", &format!("{merged}:refs/heads/main")]).await {
+        match push(&dir, &format!("{merged}:refs/heads/main"), lock).await {
             Ok(_) => {
                 finish(dir).await;
                 out.extend(applied.iter().map(|e| (e.id, Outcome::Merged(merged.clone()))));
@@ -165,11 +290,11 @@ async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &st
 
 /// Land a batch. A red batch of more than one is split in halves until each
 /// red commit is alone, so nobody inherits another lane's refusal.
-pub async fn land(tree: &Path, entries: Vec<Entry>, gate: Option<&str>, prefix: &str) -> Result<Vec<(i64, Outcome)>, String> {
+pub async fn land(tree: &Path, entries: Vec<Entry>, gate: Option<&str>, prefix: &str, lock: Option<&LandLock>) -> Result<Vec<(i64, Outcome)>, String> {
     let mut stack = vec![entries];
     let mut out = Vec::new();
     while let Some(batch) = stack.pop() {
-        match compose(tree, &batch, gate, prefix).await? {
+        match compose(tree, &batch, gate, prefix, lock).await? {
             Attempt::Done(o) => out.extend(o),
             Attempt::Red(why, applied, o) => {
                 out.extend(o);
@@ -285,21 +410,42 @@ async fn run_batch(state: &AppState, entries: Vec<Entry>) {
     };
     let gate = crate::api::contract::lane_setting(&home(), &first, "AMUX_LAND_GATE").map(|v| v.trim().trim_matches('"').to_string());
     let prefix = crate::api::contract::verify_path_prefix(&tree, &first);
-    match land(&tree, entries.clone(), gate.as_deref(), &prefix).await {
+    // The same lock a client `amux land` holds, for the whole batch (gate,
+    // push and any bisect), so neither pushes past the other (MO-4396).
+    let wait = crate::api::contract::lane_setting(&home(), &first, "AMUX_LAND_LOCK_WAIT_S")
+        .and_then(|v| v.trim().trim_matches('"').parse::<u64>().ok()).unwrap_or(LOCK_WAIT_S);
+    let lock = match git(&tree, &["remote", "get-url", "origin"]).await {
+        Ok(url) => match acquire_lock(&lock_path(&url, "main"), Duration::from_secs(wait), LOCK_POLL).await {
+            LockWait::Acquired(l) => Some(l),
+            LockWait::TimedOut(holder) => {
+                requeue(state, &entries, format!("the land lock was held by {holder} for {wait}s; requeued")).await;
+                return;
+            }
+        },
+        Err(_) => None,
+    };
+    let result = land(&tree, entries.clone(), gate.as_deref(), &prefix, lock.as_ref()).await;
+    drop(lock);
+    match result {
         Ok(results) => record(state, &results, &lanes).await,
         Err(why) => {
             // Not a verdict on any commit: put the batch back.
             tracing::warn!(lane = first, reason = %tail(&why, 300), measured = false, n_considered = entries.len(),
                 why_unmeasured = "the land could not complete", "land batch requeued");
-            let ids: Vec<i64> = entries.iter().map(|e| e.id).collect();
-            let _ = state.store.write_async(move |conn| {
-                for id in &ids {
-                    conn.execute("UPDATE land_queue SET state = 'queued', started_at = NULL, output = ?2 WHERE id = ?1", rusqlite::params![id, why])?;
-                }
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-            }).await;
+            requeue(state, &entries, why).await;
         }
     }
+}
+
+/// Put a batch back in the queue without a verdict on any commit.
+async fn requeue(state: &AppState, entries: &[Entry], why: String) {
+    let ids: Vec<i64> = entries.iter().map(|e| e.id).collect();
+    let _ = state.store.write_async(move |conn| {
+        for id in &ids {
+            conn.execute("UPDATE land_queue SET state = 'queued', started_at = NULL, output = ?2 WHERE id = ?1", rusqlite::params![id, why])?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +611,7 @@ mod tests {
         let entries: Vec<Entry> = [(1, &a), (2, &bad), (3, &c), (4, &clash)].iter()
             .map(|(i, s)| Entry { id: *i, repo: "r".into(), lane: "l".into(), sha: (*s).clone() }).collect();
         let gate = "test ! -e bad.txt";
-        let out: HashMap<i64, Outcome> = land(&lane, entries, Some(gate), "").await.unwrap().into_iter().collect();
+        let out: HashMap<i64, Outcome> = land(&lane, entries, Some(gate), "", None).await.unwrap().into_iter().collect();
         assert!(matches!(out[&1], Outcome::Merged(_)), "{:?}", out[&1]);
         assert!(matches!(out[&3], Outcome::Merged(_)), "{:?}", out[&3]);
         match &out[&2] {
@@ -482,7 +628,7 @@ mod tests {
         assert!(!files.contains("bad.txt"), "nothing of a refused commit is merged: {files}");
         assert_eq!(std::fs::read_to_string(lane.join("a.txt")).unwrap(), "main moved\n");
         // An already-landed commit is reported merged without a second push.
-        let again = land(&lane, vec![Entry { id: 9, repo: "r".into(), lane: "l".into(), sha: a.clone() }], Some(gate), "").await.unwrap();
+        let again = land(&lane, vec![Entry { id: 9, repo: "r".into(), lane: "l".into(), sha: a.clone() }], Some(gate), "", None).await.unwrap();
         assert!(matches!(again[0].1, Outcome::Merged(_)));
     }
 
@@ -544,6 +690,81 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("the queued commit never landed");
+    }
+
+    /// The server names the lock exactly as `amux land` and the Mixpeek
+    /// pre-push leg do: printf '%s %s' "$url" main | shasum | cut -c1-16.
+    #[test]
+    fn the_lock_path_matches_the_cli_key() {
+        let p = lock_path("https://github.com/mixpeek/mixpeek.git", "main");
+        assert_eq!(p.file_name().unwrap().to_string_lossy(), "land-329fce997bdd914f");
+    }
+
+    /// Free: taken, pid/since/who written, released on drop. Live holder: the
+    /// server waits, then times out (requeue) and leaves the lock alone. Dead
+    /// holder: taken over.
+    #[tokio::test]
+    async fn the_server_takes_waits_for_and_takes_over_the_land_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let path = d.path().join("locks").join("land-test");
+        let fast = Duration::from_millis(50);
+        match acquire_lock(&path, Duration::from_secs(1), fast).await {
+            LockWait::Acquired(l) => {
+                assert_eq!(read_pid(&path), Some(std::process::id() as i32));
+                assert_eq!(std::fs::read_to_string(path.join("who")).unwrap().trim(), LOCK_WHO);
+                assert!(path.join("since").exists());
+                drop(l);
+                assert!(!path.exists(), "released on drop");
+            }
+            LockWait::TimedOut(h) => panic!("a free lock must be taken, not waited on ({h})"),
+        }
+        let mut holder = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("pid"), format!("{}\n", holder.id())).unwrap();
+        std::fs::write(path.join("who"), "gs12-data\n").unwrap();
+        match acquire_lock(&path, Duration::from_millis(300), fast).await {
+            LockWait::TimedOut(h) => assert!(h.contains("gs12-data") && h.contains(&holder.id().to_string()), "{h}"),
+            LockWait::Acquired(_) => panic!("a live holder's lock must not be taken"),
+        }
+        assert_eq!(read_pid(&path), Some(holder.id() as i32), "the holder's lock is untouched");
+        holder.kill().unwrap();
+        holder.wait().unwrap();
+        match acquire_lock(&path, Duration::from_secs(1), fast).await {
+            LockWait::Acquired(_l) => assert_eq!(read_pid(&path), Some(std::process::id() as i32), "a dead holder is taken over"),
+            LockWait::TimedOut(h) => panic!("a dead holder must not block ({h})"),
+        }
+    }
+
+    /// The repository's pre-push land-lock leg refuses a push to main while a
+    /// live pid holds the lock, unless the push carries that pid as
+    /// AMUX_LAND_HOLDER_PID. A server land holding the lock passes it; the
+    /// same land without the lock is refused, which is the MO-4396 failure.
+    #[tokio::test]
+    async fn the_pre_push_land_lock_accepts_the_servers_push_while_it_holds_the_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let lane = fixture(d.path());
+        let lock = lock_path("test-origin", "main");
+        let hook = lane.join(".git").join("hooks").join("pre-push");
+        std::fs::write(&hook, format!(
+            "#!/bin/sh\nlock=\"${{AMUX_LAND_LOCK:-{}}}\"\n[ -f \"$lock/pid\" ] || exit 0\npid=\"$(tr -dc '0-9' < \"$lock/pid\")\"\n[ -n \"$pid\" ] || exit 0\n[ \"$pid\" = \"${{AMUX_LAND_HOLDER_PID:-}}\" ] && exit 0\nkill -0 \"$pid\" 2>/dev/null || exit 0\necho \"land-lock: REFUSED, main is being landed by pid $pid\" >&2\nexit 1\n",
+            lock.display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
+        let held = match acquire_lock(&lock, Duration::from_secs(1), Duration::from_millis(50)).await {
+            LockWait::Acquired(l) => l,
+            LockWait::TimedOut(h) => panic!("{h}"),
+        };
+        let a = commit(&lane, "b.txt", "ok\n");
+        let without = land(&lane, vec![Entry { id: 1, repo: "r".into(), lane: "l".into(), sha: a.clone() }], None, "", None).await.unwrap();
+        match &without[0].1 {
+            Outcome::Refused(why) => assert!(why.contains("land-lock: REFUSED"), "{why}"),
+            o => panic!("a push that does not carry the holder pid must be refused while the lock is held: {o:?}"),
+        }
+        let with = land(&lane, vec![Entry { id: 2, repo: "r".into(), lane: "l".into(), sha: a.clone() }], None, "", Some(&held)).await.unwrap();
+        assert!(matches!(with[0].1, Outcome::Merged(_)), "the holder's own push passes: {:?}", with[0].1);
+        drop(held);
+        assert!(!lock.exists());
     }
 
     #[test]

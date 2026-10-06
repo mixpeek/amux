@@ -1250,7 +1250,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),
     ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
-    ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused"]),
+    ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused", "land_lock_acquired", "land_lock_waited", "land_lock_timeout_requeued"]),
     ("10", &["worker_token_minted", "worker_identity_refused", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
