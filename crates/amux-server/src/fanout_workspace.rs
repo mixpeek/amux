@@ -464,6 +464,39 @@ where
     C: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
+    verify_commands_inner(workspace, candidate, commands, timeout, permit, cleanup, "").await
+}
+
+/// `verify_commands` with directories put ahead of the tool PATH, for a card
+/// contract whose repo keeps its interpreter in a venv (contract rule 2: a
+/// clean checkout of a Mixpeek worktree could not import its own deps). The
+/// prefix travels in the environment, so the command text still cannot name
+/// the source checkout.
+pub(crate) async fn verify_commands_prefixed<F: Fn() -> Result<(), String>>(
+    workspace: &Workspace,
+    candidate: &str,
+    commands: &[&str],
+    timeout: Duration,
+    permit: &F,
+    path_prefix: &str,
+) -> Result<(), String> {
+    verify_commands_inner(workspace, candidate, commands, timeout, permit, || async { Ok(()) }, path_prefix).await
+}
+
+async fn verify_commands_inner<F, C, Fut>(
+    workspace: &Workspace,
+    candidate: &str,
+    commands: &[&str],
+    timeout: Duration,
+    permit: &F,
+    cleanup: C,
+    path_prefix: &str,
+) -> Result<(), String>
+where
+    F: Fn() -> Result<(), String>,
+    C: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     if !(Duration::from_secs(1)
         ..=Duration::from_secs(amux_core::project::MAX_VERIFICATION_TIMEOUT_SECS))
         .contains(&timeout)
@@ -483,7 +516,8 @@ where
     if !project_clean_status(candidate).await?.is_empty() {
         return Err("worktree has uncommitted changes".into());
     }
-    let tool_path=verification_tool_path(permit).await?;
+    let tool_path = verification_tool_path(permit).await?;
+    let tool_path = if path_prefix.is_empty() { tool_path } else { format!("{path_prefix}:{tool_path}") };
     for command in commands {
         let mut cmd = verification_process(&tool_path,candidate,command);
         cmd.env(

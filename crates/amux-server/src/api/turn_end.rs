@@ -638,7 +638,7 @@ pub(crate) fn goal_condition(records: &[Value]) -> Option<String> {
 // Side effects
 // ---------------------------------------------------------------------------
 
-fn owner_name() -> String {
+pub(crate) fn owner_name() -> String {
     std::env::var("AMUX_OWNER_NAME")
         .ok()
         .filter(|v| !v.trim().is_empty())

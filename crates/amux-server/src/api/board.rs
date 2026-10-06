@@ -10544,6 +10544,10 @@ async fn patch_item_route(
                 let default_cmd = super::contract::lane_setting(&home, &lane, super::contract::DEFAULT_VERIFY);
                 match super::contract::decide(&card, &body, owner, existing.as_ref(), default_cmd.as_deref()) {
                     super::contract::Action::Respond(r) => return r,
+                    super::contract::Action::Amend(cmd, why) => {
+                        let actor = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).unwrap_or("api-anonymous").to_string();
+                        return super::contract::amend(&state, &id, &actor, cmd, why).await;
+                    }
                     super::contract::Action::Rewrite(v) => body = v,
                     super::contract::Action::PassThenFreeze(c) => {
                         // The frozen contract is the doing gate (rule 1),

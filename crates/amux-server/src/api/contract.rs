@@ -39,6 +39,8 @@ pub enum Action {
     Rewrite(Value),
     /// Let it through, then freeze this contract if the transition succeeds.
     PassThenFreeze(Contract),
+    /// Replace the frozen verify command once (new command, reason).
+    Amend(String, String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +51,7 @@ pub struct Contract {
     pub hash: String,
     pub state: String,
     pub sha: Option<String>,
+    pub amended: bool,
 }
 
 fn truthy(v: &str) -> bool {
@@ -88,7 +91,7 @@ fn nonempty(v: Option<&str>) -> Option<String> {
 
 pub fn load(conn: &Connection, card: &str) -> rusqlite::Result<Option<Contract>> {
     conn.query_row(
-        "SELECT card, acceptance, command, hash, state, sha FROM card_contracts WHERE card = ?1",
+        "SELECT card, acceptance, command, hash, state, sha, amended FROM card_contracts WHERE card = ?1",
         [card],
         |r| {
             Ok(Contract {
@@ -98,6 +101,7 @@ pub fn load(conn: &Connection, card: &str) -> rusqlite::Result<Option<Contract>>
                 hash: r.get(3)?,
                 state: r.get(4)?,
                 sha: r.get(5)?,
+                amended: r.get::<_, i64>(6)? != 0,
             })
         },
     )
@@ -140,6 +144,24 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
     if card.item_type != "code" {
         return Action::Pass;
     }
+    // The verify command (HOW it is checked) may be amended once by the lane
+    // or its orchestrator, with a reason, logged; the acceptance criteria
+    // (WHAT must hold) stay owner-only. GE2-8, 2026-10-05: a command that
+    // could not run in the clean checkout had no truthful way to change.
+    if let (Some(c), Some(new_cmd)) = (existing, nonempty(body.get("verify_cmd").and_then(Value::as_str))) {
+        if !owner && body.get("acceptance_criteria").is_none() {
+            let reason = nonempty(body.get("reason").and_then(Value::as_str));
+            return match (c.amended, reason) {
+                (true, _) => Action::Respond(refuse(StatusCode::CONFLICT, "contract_amended_once",
+                    format!("{}'s verify command was already amended once", card.id),
+                    json!({"next": "the owner can change it again, or PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\"}"}))),
+                (_, None) => Action::Respond(refuse(StatusCode::CONFLICT, "contract_amend_needs_reason",
+                    "amending a frozen verify command needs a reason".into(),
+                    json!({"patch": {"verify_cmd": "...", "reason": "why the frozen command cannot run as written"}}))),
+                (_, Some(r)) => Action::Amend(new_cmd, r),
+            };
+        }
+    }
     let edits_contract = ["acceptance_criteria", "verify_cmd"].iter().any(|k| body.get(*k).is_some());
     if edits_contract && existing.is_some() && !owner {
         tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
@@ -164,7 +186,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                 verdict = "contract_cannot_satisfy", "a worker declared its contract unsatisfiable");
             Action::Rewrite(json!({
                 "status": "needsyou",
-                "ask_actor": "owner",
+                "ask_actor": crate::api::turn_end::owner_name(),
                 "ask_type": "decision",
                 "ask_question": format!("{} cannot satisfy its frozen contract as written ({reason}): change the contract, re-scope the card, or close it?", card.id),
                 "ask_unblocks": "The owner's change to the contract or the card, after which the lane resumes or the card closes.",
@@ -185,6 +207,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                     command: c,
                     state: "frozen".into(),
                     sha: None,
+                    amended: false,
                 }),
                 (a, c) => {
                     tracing::info!(card = %card.id, lane = %card.lane, missing_acceptance = a.is_none(),
@@ -210,6 +233,33 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
         },
         _ => Action::Pass,
     }
+}
+
+/// Apply a one-time amendment of the frozen verify command.
+pub async fn amend(state: &AppState, card: &str, actor: &str, command: String, reason: String) -> Response {
+    let now = crate::config::now_f64();
+    let (c, cmd, why, who) = (card.to_string(), command.clone(), reason.clone(), actor.to_string());
+    let r = state.store.write_async(move |conn| {
+        let Some(mut k) = load(conn, &c)? else {
+            return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+        };
+        let old = k.command.clone();
+        k.hash = hash_of(&k.acceptance, &cmd);
+        k.command = cmd.clone();
+        k.state = "frozen".into();
+        save(conn, &k, now)?;
+        conn.execute("UPDATE card_contracts SET amended = 1 WHERE card = ?1", [&c])?;
+        if let Some(mut row) = crate::db::board_store::get_issue(conn, &c)? {
+            row.desc.push_str(&format!("\nContract amended once by {who} (contract rule 1): verify command `{old}` -> `{cmd}`. Reason: {why}"));
+            crate::db::board_store::save_patched(conn, &mut row)?;
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    let ok = matches!(r, Ok(ref o) if o.applied);
+    tracing::info!(card, actor, ok, measured = true, n_considered = 1, verdict = "contract_amended",
+        "a frozen verify command was amended once with a reason");
+    let code = if ok { StatusCode::OK } else { StatusCode::CONFLICT };
+    (code, Json(json!({"ok": ok, "card": card, "verify_cmd": command, "amended": ok}))).into_response()
 }
 
 /// Freeze a contract after a successful entry to doing.
@@ -259,6 +309,32 @@ pub async fn start_verification(state: &AppState, card: &str, lane: &str) -> Res
     }))).into_response()
 }
 
+/// Interpreter directories for the verify run, ahead of the login PATH: the
+/// lane tree's and its repo's venvs (a clean checkout has no venv of its own;
+/// Mixpeek worktrees symlink server/.venv to the main checkout's), then the
+/// lane's CC_VERIFY_PATH. GE2-8, 2026-10-05: bare `python` could not import
+/// croniter in the clean checkout, so done could never be granted.
+pub fn verify_path_prefix(tree: &Path, lane: &str) -> String {
+    let home = crate::config::amux_home();
+    let repo = PathBuf::from(crate::api::session_verbs::session_work_dir(lane));
+    let mut dirs: Vec<String> = Vec::new();
+    if let Some(extra) = lane_setting(&home, lane, "CC_VERIFY_PATH") {
+        dirs.extend(extra.trim().trim_matches('"').split(':').filter(|d| !d.is_empty()).map(String::from));
+    }
+    for base in [tree, repo.as_path()] {
+        for rel in ["server/.venv/bin", ".venv/bin", "venv/bin"] {
+            let d = base.join(rel);
+            if d.is_dir() {
+                let s = d.to_string_lossy().into_owned();
+                if !dirs.contains(&s) {
+                    dirs.push(s);
+                }
+            }
+        }
+    }
+    dirs.join(":")
+}
+
 async fn run_verification(state: &AppState, card: &str, lane: &str) {
     let home = crate::config::amux_home();
     let timeout = lane_setting(&home, lane, "AMUX_CONTRACT_VERIFY_TIMEOUT_S")
@@ -287,7 +363,8 @@ async fn verify(state: &AppState, card: &str, lane: &str, timeout: Duration) -> 
         branch: lane.to_string(),
         base: String::new(),
     };
-    let r = crate::fanout_workspace::verify_commands(&ws, &tmp.to_string_lossy(), &[contract.command.as_str()], timeout, &|| Ok(())).await;
+    let prefix = verify_path_prefix(&tree, lane);
+    let r = crate::fanout_workspace::verify_commands_prefixed(&ws, &tmp.to_string_lossy(), &[contract.command.as_str()], timeout, &|| Ok(()), &prefix).await;
     let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
     match r {
         Ok(()) => Ok((sha, contract.command, contract.acceptance)),
@@ -352,7 +429,7 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
 /// Each live rule and the verdicts it already logs. A rule is counted by the
 /// lines it writes, so a counter cannot claim activity the rule did not log.
 pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
-    ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused"]),
+    ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
@@ -423,7 +500,7 @@ mod tests {
         Card { id: "T-1".into(), lane: "lane".into(), status: status.into(), item_type: ty.into(), acceptance: acceptance.map(String::from) }
     }
     fn frozen() -> Contract {
-        Contract { card: "T-1".into(), acceptance: "it works".into(), command: "make test".into(), hash: "h".into(), state: "frozen".into(), sha: None }
+        Contract { card: "T-1".into(), acceptance: "it works".into(), command: "make test".into(), hash: "h".into(), state: "frozen".into(), sha: None, amended: false }
     }
     fn code(a: &Action) -> String {
         match a {
@@ -431,6 +508,7 @@ mod tests {
             Action::Pass => "pass".into(),
             Action::Rewrite(_) => "rewrite".into(),
             Action::PassThenFreeze(_) => "freeze".into(),
+            Action::Amend(..) => "amend".into(),
         }
     }
 
@@ -472,6 +550,26 @@ mod tests {
             }
             _ => panic!("cannot_satisfy becomes an owner ask"),
         }
+    }
+
+    #[test]
+    fn a_frozen_verify_command_can_be_amended_once_with_a_reason() {
+        let amend = json!({"verify_cmd": "cd server && .venv/bin/python -m pytest -q", "reason": "bare python lacks deps"});
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &amend, false, Some(&frozen()), None)), "amend");
+        let no_reason = json!({"verify_cmd": "x"});
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &no_reason, false, Some(&frozen()), None)), "409");
+        let twice = Contract { amended: true, state: "failed".into(), ..frozen() };
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &amend, false, Some(&twice), None)), "409", "only once");
+        let acceptance = json!({"acceptance_criteria": ["weaker"], "verify_cmd": "x", "reason": "r"});
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &acceptance, false, Some(&frozen()), None)), "409", "acceptance stays owner-only");
+    }
+
+    #[test]
+    fn the_verify_path_puts_the_lane_venv_first() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("server/.venv/bin")).unwrap();
+        let p = verify_path_prefix(d.path(), "no-such-lane");
+        assert!(p.starts_with(&d.path().join("server/.venv/bin").to_string_lossy().into_owned()), "{p}");
     }
 
     #[test]
