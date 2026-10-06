@@ -475,15 +475,27 @@ async fn golden_rate_limit_recovery() {
         WorkerState::RateLimited { reset_at } => assert_eq!(reset_at, Some(reset)),
         other => panic!("expected RateLimited, got {other:?}"),
     }
-    journal.extend(drain(&mut rx));
     // The dashboard's 2s visibility rides the StateEvent push — assert the
-    // EVENT, not a browser (Invariant 35 delivery, not rendering).
-    assert!(
-        journal.iter().any(|e| e.entity_type == EntityType::Worker
+    // EVENT, not a browser (Invariant 35 delivery, not rendering). The event is
+    // published after the write commits, so the DB can read rate_limited a
+    // moment before the event reaches this receiver: drain until it arrives,
+    // inside the same 2s budget (one read flaked CI on 5af339b7, 2026-10-06).
+    let saw_rate_limited = |j: &[StateEvent]| {
+        j.iter().any(|e| e.entity_type == EntityType::Worker
             && e.entity_id == wid.as_str()
             && matches!(&e.mutation,
-                MutationKind::StatusChanged { to, .. } if to == "rate_limited")),
-        "rate_limited StateEvent missing from the journal: {journal:?}"
+                MutationKind::StatusChanged { to, .. } if to == "rate_limited"))
+    };
+    for _ in 0..200 {
+        journal.extend(drain(&mut rx));
+        if saw_rate_limited(&journal) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        saw_rate_limited(&journal),
+        "rate_limited StateEvent missing from the journal after 2s: {journal:?}"
     );
     // The in-flight ExecuteTask failed (not confirmed, not stuck delivered).
     assert_eq!(failed_count(&rig.store, &wid), 1);
