@@ -13844,7 +13844,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1250';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1251';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -24631,8 +24631,11 @@ async function openFilePreview(path, options = {}) {
       bodyEl.className = 'file-overlay-body';
       const notFound = /not found|no such|does not exist|enoent/i.test(data.error);
       bodyEl.innerHTML = notFound
-        ? '<div style="padding:16px;line-height:1.55;color:var(--dim);">'
-          + '<div style="color:var(--text);font-weight:600;margin-bottom:8px;">This file is not on disk</div>'
+        // Inherit the body's colour: in light mode the file body stays dark
+        // (#1c2128 on #cdd9e5), so var(--text) drew a near-black heading on
+        // it (Ethan, 2026-10-06 screenshot).
+        ? '<div style="padding:16px;line-height:1.55;">'
+          + '<div style="font-weight:600;margin-bottom:8px;">This file is not on disk</div>'
           + '<div style="font-family:ui-monospace,monospace;font-size:0.8rem;word-break:break-all;'
           + 'background:rgba(127,127,127,0.12);padding:8px 10px;border-radius:6px;margin-bottom:10px;">' + esc(path) + '</div>'
           + 'It was referenced in the terminal but does not exist here — most often a file a worker '

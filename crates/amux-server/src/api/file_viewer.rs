@@ -242,7 +242,72 @@ fn resolve_viewable_fallback(fpath: &str, cwd: &str, naive: &Path) -> PathBuf {
     if let Some(found) = resolve_rel_descend(&root, rel_clean, &allowed_exists, &real_list_dirs) {
         return found;
     }
+    // The client joins a printed relative path onto the worker's directory
+    // before asking, so `fpath` arrives absolute under cwd: take it relative
+    // again for the scratchpad search.
+    let under_cwd = Path::new(fpath).strip_prefix(&root).ok().map(|r| r.to_string_lossy().into_owned());
+    let rel = under_cwd.as_deref().unwrap_or(rel_clean);
+    if let Some(found) = find_in_scratchpads(&tmp_claude_root(), &root, rel, &allowed_exists) {
+        tracing::info!(target: "file_viewer", verdict = "file_resolved_from_scratchpad",
+            path = %fpath, resolved = %found.display(), measured = true, n_considered = 1,
+            "file link resolved to the worker's Claude Code scratchpad");
+        return found;
+    }
     naive.to_path_buf()
+}
+
+/// `/private/tmp/claude-<uid>`: where Claude Code keeps each session's
+/// scratchpad, as `<project-slug>/<session-id>/scratchpad`.
+fn tmp_claude_root() -> PathBuf {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/private/tmp/claude-{uid}"))
+}
+
+/// A file a worker drafted in its Claude Code scratchpad and then named by a
+/// path relative to its draft folder (Ethan, 2026-10-06: mixpeek-general wrote
+/// `scratchpad/ideas/research/ideas/iab-tech-lab-defacto.md`, printed
+/// `research/ideas/iab-tech-lab-defacto.md`, and the viewer said "not on
+/// disk" because it only looked under ~/Dev/mixpeek). Searches the
+/// scratchpads of the project whose directory is `cwd`, newest session first,
+/// at the scratchpad root and up to two folders below it. Read-only, like the
+/// rest of this fallback.
+fn find_in_scratchpads(
+    tmp_root: &Path,
+    cwd: &Path,
+    rel: &str,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if rel.is_empty() || rel.split('/').any(|c| c == "..") {
+        return None;
+    }
+    // Claude Code's project slug: every `/` and `.` in the path becomes `-`.
+    let slug: String = cwd.to_string_lossy().trim_end_matches('/').chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+    let mut sessions: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(tmp_root.join(&slug))
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let pad = e.path().join("scratchpad");
+            let t = std::fs::metadata(&pad).and_then(|m| m.modified()).ok()?;
+            Some((t, pad))
+        })
+        .collect();
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.0));
+    let subdirs = |d: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(d).map(|it| it.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
+    };
+    for (_, pad) in sessions {
+        let mut bases = vec![pad.clone()];
+        for a in subdirs(&pad) {
+            bases.extend(subdirs(&a));
+            bases.push(a);
+        }
+        if let Some(hit) = bases.iter().map(|b| b.join(rel)).find(|c| c.is_file() && exists(c)) {
+            return Some(hit);
+        }
+    }
+    None
 }
 
 /// `_IMG_INLINE_MAX` (py:20623): inline an image as base64 up to this size,
@@ -2385,6 +2450,22 @@ pub(crate) mod tests {
     }
 
     // -- viewer payloads ----------------------------------------------------
+
+    #[test]
+    fn a_file_drafted_in_a_scratchpad_is_found_by_its_printed_relative_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = Path::new("/Users/x/Dev/mixpeek");
+        let pad = tmp.path().join("-Users-x-Dev-mixpeek/sess-1/scratchpad/ideas/research/ideas");
+        std::fs::create_dir_all(&pad).unwrap();
+        std::fs::write(pad.join("doc.md"), "x").unwrap();
+        let yes = |_: &Path| true;
+        let hit = find_in_scratchpads(tmp.path(), cwd, "research/ideas/doc.md", &yes);
+        assert_eq!(hit, Some(pad.join("doc.md")), "found two folders below the scratchpad root");
+        assert_eq!(find_in_scratchpads(tmp.path(), cwd, "research/ideas/other.md", &yes), None);
+        assert_eq!(find_in_scratchpads(tmp.path(), Path::new("/Users/x/Dev/amux"), "research/ideas/doc.md", &yes), None,
+            "another project's scratchpads are not searched");
+        assert_eq!(find_in_scratchpads(tmp.path(), cwd, "../../etc/passwd", &yes), None);
+    }
 
     #[tokio::test]
     async fn viewer_text_markdown_csv_binary_image() {
