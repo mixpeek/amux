@@ -7168,9 +7168,13 @@ _land_priority_check() {
     return 0
   fi
   local f
+  # A gate path matches at any directory level, so scripts/ci/ also covers a
+  # monorepo's server/scripts/ci/, where mixpeek keeps its pre-commit checks
+  # and their baselines (gs12-data, 2026-10-06: a baseline fix for a check
+  # that reddened every lane's commit was refused as touching no gate path).
   while IFS= read -r f; do
     for pat in ${AMUX_LAND_PRIORITY_PATHS:-.githooks/ scripts/ci/ .github/workflows/ scripts/graft-push.sh}; do
-      case "$f" in "$pat"*) hit="$f"; break 2 ;; esac
+      case "$f" in "$pat"*|*/"$pat"*) hit="$f"; break 2 ;; esac
     done
   done <<< "$files"
   if [ -n "$hit" ]; then
@@ -7201,7 +7205,7 @@ print(d.get("title") or ""); print(d.get("desc") or "")' 2>/dev/null)"
     return 0
   fi
   printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "priority refused: range touches no gate path and the reason names no grant; reason: $reason" >> "$log"
-  echo "amux land: --priority refused: this range touches no gate path (${AMUX_LAND_PRIORITY_PATHS:-.githooks/ scripts/ci/ .github/workflows/ scripts/graft-push.sh}) and --reason names no grant. Queue it without --priority, ask the orchestrator for a grant and name it in --reason, or for a fix forward of a red on main cite the card that names you as its owner (--reason \"fix forward <CARD>\")." >&2
+  echo "amux land: --priority refused: this range touches no gate path (${AMUX_LAND_PRIORITY_PATHS:-.githooks/ scripts/ci/ .github/workflows/ scripts/graft-push.sh}) and --reason names no grant. Queue it without --priority, ask the orchestrator for a grant and name it in --reason, or for a fix forward of a red on main cite the card that names you as its owner (--reason \"fix forward <CARD>\"): one line of that card must carry your lane name ($me) with owns, owner, routed to or fix forward, e.g. \"$me owns the red\"." >&2
   return 1
 }
 

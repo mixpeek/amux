@@ -2,7 +2,7 @@
 # test-land-fix-forward.sh [amux]: `--priority --reason "fix forward <CARD>"`
 # is allowed with no grant when that card names the pushing lane as the red's
 # owner, and refused when the card names it only as not the owner
-# (mixpeek-override, 2026-10-03, GG-41).
+# (mixpeek-override, 2026-10-03, GG-41). A gate path matches at any depth.
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
@@ -32,6 +32,12 @@ run lane-obs "fix forward of a Fast Checks red on main (GG-41)"; rc=$?
 grep -q "lane-obs priority fix-forward unproven" "$H/.amux/logs/land.log" && echo "ok   land.log says why" || { echo "FAIL no unproven line"; fail=1; }
 run lane-other "fix forward GG-41"; rc=$?
 [ "$rc" != 0 ] && echo "ok   a lane the card never names is refused" || { echo "FAIL unnamed lane allowed"; fail=1; }
+# gs12-data, 2026-10-06: a gate path matches at any depth, so a monorepo's
+# server/scripts/ci/ baseline fix needs no grant and no card.
+mkdir -p server/scripts/ci; echo '{}' > server/scripts/ci/baseline.json; git add server/scripts/ci/baseline.json; git commit -qm nested
+run lane-other "baseline for a check that reds every commit"
+# The gate decision is the claim; the land itself may conflict on f above.
+grep -q "lane-other priority allowed: range touches gate path server/scripts/ci/baseline.json" "$H/.amux/logs/land.log" && echo "ok   a nested scripts/ci/ path is a gate path" || { echo "FAIL nested gate path refused"; fail=1; }
 kill "$srv" 2>/dev/null; wait 2>/dev/null
 cd / && rm -rf -- "${H:?}"
 exit $fail
