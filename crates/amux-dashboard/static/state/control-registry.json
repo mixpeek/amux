@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2424,
+  "n_considered": 2432,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -968,6 +968,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_filesAddBookmarkTo": {
+      "kind": "command._filesAddBookmarkTo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_filesBmWriteKey": {
+      "kind": "command._filesBmWriteKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filesBookmarkOpen": {
       "kind": "command._filesBookmarkOpen",
       "feedback_required": true,
@@ -988,6 +1000,12 @@
     },
     "_filesRemoveBookmark": {
       "kind": "command._filesRemoveBookmark",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_filesRemoveBookmarkFrom": {
+      "kind": "command._filesRemoveBookmarkFrom",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

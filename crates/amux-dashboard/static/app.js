@@ -13844,7 +13844,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1252';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1253';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -25034,7 +25034,74 @@ async function _filesLoadBookmarks() {
     const d = await r.json();
     if (d && d.value) { try { localStorage.setItem(_filesBmLocalKey(), d.value); } catch(e) {} }
   } catch(e) {}
+  await _filesLoadInherited();
   _filesRenderBookmarks();
+}
+
+// SCOPES, like the rest of amux (Ethan, 2026-10-06: "global/per worker, etc."):
+// a worker's file view shows its own shortcuts, then each of its groups', then
+// the global ones. All live server-side in /api/prefs, so every client sees
+// the same lists: global `files_bookmarks`, group `files_bookmarks@group:<g>`,
+// worker `files_bookmarks::<w>`. A path shown at a nearer scope is not
+// repeated, and a chip's x removes it from the scope it came from.
+let _filesBmInherited = [];        // [{key, scopeLabel, items}] for the open worker view
+const _filesBmGroupsFor = {};      // worker -> its groups (from /api/scope)
+function _filesBmGroupKey(g) { return 'files_bookmarks@group:' + g; }
+async function _filesBmGroups(w) {
+  if (_filesBmGroupsFor[w]) return _filesBmGroupsFor[w];
+  let groups = [];
+  try {
+    const r = await fetch(API + '/api/scope?level=worker&name=' + encodeURIComponent(w), {headers: _authHeaders()});
+    const d = await r.json();
+    if (Array.isArray(d.groups)) groups = d.groups.filter(Boolean);
+  } catch(e) {}
+  return (_filesBmGroupsFor[w] = groups);
+}
+async function _filesLoadInherited() {
+  const w = _exploreSession;
+  if (!w) { _filesBmInherited = []; return; }
+  const groups = await _filesBmGroups(w);
+  const layers = [...groups.map(g => ({key: _filesBmGroupKey(g), scopeLabel: g})), {key: 'files_bookmarks', scopeLabel: 'all workers'}];
+  const got = await Promise.all(layers.map(l => fetch(API + '/api/prefs?key=' + encodeURIComponent(l.key))
+    .then(r => r.json()).catch(() => null)));
+  if (_exploreSession !== w) return;   // navigated away mid-fetch
+  _filesBmInherited = layers.map((l, i) => {
+    let items = [];
+    try { const v = got[i] && got[i].value; if (v) items = JSON.parse(v); } catch(e) {}
+    return {...l, items: Array.isArray(items) ? items : []};
+  });
+}
+async function _filesBmReadKey(key) {
+  try {
+    const d = await (await fetch(API + '/api/prefs?key=' + encodeURIComponent(key))).json();
+    if (d && typeof d.value === 'string' && d.value) return JSON.parse(d.value);
+  } catch(e) {}
+  return key === 'files_bookmarks' ? _FILES_DEFAULT_BOOKMARKS.map(b => ({...b})) : [];
+}
+function _filesBmWriteKey(key, bm) {
+  const json = JSON.stringify(bm);
+  if (key === 'files_bookmarks') { try { localStorage.setItem('amux_files_bookmarks', json); } catch(e) {} }
+  return fetch(API + '/api/prefs', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key, value: json})}).catch(()=>{});
+}
+// Add to a named scope (a group, or everywhere) from a worker's file view.
+async function _filesAddBookmarkTo(key, scopeLabel, path, type) {
+  const label = path.split('/').filter(Boolean).pop() || path;
+  const bm = await _filesBmReadKey(key);
+  if (!bm.find(b => b.path === path)) {
+    bm.push({ label, path, type: (type === 'dir' || type === 'directory') ? 'dir' : 'file' });
+    await _filesBmWriteKey(key, bm);
+  }
+  await _filesLoadInherited();
+  _filesRenderBookmarks();
+  showToast('Shortcut added for ' + scopeLabel + ': ' + label);
+}
+async function _filesRemoveBookmarkFrom(key, path) {
+  const bm = (await _filesBmReadKey(key)).filter(b => b.path !== path);
+  await _filesBmWriteKey(key, bm);
+  await _filesLoadInherited();
+  _filesRenderBookmarks();
+  showToast('Shortcut removed');
 }
 
 // Open a shortcut: folders navigate, files open in the previewer.
@@ -25063,7 +25130,30 @@ function _filesRenderBookmarks() {
       + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
       + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
       + '</span>';
-  }).join('');
+  }).join('') + (_exploreSession ? _filesInheritedChips(bm) : '');
+}
+// Chips from the worker's groups and the global list, each tagged with where
+// it comes from, so an inherited shortcut never reads as the worker's own.
+function _filesInheritedChips(own) {
+  const seen = new Set(own.map(b => b.path));
+  let html = '';
+  for (const layer of _filesBmInherited) {
+    for (const b of layer.items) {
+      if (!b || !b.path || seen.has(b.path)) continue;
+      seen.add(b.path);
+      const t = b.type === 'file' ? 'file' : 'dir';
+      const ic = t === 'file' ? '\u{1F4C4} ' : '';
+      html += '<span class="files-bm-chip files-bm-inherited" '
+        + 'style="display:inline-flex;align-items:center;gap:2px;background:transparent;border:1px dashed var(--border);border-radius:5px;padding:2px 3px 2px 9px;font-size:0.73rem;color:var(--text);white-space:nowrap;flex-shrink:0;" '
+        + 'title="' + esc(b.path) + ' (shortcut for ' + esc(layer.scopeLabel) + ')">'
+        + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label)
+        + ' <span style="color:var(--dim);font-size:0.66rem;">' + esc(layer.scopeLabel) + '</span></span>'
+        + '<button onclick="event.stopPropagation();_filesRemoveBookmarkFrom(\'' + escJs(layer.key) + '\',\'' + escJs(b.path) + '\')" title="Remove this shortcut for ' + esc(layer.scopeLabel) + '" aria-label="Remove ' + esc(b.label) + ' for ' + esc(layer.scopeLabel) + '" '
+        + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:0.95rem;line-height:1;padding:2px 4px;min-width:24px;min-height:24px;border-radius:4px;">×</button>'
+        + '</span>';
+    }
+  }
+  return html;
 }
 
 // Add a specific file/folder (from the ⋯ menu) as a shortcut in the CURRENT scope.
@@ -27506,6 +27596,22 @@ function _showFilesMenu(path, btn, type) {
   bmItem.textContent = _exploreSession ? ('Add shortcut · ' + _exploreSession) : 'Add shortcut';
   bmItem.onclick = () => { popup.remove(); _filesAddBookmarkPath(path, type); };
   popup.appendChild(bmItem);
+  // From a worker's view, the same shortcut can go to one of its groups or to
+  // every worker (the Files tab's global bar).
+  if (_exploreSession) {
+    for (const g of (_filesBmGroupsFor[_exploreSession] || [])) {
+      const gi = document.createElement('button');
+      gi.className = 'explore-menu-item';
+      gi.textContent = 'Add shortcut · group ' + g;
+      gi.onclick = () => { popup.remove(); _filesAddBookmarkTo(_filesBmGroupKey(g), 'group ' + g, path, type); };
+      popup.appendChild(gi);
+    }
+    const all = document.createElement('button');
+    all.className = 'explore-menu-item';
+    all.textContent = 'Add shortcut · all workers';
+    all.onclick = () => { popup.remove(); _filesAddBookmarkTo('files_bookmarks', 'all workers', path, type); };
+    popup.appendChild(all);
+  }
   // Connect to a .mdai node: make THIS file/folder a source of a chosen computed
   // node. Picks from the GLOBAL list of .mdai files (GET /api/files/mdai) and POSTs
   // /connect; the target gets a default edge prompt, editable in the node view after.
