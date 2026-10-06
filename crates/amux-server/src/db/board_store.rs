@@ -366,6 +366,38 @@ pub fn evidence_verdict(text: &str) -> EvidenceVerdict {
     EvidenceVerdict::NoArtifact
 }
 
+/// Scope key for MO-4426: a fix or regression card names its test file.
+pub const DONE_FIX_NEEDS_TEST_KEY: &str = "AMUX_DONE_FIX_NEEDS_TEST";
+
+/// Does a card's title or evidence claim it fixed something or closes a
+/// regression? Word-bounded, so "prefix" and "fixture" do not count.
+pub fn claims_fix(title: &str, evidence: &str) -> bool {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"(?i)\b(fix|fixes|fixed|regression|regressed)\b").unwrap());
+    re.is_match(title) || re.is_match(evidence)
+}
+
+/// Does the text name a test file by path? A token counts when it is a path
+/// (has a `/` or a file extension) and either sits under a tests/spec/e2e
+/// directory or has a test-shaped file name.
+pub fn names_test_file(text: &str) -> bool {
+    text.split(|c: char| c.is_whitespace() || "`'\"()[],;".contains(c)).any(|tok| {
+        let path = tok.split(':').next().unwrap_or("");
+        let (dirs, file) = path.rsplit_once('/').unwrap_or(("", path));
+        let Some((stem, ext)) = file.rsplit_once('.') else { return false };
+        if stem.is_empty() || ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return false;
+        }
+        let in_test_dir = format!("/{dirs}/").split('/').any(|d| matches!(d, "test" | "tests" | "__tests__" | "spec" | "specs" | "e2e"));
+        in_test_dir
+            || stem.starts_with("test_")
+            || stem.starts_with("test-")
+            || stem.ends_with("_test")
+            || stem.ends_with(".test")
+            || stem.ends_with(".spec")
+    })
+}
+
 /// Scope key for the AF-318 typed-ask requirement on `needsyou`.
 pub const NEEDSYOU_ASK_REQUIRED_KEY: &str = "AMUX_NEEDSYOU_ASK_REQUIRED";
 
@@ -8746,5 +8778,41 @@ mod dependency_owner_tests {
             assert_eq!(get_issue(c,"P")?.unwrap().depends_on,vec!["A","B"]);
             Ok(crate::db::WriteOutcome{applied:true,events:vec![]})
         }).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fix_needs_test_tests {
+    use super::*;
+
+    #[test]
+    fn a_fix_claim_is_word_bounded() {
+        assert!(claims_fix("fix(spend): namespace inherits the org budget", ""));
+        assert!(claims_fix("Budget cap", "Fixed at abc123"));
+        assert!(claims_fix("GG-9 regression suite", ""));
+        assert!(!claims_fix("prefix the fixture names", "added a fixture"));
+    }
+
+    #[test]
+    fn a_test_file_is_named_by_path_not_by_a_sha_or_url() {
+        for yes in [
+            "`cd server && pytest server/tests/unit/test_budget.py` -> 3 passed",
+            "crates/amux-server/tests/board_api.rs green",
+            "ran test_spend_policy.py",
+            "web/src/budget.test.ts ok",
+            "pkg/cap/cap_test.go",
+            "scripts/test-pipeline-bottlenecks-throughput.sh",
+            "e2e/board.spec.ts",
+        ] {
+            assert!(names_test_file(yes), "{yes}");
+        }
+        for no in [
+            "landed at 3054da0b8a1",
+            "https://github.com/mixpeek/mixpeek/actions/runs/37395648715",
+            "server/shared/billing/namespace_cost_caps.py:498",
+            "the tests pass",
+        ] {
+            assert!(!names_test_file(no), "{no}");
+        }
     }
 }

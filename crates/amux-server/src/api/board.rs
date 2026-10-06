@@ -13017,6 +13017,46 @@ pub async fn patch_item(
                         }
                     }
 
+                    // MO-4426 / GS12 19.4: a code card whose title or evidence
+                    // claims a fix or a regression must name the test that
+                    // would catch it coming back. A sha or URL satisfies the
+                    // artifact rule above, and a fix with no test has both.
+                    // Scoped switch AMUX_DONE_FIX_NEEDS_TEST (off unless set).
+                    if !force
+                        && matches!(target, TaskStatus::Done | TaskStatus::Verified)
+                        && next.item_type == "code"
+                        && bs::claims_fix(&next.title, next.evidence.as_deref().unwrap_or(""))
+                        && !bs::names_test_file(next.evidence.as_deref().unwrap_or(""))
+                        && next.session.as_deref().is_some_and(|l| {
+                            super::contract::lane_setting(&crate::config::amux_home(), l, bs::DONE_FIX_NEEDS_TEST_KEY)
+                                .is_some_and(|v| matches!(v.trim().trim_matches('"'), "1" | "true" | "on" | "yes"))
+                        })
+                    {
+                        tracing::warn!(card = %next.id, lane = next.session.as_deref().unwrap_or("-"), measured = true, n_considered = 1,
+                            verdict = "done_fix_needs_test", "a fix or regression card was closed without naming a test file");
+                        return finish(
+                            &slot_w,
+                            PatchOut::Refused(
+                                StatusCode::CONFLICT,
+                                json!({
+                                    "error": format!("{} claims a fix or regression; its evidence must name the test file that would catch it coming back", next.id),
+                                    "code": "done_fix_needs_test",
+                                    "ok": false,
+                                    "blocked": true,
+                                    "item": next.id,
+                                    "attempted_status": target_raw,
+                                    "recorded_evidence": next.evidence,
+                                    "how_to_fix": {
+                                        "evidence": "name the regression test's repo path in --evidence, e.g. server/tests/unit/test_budget_inherit.py or crates/x/tests/foo.rs, with the command that ran it",
+                                        "not_a_fix": "if the card fixed nothing, retitle it; the gate keys on fix/fixed/regression in the title or evidence",
+                                        "override_for_this_worker": format!("set {}=0 in this worker's (or its group's) configuration", bs::DONE_FIX_NEEDS_TEST_KEY),
+                                    }
+                                }),
+                            ),
+                            no_write(),
+                        );
+                    }
+
                     // AF-317 (a): A LANE'S `todo` IS A DISPATCH QUEUE, NOT A PILE.
                     //
                     // Ethan, 2026-08-29: "some workers have an infinite # of
@@ -15657,6 +15697,31 @@ mod af701_archive_guard_tests {
         std::fs::write(h.join("sessions/spoke.env"), "").unwrap();
         let old = seed(&store, "spoke", "needsyou");
         assert_eq!(route(&state, &old, owner_headers("peer"), body).await, StatusCode::OK, "switch off: the AMUX-4316 path is unchanged");
+    }
+
+    /// MO-4426: with the switch on, a fix card's done names its test file.
+    #[tokio::test]
+    async fn a_fix_card_cannot_close_without_naming_its_test() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/lane-f.env"), "AMUX_DONE_FIX_NEEDS_TEST=1\n").unwrap();
+        let id = seed(&store, "lane-f", "doing");
+        {
+            let id = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code', title='fix: budget default regression' WHERE id=?1", [id])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        let me = || owner_headers("lane-f");
+        let done = |ev: &str| json!({"status": "done", "gate_ack": true, "evidence": ev});
+        assert_eq!(route(&state, &id, me(), done("landed at 3054da0b8a1, CI https://x/runs/1")).await, StatusCode::CONFLICT);
+        assert_eq!(current(&store, &id).status, "doing");
+        assert_eq!(route(&state, &id, me(), done("`pytest server/tests/unit/test_budget.py` -> 3 passed at 3054da0b8a1")).await, StatusCode::OK);
+        assert_eq!(current(&store, &id).status, "done");
     }
 
     #[tokio::test]
