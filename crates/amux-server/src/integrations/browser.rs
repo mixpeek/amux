@@ -1792,6 +1792,26 @@ impl Drop for StartingRecord<'_> {
     }
 }
 
+/// Why a HEADED Chrome cannot open on this host, or `None` when it can.
+///
+/// A Linux server reached over the network (a dedicated customer host, a
+/// cloud VM) usually has no X or Wayland display. A headed launch there dies
+/// in ~250ms with "Missing X server or $DISPLAY", so `profile/create`, whose
+/// whole purpose is a human signing in, failed outright on the first such
+/// host it met (wexus.amux.io, 2026-10-06). macOS and Windows always have a
+/// window server for a logged-in user, so only Linux is checked.
+pub fn headed_unavailable_reason() -> Option<&'static str> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.trim().is_empty());
+    if set("DISPLAY") || set("WAYLAND_DISPLAY") {
+        None
+    } else {
+        Some("no X/Wayland display on this host (DISPLAY and WAYLAND_DISPLAY are unset)")
+    }
+}
+
 pub async fn start(
     home: &Path,
     profile: &str,
@@ -1800,6 +1820,25 @@ pub async fn start(
     started_by: &str,
     headless: bool,
 ) -> anyhow::Result<StartedBrowser> {
+    // A headed request on a display-less host launches headless instead of
+    // failing: the profile dir and cookie jar are identical either way (new
+    // headless shares the format, see launch_args), and a human signs in
+    // through the dashboard Browser tab's live view, which renders a headless
+    // page. Callers that promise a window read headed_unavailable_reason()
+    // and say so in their response; this WARN is the log signal.
+    let headless = match (headless, headed_unavailable_reason()) {
+        (false, Some(why)) => {
+            tracing::warn!(
+                verdict = "headed_browser_no_display",
+                profile,
+                session,
+                why,
+                "headed browser requested on a display-less host; launching headless (sign in via the dashboard Browser live view)"
+            );
+            true
+        }
+        _ => headless,
+    };
     // A Chrome from a PREVIOUS server process may still hold this profile. The
     // RUNNING registry is in-memory and does not survive the builder's constant
     // re-exec, so start() used to be blind to that orphan: it checked only
