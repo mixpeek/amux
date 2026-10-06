@@ -1049,8 +1049,13 @@ cmd_start() {
       echo "  ${DIM}worktree: $worktree_dir${RESET}"
       dir="$worktree_dir"
     else
-      echo "${YELLOW}warn: worktree creation failed, falling back to shared checkout${RESET}" >&2
-      worktree_dir=""
+      # REFUSE, DO NOT FALL BACK (contract rule 4, AH-381; the server's own
+      # start has refused since AMUX-4770). A worker that asked to be isolated
+      # and silently is not inherits every shared-checkout hazard.
+      mkdir -p "$CC_HOME/logs"
+      printf '%s WARN amux::cli verdict=worktree_launch_refused session=%s reason=worktree_add_failed dir=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$dir" >> "$CC_HOME/logs/server-rs.log"
+      die "refusing to start $name: CC_WORKTREE=1 asked for an isolated worktree at $worktree_dir and it could not be created. Starting in the shared checkout would put it in a tree other lanes write to. Fix it (git -C $dir worktree prune) or unset CC_WORKTREE."
     fi
   fi
 

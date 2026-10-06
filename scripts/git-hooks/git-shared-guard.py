@@ -1489,6 +1489,27 @@ def _linked_worktree_main(run_dir):
     return os.path.dirname(common)
 
 
+def _log_rule4_skip(guard, where):
+    """Record that a shared-checkout guard stood down on a rule-4 lane, at most
+    once per guard, lane and hour, in the server log the rule counters read
+    (contract rule 14). Never raises."""
+    try:
+        home = os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux")
+        lane = os.environ.get("AMUX_SESSION") or "-"
+        bucket = int(time.time() // 3600)
+        mark = os.path.join(home, "state", f"rule4-skip-{guard}-{lane}-{bucket}")
+        if os.path.exists(mark):
+            return
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        open(mark, "w").close()
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(os.path.join(home, "logs", "server-rs.log"), "a") as f:
+            f.write(f'{ts}  INFO amux::hook: verdict="shared_guard_skipped_isolated" '
+                    f'guard={guard} session={lane} worktree={where} measured=true n_considered=1\n')
+    except Exception:
+        pass
+
+
 def _worktree_config_verdict(cmd, scrubbed, run_dir):
     toks = _config_write_tokens(scrubbed)
     if not toks:
@@ -1987,6 +2008,13 @@ def main():
     # paths -> allow. In a genuinely private repo it costs one rev-parse and one
     # localhost POST on `git checkout -- <paths>` / `git restore <paths>`, and nothing
     # at all on any other command.
+    # CONTRACT RULE 4 (AH-381): on a lane launched into its own worktree
+    # (AMUX_RULE4_ISOLATED=1, exported by the server only for rule-4 lanes)
+    # and running inside a linked worktree, there is no other writer for the
+    # tree-wide checks to protect. They stand down; the config-write check
+    # below still runs, because a linked worktree's config IS the shared file.
+    _rule4_skip = (os.environ.get("AMUX_RULE4_ISOLATED") == "1"
+                   and _linked_worktree_main(run_dir) is not None)
     discard_why = None
     _dv_err = None
     # RETRY BEFORE REFUSING (AC-287). The amux server re-execs on every save of
@@ -1996,7 +2024,7 @@ def main():
     # caught by a control in review: the guard blocked with a reachable server
     # purely because the call landed in a reload window. Three tries over ~6s costs
     # nothing on an operation this rare and removes that whole false-refusal class.
-    for _dv_try in range(3):
+    for _dv_try in range(0 if _rule4_skip else 3):
         try:
             discard_why = _discard_verdict(cmd, scrubbed, run_dir)
             _dv_err = None
@@ -2104,6 +2132,10 @@ def main():
                 f"OWNER-AUTHORIZED one-off: write the exact command to ~/.amux/guard-allow-once "
                 f"and re-run (consumed once, audit-logged).\n")
             return 2
+    if _rule4_skip:
+        if re.search(r'\bgit\b', scrubbed):
+            _log_rule4_skip("git-shared-guard", run_dir)
+        return 0
     if not any(d == s or d.startswith(s + os.sep) for d in _scope_dirs for s in shared):
         if not _has_cotenants(run_dir):
             return 0

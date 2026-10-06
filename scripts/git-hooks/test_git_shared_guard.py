@@ -1144,6 +1144,27 @@ def main():
         failures.append(
             "AF-577: the refusal must explicitly rule OUT --local; got %r" % _err[:300])
 
+    # --- Contract rule 4 (AH-381): a rule-4 lane's own linked worktree ------------
+    # AMUX_RULE4_ISOLATED=1 is exported only for lanes the server launched into
+    # their own worktree. There the tree-wide checks stand down (and log once);
+    # the config-write check and every non-linked tree keep their guard.
+    _r4home = tempfile.mkdtemp(prefix="guardr4-")
+    os.makedirs(os.path.join(_r4home, "logs"), exist_ok=True)
+    _r4 = {"AMUX_RULE4_ISOLATED": "1", "AMUX_HOME": _r4home, "AMUX_SESSION": "lane-r4"}
+    _r4cases = [
+        ("control: reset --hard in a listed linked worktree, no marker", "git reset --hard", _wt_linked, _wt_linked, {}, True),
+        ("rule 4: the same command in the lane's own linked worktree", "git reset --hard", _wt_linked, _wt_linked, _r4, False),
+        ("rule 4 does not cover a MAIN checkout", "git reset --hard", _wt_main, _wt_main, _r4, True),
+        ("rule 4 keeps the shared-config write check", "git config core.bare true", _wt_linked, _elsewhere, _r4, True),
+    ]
+    for _n, _c, _d, _sr, _env, _want_block in _r4cases:
+        _rc, _err = run_hook(_c, _d, _sr, _env)
+        if (_rc == 2) != _want_block:
+            failures.append("rule 4: %s -> rc=%s, want blocked=%s. stderr: %r" % (_n, _rc, _want_block, _err[:200]))
+    _r4log = open(os.path.join(_r4home, "logs", "server-rs.log")).read() if os.path.exists(os.path.join(_r4home, "logs", "server-rs.log")) else ""
+    if _r4log.count('verdict="shared_guard_skipped_isolated"') != 1:
+        failures.append("rule 4: the stand-down must log exactly once per hour; log was %r" % _r4log[:300])
+
     # --- rm correction must not depend on AMUX_SESSION (isolated lanes) ------------
     # An ISOLATED worker is spawned with no AMUX_SESSION, so the correction used to
     # switch itself off and Claude's native, non-bypassable "Dangerous rm operation"

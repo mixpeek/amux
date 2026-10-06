@@ -32,6 +32,22 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P)" || exit 0
 cd "$REPO" 2>/dev/null || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
+# CONTRACT RULE 4 (AH-381): a lane the server launched into its own linked
+# worktree (AMUX_RULE4_ISOLATED=1) was cut from origin/main at launch and has no
+# peers in its tree, so the shared-checkout advice below does not apply. Stand
+# down, once-per-hour logged to the server log the contract counters read.
+if [ "${AMUX_RULE4_ISOLATED:-}" = "1" ] \
+   && [ "$(git rev-parse --git-dir 2>/dev/null)" != "$(git rev-parse --git-common-dir 2>/dev/null)" ]; then
+  _h="${AMUX_HOME:-$HOME/.amux}"
+  _mark="$_h/state/rule4-skip-freshness-${AMUX_SESSION:--}-$(( $(date +%s) / 3600 ))"
+  if [ ! -e "$_mark" ]; then
+    mkdir -p "$_h/state" 2>/dev/null && : > "$_mark" 2>/dev/null
+    printf '%s  INFO amux::hook: verdict="shared_guard_skipped_isolated" guard=freshness session=%s worktree=%s measured=true n_considered=1\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${AMUX_SESSION:--}" "$REPO" >> "$_h/logs/server-rs.log" 2>/dev/null
+  fi
+  exit 0
+fi
+
 out=""
 
 # ── Axis 1: is the checkout behind its remote? ───────────────────────────────

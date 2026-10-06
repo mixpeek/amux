@@ -1126,6 +1126,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("A5", &["contract_dispatch_held"]),
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
+    ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),
     ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
     ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused"]),
     ("10", &["worker_token_minted", "worker_identity_refused", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),

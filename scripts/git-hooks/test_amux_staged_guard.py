@@ -270,6 +270,37 @@ def main():
         if needle not in txt:
             failures.append(f"orphan-deletion render omits {what} ({needle!r})")
 
+    # CONTRACT RULE 4 (AH-381): in a rule-4 lane's own LINKED worktree the
+    # cross-session check stands down and logs once; a main checkout never does.
+    with tempfile.TemporaryDirectory() as t:
+        main_dir, linked = os.path.join(t, "main"), os.path.join(t, "linked")
+        real_run(["git", "init", "-q", "-b", "main", main_dir], capture_output=True)
+        real_run(["git", "-C", main_dir, "-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-q", "--allow-empty", "-m", "i"], capture_output=True)
+        real_run(["git", "-C", main_dir, "worktree", "add", "-q", linked, "-b", "side"], capture_output=True)
+        home = os.path.join(t, "home")
+        os.makedirs(os.path.join(home, "logs"))
+        cwd = os.getcwd()
+        try:
+            os.chdir(main_dir)
+            if mod._in_linked_worktree():
+                failures.append("rule 4: a MAIN checkout read as a linked worktree")
+            os.chdir(linked)
+            if not mod._in_linked_worktree():
+                failures.append("rule 4: a linked worktree was not recognised")
+            env = {"AMUX_RULE4_ISOLATED": "1", "AMUX_SESSION": "lane-r4", "AMUX_HOME": home}
+            with patch.dict(os.environ, env), patch.object(mod, "index_worktree_divergence", return_value=False), \
+                    patch.object(mod, "post", side_effect=AssertionError("the server check must not run"), create=True):
+                rc = mod.main()
+            if rc != 0:
+                failures.append(f"rule 4: the staged-guard should stand down in the lane's worktree, rc={rc}")
+            log = open(os.path.join(home, "logs", "server-rs.log")).read() if os.path.exists(
+                os.path.join(home, "logs", "server-rs.log")) else ""
+            if 'verdict="shared_guard_skipped_isolated" guard=staged-guard' not in log:
+                failures.append(f"rule 4: the stand-down was not logged: {log!r}")
+        finally:
+            os.chdir(cwd)
+
     if failures:
         print(f"FAIL {len(failures)}:")
         for f in failures:

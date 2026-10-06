@@ -119,7 +119,17 @@ pub(crate) fn home() -> PathBuf {
 /// Named "workspace" isolation on purpose: CC_ISOLATED already means an
 /// owner-only raw CLI with no harness automation, a different thing.
 pub(crate) fn workspace_isolation_on(name: &str) -> bool {
-    auto_continue_on(scoped_setting_in(&home(), name, "AMUX_WORKSPACE_ISOLATION").as_deref())
+    rule4_on(name) || auto_continue_on(scoped_setting_in(&home(), name, "AMUX_WORKSPACE_ISOLATION").as_deref())
+}
+
+/// Orchestration contract rule 4 (AH-381): one writer per worktree. On a lane
+/// where the rule is on, isolation is not opt-in: the launch always uses the
+/// worker's own worktree, refuses rather than falling back to the shared
+/// checkout, and exports AMUX_RULE4_ISOLATED=1 so the guards that exist only
+/// for shared checkouts (staged-guard, git-shared-guard, the freshness hook)
+/// can stand down inside it.
+pub(crate) fn rule4_on(name: &str) -> bool {
+    crate::api::contract::rule_on(&home(), name, "4")
 }
 
 /// The shell exports workspace isolation adds to a worker's launch, or "".
@@ -136,6 +146,9 @@ pub(crate) fn workspace_isolation_exports(name: &str) -> String {
         "export TMPDIR={}; export AMUX_PUSH_STRATEGY=\"${{AMUX_PUSH_STRATEGY:-rebase}}\"; ",
         sh_quote(&tmp.to_string_lossy())
     );
+    if rule4_on(name) {
+        out.push_str("export AMUX_RULE4_ISOLATED=1; ");
+    }
     if auto_continue_on(scoped_setting_in(&home(), name, "AMUX_KUBE_IMPERSONATE").as_deref()) {
         let src = std::env::var("KUBECONFIG")
             .ok()
@@ -14744,6 +14757,10 @@ pub(crate) async fn start_session(
             Some(o) if o.status.success() && materialized => {
                 tracing::info!(session = name, worktree = %wt_path, pinned_at,
                     "worktree created for isolated workspace");
+                if rule4_on(name) {
+                    tracing::info!(session = name, worktree = %wt_path, measured = true, n_considered = 1,
+                        verdict = "worktree_launch_isolated", "contract rule 4: the lane launches in its own worktree");
+                }
                 work_dir = wt_path;
             }
             other => {
@@ -14770,6 +14787,11 @@ pub(crate) async fn start_session(
                     });
                 tracing::error!(session = name, worktree = %wt_path, verdict = "worktree_required",
                     materialized, "refusing to start: isolation was requested and could not be provided");
+                if rule4_on(name) {
+                    tracing::error!(session = name, worktree = %wt_path, measured = true, n_considered = 1,
+                        verdict = "worktree_launch_refused",
+                        "contract rule 4: no worktree, so no launch; the shared checkout is never a fallback");
+                }
                 return (
                     false,
                     format!(
@@ -52250,6 +52272,42 @@ mod stale_draft_tests {
 #[cfg(test)]
 mod workspace_isolation_tests {
     use super::*;
+
+    /// Contract rule 4 (AH-381): on a rule-4 lane isolation is not opt-in, the
+    /// marker the shared-checkout guards read is exported, and a rollout that
+    /// holds rule 4 back leaves the lane exactly as it was.
+    #[test]
+    fn rule_four_makes_isolation_mandatory_and_marks_the_shell() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::create_dir_all(home.path().join("env")).unwrap();
+        std::fs::write(home.path().join("sessions").join("lane.env"), "CC_DIR=\"/tmp\"\nCC_TAGS=\"g\"\n").unwrap();
+        assert!(!workspace_isolation_on("lane"));
+
+        std::fs::write(home.path().join("env").join("g.env"), "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_RULES_OFF=\"4\"\n").unwrap();
+        assert!(!rule4_on("lane") && !workspace_isolation_on("lane"), "held back: unchanged");
+
+        std::fs::write(home.path().join("env").join("g.env"), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        assert!(rule4_on("lane"));
+        assert!(workspace_isolation_on("lane"), "rule 4 implies the worker's own worktree");
+        let ex = workspace_isolation_exports("lane");
+        assert!(ex.contains("export AMUX_RULE4_ISOLATED=1;"), "{ex}");
+
+        // The explicit isolation switch alone does not claim rule 4.
+        std::fs::write(home.path().join("env").join("g.env"), "AMUX_WORKSPACE_ISOLATION=1\n").unwrap();
+        assert!(workspace_isolation_on("lane"));
+        assert!(!workspace_isolation_exports("lane").contains("AMUX_RULE4_ISOLATED"));
+    }
+
+    /// The CLI's local launch refused nothing: a failed worktree fell back to
+    /// the shared checkout, the hazard rule 4 exists to remove.
+    #[test]
+    fn the_cli_never_falls_back_to_the_shared_checkout() {
+        let cli = include_str!("../../../../amux");
+        assert!(!cli.contains("falling back to shared checkout"), "the CLI fallback is back");
+        assert!(cli.contains("verdict=worktree_launch_refused"), "the CLI refusal must log its verdict");
+    }
 
     #[test]
     fn workspace_isolation_is_off_by_default_and_one_scoped_switch_turns_it_on() {

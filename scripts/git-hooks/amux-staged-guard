@@ -50,7 +50,7 @@ import json, os, shlex, ssl, subprocess, sys, time, urllib.error, urllib.request
 # `^`-anchored, because an unanchored match now finds the comment line first
 # (checked: it returned empty, which would have made `grep -L` match nothing and
 # report a clean fleet).
-GUARD_VERSION = 19
+GUARD_VERSION = 20
 
 # AF-929: the AC-297 severity upgrade below is structurally blind to
 # `git commit <pathspec>` (confirmed empirically, scratch repo, 2026-09-18) --
@@ -702,6 +702,39 @@ def _nothing_in_dispute(path):
         return None, "the check errored"
 
 
+def _in_linked_worktree():
+    """True when the cwd is a LINKED worktree (git-dir differs from the common
+    dir). A probe that cannot run answers False, so the guard keeps checking."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--git-dir", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return False
+        parts = [os.path.realpath(p.strip()) for p in r.stdout.splitlines() if p.strip()]
+        return len(parts) == 2 and parts[0] != parts[1]
+    except Exception:
+        return False
+
+
+def _log_rule4_skip(guard, lane):
+    """Record the stand-down once per guard, lane and hour in the server log
+    the contract counters read. Never raises."""
+    try:
+        home = os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux")
+        bucket = int(time.time() // 3600)
+        mark = os.path.join(home, "state", "rule4-skip-%s-%s-%d" % (guard, lane or "-", bucket))
+        if os.path.exists(mark):
+            return
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        open(mark, "w").close()
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(os.path.join(home, "logs", "server-rs.log"), "a") as f:
+            f.write('%s  INFO amux::hook: verdict="shared_guard_skipped_isolated" guard=%s '
+                    'session=%s worktree=%s measured=true n_considered=1\n' % (ts, guard, lane or "-", os.getcwd()))
+    except Exception:
+        pass
+
+
 def main():
     sess = os.environ.get("AMUX_SESSION", "")
     derived = False
@@ -722,6 +755,13 @@ def main():
     # put the commonest override in the fleet on the path of the newest check.
     if sess and index_worktree_divergence(sess, sys.stderr.write):
         return 1
+    # CONTRACT RULE 4 (AH-381): a lane the server launched into its own linked
+    # worktree (AMUX_RULE4_ISOLATED=1) has no co-tenant whose work its index
+    # could sweep, so the cross-session check below stands down. The AF-195
+    # check above is about this lane's own bytes and still runs.
+    if os.environ.get("AMUX_RULE4_ISOLATED") == "1" and _in_linked_worktree():
+        _log_rule4_skip("staged-guard", sess)
+        return 0
     # AMUX_VERIFIED_SOLO is the HONEST half of the same exit (AF-26). Both skip the
     # check; they differ in what the operator asserts, and that difference is the point —
     # ALLOW_FOREIGN says "their work is in it and I mean to ship it", VERIFIED_SOLO says
