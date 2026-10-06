@@ -47,6 +47,7 @@ pub(crate) const OWNER_ASK_KEY: &str = "AMUX_OWNER_ASK_STEER";
 /// empty guard as the owner's own send, which would bypass the isolation and
 /// pause refusals this automation must respect.
 pub(crate) const OWNER_ASK_GUARD: &str = "owner-ask";
+pub(crate) const SIGKILL_RESUME_GUARD: &str = "turn-end-sigkill";
 pub(crate) fn re(
     cell: &'static OnceLock<regex::Regex>,
     pat: &str,
@@ -550,6 +551,33 @@ pub(crate) struct TurnTail {
 /// (interrupt, API error) has no final statement to classify and returns None.
 /// A real prompt after the final assistant record also returns None: the lane
 /// has already been spoken to.
+/// The turn's last tool result was a SIGKILL ("Exit code 137") and the text
+/// it ended on is a short sign-off rather than a report.
+pub(crate) fn ended_after_sigkill(records: &[Value], turn: &TurnTail) -> bool {
+    if turn.text.trim().chars().count() > 200 {
+        return false;
+    }
+    let end = records.iter().rposition(|r| r["uuid"].as_str() == Some(turn.uuid.as_str())).unwrap_or(records.len());
+    for r in records[..end].iter().rev() {
+        if r["type"] != "user" {
+            continue;
+        }
+        let Some(blocks) = r["message"]["content"].as_array() else { continue };
+        if let Some(tr) = blocks.iter().rev().find(|b| b["type"] == "tool_result") {
+            let body = match &tr["content"] {
+                Value::String(s) => s.clone(),
+                Value::Array(a) => text_blocks(&Value::Array(a.clone())).join("\n"),
+                _ => String::new(),
+            };
+            return body.trim_start().starts_with("Exit code 137");
+        }
+        if r["message"]["content"].is_string() || blocks.iter().any(|b| b["type"] == "text") {
+            return false; // a real prompt came after the last tool: not this shape
+        }
+    }
+    false
+}
+
 pub(crate) fn final_turn(records: &[Value]) -> Option<TurnTail> {
     let last_asst = records
         .iter()
@@ -1243,6 +1271,31 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
         tracing::debug!(session = %name, verdict = "turn_end_no_final_text", "turn-end: turn did not end on text");
         return;
     };
+    // A turn that ended right after its last tool was SIGKILLed (exit 137) is
+    // an abnormal stop, not an idle: amux-cloud 2026-10-06 ~12:31 (`pkill -f`
+    // matched its own shell) and amux the same day ended on "No response
+    // requested." with a card in doing, and sat idle until the owner asked.
+    if !isolated && ended_after_sigkill(&records, &turn) {
+        if let Some(card) = state.store.read().ok()
+            .and_then(|c| crate::runtime_jobs::board_drive::exact_resume_card(&c, &name).ok().flatten())
+        {
+            let text = format!("[amux] Your last command was killed (exit 137) and the turn ended there, \
+                with {card} still in doing. Resume {card}: re-run what was killed (check the command \
+                does not match its own shell, e.g. `pkill -f`), then continue.");
+            let id = format!("sigkill-{}", turn.uuid);
+            match sv::steer_enqueue_idempotent_report(&state, &name, &text, SIGKILL_RESUME_GUARD, "", &id).await {
+                Ok(_) => {
+                    tracing::warn!(session = %name, card = %card, verdict = "turn_end_after_sigkill",
+                        measured = true, n_considered = 1,
+                        "turn-end: the turn ended right after a SIGKILLed tool with a card in doing; nudged to resume");
+                    sv::steer_deliver_for_session(&state, &name).await;
+                }
+                Err(e) => tracing::warn!(session = %name, verdict = "turn_end_after_sigkill_refused", error = e,
+                    "turn-end: a SIGKILLed turn could not be nudged"),
+            }
+            return;
+        }
+    }
     // Record which cards the lane's latest turn named, for the session list's
     // "Needs input" projection (a lane blocked on its own needsyou card).
     let named = super::goal_loop::card_ids(&turn.text);
@@ -1653,6 +1706,26 @@ mod tests {
     }
     fn user_text(ts: &str, text: &str) -> Value {
         json!({"type":"user","timestamp":ts,"message":{"role":"user","content":text}})
+    }
+
+    #[test]
+    fn a_turn_ending_right_after_a_sigkilled_tool_is_recognised() {
+        let tool = |content: &str| json!({"type":"user","uuid":"u-t","message":{"content":[
+            {"type":"tool_result","content":content,"is_error":true,"tool_use_id":"t1"}]}});
+        let recs = vec![
+            user_text("2026-10-06T12:30:00Z", "deploy it"),
+            asst("a1", "m1", "2026-10-06T12:30:05Z", json!([{"type":"tool_use","id":"t1","name":"Bash","input":{}}])),
+            tool("Exit code 137"),
+            asst("a2", "m2", "2026-10-06T12:30:06Z", json!([{"type":"text","text":"No response requested."}])),
+        ];
+        let t = final_turn(&recs).unwrap();
+        assert!(ended_after_sigkill(&recs, &t), "137 then a short sign-off is the shape");
+        let mut ok = recs.clone();
+        ok[2] = tool("Exit code 1\nboom");
+        assert!(!ended_after_sigkill(&ok, &final_turn(&ok).unwrap()), "an ordinary failure is not a SIGKILL");
+        let mut long = recs.clone();
+        long[3] = asst("a2", "m2", "2026-10-06T12:30:06Z", json!([{"type":"text","text":"x".repeat(300)}]));
+        assert!(!ended_after_sigkill(&long, &final_turn(&long).unwrap()), "a real report after the kill is left alone");
     }
 
     #[test]
