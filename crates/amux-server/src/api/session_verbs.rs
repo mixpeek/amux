@@ -16160,7 +16160,14 @@ fn resume_context_from_state(
     configured_cwd: &str,
 ) -> Result<StructuredResumeContext, String> {
     let card = crate::runtime_jobs::board_drive::exact_resume_card(conn, name)?;
-    let cwd = if runtime_cwd.trim().is_empty() {
+    // A lane launched in ITS OWN worktree (`.../.worktrees/<lane>`, rule 4 or
+    // workspace isolation) is pinned there; a runtime cwd from before the pin
+    // is another checkout with another HEAD. gs12-extra-2, 2026-10-06: the
+    // resume prompt said "work only in .worktrees/gs12-extra-2/server" while
+    // the session ran in .../server/.worktrees/gs12-extra-2.
+    let own_worktree = Path::new(configured_cwd).ends_with(Path::new(".worktrees").join(name))
+        && Path::new(configured_cwd).is_dir();
+    let cwd = if own_worktree || runtime_cwd.trim().is_empty() {
         configured_cwd
     } else {
         runtime_cwd
@@ -41447,6 +41454,26 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             load_meta(name)["pending_structured_resume_context"]["cwd"],
             json!(dir.path())
         );
+    }
+
+    #[test]
+    fn a_lane_pinned_to_its_own_worktree_resumes_there_not_in_an_older_runtime_cwd() {
+        // gs12-extra-2, 2026-10-06: launched in .../server/.worktrees/<lane>,
+        // told to "work only in" the older .worktrees/<lane>/server.
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("r.db")).unwrap();
+        let own = dir.path().join("server/.worktrees/lane-a");
+        let old = dir.path().join(".worktrees/lane-a/server");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let conn = store.read().unwrap();
+        let c = resume_context_from_state(&conn, "lane-a", old.to_str().unwrap(), own.to_str().unwrap()).unwrap();
+        assert_eq!(c.cwd, own.to_str().unwrap(), "the lane's own pinned worktree wins");
+        // An ordinary workspace keeps preferring the runtime cwd (a task worktree).
+        let shared = dir.path().join("checkout");
+        std::fs::create_dir_all(&shared).unwrap();
+        let c = resume_context_from_state(&conn, "lane-a", old.to_str().unwrap(), shared.to_str().unwrap()).unwrap();
+        assert_eq!(c.cwd, old.to_str().unwrap());
     }
 
     #[test]
