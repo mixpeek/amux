@@ -136,6 +136,16 @@ pub fn enabled_for(home: &Path, lane: &str) -> bool {
     !lane.is_empty() && lane_setting(home, lane, SWITCH).is_some_and(|v| truthy(&v))
 }
 
+/// Rules held back while the contract is on for a lane, by number, from the
+/// scoped `AMUX_CONTRACT_RULES_OFF` (e.g. "6,7"). Lets a rollout widen one
+/// rule at a time: 2026-10-06 gs12-platform took rules 1, 2, 3 and 8 without
+/// recycling twenty working sessions (7) or budget-parking long cards (6).
+pub fn rule_on(home: &Path, lane: &str, rule: &str) -> bool {
+    enabled_for(home, lane)
+        && !lane_setting(home, lane, "AMUX_CONTRACT_RULES_OFF")
+            .is_some_and(|v| v.trim().trim_matches('"').split(',').any(|r| r.trim().eq_ignore_ascii_case(rule)))
+}
+
 /// The hub that may act on `lane`'s board under rule 9.
 pub const HUB: &str = "AMUX_CONTRACT_HUB";
 
@@ -1367,5 +1377,7 @@ not a log line\n";
         assert!(!enabled_for(h, "a"), "worker beats group");
         std::fs::write(h.join("server.env"), "AMUX_CONTRACT_DONE=1\n").unwrap();
         assert!(enabled_for(h, "a"), "server.env beats every layer");
+        std::fs::write(h.join("env/g.env"), "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_RULES_OFF=\"6, 7\"\n").unwrap();
+        assert!(rule_on(h, "a", "2") && !rule_on(h, "a", "7") && !rule_on(h, "a", "6"), "a rule can be held back");
     }
 }

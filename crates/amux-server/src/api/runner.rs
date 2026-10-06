@@ -128,7 +128,7 @@ pub fn applies(guard: &str, stable_id: Option<&str>) -> bool {
 /// The gate. `Ok` lets the nudge through; `Err` says why it was not queued.
 pub async fn gate(store: &crate::db::SharedStore, lane: &str, guard: &str, text: &str) -> Result<(), &'static str> {
     let home = crate::config::amux_home();
-    if !crate::api::contract::enabled_for(&home, lane) {
+    if !crate::api::contract::rule_on(&home, lane, "6") {
         return Ok(());
     }
     for (held, why, reason) in [

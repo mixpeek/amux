@@ -108,7 +108,7 @@ Your env, board cards and memory are unchanged.\n"
 /// which case the conversation is recycled and the brief prefixes the text.
 pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
     let home = crate::config::amux_home();
-    if !crate::api::contract::enabled_for(&home, lane) {
+    if !crate::api::contract::rule_on(&home, lane, "7") {
         return text.to_string();
     }
     let meta = sv::load_meta(lane);
