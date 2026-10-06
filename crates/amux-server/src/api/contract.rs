@@ -35,6 +35,14 @@
 //! cannot set verified on a contract card. Verdicts: contract_review_started,
 //! contract_review_passed, contract_review_failed, contract_review_escalated,
 //! contract_review_unmeasured, contract_verified_refused.
+//!
+//! Rule 9 (AH-390): hub and spoke. On a contract lane's board only the lane,
+//! the owner and the lane's hub (`AMUX_CONTRACT_HUB`, usually set at group
+//! scope to the orchestrator) may clear an ask (needsyou, blocked) or assign
+//! work. A peer's `authorized_by` or the legacy `AMUX_BOARD_DELEGATION`
+//! opt-in no longer counts; a peer's message is data, and `amux signal raise`
+//! is how a peer clears a wait. Verdicts: rule9_peer_approval_refused,
+//! rule9_peer_delegation_refused.
 use crate::api::AppState;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -126,6 +134,21 @@ pub fn lane_setting(home: &Path, lane: &str, key: &str) -> Option<String> {
 
 pub fn enabled_for(home: &Path, lane: &str) -> bool {
     !lane.is_empty() && lane_setting(home, lane, SWITCH).is_some_and(|v| truthy(&v))
+}
+
+/// The hub that may act on `lane`'s board under rule 9.
+pub const HUB: &str = "AMUX_CONTRACT_HUB";
+
+/// Rule 9: whether `caller` (a worker lane) is a PEER of contract lane `lane`,
+/// so it may not clear `lane`'s asks or assign it work. None when rule 9 does
+/// not apply (switch off, same lane, no worker caller).
+pub fn rule9_peer(home: &Path, lane: &str, caller: &str) -> Option<bool> {
+    let caller = caller.trim();
+    if caller.is_empty() || caller == lane || !enabled_for(home, lane) {
+        return None;
+    }
+    let hub = lane_setting(home, lane, HUB).map(|v| v.trim().trim_matches('"').to_string());
+    Some(hub.as_deref() != Some(caller))
 }
 
 fn hash_of(acceptance: &str, command: &str, deploy_check: Option<&str>) -> String {
@@ -933,6 +956,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("2", &["contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
     ("3", &["contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
 ];
@@ -1149,6 +1173,21 @@ not a log line\n";
         assert_eq!(c.get("contract_verify_failed"), Some(&1));
         assert!(!c.contains_key("something_else"), "unmapped verdicts are not counted");
         assert_eq!(scanned, 3, "lines inside the window are what was considered");
+    }
+
+    #[test]
+    fn rule9_only_the_lane_the_owner_and_the_hub_act_on_a_contract_board() {
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("env")).unwrap();
+        std::fs::write(h.join("sessions/spoke.env"), "CC_TAGS=\"g\"\n").unwrap();
+        assert_eq!(rule9_peer(h, "spoke", "peer"), None, "switch off: rule 9 does not apply");
+        std::fs::write(h.join("env/g.env"), "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=hub\n").unwrap();
+        assert_eq!(rule9_peer(h, "spoke", "peer"), Some(true), "a peer");
+        assert_eq!(rule9_peer(h, "spoke", "hub"), Some(false), "the hub");
+        assert_eq!(rule9_peer(h, "spoke", "spoke"), None, "the lane itself");
+        assert_eq!(rule9_peer(h, "spoke", ""), None, "no worker header is the owner's path");
     }
 
     #[test]

@@ -5613,9 +5613,18 @@ pub async fn create_item(
                 }),
             );
         }
-        if !bs::board_delegation_allowed(Some(&hdr_session))
-            || !bs::board_delegation_allowed(Some(target))
-        {
+        // Contract rule 9 (AH-390): a contract lane takes assignments from its
+        // hub only; the legacy AMUX_BOARD_DELEGATION opt-in does not apply.
+        let rule9 = super::contract::rule9_peer(&crate::config::amux_home(), target, &hdr_session);
+        if rule9 == Some(true) {
+            tracing::warn!(requester = %hdr_session, target_lane = %target, measured = true, n_considered = 1,
+                verdict = "rule9_peer_delegation_refused", "a peer tried to assign work to a contract lane (contract rule 9)");
+        }
+        let allowed = match rule9 {
+            Some(peer) => !peer,
+            None => bs::board_delegation_allowed(Some(&hdr_session)) && bs::board_delegation_allowed(Some(target)),
+        };
+        if !allowed {
             tracing::warn!(marker="board_delegation_refused", requester=%hdr_session, target_lane=%target,
                 measured=true, n_considered=1, "worker owns its outcome; cross-board assignment refused");
             return err(
@@ -12297,6 +12306,23 @@ pub async fn patch_item(
                 // dashboard). `authorized_by` is the truthful path for a lane
                 // that legitimately answers another team's ask (ethos rule 3),
                 // and it is the same key, so there is one thing to learn.
+                // Contract rule 9 (AH-390): on a contract lane, a peer cannot
+                // clear an ask, with or without authorized_by; the lane, the
+                // owner and the lane's hub can, and a peer clears a wait with
+                // `amux signal raise`.
+                if matches!(from, Some(TaskStatus::NeedsYou) | Some(TaskStatus::Blocked)) && from != Some(target) && !is_local_member {
+                    let lane = row.session.clone().unwrap_or_default();
+                    if super::contract::rule9_peer(&crate::config::amux_home(), lane.trim(), &caller_lane) == Some(true) {
+                        tracing::warn!(card = %row.id, lane = %lane, caller = %caller_lane, measured = true, n_considered = 1,
+                            verdict = "rule9_peer_approval_refused", "a peer tried to clear a contract lane's ask (contract rule 9)");
+                        return finish(&slot_w, PatchOut::Refused(StatusCode::FORBIDDEN, json!({
+                            "code": "rule9_peer_cannot_clear",
+                            "error": format!("{} belongs to {lane}; a peer's answer is data, not a clearance (contract rule 9)", row.id),
+                            "how": format!("send {lane} your answer, or `amux signal raise <name>` if it waits on a signal; {lane}, the owner or its hub moves the card"),
+                            "contract": "docs/orchestration-contract.md",
+                        })), no_write());
+                    }
+                }
                 if from == Some(TaskStatus::NeedsYou) && target != TaskStatus::NeedsYou {
                     let owner = row.session.clone().unwrap_or_default().trim().to_string();
                     let authorized = map
@@ -15607,6 +15633,30 @@ mod af701_archive_guard_tests {
         let row = current(&store, &b);
         assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
         assert_eq!(super::super::contract::run_reviews(&state).await, (0, 0), "nothing left to review");
+    }
+
+    /// Contract rule 9 through the real route (AH-390): on a contract lane a
+    /// peer cannot clear an ask even with authorized_by; the hub can; with the
+    /// switch off the older authorized_by path is unchanged.
+    #[tokio::test]
+    async fn rule9_a_peer_cannot_clear_a_contract_lanes_ask() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/spoke.env"), "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=hub\n").unwrap();
+        let ask = seed(&store, "spoke", "needsyou");
+        let body = json!({"status": "todo", "authorized_by": "ethan"});
+        assert_eq!(route(&state, &ask, owner_headers("peer"), body.clone()).await, StatusCode::FORBIDDEN, "a peer's authorized_by is not a clearance");
+        assert_eq!(current(&store, &ask).status, "needsyou");
+        let blocked = seed(&store, "spoke", "blocked");
+        assert_eq!(route(&state, &blocked, owner_headers("peer"), json!({"status": "todo"})).await, StatusCode::FORBIDDEN, "nor can a peer unblock it");
+        assert_eq!(route(&state, &ask, owner_headers("hub"), body.clone()).await, StatusCode::OK, "the hub can");
+
+        std::fs::write(h.join("sessions/spoke.env"), "").unwrap();
+        let old = seed(&store, "spoke", "needsyou");
+        assert_eq!(route(&state, &old, owner_headers("peer"), body).await, StatusCode::OK, "switch off: the AMUX-4316 path is unchanged");
     }
 
     #[tokio::test]
