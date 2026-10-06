@@ -282,11 +282,18 @@ pub const CATALOG: &[Doc] = &[
         // ticks) rather than clamping to a 1s interval. Any value >= 1 is still
         // the tick period. This used to read `off: None` with a note that 0 did
         // nothing; that stopped being true when the central knob landed.
-        env: &[EnvControl {
-            var: "AMUX_BOARD_DRIVE_SECS",
-            effect: "tick seconds; 0 disables the loop (fleet-isolation opt-out, AF-69)",
-            off: Some("0"),
-        }],
+        env: &[
+            EnvControl {
+                var: "AMUX_BOARD_DRIVE_SECS",
+                effect: "tick seconds; 0 disables the loop (fleet-isolation opt-out, AF-69)",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_BLOCKER_RECOVERY_LANE_INTERVAL_S",
+                effect: "at most one blocker-recovery review per lane per this many seconds (default 3600; scoped per worker/group); 0 disables blocker recovery",
+                off: Some("0"),
+            },
+        ],
         pref: None,
         detail: Some("/api/debug/board-drive"),
     },

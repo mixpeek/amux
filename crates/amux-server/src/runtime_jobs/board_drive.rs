@@ -2134,6 +2134,47 @@ pub(crate) fn dispatch_backlog_when_idle_in(
         .unwrap_or(false)
 }
 
+/// At most one blocker-recovery review per lane per this many seconds
+/// (scoped like AMUX_DISPATCH_BACKLOG_WHEN_IDLE; 0 disables blocker recovery
+/// for that scope). Measured 2026-10-06: the per-card MB-55 budget bounds each
+/// card, but nothing bounded a lane, so a lane with a pile of parked cards was
+/// walked through all of them: gs12-model 471 reviews and gs12-spend 414 in
+/// 24 h, about $2,900 of model use across the fleet for board-drive nudges.
+pub const BLOCKER_RECOVERY_LANE_INTERVAL_KEY: &str = "AMUX_BLOCKER_RECOVERY_LANE_INTERVAL_S";
+const BLOCKER_RECOVERY_LANE_INTERVAL_DEFAULT_S: f64 = 3600.0;
+
+pub(crate) fn blocker_recovery_lane_interval_in(home: &std::path::Path, session: &str, process_value: Option<&str>) -> f64 {
+    process_value
+        .map(str::to_string)
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| crate::api::session_verbs::scoped_setting_in(home, session, BLOCKER_RECOVERY_LANE_INTERVAL_KEY))
+        .and_then(|v| v.trim().trim_matches('"').parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(BLOCKER_RECOVERY_LANE_INTERVAL_DEFAULT_S)
+}
+
+fn blocker_recovery_lane_interval(session: &str) -> f64 {
+    let process_value = std::env::var(BLOCKER_RECOVERY_LANE_INTERVAL_KEY).ok();
+    blocker_recovery_lane_interval_in(&crate::api::session_verbs::home(), session, process_value.as_deref())
+}
+
+/// Seconds until `lane` may get its next blocker-recovery review, or None when
+/// it may get one now. `interval <= 0` means disabled (always held).
+pub(crate) fn blocker_recovery_lane_hold(conn: &Connection, lane: &str, interval: f64, now: f64) -> rusqlite::Result<Option<f64>> {
+    if interval <= 0.0 {
+        return Ok(Some(f64::INFINITY));
+    }
+    let last: Option<f64> = conn
+        .query_row(
+            "SELECT MAX(ts) FROM session_events WHERE session=?1 AND type='task.blocker_recovery'",
+            [lane],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(last.map(|t| t + interval - now).filter(|left| *left > 0.0))
+}
+
 pub fn dispatch_backlog_when_idle(session: &str) -> bool {
     let process_value = std::env::var(DISPATCH_BACKLOG_KEY).ok();
     dispatch_backlog_when_idle_in(
@@ -8259,7 +8300,21 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // Before generic verification/triage: missing continuations and
             // parked Backlog were invisible to the old blocked-only nudge.
             let mut unchanged_recoveries = 0;
-            if fleet.auto_continue_enabled(lane) && dispatch_backlog_when_idle(lane) {
+            let recovery_on = fleet.auto_continue_enabled(lane) && dispatch_backlog_when_idle(lane);
+            let lane_hold = if recovery_on {
+                let (l, interval, now) = (lane.to_string(), blocker_recovery_lane_interval(lane), now_f64());
+                state.store.read_async(move |conn| Ok(blocker_recovery_lane_hold(conn, &l, interval, now)?)).await.ok().flatten()
+            } else {
+                None
+            };
+            if let Some(left) = lane_hold {
+                // Held for the lane, not the card: fall through to the other
+                // nudge kinds (verify, backlog triage), which this cap does not touch.
+                tracing::info!(target: "amux::board_drive", session = lane, next_in_s = if left.is_finite() { left as i64 } else { -1 },
+                    measured = true, n_considered = 1, verdict = "blocker_recovery_lane_held",
+                    "board_drive: blocker-recovery held for this lane by AMUX_BLOCKER_RECOVERY_LANE_INTERVAL_S (-1 = disabled)");
+            }
+            if recovery_on && lane_hold.is_none() {
                 let recovery_lane = lane.to_string();
                 let recoveries = state.store.read_async(move |conn| {
                     let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steering_queue WHERE session=?1 AND id GLOB 'board-blocker:*')", [&recovery_lane], |r|r.get(0))?;
@@ -11055,6 +11110,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _home = crate::api::settings::test_env::set_home(home.path());
         opt_in_backlog_dispatch(home.path(), "lane");
+        without_lane_recovery_cap(home.path(), "lane");
         let (_dir, state, store) = drive_state();
         drive_card(&store, "PARKED", "backlog", "agent", "code");
         drive_card(&store, "EXTERNAL", "todo", "agent", "code");
@@ -11095,6 +11151,49 @@ mod tests {
         );
         assert_eq!(drive_status(&store, "PARKED"), "backlog");
         assert_eq!(drive_events(&store, "task.blocker_recovery"), 2);
+    }
+
+    /// A lane with many parked cards gets one blocker review per lane interval,
+    /// not one per card (2026-10-06: gs12-model got 471 in 24 h). Interval 0
+    /// disables recovery for the scope; another lane is unaffected.
+    #[tokio::test]
+    async fn blocker_recovery_is_capped_per_lane_not_walked_card_by_card() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        for lane in ["lane", "other", "off"] {
+            opt_in_backlog_dispatch(home.path(), lane);
+        }
+        std::fs::OpenOptions::new().append(true).open(home.path().join("sessions/off.env")).map(|mut f| {
+            use std::io::Write as _;
+            writeln!(f, "{BLOCKER_RECOVERY_LANE_INTERVAL_KEY}=0").unwrap();
+        }).unwrap();
+        let (_dir, state, store) = drive_state();
+        for (id, lane) in [("P1", "lane"), ("P2", "lane"), ("P3", "lane"), ("Q1", "other"), ("R1", "off")] {
+            drive_card(&store, id, "backlog", "agent", "code");
+            let (id, lane) = (id.to_string(), lane.to_string());
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET session=?2, blocked_on='peer availability' WHERE id=?1", rusqlite::params![id, lane])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        let fleet = BoundaryFleet::default();
+        let clear = |store: &crate::db::SharedStore| store.write(|conn| {
+            conn.execute("DELETE FROM steering_queue", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery");
+        for _ in 0..3 {
+            clear(&store);
+            assert_ne!(drive_lane(&state, &fleet, "lane").await.outcome, "blocker-recovery",
+                "the next parked card waits for the lane interval");
+        }
+        clear(&store);
+        assert_eq!(drive_lane(&state, &fleet, "other").await.outcome, "blocker-recovery", "another lane has its own interval");
+        clear(&store);
+        assert_ne!(drive_lane(&state, &fleet, "off").await.outcome, "blocker-recovery", "interval 0 disables recovery");
+        let per_lane: i64 = store.read().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_events WHERE type='task.blocker_recovery' AND session='lane'", [], |r| r.get(0)).unwrap();
+        assert_eq!(per_lane, 1, "three parked cards, one review inside the interval");
     }
 
     #[tokio::test]
@@ -11889,6 +11988,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _home = crate::api::settings::test_env::set_home(home.path());
         opt_in_backlog_dispatch(home.path(), "lane");
+        without_lane_recovery_cap(home.path(), "lane");
         let (_dir, state, store) = drive_state();
         drive_card(&store, "HELD", "backlog", "agent", "code");
         drive_card(&store, "READY", "done", "agent", "code");
@@ -15019,6 +15119,16 @@ mod tests {
     /// A test that exercises the drain opts its lane in at WORKER scope inside
     /// its own temp home, which is how a real worker turns it on, rather than
     /// relying on the old default or mutating the shared process env.
+    /// Per-card blocker-recovery tests exercise the card budget, not the
+    /// per-lane cap; a microsecond interval takes the lane cap out of play.
+    fn without_lane_recovery_cap(home: &std::path::Path, lane: &str) {
+        use std::io::Write as _;
+        let dir = home.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{lane}.env"))).unwrap();
+        writeln!(f, "{BLOCKER_RECOVERY_LANE_INTERVAL_KEY}=0.000001").unwrap();
+    }
+
     fn opt_in_backlog_dispatch(home: &std::path::Path, lane: &str) {
         use std::io::Write as _;
         let dir = home.join("sessions");
