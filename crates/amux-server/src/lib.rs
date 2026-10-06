@@ -666,6 +666,16 @@ async fn async_main() {
     // worse than raw claude" was invisible for months is that nothing counted
     // how many times a lane's conversation had been summarized away.
     drop(runtime_jobs::context_health::spawn());
+    // Recompose every lane's MEMORY.md once per boot (contract rule 13). A new
+    // binary may compose differently, and nothing else rewrites the files until
+    // a worker's identity changes: 2026-10-06 ~/Dev/mixpeek's file was still in
+    // the pre-budget shape (35.6 KB against a 12 KB budget) a day after the
+    // budget shipped, because only lanes' own pointer appends had touched it.
+    tokio::task::spawn_blocking(|| {
+        let n = crate::api::session_verbs::refresh_fleet_rosters();
+        tracing::info!(lanes = n, measured = true, n_considered = n, verdict = "memory_recomposed_at_boot",
+            "recomposed every live lane's MEMORY.md with this build's composer");
+    });
     // Contract rules 2b and 3 (AH-377, AH-378): post-deploy checks and reviewers.
     drop(runtime_jobs::contract_watch::spawn(state.clone()));
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
