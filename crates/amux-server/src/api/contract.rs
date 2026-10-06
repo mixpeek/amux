@@ -268,6 +268,18 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             "force on a contract card is the owner's; a worker's exit is cannot_satisfy".into(),
             json!({"worker": "PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\"}"})));
     }
+    // A card already in doing with no frozen contract (it entered doing before
+    // contracts, or by a route that skipped the freeze) gets one from a PATCH
+    // that carries the fields, so "add acceptance_criteria and verify_cmd,
+    // then request done again" is a path that exists. Before this the fields
+    // passed through untouched and were dropped: verify_cmd is not a card
+    // column (gs12-spend, GS-215, 2026-10-06).
+    let status = body.get("status").and_then(Value::as_str).unwrap_or("");
+    if card.status == "doing" && existing.is_none() && (status.is_empty() || status == "doing")
+        && ["acceptance_criteria", "verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some())
+    {
+        return freeze_from(card, body, existing, defaults);
+    }
     match body.get("status").and_then(Value::as_str).unwrap_or("") {
         "cannot_satisfy" => {
             if let Err(why) = left_undone_items(body) {
@@ -287,62 +299,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                 "desc_append": format!("\ncannot_satisfy (contract rule 2): {reason}"),
             }))
         }
-        "doing" if card.status != "doing" => {
-            let acceptance = nonempty(body.get("acceptance_criteria").map(|v| v.to_string()).as_deref().map(|s| s.trim_matches('"')))
-                .or_else(|| nonempty(card.acceptance.as_deref()));
-            let command = nonempty(body.get("verify_cmd").and_then(Value::as_str))
-                .or_else(|| existing.map(|c| c.command.clone()))
-                .or_else(|| nonempty(defaults.verify.as_deref()));
-            let kind = nonempty(body.get("verify_kind").and_then(Value::as_str))
-                .or_else(|| existing.map(|c| c.kind.clone()))
-                .unwrap_or_else(|| "code".into());
-            if !KINDS.contains(&kind.as_str()) {
-                return Action::Respond(refuse(StatusCode::CONFLICT, "contract_unknown_kind",
-                    format!("verify_kind {kind:?} is not one of {KINDS:?}"), json!({"verify_kind": KINDS})));
-            }
-            let deploy_check = if kind == "deploy" {
-                let d = nonempty(body.get("deploy_check").and_then(Value::as_str))
-                    .or_else(|| existing.and_then(|c| c.deploy_check.clone()))
-                    .or_else(|| nonempty(defaults.deploy_check.as_deref()));
-                if d.is_none() || !defaults.deploy_probe {
-                    tracing::info!(card = %card.id, lane = %card.lane, missing_check = d.is_none(), missing_probe = !defaults.deploy_probe,
-                        measured = true, n_considered = 1, verdict = "contract_doing_refused", "a deploy card had no way to be checked in production");
-                    return Action::Respond(refuse(StatusCode::CONFLICT, "contract_deploy_unobservable",
-                        format!("{} is a deploy card, so it needs a post-deploy check and a lane that can read production's sha (contract rule 2b)", card.id),
-                        json!({
-                            "deploy_check": format!("a command that exits 0 when the change works in production, in this PATCH or the lane's {DEFAULT_DEPLOY_CHECK} setting"),
-                            DEPLOY_SHA_CMD: if defaults.deploy_probe { json!("set") } else { json!("unset: the lane's scope needs a command that prints production's deployed sha") },
-                        })));
-                }
-                d
-            } else {
-                None
-            };
-            match (acceptance, command) {
-                (Some(a), Some(c)) => Action::PassThenFreeze(Contract {
-                    card: card.id.clone(),
-                    hash: hash_of(&a, &c, deploy_check.as_deref()),
-                    acceptance: a,
-                    command: c,
-                    state: "frozen".into(),
-                    sha: None,
-                    amended: false,
-                    kind,
-                    deploy_check,
-                }),
-                (a, c) => {
-                    tracing::info!(card = %card.id, lane = %card.lane, missing_acceptance = a.is_none(),
-                        missing_command = c.is_none(), measured = true, n_considered = 1,
-                        verdict = "contract_doing_refused", "a code card tried to enter doing without a contract");
-                    Action::Respond(refuse(StatusCode::CONFLICT, "contract_required",
-                        format!("{} needs acceptance criteria and a verify command before doing (contract rule 1)", card.id),
-                        json!({
-                            "acceptance_criteria": "a list of testable statements, in this PATCH or already on the card",
-                            "verify_cmd": format!("a command run from the repo root of the lane's committed HEAD, in this PATCH, or the lane's {DEFAULT_VERIFY} setting"),
-                        })))
-                }
-            }
-        }
+        "doing" if card.status != "doing" => freeze_from(card, body, existing, defaults),
         "verified" if !owner => {
             tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
                 verdict = "contract_verified_refused", "a worker tried to set verified on a contract card");
@@ -364,6 +321,66 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                 json!({"worker": "add acceptance_criteria and verify_cmd, then request done again (they freeze now)"}))),
         },
         _ => Action::Pass,
+    }
+}
+
+/// Build and freeze a contract from the PATCH, the card and the lane's
+/// defaults, or refuse saying which half is missing. Shared by entering doing
+/// and by adding the contract to a card already in doing.
+fn freeze_from(card: &Card, body: &Value, existing: Option<&Contract>, defaults: &Defaults) -> Action {
+    let acceptance = nonempty(body.get("acceptance_criteria").map(|v| v.to_string()).as_deref().map(|s| s.trim_matches('"')))
+        .or_else(|| nonempty(card.acceptance.as_deref()));
+    let command = nonempty(body.get("verify_cmd").and_then(Value::as_str))
+        .or_else(|| existing.map(|c| c.command.clone()))
+        .or_else(|| nonempty(defaults.verify.as_deref()));
+    let kind = nonempty(body.get("verify_kind").and_then(Value::as_str))
+        .or_else(|| existing.map(|c| c.kind.clone()))
+        .unwrap_or_else(|| "code".into());
+    if !KINDS.contains(&kind.as_str()) {
+        return Action::Respond(refuse(StatusCode::CONFLICT, "contract_unknown_kind",
+            format!("verify_kind {kind:?} is not one of {KINDS:?}"), json!({"verify_kind": KINDS})));
+    }
+    let deploy_check = if kind == "deploy" {
+        let d = nonempty(body.get("deploy_check").and_then(Value::as_str))
+            .or_else(|| existing.and_then(|c| c.deploy_check.clone()))
+            .or_else(|| nonempty(defaults.deploy_check.as_deref()));
+        if d.is_none() || !defaults.deploy_probe {
+            tracing::info!(card = %card.id, lane = %card.lane, missing_check = d.is_none(), missing_probe = !defaults.deploy_probe,
+                measured = true, n_considered = 1, verdict = "contract_doing_refused", "a deploy card had no way to be checked in production");
+            return Action::Respond(refuse(StatusCode::CONFLICT, "contract_deploy_unobservable",
+                format!("{} is a deploy card, so it needs a post-deploy check and a lane that can read production's sha (contract rule 2b)", card.id),
+                json!({
+                    "deploy_check": format!("a command that exits 0 when the change works in production, in this PATCH or the lane's {DEFAULT_DEPLOY_CHECK} setting"),
+                    DEPLOY_SHA_CMD: if defaults.deploy_probe { json!("set") } else { json!("unset: the lane's scope needs a command that prints production's deployed sha") },
+                })));
+        }
+        d
+    } else {
+        None
+    };
+    match (acceptance, command) {
+        (Some(a), Some(c)) => Action::PassThenFreeze(Contract {
+            card: card.id.clone(),
+            hash: hash_of(&a, &c, deploy_check.as_deref()),
+            acceptance: a,
+            command: c,
+            state: "frozen".into(),
+            sha: None,
+            amended: false,
+            kind,
+            deploy_check,
+        }),
+        (a, c) => {
+            tracing::info!(card = %card.id, lane = %card.lane, missing_acceptance = a.is_none(),
+                missing_command = c.is_none(), measured = true, n_considered = 1,
+                verdict = "contract_doing_refused", "a code card tried to enter doing without a contract");
+            Action::Respond(refuse(StatusCode::CONFLICT, "contract_required",
+                format!("{} needs acceptance criteria and a verify command before doing (contract rule 1)", card.id),
+                json!({
+                    "acceptance_criteria": "a list of testable statements, in this PATCH or already on the card",
+                    "verify_cmd": format!("a command run from the repo root of the lane's committed HEAD, in this PATCH, or the lane's {DEFAULT_VERIFY} setting"),
+                })))
+        }
     }
 }
 
@@ -1209,6 +1226,23 @@ mod tests {
         let inline = json!({"status": "doing", "acceptance_criteria": ["it works"], "verify_cmd": "cargo test"});
         assert_eq!(code(&decide(&card("todo", "code", None), &inline, false, None, &dflt(None))), "freeze", "fields in the PATCH count");
         assert_eq!(code(&decide(&card("todo", "chore", None), &b, false, None, &dflt(None))), "pass", "only code cards");
+    }
+
+    #[test]
+    fn a_doing_card_without_a_contract_freezes_one_from_a_patch() {
+        // GS-215: in doing before contracts; verify_cmd was dropped on PATCH.
+        let add = json!({"acceptance_criteria": ["the reaper runs"], "verify_cmd": "kubectl get cronjob x"});
+        match decide(&card("doing", "code", None), &add, false, None, &dflt(None)) {
+            Action::PassThenFreeze(c) => assert_eq!(c.command, "kubectl get cronjob x"),
+            _ => panic!("a doing card with no contract freezes the one in the PATCH"),
+        }
+        let only_cmd = json!({"verify_cmd": "true"});
+        assert_eq!(code(&decide(&card("doing", "code", None), &only_cmd, false, None, &dflt(None))), "409",
+            "no acceptance anywhere: refused, saying what is missing");
+        assert_eq!(code(&decide(&card("doing", "code", Some("it works")), &only_cmd, false, None, &dflt(None))), "freeze",
+            "acceptance already on the card counts");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &only_cmd, false, Some(&frozen()), &dflt(None))), "409",
+            "a frozen contract is still the owner's to edit");
     }
 
     #[test]
