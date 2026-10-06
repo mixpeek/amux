@@ -500,3 +500,12 @@ fn an_ask_that_names_nothing_or_a_host_service_is_never_auto_approved() {
     let host = item("needsyou", "other", "decision", "Unload the io.amux.project-test-18972 launchd agent left from the Sep 23 install test?");
     assert_eq!(never_reason(&host), Some("host_service"));
 }
+
+#[test]
+fn a_host_change_or_an_unnamed_ask_stays_with_the_owner_even_with_send_back_on() {
+    let policy = Policy { enabled: true, send_back: true, ..Policy::default() };
+    for q in ["Unload the io.amux.project-test-18972 launchd agent?", "Shall I remove it?"] {
+        let it = item("needsyou", "other", "credential", q);
+        assert!(matches!(decide(&policy, &it), Decision::Never(_)), "{q}: {:?}", decide(&policy, &it));
+    }
+}

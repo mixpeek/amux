@@ -587,7 +587,12 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
         return Decision::Never("scope_decision");
     }
     if let Some(why) = never_reason(item) {
-        if policy.send_back && why != "public_surface" && can_send_back(item) {
+        // A worker can complete a credential step down the access ladder; it
+        // cannot grant itself a host change, an approval for an unnamed thing,
+        // or a public surface (AH-391, 2026-10-06: a launchd removal was sent
+        // back as "yours to do").
+        let owner_only = matches!(why, "public_surface" | "host_service" | "no_artifact_named");
+        if policy.send_back && !owner_only && can_send_back(item) {
             return Decision::SendBack(why);
         }
         return Decision::Never(why);
