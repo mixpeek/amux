@@ -1128,6 +1128,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
     ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused"]),
+    ("10", &["worker_token_minted", "worker_identity_refused", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
 ];
@@ -1187,7 +1188,12 @@ async fn counters_route(axum::extract::Query(q): axum::extract::Query<std::colle
             json!({"rule": rule, "total": per.values().filter_map(Value::as_u64).sum::<u64>(), "verdicts": per})
         })
         .collect();
+    let home = crate::config::amux_home();
+    let lanes: Vec<String> = std::fs::read_dir(home.join("sessions")).map(|d| {
+        d.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".env")).map(String::from)).collect()
+    }).unwrap_or_default();
     Json(json!({"since_h": since_h, "measured": true, "n_considered": scanned, "rules": rules,
+        "rule10": super::worker_identity::report(&home, &lanes),
         "contract": "docs/orchestration-contract.md (rule 14)"})).into_response()
 }
 

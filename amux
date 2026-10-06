@@ -234,7 +234,11 @@ _curl() {
   # short of the multi-minute hang AEAB-46 exists to prevent) while giving
   # real headroom for connection setup delayed by local CPU/scheduling
   # contention rather than a genuinely unreachable server.
-  command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" "$@" || rc=$?
+  # Contract rule 10 (AH-387): a lane's minted identity rides every request.
+  # Kept out of "$@" so the transport breadcrumb below never writes it to disk.
+  local _id=()
+  [[ -n "${AMUX_WORKER_TOKEN:-}" ]] && _id=(-H "X-Amux-Worker-Token: ${AMUX_WORKER_TOKEN}")
+  command curl --connect-timeout "${AMUX_CURL_CONNECT_TIMEOUT:-10}" ${_id[@]+"${_id[@]}"} "$@" || rc=$?
   if [[ "$rc" -ne 0 ]]; then _transport_breadcrumb "$rc" "$@"; fi
   return "$rc"
 }

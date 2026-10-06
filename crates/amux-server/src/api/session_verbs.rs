@@ -15266,7 +15266,7 @@ pub(crate) async fn start_session(
     // imported after the scope env files are sourced, so for its keys the
     // vault wins over a plaintext line that is still there mid-migration.
     // Keys delivered last launch and deleted since are unset.
-    let vault_values = match super::vault_secrets::launch_values(&home(), name) {
+    let mut vault_values = match super::vault_secrets::launch_values(&home(), name) {
         Ok(v) => v,
         Err(error) => {
             tracing::warn!(session = name, %error, measured = false, n_considered = 0,
@@ -15275,6 +15275,14 @@ pub(crate) async fn start_session(
             Vec::new()
         }
     };
+    // Contract rule 10 (AH-387): the lane's minted identity rides the vault
+    // channel (set-environment, imported by name), so it never reaches argv or
+    // a typed line, and a lane the rule left gets it unset as a stale key.
+    if !isolated {
+        if let Some(token) = super::worker_identity::mint(&home(), name) {
+            vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
+        }
+    }
     let vault_keys: Vec<String> = vault_values.iter().map(|(k, _)| k.clone()).collect();
     // WHAT THE LAST LAUNCH DELIVERED lives in the tmux session itself
     // (AMUX_VAULT_KEYS, names only), not in worker meta: a create-time

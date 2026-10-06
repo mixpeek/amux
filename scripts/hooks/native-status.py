@@ -48,7 +48,9 @@ def deliver(root, worker, run):
             url = os.environ['AMUX_STATUS_URL'] + '/api/sessions/' + worker + '/report'
             req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={
                 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-                'X-Amux-Session': worker})
+                'X-Amux-Session': worker,
+                # Contract rule 10 (AH-387): the lane's minted identity.
+                **({'X-Amux-Worker-Token': os.environ['AMUX_WORKER_TOKEN']} if os.environ.get('AMUX_WORKER_TOKEN') else {})})
             with urllib.request.urlopen(req, context=context, timeout=2) as response:
                 ack = json.load(response)
             if ack.get('ok'):

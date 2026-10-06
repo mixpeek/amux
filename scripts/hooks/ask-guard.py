@@ -84,7 +84,9 @@ def main() -> int:
     }).encode()
     req = urllib.request.Request(
         f"{url}/api/sessions/{session}/owner-ask", data=body, method="POST",
-        headers={"Content-Type": "application/json", "X-Amux-Session": session})
+        headers={"Content-Type": "application/json", "X-Amux-Session": session,
+                 # Contract rule 10 (AH-387): the lane's minted identity.
+                 **({"X-Amux-Worker-Token": os.environ["AMUX_WORKER_TOKEN"]} if os.environ.get("AMUX_WORKER_TOKEN") else {})})
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False

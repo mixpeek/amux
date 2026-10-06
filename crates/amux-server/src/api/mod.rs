@@ -10,6 +10,7 @@ pub mod auth;
 pub mod board;
 pub mod contract;
 pub mod land_queue;
+pub mod worker_identity;
 pub mod contract_fresh;
 pub mod prod_change;
 pub mod runner;
@@ -497,6 +498,10 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             policy::enforce,
         ))
+        // Contract rule 10 (AH-387): a claimed worker identity carries that
+        // worker's minted token. Inside require_bearer, so it sees only
+        // admitted requests.
+        .layer(axum::middleware::from_fn(worker_identity::enforce))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

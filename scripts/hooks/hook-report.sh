@@ -153,7 +153,8 @@ while True:
         # stale row metadata never overrides this invocation's canonical route.
         req=urllib.request.Request(url,
             data=json.dumps(body,separators=(",",":")).encode(),method="POST",
-            headers={"Content-Type":"application/json","X-Amux-Session":session})
+            headers={"Content-Type":"application/json","X-Amux-Session":session,
+                     **({"X-Amux-Worker-Token":os.environ["AMUX_WORKER_TOKEN"]} if os.environ.get("AMUX_WORKER_TOKEN") else {})})
         with urllib.request.urlopen(req,timeout=3,context=ctx) as response:
             code=str(response.status)
             response.read()
@@ -638,8 +639,11 @@ printf '%s %s source=%s state_queue=enqueue_failed fallback=immediate\n' \
 # `%{http_code}` prints 000 when the transfer never completed, so one branch now
 # covers both classes: 000 = could not reach the server (the AMUX-3046 stranded-
 # port case this was written for), 4xx/5xx = reached it and was refused.
+# Contract rule 10 (AH-387): the lane's minted identity, when it has one.
+ID_HDR=()
+[ -n "${AMUX_WORKER_TOKEN:-}" ] && ID_HDR=(-H "X-Amux-Worker-Token: $AMUX_WORKER_TOKEN")
 CODE=$(curl -sk -m 3 -o /dev/null -w '%{http_code}' \
-  -X POST -H 'Content-Type: application/json' \
+  -X POST -H 'Content-Type: application/json' ${ID_HDR[@]+"${ID_HDR[@]}"} \
   -H "X-Amux-Session: $AMUX_SESSION" -d "$BODY" \
   "$REPORT_URL" 2>/dev/null) || CODE=000
 case "$CODE" in

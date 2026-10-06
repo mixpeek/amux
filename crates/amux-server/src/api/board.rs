@@ -10520,7 +10520,15 @@ async fn patch_item_route(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let owner = super::standing_approvals::is_owner_request(&headers);
+    // Contract rule 10 (AH-387): on a rule-10 lane's card the owner presents
+    // the owner bearer; omitting the worker headers is not enough.
+    let owner = super::standing_approvals::is_owner_request(&headers) && {
+        let id2 = id.clone();
+        let lane = state.store.read_async(move |c| Ok(bs::get_issue(c, &id2)?.and_then(|r| r.session))).await
+            .ok().flatten().unwrap_or_default();
+        let bearer = super::auth::has_owner_token(&state, &headers, &axum::http::Uri::from_static("/"));
+        super::worker_identity::owner_allowed(&crate::config::amux_home(), &lane, true, bearer, &id)
+    };
     if let Some(r) = super::done_line::guard(&state, &id, &body, owner).await {
         return r; // contract A3: a frozen done line changes only by the owner
     }
