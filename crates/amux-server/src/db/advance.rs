@@ -117,6 +117,17 @@ pub fn advance(
             reason: "project planner owns this task lifecycle".into(),
         }));
     }
+    // Orchestration contract (AH-374): the one transition engine holds rule 2
+    // and 3 for every caller, not only the PATCH route. Before this, bulk
+    // moves, /api/verify, the orchestrator runtime and capture reconcile could
+    // move a contract lane's code card to done or verified with no server check.
+    if let Some(reason) = crate::api::contract::advance_gate(conn, &row, destination, actor, opts.force) {
+        return Ok(Err(AdvanceRefusal::InvalidTransition {
+            from: row.status.clone(),
+            to: destination.to_string(),
+            reason,
+        }));
+    }
     let from_raw = row.status.clone();
     let prev_holder = row.lease_owner.clone();
     let workflow = workflow_store::load_workflow(conn);

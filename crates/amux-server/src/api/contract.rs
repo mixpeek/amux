@@ -161,6 +161,35 @@ pub fn rule9_peer(home: &Path, lane: &str, caller: &str) -> Option<bool> {
     Some(hub.as_deref() != Some(caller))
 }
 
+/// Rules 2 and 3 inside `db::advance`, the engine every status change uses
+/// (AH-374). On a lane where rule 2 is on, a code card reaches `done` only by
+/// the server's own check and `verified` only by the harness reviewer; the
+/// owner (owner token, or `force`, both logged by their callers) is exempt.
+/// Returns the refusal reason, or None to proceed.
+pub fn advance_gate(conn: &Connection, row: &crate::db::board_store::IssueRow, destination: &str, actor: &str, force: bool) -> Option<String> {
+    if force || !matches!(destination, "done" | "verified") || row.item_type != "code" {
+        return None;
+    }
+    if actor == ACTOR || actor == crate::api::auth::OWNER_TOKEN_ACTOR || actor == crate::api::turn_end::owner_name() {
+        return None;
+    }
+    let lane = row.session.as_deref().unwrap_or("");
+    if !rule_on(&crate::config::amux_home(), lane, "2") {
+        return None;
+    }
+    // A card finished before the contract reached its lane has no contract
+    // and no reviewer will run for it, so its verified path stays as it was.
+    if destination == "verified" && load(conn, &row.id).ok().flatten().is_none() {
+        return None;
+    }
+    tracing::info!(card = %row.id, lane, actor, destination, measured = true, n_considered = 1,
+        verdict = "contract_advance_refused", "a non-PATCH path tried to finish a contract code card");
+    Some(format!(
+        "contract rule {}: on {lane}, {} for a code card is granted by the server (PATCH status done starts its check; the harness reviewer grants verified), not by {actor}",
+        if destination == "done" { "2" } else { "3" }, destination
+    ))
+}
+
 fn hash_of(acceptance: &str, command: &str, deploy_check: Option<&str>) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -300,7 +329,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             }))
         }
         "doing" if card.status != "doing" => freeze_from(card, body, existing, defaults),
-        "verified" if !owner => {
+        "verified" if !owner && existing.is_some() => {
             tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
                 verdict = "contract_verified_refused", "a worker tried to set verified on a contract card");
             Action::Respond(refuse(StatusCode::CONFLICT, "contract_verified_by_reviewer",
@@ -318,7 +347,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             },
             None => Action::Respond(refuse(StatusCode::CONFLICT, "contract_missing",
                 format!("{} has no frozen contract to verify against", card.id),
-                json!({"worker": "add acceptance_criteria and verify_cmd, then request done again (they freeze now)"}))),
+                json!({"worker": "PATCH {\"acceptance_criteria\":[...],\"verify_cmd\":\"...\"} on this card (they freeze), then request done again"}))),
         },
         _ => Action::Pass,
     }
@@ -1168,7 +1197,7 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
 /// lines it writes, so a counter cannot claim activity the rule did not log.
 pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
-    ("2", &["contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
+    ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
     ("3", &["contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
@@ -1399,10 +1428,20 @@ mod tests {
     }
 
     #[test]
+    fn a_card_already_in_doing_can_freeze_a_contract_in_place() {
+        let b = json!({"acceptance_criteria": ["it works"], "verify_cmd": "make test"});
+        assert_eq!(code(&decide(&card("doing", "code", None), &b, false, None, &dflt(None))), "freeze");
+        assert_eq!(code(&decide(&card("doing", "code", None), &json!({"verify_cmd": "make test"}), false, None, &dflt(None))), "409", "acceptance too");
+        assert_eq!(code(&decide(&card("doing", "code", Some("a")), &b, false, Some(&frozen()), &dflt(None))), "409", "a frozen one stays frozen");
+    }
+
+    #[test]
     fn only_the_owner_sets_verified_on_a_contract_card() {
         let v = json!({"status": "verified", "reviewer": "gs12-extra-2"});
         assert_eq!(code(&decide(&card("done", "code", Some("a")), &v, false, Some(&frozen()), &dflt(None))), "409");
         assert_eq!(code(&decide(&card("done", "code", Some("a")), &v, true, Some(&frozen()), &dflt(None))), "pass");
+        assert_eq!(code(&decide(&card("done", "code", Some("a")), &v, false, None, &dflt(None))), "pass",
+            "a card finished before the contract keeps its verified path");
     }
 
     #[test]

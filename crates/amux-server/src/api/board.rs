@@ -15951,6 +15951,54 @@ mod af701_archive_guard_tests {
         assert_eq!(current(&store, &b).status, "todo");
     }
 
+    /// AH-374: the contract holds in db::advance, the engine every non-PATCH
+    /// path uses (bulk moves, /api/verify, runtime jobs).
+    #[tokio::test]
+    async fn no_engine_caller_finishes_a_contract_code_card_but_the_server() {
+        let (_state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/lane-g.env"), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        std::fs::write(h.join("sessions/lane-h.env"), "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_RULES_OFF=\"2\"\n").unwrap();
+        let card = |lane: &str| {
+            let id = seed(&store, lane, "doing");
+            let id2 = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [id2])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let go = |id: &str, to: &str, actor: &str, force: bool| -> bool {
+            let (id, to, actor) = (id.to_string(), to.to_string(), actor.to_string());
+            store.write(move |conn| {
+                let opts = crate::db::advance::AdvanceOpts { force, gate_ack: true, skip_continuation: true, ..Default::default() };
+                let ok = crate::db::advance::advance(conn, &id, &to, &actor, &opts)?.is_ok();
+                Ok(WriteOutcome { applied: ok, events: vec![] })
+            }).unwrap().applied
+        };
+        let a = card("lane-g");
+        assert!(!go(&a, "done", "board_drive", false), "a runtime job cannot grant done");
+        assert!(go(&a, "done", super::super::contract::ACTOR, false), "the server's check grants done");
+        {
+            let a2 = a.clone();
+            store.write(move |conn| {
+                conn.execute("INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state) VALUES (?1, 'a', 'true', 'h', 0, 'passed')", [a2])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        assert!(!go(&a, "verified", "lane-g", false), "a lane cannot verify a contract card through the engine");
+        let legacy = card("lane-g");
+        assert!(go(&legacy, "done", super::super::contract::ACTOR, false));
+        assert!(go(&legacy, "verified", "gs12-deputy", false), "a card finished before the contract keeps its verified path");
+        let b = card("lane-g");
+        assert!(go(&b, "done", "board_drive", true), "force (the owner's) still applies");
+        let c = card("lane-h");
+        assert!(go(&c, "done", "board_drive", false), "with rule 2 held back the engine is unchanged");
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();
