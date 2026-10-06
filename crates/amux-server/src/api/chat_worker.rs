@@ -947,6 +947,15 @@ async fn finish_turn(
         Some(e) => tracing::warn!(session = %name, turn = %turn_id, duration_ms, error = %e,
             limited, measured = true, n_considered = 1, verdict = "chat_turn_failed", "chat turn failed"),
     }
+    // A companion that ran no tool and SAYS it did not check skipped the
+    // escalation ladder (primis@chat, 2026-10-06: asked why a mention had no
+    // Wikidata item, it answered from general knowledge with tools=0 and
+    // "I haven't checked the worker's output"). Counted so a sweep can see it.
+    if error.is_none() && !interrupted && a.tools.is_empty() && reply_admits_unchecked(&a.text) {
+        tracing::warn!(session = %name, turn = %turn_id, measured = true, n_considered = 1,
+            verdict = "companion_answered_unchecked",
+            "chat companion answered without a tool call and said it had not checked; the escalation ladder was skipped");
+    }
     // Turn end: the same edge a provider Stop hook reports, carrying the
     // conversation id so turn-end features (owner-ask, promise nudge) can
     // resolve the transcript.
@@ -1112,9 +1121,12 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     // THE ESCALATION LADDER (AMUX-5432, Ethan 2026-10-01). Sent every turn,
     // not only on a fresh conversation, so existing Chats learn it too.
     out.push_str(&format!(
-        "- if you lack a tool or the answer needs the worker's own access (web, inbox, calendar, its files \
-         including uncommitted edits, or what is in the worker's head), do not tell the owner to look it up: \
-         1) read what it produced (`amux peek {worker}`, `amux get <api path>`, the board, its last reply); \
+        "- when the question is about this worker's work (its output, data, results, a lookup it ran, why it \
+         did or did not produce something), check before you answer: general knowledge is not an answer to \
+         a question about what the worker did, and \"I haven't checked\" is not an acceptable reply. The same \
+         applies whenever you lack a tool or the answer needs the worker's own access (web, inbox, calendar, \
+         its files including uncommitted edits, or what is in the worker's head). Do not tell the owner to \
+         look it up: 1) read what it produced (`amux peek {worker}`, `amux get <api path>`, the board, its last reply); \
          2) else run `amux delegate-job run --worker {worker} --wait 120 --stdin <<'EOF'` with the question: \
          a read-only background job on the worker's own agent that sees its uncommitted work and, where it can, \
          a fork of its conversation; it never touches the live worker. Say when an answer came from that fork; \
@@ -1124,6 +1136,37 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     out.push_str("\n[owner]\n");
     out.push_str(text);
     out
+}
+
+/// The reply says, in so many words, that it did not look.
+fn reply_admits_unchecked(text: &str) -> bool {
+    let t = text.to_lowercase().replace('\u{2019}', "'");
+    [
+        "haven't checked",
+        "have not checked",
+        "didn't check",
+        "did not check",
+        "i can't tell you which",
+        "haven't looked",
+        "have not looked",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
+}
+
+#[cfg(test)]
+mod unchecked_reply_tests {
+    use super::reply_admits_unchecked;
+
+    #[test]
+    fn an_admission_of_not_checking_is_detected() {
+        // The 2026-10-06 primis@chat reply, verbatim fragment.
+        assert!(reply_admits_unchecked(
+            "I haven't checked the worker's output or searched Wikidata, so I can't tell you which parents exist."
+        ));
+        assert!(reply_admits_unchecked("I haven\u{2019}t checked its log."));
+        assert!(!reply_admits_unchecked("The worker's lookup returned no item for that label."));
+    }
 }
 
 fn clip(s: &str, n: usize) -> String {
