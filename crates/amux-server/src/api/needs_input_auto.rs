@@ -357,6 +357,21 @@ pub fn never_reason(item: &Value) -> Option<&'static str> {
     {
         return Some("public_surface");
     }
+    // AN APPROVAL MUST BIND TO A NAMED THING (contract rule 11). 2026-10-06:
+    // AH-391, "Shall I remove it?", was approved automatically; the "it" was a
+    // launchd agent on the host, which only the owner may unload. A short
+    // question whose object is a bare pronoun names nothing to approve.
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    if words.len() <= 6 && words.iter().any(|w| matches!(*w, "it" | "this" | "that" | "them" | "these" | "those")) {
+        return Some("no_artifact_named");
+    }
+    // The host's own services (~/Dev/CLAUDE.md: no restart, reboot or launchd
+    // change without the owner's explicit approval).
+    if regex::Regex::new(r"\b(launchd|launchctl|launch agent|launchagent|reboot|restart the (mac|host|machine))\b")
+        .map(|r| r.is_match(&t)).unwrap_or(false)
+    {
+        return Some("host_service");
+    }
     // The ask is for the OWNER to do something: approval cannot complete it.
     let owner_act = [
         r"(^|[.?!]\s*)(can|could|will|would) you\b",

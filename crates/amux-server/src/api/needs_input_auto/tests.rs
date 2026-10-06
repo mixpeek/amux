@@ -490,3 +490,13 @@ fn a_scope_or_deadline_decision_is_never_auto_approved() {
     // An ordinary judgment ask is still approved.
     assert_eq!(decide(&p, &item("card", "other", "decision", "Option A or B for the cache key? I recommend A.")), Decision::Approve);
 }
+
+#[test]
+fn an_ask_that_names_nothing_or_a_host_service_is_never_auto_approved() {
+    let bare = item("needsyou", "other", "credential", "Shall I remove it?");
+    assert_eq!(never_reason(&bare), Some("no_artifact_named"), "AH-391");
+    let named = item("needsyou", "other", "decision", "Shall I remove the stale fixture directory under tests/data?");
+    assert_ne!(never_reason(&named), Some("no_artifact_named"), "a named object is judgeable");
+    let host = item("needsyou", "other", "decision", "Unload the io.amux.project-test-18972 launchd agent left from the Sep 23 install test?");
+    assert_eq!(never_reason(&host), Some("host_service"));
+}
