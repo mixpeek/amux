@@ -521,7 +521,8 @@ pub async fn amend(state: &AppState, card: &str, actor: &str, command: String, r
 }
 
 /// Freeze a contract after a successful entry to doing.
-pub async fn freeze(state: &AppState, c: Contract) {
+/// Returns whether the contract was stored, so the PATCH can say so.
+pub async fn freeze(state: &AppState, c: Contract) -> bool {
     let now = crate::config::now_f64();
     let c2 = c.clone();
     let r = state.store.write_async(move |conn| {
@@ -530,6 +531,7 @@ pub async fn freeze(state: &AppState, c: Contract) {
     }).await;
     tracing::info!(card = %c.card, hash = %c.hash, ok = r.is_ok(), measured = true, n_considered = 1,
         verdict = "contract_frozen", "froze a card's acceptance criteria and verify command");
+    r.is_ok()
 }
 
 async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -559,8 +561,7 @@ pub async fn start_verification(state: &AppState, card: &str, lane: &str) -> Res
     }
     tracing::info!(card, lane, measured = true, n_considered = 1, verdict = "contract_verify_started",
         "server verification started for a done request");
-    let (st, c, l) = (state.clone(), card.to_string(), lane.to_string());
-    tokio::spawn(async move { run_verification(&st, &c, &l).await });
+    spawn_verification(state, card, lane);
     (StatusCode::ACCEPTED, Json(json!({
         "ok": true, "verification": "started", "card": card,
         "note": "The server runs the frozen verify command at your committed HEAD and grants done if it passes. A failure comes back to you with the output.",
@@ -591,6 +592,50 @@ pub fn verify_path_prefix(tree: &Path, lane: &str) -> String {
         }
     }
     dirs.join(":")
+}
+
+/// Verifications running in THIS process. A row in `verifying` that is not
+/// here lost its task: a deploy swap execs a new image and every spawned task
+/// ends with the old one. 2026-10-06 12:57Z: GC-142, GC-44, GC-39, GC-58 and
+/// GS-233 had their checks pass, then sat in `verifying` with nothing left to
+/// write the result, and every done request answered already_running.
+static LIVE_VERIFY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn spawn_verification(state: &AppState, card: &str, lane: &str) {
+    if let Ok(mut live) = LIVE_VERIFY.lock() {
+        live.insert(card.to_string());
+    }
+    let (st, c, l) = (state.clone(), card.to_string(), lane.to_string());
+    tokio::spawn(async move {
+        run_verification(&st, &c, &l).await;
+        if let Ok(mut live) = LIVE_VERIFY.lock() {
+            live.remove(&c);
+        }
+    });
+}
+
+/// Restart every verification whose task this process does not hold. Runs on
+/// the contract clock, so a restart strands a verification for at most one tick.
+pub async fn resume_orphaned_verifications(state: &AppState) -> usize {
+    let rows: Vec<(String, String)> = state.store.read_async(|conn| {
+        let mut st = conn.prepare(
+            "SELECT c.card, COALESCE(i.session, '') FROM card_contracts c JOIN issues i ON i.id = c.card WHERE c.state = 'verifying'",
+        )?;
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }).await.unwrap_or_default();
+    let orphans: Vec<(String, String)> = {
+        let live = LIVE_VERIFY.lock().map(|l| l.clone()).unwrap_or_default();
+        rows.iter().filter(|(c, _)| !live.contains(c)).cloned().collect()
+    };
+    for (card, lane) in &orphans {
+        tracing::warn!(card = %card, lane = %lane, measured = true, n_considered = rows.len(),
+            verdict = "contract_verify_resumed",
+            "a verification lost its task (server restarted mid-run); running it again");
+        spawn_verification(state, card, lane);
+    }
+    orphans.len()
 }
 
 async fn run_verification(state: &AppState, card: &str, lane: &str) {

@@ -1382,6 +1382,7 @@ async fn get_contract(
     // resolver, never two spellings; (2) the global custom tier, which is
     // card-agnostic, is served alongside the defaults whenever it exists.
     let mut card_gates: Option<serde_json::Value> = None;
+    let mut frozen_contract: Option<serde_json::Value> = None;
     let mut global_gates = serde_json::Map::new();
     if let Ok(conn) = state.store.read() {
         for &st in &statuses {
@@ -1392,6 +1393,21 @@ async fn get_contract(
             }
         }
         if let Some(card_id) = q.get("card").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            // The card's FROZEN contract, the one a done request is verified
+            // against. Nothing read it back before: verify_cmd is not a card
+            // column, so two lanes concluded on 2026-10-06 that a stored
+            // command was lost (GE3-12, GS-215).
+            frozen_contract = Some(match super::contract::load(&conn, card_id) {
+                Ok(Some(c)) => json!({
+                    "frozen": true, "state": c.state, "verify_cmd": c.command,
+                    "acceptance_criteria": serde_json::from_str::<serde_json::Value>(&c.acceptance)
+                        .unwrap_or_else(|_| json!(c.acceptance)),
+                    "verify_kind": c.kind, "deploy_check": c.deploy_check, "amended": c.amended, "sha": c.sha,
+                }),
+                Ok(None) => json!({"frozen": false,
+                    "how": "a code card freezes its contract on entering doing, or when acceptance_criteria/verify_cmd are PATCHed onto it while in doing"}),
+                Err(e) => json!({"frozen": null, "measured": false, "why_unmeasured": e.to_string()}),
+            });
             match bs::get_issue(&conn, card_id) {
                 Ok(Some(row)) => {
                     let mut per = serde_json::Map::new();
@@ -1476,6 +1492,7 @@ async fn get_contract(
             serde_json::Value::Object(global_gates)
         },
         "card_effective_gates": card_gates,
+        "frozen_contract": frozen_contract,
         // Global done constraint (Ethan). Applies to EVERY type on top of the
         // per-type gate above, and unlike those criteria it is machine-checked
         // against the card text, so gate_ack / --checked cannot satisfy it.
@@ -10590,6 +10607,12 @@ async fn patch_item_route(
                         // in place of the free-text checklist.
                         if let Some(m) = body.as_object_mut() {
                             m.insert("gate_ack".into(), json!(true));
+                            // Consumed here, so the card PATCH must not report
+                            // them as ignored (GE3-12: "ignored_fields
+                            // [verify_cmd]" read as a lost command).
+                            for k in ["verify_cmd", "verify_kind", "deploy_check"] {
+                                m.remove(k);
+                            }
                         }
                         freeze = Some(c);
                     }
@@ -10617,10 +10640,27 @@ async fn patch_item_route(
             .is_some_and(|r| r.status == "needsyou")
     };
     let note = body.get("desc_append").and_then(Value::as_str).unwrap_or("").to_string();
-    let resp = patch_item(State(state.clone()), Path(id.clone()), headers, Json(body)).await;
+    let mut resp = patch_item(State(state.clone()), Path(id.clone()), headers, Json(body)).await;
     if let Some(c) = freeze {
         if resp.status().is_success() {
-            super::contract::freeze(&state, c).await;
+            // Say what froze IN the response (gs12-gates, 2026-10-06): a caller
+            // otherwise had to read the database to learn its verify_cmd stuck.
+            let (cmd, kind) = (c.command.clone(), c.kind.clone());
+            let stored = super::contract::freeze(&state, c).await;
+            let status = resp.status();
+            if let Ok(bytes) = axum::body::to_bytes(resp.into_body(), usize::MAX).await {
+                let mut v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("contract".into(), if stored {
+                        json!({"frozen": true, "verify_cmd": cmd, "verify_kind": kind})
+                    } else {
+                        json!({"frozen": false, "why": "the contract write failed; see verdict=contract_frozen ok=false in the server log"})
+                    });
+                }
+                resp = (status, Json(v)).into_response();
+            } else {
+                resp = (status, Json(json!({"ok": true, "contract": {"frozen": stored}}))).into_response();
+            }
         }
     }
     if was_needsyou && resp.status().is_success() {
@@ -15711,6 +15751,20 @@ mod af701_archive_guard_tests {
         let row = current(&store, &b);
         assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
         assert_eq!(super::super::contract::run_reviews(&state).await, (0, 0), "nothing left to review");
+
+        // A verification whose task a restart ended (2026-10-06 12:57Z deploy
+        // swap: GC-142 and four more sat in verifying forever) runs again on
+        // the next contract tick, once, and grants done.
+        let o = new_card();
+        assert_eq!(route(&state, &o, me(), json!({"status": "doing", "acceptance_criteria": ["it works"]})).await, StatusCode::OK);
+        let o2 = o.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE card_contracts SET state = 'verifying' WHERE card = ?1", [o2])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(super::super::contract::resume_orphaned_verifications(&state).await, 1, "the orphan is resumed");
+        assert_eq!(super::super::contract::resume_orphaned_verifications(&state).await, 0, "a live verification is not started twice");
+        until(|| current(&store, &o).status == "done", "the resumed verification granted done").await;
     }
 
     /// Contract rule 9 through the real route (AH-390): on a contract lane a

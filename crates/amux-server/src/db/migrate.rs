@@ -613,6 +613,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0110_land_queue",
         sql: include_str!("../../migrations/0110_land_queue.sql"),
     },
+    Migration {
+        version: 111,
+        name: "0111_session_events_type_index",
+        sql: include_str!("../../migrations/0111_session_events_type_index.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
