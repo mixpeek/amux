@@ -630,7 +630,8 @@ jobs:
           # AMUX-3932 was a live bypass in it found by hand rather than by this
           # file. Cheap (no cargo), so there is no reason it was not here.
           python3 ./scripts/git-hooks/test_remove_correction.py || exit $?
-          python3 ./scripts/git-hooks/test_git_shared_guard.py
+          python3 ./scripts/git-hooks/test_git_shared_guard.py || exit $?
+          python3 ./scripts/git-hooks/test_land_push_guard.py
       # CLI dispatch tests (AEAB-17). Language-agnostic like the two steps above,
       # and they belong HERE rather than in rust.yml because rust.yml is
       # path-filtered to `crates/**`, `Cargo.*` and `e2e/**` — so a change to

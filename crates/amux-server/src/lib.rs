@@ -678,6 +678,8 @@ async fn async_main() {
     });
     // Contract rules 2b and 3 (AH-377, AH-378): post-deploy checks and reviewers.
     drop(runtime_jobs::contract_watch::spawn(state.clone()));
+    // Contract rule 5 (AH-380): the server-owned land queue.
+    drop(runtime_jobs::land_queue::spawn(state.clone()));
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));

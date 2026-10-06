@@ -7795,6 +7795,28 @@ cmd_land() {
       *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
     esac
   done
+  # CONTRACT RULE 5 (AH-380): where the server owns landing for this lane, queue
+  # the commit there and return; the lane gets a message when it lands or is
+  # refused. A 409 land_queue_off (the rule is off for this lane) or an
+  # unreachable server falls through to the client queue below.
+  # AMUX_LAND_CLIENT=1 forces the client path.
+  if [ -n "${AMUX_SESSION:-}" ] && [ "${AMUX_LAND_CLIENT:-0}" != 1 ]; then
+    local _q_sha _q_out _q_code _q_body
+    _q_sha="${land_sha:-$(git rev-parse HEAD 2>/dev/null)}"
+    if [ -n "$_q_sha" ]; then
+      _q_body=$(python3 -c 'import json,sys; print(json.dumps({"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3]}))' "$_q_sha" "$priority" "$prio_reason")
+      _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+        -H "X-Amux-Session: $AMUX_SESSION" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
+      _q_code="${_q_out##*$'\n'}"
+      case "$_q_code" in
+        202) echo "amux land: queued on the server (contract rule 5); you get a message when it lands or is refused. ${_q_out%$'\n'*}"; return 0 ;;
+        # 400: the queue refused THIS request (unknown commit, a priority land
+        # with no reason). Anything else (409 rule off, 404 from a server
+        # without the route, unreachable) falls through to the client queue.
+        400) echo "amux land: the server queue refused the request: ${_q_out%$'\n'*}" >&2; return 2 ;;
+      esac
+    fi
+  fi
   if [ -n "$land_sha" ]; then
     git rev-parse --git-dir >/dev/null 2>&1 || die "amux land: not inside a git repository"
     land_sha="$(git rev-parse --verify -q "$land_sha^{commit}")" || die "amux land: --sha does not name a commit in this repository"

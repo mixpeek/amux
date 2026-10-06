@@ -9,6 +9,7 @@ pub mod aliases;
 pub mod auth;
 pub mod board;
 pub mod contract;
+pub mod land_queue;
 pub mod contract_fresh;
 pub mod prod_change;
 pub mod runner;
@@ -326,6 +327,7 @@ pub fn router(state: AppState) -> Router {
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
         .merge(contract::routes())
+        .merge(land_queue::routes())
         .merge(vault::routes())
         .merge(vault_secrets::routes())
         .merge(chatgpt_app::routes())

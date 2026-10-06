@@ -1856,6 +1856,43 @@ def _remove_correction(command):
         "permissionDecisionReason": reason}}
 
 
+def _land_queue_push_verdict(scrubbed):
+    """Contract rule 5 (AH-380): on a lane whose landing the server owns, a
+    worker push to main is refused and pointed at `amux land`.
+
+    Matches `git push ...` naming main (main, HEAD:main, :refs/heads/main) and
+    scripts/graft-push.sh. Asks GET /api/land/policy?lane=<AMUX_SESSION>&push=1,
+    which logs worker_push_refused when it answers queue=true. Fail-OPEN: no
+    session, no server or no answer allows the push, because a wrong refusal
+    here would wedge every lane on a server restart. Not covered: a push run
+    outside a Claude Bash call (a script started some other way, a terminal)."""
+    lane = os.environ.get("AMUX_SESSION", "").strip()
+    if not lane:
+        return None
+    pushes_main = re.search(r'\bgit\s+' + GIT_GLOBALS + r'push\b[^;&|\n]*(\bmain\b|refs/heads/main)', scrubbed)
+    graft = re.search(r'(^|[\s/;&|])graft-push\.sh\b', scrubbed)
+    if not (pushes_main or graft):
+        return None
+    try:
+        import urllib.request, urllib.parse, ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        url = amux_base_url() + "/api/land/policy?" + urllib.parse.urlencode({"lane": lane, "push": "1"})
+        res = json.load(urllib.request.urlopen(url, timeout=3, context=ctx))
+    except Exception:
+        return None
+    if not res.get("queue"):
+        return None
+    reason = ("BLOCKED by contract rule 5 (AH-380): the server lands this lane's commits; "
+              "workers do not push to main. Run `amux land` (or `amux land --sha <commit>`): "
+              "the server composes queued commits onto origin/main, runs the land gate and the "
+              "repository's pre-push hook, pushes, and messages you the result.")
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                   "permissionDecision": "deny",
+                                   "permissionDecisionReason": reason}}
+
+
 def main():
     data = json.load(sys.stdin)
     if data.get("tool_name") != "Bash":
@@ -1868,6 +1905,10 @@ def main():
         print(json.dumps(correction))
         return 0  # hook JSON deny cancels the call and feeds the reason to Claude
     scrubbed = _scrub(cmd)                       # match only real invocations
+    land_deny = _land_queue_push_verdict(scrubbed)
+    if land_deny:
+        print(json.dumps(land_deny))
+        return 0
     cwd = data.get("cwd") or os.getcwd()
     shared = [os.path.realpath(os.path.expanduser(p)) for p in
               os.environ.get("AMUX_SHARED_CHECKOUTS", "~/Dev/mixpeek").split(":") if p.strip()]

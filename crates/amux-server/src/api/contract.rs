@@ -720,14 +720,14 @@ pub fn parse_sha(out: &str) -> Option<String> {
 }
 
 /// The lane's checkout: its worktree, else its work dir if that is a repo.
-fn lane_tree(lane: &str) -> Option<PathBuf> {
+pub(crate) fn lane_tree(lane: &str) -> Option<PathBuf> {
     crate::api::session_verbs::worker_worktree(lane)
         .or_else(|| Some(PathBuf::from(crate::api::session_verbs::session_work_dir(lane))).filter(|p| p.join(".git").exists()))
 }
 
 /// Run `cmd` with `sh -c` in `dir`, the lane's interpreters first on PATH.
 /// Returns (exit 0, combined output tail).
-async fn sh(dir: &Path, cmd: &str, prefix: &str, timeout: Duration) -> (bool, String) {
+pub(crate) async fn sh(dir: &Path, cmd: &str, prefix: &str, timeout: Duration) -> (bool, String) {
     let path = std::env::var("PATH").unwrap_or_default();
     let path = if prefix.is_empty() { path } else { format!("{prefix}:{path}") };
     let fut = tokio::process::Command::new("sh").arg("-c").arg(cmd).current_dir(dir).env("PATH", path)
@@ -1127,6 +1127,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
+    ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
 ];

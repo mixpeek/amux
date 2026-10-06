@@ -135,6 +135,7 @@ pub mod ids {
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
+    pub const LAND_QUEUE: &str = "land-queue";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -188,6 +189,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::EMAIL_APPROVAL_DIGEST,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
+    ids::LAND_QUEUE,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -881,6 +883,17 @@ pub const CATALOG: &[Doc] = &[
         env: NO_ENV,
         pref: None,
         detail: Some("/api/contract/counters"),
+    },
+    Doc {
+        id: ids::LAND_QUEUE,
+        name: "Land queue",
+        purpose: "Every 20 seconds, takes each repository's queued lands (contract rule 5) in order, \
+                  composes them onto origin/main in a server worktree, runs the land gate and the \
+                  repo's pre-push hook, and pushes; a red batch is bisected and a red commit goes \
+                  back to its lane unmerged.",
+        env: NO_ENV,
+        pref: None,
+        detail: Some("/api/land"),
     },
 ];
 
