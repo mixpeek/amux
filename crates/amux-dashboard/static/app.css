@@ -1090,6 +1090,11 @@
   #peek-body { touch-action:pan-x pan-y pinch-zoom; min-width:0; width:100%; box-sizing:border-box; border-radius:8px; padding-top:10px; }
   .overlay-body {
     flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
+    /* Reserve the scrollbar's width. With pre-wrap text and overflow-y:auto,
+       content near the fold made the scrollbar appear, narrowing the body,
+       re-wrapping long lines, shrinking the content, hiding the scrollbar:
+       the peek "kept expanding and contracting" (Ethan, 2026-10-06). */
+    scrollbar-gutter: stable;
     background: #010409; border-radius: 8px;
     padding: 10px; font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
     font-size: 0.78rem; line-height: 1.4; white-space: pre-wrap; word-break: break-word;

@@ -13844,7 +13844,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1253';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1254';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
