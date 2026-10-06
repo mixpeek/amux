@@ -13844,7 +13844,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1251';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1252';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -50113,6 +50113,9 @@ function _projectClearRefreshError() {
 function _openPathInFiles(path) {
   if(!path) return;
   try { closeFilePreview(); } catch(e) {}
+  // A file opened from a worker's peek: the Files view loaded UNDER the peek,
+  // so the folder click looked like it did nothing (Ethan, 2026-10-06).
+  try { if (peekSession) closePeek(); } catch(e) {}
   switchView('files');
   setTimeout(()=>loadFiles(path),0);
 }
