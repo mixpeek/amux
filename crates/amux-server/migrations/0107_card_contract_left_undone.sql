@@ -1,0 +1,4 @@
+-- Contract rule 8 (AH-384): what a closing card left undone, as JSON
+-- [{"item": "...", "card": "<id>"} | {"item": "...", "dismissed": "<reason>"}],
+-- captured at the done or cannot_satisfy request.
+-- ADDCOL: card_contracts left_undone TEXT

@@ -10,6 +10,7 @@ pub mod auth;
 pub mod board;
 pub mod contract;
 pub mod runner;
+pub mod done_line;
 pub mod board_intake;
 pub mod board_lifecycle;
 pub mod board_themes;

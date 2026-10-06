@@ -10521,6 +10521,10 @@ async fn patch_item_route(
     Json(body): Json<Value>,
 ) -> Response {
     let owner = super::standing_approvals::is_owner_request(&headers);
+    if let Some(r) = super::done_line::guard(&state, &id, &body, owner).await {
+        return r; // contract A3: a frozen done line changes only by the owner
+    }
+    let left_undone = super::contract::left_undone_items(&body).ok();
     // Orchestration contract rules 1 and 2 for code cards (AH-375, AH-376),
     // behind the scoped AMUX_CONTRACT_DONE switch.
     let mut body = body;
@@ -10557,7 +10561,12 @@ async fn patch_item_route(
                         let actor = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).unwrap_or("api-anonymous").to_string();
                         return super::contract::amend(&state, &id, &actor, cmd, why).await;
                     }
-                    super::contract::Action::Rewrite(v) => body = v,
+                    super::contract::Action::Rewrite(v) => {
+                        if let Err(r) = super::contract::record_left_undone(&state, &id, left_undone.clone().unwrap_or_default()).await {
+                            return r;
+                        }
+                        body = v
+                    }
                     super::contract::Action::PassThenFreeze(c) => {
                         // The frozen contract is the doing gate (rule 1),
                         // in place of the free-text checklist.
@@ -10569,6 +10578,9 @@ async fn patch_item_route(
                     super::contract::Action::Pass => {
                         let wants_done = body.get("status").and_then(Value::as_str) == Some("done");
                         if wants_done && !owner && row.status == "doing" && row.item_type == "code" && existing.is_some() {
+                            if let Err(r) = super::contract::record_left_undone(&state, &id, left_undone.clone().unwrap_or_default()).await {
+                                return r;
+                            }
                             return super::contract::start_verification(&state, &id, &lane).await;
                         }
                     }
@@ -15476,18 +15488,26 @@ mod af701_archive_guard_tests {
             panic!("verification never finished");
         };
         // Pasted evidence is ignored: the server runs the check, which fails.
-        assert_eq!(route(&state, &id, me(), json!({"status": "done", "evidence": "`cargo test` -> ok"})).await, StatusCode::ACCEPTED);
+        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::CONFLICT,
+            "rule 8: a close must say what it leaves undone");
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "left_undone": [{"item": "x", "card": "NOPE-1"}]})).await,
+            StatusCode::CONFLICT, "rule 8: a named card must exist");
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "evidence": "`cargo test` -> ok",
+            "left_undone": [{"item": "docs page", "dismissed": "deferred by the owner"}]})).await, StatusCode::ACCEPTED);
         assert_eq!(settle(store.clone(), id.clone()).await, "failed");
         assert_eq!(current(&store, &id).status, "doing", "a failed check leaves the card in doing");
 
         std::fs::write(repo.join("ok.txt"), "y").unwrap();
         git(&["add", "ok.txt"]);
         git(&["commit", "-qm", "fix"]);
-        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+        let follow = seed(&store, "lane-c", "todo");
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "left_undone": [{"item": "retry policy", "card": follow}]})).await, StatusCode::ACCEPTED);
         assert_eq!(settle(store.clone(), id.clone()).await, "passed");
         let row = current(&store, &id);
         assert_eq!(row.status, "done");
         assert!(row.evidence.as_deref().unwrap_or("").contains("Server-verified (contract rule 2)"), "{:?}", row.evidence);
+        assert!(row.evidence.as_deref().unwrap_or("").contains(&format!("retry policy -> {follow}")), "rule 8 rides into the evidence: {:?}", row.evidence);
+        assert!(row.desc.contains("Left undone at close (contract rule 8)"), "{}", row.desc);
 
         // The switch off leaves the ordinary path untouched.
         std::fs::write(h.join("sessions/lane-c.env"), format!("CC_DIR=\"{}\"\n", repo.display())).unwrap();
@@ -15555,7 +15575,7 @@ mod af701_archive_guard_tests {
             StatusCode::CONFLICT, "a deploy card needs a post-deploy check");
         assert_eq!(route(&state, &id, me(), json!({"status": "doing", "acceptance_criteria": ["works in prod"],
             "verify_kind": "deploy", "deploy_check": "test -f deployed-ok"})).await, StatusCode::OK);
-        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "left_undone": []})).await, StatusCode::ACCEPTED);
         done(store.clone(), id.clone()).await;
         assert_eq!(current(&store, &id).status, "done");
         assert_eq!(contract(&store, &id).1.as_deref(), Some("waiting"));
@@ -15578,7 +15598,7 @@ mod af701_archive_guard_tests {
 
         // Fixed: done again, and the check passes in production.
         std::fs::write(repo.join("deployed-ok"), "z").unwrap();
-        assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+        assert_eq!(route(&state, &id, me(), json!({"status": "done", "left_undone": []})).await, StatusCode::ACCEPTED);
         done(store.clone(), id.clone()).await;
         super::super::contract::watch_deploys(&state).await;
         assert_eq!(contract(&store, &id).1.as_deref(), Some("passed"));
@@ -15644,7 +15664,7 @@ mod af701_archive_guard_tests {
         let to_done = |id: String| {
             let (state, store) = (state.clone(), store.clone());
             async move {
-                assert_eq!(route(&state, &id, me(), json!({"status": "done"})).await, StatusCode::ACCEPTED);
+                assert_eq!(route(&state, &id, me(), json!({"status": "done", "left_undone": []})).await, StatusCode::ACCEPTED);
                 until(|| review(&store, &id).0.as_deref() == Some("pending"), "review pending").await;
             }
         };
@@ -15722,6 +15742,63 @@ mod af701_archive_guard_tests {
         assert_eq!(current(&store, &id).status, "doing");
         assert_eq!(route(&state, &id, me(), done("`pytest server/tests/unit/test_budget.py` -> 3 passed at 3054da0b8a1")).await, StatusCode::OK);
         assert_eq!(current(&store, &id).status, "done");
+    }
+
+    /// Contract A3 (AH-389): once an epic's done line is frozen, a worker
+    /// cannot discard, archive, delete or move a line card, a revision needs
+    /// the owner and a reason, and the measure counts what is met.
+    #[tokio::test]
+    async fn a_frozen_done_line_changes_only_by_the_owner() {
+        let (state, store) = fixture();
+        let epic = seed(&store, "orch", "doing");
+        let a = seed(&store, "lane-x", "todo");
+        let b = seed(&store, "lane-x", "verified");
+        for id in [&a, &b] {
+            let (id, e) = (id.clone(), epic.clone());
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET epic = ?2 WHERE id = ?1", [id, e])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        let app = || axum::Router::new().merge(super::super::done_line::routes()).with_state(state.clone());
+        let call = |method: &'static str, who: Option<&'static str>, body: Option<Value>| {
+            let app = app();
+            let path = format!("/api/contract/done-line/{epic}");
+            async move {
+                use tower::ServiceExt;
+                let mut req = axum::http::Request::builder().method(method).uri(path).header("content-type", "application/json");
+                if let Some(w) = who {
+                    req = req.header("x-amux-session", w);
+                }
+                let body = body.map(|b| b.to_string()).unwrap_or_default();
+                let resp = app.oneshot(req.body(axum::body::Body::from(body)).unwrap()).await.unwrap();
+                let st = resp.status();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+                (st, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+            }
+        };
+        assert_eq!(call("GET", None, None).await.0, StatusCode::NOT_FOUND, "nothing frozen yet");
+        assert_eq!(call("POST", Some("orch"), Some(json!({}))).await.0, StatusCode::OK, "day one: the epic's children freeze");
+        let (st, m) = call("GET", None, None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!((m["n_considered"].as_u64(), m["verified"].as_u64(), m["measured"].as_bool()), (Some(2), Some(1), Some(true)));
+
+        let worker = || owner_headers("lane-x");
+        assert_eq!(route(&state, &a, worker(), json!({"status": "discarded"})).await, StatusCode::CONFLICT, "discard is a scope change");
+        assert_eq!(route(&state, &a, worker(), json!({"epic": "ELSEWHERE"})).await, StatusCode::CONFLICT, "so is moving it out");
+        assert_eq!(route(&state, &a, worker(), json!({"desc_append": "progress"})).await, StatusCode::OK, "ordinary work proceeds");
+        assert_eq!(archive_item(State(state.clone()), Path(a.clone()), worker(), None).await.status(), StatusCode::CONFLICT);
+        assert_eq!(delete_item(State(state.clone()), Path(a.clone()), worker()).await.status(), StatusCode::CONFLICT);
+
+        assert_eq!(call("POST", Some("orch"), Some(json!({"cards": [b.clone()], "reason": "cut"}))).await.0, StatusCode::FORBIDDEN,
+            "a revision is the owner's");
+        assert_eq!(call("POST", None, Some(json!({"cards": [b.clone()]}))).await.0, StatusCode::CONFLICT, "the owner gives a reason");
+        assert_eq!(call("POST", None, Some(json!({"cards": [b.clone()], "reason": "proof 2 deferred"}))).await.0, StatusCode::OK);
+        let (_, m) = call("GET", None, None).await;
+        assert_eq!(m["version"].as_i64(), Some(2));
+        assert_eq!(m["revisions"].as_array().map(Vec::len), Some(2), "every version is kept");
+        assert_eq!(m["outside_line"].as_array().map(|v| v.len()), Some(1), "the dropped card is now outside the line");
+        assert_eq!(route(&state, &a, worker(), json!({"status": "discarded"})).await, StatusCode::OK, "off the line, ordinary rules apply");
     }
 
     #[tokio::test]
@@ -16836,6 +16913,10 @@ pub async fn archive_item(
     headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Response {
+    let owner = super::standing_approvals::is_owner_request(&headers);
+    if let Some(r) = super::done_line::guard(&state, &id, &json!({"archived": true}), owner).await {
+        return r;
+    }
     archive_restore(state, id, headers, body.map(|Json(v)| v), false).await
 }
 
@@ -16860,6 +16941,10 @@ pub async fn delete_item(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let owner = super::standing_approvals::is_owner_request(&headers);
+    if let Some(r) = super::done_line::guard(&state, &id, &json!({"status": "discarded"}), owner).await {
+        return r;
+    }
     let (_actor, actor_name) = actor_from_headers(&headers);
     enum Out {
         NotFound,

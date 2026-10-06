@@ -260,6 +260,9 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
     }
     match body.get("status").and_then(Value::as_str).unwrap_or("") {
         "cannot_satisfy" => {
+            if let Err(why) = left_undone_items(body) {
+                return Action::Respond(left_undone_refusal(card, &why));
+            }
             let reason = nonempty(body.get("reason").and_then(Value::as_str))
                 .or_else(|| nonempty(body.get("desc_append").and_then(Value::as_str)))
                 .unwrap_or_else(|| "no reason given".into());
@@ -341,13 +344,126 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             Some(c) if c.state == "verifying" => Action::Respond(
                 (StatusCode::ACCEPTED, Json(json!({"ok": true, "verification": "already_running", "card": card.id}))).into_response(),
             ),
-            Some(_) => Action::Pass, // the route starts the verification
+            // Rule 8: the close names what it leaves undone; the route records it.
+            Some(_) => match left_undone_items(body) {
+                Ok(_) => Action::Pass, // the route starts the verification
+                Err(why) => Action::Respond(left_undone_refusal(card, &why)),
+            },
             None => Action::Respond(refuse(StatusCode::CONFLICT, "contract_missing",
                 format!("{} has no frozen contract to verify against", card.id),
                 json!({"worker": "add acceptance_criteria and verify_cmd, then request done again (they freeze now)"}))),
         },
         _ => Action::Pass,
     }
+}
+
+/// A store write that returns a value (the store's own API returns only its
+/// outcome).
+pub(crate) async fn write_value<T, F>(state: &AppState, f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+{
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let s2 = slot.clone();
+    state
+        .store
+        .write_async(move |c| {
+            let v = f(c)?;
+            *s2.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .await?;
+    let v = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    v.ok_or_else(|| anyhow::anyhow!("write produced no value"))
+}
+
+/// Rule 8 (AH-384): the `left_undone` list a closing request must carry.
+/// An empty list is an explicit "nothing"; a missing field is not an answer.
+/// Each item names the work and either the card that now holds it or the
+/// reason it is dismissed.
+pub fn left_undone_items(body: &Value) -> Result<Vec<Value>, String> {
+    let Some(v) = body.get("left_undone") else {
+        return Err("the request has no left_undone field".into());
+    };
+    let Some(list) = v.as_array() else {
+        return Err("left_undone must be a list".into());
+    };
+    for (i, it) in list.iter().enumerate() {
+        let s = |k: &str| it.get(k).and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty());
+        if s("item").is_none() {
+            return Err(format!("left_undone[{i}] has no item"));
+        }
+        if s("card").is_some() == s("dismissed").is_some() {
+            return Err(format!("left_undone[{i}] needs exactly one of card or dismissed"));
+        }
+    }
+    Ok(list.clone())
+}
+
+fn left_undone_refusal(card: &Card, why: &str) -> Response {
+    tracing::info!(card = %card.id, lane = %card.lane, why, measured = true, n_considered = 1,
+        verdict = "contract_left_undone_refused", "a closing request did not say what it left undone");
+    refuse(StatusCode::CONFLICT, "contract_left_undone_required",
+        format!("closing {} must say what it leaves undone (contract rule 8): {why}", card.id),
+        json!({
+            "left_undone": [
+                {"item": "what was not finished", "card": "<the card id that now holds it>"},
+                {"item": "what was not finished", "dismissed": "<why it does not need doing>"},
+            ],
+            "nothing_left": "send \"left_undone\": [] when the card leaves nothing undone",
+        }))
+}
+
+/// Record a validated `left_undone` list on the contract and the card. Every
+/// named card must exist, so an item cannot point at work nobody filed.
+pub async fn record_left_undone(state: &AppState, card: &str, items: Vec<Value>) -> Result<(), Response> {
+    let (c, now) = (card.to_string(), crate::config::now_f64());
+    let n = items.len();
+    let r = write_value(state, move |conn| {
+        for it in &items {
+            if let Some(id) = it.get("card").and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty()) {
+                if crate::db::board_store::get_issue(conn, id)?.is_none() {
+                    return Ok(Some(id.to_string()));
+                }
+            }
+        }
+        conn.execute("UPDATE card_contracts SET left_undone = ?2, at = ?3 WHERE card = ?1",
+            rusqlite::params![c, Value::Array(items.clone()).to_string(), now])?;
+        if let Some(mut row) = crate::db::board_store::get_issue(conn, &c)? {
+            row.desc.push_str(&format!("\nLeft undone at close (contract rule 8): {}", left_undone_summary(&items)));
+            crate::db::board_store::save_patched(conn, &mut row)?;
+        }
+        Ok(None)
+    }).await;
+    match r {
+        Ok(None) => {
+            tracing::info!(card, items = n, measured = true, n_considered = n, verdict = "contract_left_undone_recorded",
+                "recorded what a closing card left undone");
+            Ok(())
+        }
+        Ok(Some(missing)) => {
+            tracing::info!(card, missing = %missing, measured = true, n_considered = n, verdict = "contract_left_undone_refused",
+                "a left_undone item named a card that does not exist");
+            Err(refuse(StatusCode::CONFLICT, "contract_left_undone_unknown_card",
+                format!("left_undone names {missing}, which is not a card"),
+                json!({"fix": "file the card first and name its id, or dismiss the item with a reason"})))
+        }
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()}))).into_response()),
+    }
+}
+
+fn left_undone_summary(items: &[Value]) -> String {
+    if items.is_empty() {
+        return "nothing".into();
+    }
+    items.iter().map(|it| {
+        let s = |k: &str| it.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        match it.get("card").and_then(Value::as_str) {
+            Some(_) => format!("{} -> {}", s("item"), s("card")),
+            None => format!("{} (dismissed: {})", s("item"), s("dismissed")),
+        }
+    }).collect::<Vec<_>>().join("; ")
 }
 
 /// Apply a one-time amendment of the frozen verify command.
@@ -497,6 +613,11 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
             let (c, ev, sha2) = (card.to_string(), evidence.clone(), sha.clone());
             let r = state.store.write_async(move |conn| {
                 set_state(conn, &c, "passed", Some(&sha2), "exit 0", now)?;
+                let left: Option<String> = conn.query_row("SELECT left_undone FROM card_contracts WHERE card = ?1", [&c], |r| r.get(0)).optional()?.flatten();
+                let ev = match left.and_then(|l| serde_json::from_str::<Vec<Value>>(&l).ok()) {
+                    Some(items) => format!("{ev} Left undone (contract rule 8): {}", left_undone_summary(&items)),
+                    None => ev,
+                };
                 // A deploy card is watched from here until production holds sha2.
                 conn.execute("UPDATE card_contracts SET deploy_state = 'waiting', deploy_tries = 0, deploy_log = NULL, deploy_at = ?2
                               WHERE card = ?1 AND kind = 'deploy'", rusqlite::params![c, now])?;
@@ -959,6 +1080,8 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("6", &["contract_budget_exhausted"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
     ("A5", &["contract_dispatch_held"]),
+    ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
+    ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered"]),
 ];
@@ -987,7 +1110,9 @@ pub fn count_verdicts(log: &str, since: f64) -> (std::collections::BTreeMap<Stri
 }
 
 pub fn routes() -> axum::Router<AppState> {
-    axum::Router::new().route("/api/contract/counters", axum::routing::get(counters_route))
+    axum::Router::new()
+        .route("/api/contract/counters", axum::routing::get(counters_route))
+        .merge(crate::api::done_line::routes())
 }
 
 async fn counters_route(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
@@ -1069,18 +1194,36 @@ mod tests {
 
     #[test]
     fn done_is_verified_by_the_server_and_cannot_satisfy_goes_to_the_owner() {
-        let done = json!({"status": "done", "evidence": "trust me", "gate_checked": ["x"]});
+        let done = json!({"status": "done", "evidence": "trust me", "gate_checked": ["x"], "left_undone": []});
         assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, Some(&frozen()), &dflt(None))), "pass", "the route starts verification");
         assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, None, &dflt(None))), "409", "nothing frozen to verify");
         let running = Contract { state: "verifying".into(), ..frozen() };
         assert_eq!(code(&decide(&card("doing", "code", Some("a")), &done, false, Some(&running), &dflt(None))), "202");
-        match decide(&card("doing", "code", Some("a")), &json!({"status": "cannot_satisfy", "reason": "the fixture is gone"}), false, Some(&frozen()), &dflt(None)) {
+        match decide(&card("doing", "code", Some("a")), &json!({"status": "cannot_satisfy", "reason": "the fixture is gone", "left_undone": []}), false, Some(&frozen()), &dflt(None)) {
             Action::Rewrite(v) => {
                 assert_eq!(v["status"], "needsyou");
                 assert!(v["ask_question"].as_str().unwrap().contains("the fixture is gone"));
             }
             _ => panic!("cannot_satisfy becomes an owner ask"),
         }
+    }
+
+    #[test]
+    fn a_close_must_say_what_it_leaves_undone() {
+        let c = card("doing", "code", Some("a"));
+        for (body, ok, why) in [
+            (json!({"status": "done"}), false, "missing"),
+            (json!({"status": "done", "left_undone": "nothing"}), false, "not a list"),
+            (json!({"status": "done", "left_undone": [{"item": "x"}]}), false, "no card or dismissal"),
+            (json!({"status": "done", "left_undone": [{"item": "x", "card": "A-1", "dismissed": "y"}]}), false, "both"),
+            (json!({"status": "done", "left_undone": [{"card": "A-1"}]}), false, "no item"),
+            (json!({"status": "done", "left_undone": []}), true, "an explicit nothing"),
+            (json!({"status": "done", "left_undone": [{"item": "x", "card": "A-1"}, {"item": "y", "dismissed": "out of scope"}]}), true, "both shapes"),
+        ] {
+            assert_eq!(code(&decide(&c, &body, false, Some(&frozen()), &dflt(None))) == "pass", ok, "{why}");
+        }
+        assert_eq!(code(&decide(&c, &json!({"status": "cannot_satisfy", "reason": "r"}), false, Some(&frozen()), &dflt(None))), "409",
+            "cannot_satisfy is a close too");
     }
 
     #[test]
