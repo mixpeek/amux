@@ -7912,7 +7912,29 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         if cap > 0 {
             let done = state.store.read().ok().map(|c| lane_done_cards(&c, lane)).unwrap_or_default();
             if done.len() >= cap {
-                let (oldest, title) = done[0].clone();
+                // Hand back the oldest done card the lane has NOT already been
+                // handed while it sits in done. Re-asking about a card the lane
+                // answered ("waits for a reviewer") asks a question only the
+                // reviewer can close (gs12-compute, GC-107, 2026-10-06). When
+                // every done card has been handed once, hold quietly.
+                let now = now_f64();
+                let fresh = state.store.read().ok().and_then(|c| {
+                    done.iter()
+                        .find(|(id, _)| matches!(nudge_budget_check(&c, lane, id, "idle-with-card", "done", now),
+                            Ok(NudgeBudget::Admit { n: 0 })))
+                        .cloned()
+                });
+                let Some((oldest, title)) = fresh else {
+                    tracing::info!(target: "amux::board_drive", session = lane, measured = true,
+                        n_considered = done.len(), cap, verdict = "done_wip_cap_awaiting_review",
+                        "board_drive: lane is at its done-WIP cap and every done card was handed back once; waiting on reviews, not re-asking");
+                    return LaneTrace::skip(
+                        lane,
+                        "done-wip-cap",
+                        format!("{} cards at done (cap {cap}); each already handed back once, waiting on reviews", done.len()),
+                    )
+                    .with_counts(eligible, open);
+                };
                 let text = format!(
                     "[amux done-WIP cap] You hold {} cards at done (cap {cap}, {DISPATCH_DONE_WIP_KEY}). Before new work, close the review gap on your oldest, {oldest} \"{title}\" (the review note on the card names it), and post the evidence on the card; the reviewer verifies it, so do not move it to verified yourself. If nothing is left for you to do, say on the card exactly what it waits for. New cards resume when you are under the cap.",
                     done.len()
@@ -11131,10 +11153,33 @@ mod tests {
         // The lane closes the review gap; the reviewer verifies (gs12 refuses
         // a lane's own verified move), so the handoff must not send it there.
         assert!(sent.iter().any(|(_, t)| t.contains("close the review gap") && t.contains("do not move it to verified yourself")), "{sent:?}");
+        // A card the lane was already handed while in done is not re-asked
+        // (gs12-compute, GC-107): the next unhanded one is, and once every done
+        // card has been handed the cap holds without sending anything.
+        let first = trace_card(&drive_lane(&state, &capped, "lane").await);
+        let handed = |id: String| {
+            store.write(move |c| {
+                nudge_budget_record(c, "lane", &id, "idle-with-card", "done", now_f64())?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        };
+        handed(first.clone());
+        let second = trace_card(&drive_lane(&state, &capped, "lane").await);
+        assert_ne!(first, second, "an answered card is skipped for the next one");
+        handed(second);
+        let quiet = BoundaryFleet::default();
+        quiet.done_cap.store(2, std::sync::atomic::Ordering::SeqCst);
+        let trace = drive_lane(&state, &quiet, "lane").await;
+        assert_eq!(trace.reason, "done-wip-cap", "the cap still holds new work: {trace:?}");
+        assert!(quiet.delivered.lock().unwrap().is_empty(), "nothing re-asked once every done card was handed");
         let open = BoundaryFleet::default();
         open.done_cap.store(3, std::sync::atomic::Ordering::SeqCst);
         let trace = drive_lane(&state, &open, "lane").await;
         assert_ne!(trace.reason, "done-wip-cap", "{trace:?}");
+    }
+
+    fn trace_card(t: &LaneTrace) -> String {
+        t.card.clone().unwrap_or_default()
     }
 
     /// A lane whose turn ended with background work still running gets its
