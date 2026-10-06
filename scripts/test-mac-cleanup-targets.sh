@@ -275,7 +275,14 @@ check "and is counted failed" "yes" "$(grep -q 'failed 2' "$FIX/out.txt" && echo
 VM_LIST_CMD="true"; prune_vm_build_caches 0 > "$FIX/out.txt"
 check "no running VM says so" "yes" "$(grep -q 'no running colima VM' "$FIX/out.txt" && echo yes || echo no)"
 check "the default prune is build cache only" "yes" "$(printf '%s' "$DEFAULT_VM_PRUNE" | grep -q 'builder prune -af' && ! printf '%s' "$DEFAULT_VM_PRUNE" | grep -q -E 'system|image|volume' && echo yes || echo no)"
-check "and it releases finished builds' cache older than 6 h, not only dangling cache" "yes" "$(printf '%s' "$DEFAULT_VM_PRUNE" | grep -q -- '-af --filter until=6h' && echo yes || echo no)"
+check "and it releases finished builds' cache older than 6 h, not only dangling cache" "yes" "$(printf '%s' "$DEFAULT_VM_PRUNE" | grep -q -- '-af --filter until=AGE' && [ "$VM_PRUNE_AGE" = 6h ] && echo yes || echo no)"
+# 2026-10-06: the gs12 VM wrote build cache at ~78G/h, so 6h-old cache was
+# almost none of it. Under the urgent floor the window is 2h.
+VM_LIST_CMD="cat $FIX/vms.json"; VM_PRUNE_CMD="$FIX/vmrec.sh prune PROFILE AGE"; : > "$VMREC"
+prune_vm_build_caches 0 60 > "$FIX/out.txt"
+check "under the urgent floor the prune window is 2h" "yes" "$(grep -q '^prune gs12-a 2h' "$VMREC" && grep -q 'pruning cache unused for 2h' "$FIX/out.txt" && echo yes || echo no)"
+: > "$VMREC"; prune_vm_build_caches 0 180 > "$FIX/out.txt"
+check "above it the window stays 6h" "yes" "$(grep -q '^prune gs12-a 6h' "$VMREC" && echo yes || echo no)"
 
 echo "12d. idle VMs are stopped under pressure, busy or unmeasured ones never (DESKT-70)"
 printf '%s\n' '{"name":"idle","status":"Running"}' '{"name":"busy","status":"Running"}' '{"name":"quiet-but-working","status":"Running"}' '{"name":"blind","status":"Running"}' '{"name":"off","status":"Stopped"}' > "$FIX/vms2.json"
@@ -319,7 +326,7 @@ check "both running VMs are trimmed, the stopped one is not" "a b" "$(tr '\n' ' 
 check "and the line counts them" "yes" "$(grep -q 'vm trim: trimmed 2 running VM(s), failed 0' "$FIX/out.txt" && echo yes || echo no)"
 : > "$FIX/trims"; trim_vms 1 > "$FIX/out.txt"
 check "a dry run trims nothing" "0" "$(grep -c . "$FIX/trims" | tr -d ' ')"
-check "the tick calls trim_vms when the disk is not tight" "yes" "$(grep -q 'then prune_vm_build_caches "$DRY"; else trim_vms "$DRY"; fi' "$TICK" && echo yes || echo no)"
+check "the tick calls trim_vms when the disk is not tight" "yes" "$(grep -q 'then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi' "$TICK" && echo yes || echo no)"
 VM_LIST_CMD=$_lc; VM_TRIM_CMD=$_tc
 
 echo "12d2. Docker Desktop is quit under pressure only when idle the whole window (escalation 20261004-213936)"

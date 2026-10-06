@@ -185,7 +185,14 @@ VM_LIST_CMD=${AMUX_CLEANUP_VM_LIST_CMD:-colima list --json}
 # in containerd's overlay store, and the host disk burned 26 G/h. `-af --filter
 # until=6h` released 78.8 GB there (leases 366 -> 130) and keeps the last 6 h
 # of cache warm for builds in flight.
-VM_PRUNE_CMD=${AMUX_CLEANUP_VM_PRUNE_CMD:-docker --context colima-PROFILE builder prune -af --filter until=6h}
+VM_PRUNE_CMD=${AMUX_CLEANUP_VM_PRUNE_CMD:-docker --context colima-PROFILE builder prune -af --filter until=AGE}
+# Build cache unused this long is pruned when the disk is tight. Under the
+# urgent floor the window shortens: 2026-10-06 the gs12 shared VM wrote build
+# cache at ~78G/h, so almost nothing was 6h old and the host fell toward 40G
+# free while 31G of 2h-old cache sat reclaimable.
+VM_PRUNE_AGE=${AMUX_CLEANUP_VM_PRUNE_AGE:-6h}
+VM_PRUNE_URGENT_AGE=${AMUX_CLEANUP_VM_PRUNE_URGENT_AGE:-2h}
+VM_PRUNE_URGENT_FREE_GB=${AMUX_CLEANUP_VM_PRUNE_URGENT_FREE_GB:-100}
 VM_TRIM_CMD=${AMUX_CLEANUP_VM_TRIM_CMD:-colima ssh -p PROFILE -- sudo fstrim -a}
 # Unused IMAGES in running colima VMs, past an age, every tick (MF-4043):
 # goal-shared reached 39 images / 148 GB (137 GB unused) on 2026-10-03 and the
@@ -1192,15 +1199,19 @@ for line in sys.stdin:
 
 # Prune build cache in every running VM and trim its disk so the host gets the
 # blocks back. Sets VMS_PRUNED / VMS_FAILED. Each step is time-boxed.
-prune_vm_build_caches() { # <dry:0|1>
-  local dry=$1 p cmd out rc
+prune_vm_build_caches() { # <dry:0|1> [free_gb]
+  local dry=$1 free=${2:--1} p cmd out rc age=$VM_PRUNE_AGE
   VMS_PRUNED=0; VMS_FAILED=0
+  if awk -v f="$free" -v u="$VM_PRUNE_URGENT_FREE_GB" 'BEGIN{exit !(f >= 0 && f < u)}'; then
+    age=$VM_PRUNE_URGENT_AGE
+    echo "mac-cleanup: vm build cache: ${free}G free is under ${VM_PRUNE_URGENT_FREE_GB}G, pruning cache unused for ${age} (not ${VM_PRUNE_AGE})"
+  fi
   local profiles; profiles=$(running_vm_profiles)
   if [ -z "$profiles" ]; then echo "mac-cleanup: vm build cache: no running colima VM"; return 0; fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     if [ "$dry" = 1 ]; then echo "mac-cleanup:   would prune build cache and trim colima VM $p (dry run)"; continue; fi
-    cmd=${VM_PRUNE_CMD//PROFILE/$p}; rc=0
+    cmd=${VM_PRUNE_CMD//PROFILE/$p}; cmd=${cmd//AGE/$age}; rc=0
     out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$?
     if [ "$rc" != 0 ]; then
       VMS_FAILED=$((VMS_FAILED+1)); echo "mac-cleanup:   vm $p build-cache prune FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120)"; continue
@@ -1602,7 +1613,7 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
 fi
 reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
 VMS_PRUNED=0
-if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY"; else trim_vms "$DRY"; fi
+if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && prune_vm_images "$DRY"
 [ "${AMUX_CLEANUP_USER_TMP:-1}" = 1 ] && reap_user_tmp "$DRY"
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && reap_lane_tmp "$DRY"
