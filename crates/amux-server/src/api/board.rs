@@ -15765,6 +15765,14 @@ mod af701_archive_guard_tests {
         assert_eq!(super::super::contract::resume_orphaned_verifications(&state).await, 1, "the orphan is resumed");
         assert_eq!(super::super::contract::resume_orphaned_verifications(&state).await, 0, "a live verification is not started twice");
         until(|| current(&store, &o).status == "done", "the resumed verification granted done").await;
+        // A card that closed another way is never re-judged, even if its
+        // contract row still reads verifying (gs12-platform rollback).
+        let o3 = o.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE card_contracts SET state = 'verifying' WHERE card = ?1", [o3])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(super::super::contract::resume_orphaned_verifications(&state).await, 0, "a done card is not resumed");
     }
 
     /// Contract rule 9 through the real route (AH-390): on a contract lane a

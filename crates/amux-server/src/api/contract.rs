@@ -620,14 +620,20 @@ fn spawn_verification(state: &AppState, card: &str, lane: &str) {
 pub async fn resume_orphaned_verifications(state: &AppState) -> usize {
     let rows: Vec<(String, String)> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
-            "SELECT c.card, COALESCE(i.session, '') FROM card_contracts c JOIN issues i ON i.id = c.card WHERE c.state = 'verifying'",
+            "SELECT c.card, COALESCE(i.session, '') FROM card_contracts c JOIN issues i ON i.id = c.card \
+             WHERE c.state = 'verifying' AND i.status = 'doing'",
         )?;
         let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
+    // Only a card still in doing whose lane still runs contracts: a card that
+    // closed another way, or a lane whose contract was rolled back, is never
+    // re-judged (gs12-platform rollback, 2026-10-06 13:15Z: 37 done cards
+    // still read `verifying`).
+    let home = crate::config::amux_home();
     let orphans: Vec<(String, String)> = {
         let live = LIVE_VERIFY.lock().map(|l| l.clone()).unwrap_or_default();
-        rows.iter().filter(|(c, _)| !live.contains(c)).cloned().collect()
+        rows.iter().filter(|(c, lane)| !live.contains(c) && enabled_for(&home, lane)).cloned().collect()
     };
     for (card, lane) in &orphans {
         tracing::warn!(card = %card, lane = %lane, measured = true, n_considered = rows.len(),
