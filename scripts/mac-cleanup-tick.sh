@@ -193,6 +193,14 @@ VM_PRUNE_CMD=${AMUX_CLEANUP_VM_PRUNE_CMD:-docker --context colima-PROFILE builde
 VM_PRUNE_AGE=${AMUX_CLEANUP_VM_PRUNE_AGE:-6h}
 VM_PRUNE_URGENT_AGE=${AMUX_CLEANUP_VM_PRUNE_URGENT_AGE:-2h}
 VM_PRUNE_URGENT_FREE_GB=${AMUX_CLEANUP_VM_PRUNE_URGENT_FREE_GB:-100}
+# A SIZE cap on top of the age window (disk RCA 20261007-081932). gs12-restore
+# builds a full mixpeek/standalone image per commit, ~10G of fresh cache each
+# (pip install 3.5G, site-packages copy 3.5G, model downloads 2G), so the 6 h
+# window alone let goal-shared hold 78G of cache and the host burned 14.5G/h.
+# BuildKit evicts least-recently-used records first and never one a running
+# build holds, so the cap keeps the newest builds warm. 0 disables it.
+VM_PRUNE_MAX_USED=${AMUX_CLEANUP_VM_PRUNE_MAX_USED:-40gb}
+VM_PRUNE_CAP_CMD=${AMUX_CLEANUP_VM_PRUNE_CAP_CMD:-docker --context colima-PROFILE builder prune -af --max-used-space CAP}
 VM_TRIM_CMD=${AMUX_CLEANUP_VM_TRIM_CMD:-colima ssh -p PROFILE -- sudo fstrim -a}
 # Unused IMAGES in running colima VMs, past an age, every tick (MF-4043):
 # goal-shared reached 39 images / 148 GB (137 GB unused) on 2026-10-03 and the
@@ -214,7 +222,16 @@ LANE_TMP_IDLE_MIN=${AMUX_CLEANUP_LANE_TMP_IDLE_MIN:-1440}
 # files) in one pass on 2026-10-04 drove fseventsd from 9 to 57 GB resident
 # and filled 52 GB of swap; a capped pass leaves the rest for the next tick.
 LANE_TMP_MAX=${AMUX_CLEANUP_LANE_TMP_MAX:-300}
-VM_IMAGE_PRUNE_CMD=${AMUX_CLEANUP_VM_IMAGE_PRUNE_CMD:-docker --context colima-PROFILE image prune -a -f --filter until=AGE}
+# AGE IS MEASURED FROM THE LAST TAG, not from the image's creation (disk RCA
+# 20261007-081932). `image prune --filter until=` reads Created, and a build
+# that hits the cache tags an image whose Created can be days old, so a tag
+# made a minute ago was pruned on the next tick. gs12-deputy saw tags vanish
+# within an hour or two, could not find the pruner, and pinned every build
+# with a never-started container; nothing retired the pins, and each ~10G
+# standalone image stayed for good. vm_image_prune_by_tag keeps any image a
+# container uses or that was tagged (or, never tagged, created) within AGE.
+VM_IMAGE_PRUNE_CMD=${AMUX_CLEANUP_VM_IMAGE_PRUNE_CMD:-vm_image_prune_by_tag colima-PROFILE AGE}
+VM_DOCKER=${AMUX_CLEANUP_VM_DOCKER:-docker}
 VM_STEP_S=${AMUX_CLEANUP_VM_STEP_S:-120}
 # Idle colima VMs under pressure (DESKT-70). On 2026-10-01 eight goal-spec lanes
 # had each started a private VM (16-32G apiece); with five running the Mac hit
@@ -1216,6 +1233,15 @@ prune_vm_build_caches() { # <dry:0|1> [free_gb]
     if [ "$rc" != 0 ]; then
       VMS_FAILED=$((VMS_FAILED+1)); echo "mac-cleanup:   vm $p build-cache prune FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120)"; continue
     fi
+    if [ "$VM_PRUNE_MAX_USED" != 0 ]; then
+      cmd=${VM_PRUNE_CAP_CMD//PROFILE/$p}; cmd=${cmd//CAP/$VM_PRUNE_MAX_USED}; rc=0
+      out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$?
+      if [ "$rc" = 0 ]; then
+        echo "mac-cleanup:   vm $p build cache capped at $VM_PRUNE_MAX_USED: $(printf '%s' "$out" | grep -i 'total' | tail -1 | tr -s ' \t' ' ' | cut -c1-60) (verdict=vm_build_cache_capped)"
+      else
+        echo "mac-cleanup:   vm $p build-cache cap FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120) (verdict=vm_build_cache_cap_failed)"
+      fi
+    fi
     cmd=${VM_TRIM_CMD//PROFILE/$p}
     perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd >/dev/null 2>&1 || echo "mac-cleanup:   vm $p fstrim did not complete (build cache was still pruned)"
     VMS_PRUNED=$((VMS_PRUNED+1))
@@ -1342,6 +1368,49 @@ EOF
   echo "mac-cleanup: user tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n tmp.* dir(s) idle over ${USER_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root)"
 }
 
+# Remove images in docker context <ctx> that no container uses and that were
+# last tagged (or, never tagged, created) more than <age> ago. Prints one
+# "deleted" line per image and a "Total reclaimed space" line like
+# `image prune`, so the caller's summary reads the same.
+vm_image_prune_by_tag() { # <ctx> <age: Nh | Nm | seconds>
+  local ctx=$1 age=$2 secs ids used plan id
+  case "$age" in *h) secs=$(( ${age%h} * 3600 )) ;; *m) secs=$(( ${age%m} * 60 )) ;; *) secs=$age ;; esac
+  ids=$("$VM_DOCKER" --context "$ctx" images -q --no-trunc | sort -u) || return 1
+  [ -n "$ids" ] || { echo "Total reclaimed space: 0B"; return 0; }
+  used=$("$VM_DOCKER" --context "$ctx" ps -aq --no-trunc) || return 1
+  [ -z "$used" ] || used=$("$VM_DOCKER" --context "$ctx" inspect -f '{{.Image}}' $used) || return 1
+  # shellcheck disable=SC2086
+  plan=$("$VM_DOCKER" --context "$ctx" image inspect $ids | USED="$used" SECS="$secs" python3 -c '
+import json, os, sys, time
+import calendar
+used = set(os.environ["USED"].split()); cutoff = time.time() - int(os.environ["SECS"])
+def utc(v):
+    v = (v or "").rstrip("Z")
+    if not v or v.startswith("0001-"): return None
+    off = 0
+    for sign in "+-":
+        i = v.rfind(sign, 19)
+        if i > 0:
+            h, m = v[i+1:].split(":"); off = (int(h) * 3600 + int(m) * 60) * (1 if sign == "+" else -1); v = v[:i]; break
+    return calendar.timegm(time.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")) - off
+for im in json.load(sys.stdin):
+    if im["Id"] in used: continue
+    t = utc(im.get("Created"))
+    if t is None or t > cutoff: continue
+    print(im["Id"], im.get("Size", 0))
+') || return 1
+  local n=0 bytes=0 sz
+  while read -r id sz; do
+    [ -n "$id" ] || continue
+    if "$VM_DOCKER" --context "$ctx" rmi "$id" >/dev/null 2>&1; then
+      echo "deleted: $id"; n=$((n+1)); bytes=$((bytes + sz))
+    fi
+  done <<EOF
+$plan
+EOF
+  echo "Total reclaimed space: $(awk -v b="$bytes" 'BEGIN{printf "%.2fGB", b/1e9}') ($n image(s), verdict=vm_images_pruned_by_tag_age)"
+}
+
 # Prune unused images older than VM_IMAGE_PRUNE_AGE in every running VM.
 prune_vm_images() { # <dry:0|1>
   local dry=$1 p cmd out rc n=0 total=""
@@ -1351,7 +1420,14 @@ prune_vm_images() { # <dry:0|1>
     [ -n "$p" ] || continue
     if [ "$dry" = 1 ]; then echo "mac-cleanup:   would prune unused images older than $VM_IMAGE_PRUNE_AGE in colima VM $p (dry run)"; continue; fi
     cmd=${VM_IMAGE_PRUNE_CMD//PROFILE/$p}; cmd=${cmd//AGE/$VM_IMAGE_PRUNE_AGE}; rc=0
-    out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$?
+    case "$cmd" in
+      vm_image_prune_by_tag\ *)
+        # A shell function cannot be exec'd: run it in a child bash under the
+        # same alarm, with the function and its docker seam exported.
+        export -f vm_image_prune_by_tag; export VM_DOCKER
+        out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c "$cmd" 2>&1) || rc=$? ;;
+      *) out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$? ;;
+    esac
     if [ "$rc" != 0 ]; then
       echo "mac-cleanup:   vm $p image prune FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120)"; continue
     fi
