@@ -207,7 +207,14 @@ pub async fn enforce(req: Request, next: Next) -> Response {
             next.run(req).await
         }
         Check::Invalid => {
+            // Which failure: no token at all, or a token that matches no live
+            // hash (a relaunched lane's old value, or another lane's). Only a
+            // digest prefix is logged, never the token (2026-10-07: gs12-extra-2
+            // was refused in bursts while its process held the right token, and
+            // the line could not say which of the two it was).
+            let presented = header(&req, TOKEN_HEADER).map(|t| digest(t)[..8].to_string());
             tracing::warn!(lane, method = %req.method(), path = %req.uri().path(), measured = true, n_considered = 1,
+                token = presented.as_deref().unwrap_or("none"),
                 verdict = "worker_identity_refused", "rule 10: a request claimed a lane without that lane's token");
             (StatusCode::FORBIDDEN, Json(json!({
                 "ok": false,
