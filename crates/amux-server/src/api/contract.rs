@@ -687,27 +687,94 @@ pub fn verify_path_prefix(tree: &Path, lane: &str) -> String {
 static LIVE_VERIFY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(Default::default);
 
-/// How many server checks run at once, fleet-wide (server.env
-/// AMUX_CONTRACT_VERIFY_CONCURRENCY, default 3). Each is a clean checkout plus
-/// a test command; unbounded, about sixty of them took the host to load 36
-/// during the 2026-10-06 gs12 rollout.
-fn verify_slots() -> &'static tokio::sync::Semaphore {
-    static S: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    S.get_or_init(|| {
-        let n = std::env::var("AMUX_CONTRACT_VERIFY_CONCURRENCY").ok().and_then(|v| v.trim().parse::<usize>().ok())
-            .or_else(|| crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
-                .get("AMUX_CONTRACT_VERIFY_CONCURRENCY").and_then(|v| v.trim().trim_matches('"').parse::<usize>().ok()))
-            // Tests share this process-wide semaphore across parallel cases.
-            .unwrap_or(if cfg!(test) { 32 } else { 3 }).clamp(1, 32);
-        tokio::sync::Semaphore::new(n)
-    })
+/// Load-adaptive caps for server checks and harness reviews (AH-397,
+/// 2026-10-07). A fixed cap of 3 checks and 2 reviews ran on a host whose load
+/// sat at 15 to 36 on a few cores; the right number depends on how busy the
+/// machine already is. Per logical CPU, a 1-minute load at or above
+/// LOAD_HIGH_PER_CPU allows one at a time, at or below LOAD_LOW_PER_CPU the
+/// configured maximum, and the default in between. Maxima come from server.env
+/// (AMUX_CONTRACT_VERIFY_CONCURRENCY, AMUX_CONTRACT_REVIEW_CONCURRENCY).
+pub const LOAD_HIGH_PER_CPU: f64 = 1.5;
+pub const LOAD_LOW_PER_CPU: f64 = 0.7;
+const CHECKS_MAX_DEFAULT: usize = 4;
+const CHECKS_MID: usize = 3;
+const REVIEWS_MAX_DEFAULT: usize = 3;
+const REVIEWS_MID: usize = 2;
+
+/// The cap for one kind of work at a given load per CPU. Pure, for tests.
+/// An unreadable load (None) gets the middle band, never the maximum.
+pub fn adaptive_cap(max: usize, mid: usize, load_per_cpu: Option<f64>) -> usize {
+    let max = max.max(1);
+    match load_per_cpu {
+        Some(l) if l >= LOAD_HIGH_PER_CPU => 1,
+        Some(l) if l <= LOAD_LOW_PER_CPU => max,
+        _ => mid.clamp(1, max),
+    }
+}
+
+fn configured_max(key: &str, default: usize) -> usize {
+    std::env::var(key).ok().and_then(|v| v.trim().parse::<usize>().ok())
+        .or_else(|| crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
+            .get(key).and_then(|v| v.trim().trim_matches('"').parse::<usize>().ok()))
+        .unwrap_or(default)
+        .clamp(1, 32)
+}
+
+fn load_per_cpu() -> Option<f64> {
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+    crate::api::request_log::host_load1().map(|l| l / cpus)
+}
+
+#[derive(Clone, Copy)]
+enum Work {
+    Check,
+    Review,
+}
+
+/// The effective cap now, logging contract_capacity_adjusted when it moves.
+fn current_cap(work: Work) -> usize {
+    if cfg!(test) {
+        // Tests run many cases in parallel in one process; the bands are
+        // tested through adaptive_cap directly.
+        return 32;
+    }
+    static LAST: [std::sync::atomic::AtomicUsize; 2] =
+        [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
+    let (max, mid, slot, name) = match work {
+        Work::Check => (configured_max("AMUX_CONTRACT_VERIFY_CONCURRENCY", CHECKS_MAX_DEFAULT), CHECKS_MID, 0, "check"),
+        Work::Review => (configured_max("AMUX_CONTRACT_REVIEW_CONCURRENCY", REVIEWS_MAX_DEFAULT), REVIEWS_MID, 1, "review"),
+    };
+    let load = load_per_cpu();
+    let cap = adaptive_cap(max, mid, load);
+    let old = LAST[slot].swap(cap, std::sync::atomic::Ordering::Relaxed);
+    if old != cap {
+        tracing::info!(work = name, old, new = cap, load_per_cpu = ?load.map(|l| (l * 100.0).round() / 100.0),
+            measured = load.is_some(), n_considered = 1, verdict = "contract_capacity_adjusted",
+            "the contract's concurrent {name} cap follows host load");
+    }
+    cap
+}
+
+/// Checks running now in this process; a check waits for a free place under
+/// the current cap.
+static CHECKS_RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+async fn take_check_place() {
+    use std::sync::atomic::Ordering;
+    loop {
+        let cap = current_cap(Work::Check);
+        let n = CHECKS_RUNNING.load(Ordering::Acquire);
+        if n < cap && CHECKS_RUNNING.compare_exchange(n, n + 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
 }
 
 /// Reviews running in this process, and the most that run at once.
 static LIVE_REVIEW: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(Default::default);
 // Tests share the process-wide LIVE_REVIEW set across parallel cases.
-const REVIEWS_AT_ONCE: usize = if cfg!(test) { 32 } else { 2 };
 
 fn spawn_verification(state: &AppState, card: &str, lane: &str) {
     if let Ok(mut live) = LIVE_VERIFY.lock() {
@@ -715,8 +782,9 @@ fn spawn_verification(state: &AppState, card: &str, lane: &str) {
     }
     let (st, c, l) = (state.clone(), card.to_string(), lane.to_string());
     tokio::spawn(async move {
-        let _slot = verify_slots().acquire().await;
+        take_check_place().await;
         run_verification(&st, &c, &l).await;
+        CHECKS_RUNNING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         if let Ok(mut live) = LIVE_VERIFY.lock() {
             live.remove(&c);
         }
@@ -1468,7 +1536,7 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         Ok(v)
     }).await.unwrap_or_default();
     let mut claimed = 0;
-    let free = REVIEWS_AT_ONCE.saturating_sub(LIVE_REVIEW.lock().map(|l| l.len()).unwrap_or(0)).min(REVIEWS_PER_PASS);
+    let free = current_cap(Work::Review).saturating_sub(LIVE_REVIEW.lock().map(|l| l.len()).unwrap_or(0)).min(REVIEWS_PER_PASS);
     let n_pending = pending.len();
     for card in pending {
         if claimed >= free {
@@ -1806,6 +1874,18 @@ mod tests {
         std::fs::write(outside.join("keep"), "x").unwrap();
         assert!(fresh_checkout(&repo, &outside, &sha).await.is_err(), "a directory outside tmp/contract is never cleared");
         assert!(outside.join("keep").exists());
+    }
+
+    #[test]
+    fn checks_and_reviews_follow_host_load_in_three_bands() {
+        assert_eq!(adaptive_cap(4, 3, Some(2.0)), 1, "an overloaded host runs one at a time");
+        assert_eq!(adaptive_cap(4, 3, Some(LOAD_HIGH_PER_CPU)), 1, "the high mark itself is overloaded");
+        assert_eq!(adaptive_cap(4, 3, Some(1.0)), 3, "between the marks: the default");
+        assert_eq!(adaptive_cap(4, 3, Some(0.3)), 4, "a quiet host runs the maximum");
+        assert_eq!(adaptive_cap(4, 3, Some(LOAD_LOW_PER_CPU)), 4, "the low mark itself is quiet");
+        assert_eq!(adaptive_cap(4, 3, None), 3, "an unreadable load is never read as quiet");
+        assert_eq!(adaptive_cap(2, 3, Some(1.0)), 2, "the default never exceeds the configured maximum");
+        assert_eq!(adaptive_cap(0, 3, Some(0.1)), 1, "never zero");
     }
 
     #[test]
