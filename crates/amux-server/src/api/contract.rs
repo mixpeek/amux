@@ -1641,7 +1641,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
     ("A5", &["contract_dispatch_held", "a2_pool_held"]),
-    ("A2", &["a2_pool_assigned", "a2_pool_empty", "a2_pool_skipped_parked"]),
+    ("A2", &["a2_pool_assigned", "a2_pool_empty", "a2_pool_skipped_parked", "a2_pool_move_refused", "a2_pool_group_too_large"]),
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),

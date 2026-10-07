@@ -419,6 +419,128 @@ pub enum Claim {
     Got(String, &'static str, bool),
     /// No proof card was ready; this card unblocks `count` open proof cards.
     Unblocks(String, &'static str, usize),
+    /// Like Unblocks, but the card moved from the hub together with its
+    /// dependency group: (card, count, group size).
+    UnblocksGroup(String, usize, usize),
+}
+
+/// Largest dependency group A2 moves as one unit (AMUX_A2_GROUP_MAX).
+const GROUP_MAX_DEFAULT: usize = 8;
+
+fn group_max() -> usize {
+    crate::api::contract::lane_setting(&crate::config::amux_home(), "", "AMUX_A2_GROUP_MAX")
+        .or_else(|| std::env::var("AMUX_A2_GROUP_MAX").ok())
+        .and_then(|v| v.trim().trim_matches('"').parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(GROUP_MAX_DEFAULT)
+}
+
+/// What a group move did.
+#[derive(Debug, PartialEq)]
+pub enum GroupTake {
+    Moved(usize),
+    TooLarge(usize),
+    /// A member is in doing, archived, or tied to another board; or the
+    /// board refused the batch.
+    Refused(String),
+}
+
+/// The card's dependency component on the hub's board: every card linked to
+/// it by depends_on in either direction, transitively. The board requires
+/// every edge to stay on one board, done and verified targets included, so
+/// this whole component is the smallest set that may move. Stops once it
+/// exceeds `cap` (returns cap+1 members) and reports a member on another
+/// board as Err(that card).
+fn dependency_component(conn: &Connection, hub: &str, root: &str, cap: usize) -> rusqlite::Result<Result<Vec<String>, String>> {
+    let mut seen: Vec<String> = vec![root.to_string()];
+    let mut queue = vec![root.to_string()];
+    while let Some(id) = queue.pop() {
+        let deps: String = conn
+            .query_row("SELECT COALESCE(depends_on, '[]') FROM issues WHERE id = ?1 AND deleted IS NULL", [&id], |r| r.get(0))
+            .optional()?
+            .unwrap_or_else(|| "[]".into());
+        let mut next: Vec<String> = serde_json::from_str::<Vec<String>>(&deps).unwrap_or_default();
+        let dependents: Vec<String> = conn
+            .prepare("SELECT i.id FROM issues i, json_each(CASE WHEN json_valid(i.depends_on) THEN i.depends_on ELSE '[]' END) d \
+                      WHERE i.deleted IS NULL AND d.value = ?1")?
+            .query_map([&id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        next.extend(dependents);
+        for n in next {
+            if seen.contains(&n) {
+                continue;
+            }
+            let owner: Option<(Option<String>, Option<String>)> = conn
+                .query_row("SELECT project_group, session FROM issues WHERE id = ?1 AND deleted IS NULL", [&n],
+                    |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            match owner {
+                Some((None, Some(s))) if s == hub => {}
+                _ => return Ok(Err(n)),
+            }
+            seen.push(n.clone());
+            if seen.len() > cap {
+                return Ok(Ok(seen));
+            }
+            queue.push(n);
+        }
+    }
+    Ok(Ok(seen))
+}
+
+/// Move a blocking hub card and its dependency component to `lane` as one
+/// unit (Ethan, 2026-10-07: the blocking plan items and the proof cards that
+/// depend on them all sat on the orchestrator's board, and the same-board
+/// rule refused moving any one of them alone). All or nothing in one
+/// savepoint: ownership of every member changes together (validated as a
+/// batch), the blocking card goes to todo, the rest keep their status, and
+/// each gets a log line naming the group.
+pub fn take_group(conn: &Connection, hub: &str, root: &str, root_status: String, lane: &str, line: &str, cap: usize) -> rusqlite::Result<GroupTake> {
+    let members = match dependency_component(conn, hub, root, cap)? {
+        Err(other) => return Ok(GroupTake::Refused(format!("{other} is on another board"))),
+        Ok(m) if m.len() > cap => return Ok(GroupTake::TooLarge(m.len())),
+        Ok(m) => m,
+    };
+    for m in &members {
+        let (status, archived): (String, i64) = conn.query_row(
+            "SELECT status, COALESCE(archived, 0) FROM issues WHERE id = ?1", [m], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        if archived != 0 || (status == "doing" && m != root) {
+            return Ok(GroupTake::Refused(format!("{m} is {}", if archived != 0 { "archived".to_string() } else { status })));
+        }
+    }
+    conn.execute_batch("SAVEPOINT a2_group")?;
+    let res = (|| -> rusqlite::Result<bool> {
+        let owner = crate::db::board_store::BoardOwner::new(None, Some(lane));
+        let changes: Vec<(String, crate::db::board_store::BoardOwner)> = members.iter().map(|m| (m.clone(), owner.clone())).collect();
+        crate::db::board_store::validate_owner_changes(conn, &changes)?;
+        let stamp = chrono::Local::now().format("%H:%M");
+        let names = members.join(", ");
+        for m in &members {
+            let note = format!("\n`{stamp}` {POOL_ACTOR}: moved to {lane} with its dependency group [{names}] ({line})");
+            conn.execute(
+                "UPDATE issues SET session = ?2, log = COALESCE(log, '') || ?3, rev = rev + 1, version = version + 1 WHERE id = ?1",
+                rusqlite::params![m, lane, note])?;
+            conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![m, POOL_TAG])?;
+        }
+        if root_status == "todo" {
+            return Ok(true);
+        }
+        take_inner(conn, root, root_status, lane, line.to_string())
+    })();
+    match res {
+        Ok(true) => {
+            conn.execute_batch("RELEASE a2_group")?;
+            Ok(GroupTake::Moved(members.len()))
+        }
+        Ok(false) => {
+            conn.execute_batch("ROLLBACK TO a2_group; RELEASE a2_group")?;
+            Ok(GroupTake::Refused(format!("{root} did not move to todo")))
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK TO a2_group; RELEASE a2_group")?;
+            Ok(GroupTake::Refused(e.to_string()))
+        }
+    }
 }
 
 /// For each card, how many open proof cards (title matches `title_re`, not
@@ -563,6 +685,21 @@ pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Optio
         if let Some(re) = title_re {
             for (card, status, source, n) in unblockers(conn, hub, lane, re)? {
                 let line = format!("taken by idle lane {lane}: no proof card is ready and this unblocks {n} open proof card(s) (contract A2)");
+                if source == "hub" {
+                    let cap = group_max();
+                    match take_group(conn, hub, &card, status, lane, &line, cap)? {
+                        GroupTake::Moved(size) => return Ok(Claim::UnblocksGroup(card, n, size)),
+                        GroupTake::TooLarge(size) => {
+                            tracing::info!(card, lane, hub, size, cap, measured = true, n_considered = size, verdict = "a2_pool_group_too_large",
+                                "a blocking card's dependency group is larger than AMUX_A2_GROUP_MAX; it stays on the hub");
+                        }
+                        GroupTake::Refused(why) => {
+                            tracing::info!(card, lane, hub, error = %why, measured = true, n_considered = 1, verdict = "a2_pool_move_refused",
+                                "a dependency group could not move as one unit; it stays on the hub and the pull tries the next card");
+                        }
+                    }
+                    continue;
+                }
                 if take(conn, &card, status, lane, line)? {
                     conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
                     return Ok(Claim::Unblocks(card, source, n));
@@ -627,7 +764,7 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
     let slot_w = slot.clone();
     let _ = store.write_async(move |conn| {
         let r = claim_pool_card(conn, &h, &l, title_re.as_ref())?;
-        let applied = matches!(r, Claim::Got(..) | Claim::Unblocks(..));
+        let applied = matches!(r, Claim::Got(..) | Claim::Unblocks(..) | Claim::UnblocksGroup(..));
         *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         Ok(crate::db::WriteOutcome { applied, events: vec![] })
     }).await;
@@ -641,6 +778,12 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
         Some(Claim::Unblocks(card, source, count)) => {
             tracing::info!(session = lane, hub, card, source, reason = "unblocks_proof", count, measured = true, n_considered = count,
                 verdict = "a2_pool_assigned", "an idle lane took the ready card that unblocks the most open proof cards (contract A2)");
+            PoolPull::Assigned { card, hub }
+        }
+        Some(Claim::UnblocksGroup(card, count, size)) => {
+            tracing::info!(session = lane, hub, card, source = "hub", reason = "unblocks_proof_group", count, group_size = size,
+                measured = true, n_considered = count, verdict = "a2_pool_assigned",
+                "an idle lane took a blocking card with its dependency group from the hub (contract A2)");
             PoolPull::Assigned { card, hub }
         }
         Some(Claim::Busy) => PoolPull::NotApplicable,
@@ -937,9 +1080,55 @@ mod tests {
         assert_eq!(pull_from_pool(&store, "ub-a").await, PoolPull::Assigned { card: "A-HIGH".into(), hub: "hub".into() },
             "A-HIGH unblocks P1 directly and P2, P3 through A-MID: 3, against A-LOW's 1");
         assert_eq!((card("A-HIGH").session.as_deref(), card("A-HIGH").status.as_str()), (Some("ub-a"), "todo"));
-        assert_eq!(pull_from_pool(&store, "ub-c").await, PoolPull::Empty { pool: 5 },
-            "HUB-DEP cannot leave the hub while P5 depends on it there; the pool size is real, not a swallowed error");
-        assert_eq!(card("HUB-DEP").session.as_deref(), Some("hub"));
+        // HUB-DEP cannot leave the hub alone while P5 depends on it there; it
+        // moves with its dependency group (Ethan, 2026-10-07).
+        assert_eq!(pull_from_pool(&store, "ub-c").await, PoolPull::Assigned { card: "HUB-DEP".into(), hub: "hub".into() });
+        assert_eq!((card("HUB-DEP").session.as_deref(), card("HUB-DEP").status.as_str()), (Some("ub-c"), "todo"));
+        assert_eq!((card("P5").session.as_deref(), card("P5").status.as_str()), (Some("ub-c"), "backlog"),
+            "the dependent proof card moves with it and keeps its status");
+        assert!(card("P5").log.unwrap_or_default().contains("dependency group"));
+    }
+
+    /// The group is all or nothing: over the cap it stays, and a member that
+    /// cannot move (in doing) keeps every member on the hub.
+    #[test]
+    fn a_dependency_group_moves_whole_or_not_at_all() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        store.write(|c| {
+            for (id, status, deps) in [
+                ("B", "backlog", "[]"), ("D1", "backlog", "[\"B\"]"), ("D2", "backlog", "[\"B\"]"), ("D3", "backlog", "[\"D2\"]"),
+                ("X", "backlog", "[]"), ("XD", "doing", "[\"X\"]"),
+            ] {
+                c.execute(
+                    "INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                     VALUES (?1, ?1, ?2, 'hub', 'code', ?3, 0, 0, 0, 0)",
+                    rusqlite::params![id, status, deps],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let owner = |id: &str| crate::db::board_store::get_issue(&store.read().unwrap(), id).unwrap().unwrap().session;
+        let go = |root: &str, cap: usize| {
+            let root = root.to_string();
+            let out = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let o2 = out.clone();
+            store.write(move |c| {
+                let r = take_group(c, "hub", &root, "backlog".into(), "lane", "test", cap)?;
+                *o2.lock().unwrap() = Some(r);
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            let r = out.lock().unwrap().take().unwrap();
+            r
+        };
+        assert_eq!(go("B", 3), GroupTake::TooLarge(4), "B, D1, D2 and D3 exceed a cap of 3");
+        assert_eq!(owner("D3").as_deref(), Some("hub"));
+        assert!(matches!(go("X", 8), GroupTake::Refused(_)), "XD is in doing");
+        assert_eq!((owner("X").as_deref(), owner("XD").as_deref()), (Some("hub"), Some("hub")), "nothing moved");
+        assert_eq!(go("B", 8), GroupTake::Moved(4));
+        for id in ["B", "D1", "D2", "D3"] {
+            assert_eq!(owner(id).as_deref(), Some("lane"), "{id} moved with the group");
+        }
     }
 
     /// MO-4071/MO-4086/MO-4438: a proof card parked with a fresh trigger, or a
