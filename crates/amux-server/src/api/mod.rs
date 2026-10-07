@@ -9,6 +9,7 @@ pub mod aliases;
 pub mod auth;
 pub mod board;
 pub mod contract;
+pub mod prompt_block;
 pub mod land_queue;
 pub mod worker_identity;
 pub mod contract_fresh;

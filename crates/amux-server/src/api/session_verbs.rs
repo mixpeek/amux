@@ -21763,7 +21763,11 @@ async fn warn_on_stalled_lanes(state: &AppState) {
         // only the order moved.
         let blocked = lane_block_reason(&session).await;
         let bucket = crate::log_dedupe::hour_bucket(now);
-        let cond = blocked.unwrap_or("busy-past-deadline");
+        let cond = blocked.unwrap_or(if crate::api::prompt_block::blocked_now(&session, now) {
+            "permission-prompt"
+        } else {
+            "busy-past-deadline"
+        });
         // TWO REASONS, AND THEY ARE NOT THE SAME TENSE (AF-188).
         //
         // `reason` is the last skip the delivery loop RECORDED for this lane —

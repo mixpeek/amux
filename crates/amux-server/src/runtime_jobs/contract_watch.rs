@@ -14,6 +14,7 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
         let state = state.clone();
         async move {
             crate::api::contract::resume_orphaned_verifications(&state).await;
+            crate::api::prompt_block::alert_due(&state).await;
             crate::api::contract::watch_deploys(&state).await;
             crate::api::contract::run_reviews(&state).await;
         }
