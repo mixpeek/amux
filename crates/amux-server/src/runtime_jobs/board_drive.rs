@@ -1724,6 +1724,108 @@ const DELIVERED_MESSAGE_CARD_SQL: &str = "SELECT 1 FROM cmd_history h \
 /// [`DISPATCHABLE_WHERE`]. Per-card refusals (junk shells, structured deps) still
 /// happen inside the loop and surface as `all-candidates-refused` — an honest
 /// difference, since those are judgments about a card, not queue membership.
+// ISOLATED LANES' CARDS GO TO A LANE THAT CAN WORK THEM (Ethan, 2026-10-07:
+// "when a worker is isolated it logs tasks on the board ... but these task
+// items never get picked up because its isolated"). amux-helper filed AH-395
+// to AH-399 for itself; dispatch skips an isolated lane before any claim
+// (AMUX-4542) and nothing else reads its board, so a card it did not finish in
+// the same turn waited forever. Its todo and backlog cards untouched for
+// AMUX_ISOLATED_HANDOFF_AFTER_H hours (default 2) move to the lane named by
+// AMUX_ISOLATED_HANDOFF, else the lane's AMUX_CONTRACT_HUB; the target must be
+// a live, non-isolated lane. Cards the lane is working (doing/review) stay.
+// With no target the cards stay and the gap is logged
+// (verdict=isolated_cards_unrouted), so it is visible where sweeps look.
+pub(crate) fn isolated_handoff_target(
+    lane: &str,
+    configured: Option<String>,
+    lanes: &[String],
+    is_isolated: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let t = configured?.trim().to_string();
+    (!t.is_empty() && t != lane && lanes.iter().any(|l| l == &t) && !is_isolated(&t)).then_some(t)
+}
+
+pub(crate) fn hand_off_isolated_cards(
+    conn: &Connection,
+    lane: &str,
+    target: &str,
+    untouched_before: f64,
+    now: f64,
+    hhmm: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let ids: Vec<String> = {
+        let mut st = conn.prepare(
+            "SELECT id FROM issues WHERE session=?1 AND status IN ('todo','backlog') \
+             AND owner_type='agent' AND deleted IS NULL AND COALESCE(archived,0)=0 \
+             AND COALESCE(type,'') NOT IN ('tripwire','watch','epic') AND updated < ?2 \
+             AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=issues.id \
+                             AND lower(t.tag) LIKE 'needs:you%') ORDER BY id",
+        )?;
+        let v = st.query_map(rusqlite::params![lane, untouched_before], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        v
+    };
+    let note = format!(
+        "handed off from isolated lane {lane} to {target}: nothing dispatches an isolated lane's cards (AMUX_ISOLATED_HANDOFF)"
+    );
+    for id in &ids {
+        let old: Option<String> = conn
+            .query_row("SELECT log FROM issues WHERE id=?1", [id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        conn.execute(
+            "UPDATE issues SET session=?1, log=?2, updated=?3 WHERE id=?4 AND session=?5",
+            rusqlite::params![target, bs::append_log(old.as_deref(), hhmm, &note), now, id, lane],
+        )?;
+    }
+    Ok(ids)
+}
+
+async fn hand_off_isolated<F: Fleet>(state: &AppState, fleet: &F, lane: &str) {
+    let home = crate::config::amux_home();
+    let configured = crate::api::contract::lane_setting(&home, lane, "AMUX_ISOLATED_HANDOFF")
+        .or_else(|| crate::api::contract::lane_setting(&home, lane, "AMUX_CONTRACT_HUB"));
+    let after_h = crate::api::contract::lane_setting(&home, lane, "AMUX_ISOLATED_HANDOFF_AFTER_H")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|h| *h >= 0.0)
+        .unwrap_or(2.0);
+    let now = crate::config::now_f64();
+    let cutoff = now - after_h * 3600.0;
+    let Some(target) = isolated_handoff_target(lane, configured.clone(), &fleet.lanes(), |l| fleet.is_isolated(l)) else {
+        let (l, c) = (lane.to_string(), cutoff);
+        let waiting: i64 = state.store.read_async(move |conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM issues WHERE session=?1 AND status IN ('todo','backlog') AND owner_type='agent' \
+                 AND deleted IS NULL AND COALESCE(archived,0)=0 AND updated < ?2",
+                rusqlite::params![l, c], |r| r.get(0))?)
+        }).await.unwrap_or(0);
+        if waiting > 0 {
+            tracing::warn!(target: "amux::board_drive", session = lane, waiting, configured = ?configured,
+                measured = true, n_considered = waiting, verdict = "isolated_cards_unrouted",
+                "board_drive: an isolated lane holds cards nothing will dispatch; set AMUX_ISOLATED_HANDOFF to a lane that can work them");
+        }
+        return;
+    };
+    let hhmm = chrono::Utc::now().format("%H:%M").to_string();
+    let (l, t) = (lane.to_string(), target.clone());
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = out.clone();
+    let moved = state.store.write_async(move |conn| {
+        let ids = hand_off_isolated_cards(conn, &l, &t, cutoff, now, &hhmm)?;
+        let applied = !ids.is_empty();
+        if let Ok(mut v) = sink.lock() {
+            *v = ids;
+        }
+        Ok(crate::db::WriteOutcome { applied, events: vec![] })
+    }).await;
+    let ids = out.lock().map(|v| v.clone()).unwrap_or_default();
+    if moved.is_ok() && !ids.is_empty() {
+        tracing::info!(target: "amux::board_drive", session = lane, to = %target, cards = ?ids,
+            measured = true, n_considered = ids.len(), verdict = "isolated_cards_handed_off",
+            "board_drive: an isolated lane's untouched cards moved to a lane that can work them");
+    }
+}
+
 fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
     let fresh_cut = pickup_fresh_cut(now);
     let reclaim_cut = now - reclaim_cooldown_s();
@@ -7440,6 +7542,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         tracing::info!(target: "amux::board_drive", session = lane, measured = true, n_considered = 1,
             verdict = "isolated_not_claimed",
             "board_drive: isolated lane skipped before any claim; delivery would refuse amux automation");
+        hand_off_isolated(state, fleet, lane).await;
         return LaneTrace::skip(
             lane,
             "isolated",
@@ -11347,6 +11450,46 @@ mod tests {
             ended.delivered.lock().unwrap().iter().any(|(_, t)| t.contains("BG")),
             "the To Do card was not delivered: {trace:?}"
         );
+    }
+
+    /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a
+    /// lane that can work them; its in-progress, fresh, needs-you and watch
+    /// cards stay, and each moved card says so in its log.
+    #[test]
+    fn an_isolated_lanes_untouched_cards_move_to_its_handoff_lane() {
+        let (_dir, _state, store) = drive_state();
+        for (id, status, kind) in [("T", "todo", "code"), ("B", "backlog", "code"), ("D", "doing", "code"),
+            ("W", "todo", "watch"), ("N", "todo", "code"), ("F", "todo", "code"), ("X", "done", "code")] {
+            drive_card(&store, id, status, "agent", kind);
+        }
+        let now = now_f64();
+        let moved = store.write(move |conn| {
+            conn.execute("UPDATE issues SET updated=?1 WHERE id<>'F'", [now - 3.0 * 3600.0])?;
+            conn.execute("INSERT INTO issue_tags (issue_id, tag) VALUES ('N', 'needs:you')", [])?;
+            let ids = hand_off_isolated_cards(conn, "lane", "worker", now - 2.0 * 3600.0, now, "09:00")?;
+            assert_eq!(ids, vec!["B".to_string(), "T".to_string()]);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        });
+        assert!(moved.is_ok());
+        let rows: Vec<(String, String, String)> = store.read().unwrap()
+            .prepare("SELECT id, session, COALESCE(log,'') FROM issues ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().flatten().collect();
+        for (id, session, log) in rows {
+            let want = if id == "T" || id == "B" { "worker" } else { "lane" };
+            assert_eq!(session, want, "{id}");
+            assert_eq!(log.contains("handed off from isolated lane lane to worker"), want == "worker", "{id}: {log}");
+        }
+    }
+
+    #[test]
+    fn the_handoff_target_must_be_a_live_lane_that_is_not_isolated() {
+        let lanes = vec!["iso".to_string(), "amux".to_string(), "other-iso".to_string()];
+        let iso = |l: &str| l.ends_with("iso");
+        assert_eq!(isolated_handoff_target("iso", Some("amux".into()), &lanes, iso), Some("amux".into()));
+        assert_eq!(isolated_handoff_target("iso", None, &lanes, iso), None);
+        assert_eq!(isolated_handoff_target("iso", Some("other-iso".into()), &lanes, iso), None, "isolated target");
+        assert_eq!(isolated_handoff_target("iso", Some("gone".into()), &lanes, iso), None, "not a lane");
+        assert_eq!(isolated_handoff_target("iso", Some("iso".into()), &lanes, iso), None, "itself");
     }
 
     #[tokio::test]
