@@ -665,7 +665,17 @@ async fn put_file(req: Request) -> Response {
         return j(403, json!({"error": "access denied"}));
     }
     let ext = py_suffix(&p);
-    if !ext.is_empty() && !WRITABLE_EXTS.contains(&ext.as_str()) {
+    // A spreadsheet saved from the viewer arrives as bytes (content_base64);
+    // only formats on BINARY_WRITABLE_EXTS may be written that way.
+    let binary = body.get("content_base64").and_then(|v| v.as_str());
+    if binary.is_some() {
+        if !BINARY_WRITABLE_EXTS.contains(&ext.as_str()) {
+            return j(
+                400,
+                json!({"error": format!("binary content not writable for: {ext}")}),
+            );
+        }
+    } else if !ext.is_empty() && !WRITABLE_EXTS.contains(&ext.as_str()) {
         return j(
             400,
             json!({"error": format!("file type not writable: {ext}")}),
@@ -684,11 +694,62 @@ async fn put_file(req: Request) -> Response {
             return j(500, json!({"error": e.to_string()}));
         }
     }
-    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    match std::fs::write(&p, content) {
-        Ok(()) => j(200, json!({"ok": true, "path": pystr(&p)})),
+    // A save based on an older copy must not overwrite a newer one. The
+    // viewer sends the ETag it loaded the file with (the same mtime+size ETag
+    // GET /api/file/raw serves); a worker that rewrote the file since gets its
+    // version kept and the viewer a 409 to reload from.
+    if let Some(want) = body.get("expected_etag").and_then(|v| v.as_str()) {
+        if let Some(have) = current_etag(&p) {
+            if have != want {
+                tracing::warn!(target: "amux::file", path = %pystr(&p), expected = want, current = %have,
+                    measured = true, n_considered = 1, verdict = "file_save_conflict",
+                    "file save refused: the file changed on disk since it was opened");
+                return j(
+                    409,
+                    json!({"error": "file changed on disk since it was opened; reload to see the current version",
+                           "code": "file_changed", "current_etag": have}),
+                );
+            }
+        }
+    }
+    let written = match binary {
+        Some(b64) => match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+            Ok(bytes) => write_atomic(&p, &bytes),
+            Err(e) => return j(400, json!({"error": format!("content_base64 is not base64: {e}")})),
+        },
+        None => {
+            let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            std::fs::write(&p, content)
+        }
+    };
+    match written {
+        Ok(()) => j(
+            200,
+            json!({"ok": true, "path": pystr(&p), "etag": current_etag(&p).unwrap_or_default()}),
+        ),
         Err(e) => j(500, json!({"error": e.to_string()})),
     }
+}
+
+/// Formats the viewer may write as bytes. Kept separate from WRITABLE_EXTS:
+/// those are text the editor round-trips as a string.
+const BINARY_WRITABLE_EXTS: &[&str] = &[".xlsx"];
+
+/// The same ETag GET /api/file/raw serves for this path, or None when absent.
+fn current_etag(p: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(p).ok().filter(|m| m.is_file())?;
+    Some(format!("\"{}-{}\"", mtime_secs(&meta), meta.len()))
+}
+
+/// Write via a sibling temp file and rename, so a reader (or a worker opening
+/// the workbook) never sees a half-written spreadsheet.
+fn write_atomic(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let tmp = p.with_file_name(format!(".{name}.amux-save-{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, p).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2665,6 +2726,51 @@ pub(crate) mod tests {
     }
 
     // -- PUT /api/file ------------------------------------------------------
+
+    /// The spreadsheet viewer's save: bytes for .xlsx only, refused when the
+    /// file changed on disk since it was opened, never half-written.
+    #[tokio::test]
+    async fn put_file_writes_xlsx_bytes_and_refuses_a_stale_save() {
+        use base64::Engine as _;
+        let app = app();
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("book.xlsx");
+        std::fs::write(&target, b"PK-original").unwrap();
+        let put = |body: Value| {
+            HttpRequest::builder().method("PUT").uri("/api/file")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string())).unwrap()
+        };
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let opened = super::current_etag(&target).unwrap();
+
+        // A peer rewrites the file after the viewer opened it.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&target, b"PK-written-by-a-worker").unwrap();
+        let (status, _, body) = send(&app, put(json!({"path": target.to_str().unwrap(),
+            "content_base64": b64(b"PK-from-viewer"), "expected_etag": opened}))).await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "file_changed");
+        assert_eq!(std::fs::read(&target).unwrap(), b"PK-written-by-a-worker", "the newer version is kept");
+
+        // Saving against the CURRENT etag writes the exact bytes.
+        let current = v["current_etag"].as_str().unwrap().to_string();
+        let (status, _, body) = send(&app, put(json!({"path": target.to_str().unwrap(),
+            "content_base64": b64(b"PK-from-viewer"), "expected_etag": current}))).await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"PK-from-viewer");
+        assert_eq!(v["etag"].as_str().unwrap(), super::current_etag(&target).unwrap());
+        assert!(std::fs::read_dir(dir.path()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains("amux-save")),
+            "no temp file is left behind");
+
+        // Binary content is refused for any other type, even a writable one.
+        let (status, _, body) = send(&app, put(json!({"path": dir.path().join("x.md").to_str().unwrap(),
+            "content_base64": b64(b"hi")}))).await;
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    }
 
     #[tokio::test]
     async fn put_file_writes_texts_and_refuses_vectors() {

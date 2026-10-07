@@ -7953,3 +7953,14 @@ body.light .bd-answer-head { color: #bc4c00; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Spreadsheet editor (Univer). The grid owns the whole body: no padding, no
+   monospace/pre-wrap inheritance, and an explicit height chain so the canvas
+   can size itself on desktop and on a phone. */
+.file-overlay-body.file-xlsx-editor { padding: 0; overflow: hidden; white-space: normal; font-family: inherit; display: flex; flex-direction: column; background: #fff; }
+.file-xlsx-editor .xlsx-univer { flex: 1; min-height: 0; height: 100%; width: 100%; }
+#file-save-btn.dirty { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 600px) {
+  .file-overlay-body.file-xlsx-editor { border-radius: 0; border-left: 0; border-right: 0; }
+  #file-save-btn { min-height: 44px; }
+}

@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1258';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1259';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -24617,6 +24617,479 @@ function _mdSearchHighlightCurrent() {
 // Spreadsheet preview (AMUX-3343): fetch the server-parsed sheets and render
 // them as tables in the file overlay, with a tab per sheet, instead of forcing a
 // download. Server-side parsing (calamine) keeps the client light for mobile.
+// ---------------------------------------------------------------------------
+// Spreadsheet editor: Univer (Apache-2.0) grid + ExcelJS (MIT) file I/O.
+//
+// .xlsx/.xlsm open in an Excel-like editor: formula bar, ribbon, number
+// formats, styles, merges, freeze panes, formulas, sheet tabs, touch UI on
+// phones. Univer's own xlsx import/export is a paid Pro feature, so the file
+// is parsed and written with ExcelJS and converted here in both directions.
+//
+// SAVE PATCHES THE ORIGINAL WORKBOOK. Only cells, column widths, row heights,
+// merges, freeze panes and sheets that changed since load are written back
+// onto the ExcelJS workbook that was parsed from the file, so anything this
+// converter does not model (themes, defined names, print setup, comments)
+// survives a save untouched.
+//
+// Loaded on first use (~3.3 MB compressed from unpkg, then cached). If it
+// cannot load, the read-only SheetJS / server-parsed viewer is used instead.
+// ---------------------------------------------------------------------------
+const _UNIVER_V = '1.0.3';
+const _UNIVER_PKGS = ['themes', 'protocol', 'core', 'network', 'rpc', 'design', 'engine-render', 'engine-formula',
+  'drawing', 'telemetry', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-formula-ui',
+  'sheets-numfmt', 'sheets-numfmt-ui'];
+const _UNIVER_FACADES = ['core', 'engine-formula', 'ui', 'docs', 'docs-ui', 'sheets', 'sheets-ui', 'sheets-formula', 'sheets-numfmt'];
+const _UNIVER_LOCALES = ['design', 'ui', 'sheets', 'sheets-ui', 'docs-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
+const _UNIVER_CSS = ['design', 'ui', 'docs-ui', 'sheets-ui', 'sheets-formula-ui', 'sheets-numfmt-ui'];
+let _univerLoading = null;
+let _xlsxEd = null;   // { univer, api, wb (ExcelJS), initial, path, etag, dirty, sub }
+
+function _loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector('script[data-src="' + src + '"]')) return resolve();
+    const s = document.createElement('script');
+    s.src = src; s.crossOrigin = 'anonymous'; s.dataset.src = src; s.async = false;
+    s.onload = () => resolve(); s.onerror = () => reject(new Error('could not load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+function _univerShimReact() {
+  const g = window;
+  if (g.ReactDOM && !g.ReactDOM.createRoot) g.ReactDOM.createRoot = c => ({ render: e => g.ReactDOM.render(e, c) });
+  const React = g.React;
+  if (React && (!React.jsx || !React.jsxs)) {
+    const T = Symbol.for('react.element'), RS = { key: 1, ref: 1, __self: 1, __source: 1 };
+    const owner = React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentOwner;
+    const mk = (type, config, maybeKey) => {
+      const props = {}; let key = maybeKey !== undefined ? '' + maybeKey : null, ref = null;
+      if (config.key !== undefined) key = '' + config.key;
+      if (config.ref !== undefined) ref = config.ref;
+      for (const n in config) if (Object.prototype.hasOwnProperty.call(config, n) && !RS[n]) props[n] = config[n];
+      if (type && type.defaultProps) for (const n in type.defaultProps) if (props[n] === undefined) props[n] = type.defaultProps[n];
+      return { $$typeof: T, type, key, ref, props, _owner: owner.current };
+    };
+    React.jsx = mk; React.jsxs = mk;
+  }
+}
+
+function _loadUniver() {
+  if (_univerLoading) return _univerLoading;
+  const U = 'https://unpkg.com/';
+  const v = p => (p === 'themes' || p === 'protocol') ? '' : '@' + _UNIVER_V;
+  _univerLoading = (async () => {
+    for (const p of _UNIVER_CSS) {
+      const href = U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/index.css';
+      if (!document.querySelector('link[href="' + href + '"]')) {
+        const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.crossOrigin = 'anonymous';
+        document.head.appendChild(l);
+      }
+    }
+    await _loadScriptOnce(U + 'react@18.3.1/umd/react.production.min.js');
+    await _loadScriptOnce(U + 'react-dom@18.3.1/umd/react-dom.production.min.js');
+    _univerShimReact();
+    const rest = [U + 'rxjs@7.8.1/dist/bundles/rxjs.umd.min.js', U + 'echarts@5.6.0/dist/echarts.min.js',
+      U + '@wendellhu/redi@1.1.2/dist/umd/index.js', U + '@wendellhu/redi@1.1.2/dist/umd/react-bindings/index.js',
+      ..._UNIVER_PKGS.map(p => U + '@univerjs/' + p + v(p) + '/lib/umd/index.js'),
+      ..._UNIVER_FACADES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/facade.js'),
+      ..._UNIVER_LOCALES.map(p => U + '@univerjs/' + p + '@' + _UNIVER_V + '/lib/umd/locale/en-US.js'),
+      U + 'exceljs@4.4.0/dist/exceljs.min.js'];
+    // Ordered, but fetched in parallel: async=false keeps execution order.
+    await Promise.all(rest.map(_loadScriptOnce));
+    if (!window.UniverCore || !window.ExcelJS) throw new Error('spreadsheet editor did not initialise');
+  })();
+  _univerLoading.catch(() => { _univerLoading = null; });
+  return _univerLoading;
+}
+
+// -- ExcelJS -> Univer -------------------------------------------------------
+const _XL_EPOCH = Date.UTC(1899, 11, 30);
+const _XL_BORDER = { thin: 1, hair: 2, dotted: 3, dashed: 4, dashDot: 5, dashDotDot: 6, double: 7, medium: 8,
+  mediumDashed: 9, mediumDashDot: 10, mediumDashDotDot: 11, slantDashDot: 12, thick: 13 };
+const _XL_BORDER_INV = Object.fromEntries(Object.entries(_XL_BORDER).map(([k, n]) => [n, k]));
+const _XL_H = { left: 1, center: 2, right: 3, justify: 4 }, _XL_H_INV = { 1: 'left', 2: 'center', 3: 'right', 4: 'justify' };
+const _XL_V = { top: 1, middle: 2, bottom: 3 }, _XL_V_INV = { 1: 'top', 2: 'middle', 3: 'bottom' };
+
+function _xlHex(c) { return c && c.argb ? '#' + String(c.argb).slice(-6) : null; }
+
+function _xlStyleToUniver(cell) {
+  const s = {}, f = cell.font || {};
+  if (f.bold) s.bl = 1;
+  if (f.italic) s.it = 1;
+  if (f.underline) s.ul = { s: 1 };
+  if (f.strike) s.st = { s: 1 };
+  if (f.size) s.fs = f.size;
+  if (f.name) s.ff = f.name;
+  const fc = _xlHex(f.color); if (fc) s.cl = { rgb: fc };
+  const fill = cell.fill;
+  if (fill && fill.type === 'pattern' && fill.pattern && fill.pattern !== 'none') { const bg = _xlHex(fill.fgColor); if (bg) s.bg = { rgb: bg }; }
+  const a = cell.alignment || {};
+  if (_XL_H[a.horizontal]) s.ht = _XL_H[a.horizontal];
+  if (_XL_V[a.vertical]) s.vt = _XL_V[a.vertical];
+  if (a.wrapText) s.tb = 3;
+  const b = cell.border || {}, bd = {};
+  for (const [k, u] of [['top', 't'], ['bottom', 'b'], ['left', 'l'], ['right', 'r']]) {
+    if (b[k] && b[k].style) bd[u] = { s: _XL_BORDER[b[k].style] || 1, cl: { rgb: _xlHex(b[k].color) || '#000000' } };
+  }
+  if (Object.keys(bd).length) s.bd = bd;
+  if (cell.numFmt && cell.numFmt !== 'General') s.n = { pattern: cell.numFmt };
+  return s;
+}
+
+function _xlValueToUniver(v, out) {
+  if (v && typeof v === 'object' && !(v instanceof Date)) {
+    if (v.formula !== undefined || v.sharedFormula !== undefined) {
+      if (v.formula) out.f = '=' + v.formula;
+      v = v.result;
+      if (v && typeof v === 'object' && v.error) v = v.error;
+    } else if (v.richText) v = v.richText.map(t => t.text).join('');
+    else if (v.text !== undefined) v = v.text;
+    else if (v.error) v = v.error;
+  }
+  if (v instanceof Date) { out.v = (v.getTime() - _XL_EPOCH) / 864e5; out.t = 2; }
+  else if (typeof v === 'number') { out.v = v; out.t = 2; }
+  else if (typeof v === 'boolean') { out.v = v ? 1 : 0; out.t = 3; }
+  else if (v != null && v !== '') { out.v = String(v); out.t = 1; }
+}
+
+// THE WORKBOOK'S DEFAULT FONT. A cell with no style index inherits font 0 of
+// styles.xml, and ExcelJS exposes neither: it reports no font for such a cell
+// and writes font 0 back as Calibri 11. Measured on a real file (Arial 8
+// default): 1,100 of 3,424 cells changed font on a save that edited one cell.
+// So read font 0 straight from the zip with the browser's own inflater.
+async function _xlZipEntry(buf, name) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) return null;
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) return null;
+    const method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true);
+    const nlen = dv.getUint16(off + 28, true), xlen = dv.getUint16(off + 30, true), clen = dv.getUint16(off + 32, true);
+    const local = dv.getUint32(off + 42, true);
+    const fname = new TextDecoder().decode(u8.subarray(off + 46, off + 46 + nlen));
+    if (fname === name) {
+      const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+      const data = u8.subarray(start, start + csize);
+      if (method === 0) return new TextDecoder().decode(data);
+      if (method !== 8 || typeof DecompressionStream === 'undefined') return null;
+      const out = new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')));
+      return await out.text();
+    }
+    off += 46 + nlen + xlen + clen;
+  }
+  return null;
+}
+
+async function _xlDefaultFont(buf) {
+  try {
+    const xml = await _xlZipEntry(buf, 'xl/styles.xml');
+    if (!xml) return null;
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const f = doc.getElementsByTagName('fonts')[0];
+    const f0 = f && f.getElementsByTagName('font')[0];
+    if (!f0) return null;
+    const val = tag => { const e = f0.getElementsByTagName(tag)[0]; return e ? e.getAttribute('val') : null; };
+    const font = {};
+    if (val('name')) font.name = val('name');
+    if (val('sz')) font.size = Number(val('sz'));
+    if (f0.getElementsByTagName('b')[0]) font.bold = true;
+    if (f0.getElementsByTagName('i')[0]) font.italic = true;
+    const c = f0.getElementsByTagName('color')[0];
+    if (c && c.getAttribute('rgb')) font.color = { argb: c.getAttribute('rgb') };
+    return Object.keys(font).length ? font : null;
+  } catch (e) { return null; }
+}
+
+function _xlToUniver(wb, defaultFont) {
+  const styles = {}, styleIds = new Map(), sheets = {}, order = [];
+  let next = 0;
+  wb.eachSheet((ws, sid) => {
+    const id = 'sheet-' + sid; order.push(id);
+    const cellData = {}, rowData = {}, columnData = {};
+    ws.eachRow({ includeEmpty: true }, (row, rn) => {
+      if (row.height || row.hidden) rowData[rn - 1] = { ...(row.height ? { h: Math.round(row.height * 4 / 3) } : {}), ...(row.hidden ? { hd: 1 } : {}) };
+      row.eachCell({ includeEmpty: false }, (cell, cn) => {
+        if (cell.isMerged && cell.master !== cell) return;
+        const out = {};
+        _xlValueToUniver(cell.value, out);
+        const st = _xlStyleToUniver(cell);
+        if (defaultFont) {
+          if (!st.ff && defaultFont.name) st.ff = defaultFont.name;
+          if (!st.fs && defaultFont.size) st.fs = defaultFont.size;
+        }
+        const key = JSON.stringify(st);
+        if (key !== '{}') {
+          if (!styleIds.has(key)) { const k = 'x' + (next++); styleIds.set(key, k); styles[k] = st; }
+          out.s = styleIds.get(key);
+        }
+        if (out.v !== undefined || out.f || out.s) (cellData[rn - 1] = cellData[rn - 1] || {})[cn - 1] = out;
+      });
+    });
+    (ws.columns || []).forEach((col, i) => {
+      if (!col) return;
+      const c = {};
+      if (col.width) c.w = Math.round(col.width * 7 + 5);
+      if (col.hidden) c.hd = 1;
+      if (Object.keys(c).length) columnData[i] = c;
+    });
+    const mergeData = Object.keys(ws._merges || {}).map(k => {
+      const m = ws._merges[k].model || ws._merges[k];
+      return { startRow: m.top - 1, startColumn: m.left - 1, endRow: m.bottom - 1, endColumn: m.right - 1 };
+    });
+    const view = (ws.views || [])[0] || {};
+    const frozen = view.state === 'frozen' && (view.xSplit || view.ySplit);
+    const props = ws.properties || {};
+    sheets[id] = {
+      id, name: ws.name, hidden: ws.state === 'hidden' || ws.state === 'veryHidden' ? 1 : 0,
+      rowCount: Math.max(ws.rowCount + 100, 200), columnCount: Math.max(ws.columnCount + 10, 26),
+      cellData, rowData, columnData, mergeData,
+      freeze: frozen ? { xSplit: view.xSplit || 0, ySplit: view.ySplit || 0, startRow: view.ySplit || -1, startColumn: view.xSplit || -1 }
+                     : { xSplit: 0, ySplit: 0, startRow: -1, startColumn: -1 },
+      defaultColumnWidth: props.defaultColWidth ? Math.round(props.defaultColWidth * 7 + 5) : 64,
+      defaultRowHeight: props.defaultRowHeight ? Math.round(props.defaultRowHeight * 4 / 3) : 20,
+      showGridlines: view.showGridLines === false ? 0 : 1,
+      defaultStyle: defaultFont ? { ...(defaultFont.name ? { ff: defaultFont.name } : {}), ...(defaultFont.size ? { fs: defaultFont.size } : {}) } : undefined,
+    };
+  });
+  const active = Math.min(((wb.views || [])[0] || {}).activeTab || 0, order.length - 1);
+  return { data: { id: 'wb', name: 'workbook', appVersion: '1.0.0', locale: 'enUS', styles, sheetOrder: order, sheets }, active };
+}
+
+// -- Univer -> ExcelJS (patch only what changed) -----------------------------
+function _uvStyle(snap, s) { return !s ? {} : (typeof s === 'string' ? (snap.styles || {})[s] || {} : s); }
+
+function _uvApplyStyle(cell, st) {
+  const font = { ...(cell.font || {}) };
+  font.bold = !!st.bl; font.italic = !!st.it;
+  font.underline = !!(st.ul && st.ul.s); font.strike = !!(st.st && st.st.s);
+  if (st.fs) font.size = st.fs;
+  if (st.ff) font.name = st.ff;
+  if (st.cl && st.cl.rgb) font.color = { argb: 'FF' + st.cl.rgb.replace('#', '').toUpperCase() }; else delete font.color;
+  cell.font = font;
+  if (st.bg && st.bg.rgb) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + st.bg.rgb.replace('#', '').toUpperCase() } };
+  else if (cell.fill && cell.fill.type === 'pattern' && cell.fill.pattern !== 'none') cell.fill = { type: 'pattern', pattern: 'none' };
+  const al = { ...(cell.alignment || {}) };
+  if (st.ht) al.horizontal = _XL_H_INV[st.ht]; else delete al.horizontal;
+  if (st.vt) al.vertical = _XL_V_INV[st.vt]; else delete al.vertical;
+  al.wrapText = st.tb === 3;
+  cell.alignment = al;
+  const border = {};
+  for (const [u, k] of [['t', 'top'], ['b', 'bottom'], ['l', 'left'], ['r', 'right']]) {
+    const e = st.bd && st.bd[u];
+    if (e) border[k] = { style: _XL_BORDER_INV[e.s] || 'thin', color: { argb: 'FF' + ((e.cl && e.cl.rgb) || '#000000').replace('#', '').toUpperCase() } };
+  }
+  cell.border = border;
+  cell.numFmt = (st.n && st.n.pattern) || 'General';
+}
+
+function _uvValue(c) {
+  if (!c) return null;
+  if (c.f) {
+    const result = c.t === 2 ? Number(c.v) : (c.t === 3 ? !!c.v : (c.v == null ? undefined : String(c.v)));
+    return { formula: String(c.f).replace(/^=/, ''), result };
+  }
+  if (c.v == null || c.v === '') return null;
+  if (c.t === 2) return Number(c.v);
+  if (c.t === 3) return !!c.v;
+  if (c.t === 1 || c.t === 4) return String(c.v);
+  const n = Number(c.v);
+  return typeof c.v === 'number' || (String(c.v).trim() !== '' && !isNaN(n) && /^-?[\d.]+(e[-+]?\d+)?$/i.test(String(c.v).trim())) ? n : String(c.v);
+}
+
+function _uvPatchWorkbook(wb, before, after) {
+  const changed = { cells: 0, sheets: 0 };
+  const byId = {};
+  wb.eachSheet((ws, sid) => { byId['sheet-' + sid] = ws; });
+  // Sheets removed in the editor.
+  for (const id of Object.keys(before.sheets)) {
+    if (!after.sheets[id] && byId[id]) { wb.removeWorksheet(byId[id].id); delete byId[id]; changed.sheets++; }
+  }
+  for (const id of after.sheetOrder) {
+    const a = after.sheets[id], b = before.sheets[id] || { cellData: {}, rowData: {}, columnData: {}, mergeData: [] };
+    let ws = byId[id];
+    if (!ws) { ws = wb.addWorksheet(a.name); byId[id] = ws; changed.sheets++; }
+    if (ws.name !== a.name) { ws.name = a.name; changed.sheets++; }
+    // Cells: the union of both snapshots, written only where they differ.
+    const rows = new Set([...Object.keys(a.cellData || {}), ...Object.keys(b.cellData || {})]);
+    for (const r of rows) {
+      const ar = (a.cellData || {})[r] || {}, br = (b.cellData || {})[r] || {};
+      for (const c of new Set([...Object.keys(ar), ...Object.keys(br)])) {
+        const ac = ar[c], bc = br[c];
+        const sa = _uvStyle(after, ac && ac.s), sb = _uvStyle(before, bc && bc.s);
+        const va = ac ? { v: ac.v, t: ac.t, f: ac.f } : {}, vb = bc ? { v: bc.v, t: bc.t, f: bc.f } : {};
+        const valueChanged = JSON.stringify(va) !== JSON.stringify(vb), styleChanged = JSON.stringify(sa) !== JSON.stringify(sb);
+        if (!valueChanged && !styleChanged) continue;
+        const cell = ws.getCell(+r + 1, +c + 1);
+        if (valueChanged) cell.value = _uvValue(ac);
+        if (styleChanged) _uvApplyStyle(cell, sa);
+        changed.cells++;
+      }
+    }
+    // Column widths / hidden, row heights / hidden.
+    const cols = new Set([...Object.keys(a.columnData || {}), ...Object.keys(b.columnData || {})]);
+    for (const c of cols) {
+      const ac = (a.columnData || {})[c] || {}, bc = (b.columnData || {})[c] || {};
+      if (JSON.stringify(ac) === JSON.stringify(bc)) continue;
+      const col = ws.getColumn(+c + 1);
+      if (ac.w) col.width = Math.max(0, Math.round((ac.w - 5) / 7 * 100) / 100);
+      col.hidden = !!ac.hd;
+    }
+    const rowKeys = new Set([...Object.keys(a.rowData || {}), ...Object.keys(b.rowData || {})]);
+    for (const r of rowKeys) {
+      const ar = (a.rowData || {})[r] || {}, br = (b.rowData || {})[r] || {};
+      if (JSON.stringify(ar) === JSON.stringify(br)) continue;
+      const row = ws.getRow(+r + 1);
+      if (ar.h) row.height = Math.round(ar.h * 3 / 4 * 100) / 100;
+      row.hidden = !!ar.hd;
+    }
+    // Merges.
+    const mkey = m => [m.startRow, m.startColumn, m.endRow, m.endColumn].join(',');
+    const ma = new Set((a.mergeData || []).map(mkey)), mb = new Set((b.mergeData || []).map(mkey));
+    for (const k of mb) if (!ma.has(k)) { const [r0, c0, r1, c1] = k.split(',').map(Number); ws.unMergeCells(r0 + 1, c0 + 1, r1 + 1, c1 + 1); }
+    for (const k of ma) if (!mb.has(k)) { const [r0, c0, r1, c1] = k.split(',').map(Number); ws.mergeCells(r0 + 1, c0 + 1, r1 + 1, c1 + 1); }
+    // Freeze panes.
+    if (JSON.stringify(a.freeze || {}) !== JSON.stringify(b.freeze || {})) {
+      const f = a.freeze || {};
+      ws.views = (f.xSplit || f.ySplit) ? [{ state: 'frozen', xSplit: f.xSplit || 0, ySplit: f.ySplit || 0 }] : [{}];
+    }
+  }
+  // Sheet order and the active tab.
+  const ids = after.sheetOrder.filter(id => byId[id]);
+  ids.forEach((id, i) => { byId[id].orderNo = i; });
+  const activeId = after.__activeId;
+  const activeIdx = activeId ? Math.max(0, ids.indexOf(activeId)) : 0;
+  wb.views = [{ ...((wb.views || [])[0] || {}), activeTab: activeIdx, firstSheet: 0 }];
+  return changed;
+}
+
+// -- Open / save / close ------------------------------------------------------
+function _xlsxEditorTeardown() {
+  if (!_xlsxEd) return;
+  try { _xlsxEd.sub && _xlsxEd.sub.dispose && _xlsxEd.sub.dispose(); } catch (e) {}
+  try { _xlsxEd.univer.dispose(); } catch (e) {}
+  _xlsxEd = null;
+  const btn = document.getElementById('file-save-btn');
+  if (btn) { btn.style.display = 'none'; btn.textContent = 'Save'; btn.classList.remove('saving', 'dirty'); }
+}
+
+function _xlsxSetDirty(d) {
+  if (!_xlsxEd) return;
+  _xlsxEd.dirty = d;
+  const btn = document.getElementById('file-save-btn');
+  if (btn) { btn.classList.toggle('dirty', d); if (!btn.classList.contains('saving')) btn.textContent = d ? 'Save •' : 'Save'; }
+}
+
+async function _openXlsxEditor(path, body) {
+  await _loadUniver();
+  const res = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const etag = res.headers.get('etag') || '';
+  const raw = await res.arrayBuffer();
+  const defaultFont = await _xlDefaultFont(raw);
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(raw);
+  const { data, active } = _xlToUniver(wb, defaultFont);
+  if (!data.sheetOrder.length) { body.innerHTML = '<div class="xlsx-empty">No sheets in this workbook.</div>'; return; }
+  body.className = 'file-overlay-body file-xlsx-editor';
+  body.innerHTML = '<div id="xlsx-univer" class="xlsx-univer"></div>';
+  const { Univer, LocaleType, mergeLocales, UniverInstanceType } = UniverCore;
+  const univer = new Univer({
+    theme: (window.UniverThemes && UniverThemes.defaultTheme) || undefined,
+    locale: LocaleType.EN_US,
+    locales: { [LocaleType.EN_US]: mergeLocales(UniverDesignEnUS, UniverUiEnUS, UniverSheetsEnUS, UniverSheetsUiEnUS,
+      UniverDocsUiEnUS, UniverSheetsFormulaUiEnUS, UniverSheetsNumfmtUiEnUS) },
+  });
+  univer.registerPlugin(UniverEngineRender.UniverRenderEnginePlugin);
+  univer.registerPlugin(UniverEngineFormula.UniverFormulaEnginePlugin);
+  univer.registerPlugin(UniverUi.UniverUIPlugin, { container: 'xlsx-univer', footer: true, header: true });
+  univer.registerPlugin(UniverDocs.UniverDocsPlugin);
+  univer.registerPlugin(UniverDocsUi.UniverDocsUIPlugin);
+  univer.registerPlugin(UniverSheets.UniverSheetsPlugin);
+  univer.registerPlugin(UniverSheetsUi.UniverSheetsUIPlugin);
+  univer.registerPlugin(UniverSheetsFormula.UniverSheetsFormulaPlugin);
+  univer.registerPlugin(UniverSheetsFormulaUi.UniverSheetsFormulaUIPlugin);
+  univer.registerPlugin(UniverSheetsNumfmt.UniverSheetsNumfmtPlugin);
+  univer.registerPlugin(UniverSheetsNumfmtUi.UniverSheetsNumfmtUIPlugin);
+  univer.createUnit(UniverInstanceType.UNIVER_SHEET, data);
+  const api = UniverCoreFacade.FUniver.newAPI(univer);
+  const fwb = api.getActiveWorkbook();
+  const sheets = fwb.getSheets();
+  if (sheets[active]) fwb.setActiveSheet(sheets[active]);
+  _xlsxEd = { univer, api, wb, defaultFont, initial: JSON.parse(JSON.stringify(fwb.save())), path, etag, dirty: false, sub: null };
+  _xlsxEd.sub = api.addEvent(api.Event.CommandExecuted, e => {
+    if (_xlsxEd && !_xlsxEd.saving && _xlsxIsEdit(e)) _xlsxSetDirty(true);
+  });
+  const btn = document.getElementById('file-save-btn');
+  if (btn) { btn.style.display = ''; btn.textContent = 'Save'; }
+}
+
+// Only a sheet MUTATION is an edit. Opening a workbook alone fires
+// doc.mutation.rich-text-editing (the cell editor initialising) and
+// formula.mutation.* (the engine starting), which made a just-opened file read
+// as unsaved. Switching tabs is a mutation too but is not worth a save prompt.
+function _xlsxIsEdit(e) {
+  return !!e && e.type === 2 && typeof e.id === 'string' && e.id.startsWith('sheet.mutation.')
+    && e.id !== 'sheet.mutation.set-worksheet-activate';
+}
+
+async function _xlsxSave() {
+  const ed = _xlsxEd;
+  if (!ed) return;
+  const btn = document.getElementById('file-save-btn');
+  btn.classList.add('saving'); btn.textContent = 'Saving…';
+  ed.saving = true;
+  try {
+    const fwb = ed.api.getActiveWorkbook();
+    const after = fwb.save();
+    after.__activeId = fwb.getActiveSheet().getSheetId();
+    const changed = _uvPatchWorkbook(ed.wb, ed.initial, after);
+    if (ed.defaultFont) {
+      ed.wb.eachSheet(ws => ws.eachRow({ includeEmpty: false }, row => row.eachCell({ includeEmpty: false }, cell => {
+        const f = cell.font;
+        if (!f || (!f.name && !f.size)) cell.font = { ...ed.defaultFont, ...(f || {}) };
+      })));
+    }
+    const buf = await ed.wb.xlsx.writeBuffer();
+    let bin = ''; const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    const r = await fetch(API + '/api/file', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: ed.path, content_base64: btoa(bin), expected_etag: ed.etag || undefined }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      btn.textContent = 'Changed on disk';
+      btn.title = 'Someone else saved this file after you opened it. Download your copy or reopen the file to see theirs.';
+      _xlsxBeacon('conflict', changed);
+      return;
+    }
+    if (!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    ed.etag = d.etag || ed.etag;
+    delete after.__activeId;
+    ed.initial = JSON.parse(JSON.stringify(after));
+    _xlsxSetDirty(false);
+    btn.textContent = 'Saved';
+    _xlsxBeacon('saved', changed);
+    setTimeout(() => { if (_xlsxEd === ed && !ed.dirty) btn.textContent = 'Save'; }, 1500);
+  } catch (e) {
+    btn.textContent = 'Save failed';
+    btn.title = String(e && e.message || e);
+    _xlsxBeacon('failed', null, String(e && e.message || e));
+  } finally {
+    ed.saving = false;
+    btn.classList.remove('saving');
+  }
+}
+
+function _xlsxBeacon(verdict, changed, error) {
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'xlsx-save', verdict, measured: true, n_considered: 1,
+      cells: changed && changed.cells, sheets: changed && changed.sheets, error, ver: APP_VER }) }).catch(() => {});
+}
+
 async function _openXlsxPreview(path) {
   _fileData = null;
   _fileViewMode = 'preview';
@@ -24635,6 +25108,20 @@ async function _openXlsxPreview(path) {
     dlBtn.dataset.url = API + '/api/file/raw?path=' + encodeURIComponent(path) + '&download=1';
     dlBtn.dataset.filename = path.split('/').pop();
     dlBtn.style.display = '';
+  }
+  // .xlsx/.xlsm open in the Excel-like editor; .xls/.ods (and any failure to
+  // load the editor) keep the read-only viewer below.
+  if (/\.(xlsx|xlsm)$/i.test(path)) {
+    body.textContent = 'Loading spreadsheet editor…';
+    try { await _openXlsxEditor(path, body); return; }
+    catch (e) {
+      _xlsxEditorTeardown();
+      fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'xlsx-editor', verdict: 'fallback_readonly', measured: true, n_considered: 1,
+          error: String(e && e.message || e), ver: APP_VER }) }).catch(() => {});
+      body.className = 'file-overlay-body';
+      body.textContent = 'Loading spreadsheet…';
+    }
   }
   try {
     // Primary: SheetJS (the standard xlsx library) parses the raw bytes in the
@@ -24900,6 +25387,12 @@ function _fileVideoFullscreen() {
 }
 
 function closeFilePreview() {
+  if (_xlsxEd && _xlsxEd.dirty) {
+    showConfirm('This spreadsheet has unsaved changes. Close without saving?', 'Discard changes', true)
+      .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } });
+    return;
+  }
+  _xlsxEditorTeardown();
   _readPosDetach();   // flush the reading position before tearing down
   const v = document.querySelector('#file-body video');
   if (v) { v.pause(); v.src = ''; }
@@ -24950,6 +25443,7 @@ async function _fileDownload() {
 }
 
 async function _fileSave() {
+  if (_xlsxEd) { await _xlsxSave(); return; }
   if (!_fileData || _fileData.readOnly || (!_fileData.is_markdown && !_fileData._isNew)) return;
   const ta = document.getElementById('file-edit-ta');
   const btn = document.getElementById('file-save-btn');
@@ -51530,3 +52024,11 @@ async function _addToPinGroup(fp, existingGroupId, firstPinId) {
     showToast('Added tab: ' + fp.split('/').pop());
   } catch (e) { showToast('Pin error: ' + e.message); }
 }
+
+// Cmd/Ctrl+S saves an open spreadsheet (Univer swallows most keys inside the
+// grid, so this listens in the capture phase).
+document.addEventListener('keydown', e => {
+  if (_xlsxEd && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault(); e.stopPropagation(); _xlsxSave();
+  }
+}, true);

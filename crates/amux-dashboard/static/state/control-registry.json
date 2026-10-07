@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2442,
+  "n_considered": 2461,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1880,6 +1880,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openXlsxPreview": {
+      "kind": "command._openXlsxPreview",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxConfirmMessage": {
       "kind": "command._outboxConfirmMessage",
       "feedback_required": true,
@@ -3322,6 +3328,18 @@
     },
     "_wselRun": {
       "kind": "command._wselRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_xlsxBeacon": {
+      "kind": "command._xlsxBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_xlsxSave": {
+      "kind": "command._xlsxSave",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
