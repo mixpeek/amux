@@ -272,7 +272,40 @@ pub struct Card {
 
 /// Rules 1 and 2 as a pure decision, so each branch is testable without a
 /// server. `existing` is the card's frozen contract, if any.
+/// A worker's honest exit: the card goes to the owner as a decision.
+fn cannot_satisfy(card: &Card, body: &Value) -> Action {
+    if let Err(why) = left_undone_items(body) {
+        return Action::Respond(left_undone_refusal(card, &why));
+    }
+    let reason = nonempty(body.get("reason").and_then(Value::as_str))
+        .or_else(|| nonempty(body.get("desc_append").and_then(Value::as_str)))
+        .unwrap_or_else(|| "no reason given".into());
+    tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
+        verdict = "contract_cannot_satisfy", "a worker declared its contract unsatisfiable");
+    Action::Rewrite(json!({
+        "status": "needsyou",
+        "ask_actor": crate::api::turn_end::owner_name(),
+        "ask_type": "decision",
+        "ask_question": format!("{} cannot satisfy its frozen contract as written ({reason}): change the contract, re-scope the card, or close it?", card.id),
+        "ask_unblocks": "The owner's change to the contract or the card, after which the lane resumes or the card closes.",
+        "desc_append": format!("\ncannot_satisfy (contract rule 2): {reason}"),
+        // A standing approval cannot answer this ask: only the owner
+        // changes a frozen contract. Without this a keyword match
+        // (SA-9 on "check") refused GG-31's cannot_satisfy as "already
+        // approved" and the card could not leave doing (gs12-gates,
+        // 2026-10-07). Uses the gate's own logged decline.
+        "standing_approval_decline": "contract cannot_satisfy: changing a frozen contract is the owner's decision, which no standing approval covers",
+    }))
+}
+
 pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract>, defaults: &Defaults) -> Action {
+    // BEFORE the code-type check (gs12-extra-3, GE3-15, 2026-10-07): the
+    // harness reviewer reviews proof cards of any type and tells the lane its
+    // exit is cannot_satisfy, but for an ops card decide passed, so the PATCH
+    // reached the status vocabulary and was refused 400 unknown status.
+    if body.get("status").and_then(Value::as_str) == Some("cannot_satisfy") {
+        return cannot_satisfy(card, body);
+    }
     if card.item_type != "code" {
         return Action::Pass;
     }
@@ -286,7 +319,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             return match (c.amended, reason) {
                 (true, _) => Action::Respond(refuse(StatusCode::CONFLICT, "contract_amended_once",
                     format!("{}'s verify command was already amended once", card.id),
-                    json!({"next": "the owner can change it again, or PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\"}"}))),
+                    json!({"next": "the owner can change it again, or PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}"}))),
                 (_, None) => Action::Respond(refuse(StatusCode::CONFLICT, "contract_amend_needs_reason",
                     "amending a frozen verify command needs a reason".into(),
                     json!({"patch": {"verify_cmd": "...", "reason": "why the frozen command cannot run as written"}}))),
@@ -300,14 +333,14 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             verdict = "contract_frozen_edit_refused", "a frozen contract was edited by a worker");
         return Action::Respond(refuse(StatusCode::CONFLICT, "contract_frozen",
             format!("{}'s acceptance criteria and verify command were frozen when it entered doing", card.id),
-            json!({"owner": "the owner can change a frozen contract", "worker": "if the contract cannot be met as written, PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\"}"})));
+            json!({"owner": "the owner can change a frozen contract", "worker": "if the contract cannot be met as written, PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}"})));
     }
     if body.get("force").and_then(Value::as_bool) == Some(true) && !owner {
         tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
             verdict = "contract_force_refused", "a worker tried to force a contract card");
         return Action::Respond(refuse(StatusCode::FORBIDDEN, "contract_force_owner_only",
             "force on a contract card is the owner's; a worker's exit is cannot_satisfy".into(),
-            json!({"worker": "PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\"}"})));
+            json!({"worker": "PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}"})));
     }
     // A card already in doing with no frozen contract (it entered doing before
     // contracts, or by a route that skipped the freeze) gets one from a PATCH
@@ -322,30 +355,7 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
         return freeze_from(card, body, existing, defaults);
     }
     match body.get("status").and_then(Value::as_str).unwrap_or("") {
-        "cannot_satisfy" => {
-            if let Err(why) = left_undone_items(body) {
-                return Action::Respond(left_undone_refusal(card, &why));
-            }
-            let reason = nonempty(body.get("reason").and_then(Value::as_str))
-                .or_else(|| nonempty(body.get("desc_append").and_then(Value::as_str)))
-                .unwrap_or_else(|| "no reason given".into());
-            tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
-                verdict = "contract_cannot_satisfy", "a worker declared its contract unsatisfiable");
-            Action::Rewrite(json!({
-                "status": "needsyou",
-                "ask_actor": crate::api::turn_end::owner_name(),
-                "ask_type": "decision",
-                "ask_question": format!("{} cannot satisfy its frozen contract as written ({reason}): change the contract, re-scope the card, or close it?", card.id),
-                "ask_unblocks": "The owner's change to the contract or the card, after which the lane resumes or the card closes.",
-                "desc_append": format!("\ncannot_satisfy (contract rule 2): {reason}"),
-                // A standing approval cannot answer this ask: only the owner
-                // changes a frozen contract. Without this a keyword match
-                // (SA-9 on "check") refused GG-31's cannot_satisfy as "already
-                // approved" and the card could not leave doing (gs12-gates,
-                // 2026-10-07). Uses the gate's own logged decline.
-                "standing_approval_decline": "contract cannot_satisfy: changing a frozen contract is the owner's decision, which no standing approval covers",
-            }))
-        }
+        "cannot_satisfy" => cannot_satisfy(card, body),
         "doing" if card.status != "doing" => freeze_from(card, body, existing, defaults),
         "verified" if !owner && existing.is_some() => {
             tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
@@ -940,7 +950,7 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
             tracing::warn!(card, lane, sha = ?sha, measured = true, n_considered = 1,
                 verdict = "contract_verify_failed", reason = %tail(&why, 300), "server verification failed; the card stays in doing");
             let text = format!(
-                "[amux contract] {card} is not done: server verification failed at {}.\n\n{}\n\nFix and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\"}} if the frozen contract cannot be met as written.",
+                "[amux contract] {card} is not done: server verification failed at {}.\n\n{}\n\nFix and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}} if the frozen contract cannot be met as written.",
                 sha.as_deref().unwrap_or("an unreadable HEAD"),
                 tail(&why, 800)
             );
@@ -1114,7 +1124,7 @@ pub async fn watch_deploys(state: &AppState) -> (usize, usize) {
         tracing::warn!(card, lane, sha, prod, tries, measured = true, n_considered = 1, verdict = "contract_deploy_failed",
             reason = %tail(&out, 300), "the post-deploy check failed in production; the card is back in doing");
         let text = format!(
-            "[amux contract] {card} is back in doing: its post-deploy check failed {tries} times in production at {prod}.\n\n{}\n\nFix and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\"}}.",
+            "[amux contract] {card} is back in doing: its post-deploy check failed {tries} times in production at {prod}.\n\n{}\n\nFix and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}}.",
             tail(&out, 800)
         );
         let _ = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-deploy", ACTOR).await;
@@ -1518,7 +1528,7 @@ async fn review_one(state: &AppState, card: String) {
             verdict = "contract_review_failed", "the harness reviewer failed the card; reopened with findings"),
     }
     if target == "doing" {
-        let text = format!("[amux contract] {card} is back in doing: the independent reviewer failed round {round} of {REVIEW_ROUNDS}.\n\n{list}\n\nAddress the findings and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\"}}.");
+        let text = format!("[amux contract] {card} is back in doing: the independent reviewer failed round {round} of {REVIEW_ROUNDS}.\n\n{list}\n\nAddress the findings and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}}.");
         let _ = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-review", ACTOR).await;
     }
 }
@@ -2051,6 +2061,21 @@ mod tests {
         assert_eq!(code(&decide(&card("doing", "code", Some("a")), &edit, true, Some(&frozen()), &dflt(None))), "pass", "the owner may edit");
         let force = json!({"status": "done", "force": true, "reason": "x"});
         assert_eq!(code(&decide(&card("doing", "code", Some("a")), &force, false, Some(&frozen()), &dflt(None))), "403");
+    }
+
+    /// GE3-15 (gs12-extra-3, 2026-10-07): the reviewer offers cannot_satisfy
+    /// for an ops-typed proof card too, so the exit works for every type.
+    #[test]
+    fn cannot_satisfy_is_honoured_on_a_card_of_any_type() {
+        match decide(&card("doing", "ops", None), &json!({"status": "cannot_satisfy", "reason": "the drill cannot run here", "left_undone": []}), false, None, &dflt(None)) {
+            Action::Rewrite(b) => {
+                assert_eq!(b["status"], json!("needsyou"));
+                assert!(b["ask_question"].as_str().unwrap().contains("the drill cannot run here"));
+            }
+            _ => panic!("an ops card's cannot_satisfy must be rewritten to the owner's decision"),
+        }
+        assert!(matches!(decide(&card("doing", "ops", None), &json!({"status": "done"}), false, None, &dflt(None)), Action::Pass),
+            "other moves on a non-code card are still not the contract's");
     }
 
     #[test]
