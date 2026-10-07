@@ -1178,6 +1178,25 @@ pub fn proof_rules(title: &str, desc: &str) -> String {
     )
 }
 
+/// For a card that is not code (a decision, investigation, ops or chore card
+/// and the like), what passing means: the outcome its gate asks for is
+/// recorded on the card and still holds. Proof cards keep proof_rules.
+pub fn outcome_rules(item_type: &str, title: &str, desc: &str) -> String {
+    let t = title.trim_start();
+    if item_type == "code" || t.starts_with("GS12 proof") || t.starts_with("GS12 requirement") {
+        return String::new();
+    }
+    let tail: String = desc.chars().rev().take(3000).collect::<Vec<_>>().into_iter().rev().collect();
+    format!(
+        "\n\nTHIS IS A {kind} CARD, not code: it may have no commits. Pass it when its outcome is recorded on the card \
+         (for a decision: what was chosen, by whom and when; for an investigation: the findings; for ops or chore work: \
+         what was done and its result) and, where you can check it in this checkout, still holds. Fail it when the outcome \
+         is missing, is only a plan, or is contradicted by the repository.\n\
+         Card description (latest part):\n{tail}",
+        kind = item_type.to_uppercase()
+    )
+}
+
 fn review_prompt(card: &str, title: &str, c: &Contract, evidence: &str, round: i64) -> String {
     if c.is_uncontracted() {
         return format!(
@@ -1389,7 +1408,8 @@ async fn review_one(state: &AppState, card: String) {
     let round = rounds + 1;
     tracing::info!(card, lane, round, measured = true, n_considered = 1, verdict = "contract_review_started",
         "a fresh reviewer started for a verified-eligible card");
-    let evidence = format!("{}{}", row.evidence.as_deref().unwrap_or(""), proof_rules(&row.title, &row.desc));
+    let evidence = format!("{}{}{}", row.evidence.as_deref().unwrap_or(""), proof_rules(&row.title, &row.desc),
+        outcome_rules(&row.item_type, &row.title, &row.desc));
     let result = review(&card, &lane, &row.title, &k, &evidence, round).await;
     let now = crate::config::now_f64();
     let (pass, findings, model) = match result {
@@ -1484,6 +1504,10 @@ async fn review_one(state: &AppState, card: String) {
 /// failed comes back when it is done again, with its rounds kept. Proof and
 /// requirement cards count whatever their type: 10 of the 12 waiting GS-12
 /// proof cards were typed `ops`, and a code-only filter skipped every one.
+/// Every card type but epics, watches and tripwires counts since 2026-10-07:
+/// 53 GS-12 cards (decisions, investigations, ops) sat at done for a median
+/// 25 h waiting on a person to verify them, the bottleneck detector's top
+/// constraint, while the reviewer's queue was empty.
 pub async fn enqueue_uncontracted(state: &AppState) -> usize {
     type Cand = (String, String, String, Option<String>, String, Option<String>);
     let cands: Vec<Cand> = state.store.read_async(|conn| {
@@ -1491,7 +1515,7 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
             "SELECT i.id, COALESCE(i.session, ''), i.title, i.acceptance_criteria, substr(COALESCE(i.desc, ''), 1, 400), i.evidence \
              FROM issues i LEFT JOIN card_contracts c ON c.card = i.id \
              WHERE i.status = 'done' AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
-             AND (i.type = 'code' OR i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%') \
+             AND COALESCE(i.type, '') NOT IN ('epic', 'watch', 'tripwire') \
              AND (c.card IS NULL OR (c.command = ?1 AND c.review_state = 'failed'))")?;
         let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<rusqlite::Result<Vec<Cand>>>()?;
@@ -1928,6 +1952,9 @@ mod tests {
         let rules = proof_rules("GS12 proof 6: Scale to zero", "... Ethan: make sure its all measured. each Ray Serve app at min_replicas 0 ...");
         assert!(rules.contains("COMPLETION PROOF") && rules.contains("Ray Serve app"), "{rules}");
         assert_eq!(proof_rules("GS12 6.9 Dependency resilience", "x"), "", "plan items keep the ordinary prompt");
+        assert!(outcome_rules("decision", "Pick a blog host", "chose Ghost(Pro), Ethan 10-07").contains("DECISION CARD"));
+        assert_eq!(outcome_rules("code", "x", "y"), "");
+        assert_eq!(outcome_rules("ops", "GS12 proof 6: Scale to zero", "y"), "", "proof cards keep proof_rules");
     }
 
     #[test]
