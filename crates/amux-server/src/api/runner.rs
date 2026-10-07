@@ -675,64 +675,9 @@ fn take_inner(conn: &Connection, card: &str, status: String, lane: &str, line: S
 /// todo, logged as harness:a2. Two lanes never get the same card: the store
 /// has one writer, and the card leaves the hub's board in the same write.
 pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Option<&regex::Regex>) -> rusqlite::Result<Claim> {
-    if lane_has_work(conn, lane)? {
-        return Ok(Claim::Busy);
-    }
-    // The lane's own backlog first: a proof card the reviewer sent back to it
-    // is its to fix before anything new (AH-395).
-    if title_re.is_some() {
-        for (card, status, ready, reopened) in candidates(conn, lane, title_re, false)? {
-            if ready
-                && status == "backlog"
-                && take(conn, &card, status, lane, format!("moved from {lane}'s own backlog by the idle-lane pool (contract A2)"))?
-            {
-                return Ok(Claim::Got(card, "own", reopened));
-            }
-        }
-    }
-    let cards = pool_cards(conn, hub, title_re)?;
-    let pool = cards.len();
-    let mut got = None;
-    for (card, status, ready, reopened) in cards {
-        if ready && take(conn, &card, status, lane, format!("pulled from {hub}'s pool by idle lane {lane} (contract A2)"))? {
-            got = Some((card, reopened));
-            break;
-        }
-    }
-    let Some((card, reopened)) = got else {
-        if let Some(re) = title_re {
-            for (card, status, source, n) in unblockers(conn, hub, lane, re)? {
-                let line = format!("taken by idle lane {lane}: no proof card is ready and this unblocks {n} open proof card(s) (contract A2)");
-                if source == "hub" {
-                    let cap = group_max(lane);
-                    match take_group(conn, hub, &card, status, lane, &line, cap)? {
-                        GroupTake::Moved(size) => return Ok(Claim::UnblocksGroup(card, n, size)),
-                        // Once per card per 10 minutes: every idle lane's
-                        // pass hits the same group, which logged 2058 lines
-                        // an hour on GS-12 (2026-10-07).
-                        GroupTake::TooLarge(size) if first_this_window(&format!("toolarge:{card}")) => {
-                            tracing::info!(card, lane, hub, size, cap, measured = true, n_considered = size, verdict = "a2_pool_group_too_large",
-                                "a blocking card's dependency group is larger than AMUX_A2_GROUP_MAX; it stays on the hub");
-                        }
-                        GroupTake::Refused(why) if first_this_window(&format!("refused:{card}")) => {
-                            tracing::info!(card, lane, hub, error = %why, measured = true, n_considered = 1, verdict = "a2_pool_move_refused",
-                                "a dependency group could not move as one unit; it stays on the hub and the pull tries the next card");
-                        }
-                        GroupTake::TooLarge(_) | GroupTake::Refused(_) => {}
-                    }
-                    continue;
-                }
-                if take(conn, &card, status, lane, line)? {
-                    conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
-                    return Ok(Claim::Unblocks(card, source, n));
-                }
-            }
-        }
-        return Ok(Claim::Empty(pool));
-    };
-    // A pulled card has left the pool: it is the lane's now.
-    conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
-    Ok(Claim::Got(card, "hub", reopened))
+    let cap = group_max(lane);
+    let plan = plan_pool_pull(conn, hub, lane, title_re, cap)?;
+    execute_plan(conn, hub, lane, plan, cap)
 }
 
 /// AH-395: a proof card for a lane its done-WIP cap would otherwise park,
@@ -788,7 +733,7 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
     // web), so every board write in amux queued behind it and a 300-byte
     // desc_append timed out at 30 and 90 s. The search reads; only the claim
     // writes. A pass with nothing claimable never takes the writer.
-    let (ph, pl, pre) = (hub.clone(), lane.to_string(), title_re.clone());
+    let (ph, pl, pre) = (hub.clone(), lane.to_string(), title_re);
     let cap = group_max(lane);
     let planned = store.read_async(move |conn| Ok(plan_pool_pull(conn, &ph, &pl, pre.as_ref(), cap)?)).await;
     match planned {
@@ -800,12 +745,16 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
             }
             return PoolPull::Empty { pool };
         }
-        Ok(Plan::Work) | Err(_) => {}
+        Ok(_) => {}
+        Err(_) => return PoolPull::Empty { pool: 0 },
     }
+    let Ok(plan) = planned else { return PoolPull::Empty { pool: 0 } };
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot_w = slot.clone();
     let _ = store.write_async(move |conn| {
-        let r = claim_pool_card(conn, &h, &l, title_re.as_ref())?;
+        // Only the chosen claim runs under the writer, never the search
+        // (2026-10-07: claim_pool_card re-ran it here, 130-138 s per hold).
+        let r = execute_plan(conn, &h, &l, plan, cap)?;
         let applied = matches!(r, Claim::Got(..) | Claim::Unblocks(..) | Claim::UnblocksGroup(..));
         *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         Ok(crate::db::WriteOutcome { applied, events: vec![] })
@@ -840,12 +789,18 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
     }
 }
 
-/// What a read-only look at the pool found.
+/// What a read-only look at the pool found: the one claim to make.
 #[derive(Debug, PartialEq)]
 pub enum Plan {
     Busy,
     Nothing(usize),
-    Work,
+    /// card, status, reopened: the lane's own ready backlog card.
+    Own(String, String, bool),
+    /// card, status, reopened: a ready card in the hub's pool.
+    Pool(String, String, bool),
+    /// card, status, source, open proof cards it unblocks. A hub card moves
+    /// with its dependency group, which the plan found within the cap.
+    Unblock(String, String, &'static str, usize),
 }
 
 /// claim_pool_card's search without its writes: is there anything this lane
@@ -855,20 +810,23 @@ pub fn plan_pool_pull(conn: &Connection, hub: &str, lane: &str, title_re: Option
     if lane_has_work(conn, lane)? {
         return Ok(Plan::Busy);
     }
-    if title_re.is_some() && candidates(conn, lane, title_re, false)?.iter().any(|c| c.2 && c.1 == "backlog") {
-        return Ok(Plan::Work);
+    if title_re.is_some() {
+        if let Some((card, status, _, reopened)) = candidates(conn, lane, title_re, false)?.into_iter().find(|c| c.2 && c.1 == "backlog") {
+            return Ok(Plan::Own(card, status, reopened));
+        }
     }
     let cards = pool_cards(conn, hub, title_re)?;
-    if cards.iter().any(|c| c.2) {
-        return Ok(Plan::Work);
+    let pool = cards.len();
+    if let Some((card, status, _, reopened)) = cards.into_iter().find(|c| c.2) {
+        return Ok(Plan::Pool(card, status, reopened));
     }
     if let Some(re) = title_re {
-        for (card, _status, source, _n) in unblockers(conn, hub, lane, re)? {
+        for (card, status, source, n) in unblockers(conn, hub, lane, re)? {
             if source != "hub" {
-                return Ok(Plan::Work);
+                return Ok(Plan::Unblock(card, status, source, n));
             }
             match dependency_component(conn, hub, &card, cap)? {
-                Ok(m) if m.len() <= cap => return Ok(Plan::Work),
+                Ok(m) if m.len() <= cap => return Ok(Plan::Unblock(card, status, source, n)),
                 Ok(_) => {
                     if first_this_window(&format!("toolarge:{card}")) {
                         let size = dependency_component(conn, hub, &card, COMPONENT_MEASURE_MAX)?.map_or(cap + 1, |all| all.len());
@@ -885,7 +843,46 @@ pub fn plan_pool_pull(conn: &Connection, hub: &str, lane: &str, title_re: Option
             }
         }
     }
-    Ok(Plan::Nothing(cards.len()))
+    Ok(Plan::Nothing(pool))
+}
+
+/// Make the one claim a plan chose, inside the caller's write. Each move
+/// re-checks the card's status (take / take_group), so a card that changed
+/// since the read is simply not taken and the next pass plans again.
+pub fn execute_plan(conn: &Connection, hub: &str, lane: &str, plan: Plan, cap: usize) -> rusqlite::Result<Claim> {
+    Ok(match plan {
+        Plan::Busy => Claim::Busy,
+        Plan::Nothing(pool) => Claim::Empty(pool),
+        Plan::Own(card, status, reopened) => {
+            if take(conn, &card, status, lane, format!("moved from {lane}'s own backlog by the idle-lane pool (contract A2)"))? {
+                Claim::Got(card, "own", reopened)
+            } else {
+                Claim::Empty(0)
+            }
+        }
+        Plan::Pool(card, status, reopened) => {
+            if take(conn, &card, status, lane, format!("pulled from {hub}'s pool by idle lane {lane} (contract A2)"))? {
+                conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
+                Claim::Got(card, "hub", reopened)
+            } else {
+                Claim::Empty(0)
+            }
+        }
+        Plan::Unblock(card, status, source, n) => {
+            let line = format!("taken by idle lane {lane}: no proof card is ready and this unblocks {n} open proof card(s) (contract A2)");
+            if source == "hub" {
+                match take_group(conn, hub, &card, status, lane, &line, cap)? {
+                    GroupTake::Moved(size) => Claim::UnblocksGroup(card, n, size),
+                    _ => Claim::Empty(0),
+                }
+            } else if take(conn, &card, status, lane, line)? {
+                conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
+                Claim::Unblocks(card, source, n)
+            } else {
+                Claim::Empty(0)
+            }
+        }
+    })
 }
 
 /// a2_pool_empty once per lane per 10 minutes, not every board-drive pass.
@@ -1202,13 +1199,36 @@ mod tests {
         }).unwrap();
         let plan = |cap: usize| plan_pool_pull(&store.read().unwrap(), "hub", "lane", Some(&re), cap).unwrap();
         assert!(matches!(plan(2), Plan::Nothing(_)), "only a too-large group: nothing to claim");
-        assert_eq!(plan(8), Plan::Work, "the group fits: claim it");
+        assert!(matches!(plan(8), Plan::Unblock(ref c, _, "hub", _) if c == "B"), "the group fits: claim B with it");
         store.write(|c| {
             c.execute("INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
                        VALUES ('L', 'mine', 'doing', 'lane', 'code', '[]', 0, 0, 0, 0)", [])?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         assert_eq!(plan(8), Plan::Busy, "a lane holding work is busy");
+    }
+
+    /// The write makes only the planned claim, and re-checks it: a card that
+    /// moved between the read and the write is not taken (no search re-run).
+    #[test]
+    fn a_stale_plan_claims_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        store.write(|c| {
+            c.execute("INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                       VALUES ('P', 'GS12 proof 2 run', 'todo', 'hub', 'code', '[]', 0, 0, 0, 0)", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let out = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let o = out.clone();
+        store.write(move |c| {
+            // Planned while P was in backlog; it is in todo now.
+            *o.lock().unwrap() = Some(execute_plan(c, "hub", "lane", Plan::Pool("P".into(), "backlog".into(), false), 8)?);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(matches!(out.lock().unwrap().take(), Some(Claim::Empty(_))));
+        let session: String = store.read().unwrap().query_row("SELECT session FROM issues WHERE id='P'", [], |r| r.get(0)).unwrap();
+        assert_eq!(session, "hub", "nothing moved");
     }
 
     #[test]
