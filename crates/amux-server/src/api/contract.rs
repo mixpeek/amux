@@ -1378,6 +1378,10 @@ async fn wait_review(dir: &Path) -> Result<(String, String), String> {
     }
     let text = std::fs::read_to_string(dir.join(REVIEW_OUT)).unwrap_or_default();
     let code = std::fs::read_to_string(dir.join(REVIEW_EXIT)).unwrap_or_default();
+    if code.trim() != "0" {
+        return Err(format!("reviewer exited {}; partial output cannot grant a verdict: {}", code.trim(),
+            tail(&format!("{text}{}", std::fs::read_to_string(dir.join(REVIEW_ERR)).unwrap_or_default()), 400)));
+    }
     Ok((text, code))
 }
 
@@ -1461,11 +1465,21 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
             launch_review(&tmp, &cli, &args, &prompt)?;
         }
     }
-    let result = collect_review(&tmp, &model).await;
+    let mut result = collect_review(&tmp, &model).await;
     // Keep the original inputs and output independently of a disposable
     // review checkout, including a failed or unmeasured result.
     if matches!(review_job(&tmp), ReviewJob::Running(..)) { return result; }
     retain_review_evidence(&home, card, &format!("{sha}-{round}"), &tmp)?;
+    // A completed model attempt with no trustworthy verdict spent a round.
+    // Reopen through the normal bounded failure path; retrying it forever as
+    // an unspent pending review burns tokens without improving the proof.
+    if matches!(review_job(&tmp), ReviewJob::Finished) {
+        if let Err(why) = &result {
+            tracing::warn!(card, round, measured = false, n_considered = 1, verdict = "contract_review_unmeasured",
+                why_unmeasured = %tail(why, 300), "completed review produced no trustworthy verdict; bounded failure recovery");
+            result = Ok((false, vec![format!("Independent review produced no trustworthy verdict: {why}")], format!("{model}/unmeasured")));
+        }
+    }
     tracing::info!(card, sha, round, measured = true, n_considered = 1,
         verdict = "contract_review_evidence_retained", "review input and output retained outside the temporary checkout");
     let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
@@ -2111,6 +2125,18 @@ mod tests {
             let log: String = conn.query_row("SELECT log FROM card_contracts WHERE card=?1", [status], |r| r.get(0)).unwrap();
             assert!(log.contains("original failure output"));
         }
+    }
+
+    #[tokio::test]
+    async fn failed_reviewer_exit_cannot_turn_partial_pass_output_into_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(REVIEW_OUT), r#"{"verdict":"pass","findings":[]}"#).unwrap();
+        for code in ["37", "timeout", ""] {
+            std::fs::write(dir.path().join(REVIEW_EXIT), code).unwrap();
+            assert!(collect_review(dir.path(), "fixture").await.is_err(), "failed exit {code}");
+        }
+        std::fs::write(dir.path().join(REVIEW_EXIT), "0\n").unwrap();
+        assert!(collect_review(dir.path(), "fixture").await.unwrap().0, "zero exit with complete verdict is usable");
     }
 
     #[test]

@@ -88,6 +88,9 @@ at the same commit is not reusable after its obligations changed. The full card
 source is available as `card-source.md` to the read-only reviewer; an excerpt
 must not stand in for all measurement requirements. Review inputs and complete
 outputs survive temporary checkout cleanup under `$AMUX_HOME/review-evidence`.
+A nonzero, missing or timeout exit cannot grant a verdict from partial stdout.
+Completed attempts without a trustworthy verdict spend a bounded review round;
+pre-launch failures stay unmeasured without spending a model round.
 
 Fresh-session briefs preserve explicit acceptance criteria and next action even
 before a contract freezes, with a pointer to the full card. Repeated nudges are
