@@ -1269,13 +1269,28 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 fn review_job(dir: &Path) -> ReviewJob {
+    review_job_with(dir, pid_alive)
+}
+
+fn review_job_with(dir: &Path, pid_alive: impl Fn(u32) -> bool) -> ReviewJob {
+    // LIVENESS FIRST, THEN THE EXIT FILE. The reviewer writes its exit file and
+    // then dies, so checking the file first let a run that finished between
+    // the two reads look dead with no result: "the reviewer exited without
+    // writing its result", a completed review thrown away (rust.yml on
+    // e964d466, uncontracted-review test, review_state back to pending).
+    // A pid found dead here has already written the file, so this order
+    // cannot miss it.
+    let pid = std::fs::read_to_string(dir.join(REVIEW_PID)).ok().and_then(|s| s.trim().parse::<u32>().ok());
+    let alive = pid.is_some_and(&pid_alive);
     if dir.join(REVIEW_EXIT).exists() {
         return ReviewJob::Finished;
     }
-    let Some(pid) = std::fs::read_to_string(dir.join(REVIEW_PID)).ok().and_then(|s| s.trim().parse::<u32>().ok()) else {
+    let Some(pid) = pid else {
         return ReviewJob::None;
     };
-    if !pid_alive(pid) {
+    if !alive {
+        tracing::warn!(dir = %dir.display(), pid, measured = true, n_considered = 1, verdict = "review_exited_without_result",
+            "a reviewer process ended without writing its exit file");
         return ReviewJob::None;
     }
     let age = std::fs::metadata(dir.join(REVIEW_PID)).and_then(|m| m.modified()).ok()
@@ -1947,6 +1962,26 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reviewer finishes in the instant between the two reads: the
+    /// liveness probe below writes the exit file and then reports the pid
+    /// dead, which is exactly what a real exit does. Checking the file first
+    /// (the old order) returned None here; liveness first returns Finished.
+    #[test]
+    fn a_reviewer_that_finishes_between_the_two_reads_is_finished_not_lost() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(REVIEW_PID), "4242").unwrap();
+        let exit = d.path().join(REVIEW_EXIT);
+        let job = review_job_with(d.path(), |_| {
+            std::fs::write(&exit, "0").unwrap();
+            false
+        });
+        assert!(matches!(job, ReviewJob::Finished), "a finished run must not read as lost");
+        let gone = tempfile::tempdir().unwrap();
+        std::fs::write(gone.path().join(REVIEW_PID), "4242").unwrap();
+        assert!(matches!(review_job_with(gone.path(), |_| false), ReviewJob::None), "dead with no exit file is still None");
+        assert!(matches!(review_job_with(gone.path(), |_| true), ReviewJob::Running(4242, _)));
+    }
 
     fn card(status: &str, ty: &str, acceptance: Option<&str>) -> Card {
         Card { id: "T-1".into(), lane: "lane".into(), status: status.into(), item_type: ty.into(), acceptance: acceptance.map(String::from) }
