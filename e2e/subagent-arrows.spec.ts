@@ -14,7 +14,10 @@ async function setup(page:Page, items=freshSubs(), failFirst=false) {
 }
 test('terminal arrows cycle actual child output and preserve the parent draft',async({page},info)=>{
   const writes:string[]=[];
-  page.on('request',r=>{if(/\/api\/sessions\/arrows\//.test(r.url())&&r.method()!=='GET')writes.push(r.url());});
+  // Typing presence (POST .../typing, AC-474) is excluded on purpose: it is an
+  // in-memory "is typing" signal that changes nothing on the worker and writes
+  // nothing to the store. Every other non-GET here is a real write.
+  page.on('request',r=>{if(/\/api\/sessions\/arrows\//.test(r.url())&&!/\/typing$/.test(new URL(r.url()).pathname)&&r.method()!=='GET')writes.push(r.url());});
   await page.route('**/api/sessions/arrows/subagents?*',r=>{
     const agent=new URL(r.request().url()).searchParams.get('agent');
     return r.fulfill({json:{session:'arrows',agent,conversation:'parent-a',output:'⏺ Output from '+agent}});
