@@ -114,6 +114,18 @@ pub struct Contract {
     pub deploy_check: Option<String>,
 }
 
+/// The command recorded for a card the harness reviews without a contract
+/// (it reached done before the contract reached its lane). It is never run.
+pub const UNCONTRACTED_CMD: &str = "(none: reviewed from evidence)";
+
+impl Contract {
+    /// A review record for a card that has no frozen contract. Rules 1 and 2
+    /// treat the card as uncontracted; only the reviewer reads this row.
+    pub fn is_uncontracted(&self) -> bool {
+        self.command == UNCONTRACTED_CMD
+    }
+}
+
 fn truthy(v: &str) -> bool {
     matches!(v.trim().trim_matches('"').to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
@@ -1048,6 +1060,28 @@ pub fn parse_review(out: &str) -> Option<(bool, Vec<String>)> {
 }
 
 fn review_prompt(card: &str, title: &str, c: &Contract, evidence: &str, round: i64) -> String {
+    if c.is_uncontracted() {
+        return format!(
+"You are the independent reviewer for board card {card} (round {round} of {REVIEW_ROUNDS}). You did not write this work. \
+The working directory is a clean checkout of {sha}.
+
+Card: {title}
+Acceptance criteria: {acc}
+There is no frozen verify command: this card reached done before the contract reached its lane, so no server check ran. \
+Judge each acceptance criterion against the evidence the lane recorded and the commits themselves.
+Evidence recorded on the card: {evidence}
+
+Find the card's change: `git log --oneline --grep={card} -20`, then `git show` those commits, and read any test or run note the \
+evidence names. A criterion is met only if the evidence or the code shows it, with a measured result where the criterion asks \
+for one. Look for tests that were weakened, skipped or made to assert nothing, criteria satisfied in name only, and obvious \
+regressions. Do not modify files.
+
+Finish with exactly one line of JSON and nothing after it:
+{{\"verdict\": \"pass\" or \"fail\", \"findings\": [\"one sentence per problem, with file:line\"]}}",
+            sha = c.sha.as_deref().unwrap_or("HEAD"),
+            acc = c.acceptance,
+        );
+    }
     format!(
 "You are the independent reviewer for board card {card} (round {round} of {REVIEW_ROUNDS}). You did not write this work. \
 The working directory is a clean checkout of the commit the server verified ({sha}).
@@ -1321,6 +1355,71 @@ async fn review_one(state: &AppState, card: String) {
     }
 }
 
+/// Rule 3 for cards that reached done with no contract (they predate the
+/// contract on their lane), on lanes whose scoped AMUX_REVIEW_UNCONTRACTED is
+/// on. 2026-10-07: 12 GS-12 proof cards sat at done for 4+ hours with no
+/// reviewer, because the harness reviewer only knew contract cards. A review
+/// record is created (UNCONTRACTED_CMD, never run) and the existing reviewer,
+/// cap and restart safety take it from there. A card whose uncontracted review
+/// failed comes back when it is done again, with its rounds kept.
+pub async fn enqueue_uncontracted(state: &AppState) -> usize {
+    type Cand = (String, String, String, Option<String>, String, Option<String>);
+    let cands: Vec<Cand> = state.store.read_async(|conn| {
+        let mut st = conn.prepare(
+            "SELECT i.id, COALESCE(i.session, ''), i.title, i.acceptance_criteria, substr(COALESCE(i.desc, ''), 1, 400), i.evidence \
+             FROM issues i LEFT JOIN card_contracts c ON c.card = i.id \
+             WHERE i.status = 'done' AND i.type = 'code' AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
+             AND (c.card IS NULL OR (c.command = ?1 AND c.review_state = 'failed'))")?;
+        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+            .collect::<rusqlite::Result<Vec<Cand>>>()?;
+        Ok(v)
+    }).await.unwrap_or_default();
+    let home = crate::config::amux_home();
+    let mut opted: std::collections::HashMap<String, bool> = Default::default();
+    let mut n = 0usize;
+    for (card, lane, title, acc, desc, evidence) in cands {
+        let on = *opted.entry(lane.clone()).or_insert_with(|| {
+            !lane.is_empty() && lane_setting(&home, &lane, "AMUX_REVIEW_UNCONTRACTED").is_some_and(|v| truthy(&v))
+        });
+        if !on {
+            continue;
+        }
+        let Some(tree) = lane_tree(&lane) else { continue };
+        // The commit to review: a sha the evidence names, if this checkout
+        // has it; else the lane's view of origin/main.
+        let mut sha = None;
+        if let Some(s) = evidence.as_deref().and_then(parse_sha) {
+            if git(&tree, &["cat-file", "-e", &format!("{s}^{{commit}}")]).await.is_ok() {
+                sha = Some(s);
+            }
+        }
+        if sha.is_none() {
+            sha = git(&tree, &["rev-parse", "origin/main"]).await.ok().filter(|s| !s.is_empty());
+        }
+        let Some(sha) = sha else { continue };
+        let acceptance = nonempty(acc.as_deref())
+            .unwrap_or_else(|| format!("{title}. {}", desc.trim()));
+        let now = crate::config::now_f64();
+        let (c, a, sh) = (card.clone(), acceptance, sha.clone());
+        let r = state.store.write_async(move |conn| {
+            let k = conn.execute(
+                "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, kind, review_state, review_at) \
+                 VALUES (?1, ?2, ?3, '', ?4, 'passed', ?5, 'code', 'pending', ?4) \
+                 ON CONFLICT(card) DO UPDATE SET review_state = 'pending', review_at = ?4, sha = ?5 \
+                 WHERE card_contracts.command = ?3 AND card_contracts.review_state = 'failed'",
+                rusqlite::params![c, a, UNCONTRACTED_CMD, now, sh])?;
+            Ok(crate::db::WriteOutcome { applied: k > 0, events: vec![] })
+        }).await;
+        if matches!(r, Ok(ref o) if o.applied) {
+            n += 1;
+            tracing::info!(card = %card, lane = %lane, sha = %sha, measured = true, n_considered = 1,
+                verdict = "contract_review_uncontracted_enqueued",
+                "a done card with no contract was queued for the harness reviewer");
+        }
+    }
+    n
+}
+
 /// One pass: claim up to REVIEWS_PER_PASS pending reviews and run them in the
 /// background. Returns (pending before the pass, claimed).
 pub async fn run_reviews(state: &AppState) -> (usize, usize) {
@@ -1340,8 +1439,12 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
+    enqueue_uncontracted(state).await;
+    // Proof cards first: they decide a project's finish (GS-12, 2026-10-07).
     let pending: Vec<String> = state.store.read_async(|conn| {
-        let mut st = conn.prepare("SELECT card FROM card_contracts WHERE review_state = 'pending' ORDER BY review_at")?;
+        let mut st = conn.prepare(
+            "SELECT c.card FROM card_contracts c LEFT JOIN issues i ON i.id = c.card WHERE c.review_state = 'pending' \
+             ORDER BY CASE WHEN i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%' THEN 0 ELSE 1 END, c.review_at")?;
         let v = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
@@ -1386,7 +1489,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
-    ("3", &["contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("3", &["contract_review_uncontracted_enqueued", "contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),

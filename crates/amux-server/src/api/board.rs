@@ -10561,7 +10561,8 @@ async fn patch_item_route(
             .read_async(move |c| {
                 let row = bs::get_issue(c, &id2)?;
                 let contract = match &row {
-                    Some(_) => super::contract::load(c, &id2)?,
+                    // An uncontracted review record is not a contract (rules 1, 2).
+                    Some(_) => super::contract::load(c, &id2)?.filter(|k| !k.is_uncontracted()),
                     None => None,
                 };
                 Ok((row, contract))
@@ -16119,6 +16120,66 @@ mod af701_archive_guard_tests {
         assert_eq!(rs(&id).as_deref(), Some("superseded"));
         assert_eq!(super::super::contract::run_reviews(&state).await, (0, 0), "nothing left to review");
         assert!(!marker.exists(), "no reviewer ran for a card that left done");
+    }
+
+    /// Rule 3 for cards that reached done with no contract (2026-10-07: 12
+    /// GS-12 proof cards waited 4+ hours at done with no reviewer). Opted-in
+    /// lanes only, proof cards first, verified only by the harness reviewer.
+    #[tokio::test]
+    async fn a_done_card_with_no_contract_is_reviewed_on_an_opted_in_lane_proof_first() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let sha = String::from_utf8(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, "#!/bin/sh\ncat >/dev/null\necho '{\"verdict\": \"pass\", \"findings\": []}'\n").unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(h.join("sessions/lane-u.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_REVIEW_UNCONTRACTED=1\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        std::fs::write(h.join("sessions/lane-n.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        let done_card = |lane: &str, title: &str| {
+            let id = seed(&store, lane, "done");
+            let (id2, t, ev) = (id.clone(), title.to_string(), format!("ran it at {sha}"));
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code', title=?2, evidence=?3 WHERE id=?1", rusqlite::params![id2, t, ev])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let older_a = done_card("lane-u", "an ordinary card");
+        let older_b = done_card("lane-u", "another ordinary card");
+        let proof = done_card("lane-u", "GS12 proof 7 run: the thing holds");
+        let other = done_card("lane-n", "GS12 proof 8 run: not opted in");
+        let review_state = |id: &str| -> Option<String> {
+            store.read().unwrap().query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get(0)).ok()
+        };
+
+        let (pending, claimed) = super::super::contract::run_reviews(&state).await;
+        assert_eq!((pending, claimed), (3, 2), "three opted-in cards queued, two claimed per pass");
+        assert_ne!(review_state(&proof).as_deref(), Some("pending"), "the proof card is claimed first");
+        assert!([&older_a, &older_b].iter().any(|c| review_state(c).as_deref() == Some("pending")), "one ordinary card waits");
+        assert_eq!(review_state(&other), None, "a lane without the setting is untouched");
+        for _ in 0..300 {
+            if current(&store, &proof).status == "verified" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let row = current(&store, &proof);
+        assert_eq!(row.status, "verified");
+        assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
+        // The record is not a contract: rules 1 and 2 still see no contract.
+        let k = super::super::contract::load(&store.read().unwrap(), &proof).unwrap().unwrap();
+        assert!(k.is_uncontracted());
+        assert_eq!(current(&store, &other).status, "done");
     }
 
     #[tokio::test]
