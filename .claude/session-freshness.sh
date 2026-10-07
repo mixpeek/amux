@@ -478,6 +478,17 @@ if [ -n "${hooks_dir:-}" ] && [ -d "$REPO/scripts/git-hooks" ]; then
     out+=$'    ./scripts/install-hooks.sh   installs and verifies it now\n'
   fi
 
+  # The status report hook, same blind spot (2026-10-07: a stale copy without
+  # the worker-token header had every report from rule-10 lanes refused).
+  _rhd="${AMUX_REPORT_HOOK_DEST:-$HOME/.amux/hook-report.sh}"
+  _rhs="$REPO/scripts/hooks/hook-report.sh"
+  if [ -f "$_rhs" ] && [ -f "$_rhd" ] && ! cmp -s "$_rhs" "$_rhd"; then
+    out+="  - the status report hook differs from this checkout"$'\n'
+    out+="    running: ${_rhd}"$'\n'
+    out+=$'    every lane reports its state through it; a repo edit reaches nobody until it is installed\n'
+    out+=$'    ./scripts/install-hooks.sh   installs and verifies it now\n'
+  fi
+
   if [ -n "$stale_hooks" ]; then
     out+="  - installed git hooks differ from this checkout: ${stale_hooks}"$'
 '

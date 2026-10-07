@@ -365,6 +365,19 @@ if [ -d "$(dirname "$READ_ROUTER_DEST")" ] && [ -f "$READ_ROUTER_SRC" ]; then
   install -m 0755 "$READ_ROUTER_SRC" "$READ_ROUTER_DEST"
 fi
 
+# THE STATUS REPORT HOOK, same blind spot (2026-10-07). Every Claude lane's
+# lifecycle hooks run ~/.amux/hook-report.sh, and only install.sh placed it, so
+# the running copy was Oct 5's, from before it sent X-Amux-Worker-Token: on the
+# rule-10 lanes gs12-extra-1 and gs12-extra-2 every status report was refused
+# worker_identity_refused (~100 each by 16:45Z) and the server lost their state.
+# Replaced via rename(2), never in place: lanes execute it constantly.
+REPORT_HOOK_DEST="${AMUX_REPORT_HOOK_DEST:-$HOME/.amux/hook-report.sh}"
+REPORT_HOOK_SRC="$ROOT/scripts/hooks/hook-report.sh"
+if [ -d "$(dirname "$REPORT_HOOK_DEST")" ] && [ -f "$REPORT_HOOK_SRC" ] && ! cmp -s "$REPORT_HOOK_SRC" "$REPORT_HOOK_DEST"; then
+  _rh=$(mktemp "${REPORT_HOOK_DEST}.XXXXXX") && cp "$REPORT_HOOK_SRC" "$_rh" && chmod 0711 "$_rh" \
+    && bash "$ROOT/scripts/atomic-replace.sh" "$_rh" "$REPORT_HOOK_DEST" >/dev/null; rm -f "$_rh"
+fi
+
 # Verify rather than announce (ethos #7): compare what landed against its source,
 # so a stale installed copy cannot hide behind a success message. That drift was
 # real and security-relevant — the AC-239 secret patterns (Clerk, R2, Slack,
@@ -395,6 +408,14 @@ if [ -d "$(dirname "$SHARED_GUARD_DEST")" ]; then
   fi
 else
   echo "  SKIP $SHARED_GUARD_DEST — no ~/.amux/hooks on this machine (not an amux host)"
+fi
+if [ -f "$REPORT_HOOK_SRC" ] && [ -d "$(dirname "$REPORT_HOOK_DEST")" ]; then
+  if cmp -s "$REPORT_HOOK_SRC" "$REPORT_HOOK_DEST"; then
+    echo "  ok   $REPORT_HOOK_DEST matches scripts/hooks/hook-report.sh"
+  else
+    echo "  FAIL $REPORT_HOOK_DEST differs from scripts/hooks/hook-report.sh" >&2
+    fail=1
+  fi
 fi
 if [ ! -f "$READ_ROUTER_SRC" ]; then
   echo "  SKIP $READ_ROUTER_DEST — this checkout has no scripts/hooks/large-read-guard.py"

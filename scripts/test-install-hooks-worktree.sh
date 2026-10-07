@@ -146,5 +146,27 @@ else
   fi
 fi
 
+# ── C: the status report hook is installed, atomically, and verified ────────
+# (2026-10-07: only install.sh placed ~/.amux/hook-report.sh, so the running
+# copy predated the worker-token header and rule-10 lanes' reports were
+# refused.) Every destination is redirected into $TMP: nothing real is touched.
+mkdir -p "$wt/scripts/hooks" "$TMP/home/hooks"
+cp -p "$SRC_REPO/scripts/hooks/hook-report.sh" "$wt/scripts/hooks/"
+cp -p "$SRC_REPO/scripts/atomic-replace.sh" "$wt/scripts/"
+printf '#!/bin/bash\n# stale\n' > "$TMP/home/hook-report.sh"; chmod 0711 "$TMP/home/hook-report.sh"
+ino_before=$(ls -i "$TMP/home/hook-report.sh" | awk '{print $1}')
+cout="$(cd "$wt" && AMUX_REPORT_HOOK_DEST="$TMP/home/hook-report.sh" AMUX_SHARED_GUARD_DEST="$TMP/home/hooks/git-shared-guard.py" \
+  AMUX_READ_ROUTER_DEST="$TMP/home/hooks/large-read-guard.py" bash scripts/install-hooks.sh 2>&1)" || true   # its verdict is checked below, line by line
+if cmp -s "$wt/scripts/hooks/hook-report.sh" "$TMP/home/hook-report.sh"; then
+  ok "C: a stale report hook is replaced with the tracked one"
+else
+  bad "C: the report hook was not installed"; printf '%s\n' "$cout" | tail -5 | sed 's/^/       /' >&2
+fi
+[ "$(ls -i "$TMP/home/hook-report.sh" | awk '{print $1}')" != "$ino_before" ] \
+  && ok "C: it was replaced by rename (new inode), not rewritten in place" \
+  || bad "C: the running hook was rewritten in place (same inode)"
+printf '%s' "$cout" | grep -q "ok   $TMP/home/hook-report.sh matches scripts/hooks/hook-report.sh" \
+  && ok "C: the install is verified and says so" || bad "C: no verification line for the report hook"
+
 [ "$fail" -eq 0 ] && echo "install-hooks worktree suite: PASS" || echo "install-hooks worktree suite: FAIL" >&2
 exit "$fail"
