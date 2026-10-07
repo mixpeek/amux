@@ -33,7 +33,15 @@ pub fn prompt_line(raw: &str) -> Option<String> {
     if after.iter().any(|l| l.contains("\u{23f5}\u{23f5}") || l.to_lowercase().contains("bypass permissions on")) {
         return None;
     }
-    let reason = if i > 0 && !tail[i - 1].starts_with('\u{2502}') { tail[i - 1] } else { tail[i] };
+    // Claude Code may draw a countdown line above the question ("will
+    // automatically deny this request in 1:59 ..."); it changes every second,
+    // so it is never the reason line (gs12-extra-2, 2026-10-07: 50 warnings
+    // an hour, each one a "new" prompt at age 0).
+    let mut j = i;
+    while j > 0 && tail[j - 1].to_lowercase().contains("automatically deny") {
+        j -= 1;
+    }
+    let reason = if j > 0 && !tail[j - 1].starts_with('\u{2502}') { tail[j - 1] } else { tail[i] };
     Some(reason.chars().take(160).collect())
 }
 
@@ -66,7 +74,9 @@ pub fn observe(lane: &str, raw: Option<&str>, now: f64) -> Option<(String, f64)>
         warned_at: 0.0,
         alerted: false,
     });
-    if entry.line != line {
+    // Digits never make a prompt a different prompt (counters, timers).
+    let same = |a: &str, b: &str| a.chars().filter(|c| !c.is_ascii_digit()).eq(b.chars().filter(|c| !c.is_ascii_digit()));
+    if !same(&entry.line, &line) {
         *entry = Seen { line: line.clone(), since: now, last_seen: now, warned_at: 0.0, alerted: false };
     }
     entry.last_seen = now;
@@ -174,6 +184,16 @@ Do you want to proceed?
 
 \u{276f}
 \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)";
+
+    #[test]
+    fn a_countdown_line_is_not_the_reason_and_does_not_restart_the_block() {
+        let screen = |t: &str| format!("\u{23fa} Bash(git grep -l probe origin/main)\n\u{26a0} Claude Code will automatically deny this request in {t}, to avoid blocking progress on an unattended session\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No\nEsc to cancel");
+        assert_eq!(prompt_line(&screen("1:59")).as_deref(), Some("\u{23fa} Bash(git grep -l probe origin/main)"));
+        let lane = "countdown-lane";
+        let (_, first) = observe(lane, Some(&screen("1:59")), 1000.0).unwrap();
+        let (_, later) = observe(lane, Some(&screen("0:30")), 1090.0).unwrap();
+        assert_eq!(first, later, "the same prompt keeps its first-seen time");
+    }
 
     #[test]
     fn a_drawn_permission_prompt_names_its_reason_line() {
