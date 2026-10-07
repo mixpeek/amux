@@ -358,8 +358,75 @@ pub(crate) fn authorize_local_member_request(
     {
         return None;
     }
+    // Scope writes (the Chat toggle writes a worker's env): scope.rs checks the
+    // body against the member's grant (worker level, inside the grant only).
+    if path == "/api/scope" && *method == Method::PUT {
+        return None;
+    }
+    // READ access to files under the working directories of the workers the
+    // grant covers (AC-490): a group member ("Elliot sees everything in the
+    // wexus group", Ethan 2026-10-07) needs the group's documents, not only
+    // its workers and cards. GET only; uploads, renames and deletes stay
+    // denied below. The path is canonicalized, so ".." cannot climb out.
+    if *method == Method::GET {
+        if let Some(target) = member_file_target(path, uri) {
+            let allowed = scoped_worker_dirs(&scope);
+            let ok = canonical_or_lexical(&target)
+                .is_some_and(|t| allowed.iter().any(|d| t.starts_with(d)));
+            if ok {
+                return None;
+            }
+            tracing::warn!(path = %target.display(), scope_level = scope.level(), scope_name = scope.name(),
+                verdict = "member_file_outside_grant", "scoped member file read refused");
+            return Some(forbidden(&scope, "a file outside your workers' folders"));
+        }
+    }
 
     Some(forbidden(&scope, path))
+}
+
+/// The file a read route is about, for the scoped-member file rule.
+fn member_file_target(path: &str, uri: &Uri) -> Option<std::path::PathBuf> {
+    if let Some(rest) = path.strip_prefix("/api/file/raw-path/") {
+        let decoded = super::fs::parse_qs(&format!("p={}", rest.replace('+', "%2B")))
+            .into_iter().next().map(|(_, v)| v).unwrap_or_default();
+        return Some(std::path::PathBuf::from(format!("/{}", decoded.trim_start_matches('/'))));
+    }
+    let reads = ["/api/file", "/api/file/", "/api/file/raw", "/api/file/xlsx", "/api/file/vtt",
+                 "/api/fs/read", "/api/fs/list"];
+    if !reads.contains(&path) {
+        return None;
+    }
+    let qs = super::fs::parse_qs(uri.query().unwrap_or(""));
+    qs.into_iter().find(|(k, _)| k == "path").map(|(_, v)| std::path::PathBuf::from(v))
+}
+
+fn canonical_or_lexical(p: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !p.is_absolute() {
+        return None;
+    }
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return Some(c);
+    }
+    // A path that does not exist yet: resolve lexically, refusing any "..".
+    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return None;
+    }
+    Some(p.to_path_buf())
+}
+
+/// Working directories (CC_DIR) of the workers a scope covers, canonicalized.
+pub(crate) fn scoped_worker_dirs(scope: &MemberScope) -> Vec<std::path::PathBuf> {
+    let sessions = super::groups::amux_home().join("sessions");
+    scoped_worker_names(scope)
+        .into_iter()
+        .filter_map(|w| {
+            let env = std::fs::read_to_string(sessions.join(format!("{w}.env"))).ok()?;
+            let dir = env.lines().find_map(|l| l.strip_prefix("CC_DIR="))?;
+            let dir = dir.trim().trim_matches('"').trim_matches('\'');
+            (!dir.is_empty() && dir != "/").then(|| canonical_or_lexical(std::path::Path::new(dir)))?
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -2857,5 +2924,23 @@ mod tests {
         assert_eq!(wrong, StatusCode::FORBIDDEN);
         let (still_live, _, _) = raw_send(&app, "GET", &format!("/invite/{token}"), "", &[]).await;
         assert_eq!(still_live, StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod member_file_tests {
+    use super::*;
+
+    #[test]
+    fn file_targets_come_from_the_right_place_and_dotdot_cannot_climb() {
+        let u: Uri = "/api/file/raw?path=%2Fhome%2Famux%2Fwexus%2Fa.md".parse().unwrap();
+        assert_eq!(member_file_target("/api/file/raw", &u).unwrap(), std::path::PathBuf::from("/home/amux/wexus/a.md"));
+        let u: Uri = "/api/file/raw-path/home/amux/wexus/a%20b+c.html".parse().unwrap();
+        assert_eq!(member_file_target("/api/file/raw-path/home/amux/wexus/a%20b+c.html", &u).unwrap(),
+            std::path::PathBuf::from("/home/amux/wexus/a b+c.html"));
+        let u: Uri = "/api/fs/delete?path=/x".parse().unwrap();
+        assert!(member_file_target("/api/fs/delete", &u).is_none(), "only read routes are file targets");
+        assert!(canonical_or_lexical(std::path::Path::new("/nonexistent-amux/wexus/../../etc/passwd")).is_none());
+        assert!(canonical_or_lexical(std::path::Path::new("relative/path")).is_none());
     }
 }
