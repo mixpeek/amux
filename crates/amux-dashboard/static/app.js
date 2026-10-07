@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1260';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1261';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15598,7 +15598,10 @@ async function _psfViewFile(filePath) {
       iframe.setAttribute('scrolling', 'yes');
       iframe.style.cssText = 'width:100%;flex:1;min-height:300px;border:none;background:#fff;';
       content.appendChild(iframe);
-      iframe.srcdoc = data.content;
+      // Same as the file overlay: load from the file's own URL so in-page
+      // anchors and relative links stay inside the document (see _htmlPreviewUrl).
+      const _pu = _htmlPreviewUrl(data.path || filePath);
+      if (_pu) iframe.src = _authUrl(_pu); else iframe.srcdoc = data.content;
     } else if (data.content != null) {
       content.className = 'file-overlay-body file-code';
       content.innerHTML = typeof _fileHighlightHTML === 'function' ? _fileHighlightHTML(data) : '<pre>' + esc(data.content) + '</pre>';
