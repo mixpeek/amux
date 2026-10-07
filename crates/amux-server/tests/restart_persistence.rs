@@ -704,11 +704,12 @@ async fn the_rig_can_tell_a_dead_server_from_a_live_one() {
 /// their full evidence remains after disposable checkout cleanup.
 #[tokio::test]
 async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_passes() {
-    recover_completed_review("0", "fail").await;
-    recover_completed_review("37", "pass").await;
+    recover_completed_review("0", "fail", false).await;
+    recover_completed_review("37", "pass", false).await;
+    recover_completed_review("0", "fail", true).await;
 }
 
-async fn recover_completed_review(exit: &str, verdict: &str) {
+async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     let mut rig = Rig::new();
     // A cached review must be adopted; this sentinel catches a paid rerun.
     let repo = rig.home.join("fixture-repo");
@@ -722,7 +723,10 @@ async fn recover_completed_review(exit: &str, verdict: &str) {
     std::fs::create_dir_all(rig.home.join("sessions")).unwrap();
     let forbidden = rig.home.join("must-not-rerun-review");
     let cli = rig.home.join("review-cli.sh");
-    std::fs::write(&cli, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", forbidden.display())).unwrap();
+    let cli_script = if live {
+        format!("#!/bin/sh\necho launch >> '{}'\nsleep 20\necho '{{\"verdict\":\"fail\",\"findings\":[\"missing required measurement\"]}}'\nexit 0\n", forbidden.display())
+    } else { format!("#!/bin/sh\necho launch >> '{}'\nexit 1\n", forbidden.display()) };
+    std::fs::write(&cli, cli_script).unwrap();
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap(); }
     std::fs::write(rig.home.join(format!("sessions/{lane}.env")), format!("CC_DIR={}\nCC_NAME={lane}\nCC_ISOLATED=1\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI={}\n", repo.display(), cli.display())).unwrap();
     rig.spawn();
@@ -736,7 +740,7 @@ async fn recover_completed_review(exit: &str, verdict: &str) {
     rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','cron-rs',NULL,'delivery interrupted')", &[&sid]);
     rig.seed("INSERT INTO steering_queue(id,session,text,queued_at,delivering_since) VALUES('rr-claimed',?1,'uncertain delivery',1,1)", &[&lane]);
     rig.seed("INSERT INTO steering_queue(id,session,text,queued_at) VALUES('rr-waiting',?1,'never attempted',2)", &[&lane]);
-    rig.seed("INSERT INTO issues(id,title,type,status,session,created,updated,evidence) VALUES(?1,'Recovered independent review','ops','done',?2,1,1,'recorded server check')", &[&card,&lane]);
+    rig.seed("INSERT INTO issues(id,title,type,status,session,created,updated,evidence,desc) VALUES(?1,'Recovered independent review','ops','done',?2,1,1,'recorded server check','original full measurement requirements')", &[&card,&lane]);
     rig.seed("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,review_state,review_at) VALUES(?1,'original criteria','exit 0','fixed-hash',1,'passed',?2,'running',1)", &[&card,&sha]);
     let conn = rusqlite::Connection::open(&rig.db).unwrap();
     let frozen = amux_server::api::contract::load(&conn, card).unwrap().unwrap();
@@ -744,13 +748,24 @@ async fn recover_completed_review(exit: &str, verdict: &str) {
     let input = amux_server::api::contract::review_input_hash(&frozen, &row, 1);
     drop(conn);
     let review = rig.home.join("tmp/contract").join(format!("{card}-review-{}-{}", &sha[..12], &input[..16]));
-    assert!(Command::new("git").arg("-C").arg(&repo).args(["worktree", "add", "--detach"]).arg(&review).arg(&sha).status().unwrap().success());
-    std::fs::write(review.join(".amux-review.out"), json!({"verdict":verdict,"findings":["missing required measurement"]}).to_string()).unwrap();
-    std::fs::write(review.join(".amux-review.exit"), exit).unwrap();
-    std::fs::write(review.join("card-source.md"), "original full measurement requirements").unwrap();
-    std::fs::write(review.join(".amux-review.prompt"), "original immutable review prompt").unwrap();
+    if live {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        while !forbidden.exists() && Instant::now() < deadline { tokio::time::sleep(Duration::from_millis(100)).await; }
+        assert!(forbidden.exists(), "the real detached review must launch before the crash");
+        assert!(review.join(".amux-review.pid").exists(), "launched reviewer PID is durable");
+    } else {
+        assert!(Command::new("git").arg("-C").arg(&repo).args(["worktree", "add", "--detach"]).arg(&review).arg(&sha).status().unwrap().success());
+        std::fs::write(review.join(".amux-review.out"), json!({"verdict":verdict,"findings":["missing required measurement"]}).to_string()).unwrap();
+        std::fs::write(review.join(".amux-review.exit"), exit).unwrap();
+        std::fs::write(review.join("card-source.md"), "original full measurement requirements").unwrap();
+        std::fs::write(review.join(".amux-review.prompt"), "original immutable review prompt").unwrap();
+    }
     rig.kill();
     assert!(rig.client.get(rig.url("/health")).send().await.is_err());
+    if live {
+        let pid = std::fs::read_to_string(review.join(".amux-review.pid")).unwrap();
+        assert!(Command::new("kill").args(["-0",pid.trim()]).status().unwrap().success(), "reviewer outlives the server PID");
+    }
     // Provider hooks can arrive while the server is down. They must remain
     // durable locally and be consumed by the next image without new prompts.
     let run = "deadbeef";
@@ -788,7 +803,7 @@ async fn recover_completed_review(exit: &str, verdict: &str) {
     assert_eq!(rig.count("SELECT COUNT(*) FROM steering_history WHERE id='rr-claimed' AND outcome LIKE 'interrupted%'"), 1, "uncertain delivery remains explicit");
     assert_eq!(rig.count("SELECT COUNT(*) FROM card_contracts WHERE card='RR-RECOVERY' AND review_state='failed'"), 1);
     assert_eq!(rig.count("SELECT COUNT(*) FROM issues WHERE id='RR-RECOVERY' AND status='verified'"), 0);
-    assert!(!forbidden.exists(), "completed review was rerun instead of adopted");
+    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live), "review must be adopted, never duplicated");
     assert_eq!(rig.count("SELECT review_rounds FROM card_contracts WHERE card='RR-RECOVERY'"), 1, "a completed failed/unmeasured attempt spends one bounded round");
     if exit != "0" {
         let conn = rusqlite::Connection::open(&rig.db).unwrap();
@@ -801,9 +816,11 @@ async fn recover_completed_review(exit: &str, verdict: &str) {
     assert!(std::fs::read_to_string(artifact.join(".amux-review.out")).unwrap().contains("missing required measurement"));
     assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.exit")).unwrap(), exit);
     assert_eq!(std::fs::read_to_string(artifact.join("card-source.md")).unwrap(), "original full measurement requirements");
-    assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.prompt")).unwrap(), "original immutable review prompt");
+    let prompt = std::fs::read_to_string(artifact.join(".amux-review.prompt")).unwrap();
+    if live { assert!(prompt.contains("original criteria") && prompt.contains("card-source.md")); }
+    else { assert_eq!(prompt, "original immutable review prompt"); }
     rig.restart().await;
     assert_eq!(rig.count("SELECT COUNT(*) FROM schedule_runs WHERE status='error'"), 2);
     assert_eq!(rig.count("SELECT COUNT(*) FROM session_events WHERE type='session.native_status' AND json_extract(data,'$.run_id')='deadbeef'"), 2);
-    assert!(!forbidden.exists());
+    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live));
 }
