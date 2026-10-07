@@ -2143,30 +2143,32 @@ mod tests {
     fn review_verdict_is_fenced_by_current_inputs_and_status_in_the_writer() {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("db")).unwrap();
-        let conn = store.read().unwrap();
-        conn.execute("INSERT INTO issues(id,title,type,status,session,desc,evidence,created,updated) VALUES('RACE','Required measurement','ops','done','lane','full source','recorded evidence',1,1)", []).unwrap();
-        conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,review_rounds) VALUES('RACE','every surface','true','frozen-hash',1,'passed','pinned-sha',0)", []).unwrap();
-        let k = load(&conn, "RACE").unwrap().unwrap();
-        let row = crate::db::board_store::get_issue(&conn, "RACE").unwrap().unwrap();
-        let generation = review_input_hash(&k, &row, 1);
-        assert!(review_generation_current(&conn, "RACE", 1, &generation).unwrap());
-        for (table, field, value) in [
-            ("issues", "status", "doing"), ("issues", "desc", "changed source"),
-            ("issues", "evidence", "new evidence"), ("issues", "session", "another lane"),
-            ("card_contracts", "acceptance", "more surfaces"), ("card_contracts", "state", "failed"),
-            ("card_contracts", "sha", "different-sha"), ("card_contracts", "review_rounds", "1"),
-        ] {
-            let key = if table == "issues" { "id" } else { "card" };
-            let select = format!("SELECT CAST({field} AS TEXT) FROM {table} WHERE {key}='RACE'");
-            let original: String = conn.query_row(&select, [], |r| r.get(0)).unwrap();
-            let update = format!("UPDATE {table} SET {field}=?1 WHERE {key}='RACE'");
-            conn.execute(&update, [value]).unwrap();
-            assert!(!review_generation_current(&conn, "RACE", 1, &generation).unwrap(), "{table}.{field}");
-            conn.execute(&update, [&original]).unwrap();
-            assert!(review_generation_current(&conn, "RACE", 1, &generation).unwrap(), "restored {table}.{field}");
-        }
-        conn.execute("DELETE FROM card_contracts WHERE card='RACE'", []).unwrap();
-        assert!(!review_generation_current(&conn, "RACE", 1, &generation).unwrap());
+        store.write(|conn| {
+            conn.execute("INSERT INTO issues(id,title,type,status,session,desc,evidence,created,updated) VALUES('RACE','Required measurement','ops','done','lane','full source','recorded evidence',1,1)", []).unwrap();
+            conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,review_rounds) VALUES('RACE','every surface','true','frozen-hash',1,'passed','pinned-sha',0)", []).unwrap();
+            let k = load(conn, "RACE").unwrap().unwrap();
+            let row = crate::db::board_store::get_issue(conn, "RACE").unwrap().unwrap();
+            let generation = review_input_hash(&k, &row, 1);
+            assert!(review_generation_current(conn, "RACE", 1, &generation).unwrap());
+            for (table, field, value) in [
+                ("issues", "status", "doing"), ("issues", "desc", "changed source"),
+                ("issues", "evidence", "new evidence"), ("issues", "session", "another lane"),
+                ("card_contracts", "acceptance", "more surfaces"), ("card_contracts", "state", "failed"),
+                ("card_contracts", "sha", "different-sha"), ("card_contracts", "review_rounds", "1"),
+            ] {
+                let key = if table == "issues" { "id" } else { "card" };
+                let select = format!("SELECT CAST({field} AS TEXT) FROM {table} WHERE {key}='RACE'");
+                let original: String = conn.query_row(&select, [], |r| r.get(0)).unwrap();
+                let update = format!("UPDATE {table} SET {field}=?1 WHERE {key}='RACE'");
+                conn.execute(&update, [value]).unwrap();
+                assert!(!review_generation_current(conn, "RACE", 1, &generation).unwrap(), "{table}.{field}");
+                conn.execute(&update, [&original]).unwrap();
+                assert!(review_generation_current(conn, "RACE", 1, &generation).unwrap(), "restored {table}.{field}");
+            }
+            conn.execute("DELETE FROM card_contracts WHERE card='RACE'", []).unwrap();
+            assert!(!review_generation_current(conn, "RACE", 1, &generation).unwrap());
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
     }
 
     #[test]

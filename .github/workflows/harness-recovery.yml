@@ -19,16 +19,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Install private harness runtime
-        run: apt-get update && apt-get install -y git tmux python3 ca-certificates procps
+        run: apt-get update && apt-get install -y git tmux python3 ca-certificates procps ffmpeg
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Trust only the checked-out fixture repository
+        # Container UID ownership can differ from the checkout action's UID.
+        # Source receipts must read this exact repository, not silently skip it.
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
       - name: Use the shared dependency target
         run: echo "CARGO_TARGET_DIR=$HOME/.amux/rust-build-target" >> "$GITHUB_ENV"
       - name: Real process crash and stateful recovery
         env:
           AMUX_RECOVERY_ARTIFACT_DIR: ${{ runner.temp }}/harness-recovery
+          AMUX_REQUIRE_MEDIA_RECOVERY: 1
+          AMUX_HOME: ${{ runner.temp }}/harness-recovery/controller-state
         run: bash scripts/test-harness-recovery.sh
       - name: Retain measured recovery receipts even on failure
         if: always()
@@ -38,5 +46,6 @@ jobs:
           path: |
             ${{ runner.temp }}/harness-recovery/*.log
             ${{ runner.temp }}/harness-recovery/*.sha256
+            ${{ runner.temp }}/harness-recovery/controller-state/test-receipts/*.tsv
             /tmp/amux-chaos-*/recovery-receipt.json
           if-no-files-found: warn

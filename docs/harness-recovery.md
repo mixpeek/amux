@@ -133,13 +133,17 @@ that no test ran. Retry after those consumers finish.
 | Provider conversations, leases, media-job metadata | Explicitly labelled seeded persistence cases in that matrix |
 | Interrupted manual shell and cron delivery | Real restart: error/unknown result retained, no false pass or automatic replay |
 | Native lifecycle spool and installed observer | Hooks run during downtime; boot consumes edges once and repairs installed bytes |
-| Pending independent review | A completed result is adopted without launching the configured sentinel CLI; full evidence retained |
-| Idle pool and dependency graph | Transactional stale-plan, dependency change, archive, busy lane, transitive/cyclic graph and 300-card tests |
+| Pending independent review | Cached results and a real detached reviewer surviving SIGKILL are adopted without a second CLI launch; full evidence retained |
+| Media prepare | Seeded stale intent resumes a real ffmpeg consumer after SIGKILL; completed output is adopted, and lost output is regenerated |
+| Lease expiry | Real API counts expired and live RFC3339 leases correctly before and after SIGKILL |
+| Idle pool and dependency graph | Real idle-worker claim from an over-cap graph, SIGKILL between claim and dispatch, one pickup command at the fake terminal, and intact roll-up edges; transactional stale-plan, dependency change, archive, busy lane, transitive/cyclic graph and 300-card tests |
 | Internal consumers | Injected constructor, poll and long-loop panic; recovery counters and abort/termination controls |
 | Budget, scheduler reserve, coalescing, shell pipelines | Attributed/unknown accounting; definite versus uncertain delivery; actual failed shell pipeline |
 | Scope and handoff | Exact frozen IDs, bad/missing scope and acceptance-preserving brief controls |
 
-Persistence of media metadata is not a proof of a live ffmpeg restart. Fake
+The media restart case seeds the lost heartbeat explicitly; it proves the resumed
+ffmpeg consumer, not killing an encoder at every possible point. CI requires ffmpeg
+for this case; a missing local binary is reported unmeasured. Fake
 providers prove harness transport and state, not real provider flags, model
 reasoning, an external plane's correctness, or every possible interleaving.
 For work involving those surfaces, add a real consumer test and a failing

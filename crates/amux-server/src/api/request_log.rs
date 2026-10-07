@@ -2318,6 +2318,22 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/browser/profiles/{name}",
+        methods: &["DELETE"],
+    },
+    RouteEntry {
+        path: "/api/browser/profile-for",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/browser/profile/meta",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/browser/sync-logins",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/browser/complete-order",
         methods: &["POST"],
     },
