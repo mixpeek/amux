@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1259';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1260';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16486,21 +16486,12 @@ function _peekToggleToolNow(id) {
   if (el) el.classList.toggle('collapsed', !now);
 }
 let _peekToolSeq = 0;
-// A previewed HTML file's relative links ("page2.html", "img/x.png") must
-// resolve to its SIBLING files. In a srcdoc frame they resolved against the
-// dashboard's own URL: on a door-protected host that was the sign-in page, on
-// a local one the SPA (Ethan, /home/amux/mtp/index.html, 2026-10-07). A <base>
-// at /api/file/raw-path/<dir>/ fixes both; that route serves the same bytes as
-// /api/file/raw with a sandbox CSP on HTML.
-function _htmlPreviewWithBase(html, filePath) {
-  const dir = String(filePath || '').replace(/[^/]*$/, '');
-  if (!dir.startsWith('/')) return html;
-  const href = '/api/file/raw-path' + dir.split('/').map(encodeURIComponent).join('/');
-  const base = '<base href="' + href.replace(/"/g, '&quot;') + '">';
-  if (/<base[\s>]/i.test(html)) return html;           // the file chose its own
-  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + base);
-  if (/^\s*<!doctype[^>]*>/i.test(html)) return html.replace(/^\s*<!doctype[^>]*>/i, m => m + base);
-  return base + html;
+// Path-style URL for a previewed file (api/file_viewer.rs raw_path), so the
+// frame's own document URL is the file's and its links resolve normally.
+function _htmlPreviewUrl(filePath) {
+  const p = String(filePath || '');
+  if (!p.startsWith('/')) return null;
+  return '/api/file/raw-path' + p.split('/').map(encodeURIComponent).join('/');
 }
 function _wrapToolCalls(html) {
   const lines = html.split('\n');
@@ -24339,7 +24330,15 @@ function _renderFileBody(data, mode) {
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
-    iframe.srcdoc = _htmlPreviewWithBase(data.content, data.path);
+    // Load the file from its own URL, not srcdoc. In a srcdoc frame the
+    // document is about:srcdoc while links resolve against the DASHBOARD's
+    // URL, so an in-page "#plan" or a sibling "page2.html" navigated the frame
+    // to the dashboard (the sign-in page behind a door): Ethan,
+    // /home/amux/mtp/index.html, 2026-10-07. From /api/file/raw-path/<file>,
+    // anchors scroll in place and relative links reach sibling files. The
+    // sandbox attribute above and the route's CSP keep it an opaque origin.
+    const _previewUrl = _htmlPreviewUrl(data.path);
+    if (_previewUrl) iframe.src = _authUrl(_previewUrl); else iframe.srcdoc = data.content;
     return;
   }
   if (data.is_video) {
