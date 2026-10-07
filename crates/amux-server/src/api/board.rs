@@ -16315,8 +16315,16 @@ mod af701_archive_guard_tests {
         // 60 s, not 15: CI failed here with the desc still "fixture" (the
         // review had not written), the way the uncontracted-review test did
         // at 17 s where a local run takes ~1.5 s.
+        // The review writes the desc FIRST and queues the lane message after
+        // (contract.rs prereview_one), so waiting on the desc alone raced the
+        // queue count below on CI (42827a32's run: queued 0). Wait for both.
+        let queued_now = || -> i64 {
+            store.read().unwrap()
+                .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap()
+        };
         for _ in 0..1200 {
-            if current(&store, &proof).desc.contains("missing from the plan") && current(&store, &ops).desc.contains("missing from the plan") {
+            if current(&store, &proof).desc.contains("missing from the plan") && current(&store, &ops).desc.contains("missing from the plan")
+                && queued_now() >= 1 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
