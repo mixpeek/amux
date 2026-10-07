@@ -338,6 +338,12 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                 "ask_question": format!("{} cannot satisfy its frozen contract as written ({reason}): change the contract, re-scope the card, or close it?", card.id),
                 "ask_unblocks": "The owner's change to the contract or the card, after which the lane resumes or the card closes.",
                 "desc_append": format!("\ncannot_satisfy (contract rule 2): {reason}"),
+                // A standing approval cannot answer this ask: only the owner
+                // changes a frozen contract. Without this a keyword match
+                // (SA-9 on "check") refused GG-31's cannot_satisfy as "already
+                // approved" and the card could not leave doing (gs12-gates,
+                // 2026-10-07). Uses the gate's own logged decline.
+                "standing_approval_decline": "contract cannot_satisfy: changing a frozen contract is the owner's decision, which no standing approval covers",
             }))
         }
         "doing" if card.status != "doing" => freeze_from(card, body, existing, defaults),
@@ -1673,6 +1679,8 @@ mod tests {
         match decide(&card("doing", "code", Some("a")), &json!({"status": "cannot_satisfy", "reason": "the fixture is gone", "left_undone": []}), false, Some(&frozen()), &dflt(None)) {
             Action::Rewrite(v) => {
                 assert_eq!(v["status"], "needsyou");
+                assert!(v["standing_approval_decline"].as_str().is_some_and(|s| !s.is_empty()),
+                    "a cannot_satisfy is never answered by a standing approval");
                 assert!(v["ask_question"].as_str().unwrap().contains("the fixture is gone"));
             }
             _ => panic!("cannot_satisfy becomes an owner ask"),
