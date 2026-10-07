@@ -1676,7 +1676,32 @@ fn trim_live_overlap(transcript: &str, live: &str) -> String {
         }
     }
     if found.len() >= 3 {
-        let after = found[0] + 1;
+        // ANCHOR AT THE TRANSCRIPT'S END, not at any line it ever contained
+        // (Ethan, 2026-10-07, amux-helper: "the amux ui peek is still not
+        // parity"). A lane whose tool output once quoted Claude Code's own
+        // chrome ("✔ Update installed · Restart to update", a peek of a peer)
+        // made that chrome line, live in its OWN frame below the spinner,
+        // count as overlap, and the cut went through the running tool, the
+        // spinner and the tip, leaving only the composer and footer. The
+        // live frame continues where the transcript stops, so the cut follows
+        // the newest transcript line the frame shows; the old last-match cut
+        // stays an upper bound.
+        let mut after = found[0] + 1;
+        let live_norm: Vec<String> = ll.iter().map(|x| norm(x)).collect();
+        let same = |t: &str, l: &str| {
+            let (tc, lc) = (t.chars().count(), l.chars().count());
+            lc >= 12 && (t == l || (tc >= 24 && lc >= 24 && (t.contains(l) || l.contains(t))))
+        };
+        let anchor = tlines.iter().rev().map(|x| norm(x)).filter(|t| t.chars().count() >= 12).find_map(|t| {
+            live_norm.iter().rposition(|l| same(&t, l))
+        });
+        if let Some(at) = anchor {
+            if at + 1 < after {
+                tracing::debug!(cut_was = after, cut = at + 1, measured = true, n_considered = ll.len(),
+                    verdict = "peek_live_cut_at_transcript_end", "a live line quoted earlier in the transcript no longer hides the frame below it");
+                after = at + 1;
+            }
+        }
         return ll[after.min(ll.len())..]
             .join("\n")
             .trim_start_matches('\n')
@@ -40718,6 +40743,21 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     /// third-from-last match and the last one: taking the wrong end would
     /// re-emit `carried over from the transcript`, which the reader has already
     /// seen, and that duplication is the exact symptom the trim exists to stop.
+    /// A chrome line the transcript once QUOTED (tool output peeking a peer)
+    /// must not count as overlap when it shows in this lane's own frame: the
+    /// cut follows the transcript's end, so the running tool, spinner and tip
+    /// below it stay (Ethan, 2026-10-07, amux-helper peek parity).
+    #[test]
+    fn a_chrome_line_quoted_earlier_in_the_transcript_does_not_hide_the_live_frame() {
+        let transcript = "⏺ Bash(peek gs12-model)\n  ⎿  == gs12-model\n     ✔ Update installed · Restart to update\n     ⏵⏵ bypass permissions on (shift+tab to cycle)\n⏺ That approval came from the automatic needs-input policy, not from you.\n  Speaking in your name needs your own yes, so I am not acting on it.\n  The policy should never approve an ask like that, so I am fixing it now.\n⏺ Bash(P=/private/tmp/p1; cd $P; git fetch -q origin main)";
+        let live = "⏺ That approval came from the automatic needs-input policy, not from you.\n  Speaking in your name needs your own yes, so I am not acting on it.\n  The policy should never approve an ask like that, so I am fixing it now.\n\n  Adding an owner-voice never rule with a test · 2m 4s\n  ⎿  $ P=/private/tmp/p1; cd $P; git fetch -q origin main\n     (ctrl+b ctrl+b (twice) to run in background)\n\n+ Moonwalking… (2m 19s · ↓ 1.4k tokens)\n  ⎿  Tip: Use /btw to ask a quick side question\n                         ✔ Update installed · Restart to update\n──────── amux-helper ─\n❯ \n────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt";
+        let out = trim_live_overlap(transcript, live);
+        for want in ["Moonwalking", "Tip: Use /btw", "Update installed", "bypass permissions"] {
+            assert!(out.contains(want), "{want} must stay in the live frame: {out}");
+        }
+        assert!(!out.contains("That approval came from"), "the overlap is still trimmed: {out}");
+    }
+
     #[test]
     fn the_overlap_scan_keeps_the_last_match_not_the_third_from_last() {
         let shared: Vec<String> = (0..6)
