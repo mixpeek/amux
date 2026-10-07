@@ -16300,14 +16300,19 @@ mod af701_archive_guard_tests {
                 StatusCode::OK, "{id} enters doing");
         }
         assert_eq!(super::super::contract::run_prereviews(&state).await, 1, "only the proof card is pre-reviewed");
-        for _ in 0..300 {
+        // 60 s, not 15: CI failed here with the desc still "fixture" (the
+        // review had not written), the way the uncontracted-review test did
+        // at 17 s where a local run takes ~1.5 s.
+        for _ in 0..1200 {
             if current(&store, &proof).desc.contains("missing from the plan") {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let row = current(&store, &proof);
-        assert!(row.desc.contains("no Ray Serve app is measured at 0 replicas"), "{}", row.desc);
+        let pre: Option<(Option<String>, Option<String>)> = store.read().unwrap()
+            .query_row("SELECT prereview_state, prereview_hash FROM card_contracts WHERE card = ?1", [&proof], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        assert!(row.desc.contains("no Ray Serve app is measured at 0 replicas"), "desc={:?} prereview={pre:?}", row.desc);
         assert_eq!(row.status, "doing", "a pre-run review never moves the card");
         let pst = |id: &str| store.read().unwrap().query_row("SELECT prereview_state FROM card_contracts WHERE card = ?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
         assert_eq!(pst(&proof).as_deref(), Some("gaps"));

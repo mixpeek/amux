@@ -1592,12 +1592,6 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
 // contract hash, lists the measurements the planned run would not produce,
 // and sends them to the lane before it runs. It never blocks the card.
 
-/// A GS-12 completion-proof or requirement card.
-pub fn is_proof_title(title: &str) -> bool {
-    let t = title.trim_start();
-    t.starts_with("GS12 proof") || t.starts_with("GS12 requirement")
-}
-
 /// The pre-run verdict: Some((ready, findings)) from the last JSON line whose
 /// verdict is "ready" or "gaps". Anything else is unmeasured.
 pub fn parse_prereview(out: &str) -> Option<(bool, Vec<String>)> {
