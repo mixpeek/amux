@@ -364,7 +364,7 @@ pub(crate) fn authorize_local_member_request(
         return None;
     }
     // READ access to files under the working directories of the workers the
-    // grant covers (AC-490): a group member ("Elliot sees everything in the
+    // grant covers (AC-482): a group member ("Elliot sees everything in the
     // wexus group", Ethan 2026-10-07) needs the group's documents, not only
     // its workers and cards. GET only; uploads, renames and deletes stay
     // denied below. The path is canonicalized, so ".." cannot climb out.
