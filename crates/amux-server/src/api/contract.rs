@@ -1566,7 +1566,10 @@ async fn review_one(state: &AppState, card: String) {
 // A done card whose own check was abandoned (state 'superseded', set by
 // the 2026-10-06 hand cleanup of stuck 'verifying' checks) is reviewed the
 // same way; its row kept it out of this query and nothing else reviews it,
-// so 23 GS-12 cards sat at done unreviewed for 31 h (2026-10-07).
+// so 23 GS-12 cards sat at done unreviewed for 31 h (2026-10-07). A check
+// left frozen or failed on a card at done for STUCK_CHECK_S is the same: with
+// rules 4 and 5 off for a group nothing runs or acts on it (AH-402).
+const STUCK_CHECK_S: f64 = 6.0 * 3600.0;
 pub async fn enqueue_uncontracted(state: &AppState) -> usize {
     type Cand = (String, String, String, Option<String>, String, Option<String>);
     let cands: Vec<Cand> = state.store.read_async(|conn| {
@@ -1576,8 +1579,11 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
              WHERE i.status = 'done' AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
              AND COALESCE(i.type, '') NOT IN ('epic', 'watch', 'tripwire') \
              AND (c.card IS NULL OR (c.command = ?1 AND c.review_state = 'failed') \
-                  OR (c.state = 'superseded' AND c.review_state IS NULL))")?;
-        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+                  OR (c.state = 'superseded' AND c.review_state IS NULL) \
+                  OR (c.state IN ('frozen', 'failed') AND c.review_state IS NULL \
+                      AND COALESCE(i.entered_state_at, 0) < ?2))")?;
+        let stuck_before = crate::config::now_f64() - STUCK_CHECK_S;
+        let v = st.query_map(rusqlite::params![UNCONTRACTED_CMD, stuck_before], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<rusqlite::Result<Vec<Cand>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
@@ -1613,12 +1619,12 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
                 "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, kind, review_state, review_at) \
                  VALUES (?1, ?2, ?3, '', ?4, 'passed', ?5, 'code', 'pending', ?4) \
                  ON CONFLICT(card) DO UPDATE SET review_state = 'pending', review_at = ?4, sha = ?5, \
-                   log = CASE WHEN card_contracts.state = 'superseded' \
-                         THEN COALESCE(card_contracts.log, '') || ' | abandoned check (superseded), reviewed from evidence; was: ' || card_contracts.command \
+                   log = CASE WHEN card_contracts.state IN ('superseded', 'frozen', 'failed') \
+                         THEN COALESCE(card_contracts.log, '') || ' | check ' || card_contracts.state || ' and never reviewed, reviewed from evidence; was: ' || card_contracts.command \
                          ELSE card_contracts.log END, \
                    command = ?3, state = 'passed' \
                  WHERE (card_contracts.command = ?3 AND card_contracts.review_state = 'failed') \
-                    OR (card_contracts.state = 'superseded' AND card_contracts.review_state IS NULL)",
+                    OR (card_contracts.state IN ('superseded', 'frozen', 'failed') AND card_contracts.review_state IS NULL)",
                 rusqlite::params![c, a, UNCONTRACTED_CMD, now, sh])?;
             Ok(crate::db::WriteOutcome { applied: k > 0, events: vec![] })
         }).await;

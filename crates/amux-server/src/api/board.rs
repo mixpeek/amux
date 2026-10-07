@@ -16296,7 +16296,22 @@ mod af701_archive_guard_tests {
         };
         let abandoned = card(None);
         let reviewing = card(Some("running"));
-        assert_eq!(super::super::contract::enqueue_uncontracted(&state).await, 1);
+        // A frozen check on a card done for a day is stuck; one done a minute ago is not yet.
+        let stuck = |age: f64| {
+            let id = seed(&store, "lane-ab", "done");
+            let (id2, ev, at) = (id.clone(), format!("recorded at {sha}"), crate::config::now_f64() - age);
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code', evidence=?2, entered_state_at=?3 WHERE id=?1", rusqlite::params![id2, ev, at])?;
+                conn.execute(
+                    "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, kind) \
+                     VALUES (?1, 'a', 'pytest -q y', 'h', 0, 'frozen', '', 'code')", [&id2])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let old_frozen = stuck(86400.0);
+        let new_frozen = stuck(60.0);
+        assert_eq!(super::super::contract::enqueue_uncontracted(&state).await, 2);
         let row = |id: &str| store.read().unwrap().query_row(
             "SELECT review_state, command, COALESCE(log, '') FROM card_contracts WHERE card = ?1", [id],
             |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap();
@@ -16305,6 +16320,8 @@ mod af701_archive_guard_tests {
         assert_eq!(cmd, super::super::contract::UNCONTRACTED_CMD);
         assert!(log.contains("was: pytest -q x"), "the abandoned command is kept: {log}");
         assert_eq!(row(&reviewing).0.as_deref(), Some("running"), "a review in progress is not requeued");
+        assert_eq!(row(&old_frozen).0.as_deref(), Some("pending"), "a check frozen at done for a day is reviewed");
+        assert_eq!(row(&new_frozen).0, None, "a fresh frozen check is left to run");
     }
 
     /// Ethan, 2026-10-07 (acceleration item 1): a proof card entering doing
