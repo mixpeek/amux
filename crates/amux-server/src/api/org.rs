@@ -2526,6 +2526,52 @@ mod tests {
         assert_eq!(replay, StatusCode::GONE);
     }
 
+    /// The SANDBOX shape: no owner token (AMUX_AUTH_TOKEN=none behind a front
+    /// door) must still bound a scoped member. require_bearer used to return
+    /// before the member guard when no token was configured, so a scoped
+    /// account reached any worker by name (sandbox.amux.io, 2026-10-07).
+    #[tokio::test]
+    async fn member_scope_is_enforced_when_no_owner_token_is_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("org-notoken.db");
+        let store = Store::open(&db).unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let app = crate::api::router(state);
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            for (id, name) in [("wrk_allowed", "allowed-worker"), ("wrk_other", "other-worker")] {
+                conn.execute(
+                    "INSERT INTO _amux_workers \
+                     (id,display_name,name_aliases,cwd,provider,backend,environment,permissions,state,version,created_at,updated_at) \
+                     VALUES (?1,?2,'[]','/tmp','claude','tmux','{}','[]','{\"state\":\"stopped\"}',0,'now','now')",
+                    rusqlite::params![id, name],
+                )
+                .unwrap();
+            }
+        }
+        let (created, _, body) = raw_send(&app, "POST", "/api/org/invites",
+            r#"{"email":"nt-guest@example.com","scope_level":"worker","scope_name":"allowed-worker"}"#,
+            &[("content-type", "application/json")]).await;
+        assert_eq!(created, StatusCode::CREATED, "{body}");
+        let token = serde_json::from_str::<Value>(&body).unwrap()["token"].as_str().unwrap().to_string();
+        let (accepted, headers, _) = raw_send(&app, "POST", &format!("/invite/{token}"),
+            "email=nt-guest%40example.com&name=Guest", &[("content-type", "application/x-www-form-urlencoded")]).await;
+        assert_eq!(accepted, StatusCode::SEE_OTHER);
+        let cookie = headers[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string();
+        let (allowed, _, _) = raw_send(&app, "GET", "/api/workers/wrk_allowed", "", &[("cookie", &cookie)]).await;
+        assert_ne!(allowed, StatusCode::FORBIDDEN);
+        let (denied, _, denied_body) = raw_send(&app, "GET", "/api/workers/wrk_other", "", &[("cookie", &cookie)]).await;
+        assert_eq!(denied, StatusCode::FORBIDDEN, "no owner token must not mean no member scope: {denied_body}");
+        let (admin, _, _) = raw_send(&app, "GET", "/api/org/members", "", &[("cookie", &cookie)]).await;
+        assert_eq!(admin, StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test]
     async fn worker_scope_is_enforced_and_owner_rescope_reaches_the_existing_cookie() {
         let (app, dir) = full_app();
