@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1259';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1260';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14577,6 +14577,14 @@ function _chatReconnect() {
   _chatLoad(name);
 }
 
+// FILE PATHS IN CHAT OPEN LIKE PEEK (Ethan, 2026-10-07: "these should be able
+// to click and link and open files like peek view but in chat"). Same
+// linkifier, click handler and cwd (the chat runs in its worker's peek
+// overlay), so a path behaves the same in both tabs.
+function _chatLinkify(html) {
+  return _linkifyPaths(html);
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -14667,13 +14675,13 @@ function _chatMessageHtml(m) {
       ? '<button type="button" class="btn chat-retry-btn" onclick="_chatRetryTurn(\'' + escJs(_chat.name) + '\',\'' + escJs(original) + '\')">Retry</button>'
       : '';
     return _chatBubble('assistant', head + _chatLimitHtml(m.limit) + '<span class="chat-error">' + esc(m.error) + '</span>'
-      + (m.text ? renderMarkdown(m.text) : '') + retryBtn, 'failed · ' + _chatTime(m.ts), 'is-error');
+      + (m.text ? _chatLinkify(renderMarkdown(m.text)) : '') + retryBtn, 'failed · ' + _chatTime(m.ts), 'is-error');
   }
   const bits = [_chatTime(m.ts)];
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
-  return _chatBubble('assistant', head + renderMarkdown(m.text || ''), esc(bits.filter(Boolean).join(' · ')),
+  return _chatBubble('assistant', head + _chatLinkify(renderMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')),
     m.interrupted ? 'is-interrupted' : '');
 }
 
@@ -14861,7 +14869,7 @@ function _chatPaintLive() {
   for (const raw of split.settled) {
     const div = document.createElement('div');
     div.className = 'md-blk';
-    div.innerHTML = renderMarkdown(raw);
+    div.innerHTML = _chatLinkify(renderMarkdown(raw));
     L.md.appendChild(div);   // fades in via CSS: this path runs per block, Motion is kept for per-turn entrances
   }
   if (split.used) L.settledLen += split.used;
@@ -14869,7 +14877,7 @@ function _chatPaintLive() {
   // remend closes an unfinished fence, link or emphasis for this frame only
   // (Streamdown's healing step), so raw markup never flashes.
   const healed = _chatHoldPartialTable((typeof remend === 'function') ? remend(tailRaw) : tailRaw);
-  if (L.tailRaw !== tailRaw) { L.tail.innerHTML = healed ? renderMarkdown(healed) : ''; L.tailRaw = tailRaw; }
+  if (L.tailRaw !== tailRaw) { L.tail.innerHTML = healed ? _chatLinkify(renderMarkdown(healed)) : ''; L.tailRaw = tailRaw; }
   L.typing.hidden = !!st.text || (st.phase === 'tool');
   L.root.classList.toggle('has-text', !!st.text);
   const phase = st.interrupted ? 'stopping…' : st.phase === 'thinking' ? 'thinking…' : st.phase === 'tool' ? 'running a tool…' : 'responding…';
@@ -16276,7 +16284,9 @@ function _osc8Resolve(html, urls) {
 // `peekSessionDir` holds. An absolute path is returned untouched.
 function _resolveOutputPath(p) {
   const raw = String(p || '').replace(/:\d+$/, '');   // strip a trailing :linenum
-  if (raw.startsWith('/')) return raw;
+  // `~/` is expanded by the server's file API (fs.rs expanduser), so it is
+  // as absolute as `/` here.
+  if (raw.startsWith('/') || raw.startsWith('~/')) return raw;
   const base = (typeof peekSessionDir === 'string' && peekSessionDir) ? peekSessionDir.replace(/\/+$/, '') : '';
   const rel = raw.replace(/^\.\//, '');
   return base ? base + '/' + rel : rel;
@@ -16337,7 +16347,7 @@ async function _openPathFromOutput(p) {
   try {
     const raw = String(p || '').replace(/:\d+$/, '');
     const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
-    if (!raw.startsWith('/') && cwd) {
+    if (!raw.startsWith('/') && !raw.startsWith('~/') && cwd) {
       const r = await fetch(API + '/api/fs/resolve?cwd=' + encodeURIComponent(cwd)
         + '&rel=' + encodeURIComponent(raw), { headers: _authHeaders() });
       if (r.ok) {
@@ -16402,7 +16412,7 @@ function _linkifyPaths(safeHtml) {
     // part of the path (Ethan, 2026-09-24: `@/Users/ethan/.amux/uploads/x.png`
     // opened /Users/ethan/Dev/amux/@/Users/…). Consumed as its own group and
     // re-emitted as plain text, so the link carries the real path.
-    const RE = /(^|[\s(\[>"'`,;=])(@?)((?:\.?\/)?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+)?(?![^<]*>)/gm;
+    const RE = /(^|[\s(\[>"'`,;=])(@?)((?:~\/|\.?\/)?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]{1,8})(:\d+)?(?![^<]*>)/gm;
     return String(safeHtml).replace(RE, (m, pre, at, path, line, offset, whole) => {
       // Already a link: ansiToHtml now links paths on the plain text (so a path
       // split by syntax colours still links). Do not wrap it a second time.
@@ -16438,7 +16448,7 @@ function _linkifyPaths(safeHtml) {
       // cwd we cannot resolve it, and linking it anyway would render text that
       // looks clickable and does nothing — the precise failure this file already
       // records for the OSC-8 hyperlinks above. Leave it as plain text instead.
-      if (!p.startsWith('/') && !(typeof peekSessionDir === 'string' && peekSessionDir)) return m;
+      if (!p.startsWith('/') && !p.startsWith('~/') && !(typeof peekSessionDir === 'string' && peekSessionDir)) return m;
       const cls = /\.md$/i.test(p) ? 'md-link' : 'file-link';
       const shown = p + (line || '');
       return pre + at + '<span class="' + cls + '" title="Open in the file browser: '
