@@ -87,6 +87,73 @@ pub fn mint(home: &Path, lane: &str) -> Option<String> {
     Some(token)
 }
 
+// A SCHEDULED SHELL RUN SPEAKS AS ITS LANE (gtm-engine, 2026-10-07: SCHED-173,
+// gtm-ticker's tick_runner.sh, was refused worker_identity_refused on every
+// board write, so a signup that needed a human left no needsyou card). The
+// lane's launch token cannot be handed over: the server keeps only its hash,
+// and minting a new one would invalidate the live lane's. Each shell run gets
+// its own token instead, accepted beside the launch token while the run lives
+// and removed when it ends (RunToken's Drop). A hash left by a run that died
+// with the server is ignored and removed after RUN_TOKEN_MAX_AGE_S.
+const RUN_TOKEN_MAX_AGE_S: u64 = 6 * 3600;
+
+fn runs_dir(home: &Path, lane: &str) -> PathBuf {
+    home.join("worker-tokens").join(format!("{lane}.runs"))
+}
+
+/// A token for one scheduler-launched run of `lane`. The value goes into the
+/// run's env as AMUX_WORKER_TOKEN; dropping this removes its hash.
+pub struct RunToken {
+    path: PathBuf,
+    pub value: String,
+}
+
+impl Drop for RunToken {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub fn mint_run(home: &Path, lane: &str) -> Option<RunToken> {
+    if !super::session_verbs::valid_session_name(lane) || !super::contract::rule_on(home, lane, RULE) {
+        return None;
+    }
+    let token = random_token()?;
+    let dir = runs_dir(home, lane);
+    std::fs::create_dir_all(&dir).ok()?;
+    let d = digest(&token);
+    let path = dir.join(format!("{}.sha256", &d[..16]));
+    std::fs::write(&path, &d).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    tracing::info!(lane, measured = true, n_considered = 1, verdict = "worker_run_token_minted",
+        "rule 10: minted a token for one scheduled run of this lane");
+    Some(RunToken { path, value: token })
+}
+
+fn run_token_valid(home: &Path, lane: &str, presented: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(runs_dir(home, lane)) else { return false };
+    let want = digest(presented);
+    let mut ok = false;
+    for e in entries.flatten() {
+        let p = e.path();
+        let stale = e.metadata().ok().and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > RUN_TOKEN_MAX_AGE_S);
+        if stale {
+            let _ = std::fs::remove_file(&p);
+            continue;
+        }
+        if let Ok(h) = std::fs::read_to_string(&p) {
+            ok |= super::auth::constant_time_eq(want.as_bytes(), h.trim().as_bytes());
+        }
+    }
+    ok
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Check {
     /// Rule 10 is off for the lane: headers are trusted as before.
@@ -101,10 +168,14 @@ pub fn check(home: &Path, lane: &str, presented: Option<&str>) -> Check {
     if !super::contract::rule_on(home, lane, RULE) {
         return Check::Unenforced;
     }
+    let presented = presented.map(str::trim).filter(|t| !t.is_empty());
+    if presented.is_some_and(|t| run_token_valid(home, lane, t)) {
+        return Check::Valid;
+    }
     let Ok(want) = std::fs::read_to_string(hash_path(home, lane)) else {
         return Check::Unminted;
     };
-    match presented.map(str::trim).filter(|t| !t.is_empty()) {
+    match presented {
         Some(t) if super::auth::constant_time_eq(digest(t).as_bytes(), want.trim().as_bytes()) => Check::Valid,
         _ => Check::Invalid,
     }
@@ -247,6 +318,23 @@ mod tests {
         let t2 = mint(h, "w").unwrap();
         assert_eq!(check(h, "w", Some(&t)), Check::Invalid, "a relaunch retires the old token");
         assert_eq!(check(h, "w", Some(&t2)), Check::Valid);
+    }
+
+    /// gtm-engine, 2026-10-07 (SCHED-173): a scheduled shell run speaks as
+    /// its lane with its own token, beside the live lane's, until it ends.
+    #[test]
+    fn a_scheduled_runs_token_is_valid_beside_the_lanes_until_the_run_ends() {
+        let d = home_with("AMUX_CONTRACT_DONE=1\n");
+        let h = d.path();
+        let lane = mint(h, "w").unwrap();
+        let run = mint_run(h, "w").expect("rule 10 on: a run token is minted");
+        assert_eq!(check(h, "w", Some(&run.value)), Check::Valid, "the run speaks as the lane");
+        assert_eq!(check(h, "w", Some(&lane)), Check::Valid, "the lane's own token still works");
+        assert_eq!(check(h, "x", Some(&run.value)), Check::Unenforced, "another lane (rule off) is not affected");
+        let v = run.value.clone();
+        drop(run);
+        assert_eq!(check(h, "w", Some(&v)), Check::Invalid, "a finished run's token is retired");
+        assert_eq!(check(h, "w", Some(&lane)), Check::Valid);
     }
 
     #[test]

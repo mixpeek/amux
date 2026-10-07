@@ -1856,6 +1856,15 @@ impl LiveDeliverer {
                     } else {
                         command.env("AMUX_SESSION", &owner);
                     }
+                    // Its own worker token for the life of the run (rule 10),
+                    // removed when `_run_token` drops after the child exits.
+                    let _run_token = (!owner.is_empty())
+                        .then(|| crate::api::worker_identity::mint_run(&crate::config::amux_home(), &owner))
+                        .flatten();
+                    match &_run_token {
+                        Some(t) => { command.env(crate::api::worker_identity::TOKEN_ENV, &t.value); }
+                        None => { command.env_remove(crate::api::worker_identity::TOKEN_ENV); }
+                    }
                     let mut child = command
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
@@ -3480,6 +3489,34 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    /// gtm-engine, 2026-10-07 (SCHED-173): a rule-10 lane's shell schedule
+    /// runs with its own worker token, whose hash exists only while it runs.
+    #[tokio::test]
+    async fn a_shell_run_speaks_as_its_lane_with_its_own_worker_token() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/w.env"), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let runs = home.path().join("worker-tokens/w.runs");
+        let (store, _dir) = store();
+        let state = crate::api::AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let mut sched = make_row("SCHED-T", "w", None, "");
+        sched.raw.insert("kind".into(), Value::from("shell"));
+        sched.raw.insert("command".into(), Value::from(format!(
+            "test -n \"$AMUX_WORKER_TOKEN\" && echo runs=$(ls '{}' | wc -l | tr -d ' ')", runs.display())));
+        let out = LiveDeliverer::new(state).deliver(&sched, "test").await;
+        let o = out.shell_output().expect("the shell run happened");
+        assert_eq!(o.exit_code, 0, "the run had a token: {}", o.tail);
+        assert!(o.tail.contains("runs=1"), "one run hash while it ran: {}", o.tail);
+        assert_eq!(std::fs::read_dir(&runs).map(|d| d.count()).unwrap_or(0), 0, "and none after");
     }
 
     #[tokio::test]
