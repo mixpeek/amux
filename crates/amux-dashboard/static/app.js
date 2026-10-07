@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1260';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1261';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15606,7 +15606,10 @@ async function _psfViewFile(filePath) {
       iframe.setAttribute('scrolling', 'yes');
       iframe.style.cssText = 'width:100%;flex:1;min-height:300px;border:none;background:#fff;';
       content.appendChild(iframe);
-      iframe.srcdoc = data.content;
+      // Same as the file overlay: load from the file's own URL so in-page
+      // anchors and relative links stay inside the document (see _htmlPreviewUrl).
+      const _pu = _htmlPreviewUrl(data.path || filePath);
+      if (_pu) iframe.src = _authUrl(_pu); else iframe.srcdoc = data.content;
     } else if (data.content != null) {
       content.className = 'file-overlay-body file-code';
       content.innerHTML = typeof _fileHighlightHTML === 'function' ? _fileHighlightHTML(data) : '<pre>' + esc(data.content) + '</pre>';
@@ -16496,6 +16499,13 @@ function _peekToggleToolNow(id) {
   if (el) el.classList.toggle('collapsed', !now);
 }
 let _peekToolSeq = 0;
+// Path-style URL for a previewed file (api/file_viewer.rs raw_path), so the
+// frame's own document URL is the file's and its links resolve normally.
+function _htmlPreviewUrl(filePath) {
+  const p = String(filePath || '');
+  if (!p.startsWith('/')) return null;
+  return '/api/file/raw-path' + p.split('/').map(encodeURIComponent).join('/');
+}
 function _wrapToolCalls(html) {
   const lines = html.split('\n');
   const strip = s => s.replace(/<[^>]*>/g, '');
@@ -24333,7 +24343,15 @@ function _renderFileBody(data, mode) {
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
-    iframe.srcdoc = data.content;
+    // Load the file from its own URL, not srcdoc. In a srcdoc frame the
+    // document is about:srcdoc while links resolve against the DASHBOARD's
+    // URL, so an in-page "#plan" or a sibling "page2.html" navigated the frame
+    // to the dashboard (the sign-in page behind a door): Ethan,
+    // /home/amux/mtp/index.html, 2026-10-07. From /api/file/raw-path/<file>,
+    // anchors scroll in place and relative links reach sibling files. The
+    // sandbox attribute above and the route's CSP keep it an opaque origin.
+    const _previewUrl = _htmlPreviewUrl(data.path);
+    if (_previewUrl) iframe.src = _authUrl(_previewUrl); else iframe.srcdoc = data.content;
     return;
   }
   if (data.is_video) {
@@ -24447,7 +24465,8 @@ function _renderFileBody(data, mode) {
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
-    iframe.srcdoc = data.content;
+    const _purl = _htmlPreviewUrl(data.path);   // own URL: anchors/links stay in the document
+    if (_purl) iframe.src = _authUrl(_purl); else iframe.srcdoc = data.content;
     iframe.onload = function() {
       // Bind anchor links to scroll within the iframe. Cross-origin under the
       // sandbox above → contentDocument access throws; the try/catch makes this a

@@ -2500,6 +2500,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/file/raw-path/{*rest}",
+        methods: ANY,
+    },
+    RouteEntry {
         path: "/api/file/xlsx",
         methods: ANY,
     },

@@ -64,6 +64,22 @@ const PUBLIC_PREFIXES: &[&str] = &[
 
 pub async fn require_bearer(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let Some(expected) = &state.auth_token else {
+        // NO OWNER TOKEN IS NOT NO AUTHORIZATION. A host behind its own front
+        // door runs with AMUX_AUTH_TOKEN=none, and member scopes must still
+        // bound a member there. This early return used to skip them: a
+        // group-scoped account on sandbox.amux.io opened, messaged and read
+        // files of workers outside its group by name (2026-10-07), while the
+        // filtered lists made it look scoped.
+        if super::org::is_verified_local_member(req.headers()) {
+            if let Some(response) = super::org::authorize_local_member_request(
+                &state,
+                req.method(),
+                req.uri(),
+                req.headers(),
+            ) {
+                return response;
+            }
+        }
         return next.run(req).await;
     };
     // An explicit owner credential wins even if this browser also carries an

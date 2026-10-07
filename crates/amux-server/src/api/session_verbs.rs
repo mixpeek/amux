@@ -19471,6 +19471,14 @@ fn session_destructive_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     ) {
         return true;
     }
+    // A verified invited member IS a human (an agent cannot hold the member
+    // cookie), and the route guard already confines a scoped member to its own
+    // workers. Without this, the human-only archive/delete refused every member
+    // on a host whose dashboard carries no UI token (sandbox.amux.io,
+    // 2026-10-07), the same misreading as the scope-write 403.
+    if super::org::is_verified_local_member(headers) {
+        return true;
+    }
     headers
         .get("x-amux-ui-token")
         .and_then(|v| v.to_str().ok())
