@@ -1781,6 +1781,9 @@ pub(crate) fn hand_off_isolated_cards(
     Ok(ids)
 }
 
+static UNROUTED_WARNED: std::sync::LazyLock<std::sync::Mutex<HashMap<String, f64>>> =
+    std::sync::LazyLock::new(Default::default);
+
 async fn hand_off_isolated<F: Fleet>(state: &AppState, fleet: &F, lane: &str) {
     let home = crate::config::amux_home();
     let configured = crate::api::contract::lane_setting(&home, lane, "AMUX_ISOLATED_HANDOFF")
@@ -1799,7 +1802,16 @@ async fn hand_off_isolated<F: Fleet>(state: &AppState, fleet: &F, lane: &str) {
                  AND deleted IS NULL AND COALESCE(archived,0)=0 AND updated < ?2",
                 rusqlite::params![l, c], |r| r.get(0))?)
         }).await.unwrap_or(0);
-        if waiting > 0 {
+        // Once an hour per lane: the drive tick runs every minute.
+        let due = UNROUTED_WARNED.lock().map(|mut m| {
+            let last = m.get(lane).copied().unwrap_or(0.0);
+            let due = now - last >= 3600.0;
+            if due && waiting > 0 {
+                m.insert(lane.to_string(), now);
+            }
+            due
+        }).unwrap_or(true);
+        if waiting > 0 && due {
             tracing::warn!(target: "amux::board_drive", session = lane, waiting, configured = ?configured,
                 measured = true, n_considered = waiting, verdict = "isolated_cards_unrouted",
                 "board_drive: an isolated lane holds cards nothing will dispatch; set AMUX_ISOLATED_HANDOFF to a lane that can work them");
