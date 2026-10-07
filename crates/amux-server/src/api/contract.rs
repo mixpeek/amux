@@ -1608,6 +1608,17 @@ pub fn parse_prereview(out: &str) -> Option<(bool, Vec<String>)> {
     })
 }
 
+/// The plan a pre-run review judges: the card's acceptance (its title when it
+/// has none) and its frozen verify command when one exists. The description
+/// is not part of it: the pre-review's own note lands there.
+fn prereview_plan(title: &str, acceptance: Option<&str>, frozen_cmd: Option<&str>) -> (String, String, String) {
+    let acc = nonempty(acceptance).unwrap_or_else(|| title.trim().to_string());
+    let cmd = nonempty(frozen_cmd)
+        .unwrap_or_else(|| "(none frozen: the plan is the card's description and the scripts it names)".to_string());
+    let hash = hash_of(&acc, &cmd, None);
+    (acc, cmd, hash)
+}
+
 fn prereview_prompt(card: &str, title: &str, c: &Contract, desc: &str, prior: &str) -> String {
     let tail: String = desc.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
     format!(
@@ -1616,8 +1627,8 @@ fn prereview_prompt(card: &str, title: &str, c: &Contract, desc: &str, prior: &s
 origin/main. Do not modify files.
 
 Card: {title}
-Acceptance criteria (frozen): {acc}
-Planned check (the frozen verify command; the run it describes is the plan): {cmd}
+Acceptance criteria: {acc}
+Planned check (the frozen verify command when there is one; the run it describes is the plan): {cmd}
 Earlier review findings for this card, if any: {prior}
 Card description (latest part, including any owner measurement requirements):
 {tail}
@@ -1643,7 +1654,13 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
         let prior: Option<String> = conn.query_row("SELECT review_log FROM card_contracts WHERE card = ?1", [&c2], |r| r.get(0)).unwrap_or(None);
         Ok((k, row, prior))
     }).await.ok();
-    let Some((Some(k), Some(row), prior)) = facts else { return };
+    let Some((k, Some(row), prior)) = facts else { return };
+    let frozen = k.as_ref().filter(|k| !k.is_uncontracted()).map(|k| k.command.clone());
+    let (acc, cmd, _) = prereview_plan(&row.title, row.acceptance_criteria.as_deref(), frozen.as_deref());
+    let k = Contract {
+        card: card.clone(), acceptance: acc, command: cmd, hash: hash.clone(), state: String::new(), sha: None,
+        amended: false, kind: "code".into(), deploy_check: None,
+    };
     let lane = row.session.clone().unwrap_or_default();
     let home = crate::config::amux_home();
     let model = reviewer_model(&home, &lane);
@@ -1669,14 +1686,14 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
         let _ = std::fs::remove_dir_all(&dir);
     }
     let (st, note) = match &result {
-        Ok((true, _)) => ("ready", format!("\nPre-run review ({model}, contract {hash}): the planned run covers the required measurements.")),
-        Ok((false, f)) => ("gaps", format!("\nPre-run review ({model}, contract {hash}): before you run, these required measurements are missing from the plan:\n{}",
+        Ok((true, _)) => ("ready", format!("\nPre-run review ({model}, plan {hash}): the planned run covers the required measurements.")),
+        Ok((false, f)) => ("gaps", format!("\nPre-run review ({model}, plan {hash}): before you run, these required measurements are missing from the plan:\n{}",
             f.iter().map(|x| format!("- {x}")).collect::<Vec<_>>().join("\n"))),
         Err(_) => ("unmeasured", String::new()),
     };
-    let (c, n, s2) = (card.clone(), note.clone(), st.to_string());
+    let (c, n, s2, now) = (card.clone(), note.clone(), st.to_string(), crate::config::now_f64());
     let _ = state.store.write_async(move |conn| {
-        conn.execute("UPDATE card_contracts SET prereview_state = ?2 WHERE card = ?1", rusqlite::params![c, s2])?;
+        conn.execute("UPDATE card_prereviews SET state = ?2, at = ?3 WHERE card = ?1", rusqlite::params![c, s2, now])?;
         if !n.is_empty() {
             if let Some(mut r) = crate::db::board_store::get_issue(conn, &c)? {
                 r.desc.push_str(&n);
@@ -1700,34 +1717,43 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
     }
 }
 
-/// One pass: start pre-run reviews for proof cards whose frozen contract has
-/// not had one, under the shared review cap. Returns how many were started.
+/// One pass: start pre-run reviews for proof cards in doing or todo whose
+/// current plan has not had one, under the shared review cap. Most GS-12 proof
+/// cards are typed ops and never freeze a contract, so the plan is hashed from
+/// the card itself (prereview_plan). Returns how many were started.
 pub async fn run_prereviews(state: &AppState) -> usize {
     let live: Vec<String> = LIVE_REVIEW.lock().map(|l| l.iter().cloned().collect()).unwrap_or_default();
     // A pre-review a restart ended is claimed again; the next run adopts its
     // detached reviewer's output instead of starting over.
     let _ = state.store.write_async(move |conn| {
-        let running: Vec<String> = conn.prepare("SELECT card FROM card_contracts WHERE prereview_state = 'running'")?
+        let running: Vec<String> = conn.prepare("SELECT card FROM card_prereviews WHERE state = 'running'")?
             .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
         let mut n = 0;
         for c in running.iter().filter(|c| !live.contains(&format!("pre:{c}"))) {
-            n += conn.execute("UPDATE card_contracts SET prereview_state = NULL, prereview_hash = NULL WHERE card = ?1 AND prereview_state = 'running'", [c])?;
+            n += conn.execute("DELETE FROM card_prereviews WHERE card = ?1 AND state = 'running'", [c])?;
         }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
-    let cands: Vec<(String, String, String)> = state.store.read_async(|conn| {
+    type Cand = (String, String, String, Option<String>, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<Cand> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
-            "SELECT c.card, c.hash, COALESCE(i.session, '') FROM card_contracts c JOIN issues i ON i.id = c.card \
+            "SELECT i.id, COALESCE(i.session, ''), i.title, i.acceptance_criteria, \
+                    CASE WHEN c.command IS NOT NULL AND c.command <> ?1 THEN c.command END, p.hash, p.state \
+             FROM issues i LEFT JOIN card_contracts c ON c.card = i.id LEFT JOIN card_prereviews p ON p.card = i.id \
              WHERE (i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%') AND i.status IN ('doing', 'todo') \
-             AND COALESCE(i.archived, 0) = 0 AND c.command <> ?1 \
-             AND (c.prereview_hash IS NULL OR c.prereview_hash <> c.hash) AND COALESCE(c.prereview_state, '') <> 'running' \
-             ORDER BY c.frozen_at")?;
-        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+             AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
+             ORDER BY CASE i.status WHEN 'doing' THEN 0 ELSE 1 END, i.id")?;
+        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
+            .collect::<rusqlite::Result<Vec<Cand>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
     let home = crate::config::amux_home();
     let mut started = 0;
-    for (card, hash, lane) in cands {
+    for (card, lane, title, acceptance, frozen, done_hash, done_state) in rows {
+        let (_, _, hash) = prereview_plan(&title, acceptance.as_deref(), frozen.as_deref());
+        if done_hash.as_deref() == Some(hash.as_str()) || done_state.as_deref() == Some("running") {
+            continue;
+        }
         let busy = LIVE_REVIEW.lock().map(|l| l.len()).unwrap_or(0);
         if busy >= current_cap(Work::Review) {
             break;
@@ -1735,10 +1761,11 @@ pub async fn run_prereviews(state: &AppState) -> usize {
         if !enabled_for(&home, &lane) {
             continue;
         }
-        let (c, h) = (card.clone(), hash.clone());
+        let (c, h, now) = (card.clone(), hash.clone(), crate::config::now_f64());
         let won = state.store.write_async(move |conn| {
-            let n = conn.execute("UPDATE card_contracts SET prereview_state = 'running', prereview_hash = ?2 \
-                WHERE card = ?1 AND COALESCE(prereview_state, '') <> 'running'", rusqlite::params![c, h])?;
+            let n = conn.execute("INSERT INTO card_prereviews (card, hash, state, at) VALUES (?1, ?2, 'running', ?3) \
+                ON CONFLICT(card) DO UPDATE SET hash = ?2, state = 'running', at = ?3 WHERE card_prereviews.state <> 'running'",
+                rusqlite::params![c, h, now])?;
             Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
         }).await;
         if !matches!(won, Ok(ref o) if o.applied) {

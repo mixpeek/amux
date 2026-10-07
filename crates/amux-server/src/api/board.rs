@@ -16263,7 +16263,7 @@ mod af701_archive_guard_tests {
     /// Ethan, 2026-10-07 (acceleration item 1): a proof card entering doing
     /// gets one pre-run review of its plan, and its gaps reach the lane and
     /// the card before the expensive run. A non-proof card gets none, and the
-    /// same frozen contract is never pre-reviewed twice.
+    /// same plan is never pre-reviewed twice.
     #[tokio::test]
     async fn a_proof_card_entering_doing_gets_one_pre_run_review_of_its_plan() {
         let (state, store) = fixture();
@@ -16279,48 +16279,60 @@ mod af701_archive_guard_tests {
         let cli = h.join("prereviewer.sh");
         std::fs::write(&cli, "#!/bin/sh\ncat >/dev/null\necho reading\necho '{\"verdict\": \"gaps\", \"findings\": [\"no Ray Serve app is measured at 0 replicas\"]}'\n").unwrap();
         std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
-        for lane in ["lane-pre", "lane-pre2"] {
+        for lane in ["lane-pre", "lane-pre2", "lane-pre3"] {
             std::fs::write(h.join(format!("sessions/{lane}.env")),
                 format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nCC_VERIFY=\"true\"\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
         }
         // One card per lane: a lane holds one card in doing.
-        let card = |lane: &str, title: &str| {
+        let card = |lane: &str, kind: &str, title: &str| {
             let id = seed(&store, lane, "todo");
-            let (id2, t) = (id.clone(), title.to_string());
+            let (id2, k, t) = (id.clone(), kind.to_string(), title.to_string());
             store.write(move |conn| {
-                conn.execute("UPDATE issues SET type='code', title=?2 WHERE id=?1", rusqlite::params![id2, t])?;
+                conn.execute("UPDATE issues SET type=?2, title=?3 WHERE id=?1", rusqlite::params![id2, k, t])?;
                 Ok(WriteOutcome { applied: true, events: vec![] })
             }).unwrap();
             id
         };
-        let proof = card("lane-pre", "GS12 proof 6 run: scale to zero");
-        let plain = card("lane-pre2", "an ordinary card");
+        let proof = card("lane-pre", "code", "GS12 proof 6 run: scale to zero");
+        let plain = card("lane-pre2", "code", "an ordinary card");
+        // Most GS-12 proof cards are ops-typed and never freeze a contract.
+        let ops = card("lane-pre3", "ops", "GS12 requirement 4: restore drill");
+        let o2 = ops.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE issues SET status='doing' WHERE id=?1", [o2])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
         for (lane, id) in [("lane-pre", &proof), ("lane-pre2", &plain)] {
             assert_eq!(route(&state, id, owner_headers(lane), json!({"status": "doing", "acceptance_criteria": ["every min-0 surface reads 0"]})).await,
                 StatusCode::OK, "{id} enters doing");
         }
-        assert_eq!(super::super::contract::run_prereviews(&state).await, 1, "only the proof card is pre-reviewed");
+        assert_eq!(super::super::contract::run_prereviews(&state).await, 2, "only the two proof cards are pre-reviewed");
         // 60 s, not 15: CI failed here with the desc still "fixture" (the
         // review had not written), the way the uncontracted-review test did
         // at 17 s where a local run takes ~1.5 s.
         for _ in 0..1200 {
-            if current(&store, &proof).desc.contains("missing from the plan") {
+            if current(&store, &proof).desc.contains("missing from the plan") && current(&store, &ops).desc.contains("missing from the plan") {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let row = current(&store, &proof);
-        let pre: Option<(Option<String>, Option<String>)> = store.read().unwrap()
-            .query_row("SELECT prereview_state, prereview_hash FROM card_contracts WHERE card = ?1", [&proof], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        let pre: Option<(String, String)> = store.read().unwrap()
+            .query_row("SELECT state, hash FROM card_prereviews WHERE card = ?1", [&proof], |r| Ok((r.get(0)?, r.get(1)?))).ok();
         assert!(row.desc.contains("no Ray Serve app is measured at 0 replicas"), "desc={:?} prereview={pre:?}", row.desc);
         assert_eq!(row.status, "doing", "a pre-run review never moves the card");
-        let pst = |id: &str| store.read().unwrap().query_row("SELECT prereview_state FROM card_contracts WHERE card = ?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
+        let pst = |id: &str| store.read().unwrap().query_row("SELECT state FROM card_prereviews WHERE card = ?1", [id], |r| r.get::<_, String>(0)).ok();
         assert_eq!(pst(&proof).as_deref(), Some("gaps"));
+        assert_eq!(pst(&ops).as_deref(), Some("gaps"), "an ops proof card with no contract is pre-reviewed too");
+        assert_eq!(current(&store, &ops).status, "doing");
+        let ops_contract: i64 = store.read().unwrap()
+            .query_row("SELECT COUNT(*) FROM card_contracts WHERE card = ?1", [&ops], |r| r.get(0)).unwrap();
+        assert_eq!(ops_contract, 0, "a pre-review never creates a contract row, which would gate verified");
         assert_eq!(pst(&plain), None, "a non-proof card gets none");
         let queued: i64 = store.read().unwrap()
             .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap();
         assert_eq!(queued, 1, "the findings are delivered to the lane once");
-        assert_eq!(super::super::contract::run_prereviews(&state).await, 0, "the same frozen contract is never pre-reviewed twice");
+        assert_eq!(super::super::contract::run_prereviews(&state).await, 0, "the same plan is never pre-reviewed twice");
     }
 
     #[tokio::test]
