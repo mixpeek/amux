@@ -16157,15 +16157,24 @@ mod af701_archive_guard_tests {
         let older_a = done_card("lane-u", "an ordinary card");
         let older_b = done_card("lane-u", "another ordinary card");
         let proof = done_card("lane-u", "GS12 proof 7 run: the thing holds");
+        let ops_proof = done_card("lane-u", "GS12 proof 9 run: an ops-typed proof card");
+        {
+            let id = ops_proof.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='ops' WHERE id=?1", [id])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
         let other = done_card("lane-n", "GS12 proof 8 run: not opted in");
         let review_state = |id: &str| -> Option<String> {
             store.read().unwrap().query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get(0)).ok()
         };
 
         let (pending, claimed) = super::super::contract::run_reviews(&state).await;
-        assert_eq!((pending, claimed), (3, 2), "three opted-in cards queued, two claimed per pass");
+        assert_eq!((pending, claimed), (4, 2), "four opted-in cards queued, two claimed per pass");
         assert_ne!(review_state(&proof).as_deref(), Some("pending"), "the proof card is claimed first");
-        assert!([&older_a, &older_b].iter().any(|c| review_state(c).as_deref() == Some("pending")), "one ordinary card waits");
+        assert_ne!(review_state(&ops_proof).as_deref(), Some("pending"), "an ops-typed proof card is queued and claimed first too");
+        assert!([&older_a, &older_b].iter().all(|c| review_state(c).as_deref() == Some("pending")), "ordinary cards wait behind proof");
         assert_eq!(review_state(&other), None, "a lane without the setting is untouched");
         for _ in 0..300 {
             if current(&store, &proof).status == "verified" {

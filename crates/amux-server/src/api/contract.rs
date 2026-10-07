@@ -1361,14 +1361,17 @@ async fn review_one(state: &AppState, card: String) {
 /// reviewer, because the harness reviewer only knew contract cards. A review
 /// record is created (UNCONTRACTED_CMD, never run) and the existing reviewer,
 /// cap and restart safety take it from there. A card whose uncontracted review
-/// failed comes back when it is done again, with its rounds kept.
+/// failed comes back when it is done again, with its rounds kept. Proof and
+/// requirement cards count whatever their type: 10 of the 12 waiting GS-12
+/// proof cards were typed `ops`, and a code-only filter skipped every one.
 pub async fn enqueue_uncontracted(state: &AppState) -> usize {
     type Cand = (String, String, String, Option<String>, String, Option<String>);
     let cands: Vec<Cand> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
             "SELECT i.id, COALESCE(i.session, ''), i.title, i.acceptance_criteria, substr(COALESCE(i.desc, ''), 1, 400), i.evidence \
              FROM issues i LEFT JOIN card_contracts c ON c.card = i.id \
-             WHERE i.status = 'done' AND i.type = 'code' AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
+             WHERE i.status = 'done' AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
+             AND (i.type = 'code' OR i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%') \
              AND (c.card IS NULL OR (c.command = ?1 AND c.review_state = 'failed'))")?;
         let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<rusqlite::Result<Vec<Cand>>>()?;
