@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1258';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1259';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16486,6 +16486,22 @@ function _peekToggleToolNow(id) {
   if (el) el.classList.toggle('collapsed', !now);
 }
 let _peekToolSeq = 0;
+// A previewed HTML file's relative links ("page2.html", "img/x.png") must
+// resolve to its SIBLING files. In a srcdoc frame they resolved against the
+// dashboard's own URL: on a door-protected host that was the sign-in page, on
+// a local one the SPA (Ethan, /home/amux/mtp/index.html, 2026-10-07). A <base>
+// at /api/file/raw-path/<dir>/ fixes both; that route serves the same bytes as
+// /api/file/raw with a sandbox CSP on HTML.
+function _htmlPreviewWithBase(html, filePath) {
+  const dir = String(filePath || '').replace(/[^/]*$/, '');
+  if (!dir.startsWith('/')) return html;
+  const href = '/api/file/raw-path' + dir.split('/').map(encodeURIComponent).join('/');
+  const base = '<base href="' + href.replace(/"/g, '&quot;') + '">';
+  if (/<base[\s>]/i.test(html)) return html;           // the file chose its own
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + base);
+  if (/^\s*<!doctype[^>]*>/i.test(html)) return html.replace(/^\s*<!doctype[^>]*>/i, m => m + base);
+  return base + html;
+}
 function _wrapToolCalls(html) {
   const lines = html.split('\n');
   const strip = s => s.replace(/<[^>]*>/g, '');
@@ -24323,7 +24339,7 @@ function _renderFileBody(data, mode) {
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
-    iframe.srcdoc = data.content;
+    iframe.srcdoc = _htmlPreviewWithBase(data.content, data.path);
     return;
   }
   if (data.is_video) {

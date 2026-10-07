@@ -892,6 +892,13 @@ pub async fn handler(State(state): State<AppState>, req: Request) -> Response {
 
 async fn put_scope(state: AppState, req: Request) -> Response {
     let actor = super::groups::hdr_worker(req.headers());
+    // A verified invited member is a HUMAN, though the member middleware stamps
+    // x-amux-session = "member:<email>" for attribution, which made this guard
+    // read Ethan on sandbox.amux.io as a worker reconfiguring a peer
+    // ("'member:ethan@mixpeek.com' may not configure another worker",
+    // 2026-10-07). Their grant decides, not the session rule.
+    let member = super::org::local_member_scope(req.headers())
+        .filter(|_| super::org::local_member_actor(req.headers()).is_some());
     let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
         Ok(b) => b,
         Err(e) => return j(400, json!({"error": e.to_string()})),
@@ -948,6 +955,7 @@ async fn put_scope(state: AppState, req: Request) -> Response {
         &capability,
         body.get("value"),
         &actor,
+        member.as_ref(),
     )
     .await
 }
@@ -961,6 +969,7 @@ async fn scope_write(
     key: &str,
     value: Option<&Value>,
     actor: &str,
+    member: Option<&super::org::MemberScope>,
 ) -> Response {
     let Some(cap) = cap_by_key(key) else {
         return j(400, json!({"error": format!("unknown capability '{key}'")}));
@@ -981,7 +990,21 @@ async fn scope_write(
             )}),
         );
     }
-    let (ok, why) = scope_write_allowed(level, name, actor);
+    let (ok, why) = match member {
+        Some(m) if m.is_global() => (true, format!("verified member {actor} with global access (a human)")),
+        Some(m) if level == "worker" && m.allows_worker(name) => (
+            true,
+            format!("verified member {actor} configuring '{name}', inside their grant"),
+        ),
+        Some(m) => {
+            tracing::warn!(actor, level, name, scope_level = m.level(), scope_name = m.name(),
+                verdict = "scope_write_member_outside_grant", "member scope write refused");
+            (false, format!(
+                "'{actor}' is a member with {} access ({}) and may configure only workers inside it, not the {level} layer for '{name}'.",
+                m.level(), if m.name().is_empty() { "global" } else { m.name() }))
+        }
+        None => scope_write_allowed(level, name, actor),
+    };
     if !ok {
         return j(403, json!({"error": why}));
     }

@@ -79,6 +79,7 @@ pub fn routes() -> Router<AppState> {
         // that contract (same convention as api/fs.rs).
         .route("/", any(file_root))
         .route("/raw", any(raw))
+        .route("/raw-path/{*rest}", any(raw_path))
         .route("/xlsx", any(xlsx))
         .route("/vtt", any(vtt))
         .route("/prepare", any(prepare))
@@ -872,6 +873,83 @@ pub(crate) fn stream_file(path: PathBuf, start: u64, length: u64) -> Body {
     // Compression may poll again after EOF while flushing its encoder. Unfold
     // panics on that second poll unless fused (aborted gzip upload downloads).
     Body::from_stream(futures::StreamExt::fuse(stream))
+}
+
+/// `GET /api/file/raw-path/<absolute path>`: the same bytes as `raw?path=`,
+/// addressed by PATH so a document's relative links resolve.
+///
+/// The dashboard previews an HTML file in a sandboxed `srcdoc` iframe with
+/// `<base href="/api/file/raw-path/<its dir>/">`. Without a path-shaped URL a
+/// relative link ("page2.html", "img/x.png") resolved against the DASHBOARD's
+/// URL instead: on sandbox.amux.io it landed on the sign-in page, locally on
+/// the SPA (Ethan, /home/amux/mtp/index.html, 2026-10-07). Everything `raw`
+/// enforces still applies: this rewrites the request and calls it.
+///
+/// HTML answers carry `Content-Security-Policy: sandbox ...`, so a page opened
+/// from here, even in a top-level tab, runs as an opaque origin and cannot act
+/// as the signed-in user on the amux origin.
+/// %XX-decode a URL path segment. Unlike a query, a path keeps '+' literal.
+fn pct_decode_path(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// %XX-encode everything but unreserved bytes, so `parse_qs` (which turns '+'
+/// into a space) gives back exactly this string.
+fn pct_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for &c in s.as_bytes() {
+        if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'~' | b'/') {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{c:02X}"));
+        }
+    }
+    out
+}
+
+async fn raw_path(req: Request) -> Response {
+    let rest = req
+        .uri()
+        .path()
+        .split_once("/raw-path/")
+        .map(|(_, r)| r.to_string())
+        .unwrap_or_default();
+    let decoded = pct_decode_path(&rest);
+    let abs = format!("/{}", decoded.trim_start_matches('/'));
+    let enc = pct_encode_query(&abs);
+    let (mut parts, body) = req.into_parts();
+    let uri = format!("/api/file/raw?path={enc}");
+    parts.uri = match uri.parse() {
+        Ok(u) => u,
+        Err(_) => return j(400, json!({"error": "bad path"})),
+    };
+    let mut resp = raw(Request::from_parts(parts, body)).await;
+    let is_html = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+    if is_html {
+        resp.headers_mut().insert(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            axum::http::HeaderValue::from_static("sandbox allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox"),
+        );
+    }
+    resp
 }
 
 async fn raw(req: Request) -> Response {
@@ -2151,6 +2229,17 @@ fn lib_facets(books: &[Value]) -> Value {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn raw_path_round_trips_paths_through_the_query() {
+        use super::{pct_decode_path, pct_encode_query};
+        for p in ["/home/amux/mtp/index.html", "/a b/c+d%/\u{e9}.html", "/x/?#&=.html"] {
+            let enc = pct_encode_query(p);
+            let qs = crate::api::fs::parse_qs(&format!("path={enc}"));
+            assert_eq!(qs.first().map(|(_, v)| v.as_str()), Some(p), "{enc}");
+        }
+        assert_eq!(pct_decode_path("a%20b+c%2Fd"), "a b+c/d");
+    }
+
     #[tokio::test]
     async fn file_stream_can_be_polled_after_eof_by_compression() {
         use futures::StreamExt;
