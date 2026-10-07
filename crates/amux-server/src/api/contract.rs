@@ -562,6 +562,23 @@ fn left_undone_summary(items: &[Value]) -> String {
 
 /// Apply a one-time amendment of the frozen verify command.
 pub async fn amend(state: &AppState, card: &str, actor: &str, command: String, reason: String) -> Response {
+    // Checked BEFORE it is stored, against the same rules the runner applies,
+    // so a command the runner would refuse does not spend the card's one
+    // amend (gs12-mvs, GM-125, 2026-10-07).
+    let (c0, lane) = (card.to_string(), state.store.read_async({
+        let c = card.to_string();
+        move |conn| Ok(crate::db::board_store::get_issue(conn, &c)?.and_then(|r| r.session))
+    }).await.ok().flatten().unwrap_or_default());
+    if let Some(tree) = lane_tree(&lane) {
+        let t = tree.to_string_lossy().into_owned();
+        let ws = crate::fanout_workspace::Workspace { repo: t.clone(), path: t, branch: String::new(), base: String::new() };
+        if let Err(why) = crate::fanout_workspace::validate_verification_command(&ws, &command) {
+            tracing::info!(card = %c0, lane, measured = true, n_considered = 1, verdict = "contract_amend_rule_refused",
+                "an amended verify command breaks a runner rule; refused before it spends the one amend");
+            return refuse(StatusCode::CONFLICT, "contract_amend_breaks_verify_rules", why,
+                json!({"amend": "not spent: fix every listed rule and amend again"}));
+        }
+    }
     let now = crate::config::now_f64();
     let (c, cmd, why, who) = (card.to_string(), command.clone(), reason.clone(), actor.to_string());
     let r = state.store.write_async(move |conn| {

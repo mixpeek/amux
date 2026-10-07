@@ -379,11 +379,21 @@ pub(crate) fn validate_verification_command(
     workspace: &Workspace,
     command: &str,
 ) -> Result<(), String> {
+    // EVERY violation at once, plus the whole rule set (gs12-mvs, GM-125,
+    // 2026-10-07): returning only the first one disclosed the rules one
+    // refusal at a time, and the second refusal arrived after the card's one
+    // amend was spent.
+    let mut problems: Vec<&str> = Vec::new();
     if command.contains("$(") || command.contains('`') {
-        return Err("verification commands must be static candidate-relative commands; put dynamic logic in a committed script and call that script".into());
+        problems.push("verification commands must be static candidate-relative commands; put dynamic logic in a committed script and call that script");
     }
-    if command.contains(".amux/") || command.split_whitespace().any(|part| part == ".amux") {
-        return Err("verification commands cannot depend on .amux receipt files; report receipts are harness plumbing, not committed candidate evidence".into());
+    // A RELATIVE .amux path is the candidate's receipt directory. A runtime
+    // installed under the home ~/.amux (a venv) is outside the candidate and
+    // is what the source-checkout rule below tells lanes to use.
+    let receipt = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>' | '=' | '"' | '\''))
+        .any(|part| part == ".amux" || part.starts_with(".amux/") || part.starts_with("./.amux"));
+    if receipt {
+        problems.push("verification commands cannot depend on .amux receipt files; report receipts are harness plumbing, not committed candidate evidence");
     }
     for source in [&workspace.path, &workspace.repo] {
         let mut spellings = vec![source.clone()];
@@ -404,11 +414,20 @@ pub(crate) fn validate_verification_command(
         {
             tracing::warn!(session=%workspace.branch.trim_start_matches("amux/fanout/"),
                 verdict="fanout_verification_source_path", "validation references the original source checkout");
-            return Err("worktree_verify references the original worker or shared checkout. Use source paths relative to the merged candidate (for example: cd server && python -m pytest tests); remove fallback cd commands. Use a runtime installed outside those source checkouts if needed.".into());
+            problems.push("worktree_verify references the original worker or shared checkout. Use source paths relative to the merged candidate (for example: cd server && python -m pytest tests); remove fallback cd commands. Use a runtime installed outside those source checkouts if needed.");
+            break;
         }
     }
-    Ok(())
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!("{} | All rules for a verify command: {VERIFY_RULES}", problems.join(" | ")))
 }
+
+/// Stated in full on every refusal, so a lane can meet them in one amend.
+pub(crate) const VERIFY_RULES: &str = "(1) no $() or backticks: dynamic logic goes in a committed script the command calls; \
+(2) no relative .amux/ path: those are the harness's report receipts (a runtime under ~/.amux, such as a venv, is allowed); \
+(3) no path into the worker's or the shared source checkout: run from the candidate's root, e.g. cd server && python -m pytest tests.";
 
 /// Shared semantics for source and merged candidates: preflight ALL distinct
 /// commands before any process, then run each with its own bounded timeout.
@@ -1828,6 +1847,16 @@ A  artifacts/project-report.json"
         let err = validate_verification_command(&workspace, "test -f .amux/project-report.json")
             .unwrap_err();
         assert!(err.contains("receipt files"));
+        // GM-125: a runtime under the home ~/.amux is not a receipt.
+        assert!(validate_verification_command(&workspace,
+            "cd server && ~/.amux/venvs/server-arm64/bin/python -m pytest -q tests").is_ok());
+        assert!(validate_verification_command(&workspace, "cat ./.amux/project-wait.json").is_err());
+        // Every violation and the whole rule set, in one refusal.
+        let err = validate_verification_command(&workspace,
+            "cd /tmp/source-repo && test `pwd` && cat .amux/project-report.json").unwrap_err();
+        for want in ["static candidate-relative", "receipt files", "references the original worker", "All rules for a verify command"] {
+            assert!(err.contains(want), "{want} missing from: {err}");
+        }
     }
 
     #[tokio::test]

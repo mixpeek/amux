@@ -16311,6 +16311,46 @@ mod af701_archive_guard_tests {
     /// gets one pre-run review of its plan, and its gaps reach the lane and
     /// the card before the expensive run. A non-proof card gets none, and the
     /// same plan is never pre-reviewed twice.
+    /// gs12-mvs, GM-125, 2026-10-07: an amend that breaks a runner rule is
+    /// refused with every rule stated and does NOT spend the one amend; a
+    /// valid amend then lands, and a second is refused.
+    #[tokio::test]
+    async fn an_amend_that_breaks_a_verify_rule_does_not_spend_the_one_amend() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).status().unwrap().success());
+        std::fs::write(h.join("sessions/lane-am.env"), format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\n", repo.display())).unwrap();
+        let id = seed(&store, "lane-am", "todo");
+        let i2 = id.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE issues SET type='code' WHERE id=?1", [i2])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let call = |body: Value| {
+            let (st, id) = (state.clone(), id.clone());
+            async move {
+                let r = patch_item_route(State(st), Path(id), owner_headers("lane-am"), Json(body)).await;
+                let code = r.status();
+                let b = to_bytes(r.into_body(), 1 << 20).await.unwrap();
+                (code, serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null))
+            }
+        };
+        let (st, b) = call(json!({"status": "doing", "acceptance_criteria": ["it holds"], "verify_cmd": "true"})).await;
+        assert_eq!(st, StatusCode::OK, "{b}");
+        let (st, b) = call(json!({"verify_cmd": "test `pwd` && cat .amux/project-report.json", "reason": "the frozen one cannot run"})).await;
+        assert_eq!((st, b["code"].as_str()), (StatusCode::CONFLICT, Some("contract_amend_breaks_verify_rules")), "{b}");
+        assert!(b["error"].as_str().unwrap().contains("All rules for a verify command"), "{b}");
+        let (st, b) = call(json!({"verify_cmd": "cd server && ~/.amux/venvs/x/bin/python -m pytest -q", "reason": "the frozen one cannot run"})).await;
+        assert_eq!(st, StatusCode::OK, "the refused amend did not spend it: {b}");
+        let (st, b) = call(json!({"verify_cmd": "true", "reason": "again"})).await;
+        assert_eq!((st, b["code"].as_str()), (StatusCode::CONFLICT, Some("contract_amended_once")), "{b}");
+    }
+
     #[tokio::test]
     async fn a_proof_card_entering_doing_gets_one_pre_run_review_of_its_plan() {
         let (state, store) = fixture();
