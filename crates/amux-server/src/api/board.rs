@@ -12537,6 +12537,11 @@ pub async fn patch_item(
                         next.lease_expires_at = None;
                         next.lease_generation += 1;
                     }
+                    // Core's transition reads `task`, built from the row BEFORE the
+                    // lease was released above, so a named move (needsyou, todo,
+                    // review) still met AlreadyClaimed (gs12-planes, GP-196,
+                    // 2026-10-07). Rebuild it from the released row.
+                    let task = if owner_over_foreign_lease { next.to_task().unwrap_or(task) } else { task };
                     if let (Some(wid), false) = (&caller_wid, force || owner_over_foreign_lease) {
                         let as_worker = Actor::Worker { id: wid.clone() };
                         if amux_core::board::holder_guard(&task, &as_worker).is_err() {

@@ -8377,11 +8377,15 @@ async fn the_cards_own_lane_moves_it_when_another_lane_holds_the_lease() {
     let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
         Some(json!({ "status": "todo", "reason": "a third lane" })), &[("X-Amux-Session", "lane-c")]).await;
     assert_eq!((st, v["error"].clone()), (StatusCode::CONFLICT, json!("lease_held")), "{v}");
+    // A NAMED move goes through core's claim check, which a forced park
+    // (doing -> backlog) skips: GP-196 met AlreadyClaimed on needsyou.
     let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
-        Some(json!({ "status": "backlog", "reason": "parked on a trigger" })), &[("X-Amux-Session", "lane-a")]).await;
-    assert_eq!(st, StatusCode::OK, "{v}");
+        Some(json!({ "status": "needsyou", "ask_actor": "ethan", "ask_type": "budget",
+            "ask_question": "May lane-a spend $40 a day on the on-demand pool?",
+            "ask_unblocks": "A yes lets lane-a run the proof on the on-demand pool." })), &[("X-Amux-Session", "lane-a")]).await;
+    assert_eq!(st, StatusCode::OK, "the owner parks its card on the owner: {v}");
     let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
-    assert_eq!(d["status"], json!("backlog"), "{d}");
+    assert_eq!(d["status"], json!("needsyou"), "{d}");
     assert!(d.get("lease").is_none() || d["lease"].is_null(), "the foreign lease is gone: {d}");
 }
 
