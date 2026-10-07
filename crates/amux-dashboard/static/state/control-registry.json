@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2433,
+  "n_considered": 2442,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3166,6 +3166,12 @@
     },
     "_tunnelStopUI": {
       "kind": "command._tunnelStopUI",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_typingPing": {
+      "kind": "command._typingPing",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

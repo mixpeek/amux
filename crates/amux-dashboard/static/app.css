@@ -7941,3 +7941,15 @@ body.light .bd-answer-head { color: #bc4c00; }
   .map-loc-seg > button, .map-loc-back { min-height: 44px; }
   .map-loc-legend { min-width: 160px; }
 }
+
+/* Multiplayer typing presence (AC-474): another account typing to this worker. */
+.typing-ind {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--dim);
+  padding: 2px 4px 0;
+  min-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

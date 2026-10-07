@@ -1886,6 +1886,39 @@ function _saveConnections(list) {
   localStorage.setItem(_CONNECTIONS_KEY, JSON.stringify(_connectionEntries(list)));
 }
 
+// Username/password for a connection that sits behind a sign-in (an
+// amux-door host, cloud/desktop/door.py). Kept per ORIGIN in its own
+// device-only key: the connection list itself travels to every other server
+// in the ?_sync= payload, so a password must never be part of it.
+const _CONN_LOGINS_KEY = 'amux_conn_logins';
+function _connLogins() {
+  try { const v = JSON.parse(localStorage.getItem(_CONN_LOGINS_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; }
+  catch { return {}; }
+}
+function _connLoginFor(url) {
+  try { const l = _connLogins()[new URL(url).origin]; return l && l.user && l.pass ? l : null; } catch { return null; }
+}
+function _connLoginSet(url, login) {
+  const all = _connLogins();
+  const origin = new URL(url).origin;
+  if (login) all[origin] = {user: login.user, pass: login.pass}; else delete all[origin];
+  localStorage.setItem(_CONN_LOGINS_KEY, JSON.stringify(all));
+}
+// Sign in to a door-protected server and land on its dashboard: a top-level
+// form POST (cookies set by the response belong to that server, and no CORS
+// is involved), with the usual ?_sync= handoff as the destination.
+function _connSignInAndGo(serverUrl, login, nextPath) {
+  const f = document.createElement('form');
+  f.method = 'POST';
+  f.action = serverUrl.replace(/\/+$/, '') + '/_door/login';
+  f.style.display = 'none';
+  for (const [k, v] of [['username', login.user], ['password', login.pass], ['next', nextPath]]) {
+    const i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = v; f.appendChild(i);
+  }
+  document.body.appendChild(f);
+  f.submit();
+}
+
 function _renderInstanceSwitcher() {
   const conns = _loadConnections();
   const origin = window.location.origin;
@@ -1921,7 +1954,7 @@ function _renderInstanceSwitcher() {
           return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
             <div style="flex:1;min-width:0;">
               <div style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</div>
-              <div style="font-size:0.7rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}</div>
+              <div style="font-size:0.7rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.url)}${_connLoginFor(c.url) ? ' &middot; signs in as ' + esc(_connLoginFor(c.url).user) : ''}</div>
             </div>
             ${isCurr
               ? '<span style="font-size:0.68rem;color:var(--accent);flex-shrink:0;">current</span>'
@@ -1939,6 +1972,7 @@ function _switchInstance(i) {
 
 function _removeConnection(i) {
   const conns = _loadConnections();
+  if (conns[i]) { try { _connLoginSet(conns[i].url, null); } catch (e) {} }
   conns.splice(i, 1);
   _saveConnections(conns);
   _renderInstanceSwitcher();
@@ -1966,15 +2000,21 @@ function _addConnPreset(name, url) {
 function _addConnectionSave() {
   const ni = document.getElementById('add-conn-name');
   const ui = document.getElementById('add-conn-url');
+  const usr = document.getElementById('add-conn-user');
+  const pwd = document.getElementById('add-conn-pass');
   const name = (ni ? ni.value : '').trim();
   const url = (ui ? ui.value : '').trim().replace(/\/$/, '');
+  const user = (usr ? usr.value : '').trim();
+  const pass = pwd ? pwd.value : '';
   if (!name || !url) return;
-  if (!_connectionEntries([{name,url}]).length) { _connectionSecurityError('Use an HTTPS origin only, without credentials, path, query or fragment.'); return; }
+  if (!_connectionEntries([{name,url}]).length) { _connectionSecurityError('Use an HTTPS origin only, without credentials, path, query or fragment. Put a username and password in their own fields.'); return; }
+  if (!!user !== !!pass) { _connectionSecurityError('Enter both a username and a password, or neither.'); return; }
   const conns = _loadConnections();
   conns.push({ name, url });
   _saveConnections(conns);
+  _connLoginSet(url, user ? {user, pass} : null);
   _toggleAddConnectionForm(false);
-  if(ni) ni.value=''; if(ui) ui.value='';
+  if(ni) ni.value=''; if(ui) ui.value=''; if(usr) usr.value=''; if(pwd) pwd.value='';
   _renderInstanceSwitcher();
 }
 
@@ -10605,7 +10645,89 @@ function _draftSave(session, text) {
   const record = previous.t === text ? previous : {t:text, ts:Date.now(), rev:crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()};
   _draftPersist(session, record);
   _draftSyncInputs(session, text);
+  if (previous.t !== text) _typingPing(session, !!text);
   return record.rev;
+}
+
+// ── Multiplayer typing presence (AC-474, server: api/typing.rs) ──
+// Another account typing to a worker shows as "elliot is typing…" under that
+// worker's composers. The server owns identity (member email, lane, owner)
+// and expires entries after ttl_ms; this client re-arms on every event and
+// drops anything not refreshed in time, so a lost "stopped" can leave an
+// indicator up for one TTL at most. Our own actor is learned from our own
+// ping's response and never shown back to us.
+const _typingState = new Map();          // session -> Map(actor -> {label, until})
+const _typingSent = new Map();           // session -> {active, at}
+let _typingSelf = '';
+let _typingTimer = null;
+function _typingPing(session, active) {
+  if (!session) return;
+  const last = _typingSent.get(session);
+  const now = Date.now();
+  // Starts and stops go out at once; a continuing stream re-arms every 3s.
+  if (active && last && last.active && now - last.at < 3000) return;
+  if (!active && (!last || !last.active)) return;
+  // Presence is ephemeral: never queue it in the durable offline outbox
+  // (a replayed "typing" from minutes ago is wrong, and it inflated the
+  // outbox the offline lifecycle tests count), and do not send it offline.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  _typingSent.set(session, {active, at: now});
+  fetch('/api/sessions/' + encodeURIComponent(session) + '/typing', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active}), _skipOutbox: true,
+  }).then(r => r.ok ? r.json() : null).then(d => { if (d && d.actor) _typingSelf = d.actor; }).catch(() => {});
+}
+function _typingOnEvent(msg) {
+  if (!msg || !msg.session) return;
+  const until = Date.now() + (msg.ttl_ms || 8000);
+  const next = new Map();
+  for (const w of (msg.who || [])) {
+    if (!w || !w.actor || w.actor === _typingSelf) continue;
+    next.set(w.actor, {label: w.label || w.actor, until});
+  }
+  if (next.size) _typingState.set(msg.session, next); else _typingState.delete(msg.session);
+  _typingRender();
+}
+function _typingText(session) {
+  const who = _typingState.get(session);
+  if (!who) return '';
+  const now = Date.now();
+  for (const [a, v] of who) if (v.until <= now) who.delete(a);
+  if (!who.size) { _typingState.delete(session); return ''; }
+  const names = [...who.values()].map(v => v.label);
+  return names.length === 1 ? names[0] + ' is typing\u2026'
+    : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] + ' are typing\u2026';
+}
+function _typingPlace(anchor, id, text) {
+  let el = document.getElementById(id);
+  if (!text) { if (el) el.remove(); return; }
+  if (!anchor) return;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = id;
+    el.className = 'typing-ind';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    anchor.insertAdjacentElement('beforebegin', el);   // above the composer row, never beside the input
+  }
+  if (el.textContent !== text) el.textContent = text;
+}
+// Idempotent: card templates are rebuilt on SSE re-renders, so this re-applies
+// from state rather than trusting an element to survive.
+function _typingRender() {
+  const sessions = new Set([..._typingState.keys()]);
+  document.querySelectorAll('.typing-ind[data-typing-session]').forEach(el => sessions.add(el.dataset.typingSession));
+  for (const s of sessions) {
+    const text = _typingText(s);
+    const cardInput = document.getElementById('input-' + s);
+    _typingPlace(cardInput && cardInput.closest('.send-row'), 'typing-card-' + s, text);
+    const c = document.getElementById('typing-card-' + s); if (c) c.dataset.typingSession = s;
+  }
+  const peekT = typeof _peekComposerTarget === 'function' ? _peekComposerTarget() : null;
+  const peekInput = document.getElementById('peek-cmd-input');
+  _typingPlace(peekInput && (peekInput.closest('.send-row') || peekInput.parentElement), 'typing-peek', peekT ? _typingText(peekT) : '');
+  if (_typingState.size && !_typingTimer) {
+    _typingTimer = setInterval(() => { _typingRender(); if (!_typingState.size) { clearInterval(_typingTimer); _typingTimer = null; _typingRender(); } }, 1000);
+  }
 }
 function _liveComposerValue(session) {
   if (typeof peekSession !== 'undefined' && _peekComposerTarget() === session) {
@@ -13844,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1255';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1258';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39992,6 +40114,8 @@ function connectSSE() {
           _fireAmuxAlert(a);
           if (a.type === 'steering_delivered' && a.session === peekSession) _steeringUpdateBadge();
         }
+      } else if (msg.type === 'typing') {
+        _typingOnEvent(msg);
       } else if (msg.type === 'invalidate') {
         _stateSync.invalidate(msg).catch(error => _interactionDiagnostic({verdict:'query_invalidation_failed', error:String(error), measured:true, n_considered:1}));
         for (const key of (msg.keys || [])) {
@@ -41089,6 +41213,8 @@ function _switchServerUrl(idx, evt) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url.replace(/\/+$/, '') + '/?_sync=' + encodeURIComponent(payload);
+  const login = _connLoginFor(s.url);
+  if (login) { _connSignInAndGo(s.url, login, '/?_sync=' + encodeURIComponent(payload)); return; }
   location.href = url;
 }
 
@@ -41107,6 +41233,8 @@ function switchServer(idx) {
     deviceName: localStorage.getItem('amux_device_name') || ''
   }));
   const url = s.url + '/?_sync=' + encodeURIComponent(payload);
+  const login = _connLoginFor(s.url);
+  if (login) { _connSignInAndGo(s.url, login, '/?_sync=' + encodeURIComponent(payload)); return; }
   location.href = url;
 }
 

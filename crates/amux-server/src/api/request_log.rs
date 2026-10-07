@@ -2704,6 +2704,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/chat/interrupt",
         methods: &["POST"],
     },
+    // -- composer typing presence (api/typing.rs, AC-474)
+    RouteEntry {
+        path: "/api/sessions/{name}/typing",
+        methods: &["GET", "POST"],
+    },
     // -- saved messages / habits / token-baseline reset (AMUX-2871)
     RouteEntry {
         path: "/api/saved-messages",

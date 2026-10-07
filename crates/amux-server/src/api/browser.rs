@@ -1497,6 +1497,14 @@ async fn start(
                     "not part of POST /api/browser/start and did nothing; viewport at start is device or width+height"
                 );
             }
+            if body.headless == Some(false) {
+                if let Some(why) = chrome::headed_unavailable_reason() {
+                    v["headless_fallback"] = json!({
+                        "why": why,
+                        "sign_in_via": "dashboard Browser tab live view (headless page, same profile dir)",
+                    });
+                }
+            }
             record_browser_event(
                 &state,
                 attrib.as_deref(),
@@ -2828,14 +2836,37 @@ async fn profile_create(
         }
         launch_ms = launch_started.elapsed().as_millis();
     }
+    // A requested sign-in window that never opened is a failure, not a 200
+    // with `launched:false` beside `ok:true` (wexus.amux.io, 2026-10-06: a
+    // caller reading `ok` was told the window it asked for existed).
+    let wants_launch = !body.url.trim().is_empty();
+    let ok = !wants_launch || launched;
+    // On a display-less host chrome::start launched it headless; the human
+    // signs in through the dashboard Browser tab's live view instead.
+    let headless_fallback = if wants_launch && launched {
+        chrome::headed_unavailable_reason().map(|why| {
+            json!({
+                "why": why,
+                "sign_in_via": "dashboard Browser tab live view (headless page, same profile dir)",
+            })
+        })
+    } else {
+        None
+    };
+    let note = if headless_fallback.is_some() {
+        "no display on this host: open the dashboard Browser tab, sign in through the live view, then POST /api/browser/stop to flush the profile"
+    } else {
+        "sign in through the opened window, then POST /api/browser/stop to flush the profile"
+    };
     let body_json = json!({
-        "ok": true,
+        "ok": ok,
         "profile": name,
         "path": dir.display().to_string(),
         "launched": launched,
         "launch_ms": launch_ms,
         "launch_error": launch_error,
-        "note": "sign in through the opened window, then POST /api/browser/stop to flush the profile",
+        "headless_fallback": headless_fallback,
+        "note": note,
     });
     let binding_session = resolve_session(body.session.as_deref(), &headers);
     let actor = explicit_session(body.session.as_deref(), &headers);
@@ -2852,6 +2883,10 @@ async fn profile_create(
         }),
     )
     .await;
+    if !ok {
+        tracing::warn!(verdict = "profile_create_launch_failed", profile = %name, "profile/create: sign-in browser did not launch");
+        return err(StatusCode::BAD_GATEWAY, body_json);
+    }
     let body_v = Json(body_json).into_response();
     // Declare the wait as the LAUNCH's only when the launch dominated it. A
     // create that took 11s around a 200ms launch is amux being slow and must

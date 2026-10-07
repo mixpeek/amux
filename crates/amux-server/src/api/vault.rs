@@ -129,6 +129,9 @@ pub(crate) fn card_brand(number: &str) -> &'static str {
 
 /// What anyone may see about an item: never a secret value.
 pub(crate) fn public_view(item: &Value) -> Value {
+    if item["kind"].as_str() == Some("login") {
+        return login_public_view(item);
+    }
     let f = &item["fields"];
     let number = f["number"].as_str().unwrap_or("");
     let d = digits(number);
@@ -249,6 +252,216 @@ fn new_id() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Login items: a username and password amux types into a sign-in page itself
+// ---------------------------------------------------------------------------
+//
+// Same shape as a card (AC-475, 2026-10-06). A worker on the Wexus host had
+// the NetSuite password in a file, correctly refused to read it or type it
+// into a form, and had no other way in. The vault fixes that the way it fixes
+// checkout: the worker opens the sign-in page in its amux browser and names
+// the item; amux types the values in. The password never reaches a prompt, a
+// transcript, a log line or an API response.
+//
+// The rule that makes it safe to hand a worker this verb: an item carries the
+// ORIGINS it may be typed into, and amux checks the page's own host before
+// filling. A worker that navigates somewhere else and asks for a fill is
+// refused, so the verb cannot be used to post the password to a page of the
+// worker's choosing.
+
+/// Host-suffix match: `netsuite.com` allows `system.netsuite.com` and
+/// `1234567.app.netsuite.com`, never `netsuite.com.evil.example`.
+pub(crate) fn host_allowed(host: &str, origins: &[String]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    origins.iter().any(|o| {
+        let o = o.trim().trim_start_matches("https://").trim_start_matches("http://")
+            .trim_start_matches("*.").trim_end_matches('/').to_ascii_lowercase();
+        !o.is_empty() && (host == o || host.ends_with(&format!(".{o}")))
+    })
+}
+
+fn mask_username(u: &str) -> String {
+    match u.split_once('@') {
+        Some((local, domain)) => {
+            let first: String = local.chars().take(1).collect();
+            format!("{first}***@{domain}")
+        }
+        None => {
+            let first: String = u.chars().take(1).collect();
+            format!("{first}***")
+        }
+    }
+}
+
+fn login_public_view(item: &Value) -> Value {
+    let f = &item["fields"];
+    let held: Vec<&str> = ["username", "password"]
+        .into_iter()
+        .filter(|k| f[*k].as_str().is_some_and(|v| !v.is_empty()))
+        .collect();
+    json!({
+        "id": item["id"],
+        "name": item["name"],
+        "kind": "login",
+        "username_hint": mask_username(f["username"].as_str().unwrap_or("")),
+        "origins": item["rules"]["origins"],
+        "fields_held": held,
+        "rules": item["rules"],
+        "status": item["status"],
+        "created": item["created"],
+        "created_by": item["created_by"],
+    })
+}
+
+fn create_login(home: &Path, headers: &HeaderMap, name: String, body: &Value) -> Response {
+    let f = &body["fields"];
+    let username = f["username"].as_str().unwrap_or("").trim().to_string();
+    let password = f["password"].as_str().unwrap_or("").to_string();
+    if username.is_empty() || password.is_empty() {
+        return err(StatusCode::BAD_REQUEST, json!({"error": "fields.username and fields.password are required"}));
+    }
+    let origins: Vec<String> = body["rules"]["origins"].as_array().map(|a| {
+        a.iter().filter_map(Value::as_str).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    }).unwrap_or_default();
+    if origins.is_empty() {
+        return err(StatusCode::BAD_REQUEST, json!({
+            "error": "rules.origins is required: the hosts this login may be typed into, e.g. [\"netsuite.com\"]",
+            "why": "amux checks the page's host against it before every fill, so a worker cannot send the password to a page of its choosing"}));
+    }
+    let from_worker = is_worker_origin(headers);
+    let by = origin_name(headers);
+    let item = json!({
+        "id": new_id(),
+        "name": name,
+        "kind": "login",
+        "fields": {"username": username, "password": password},
+        "rules": {"origins": origins},
+        "status": if from_worker { "pending_owner_activation" } else { "active" },
+        "created": now_f64(),
+        "created_by": by,
+    });
+    let mut items = load_items(home);
+    items.push(item.clone());
+    if let Err(e) = save_items(home, &items) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
+    }
+    audit(home, json!({"ts": now_f64(), "event": "item_added", "item": item["id"], "kind": "login", "by": by,
+        "status": item["status"], "rules": item["rules"]}));
+    tracing::info!(item = %item["id"], by = %by, status = %item["status"], measured = true,
+        n_considered = 1, verdict = "vault_login_added", "vault login added (values not logged)");
+    (StatusCode::CREATED, Json(json!({"ok": true, "item": login_public_view(&item)}))).into_response()
+}
+
+pub(crate) fn login_fill_script(username: &str, password: &str, submit: bool) -> String {
+    let u = serde_json::to_string(username).unwrap_or_else(|_| "\"\"".into());
+    let p = serde_json::to_string(password).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        r#"(() => {{
+  const U = {u}, P = {p}, SUBMIT = {submit};
+  const vis = el => el && !el.disabled && el.offsetParent !== null && el.type !== 'hidden';
+  const pick = sels => {{ for (const s of sels) for (const el of document.querySelectorAll(s)) if (vis(el)) return el; return null; }};
+  const set = (el, val) => {{
+    const d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    el.focus(); d.set.call(el, val);
+    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  const user = pick(['input[autocomplete="username"]', 'input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]',
+                     'input[name*="user" i]', 'input[id*="user" i]', 'input[name*="login" i]']);
+  const pass = pick(['input[autocomplete="current-password"]', 'input[type="password"]']);
+  const filled = [], not_found = [];
+  if (user && user !== pass) {{ set(user, U); filled.push('username'); }} else not_found.push('username');
+  if (pass) {{ set(pass, P); filled.push('password'); }} else not_found.push('password');
+  let submitted = false;
+  if (SUBMIT && filled.length) {{
+    // Pick by the .type PROPERTY, not a [type=submit] selector: a <button> with
+    // no type attribute is a submit button by default and the selector misses
+    // it (Oracle's sign-in, 2026-10-06). Visible only, the field's own form
+    // first: pages carry hidden forms whose buttons do nothing useful.
+    const field = pass || user;
+    const isSubmit = el => el.tagName === 'BUTTON' ? el.type === 'submit' : (el.tagName === 'INPUT' && el.type === 'submit');
+    const words = /^(next|continue|sign ?in|log ?in|submit|verify)$/i;
+    const all = [...document.querySelectorAll('button, input[type="submit"]')].filter(vis);
+    const own = field.form ? all.filter(b => b.form === field.form && isSubmit(b)) : [];
+    const btn = own[0] || all.find(b => isSubmit(b) && words.test((b.innerText || b.value || '').trim()))
+      || all.find(b => words.test((b.innerText || b.value || '').trim())) || all.find(isSubmit);
+    if (btn) {{ btn.click(); submitted = true; }}
+    else if (field.form && vis(field)) {{ field.form.requestSubmit ? field.form.requestSubmit() : field.form.submit(); submitted = true; }}
+  }}
+  return {{ filled, not_found, submitted, url: location.href }};
+}})()"#
+    )
+}
+
+async fn fill_login(home: &Path, id: &str, item: &Value, session: &str, body: &Value) -> Response {
+    let submit = body["submit"].as_bool().unwrap_or(false);
+    let origins: Vec<String> = item["rules"]["origins"].as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    let mut a = json!({"ts": now_f64(), "event": "fill", "kind": "login", "item": id, "session": session, "submit": submit});
+    if item["status"].as_str() != Some("active") {
+        a["decision"] = json!("refused");
+        a["why"] = json!("not active");
+        audit(home, a);
+        return err(StatusCode::FORBIDDEN, json!({"ok": false,
+            "error": "this vault login is not active yet: the owner activates it from the dashboard"}));
+    }
+    let (_page, mut cdp) = match super::browser::connect_session(session, None).await {
+        Ok(x) => x,
+        Err(_) => {
+            a["decision"] = json!("fill_failed");
+            a["why"] = json!("no browser page");
+            audit(home, a);
+            return err(StatusCode::BAD_GATEWAY, json!({"ok": false,
+                "error": format!("no amux browser page for session '{session}': open the sign-in page with /api/browser/start first")}));
+        }
+    };
+    // Read the host from the page itself, not from anything the caller says.
+    let host = match cdp.eval("location.hostname", 10).await {
+        Ok(v) => v.as_str().unwrap_or("").to_string(),
+        Err(e) => {
+            a["decision"] = json!("fill_failed");
+            a["why"] = json!(e.to_string());
+            audit(home, a);
+            return err(StatusCode::BAD_GATEWAY, json!({"ok": false, "error": format!("could not read the page's host: {e}")}));
+        }
+    };
+    a["host"] = json!(host);
+    if !host_allowed(&host, &origins) {
+        a["decision"] = json!("refused_origin");
+        audit(home, a);
+        tracing::warn!(item = %id, session = %session, host = %host, measured = true, n_considered = 1,
+            verdict = "vault_login_origin_refused", "vault login fill refused: page host is not one of the item's origins");
+        return err(StatusCode::FORBIDDEN, json!({"ok": false,
+            "error": format!("this login may only be typed into {origins:?}; the page is on {host}"),
+            "next": "navigate the browser to the sign-in page for one of those hosts, then retry"}));
+    }
+    let f = &item["fields"];
+    let script = login_fill_script(f["username"].as_str().unwrap_or(""), f["password"].as_str().unwrap_or(""), submit);
+    match cdp.eval(&script, 15).await {
+        Ok(r) => {
+            let filled = r.get("filled").cloned().unwrap_or(json!([]));
+            let not_found = r.get("not_found").cloned().unwrap_or(json!([]));
+            a["decision"] = json!("filled");
+            a["filled"] = filled.clone();
+            a["not_found"] = not_found.clone();
+            a["submitted"] = r.get("submitted").cloned().unwrap_or(json!(false));
+            audit(home, a);
+            tracing::info!(item = %id, session = %session, host = %host, measured = true, n_considered = 1,
+                verdict = "vault_login_filled", "vault login filled into the worker's page (values not logged)");
+            Json(json!({"ok": true, "host": host, "filled": filled, "not_found": not_found,
+                "submitted": r.get("submitted"),
+                "note": "values were typed into the page by amux and are not returned. A two-step sign-in (email, then password) needs a second fill on the second page."}))
+                .into_response()
+        }
+        Err(e) => {
+            a["decision"] = json!("fill_failed");
+            a["why"] = json!(e.to_string());
+            audit(home, a);
+            err(StatusCode::BAD_GATEWAY, json!({"ok": false, "error": e.to_string()}))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
 
@@ -272,6 +485,9 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let name = body["name"].as_str().unwrap_or("").trim().to_string();
     if name.is_empty() {
         return err(StatusCode::BAD_REQUEST, json!({"error": "name is required"}));
+    }
+    if body["kind"].as_str() == Some("login") {
+        return create_login(&home, &headers, name, &body);
     }
     let src = body["fields"].as_object().cloned().unwrap_or_default();
     let mut fields = Map::new();
@@ -417,6 +633,11 @@ pub(crate) fn fill_script(values: &Value) -> String {
 async fn fill(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json<Value>) -> Response {
     let home = amux_home();
     let session = body["session"].as_str().map(str::to_string).unwrap_or_else(|| origin_name(&headers));
+    if let Some(item) = load_items(&home).into_iter().find(|i| i["id"].as_str() == Some(id.as_str())) {
+        if item["kind"].as_str() == Some("login") {
+            return fill_login(&home, &id, &item, &session, &body).await;
+        }
+    }
     let amount = body["amount_usd"].as_f64().unwrap_or(f64::NAN);
     let currency = body["currency"].as_str().unwrap_or("USD").to_string();
     let merchant = body["merchant"].as_str().unwrap_or("").trim().to_string();
@@ -915,6 +1136,39 @@ pub fn routes() -> Router<super::AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_origins_match_host_suffixes_and_nothing_else() {
+        let o = vec!["netsuite.com".to_string()];
+        assert!(host_allowed("system.netsuite.com", &o));
+        assert!(host_allowed("1234567.app.netsuite.com", &o));
+        assert!(host_allowed("netsuite.com", &o));
+        assert!(!host_allowed("netsuite.com.evil.example", &o));
+        assert!(!host_allowed("evilnetsuite.com", &o));
+        assert!(!host_allowed("example.com", &o));
+        assert!(host_allowed("login.oracle.com", &["https://*.oracle.com/".to_string()]));
+        assert!(!host_allowed("anything.com", &[]));
+    }
+
+    #[test]
+    fn login_view_never_carries_the_password() {
+        let item = json!({"id": "vlt_x", "name": "NetSuite", "kind": "login",
+            "fields": {"username": "ethan@runmixpeek.com", "password": "hunter2-secret"},
+            "rules": {"origins": ["netsuite.com"]}, "status": "active"});
+        let v = login_public_view(&item).to_string();
+        assert!(!v.contains("hunter2-secret"), "{v}");
+        assert!(!v.contains("ethan@"), "username is masked: {v}");
+        assert!(v.contains("e***@runmixpeek.com"), "{v}");
+        let routed = public_view(&item).to_string();
+        assert!(!routed.contains("hunter2-secret"), "public_view must route logins to the login view: {routed}");
+    }
+
+    #[test]
+    fn login_fill_script_json_escapes_values() {
+        let s = login_fill_script("a\"b", "p'\"</script>", true);
+        assert!(s.contains(r#"const U = "a\"b""#), "{s}");
+        assert!(s.contains("SUBMIT = true"));
+    }
 
     fn card(limit: f64, status: &str) -> Value {
         json!({"id": "vlt_1", "status": status, "rules": {"max_usd_without_approval": limit},
