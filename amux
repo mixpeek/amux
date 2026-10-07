@@ -5486,7 +5486,10 @@ exp = f", login expires in {lg['days_left']} day(s)" if lg.get("days_left") is n
 print(f"  {d['site']}: {state}{exp}", file=sys.stderr)
 print(f"  why: {d.get('why','')}", file=sys.stderr)
 if d.get("alternatives"):
-    print("  also signed in: " + ", ".join(d["alternatives"]), file=sys.stderr)
+    # Live-login alternatives when the pick is signed in; otherwise these are
+    # only REGISTERED for the site, which is not the same claim.
+    what = "also signed in" if d.get("signed_in") else "also registered (not signed in)"
+    print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
 print(f'  start it: POST /api/browser/start {{"profile":"{d["profile"]}"}}', file=sys.stderr)
 sys.exit(0 if d.get("signed_in") else 3)
 PYEOF
