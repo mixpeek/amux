@@ -215,14 +215,14 @@ code=$( cd "$ROOT_REPO" || exit
         bash "$ROOT_REPO/scripts/safe-cargo.sh" test -p amux-server >/dev/null 2>&1; echo $? )
 rm -f "$ROOT_REPO/$NEWREL"
 ok "compiler verdict stays green even when coverage is unmeasured" "$code" "0"
-ok "receipt records source drift" "$(grep -c '^# source_state\tchanged$' "$(rcpt o)")" "1"
+ok "receipt records source drift" "$(grep -c $'^# source_state\tchanged$' "$(rcpt o)")" "1"
 ok "changed run certifies no file bytes" "$(grep -vc '^#' "$(rcpt o)" || true)" "0"
 o=$(run "$(rcpt o)" "$REALP")
 ok "pre-commit withholds reassuring coverage" "$(echo "$o" | grep -c 'match the bytes')" "0"
 
 echo "cell p: a missing pre-run snapshot cannot certify end-of-run bytes"
 ( cd "$ROOT_REPO" && unset AMUX_TEST_SOURCE_SNAPSHOT; AMUX_HOME="$TMP/h.p" AMUX_SESSION=sc "$WRITER" 0 test -p amux-server ) >/dev/null 2>&1
-ok "missing snapshot is explicit" "$(grep -c '^# source_state\tunmeasured$' "$(rcpt p)")" "1"
+ok "missing snapshot is explicit" "$(grep -c $'^# source_state\tunmeasured$' "$(rcpt p)")" "1"
 ok "missing snapshot certifies no bytes" "$(grep -vc '^#' "$(rcpt p)" || true)" "0"
 
 echo ""

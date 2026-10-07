@@ -122,7 +122,10 @@ its receipts. Test wrappers capture the source before execution; receipts
 withhold all byte coverage when the source differs afterwards or the initial
 snapshot is unavailable. This detects observed source drift, not every possible
 transient edit restored during a run. Then run the full server and workspace
-suites, check and clippy.
+suites, check and clippy. Package cleanup takes an exclusive target lease;
+active build/test consumers make it defer rather than delete their executables.
+A held/failed cache refresh preserves the previous source fingerprint and records
+that no test ran. Retry after those consumers finish.
 
 | Surface | Recovery evidence |
 | --- | --- |

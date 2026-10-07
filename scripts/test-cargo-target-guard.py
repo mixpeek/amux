@@ -66,6 +66,28 @@ class CargoReclaimTests(unittest.TestCase):
         self.assertTrue((self.root / 'debug' / '.cargo-lock').exists())
         self.assertTrue(guard.lease_path(self.root).exists())
 
+    def test_cargo_clean_cannot_delete_a_leased_test_artifact_and_idle_retry_succeeds(self):
+        bin_dir = self.base / 'clean-bin'; bin_dir.mkdir()
+        scope = bin_dir / 'systemd-run'
+        scope.write_text('#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n'); scope.chmod(0o755)
+        cargo = bin_dir / 'cargo'
+        cargo.write_text('#!/bin/sh\nif [ "$1" = clean ]; then rm "$CLEAN_MARKER"; exit 0; fi\nprintf "ready\\n"\nread -r release\n'); cargo.chmod(0o755)
+        env = {**os.environ, 'PATH':str(bin_dir)+':'+os.environ['PATH'], 'CARGO_TARGET_DIR':str(self.root), 'CLEAN_MARKER':str(self.marker), 'AMUX_HOME':str(self.base/'fixture-home'), 'AMUX_SESSION':'target-guard-fixture'}
+        wrapper = str(SCRIPT.with_name('safe-cargo.sh'))
+        holder = subprocess.Popen(['bash',wrapper,'test'], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), 'ready')
+            held = subprocess.run(['bash',wrapper,'clean'], env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(held.returncode,75, held.stdout+held.stderr)
+            self.assertIn('lock busy',held.stdout)
+            self.assertTrue(self.marker.exists(), 'clean must not remove another consumer executable')
+        finally:
+            holder.communicate('finished\n',timeout=10)
+        self.assertEqual(holder.returncode,0)
+        idle = subprocess.run(['bash',wrapper,'clean'], env=env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(idle.returncode,0,idle.stdout+idle.stderr)
+        self.assertFalse(self.marker.exists(), 'the same cleanup works after lease release')
+
     def test_native_cargo_lock_blocks_unwrapped_build(self):
         lock = self.root / 'debug' / '.cargo-lock'
         fd = guard.open_lock(lock)
@@ -262,8 +284,14 @@ class CargoReclaimTests(unittest.TestCase):
             self.assertNotIn(str(proc.pid), aged,
                              'past the build-age bound this is a daemon, not an in-flight build')
             # ...and the reclaim it had been deadlocking now gets through.
-            self.mutate(probe=guard.active_processes)
-            self.assertFalse(self.marker.exists())
+            active, _ = self.measured_active([self.root])
+            if active:
+                with self.assertRaisesRegex(guard.Deferred, 'active cargo/rustc/test'):
+                    self.mutate(probe=guard.active_processes)
+                self.assertTrue(self.marker.exists(), 'an ambient compiler still fences reclamation')
+            else:
+                self.mutate(probe=guard.active_processes)
+                self.assertFalse(self.marker.exists())
         finally:
             proc.kill()
             proc.wait()

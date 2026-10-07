@@ -156,6 +156,7 @@ _target_guard="$(cd "$(dirname "$0")" && pwd)/cargo-target-guard.py"
 _budget="$(cd "$(dirname "$0")" && pwd)/cargo-budget.py"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.amux/rust-build-target}"
 _guard_cmd=(python3 "$_target_guard" run --target "$CARGO_TARGET_DIR")
+if [ "${1:-}" = "clean" ]; then _guard_cmd+=(--exclusive-run); fi
 # Cargo's explicit --target-dir wins over the environment. Lease both roots.
 _next_target=0
 for _arg in "$@"; do

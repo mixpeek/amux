@@ -300,6 +300,7 @@ def main():
     parser.add_argument('--destination')
     parser.add_argument('--protected-path', action='append', default=[])
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--exclusive-run', action='store_true', help='run a target-mutating command only when no consumer lease is held')
     # Parse command separately: argparse REMAINDER would swallow guard options.
     argsv = sys.argv[1:]
     command = []
@@ -315,7 +316,9 @@ def main():
             # Acquired inside the systemd scope, and inherited by cargo and its
             # children. No parent polling window between build and test binaries.
             for target in targets:
-                fd = open_lock(lease_path(target), shared=True, wait=True)
+                # cargo clean is a mutation too. A shared lease let it delete
+                # the next test executable after Cargo released its build lock.
+                fd = open_lock(lease_path(target), shared=not args.exclusive_run, wait=not args.exclusive_run)
                 os.set_inheritable(fd, True)
             os.execvp(command[0], command)
         if not args.path or (args.action == 'move' and not args.destination):

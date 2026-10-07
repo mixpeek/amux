@@ -120,6 +120,31 @@ before=$(awk -v n="$pre_line" 'NR<n' "$WRAP" \
 if [ "$before" -eq 0 ]; then ok "(f3) and nothing executable runs before the snapshot is taken"
 else bad "(f3) $before statement(s) run before the snapshot; the file could move under them"; fi
 
+# A refused clean must not publish the new fingerprint or run a stale suite.
+mkdir -p "$REPO/crates/whatever/src" "$TMP/held-target/.amux-cargo-fingerprint"
+echo fixture > "$REPO/crates/whatever/src/lib.rs"
+echo stale > "$TMP/held-target/.amux-cargo-fingerprint/whatever.sha256"
+cat > "$TMP/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = clean ]; then exit 75; fi
+if [ "$1" = test ]; then touch "$TEST_START_MARKER"; fi
+exit 0
+STUB
+chmod +x "$TMP/bin/cargo"
+set +e
+out=$(cd "$REPO" && PATH="$TMP/bin:$PATH" AMUX_HOME="$TMP/held-home" AMUX_SESSION=held \
+      TEST_START_MARKER="$TMP/test-started" CARGO_TARGET_DIR="$TMP/held-target" bash "$WRAP" -p whatever 2>&1)
+rc=$?
+set -e
+if [ "$rc" = 75 ] && [ ! -e "$TMP/test-started" ]; then ok "(g) a refused cleanup prevents testing stale artifacts"
+else bad "(g) cleanup failure was swallowed (exit $rc)"; fi
+if [ "$(cat "$TMP/held-target/.amux-cargo-fingerprint/whatever.sha256")" = stale ]; then ok "(g2) a refused clean preserves the previous fingerprint"
+else bad "(g2) failed cleanup falsely adopted the new source digest"; fi
+if printf '%s' "$out" | grep -q 'NO TEST RAN'; then ok "(g3) no-run result is explicit"
+else bad "(g3) refusal printed no measured no-run result"; fi
+if awk -F '\t' '$1=="# rc" && $2==75 {found=1} END {exit !found}' "$TMP/held-home/test-receipts/held.tsv"; then ok "(g4) refused refresh writes an honest non-green receipt"
+else bad "(g4) refusal left an earlier green receipt as the current result"; fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

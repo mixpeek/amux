@@ -147,6 +147,7 @@ for p in d.get('packages',[]):
   [ -n "$_pkg_dir" ] || { [ -d "crates/$_pkg" ] && _pkg_dir="crates/$_pkg"; }
 fi
 _safe="$(dirname "${_TC_ORIGIN:-$0}")/safe-cargo.sh"
+_rcpt_writer="$(dirname "${_TC_ORIGIN:-$0}")/write-test-receipt.sh"
 
 # AF-791: detect shared-target stale artifacts when source content changes but
 # mtime does not. On this repo's shared CARGO_TARGET_DIR, mtime-only freshness
@@ -206,9 +207,9 @@ _freshen_shared_package_cache() {
     echo "staleness: shared target cache for package $_pkg differs from source digest;"
     echo "staleness: cleaning package cache before this test run to avoid stale artifacts."
     if [ -x "$_safe" ]; then
-      "$_safe" clean --manifest-path "$(cd "$_pkg_dir" && pwd)/Cargo.toml" -p "$_pkg" --quiet
+      "$_safe" clean --manifest-path "$(cd "$_pkg_dir" && pwd)/Cargo.toml" -p "$_pkg" --quiet || return $?
     else
-      (cd "$_pkg_dir" && cargo clean --manifest-path Cargo.toml -p "$_pkg" --quiet)
+      (cd "$_pkg_dir" && cargo clean --manifest-path Cargo.toml -p "$_pkg" --quiet) || return $?
     fi
   fi
 
@@ -217,7 +218,12 @@ _freshen_shared_package_cache() {
 
 DIRTY_BEFORE=$(dirty_now)
 
-_freshen_shared_package_cache
+_freshen_shared_package_cache || {
+  RC=$?
+  echo "staleness: cleanup held/failed; NO TEST RAN; source fingerprint retained (exit $RC)."
+  if [ -x "$_rcpt_writer" ]; then AMUX_TEST_SOURCE_SNAPSHOT="" "$_rcpt_writer" "$RC" "$@"; fi
+  exit "$RC"
+}
 
 # ── WHICH TARGETS DID THIS NOT RUN? (AF-346) ────────────────────────────────
 #
@@ -320,7 +326,6 @@ esac
 # it, and CI stayed red for five commits before anyone read the step. A count
 # assertion is the right check here precisely because a second run line is how
 # an unprotected or receipt-less path gets added.
-_rcpt_writer="$(dirname "${_TC_ORIGIN:-$0}")/write-test-receipt.sh"
 _TC_SOURCE_SNAPSHOT=$(mktemp) || _TC_SOURCE_SNAPSHOT=""
 if [ -n "$_TC_SOURCE_SNAPSHOT" ] && [ -x "$_rcpt_writer" ]; then
   "$_rcpt_writer" --snapshot "$_TC_SOURCE_SNAPSHOT"
