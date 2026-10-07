@@ -1992,9 +1992,10 @@ mod tests {
         let sentence = "AH-394, the proof-first instruction, is still waiting on your yes.";
         let turn = TurnTail { uuid: "u1".into(), text: sentence.into(), ts: 1.0, prompt: String::new() };
         isolated_owner_ask(&state, "iso-lane", &[], &turn, OwnerAsk::InBoundary { sentence: sentence.into() }).await;
-        let n: i64 = state.store.read().unwrap()
-            .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'iso-lane'", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 0, "no owner-policy proceed for a sentence naming a needsyou card");
+        // The proceed was never even claimed: the guard returns before it.
+        let key = format!("isolated-proceed:iso-lane:{}:{}", question_key(sentence), day_bucket());
+        assert!(claim_once(&state, "iso-lane", "turn_end.isolated_proceed", key, json!({})).await,
+            "no owner-policy proceed may be claimed for a sentence naming a needsyou card");
     }
 
     #[tokio::test]
