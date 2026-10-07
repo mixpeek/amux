@@ -1129,7 +1129,7 @@ pub async fn watch_deploys(state: &AppState) -> (usize, usize) {
 
 const REVIEW_ROUNDS: i64 = 3;
 const REVIEW_TIMEOUT_S: u64 = 1200;
-const REVIEWS_PER_PASS: usize = 5;
+pub(crate) const REVIEWS_PER_PASS: usize = 5;
 /// A review still `running` this long after it started died with the server.
 const REVIEW_STALE_S: f64 = 2.0 * 3600.0;
 
