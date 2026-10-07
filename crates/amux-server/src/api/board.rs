@@ -16200,6 +16200,41 @@ mod af701_archive_guard_tests {
         assert_eq!(current(&store, &other).status, "done");
     }
 
+    /// 2026-10-07: decisions, investigations and ops cards waited a median
+    /// 25 h at done for a person; the reviewer now takes every type but
+    /// epics, watches and tripwires.
+    #[tokio::test]
+    async fn a_done_decision_card_with_no_contract_is_reviewed_and_an_epic_is_not() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        std::fs::write(h.join("sessions/lane-d2.env"), format!("CC_DIR=\"{}\"\nAMUX_REVIEW_UNCONTRACTED=1\n", repo.display())).unwrap();
+        let sha = String::from_utf8(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+        let card = |ty: &str| {
+            let id = seed(&store, "lane-d2", "done");
+            let (id2, ty, ev) = (id.clone(), ty.to_string(), format!("recorded at {sha}"));
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type=?2, evidence=?3 WHERE id=?1", rusqlite::params![id2, ty, ev])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let decision = card("decision");
+        let epic = card("epic");
+        let queued = super::super::contract::enqueue_uncontracted(&state).await;
+        assert_eq!(queued, 1, "only the decision card is queued");
+        let rs = |id: &str| store.read().unwrap().query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get::<_, Option<String>>(0)).ok().flatten();
+        assert_eq!(rs(&decision).as_deref(), Some("pending"));
+        assert_eq!(rs(&epic), None, "an epic is never reviewed this way");
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();
