@@ -200,7 +200,12 @@ VM_PRUNE_URGENT_FREE_GB=${AMUX_CLEANUP_VM_PRUNE_URGENT_FREE_GB:-100}
 # BuildKit evicts least-recently-used records first and never one a running
 # build holds, so the cap keeps the newest builds warm. 0 disables it.
 VM_PRUNE_MAX_USED=${AMUX_CLEANUP_VM_PRUNE_MAX_USED:-40gb}
-VM_PRUNE_CAP_CMD=${AMUX_CLEANUP_VM_PRUNE_CAP_CMD:-docker --context colima-PROFILE builder prune -af --max-used-space CAP}
+# `builder prune --max-used-space` reclaimed 0B on goal-shared with 87.8G of
+# cache (buildx 0.24 against Docker 29, containerd store) while an age prune
+# freed 21.8G, so the cap measures `builder du` itself and, over the cap,
+# prunes with the short window VM_PRUNE_CAP_AGE.
+VM_PRUNE_CAP_AGE=${AMUX_CLEANUP_VM_PRUNE_CAP_AGE:-1h}
+VM_PRUNE_CAP_CMD=${AMUX_CLEANUP_VM_PRUNE_CAP_CMD:-vm_build_cache_cap colima-PROFILE CAP}
 VM_TRIM_CMD=${AMUX_CLEANUP_VM_TRIM_CMD:-colima ssh -p PROFILE -- sudo fstrim -a}
 # Unused IMAGES in running colima VMs, past an age, every tick (MF-4043):
 # goal-shared reached 39 images / 148 GB (137 GB unused) on 2026-10-03 and the
@@ -1235,7 +1240,12 @@ prune_vm_build_caches() { # <dry:0|1> [free_gb]
     fi
     if [ "$VM_PRUNE_MAX_USED" != 0 ]; then
       cmd=${VM_PRUNE_CAP_CMD//PROFILE/$p}; cmd=${cmd//CAP/$VM_PRUNE_MAX_USED}; rc=0
-      out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$?
+      case "$cmd" in
+        vm_build_cache_cap\ *)
+          export -f vm_build_cache_cap; export VM_DOCKER VM_PRUNE_CAP_AGE
+          out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c "$cmd" 2>&1) || rc=$? ;;
+        *) out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$? ;;
+      esac
       if [ "$rc" = 0 ]; then
         echo "mac-cleanup:   vm $p build cache capped at $VM_PRUNE_MAX_USED: $(printf '%s' "$out" | grep -i 'total' | tail -1 | tr -s ' \t' ' ' | cut -c1-60) (verdict=vm_build_cache_capped)"
       else
@@ -1366,6 +1376,17 @@ reap_user_tmp() { # <dry:0|1>
 $(find "$root" -maxdepth 1 -name 'tmp.*' -type d -mmin +"$USER_TMP_IDLE_MIN" 2>/dev/null)
 EOF
   echo "mac-cleanup: user tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n tmp.* dir(s) idle over ${USER_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root)"
+}
+
+# Over <cap> of build cache in docker context <ctx>, prune cache unused for
+# VM_PRUNE_CAP_AGE. Prints the measured total and a Total: line like prune.
+vm_build_cache_cap() { # <ctx> <cap: NNgb>
+  local ctx=$1 cap=$2 total
+  total=$("$VM_DOCKER" --context "$ctx" builder du 2>/dev/null | awk '/^Total:/{print $2}' | tail -1)
+  local over; over=$(awk -v t="${total:-0B}" -v c="$cap" 'function b(x,  n,u){n=x+0; u=toupper(x); sub(/^[0-9.]+/,"",u); return n*(u~/^T/?1e12:u~/^G/?1e9:u~/^M/?1e6:u~/^K/?1e3:1)} BEGIN{print (b(t) > b(c)) ? 1 : 0}')
+  if [ "$over" != 1 ]; then echo "build cache ${total:-0B} is within $cap"; echo "Total: 0B"; return 0; fi
+  echo "build cache ${total} is over $cap, pruning cache unused for $VM_PRUNE_CAP_AGE"
+  "$VM_DOCKER" --context "$ctx" builder prune -af --filter "until=$VM_PRUNE_CAP_AGE" 2>&1 | grep -i 'total' | tail -1
 }
 
 # Remove images in docker context <ctx> that no container uses and that were

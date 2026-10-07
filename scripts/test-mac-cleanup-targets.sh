@@ -316,7 +316,22 @@ check "the cap runs after the age prune and before the trim" "prune cap trim" "$
 check "the cap logs its verdict" "2" "$(grep -c 'verdict=vm_build_cache_capped' "$FIX/out.txt" | tr -d ' ')"
 VM_PRUNE_MAX_USED=0; : > "$VMREC"; prune_vm_build_caches 0 > "$FIX/out.txt"
 check "0 disables the cap" "0" "$(grep -c '^cap ' "$VMREC" | tr -d ' ')"
-check "the default cap is build cache only, by size" "yes" "$(printf '%s' "$DEFAULT_VM_CAP" | grep -q 'builder prune -af --max-used-space CAP' && [ "$DEFAULT_VM_MAX_USED" = 40gb ] && echo yes || echo no)"
+check "the default cap is the measuring function" "yes" "$(printf '%s' "$DEFAULT_VM_CAP" | grep -q '^vm_build_cache_cap colima-PROFILE CAP$' && [ "$DEFAULT_VM_MAX_USED" = 40gb ] && echo yes || echo no)"
+DUREC="$FIX/du.rec"; : > "$DUREC"
+cat > "$FIX/dudocker.sh" <<SH
+#!/bin/bash
+shift 2
+if [ "\$1 \$2" = "builder du" ]; then printf 'Private:\t1GB\nTotal:\t%s\n' "\$DU_TOTAL"; exit 0; fi
+echo "\$@" >> "$DUREC"; printf 'Total:\t21.81GB\n'
+SH
+chmod +x "$FIX/dudocker.sh"
+out=$(DU_TOTAL=87.84GB VM_DOCKER="$FIX/dudocker.sh" VM_PRUNE_CAP_AGE=1h vm_build_cache_cap colima-x 40gb)
+check "over the cap, the cache is pruned by the short window" "yes" "$(yn grep -q 'prune -af --filter until=1h' "$DUREC")"
+check "and the reclaimed total is reported" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "Total:.21.81GB"' _ "$out")"
+: > "$DUREC"; out=$(DU_TOTAL=12.5GB VM_DOCKER="$FIX/dudocker.sh" vm_build_cache_cap colima-x 40gb)
+check "within the cap nothing is pruned" "0" "$(grep -c . "$DUREC" | tr -d ' ')"
+: > "$DUREC"; out=$(DU_TOTAL=512MB VM_DOCKER="$FIX/dudocker.sh" vm_build_cache_cap colima-x 1gb)
+check "units compare across MB and GB" "0" "$(grep -c . "$DUREC" | tr -d ' ')"
 VM_LIST_CMD="cat $FIX/vms.json"; VM_PRUNE_CMD="$FIX/vmrec.sh prune PROFILE AGE"; : > "$VMREC"
 prune_vm_build_caches 0 60 > "$FIX/out.txt"
 check "under the urgent floor the prune window is 2h" "yes" "$(grep -q '^prune gs12-a 2h' "$VMREC" && grep -q 'pruning cache unused for 2h' "$FIX/out.txt" && echo yes || echo no)"
@@ -412,7 +427,18 @@ echo "14. the whole tick reports the arm and deletes nothing in --dry-run (macOS
 if [ "$(uname)" = Darwin ]; then
   fresh_root e2e
   mk_target "$R/proj/target" old
-  tick_out=$(AMUX_CLEANUP_TARGET_ROOTS="$R" AMUX_CLEANUP_TARGET_KEEP="" AMUX_CLEANUP_LSOF_CMD="cat $FIX/lsof.base" bash "$TICK" --dry-run 2>&1)
+  # HERMETIC (cpu RCA 20261007-101721): every scan root points into the
+  # fixture. With only the target roots overridden this one dry run walked the
+  # real ~/Dev, /private/tmp and ~/.amux for 15+ minutes at a core or more,
+  # and the suite was itself a load source in two cpu escalations
+  # (AMUX-5635 (b), this one).
+  mkdir -p "$FIX/h/ctmp" "$FIX/h/ltmp" "$FIX/h/utmp" "$FIX/h/lima" "$FIX/h/wt"
+  t0=$(date +%s)
+  tick_out=$(AMUX_CLEANUP_TARGET_ROOTS="$R" AMUX_CLEANUP_TARGET_KEEP="" AMUX_CLEANUP_LSOF_CMD="cat $FIX/lsof.base" \
+    AMUX_CLEANUP_CHURN_ROOTS="$R" AMUX_CLEANUP_WORKTREE_ROOTS="$FIX/h/wt@1" AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/h/ctmp" \
+    AMUX_CLEANUP_LANE_TMP_ROOT="$FIX/h/ltmp" AMUX_CLEANUP_USER_TMP_ROOT="$FIX/h/utmp" AMUX_CLEANUP_LIMA_ROOT="$FIX/h/lima" \
+    bash "$TICK" --dry-run 2>&1)
+  check "the dry run stays inside the fixture (under 120 s)" "yes" "$(yn test $(( $(date +%s) - t0 )) -lt 120)"
   check "the tick prints the cargo-targets line"       "yes" "$(printf '%s' "$tick_out" | grep -q 'mac-cleanup: cargo targets: found 1' && echo yes || echo no)"
   check "the tick says it WOULD reap the fixture"      "yes" "$(printf '%s' "$tick_out" | grep -q "would reap .* $R/proj/target" && echo yes || echo no)"
   check "the done line carries targets_reaped=0"       "yes" "$(printf '%s' "$tick_out" | grep -q 'targets_reaped=0' && echo yes || echo no)"
