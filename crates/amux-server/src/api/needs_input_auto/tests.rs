@@ -509,3 +509,14 @@ fn a_host_change_or_an_unnamed_ask_stays_with_the_owner_even_with_send_back_on()
         assert!(matches!(decide(&policy, &it), Decision::Never(_)), "{q}: {:?}", decide(&policy, &it));
     }
 }
+
+#[test]
+fn an_ask_to_speak_in_the_owners_name_is_never_auto_approved_or_sent_back() {
+    let policy = Policy { enabled: true, send_back: true, ..Policy::default() };
+    let q = "Should amux-helper tell mixpeek-override, in your name, that every GS-12 lane's next card is a reopened proof card?";
+    let it = item("needsyou", "other", "decision", q);
+    assert_eq!(never_reason(&it), Some("owner_voice"), "AH-394");
+    assert!(matches!(decide(&policy, &it), Decision::Never("owner_voice")));
+    let plain = item("needsyou", "other", "decision", "Should gs12-planes take GP-201 before GP-199 this afternoon?");
+    assert_ne!(never_reason(&plain), Some("owner_voice"));
+}

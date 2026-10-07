@@ -365,6 +365,15 @@ pub fn never_reason(item: &Value) -> Option<&'static str> {
     if words.len() <= 6 && words.iter().any(|w| matches!(*w, "it" | "this" | "that" | "them" | "these" | "those")) {
         return Some("no_artifact_named");
     }
+    // AN ASK TO SPEAK FOR THE OWNER is his alone (AH-394, 2026-10-07: "tell
+    // the orchestrator, in your name, ..." was approved automatically, and the
+    // owner-policy nudge answered the same question twice). Approval by policy
+    // would put words in his mouth.
+    if regex::Regex::new(r"\b(in your name|on your behalf|as your (instruction|decision|words)|in ethan'?s name|on ethan'?s behalf)\b")
+        .map(|r| r.is_match(&t)).unwrap_or(false)
+    {
+        return Some("owner_voice");
+    }
     // The host's own services (~/Dev/CLAUDE.md: no restart, reboot or launchd
     // change without the owner's explicit approval).
     if regex::Regex::new(r"\b(launchd|launchctl|launch agent|launchagent|reboot|restart the (mac|host|machine))\b")
@@ -591,7 +600,7 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
         // cannot grant itself a host change, an approval for an unnamed thing,
         // or a public surface (AH-391, 2026-10-06: a launchd removal was sent
         // back as "yours to do").
-        let owner_only = matches!(why, "public_surface" | "host_service" | "no_artifact_named");
+        let owner_only = matches!(why, "public_surface" | "host_service" | "no_artifact_named" | "owner_voice");
         if policy.send_back && !owner_only && can_send_back(item) {
             return Decision::SendBack(why);
         }

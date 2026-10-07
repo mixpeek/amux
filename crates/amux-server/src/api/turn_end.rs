@@ -403,7 +403,10 @@ pub(crate) fn boundary_of(context: &str) -> Option<Boundary> {
 
 /// The text says a choice is the owner's to make (see boundary_of).
 fn reserved_for_owner(lower: &str) -> bool {
-    rx!(r"\b(your call|your decision|your choice|yours to (decide|make|call)|up to you|you decide|you choose|you'?ll decide|(ethan|the owner)'?s (call|decision|choice))\b")
+    // "in your name" / "on your behalf" / "only you can" (AH-394, 2026-10-07:
+    // the nudge answered "should I tell the orchestrator, in your name, ..."
+    // twice with "proceed", which would have spoken for the owner).
+    rx!(r"\b(your call|your decision|your choice|yours to (decide|make|call)|up to you|you decide|you choose|you'?ll decide|(ethan|the owner)'?s (call|decision|choice)|in your name|on your behalf|as your (instruction|decision|words)|only you can)\b")
         .is_match(lower)
 }
 
@@ -1583,6 +1586,17 @@ mod tests {
         match ask(text) {
             OwnerAsk::Boundary { kind, .. } => Some(kind),
             _ => None,
+        }
+    }
+
+    #[test]
+    fn an_ask_to_speak_in_the_owners_name_is_his() {
+        for q in [
+            "The proof-first instruction: should I tell the orchestrator, in your name, that every GS-12 lane's next card is a reopened proof card?",
+            "Only you can override how it prioritizes. Want me to send it?",
+            "Shall I send it on your behalf?",
+        ] {
+            assert_eq!(boundary(q), Some(Boundary::OwnerOnly), "{q}");
         }
     }
 
