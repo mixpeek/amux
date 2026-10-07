@@ -10667,9 +10667,13 @@ function _typingPing(session, active) {
   // Starts and stops go out at once; a continuing stream re-arms every 3s.
   if (active && last && last.active && now - last.at < 3000) return;
   if (!active && (!last || !last.active)) return;
+  // Presence is ephemeral: never queue it in the durable offline outbox
+  // (a replayed "typing" from minutes ago is wrong, and it inflated the
+  // outbox the offline lifecycle tests count), and do not send it offline.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   _typingSent.set(session, {active, at: now});
   fetch('/api/sessions/' + encodeURIComponent(session) + '/typing', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active}),
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active}), _skipOutbox: true,
   }).then(r => r.ok ? r.json() : null).then(d => { if (d && d.actor) _typingSelf = d.actor; }).catch(() => {});
 }
 function _typingOnEvent(msg) {
@@ -13962,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1257';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1258';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
