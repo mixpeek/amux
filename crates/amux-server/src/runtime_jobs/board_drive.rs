@@ -3967,6 +3967,35 @@ fn delegated_only_pickup(session: &str) -> bool {
         .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
+/// AH-395: the proof card a lane at its done-WIP cap takes instead of
+/// waiting (see claim_proof_for_capped), with its pickup prompt. None when A2
+/// or the lane's AMUX_A2_POOL_TITLE_REGEX is off, or no proof card is ready.
+async fn proof_for_capped_lane(state: &AppState, lane: &str) -> Option<(String, String)> {
+    let home = crate::config::amux_home();
+    if !crate::api::contract::rule_on(&home, lane, "A2") {
+        return None;
+    }
+    let re = crate::api::runner::pool_title_re(&home, lane)?;
+    let hub = crate::api::contract::lane_setting(&home, lane, "AMUX_CONTRACT_HUB")
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .filter(|h| !h.is_empty() && h != lane);
+    let l = lane.to_string();
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot_w = slot.clone();
+    let _ = state.store.write_async(move |conn| {
+        let got = crate::api::runner::claim_proof_for_capped(conn, hub.as_deref(), &l, &re)?;
+        let applied = got.as_ref().is_some_and(|g| g.1 != "own-todo");
+        *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = got;
+        Ok(crate::db::WriteOutcome { applied, events: vec![] })
+    }).await;
+    let (card, source, reopened) = slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let conn = state.store.read().ok()?;
+    let row = bs::get_issue(&conn, &card).ok().flatten()?;
+    tracing::info!(session = lane, card, source, reopened, cap = true, measured = true, n_considered = 1,
+        verdict = "a2_pool_assigned", "a lane at its done-WIP cap took a proof card instead of waiting (AH-395)");
+    Some((card, pickup_prompt(&conn, lane, &row)))
+}
+
 pub fn select_pickup(conn: &Connection, session: &str, now: f64) -> Pickup {
     select_pickup_with(conn, session, now, bs::continuation_required(Some(session)))
 }
@@ -7803,7 +7832,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         .with_counts(eligible, open);
     };
     let advance = select_advance(&conn, lane, &tags, now);
-    let pickup = select_pickup(&conn, lane, now);
+    let mut pickup = select_pickup(&conn, lane, now);
     drop(conn);
 
     let advance_reason = match &advance {
@@ -7952,7 +7981,13 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         let cap = fleet.done_wip_cap(lane);
         if cap > 0 {
             let done = state.store.read().ok().map(|c| lane_done_cards(&c, lane)).unwrap_or_default();
-            if done.len() >= cap {
+            // AH-395: proof work is exempt from the cap. Done cards wait on the
+            // harness reviewer, which a lane cannot hurry, and a proof card
+            // (often one the reviewer reopened) is exactly what closes them.
+            let proof = if done.len() >= cap { proof_for_capped_lane(state, lane).await } else { None };
+            if let Some((card, prompt)) = proof {
+                pickup = Pickup::Claim { card, prompt };
+            } else if done.len() >= cap {
                 // Hand back the oldest done card the lane has NOT already been
                 // handed while it sits in done. Re-asking about a card the lane
                 // answered ("waits for a reviewer") asks a question only the

@@ -416,6 +416,32 @@ pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Optio
     Ok(Claim::Got(card, "hub", reopened))
 }
 
+/// AH-395: a proof card for a lane its done-WIP cap would otherwise park,
+/// inside the caller's write. Its own ready proof card in todo first (no
+/// move), then its own backlog, then the hub's pool (both moved to the
+/// lane's todo, logged as harness:a2). Returns (card, source, reopened).
+pub fn claim_proof_for_capped(conn: &Connection, hub: Option<&str>, lane: &str, title_re: &regex::Regex) -> rusqlite::Result<Option<(String, &'static str, bool)>> {
+    for (card, status, ready, reopened) in candidates(conn, lane, Some(title_re), false)? {
+        if !ready {
+            continue;
+        }
+        if status == "todo" {
+            return Ok(Some((card, "own-todo", reopened)));
+        }
+        if take(conn, &card, status, lane, format!("moved from {lane}'s own backlog for proof work past the done-WIP cap (contract A2)"))? {
+            return Ok(Some((card, "own", reopened)));
+        }
+    }
+    let Some(hub) = hub else { return Ok(None) };
+    for (card, status, ready, reopened) in pool_cards(conn, hub, Some(title_re))? {
+        if ready && take(conn, &card, status, lane, format!("pulled from {hub}'s pool for proof work past the done-WIP cap (contract A2)"))? {
+            conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
+            return Ok(Some((card, "hub", reopened)));
+        }
+    }
+    Ok(None)
+}
+
 /// A2 for one idle lane: when the rule is on and capacity allows, pull the
 /// next ready card from the lane's hub (AMUX_CONTRACT_HUB). board-drive's
 /// ordinary pickup dispatches it on the next pass.
@@ -605,6 +631,46 @@ mod tests {
             "nothing left: the plan card is not proof and the blocked one waits");
         assert_eq!(who("PLAN").session.as_deref(), Some("hub"), "a non-proof hub card is never taken");
         assert_eq!(who("BLOCKED").session.as_deref(), Some("hub"), "a card with an open dependency is skipped");
+    }
+
+    /// AH-395: a lane parked by its done-WIP cap still gets proof work: its
+    /// own ready proof card in todo, else its own backlog, else the hub's,
+    /// never a non-proof card.
+    #[test]
+    fn a_capped_lane_gets_proof_work_own_todo_then_own_backlog_then_hub() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        let re = regex::Regex::new("^GS12 (proof|requirement)").unwrap();
+        store.write(|c| {
+            for (id, title, session, status) in [
+                ("NP", "GS12 plan item 3.1", "cap", "todo"),
+                ("OB", "GS12 proof 5 reopened in its backlog", "cap", "backlog"),
+                ("HB", "GS12 proof 6 on the hub", "hub", "backlog"),
+                ("OT", "GS12 proof 7 already in todo", "cap2", "todo"),
+            ] {
+                c.execute(
+                    "INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                     VALUES (?1, ?2, ?3, ?4, 'ops', '[]', 0, 0, 0, 0)",
+                    rusqlite::params![id, title, status, session],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let got = |hub: Option<&'static str>, lane: &'static str| {
+            let re = re.clone();
+            let out = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let o = out.clone();
+            store.write(move |c| {
+                *o.lock().unwrap() = claim_proof_for_capped(c, hub, lane, &re)?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            let v = out.lock().unwrap().take();
+            v.map(|(card, source, _)| (card, source))
+        };
+        assert_eq!(got(Some("hub"), "cap2"), Some(("OT".into(), "own-todo")), "its own proof card in todo, unmoved");
+        assert_eq!(got(Some("hub"), "cap"), Some(("OB".into(), "own")), "its own backlog before the hub, never the non-proof todo");
+        assert_eq!(got(Some("hub"), "cap3"), Some(("HB".into(), "hub")), "then the hub's pool");
+        assert_eq!(got(Some("hub"), "cap4"), None, "nothing proof left");
     }
 
     #[test]
