@@ -1159,6 +1159,25 @@ pub fn parse_review(out: &str) -> Option<(bool, Vec<String>)> {
     })
 }
 
+/// Extra instructions for a completion-proof or requirement card (Ethan,
+/// 2026-10-07: "make sure its all measured"). The reviewer otherwise sees only
+/// the acceptance and evidence, not the card's description, so measurement
+/// requirements written there (per surface, per extractor) went unread.
+pub fn proof_rules(title: &str, desc: &str) -> String {
+    let t = title.trim_start();
+    if !(t.starts_with("GS12 proof") || t.starts_with("GS12 requirement")) {
+        return String::new();
+    }
+    let tail: String = desc.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+    format!(
+        "\n\nTHIS IS A COMPLETION PROOF. Fail it unless every criterion, and every measurement the card's description \
+         requires (per surface, per extractor, per template), has a recorded measured number from a run on origin/main: \
+         the command, its output, and the value. A statement that something works, or a measurement of some surfaces \
+         standing in for all of them, is a failure; name each missing measurement as a finding.\n\
+         Card description (latest part, including any owner measurement requirements):\n{tail}"
+    )
+}
+
 fn review_prompt(card: &str, title: &str, c: &Contract, evidence: &str, round: i64) -> String {
     if c.is_uncontracted() {
         return format!(
@@ -1370,7 +1389,8 @@ async fn review_one(state: &AppState, card: String) {
     let round = rounds + 1;
     tracing::info!(card, lane, round, measured = true, n_considered = 1, verdict = "contract_review_started",
         "a fresh reviewer started for a verified-eligible card");
-    let result = review(&card, &lane, &row.title, &k, row.evidence.as_deref().unwrap_or(""), round).await;
+    let evidence = format!("{}{}", row.evidence.as_deref().unwrap_or(""), proof_rules(&row.title, &row.desc));
+    let result = review(&card, &lane, &row.title, &k, &evidence, round).await;
     let now = crate::config::now_f64();
     let (pass, findings, model) = match result {
         Ok(r) => r,
@@ -1905,6 +1925,9 @@ mod tests {
         assert_eq!(review_cap(5, Some(1.2)), 5, "reviews are not held to the CPU bands");
         assert_eq!(review_cap(5, None), 5);
         assert_eq!(review_cap(5, Some(REVIEW_HOLD_PER_CPU)), 3, "only an extreme load halves them");
+        let rules = proof_rules("GS12 proof 6: Scale to zero", "... Ethan: make sure its all measured. each Ray Serve app at min_replicas 0 ...");
+        assert!(rules.contains("COMPLETION PROOF") && rules.contains("Ray Serve app"), "{rules}");
+        assert_eq!(proof_rules("GS12 6.9 Dependency resilience", "x"), "", "plan items keep the ordinary prompt");
     }
 
     #[test]
