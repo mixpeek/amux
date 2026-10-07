@@ -951,7 +951,7 @@ async fn post_owner(
             "ok": true, "dry_run": true,
             "would": match action {
                 AlertAction::Send => "send",
-                AlertAction::Dedupe => "suppress (dedupe: same message within 60s)",
+                AlertAction::Dedupe => "suppress (dedupe: the same alert within 60s, or the same alert from this sender within the repeat window)",
                 AlertAction::StormNotice => "send ONE storm notice, then mute",
                 AlertAction::Muted => "suppress (storm mute active)",
             },
@@ -2137,7 +2137,8 @@ mod tests {
         assert_ne!(alert_shape(a), alert_shape("TubeScience search down since 14:10Z"));
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE owner_alerts (id INTEGER PRIMARY KEY, ts REAL, origin TEXT, claimed TEXT, message TEXT, reason TEXT, channels TEXT, deduped INTEGER)").unwrap();
-        conn.execute("INSERT INTO owner_alerts (ts, claimed, message, deduped) VALUES (1000.0, 'gs12-mvs', ?1, 0)", [a]).unwrap();
+        // The live table stores ts as INTEGER seconds; the fixture must too.
+        conn.execute("INSERT INTO owner_alerts (ts, claimed, message, deduped) VALUES (1000, 'gs12-mvs', ?1, 0)", [a]).unwrap();
         assert_eq!(repeat_sent_within(&conn, "gs12-mvs", b, 1000.0 + 3600.0, 4.0 * 3600.0), Some(1000.0), "an hour later it is a repeat");
         assert_eq!(repeat_sent_within(&conn, "gs12-mvs", b, 1000.0 + 5.0 * 3600.0, 4.0 * 3600.0), None, "after the window it sends again");
         assert_eq!(repeat_sent_within(&conn, "gainz", b, 4600.0, 4.0 * 3600.0), None, "another sender is not a repeat");
