@@ -263,8 +263,30 @@ pub enum PoolPull {
     Held(&'static str),
     /// Nothing ready in the hub's pool.
     Empty { pool: usize },
-    /// This card moved from the hub to the lane, in todo.
+    /// This card moved to the lane's todo: from the hub's board, or from the
+    /// lane's own backlog.
     Assigned { card: String, hub: String },
+}
+
+/// A lane's pool title rule (AMUX_A2_POOL_TITLE_REGEX): a card whose title
+/// matches is pool work without a tag. AH-395, 2026-10-07: eight gs12 lanes
+/// idle while ~66 proof cards waited untagged in the orchestrator's backlog.
+pub fn pool_title_re(home: &std::path::Path, lane: &str) -> Option<regex::Regex> {
+    crate::api::contract::lane_setting(home, lane, "AMUX_A2_POOL_TITLE_REGEX")
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .filter(|v| !v.is_empty())
+        .and_then(|v| regex::Regex::new(&v).ok())
+}
+
+/// A card the harness reviewer sent back: a failed or escalated review on
+/// record, or the reviewer's note in its description.
+fn reopened_by_review(conn: &Connection, id: &str, desc: &str) -> rusqlite::Result<bool> {
+    let state: Option<String> = conn
+        .query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    Ok(matches!(state.as_deref(), Some("failed") | Some("escalated"))
+        || (desc.contains("Review round") && desc.contains("failed (contract rule 3")))
 }
 
 fn deps_resolved(conn: &Connection, depends_on: &str) -> rusqlite::Result<bool> {
@@ -277,25 +299,44 @@ fn deps_resolved(conn: &Connection, depends_on: &str) -> rusqlite::Result<bool> 
     Ok(true)
 }
 
-/// The hub's pool cards in board order, with whether each is ready (every
-/// dependency resolved, by the same predicate readiness and promotion use).
-pub fn pool_cards(conn: &Connection, hub: &str) -> rusqlite::Result<Vec<(String, String, bool)>> {
-    let rows: Vec<(String, String, String)> = conn
+/// One pool candidate: id, status, ready (every dependency resolved, by the
+/// same predicate readiness and promotion use), reopened by review.
+pub type PoolCard = (String, String, bool, bool);
+
+/// Pool cards on `owner`'s board in todo or backlog: tagged `pool` (when
+/// `tag_ok`), or titled to match `title_re`. Reopened-by-review cards first,
+/// then board order.
+fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, tag_ok: bool) -> rusqlite::Result<Vec<PoolCard>> {
+    type Row = (String, String, String, String, String, bool);
+    let rows: Vec<Row> = conn
         .prepare(
-            "SELECT i.id, i.status, COALESCE(i.depends_on, '[]') FROM issues i \
-             JOIN issue_tags t ON t.issue_id = i.id AND t.tag = ?2 \
+            "SELECT i.id, i.status, COALESCE(i.depends_on, '[]'), COALESCE(i.title, ''), COALESCE(i.desc, ''), \
+                    EXISTS(SELECT 1 FROM issue_tags t WHERE t.issue_id = i.id AND t.tag = ?2) \
+             FROM issues i \
              WHERE i.session = ?1 AND i.status IN ('todo', 'backlog') \
                AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0 \
              ORDER BY i.pos, i.created, i.id",
         )?
-        .query_map(rusqlite::params![hub, POOL_TAG], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map(rusqlite::params![owner, POOL_TAG], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut out = Vec::with_capacity(rows.len());
-    for (id, status, deps) in rows {
+    let mut out = Vec::new();
+    for (id, status, deps, title, desc, tagged) in rows {
+        let by_title = title_re.is_some_and(|re| re.is_match(&title));
+        if !((tag_ok && tagged) || by_title) {
+            continue;
+        }
         let ready = deps_resolved(conn, &deps)?;
-        out.push((id, status, ready));
+        let reopened = reopened_by_review(conn, &id, &desc)?;
+        out.push((id, status, ready, reopened));
     }
+    // Stable sort: reopened first, board order within each group.
+    out.sort_by_key(|c| !c.3);
     Ok(out)
+}
+
+/// The hub's pool cards (tagged, or titled by the rule), reopened first.
+pub fn pool_cards(conn: &Connection, hub: &str, title_re: Option<&regex::Regex>) -> rusqlite::Result<Vec<PoolCard>> {
+    candidates(conn, hub, title_re, true)
 }
 
 fn lane_has_work(conn: &Connection, lane: &str) -> rusqlite::Result<bool> {
@@ -313,49 +354,66 @@ fn lane_has_work(conn: &Connection, lane: &str) -> rusqlite::Result<bool> {
 pub enum Claim {
     Busy,
     Empty(usize),
-    Got(String),
+    /// card, source ("own" or "hub"), reopened by review
+    Got(String, &'static str, bool),
 }
 
-/// One atomic claim inside the caller's write transaction: if `lane` holds no
-/// todo or doing card, move the first ready pool card from `hub` to it, in
-/// todo, logged as harness:a2. Two lanes never get the same card: the store
-/// has one writer, and the card leaves the hub's board in the same write.
-pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str) -> rusqlite::Result<Claim> {
-    if lane_has_work(conn, lane)? {
-        return Ok(Claim::Busy);
-    }
-    let cards = pool_cards(conn, hub)?;
-    let pool = cards.len();
-    let Some((card, status, _)) = cards.into_iter().find(|(_, _, ready)| *ready) else {
-        return Ok(Claim::Empty(pool));
-    };
-    let line = format!("pulled from {hub}'s pool by idle lane {lane} (contract A2)");
+/// Move `card` to `lane`'s todo from `status`, logged as harness:a2.
+fn take(conn: &Connection, card: &str, status: String, lane: &str, line: String) -> rusqlite::Result<bool> {
     if status == "todo" {
-        let Some(mut row) = crate::db::board_store::get_issue(conn, &card)? else {
-            return Ok(Claim::Empty(pool));
+        let Some(mut row) = crate::db::board_store::get_issue(conn, card)? else {
+            return Ok(false);
         };
         row.session = Some(lane.to_string());
         let stamp = chrono::Local::now().format("%H:%M");
         let log = row.log.clone().unwrap_or_default();
         row.log = Some(format!("{log}\n`{stamp}` {POOL_ACTOR}: {line}"));
         crate::db::board_store::save_patched(conn, &mut row)?;
-    } else {
-        let opts = crate::db::advance::AdvanceOpts {
-            expected_from: Some(status),
-            assign_to: Some(lane.to_string()),
-            gate_ack: true,
-            skip_continuation: true,
-            log_line: Some(line.clone()),
-            reason: Some(line),
-            ..Default::default()
-        };
-        if crate::db::advance::advance(conn, &card, "todo", POOL_ACTOR, &opts)?.is_err() {
-            return Ok(Claim::Empty(pool));
+        return Ok(true);
+    }
+    let opts = crate::db::advance::AdvanceOpts {
+        expected_from: Some(status),
+        assign_to: Some(lane.to_string()),
+        gate_ack: true,
+        skip_continuation: true,
+        log_line: Some(line.clone()),
+        reason: Some(line),
+        ..Default::default()
+    };
+    Ok(crate::db::advance::advance(conn, card, "todo", POOL_ACTOR, &opts)?.is_ok())
+}
+
+/// One atomic claim inside the caller's write transaction: if `lane` holds no
+/// todo or doing card, move the first ready pool card from `hub` to it, in
+/// todo, logged as harness:a2. Two lanes never get the same card: the store
+/// has one writer, and the card leaves the hub's board in the same write.
+pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Option<&regex::Regex>) -> rusqlite::Result<Claim> {
+    if lane_has_work(conn, lane)? {
+        return Ok(Claim::Busy);
+    }
+    // The lane's own backlog first: a proof card the reviewer sent back to it
+    // is its to fix before anything new (AH-395).
+    if title_re.is_some() {
+        for (card, status, ready, reopened) in candidates(conn, lane, title_re, false)? {
+            if ready
+                && status == "backlog"
+                && take(conn, &card, status, lane, format!("moved from {lane}'s own backlog by the idle-lane pool (contract A2)"))?
+            {
+                return Ok(Claim::Got(card, "own", reopened));
+            }
         }
+    }
+    let cards = pool_cards(conn, hub, title_re)?;
+    let pool = cards.len();
+    let Some((card, status, _, reopened)) = cards.into_iter().find(|c| c.2) else {
+        return Ok(Claim::Empty(pool));
+    };
+    if !take(conn, &card, status, lane, format!("pulled from {hub}'s pool by idle lane {lane} (contract A2)"))? {
+        return Ok(Claim::Empty(pool));
     }
     // A pulled card has left the pool: it is the lane's now.
     conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
-    Ok(Claim::Got(card))
+    Ok(Claim::Got(card, "hub", reopened))
 }
 
 /// A2 for one idle lane: when the rule is on and capacity allows, pull the
@@ -378,19 +436,20 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
         return PoolPull::Held("provider_limit");
     }
     let (h, l) = (hub.clone(), lane.to_string());
+    let title_re = pool_title_re(&home, lane);
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot_w = slot.clone();
     let _ = store.write_async(move |conn| {
-        let r = claim_pool_card(conn, &h, &l)?;
-        let applied = matches!(r, Claim::Got(_));
+        let r = claim_pool_card(conn, &h, &l, title_re.as_ref())?;
+        let applied = matches!(r, Claim::Got(..));
         *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         Ok(crate::db::WriteOutcome { applied, events: vec![] })
     }).await;
     let got = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
     match got {
-        Some(Claim::Got(card)) => {
-            tracing::info!(session = lane, hub, card, measured = true, n_considered = 1, verdict = "a2_pool_assigned",
-                "an idle lane pulled a ready card from its hub's pool (contract A2)");
+        Some(Claim::Got(card, source, reopened)) => {
+            tracing::info!(session = lane, hub, card, source, reopened, measured = true, n_considered = 1, verdict = "a2_pool_assigned",
+                "an idle lane took a ready pool card (contract A2)");
             PoolPull::Assigned { card, hub }
         }
         Some(Claim::Busy) => PoolPull::NotApplicable,
@@ -427,8 +486,8 @@ pub fn pool_census(conn: &Connection) -> rusqlite::Result<Vec<(String, usize, us
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::new();
     for hub in hubs {
-        let cards = pool_cards(conn, &hub)?;
-        let ready = cards.iter().filter(|(_, _, r)| *r).count();
+        let cards = pool_cards(conn, &hub, None)?;
+        let ready = cards.iter().filter(|c| c.2).count();
         out.push((hub, cards.len(), ready));
     }
     Ok(out)
@@ -489,6 +548,63 @@ mod tests {
         assert_eq!(session("NOT-POOL").session.as_deref(), Some("hub"), "only cards the hub released");
         let census = pool_census(&store.read().unwrap()).unwrap();
         assert_eq!(census, vec![("hub".to_string(), 2, 1)], "P-BLOCKED and P-3 remain; one is ready");
+    }
+
+    /// AH-395: with AMUX_A2_POOL_TITLE_REGEX an idle lane takes proof cards
+    /// from the hub without any tag, reopened-by-review first; its own
+    /// backlog proof card comes before the hub's; a non-proof hub card is
+    /// never taken; a card with an open dependency is skipped.
+    #[tokio::test]
+    async fn an_idle_lane_takes_the_next_reopened_proof_card_by_title() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let store: crate::db::SharedStore = std::sync::Arc::new(crate::db::Store::open(&h.join("q.db")).unwrap());
+        for lane in ["pr-a", "pr-b", "pr-c", "pr-d"] {
+            std::fs::write(
+                h.join(format!("sessions/{lane}.env")),
+                "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=\"hub\"\nAMUX_A2_POOL_TITLE_REGEX=\"^GS12 (proof|requirement)\"\n",
+            )
+            .unwrap();
+        }
+        let card = |id: &'static str, title: &'static str, session: &'static str, status: &'static str, deps: &'static str, pos: f64, reopened: bool| {
+            store.write(move |c| {
+                c.execute(
+                    "INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                     VALUES (?1, ?2, ?3, ?4, 'ops', ?5, ?6, 0, 0, 0)",
+                    rusqlite::params![id, title, status, session, deps, pos],
+                )?;
+                if reopened {
+                    c.execute(
+                        "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, review_state) \
+                         VALUES (?1, 'a', '(none)', 'h', 0, 'frozen', 'failed')",
+                        [id],
+                    )?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        };
+        card("DEP-1", "GS12 plan item 1.1 open", "hub", "doing", "[]", 0.0, false);
+        card("PLAN", "GS12 plan item 2.3 not proof", "hub", "backlog", "[]", 0.1, false);
+        card("BLOCKED", "GS12 proof 9 blocked", "hub", "backlog", "[\"DEP-1\"]", 0.2, true);
+        card("OLD", "GS12 proof 1 never reviewed", "hub", "backlog", "[]", 1.0, false);
+        card("REOPENED", "GS12 requirement 4 sent back", "hub", "backlog", "[]", 2.0, true);
+        card("OWN", "GS12 proof 7 reopened here", "pr-b", "backlog", "[]", 0.0, true);
+        let who = |id: &str| crate::db::board_store::get_issue(&store.read().unwrap(), id).unwrap().unwrap();
+
+        assert_eq!(pull_from_pool(&store, "pr-a").await, PoolPull::Assigned { card: "REOPENED".into(), hub: "hub".into() },
+            "a reopened proof card comes before an older one, with no pool tag");
+        assert_eq!((who("REOPENED").session.as_deref(), who("REOPENED").status.as_str()), (Some("pr-a"), "todo"));
+        assert_eq!(pull_from_pool(&store, "pr-b").await, PoolPull::Assigned { card: "OWN".into(), hub: "hub".into() },
+            "the lane's own backlog proof card first");
+        assert_eq!((who("OWN").session.as_deref(), who("OWN").status.as_str()), (Some("pr-b"), "todo"));
+        assert_eq!(pull_from_pool(&store, "pr-c").await, PoolPull::Assigned { card: "OLD".into(), hub: "hub".into() });
+        assert!(matches!(pull_from_pool(&store, "pr-d").await, PoolPull::Empty { .. }),
+            "nothing left: the plan card is not proof and the blocked one waits");
+        assert_eq!(who("PLAN").session.as_deref(), Some("hub"), "a non-proof hub card is never taken");
+        assert_eq!(who("BLOCKED").session.as_deref(), Some("hub"), "a card with an open dependency is skipped");
     }
 
     #[test]
