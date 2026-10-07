@@ -33,19 +33,46 @@ jobs:
       - name: Use the shared dependency target
         run: echo "CARGO_TARGET_DIR=$HOME/.amux/rust-build-target" >> "$GITHUB_ENV"
       - name: Real process crash and stateful recovery
+        id: recovery
         env:
           AMUX_RECOVERY_ARTIFACT_DIR: ${{ runner.temp }}/harness-recovery
           AMUX_REQUIRE_MEDIA_RECOVERY: 1
           AMUX_HOME: ${{ runner.temp }}/harness-recovery/controller-state
         run: bash scripts/test-harness-recovery.sh
+      - name: Assemble portable recovery evidence
+        if: always()
+        env:
+          REQUIRE_COMPLETE: ${{ steps.recovery.outcome == 'success' }}
+        # Multiline absolute upload paths are not all translated into container
+        # paths by the runner. Copy only fixture receipts to one relative root.
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          source = pathlib.Path(os.environ['RUNNER_TEMP']) / 'harness-recovery'
+          target = pathlib.Path('harness-recovery-receipts')
+          target.mkdir(exist_ok=True)
+          for pattern in ('*.log', '*.sha256', 'controller-state/test-receipts/*.tsv'):
+              for path in source.glob(pattern):
+                  dest = target / path.relative_to(source)
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, dest)
+          for path in pathlib.Path('/tmp').glob('amux-chaos-*/recovery-receipt.json'):
+              dest = target / path.parent.name / path.name
+              dest.parent.mkdir(exist_ok=True)
+              shutil.copy2(path, dest)
+          if os.environ['REQUIRE_COMPLETE'] == 'true':
+              assert (target / 'binary.sha256').is_file(), 'missing tested binary identity'
+              receipts = list(target.glob('controller-state/test-receipts/*.tsv'))
+              assert receipts, 'missing test source receipt'
+              for receipt in receipts:
+                  data = receipt.read_text()
+                  assert '# rc\t0\n' in data and '# source_state\tstable_before_after\n' in data, data[:1000]
+              assert len(list(target.glob('amux-chaos-*/recovery-receipt.json'))) == 2, 'missing orchestration receipts'
+          PY
       - name: Retain measured recovery receipts even on failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: harness-recovery-receipts
-          path: |
-            ${{ runner.temp }}/harness-recovery/*.log
-            ${{ runner.temp }}/harness-recovery/*.sha256
-            ${{ runner.temp }}/harness-recovery/controller-state/test-receipts/*.tsv
-            /tmp/amux-chaos-*/recovery-receipt.json
+          path: harness-recovery-receipts/
           if-no-files-found: warn
