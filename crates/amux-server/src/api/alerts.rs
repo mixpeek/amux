@@ -496,6 +496,48 @@ fn guard_state_from_ledger(
     (hist, last)
 }
 
+/// The same alert, reworded only by numbers or a re-notify clause. 2026-10-07
+/// (Ethan: "look at all the alerts amux has sent ... if not necessary fix"):
+/// the MVS restore canary paged hourly with "5 missing ... (checked 140)",
+/// then "4 missing ...", and the homepage canary re-paged every 61 min with
+/// "RE-NOTIFY: same condition, still unresolved after 61 min". Each differed
+/// from the last only in digits or that clause, so the exact-message guard
+/// never matched and every one reached the owner.
+pub(crate) fn alert_shape(msg: &str) -> String {
+    let mut lower = msg.to_lowercase();
+    // Drop the re-notify sentence itself, keeping what follows it.
+    if let Some(i) = lower.find("re-notify") {
+        let end = lower[i..].find('.').map(|j| i + j + 1).unwrap_or(lower.len());
+        lower.replace_range(i..end, "");
+    }
+    lower.chars().filter(|c| !c.is_ascii_digit()).collect::<String>()
+        .split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// How long the same alert from the same sender stays quiet after it was sent
+/// (AMUX_ALERT_REPEAT_S, default 4 h). It is still recorded every time.
+fn alert_repeat_s() -> f64 {
+    std::env::var("AMUX_ALERT_REPEAT_S").ok().and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| *v >= 0.0).unwrap_or(4.0 * 3600.0)
+}
+
+/// When the same-shaped alert from `session` was last SENT within `window_s`.
+fn repeat_sent_within(conn: &rusqlite::Connection, session: &str, msg: &str, now: f64, window_s: f64) -> Option<f64> {
+    if window_s <= 0.0 {
+        return None;
+    }
+    let shape = alert_shape(msg);
+    let mut stmt = conn.prepare(
+        "SELECT ts, message FROM owner_alerts WHERE claimed=?1 AND COALESCE(deduped,0)=0 AND ts >= ?2 ORDER BY ts DESC LIMIT 200",
+    ).ok()?;
+    let rows: Vec<(f64, String)> = stmt
+        .query_map(rusqlite::params![session, now - window_s], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?)))
+        .ok()?
+        .flatten()
+        .collect();
+    rows.into_iter().find(|(_, m)| alert_shape(m) == shape).map(|(t, _)| t)
+}
+
 /// Per-router guard state (Python's `_urgent_alert_last` / `_hist` / `_mute`
 /// module dicts). Keyed by sha256(claimed_session + "|" + msg)[..16].
 #[derive(Default)]
@@ -853,6 +895,15 @@ async fn post_owner(
             .collect(),
         _ => ledger_hist,
     };
+    let repeat_last = match state.store.read() {
+        Ok(conn) => repeat_sent_within(&conn, &session, &msg, now, alert_repeat_s()),
+        Err(_) => None,
+    };
+    if let Some(prev) = repeat_last {
+        tracing::info!(session = %session, minutes_since = ((now - prev) / 60.0) as i64, measured = true, n_considered = 1,
+            verdict = "owner_alert_repeat_suppressed",
+            "owner alert suppressed: the same alert from this sender was sent within the repeat window");
+    }
     let (action, hist_len) = {
         let mut g = guard.lock().unwrap_or_else(|e| e.into_inner());
         let mem_hist: Vec<f64> = g.hist.get(&key).cloned().unwrap_or_default();
@@ -869,6 +920,11 @@ async fn post_owner(
             last_in,
         );
         let hist_len = new_hist.len();
+        let action = if repeat_last.is_some() && matches!(action, AlertAction::Send | AlertAction::StormNotice) {
+            AlertAction::Dedupe
+        } else {
+            action
+        };
         // A DRY RUN MUST NOT MUTATE THE GUARD. Caught on the first live probe of
         // this very feature: four dry-runs of one message returned send, then
         // dedupe, dedupe, dedupe — because the first had written `last`. That
@@ -2069,6 +2125,23 @@ mod tests {
     }
 
     // ---- pure decision function (the storm replay) ------------------------
+
+    #[test]
+    fn an_alert_reworded_only_by_numbers_or_a_renotify_clause_is_the_same_alert() {
+        let a = "MVS restore canary: 0 probe(s) missing from the durable payload chain, 5 missing from API readback (checked 140).";
+        let b = "MVS restore canary: 0 probe(s) missing from the durable payload chain, 4 missing from API readback (checked 0).";
+        assert_eq!(alert_shape(a), alert_shape(b));
+        let h1 = "Homepage DOWN from outside. (uptime canary exit 1)";
+        let h2 = "Homepage DOWN from outside.    RE-NOTIFY: same condition, still unresolved after 61 min. (uptime canary exit 1)";
+        assert_eq!(alert_shape(h1), alert_shape(h2));
+        assert_ne!(alert_shape(a), alert_shape("TubeScience search down since 14:10Z"));
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE owner_alerts (id INTEGER PRIMARY KEY, ts REAL, origin TEXT, claimed TEXT, message TEXT, reason TEXT, channels TEXT, deduped INTEGER)").unwrap();
+        conn.execute("INSERT INTO owner_alerts (ts, claimed, message, deduped) VALUES (1000.0, 'gs12-mvs', ?1, 0)", [a]).unwrap();
+        assert_eq!(repeat_sent_within(&conn, "gs12-mvs", b, 1000.0 + 3600.0, 4.0 * 3600.0), Some(1000.0), "an hour later it is a repeat");
+        assert_eq!(repeat_sent_within(&conn, "gs12-mvs", b, 1000.0 + 5.0 * 3600.0, 4.0 * 3600.0), None, "after the window it sends again");
+        assert_eq!(repeat_sent_within(&conn, "gainz", b, 4600.0, 4.0 * 3600.0), None, "another sender is not a repeat");
+    }
 
     #[test]
     fn storm_decision_replays_the_302s_cadence_incident() {
