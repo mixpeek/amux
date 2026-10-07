@@ -16265,6 +16265,48 @@ mod af701_archive_guard_tests {
         assert_eq!(rs(&epic), None, "an epic is never reviewed this way");
     }
 
+    /// A done card whose check was abandoned (superseded) is reviewed from
+    /// evidence; one already under review is left alone.
+    #[tokio::test]
+    async fn a_done_card_whose_check_was_abandoned_is_reviewed_from_evidence() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        std::fs::write(h.join("sessions/lane-ab.env"), format!("CC_DIR=\"{}\"\nAMUX_REVIEW_UNCONTRACTED=1\n", repo.display())).unwrap();
+        let sha = String::from_utf8(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+        let card = |review: Option<&str>| {
+            let id = seed(&store, "lane-ab", "done");
+            let (id2, review, ev) = (id.clone(), review.map(str::to_string), format!("recorded at {sha}"));
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code', evidence=?2 WHERE id=?1", rusqlite::params![id2, ev])?;
+                conn.execute(
+                    "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, kind, review_state) \
+                     VALUES (?1, 'a', 'pytest -q x', 'h', 0, 'superseded', '', 'code', ?2)",
+                    rusqlite::params![id2, review])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let abandoned = card(None);
+        let reviewing = card(Some("running"));
+        assert_eq!(super::super::contract::enqueue_uncontracted(&state).await, 1);
+        let row = |id: &str| store.read().unwrap().query_row(
+            "SELECT review_state, command, COALESCE(log, '') FROM card_contracts WHERE card = ?1", [id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap();
+        let (rs, cmd, log) = row(&abandoned);
+        assert_eq!(rs.as_deref(), Some("pending"));
+        assert_eq!(cmd, super::super::contract::UNCONTRACTED_CMD);
+        assert!(log.contains("was: pytest -q x"), "the abandoned command is kept: {log}");
+        assert_eq!(row(&reviewing).0.as_deref(), Some("running"), "a review in progress is not requeued");
+    }
+
     /// Ethan, 2026-10-07 (acceleration item 1): a proof card entering doing
     /// gets one pre-run review of its plan, and its gaps reach the lane and
     /// the card before the expensive run. A non-proof card gets none, and the
