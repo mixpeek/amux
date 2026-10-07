@@ -87,7 +87,7 @@ sample() {
 }
 
 FLAG=$(mktemp)
-trap 'kill "$SAMPLER" 2>/dev/null; rm -f "$FLAG" "${_TC_SNAPSHOT:-}"' EXIT INT TERM
+trap 'kill "$SAMPLER" 2>/dev/null; rm -f "$FLAG" "${_TC_SNAPSHOT:-}" "${_TC_SOURCE_SNAPSHOT:-}"' EXIT INT TERM
 
 sample & SAMPLER=$!
 
@@ -320,11 +320,18 @@ esac
 # it, and CI stayed red for five commits before anyone read the step. A count
 # assertion is the right check here precisely because a second run line is how
 # an unprotected or receipt-less path gets added.
+_rcpt_writer="$(dirname "${_TC_ORIGIN:-$0}")/write-test-receipt.sh"
+_TC_SOURCE_SNAPSHOT=$(mktemp) || _TC_SOURCE_SNAPSHOT=""
+if [ -n "$_TC_SOURCE_SNAPSHOT" ] && [ -x "$_rcpt_writer" ]; then
+  "$_rcpt_writer" --snapshot "$_TC_SOURCE_SNAPSHOT"
+fi
+export AMUX_TEST_SOURCE_SNAPSHOT="$_TC_SOURCE_SNAPSHOT"
+
 _run_under_test() {
   if [ -x "$_safe" ]; then
     # It writes its own receipt for a `test` run; this script writes one at the
     # end, so tell it not to. Two identical receipts would be harmless and
-    # confusing, and the one written last is the one that saw the final tree.
+    # confusing. The outer wrapper owns the pre-run source snapshot.
     _TC_RECEIPT=1 "$_safe" test "$@"
   else
     cargo test "$@"

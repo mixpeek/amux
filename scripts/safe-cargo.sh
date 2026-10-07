@@ -138,13 +138,18 @@ done
 # silent no-op forever -- confirmed live in testing before this shipped, the
 # exact bug this comment is here to stop someone re-introducing.
 echo $$ > "$_throttle_slot.pid" 2>/dev/null || true
-_throttle_release() { rmdir "$_throttle_slot" 2>/dev/null || true; rm -f "$_throttle_slot.pid" 2>/dev/null || true; }
+_throttle_release() { rm -f "${_SC_SOURCE_SNAPSHOT:-}"; rmdir "$_throttle_slot" 2>/dev/null || true; rm -f "$_throttle_slot.pid" 2>/dev/null || true; }
 trap '_throttle_release' EXIT
 
 _receipt=""
 if [ "${1:-}" = "test" ] && [ -z "${_TC_RECEIPT:-}" ]; then
   _receipt="$(cd "$(dirname "$0")" && pwd)/write-test-receipt.sh"
   [ -x "$_receipt" ] || _receipt=""
+  if [ -n "$_receipt" ]; then
+    _SC_SOURCE_SNAPSHOT=$(mktemp) || _SC_SOURCE_SNAPSHOT=""
+    if [ -n "$_SC_SOURCE_SNAPSHOT" ]; then "$_receipt" --snapshot "$_SC_SOURCE_SNAPSHOT"; fi
+    export AMUX_TEST_SOURCE_SNAPSHOT="$_SC_SOURCE_SNAPSHOT"
+  fi
 fi
 
 _target_guard="$(cd "$(dirname "$0")" && pwd)/cargo-target-guard.py"

@@ -704,6 +704,11 @@ async fn the_rig_can_tell_a_dead_server_from_a_live_one() {
 /// their full evidence remains after disposable checkout cleanup.
 #[tokio::test]
 async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_passes() {
+    recover_completed_review("0", "fail").await;
+    recover_completed_review("37", "pass").await;
+}
+
+async fn recover_completed_review(exit: &str, verdict: &str) {
     let mut rig = Rig::new();
     // A cached review must be adopted; this sentinel catches a paid rerun.
     let repo = rig.home.join("fixture-repo");
@@ -740,8 +745,8 @@ async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_pa
     drop(conn);
     let review = rig.home.join("tmp/contract").join(format!("{card}-review-{}-{}", &sha[..12], &input[..16]));
     assert!(Command::new("git").arg("-C").arg(&repo).args(["worktree", "add", "--detach"]).arg(&review).arg(&sha).status().unwrap().success());
-    std::fs::write(review.join(".amux-review.out"), "{\"verdict\":\"fail\",\"findings\":[\"missing required measurement\"]}\n").unwrap();
-    std::fs::write(review.join(".amux-review.exit"), "0").unwrap();
+    std::fs::write(review.join(".amux-review.out"), json!({"verdict":verdict,"findings":["missing required measurement"]}).to_string()).unwrap();
+    std::fs::write(review.join(".amux-review.exit"), exit).unwrap();
     std::fs::write(review.join("card-source.md"), "original full measurement requirements").unwrap();
     std::fs::write(review.join(".amux-review.prompt"), "original immutable review prompt").unwrap();
     rig.kill();
@@ -784,10 +789,17 @@ async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_pa
     assert_eq!(rig.count("SELECT COUNT(*) FROM card_contracts WHERE card='RR-RECOVERY' AND review_state='failed'"), 1);
     assert_eq!(rig.count("SELECT COUNT(*) FROM issues WHERE id='RR-RECOVERY' AND status='verified'"), 0);
     assert!(!forbidden.exists(), "completed review was rerun instead of adopted");
+    assert_eq!(rig.count("SELECT review_rounds FROM card_contracts WHERE card='RR-RECOVERY'"), 1, "a completed failed/unmeasured attempt spends one bounded round");
+    if exit != "0" {
+        let conn = rusqlite::Connection::open(&rig.db).unwrap();
+        let log: String = conn.query_row("SELECT review_log FROM card_contracts WHERE card='RR-RECOVERY'", [], |r| r.get(0)).unwrap();
+        assert!(log.contains("no trustworthy verdict") && log.contains("37"), "{log}");
+    }
     assert!(std::fs::read_to_string(rig.home.join("native-status.py")).unwrap().contains("X-Amux-Worker-Token"));
     let archives = rig.home.join("review-evidence").join(card);
     let artifact = std::fs::read_dir(&archives).unwrap().next().unwrap().unwrap().path();
     assert!(std::fs::read_to_string(artifact.join(".amux-review.out")).unwrap().contains("missing required measurement"));
+    assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.exit")).unwrap(), exit);
     assert_eq!(std::fs::read_to_string(artifact.join("card-source.md")).unwrap(), "original full measurement requirements");
     assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.prompt")).unwrap(), "original immutable review prompt");
     rig.restart().await;

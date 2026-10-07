@@ -91,7 +91,7 @@ WHOME="$TMP/whome"
 # rc=101, not 0. With 0 a writer that HARDCODES "# rc 0" is indistinguishable
 # from one that reads its argument, and the exit-code assertion below could not
 # have failed. Caught by mutating the writer.
-( cd "$ROOT_REPO" && AMUX_HOME="$WHOME" AMUX_SESSION=wcell "$WRITER" 101 -p amux-server ) >/dev/null 2>&1
+( cd "$ROOT_REPO" && "$WRITER" --snapshot "$TMP/start.json" && AMUX_TEST_SOURCE_SNAPSHOT="$TMP/start.json" AMUX_HOME="$WHOME" AMUX_SESSION=wcell "$WRITER" 101 -p amux-server ) >/dev/null 2>&1
 rm -f "$ROOT_REPO/$NEWREL"
 ok "the new file is in the receipt" \
    "$(grep -c "$NEWREL" "$WHOME/test-receipts/wcell.tsv" 2>/dev/null || echo 0)" "1"
@@ -136,6 +136,7 @@ ok "no false drift report" "$(echo "$o" | grep -c 'DIFFER')" "0"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/cargo" <<'STUB'
 #!/bin/sh
+if [ -n "${FAKE_CARGO_MUTATE_FILE:-}" ]; then printf '// changed during compiler run\n' > "$FAKE_CARGO_MUTATE_FILE"; fi
 exit ${FAKE_CARGO_RC:-0}
 STUB
 cat > "$TMP/bin/systemd-run" <<'STUB'
@@ -206,6 +207,23 @@ ok "and tells it not to double-write the receipt" \
    "$(grep -cF '_TC_RECEIPT=1' "$ROOT_REPO/scripts/test-contended.sh")" "1"
 ok "no bare cargo test at top level" \
    "$(grep -c '^cargo test' "$ROOT_REPO/scripts/test-contended.sh")" "0"
+
+echo "cell o: source changed inside cargo cannot receive byte coverage"
+echo "// original before compile" > "$ROOT_REPO/$NEWREL"
+code=$( cd "$ROOT_REPO" || exit
+        export PATH="$TMP/bin:$PATH" AMUX_HOME="$TMP/h.o" AMUX_SESSION=sc FAKE_CARGO_MUTATE_FILE="$ROOT_REPO/$NEWREL"
+        bash "$ROOT_REPO/scripts/safe-cargo.sh" test -p amux-server >/dev/null 2>&1; echo $? )
+rm -f "$ROOT_REPO/$NEWREL"
+ok "compiler verdict stays green even when coverage is unmeasured" "$code" "0"
+ok "receipt records source drift" "$(grep -c '^# source_state\tchanged$' "$(rcpt o)")" "1"
+ok "changed run certifies no file bytes" "$(grep -vc '^#' "$(rcpt o)" || true)" "0"
+o=$(run "$(rcpt o)" "$REALP")
+ok "pre-commit withholds reassuring coverage" "$(echo "$o" | grep -c 'match the bytes')" "0"
+
+echo "cell p: a missing pre-run snapshot cannot certify end-of-run bytes"
+( cd "$ROOT_REPO" && unset AMUX_TEST_SOURCE_SNAPSHOT; AMUX_HOME="$TMP/h.p" AMUX_SESSION=sc "$WRITER" 0 test -p amux-server ) >/dev/null 2>&1
+ok "missing snapshot is explicit" "$(grep -c '^# source_state\tunmeasured$' "$(rcpt p)")" "1"
+ok "missing snapshot certifies no bytes" "$(grep -vc '^#' "$(rcpt p)" || true)" "0"
 
 echo ""
 echo "test-test-receipt: $pass passed, $fail failed"

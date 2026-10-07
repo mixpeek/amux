@@ -118,7 +118,11 @@ Run `scripts/test-harness-recovery.sh` for a privately linked server binary,
 real HTTPS/SIGKILL recovery tests, scheduler/script/identity endpoint scenarios,
 and pace-scope regressions. It shares the sanctioned Cargo dependency cache;
 the executable under test has its own immutable artifact path and hash. Preserve
-its receipts. Then run the full server and workspace suites, check and clippy.
+its receipts. Test wrappers capture the source before execution; receipts
+withhold all byte coverage when the source differs afterwards or the initial
+snapshot is unavailable. This detects observed source drift, not every possible
+transient edit restored during a run. Then run the full server and workspace
+suites, check and clippy.
 
 | Surface | Recovery evidence |
 | --- | --- |
