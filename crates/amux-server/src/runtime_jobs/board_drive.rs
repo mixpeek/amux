@@ -177,7 +177,7 @@ const BACKLOG_STALE_AGE_S: i64 = 14 * 86400;
 /// un-drained for a NON-destructive NUDGE, which the owning session can
 /// answer by either re-confirming the trigger (bumps `last_verified_at`) or
 /// finally acting on the card — never by an automated status change.
-const SOURCE_REF_STALE_S: i64 = 24 * 3600;
+pub(crate) const SOURCE_REF_STALE_S: i64 = 24 * 3600;
 
 /// A source ref is an external-trigger block only while the owner has recently
 /// verified it. Older refs still preserve message/provenance links but do not

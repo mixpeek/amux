@@ -307,25 +307,39 @@ pub type PoolCard = (String, String, bool, bool);
 /// `tag_ok`), or titled to match `title_re`. Reopened-by-review cards first,
 /// then board order.
 fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, tag_ok: bool) -> rusqlite::Result<Vec<PoolCard>> {
-    type Row = (String, String, String, String, String, bool);
+    type Row = (String, String, String, String, String, bool, bool);
+    // A PARKED backlog card is not ready (gs12-tiering MO-4071, gs12-obs
+    // MO-4086, gs12-cicd MO-4438, 2026-10-07): `amux board backlog --trigger`
+    // stores the wait in source_ref and stamps last_verified_at, and A2 pulled
+    // the card straight back into pickup a minute later, looping between
+    // pickup and backlog while the other lane's run was still queued. Same
+    // predicate as the backlog drain (board_drive::drain_backlog): a trigger
+    // confirmed within SOURCE_REF_STALE_S, or a blocked_on, holds the card.
+    let verified_cut = crate::config::now_f64() as i64 - crate::runtime_jobs::board_drive::SOURCE_REF_STALE_S;
     let rows: Vec<Row> = conn
         .prepare(
             "SELECT i.id, i.status, COALESCE(i.depends_on, '[]'), COALESCE(i.title, ''), COALESCE(i.desc, ''), \
-                    EXISTS(SELECT 1 FROM issue_tags t WHERE t.issue_id = i.id AND t.tag = ?2) \
+                    EXISTS(SELECT 1 FROM issue_tags t WHERE t.issue_id = i.id AND t.tag = ?2), \
+                    (i.status = 'backlog' AND ((COALESCE(i.source_ref, '') <> '' AND COALESCE(i.last_verified_at, 0) > ?3) \
+                                               OR COALESCE(i.blocked_on, '') <> '')) \
              FROM issues i \
              WHERE i.session = ?1 AND i.status IN ('todo', 'backlog') \
                AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0 \
              ORDER BY i.pos, i.created, i.id",
         )?
-        .query_map(rusqlite::params![owner, POOL_TAG], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+        .query_map(rusqlite::params![owner, POOL_TAG, verified_cut], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::new();
-    for (id, status, deps, title, desc, tagged) in rows {
+    for (id, status, deps, title, desc, tagged, parked) in rows {
         let by_title = title_re.is_some_and(|re| re.is_match(&title));
         if !((tag_ok && tagged) || by_title) {
             continue;
         }
-        let ready = deps_resolved(conn, &deps)?;
+        if parked {
+            tracing::debug!(card = %id, measured = true, n_considered = 1, verdict = "a2_parked_card_skipped",
+                "A2 leaves a backlog card parked on a fresh trigger or blocker where it is");
+        }
+        let ready = !parked && deps_resolved(conn, &deps)?;
         let reopened = reopened_by_review(conn, &id, &desc)?;
         out.push((id, status, ready, reopened));
     }
@@ -671,6 +685,37 @@ mod tests {
         assert_eq!(got(Some("hub"), "cap"), Some(("OB".into(), "own")), "its own backlog before the hub, never the non-proof todo");
         assert_eq!(got(Some("hub"), "cap3"), Some(("HB".into(), "hub")), "then the hub's pool");
         assert_eq!(got(Some("hub"), "cap4"), None, "nothing proof left");
+    }
+
+    /// MO-4071/MO-4086/MO-4438: a proof card parked with a fresh trigger, or a
+    /// blocker, stays in backlog; a stale trigger (past SOURCE_REF_STALE_S)
+    /// releases it, as the backlog drain does.
+    #[test]
+    fn a2_leaves_a_card_parked_on_a_fresh_trigger_in_backlog() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        let re = regex::Regex::new("^GS12 proof").unwrap();
+        let now = crate::config::now_f64() as i64;
+        let stale = now - crate::runtime_jobs::board_drive::SOURCE_REF_STALE_S - 60;
+        store.write(move |c| {
+            for (id, src, at, blocked) in [("TRIG", "GR-88 done", now - 60, ""), ("BLOCK", "", 0, "GT-316 run"),
+                                           ("STALE", "GR-88 done", stale, ""), ("FREE", "", 0, "")] {
+                c.execute(
+                    "INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived, source_ref, last_verified_at, blocked_on) \
+                     VALUES (?1, 'GS12 proof ' || ?1, 'backlog', 'lane', 'ops', '[]', 0, 0, 0, 0, ?2, ?3, ?4)",
+                    rusqlite::params![id, src, at, blocked],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let conn = store.read().unwrap();
+        let ready: Vec<(String, bool)> = candidates(&conn, "lane", Some(&re), false).unwrap()
+            .into_iter().map(|(id, _, ready, _)| (id, ready)).collect();
+        let r = |id: &str| ready.iter().find(|(i, _)| i == id).map(|(_, r)| *r);
+        assert_eq!(r("TRIG"), Some(false), "a fresh trigger holds the card");
+        assert_eq!(r("BLOCK"), Some(false), "a blocker holds the card");
+        assert_eq!(r("STALE"), Some(true), "a stale trigger releases it");
+        assert_eq!(r("FREE"), Some(true));
     }
 
     #[test]
