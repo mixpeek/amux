@@ -683,6 +683,7 @@ async fn async_main() {
     // AMUX-3761: a durable record of WHICH RULE decided each lane's status,
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));
+    drop(runtime_jobs::browser_login_sync::spawn());
     drop(runtime_jobs::episodes::spawn(state.clone()));
     // CDC poller (migration 0061): tails board_change_log so the catch-up
     // endpoint (/api/board/changes) stays current.

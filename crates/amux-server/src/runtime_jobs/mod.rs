@@ -51,6 +51,7 @@ pub mod autofix;
 pub mod board_drain;
 pub mod board_drive;
 pub mod board_hygiene;
+pub mod browser_login_sync;
 pub mod browser_reaper;
 pub mod computer_reaper;
 pub mod capture_reconcile;

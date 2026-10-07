@@ -429,6 +429,11 @@ pub struct BrowserProfile {
     /// Python server): which domains this profile is signed into.
     pub domains: Vec<String>,
     pub label: String,
+    /// Registry `role`: primary | personal | restricted | customer | test |
+    /// deprecated, or "" (see integrations::browser_logins).
+    pub role: String,
+    /// Registry `identity`: who this profile signs in as (an email or a name).
+    pub identity: String,
     pub registered: bool,
     /// Does the directory this name resolves to actually EXIST?
     ///
@@ -480,7 +485,7 @@ pub fn dir_size_bytes(root: &Path) -> u64 {
 }
 
 /// Registry metadata (Python `_bu_registry_load`): name -> {domains, label}.
-fn registry_load(home: &Path) -> serde_json::Map<String, serde_json::Value> {
+pub fn registry_load(home: &Path) -> serde_json::Map<String, serde_json::Value> {
     let path = home.join("playwright-auth").join("profiles.json");
     std::fs::read_to_string(path)
         .ok()
@@ -534,6 +539,16 @@ pub fn list_profiles(home: &Path, with_sizes: bool) -> Vec<BrowserProfile> {
                     .unwrap_or_default(),
                 label: meta
                     .and_then(|m| m.get("label"))
+                    .and_then(|l| l.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                role: meta
+                    .and_then(|m| m.get("role"))
+                    .and_then(|l| l.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                identity: meta
+                    .and_then(|m| m.get("identity"))
                     .and_then(|l| l.as_str())
                     .unwrap_or("")
                     .to_string(),
