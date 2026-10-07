@@ -33,6 +33,12 @@ json.dump(b,open(f"{T}/board_stalled.json","w"))
 good=[{"id":f"V-{i}","session":"gs12-extra-1","title":f"GS12 proof {i}","status":"verified","closed_at":now-3600} for i in range(10)]
 good+=[{"id":f"A-{i}","session":"gs12-extra-2","title":f"GS12 proof a{i}","status":"doing"} for i in range(12)]
 json.dump(good,open(f"{T}/board_ok.json","w"))
+# Live shape, 2026-10-07 12:25Z: a good last 24 h (10 verified) but only 2 proof
+# cards in work, and a review backlog that outranks proof.
+mix=[{"id":f"V-{i}","session":"gs12-extra-1","title":f"GS12 proof {i}","status":"verified","closed_at":now-3600} for i in range(10)]
+mix+=[{"id":f"A-{i}","session":"gs12-extra-2","title":f"GS12 proof a{i}","status":"doing"} for i in range(2)]
+mix+=[{"id":f"R-{i}","session":"gs12-model","title":f"card {i}","status":"done","entered_state_at":now-30*3600} for i in range(200)]
+json.dump(mix,open(f"{T}/board_mixed.json","w"))
 json.dump([{"name":"gs12-a","status":"idle"},{"name":"gs12-b","status":"active"}],open(f"{T}/sessions.json","w"))
 json.dump({"wait_p95_min":5,"n_considered":3},open(f"{T}/land.json","w"))
 json.dump({"deploy_sha":"04bec9a4f2b8"},open(f"{T}/prod.json","w"))
@@ -57,6 +63,9 @@ out=$(run --board-file "$T/board_stalled.json")
 check "the third stalled run alerts Ethan" "1" "$(grep -c '^alert' "$T/amux-calls.log")"
 out=$(run --board-file "$T/board_stalled.json")
 check "and not again within a day" "1" "$(grep -c '^alert' "$T/amux-calls.log")"
+rm -f "$T/state.json" "$T/amux-calls.log"
+for k in 1 2 3; do out=$(run --board-file "$T/board_mixed.json"); done
+check "with review ranked first, too few active proof cards still trip the alert" "review_backlog 1" "$(v 'd["name"]') $(cat "$T/amux-calls.log" 2>/dev/null | grep -c '^alert')"
 out=$(run --board-file "$T/board_ok.json" --dry-run)
 check "proof on pace is not the constraint" "no" "$(v '"yes" if d["name"]=="proof_stalled" else "no"')"
 out=$(run --board-file "$T/missing.json" --dry-run)

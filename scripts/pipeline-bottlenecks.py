@@ -361,6 +361,9 @@ def constraints(a, now, state):
                  and all((by.get(d) or {}).get("status") in ("done", "verified") for d in _deps(i))]
         # Days to finish at the measured rate minus days at the needed rate.
         lost_h = max(0.0, remaining / max(v24, 0.5) - remaining / a.proof_per_day) * 24
+        # Too few proof cards in work is tomorrow's low rate: an hour per
+        # missing active card, so a good last 24 h does not hide it.
+        lost_h += max(0, a.proof_min_active - active) * 1.0
         bad = v24 < a.proof_per_day or active < a.proof_min_active
         out.append({"name": "proof_stalled" if bad else "proof_on_pace", "owner": "orchestrator",
                     "est_hours": round(lost_h if bad else 0, 1),
@@ -431,35 +434,49 @@ def orchestrator_ask(a, now, st, key, text):
     return "queued for the orchestrator"
 
 
+def _alert(a, msg, why):
+    if a.dry_run:
+        return "would alert ethan"
+    r = subprocess.run(["amux", "alert", msg, why], capture_output=True, text=True)
+    return "alerted ethan" if r.returncode == 0 else "alert failed: " + (r.stderr or r.stdout).strip()[:120]
+
+
+def proof_line(nums):
+    return (f"GS-12 proof: {nums['proof_verified']}/{nums['proof_total']} verified, {nums['verified_24h']} in 24 h "
+            f"(need {nums['need_per_day']:g}/day), {nums['active_on_lanes']} proof cards active on lanes "
+            f"(need {nums['need_active']}), {nums['ready_on_hub']} ready on the orchestrator board")
+
+
+def proof_tripwire(ranked, a, now, state):
+    """The SCHED-620 rule, folded in, evaluated every run whatever ranks
+    first: three consecutive stalled runs, then Ethan, at most once a day.
+    Returns the action taken, or "" when none."""
+    st = state.setdefault("_constraints", {})
+    p = next((c for c in ranked if c["name"] in ("proof_stalled", "proof_on_pace")), None)
+    if p is None:
+        return ""
+    if p["name"] != "proof_stalled":
+        st["proof_bad_runs"] = 0
+        return ""
+    bad = st.get("proof_bad_runs", 0) + 1
+    st["proof_bad_runs"] = bad
+    if bad >= 3 and now - st.get("proof_alert", 0) >= 86400:
+        r = _alert(a, proof_line(p["numbers"]) + f", stalled {bad} hourly runs.", "GS-12 proof stalled 3h+ (bottleneck detector)")
+        if not a.dry_run:
+            st["proof_alert"] = now
+        return r
+    return ""
+
+
 def act(top, a, now, state):
     """Recover or route the top constraint, deduped; returns what was done."""
     st = state.setdefault("_constraints", {})
     name, nums = top["name"], top["numbers"]
-    if name != "proof_stalled":
-        st["proof_bad_runs"] = 0
     if top["est_hours"] <= 0:
         return "none: no constraint costs measurable finish-date hours"
-
-    def alert(msg, why):
-        if a.dry_run:
-            return "would alert ethan"
-        r = subprocess.run(["amux", "alert", msg, why], capture_output=True, text=True)
-        return "alerted ethan" if r.returncode == 0 else "alert failed: " + (r.stderr or r.stdout).strip()[:120]
+    alert = lambda msg, why: _alert(a, msg, why)
     if name == "proof_stalled":
-        # The tripwire's rule (SCHED-620, folded in here): three consecutive
-        # stalled runs, then Ethan, at most once a day while it lasts.
-        bad = st.get("proof_bad_runs", 0) + 1
-        st["proof_bad_runs"] = bad
-        line = (f"GS-12 proof: {nums['proof_verified']}/{nums['proof_total']} verified, {nums['verified_24h']} in 24 h "
-                f"(need {nums['need_per_day']:g}/day), {nums['active_on_lanes']} proof cards active on lanes "
-                f"(need {nums['need_active']}), {nums['ready_on_hub']} ready on the orchestrator board")
-        done = []
-        if bad >= 3 and now - st.get("proof_alert", 0) >= 86400:
-            done.append(alert(line + f", stalled {bad} hourly runs.", "GS-12 proof stalled 3h+ (bottleneck detector)"))
-            if not a.dry_run:
-                st["proof_alert"] = now
-        done.append(orchestrator_ask(a, now, st, "proof", line + ": put lanes on the ready proof cards first."))
-        return "; ".join(done)
+        return orchestrator_ask(a, now, st, "proof", proof_line(nums) + ": put lanes on the ready proof cards first.")
     if name == "owner_ask_blocks_proof":
         if now - st.get("owner_alert", 0) < 86400:
             return "deduped: Ethan alerted within 24 h"
@@ -503,6 +520,9 @@ def run_constraints(a, now):
     ranked, ncons, unmeas = constraints(a, now, state)
     top = ranked[0] if ranked else None
     action = act(top, a, now, state) if top else "none: nothing measured"
+    tripped = proof_tripwire(ranked, a, now, state)
+    if tripped:
+        action += "; proof tripwire: " + tripped
     rec = {"ts": int(now), "verdict": "top_constraint" if top and top["est_hours"] > 0 else "no_constraint",
            "name": top["name"] if top else None, "est_hours": top["est_hours"] if top else 0,
            "numbers": top["numbers"] if top else {}, "action": action,
