@@ -7050,6 +7050,41 @@ _land_pick_tree() {
 # AMUX_LAND_REGENERATE_TIMEOUT_S (default 300). Files it leaves that match an
 # amux.landRegenerable glob replace <tip>'s copies; matching files it removed
 # are deleted.
+# _land_regen_tree <tip> <inputs>: print a directory holding <tip>'s regenerate
+# inputs, kept as one sparse worktree per repo and branch under the git common
+# dir and moved with a detached checkout, so a land rewrites only what changed.
+# rc 1 means use a fresh extract instead. Runs under the land lock, which is
+# per repo and branch, so one land at a time owns the tree.
+_land_regen_tree() {
+  local tip="$1" inputs="$2" gd dir pats p
+  [ "${AMUX_LAND_REGEN_REUSE:-1}" = 1 ] || return 1
+  [ -n "$inputs" ] || return 1
+  gd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dir="$gd/amux-land-regen/$(printf '%s' "${branch:-main}" | tr '/' '_')"
+  pats=""
+  while read -r p; do
+    [ -n "$p" ] || continue
+    p="${p#:(glob)}"
+    pats="$pats/$p"$'\n'
+  done <<< "$inputs"
+  local G=(git -c core.hooksPath=/dev/null -c advice.detachedHead=false)
+  if [ ! -e "$dir/.git" ] || [ "$(cat "$dir.patterns" 2>/dev/null)" != "$pats" ]; then
+    [ -e "$dir/.git" ] && "${G[@]}" worktree remove --force "$dir" >/dev/null 2>&1
+    rm -rf -- "${dir:?}"; mkdir -p "${dir%/*}"
+    "${G[@]}" worktree add --no-checkout --detach "$dir" "$tip" >/dev/null 2>&1 || return 1
+    printf '%s' "$pats" | "${G[@]}" -C "$dir" sparse-checkout set --no-cone --stdin >/dev/null 2>&1 || return 1
+    printf '%s' "$pats" > "$dir.patterns"
+    _land_log "regenerate tree: created $dir"
+  fi
+  "${G[@]}" -C "$dir" checkout -f --detach "$tip" >/dev/null 2>&1 || return 1
+  "${G[@]}" -C "$dir" clean -fdq >/dev/null 2>&1 || return 1
+  # Trust it only if git agrees the checkout matches <tip>.
+  [ -z "$("${G[@]}" -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 1
+  [ "$("${G[@]}" -C "$dir" rev-parse HEAD 2>/dev/null)" = "$(git rev-parse "$tip")" ] || return 1
+  _land_log "regenerate tree: reused $dir at $(git rev-parse --short "$tip") (verdict=land_regen_tree_reused)"
+  printf '%s\n' "$dir"
+}
+
 _land_regenerate() {
   local tip="$1" cmd inputs globs tmp idx rc=0 out t0 tree new n=0 p g hit
   local budget="${AMUX_LAND_REGENERATE_TIMEOUT_S:-300}"
@@ -7074,19 +7109,40 @@ _land_regenerate() {
   fi
   globs="$(git config --get-all amux.landRegenerable 2>/dev/null || true)"
   inputs="$(git config --get-all amux.landRegenerateInput 2>/dev/null || true)"
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-regen.XXXXXX")"
-  # shellcheck disable=SC2086  # one pathspec per line on purpose
-  if ! git archive "$tip" ${inputs:+-- $inputs} | tar -x -C "$tmp" 2>/dev/null; then
-    rm -rf -- "${tmp:?}"
-    _land_log "regenerate: could not extract $(git rev-parse --short "$tip") (inputs: ${inputs:-whole tree}); nothing pushed"
-    return 1
-  fi
   _matches() {
     local q="$1" gg
     # shellcheck disable=SC2053  # $gg is a glob on purpose
     while read -r gg; do [ -n "$gg" ] && [[ "$q" == $gg ]] && return 0; done <<< "$globs"
     return 1
   }
+  # REUSE ONE SPARSE WORKTREE instead of extracting a fresh tree every land
+  # (fseventsd escalation 20261007-030851: mixpeek's inputs include all of
+  # server/, so each land wrote and then deleted tens of thousands of files in
+  # TMPDIR; 1911 directories changed in one minute under one regen tree). A
+  # detached checkout rewrites only what changed. Falls back to the fresh
+  # extract on any failure; AMUX_LAND_REGEN_REUSE=0 turns it off.
+  local reused=0
+  if tmp="$(_land_regen_tree "$tip" "$inputs")"; then
+    reused=1
+  else
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-regen.XXXXXX")"
+    # shellcheck disable=SC2086  # one pathspec per line on purpose
+    if ! git archive "$tip" ${inputs:+-- $inputs} | tar -x -C "$tmp" 2>/dev/null; then
+      rm -rf -- "${tmp:?}"
+      _land_log "regenerate: could not extract $(git rev-parse --short "$tip") (inputs: ${inputs:-whole tree}); nothing pushed"
+      return 1
+    fi
+  fi
+  if [ "$reused" = 1 ]; then
+    # Outputs a previous run left that are not in this tip: remove them, so the
+    # before/after comparison below sees exactly what a fresh extract would.
+    local want
+    # shellcheck disable=SC2086  # one pathspec per line on purpose
+    want="$(git ls-tree -r --name-only "$tip" ${inputs:+-- $inputs} 2>/dev/null)"
+    (cd "$tmp" && find . -path ./.git -prune -o -type f -print | sed 's|^\./||') | while read -r p; do
+      if _matches "$p" && ! printf '%s\n' "$want" | grep -qxF -- "$p"; then rm -f -- "$tmp/$p"; fi
+    done
+  fi
   local before after
   before="$(cd "$tmp" && find . -type f | sed 's|^\./||' | while read -r p; do _matches "$p" && printf '%s\n' "$p"; done | sort)"
   t0=$(date +%s)
@@ -7125,11 +7181,11 @@ _land_regenerate() {
   if [ "$rc" != 0 ]; then
     local log; log="$HOME/.amux/logs/land/$(date -u +%Y%m%dT%H%M%SZ)-${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}-$$-regenerate.log"
     mkdir -p "${log%/*}"; printf '%s\n' "$out" > "$log"
-    rm -rf -- "${tmp:?}"
+    [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
     _land_log "regenerate failed (rc $rc after $(( $(date +%s) - t0 ))s: $cmd). Output: $log"
     return 1
   fi
-  after="$(cd "$tmp" && find . -type f | sed 's|^\./||' | while read -r p; do _matches "$p" && printf '%s\n' "$p"; done | sort)"
+  after="$(cd "$tmp" && find . -path ./.git -prune -o -type f -print | sed 's|^\./||' | while read -r p; do _matches "$p" && printf '%s\n' "$p"; done | sort)"
   idx="$(mktemp "${TMPDIR:-/tmp}/amux-land-regen-idx.XXXXXX")"
   GIT_INDEX_FILE="$idx" git read-tree "$tip"
   while read -r p; do
@@ -7142,7 +7198,7 @@ _land_regenerate() {
     printf '%s\n' "$after" | grep -qxF -- "$p" || GIT_INDEX_FILE="$idx" git update-index --force-remove -- "$p"
   done <<< "$before"
   tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
-  rm -f -- "${idx:?}"; rm -rf -- "${tmp:?}"
+  rm -f -- "${idx:?}"; [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
   if [ "$tree" = "$(git rev-parse "$tip^{tree}")" ]; then
     _land_log "regenerate ran in $(( $(date +%s) - t0 ))s and changed nothing on $(git rev-parse --short "$tip")"
     printf '%s\n' "$tip"; return 0
