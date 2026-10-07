@@ -348,6 +348,16 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
                 format!("{} is verified by the harness reviewer, not by its lane (contract rule 3)", card.id),
                 json!({"worker": "request done; after the server's check passes, a fresh reviewer runs and grants verified or sends findings back"})))
         }
+        // Done is only reachable from doing, where the contract is checked.
+        // gs12-mvs, GM-149, 2026-10-06: `board todo` then `board done` moved a
+        // code card to done with no contract check at all.
+        "done" if !owner && card.status != "doing" && card.status != "done" => {
+            tracing::info!(card = %card.id, lane = %card.lane, from = %card.status, measured = true, n_considered = 1,
+                verdict = "contract_done_from_non_doing_refused", "a worker requested done on a contract card outside doing");
+            Action::Respond(refuse(StatusCode::CONFLICT, "contract_done_requires_doing",
+                format!("{} is {}; on a contract lane done is requested from doing, where the frozen contract is verified", card.id, card.status),
+                json!({"worker": "PATCH {\"status\":\"doing\",\"acceptance_criteria\":[...],\"verify_cmd\":\"...\"}, then request done with left_undone"})))
+        }
         "done" if !owner && card.status == "doing" => match existing {
             Some(c) if c.state == "verifying" => Action::Respond(
                 (StatusCode::ACCEPTED, Json(json!({"ok": true, "verification": "already_running", "card": card.id}))).into_response(),
@@ -1632,6 +1642,16 @@ mod tests {
             "acceptance already on the card counts");
         assert_eq!(code(&decide(&card("doing", "code", Some("a")), &only_cmd, false, Some(&frozen()), &dflt(None))), "409",
             "a frozen contract is still the owner's to edit");
+    }
+
+    #[test]
+    fn done_from_outside_doing_is_refused_for_a_worker() {
+        let done = json!({"status": "done", "evidence": "x", "left_undone": []});
+        for from in ["todo", "backlog", "review", "blocked"] {
+            assert_eq!(code(&decide(&card(from, "code", Some("a")), &done, false, None, &dflt(None))), "409", "{from} -> done");
+            assert_eq!(code(&decide(&card(from, "code", Some("a")), &done, true, None, &dflt(None))), "pass", "the owner may, from {from}");
+        }
+        assert_eq!(code(&decide(&card("todo", "chore", None), &done, false, None, &dflt(None))), "pass", "only code cards");
     }
 
     #[test]
