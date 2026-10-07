@@ -93,11 +93,11 @@ pub fn charge(prev: &Budget, hash: &str, now: f64, entered: f64, spend: f64, l: 
     (next, cause)
 }
 
-/// Text identity for the repeat breaker: digits removed, so a nudge that
-/// differs only in a count or a timestamp is the same nudge.
+/// Exact normalized instruction identity. Task IDs, revisions and measured
+/// values are actionable data; stripping their digits merges distinct work.
 pub fn text_hash(text: &str) -> String {
     use sha2::{Digest, Sha256};
-    let norm: String = text.chars().filter(|c| !c.is_ascii_digit()).collect();
+    let norm = text;
     format!("{:x}", Sha256::digest(norm.split_whitespace().collect::<Vec<_>>().join(" ").as_bytes()))[..16].to_string()
 }
 
@@ -151,12 +151,17 @@ pub async fn gate(store: &crate::db::SharedStore, lane: &str, guard: &str, text:
     let now = crate::config::now_f64();
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot_w = slot.clone();
-    let _ = store.write_async(move |conn| {
+    let result = store.write_async(move |conn| {
         let r = charge_card(conn, &lane_s, &hash, now, &limits, &owner_lane)?;
         let applied = r.is_some();
         *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = r;
         Ok(crate::db::WriteOutcome { applied, events: vec![] })
     }).await;
+    if let Err(error) = result {
+        tracing::warn!(session = lane, guard, %error, measured = false, n_considered = 1,
+            verdict = "contract_budget_unmeasured", "budget accounting failed; automated nudge held");
+        return Err("held: card budget accounting failed; retry after store recovery");
+    }
     let charged = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
     match charged {
         Some(Charged::Exhausted { card, cause, activity }) => {
@@ -199,8 +204,8 @@ pub fn charge_card(conn: &Connection, lane: &str, hash: &str, now: f64, l: &Limi
         return Ok(Some(Charged::Spent));
     }
     let spend: f64 = conn.query_row(
-        "SELECT COALESCE(SUM(cost_usd), 0) FROM token_ledger WHERE session = ?1 AND ts >= ?2",
-        rusqlite::params![lane, entered as i64], |r| r.get(0)).unwrap_or(0.0);
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM token_ledger WHERE session = ?1 AND ts >= ?2 AND task = ?3",
+        rusqlite::params![lane, entered as i64, card], |r| r.get(0))?;
     let (next, cause) = charge(&prev.map(|p| p.0).unwrap_or_default(), hash, now, entered, spend, l);
     conn.execute(
         "INSERT INTO card_budgets (card, lane, started_at, nudges, last_hash, repeats, exhausted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -563,33 +568,24 @@ pub fn take_group(conn: &Connection, hub: &str, root: &str, root_status: String,
     }
 }
 
-/// For each card, how many open proof cards (title matches `title_re`, not
-/// terminal) it blocks directly or through one more dependency hop.
+/// Count each open proof once for every transitive prerequisite. Read the
+/// graph once, then walk it in memory with a visited set (cycles terminate).
 fn proof_unblock_counts(conn: &Connection, title_re: &regex::Regex) -> rusqlite::Result<std::collections::HashMap<String, usize>> {
-    let rows: Vec<(String, String)> = conn
-        .prepare("SELECT COALESCE(title, ''), COALESCE(depends_on, '[]') FROM issues \
-                  WHERE status NOT IN ('done', 'verified', 'discarded') AND deleted IS NULL AND COALESCE(archived, 0) = 0 \
-                  AND COALESCE(depends_on, '') NOT IN ('', '[]')")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut counts: std::collections::HashMap<String, usize> = Default::default();
-    for (title, deps) in rows {
-        if !title_re.is_match(&title) {
-            continue;
-        }
-        let mut reach: std::collections::HashSet<String> = Default::default();
-        for d in serde_json::from_str::<Vec<String>>(&deps).unwrap_or_default() {
-            let second: String = conn
-                .query_row("SELECT COALESCE(depends_on, '[]') FROM issues WHERE id = ?1", [&d], |r| r.get(0))
-                .optional()?
-                .unwrap_or_default();
-            for d2 in serde_json::from_str::<Vec<String>>(&second).unwrap_or_default() {
-                reach.insert(d2);
-            }
-            reach.insert(d);
-        }
-        for d in reach {
-            *counts.entry(d).or_insert(0) += 1;
+    let rows: Vec<(String, String, String, String)> = conn
+        .prepare("SELECT id, COALESCE(title, ''), status, COALESCE(depends_on, '[]') FROM issues WHERE deleted IS NULL AND COALESCE(archived, 0) = 0")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let graph: std::collections::HashMap<String, Vec<String>> = rows.iter()
+        .map(|(id, _, _, deps)| (id.clone(), serde_json::from_str(deps).unwrap_or_default())).collect();
+    let mut counts = std::collections::HashMap::new();
+    for (id, title, status, _) in &rows {
+        if !title_re.is_match(title) || matches!(status.as_str(), "done" | "verified" | "discarded") { continue; }
+        let mut reach = std::collections::HashSet::from([id.clone()]);
+        let mut queue = graph.get(id).cloned().unwrap_or_default();
+        while let Some(dep) = queue.pop() {
+            if !reach.insert(dep.clone()) { continue; }
+            if let Some(next) = graph.get(&dep) { queue.extend(next.iter().cloned()); }
+            *counts.entry(dep).or_insert(0) += 1;
         }
     }
     Ok(counts)
@@ -597,7 +593,7 @@ fn proof_unblock_counts(conn: &Connection, title_re: &regex::Regex) -> rusqlite:
 
 /// When no proof card is ready: the ready non-proof card, on the lane's own
 /// board first and then the hub's, that unblocks the most open proof cards
-/// (directly or one hop down), oldest first among equals. Returns
+/// (through the entire graph), oldest first among equals. Returns
 /// (card, status, source, count).
 fn unblockers(conn: &Connection, hub: &str, lane: &str, title_re: &regex::Regex) -> rusqlite::Result<Vec<(String, String, &'static str, usize)>> {
     let counts = proof_unblock_counts(conn, title_re)?;
@@ -807,6 +803,12 @@ pub enum Plan {
     Unblock(String, String, &'static str, usize),
 }
 
+fn shared_hub_board(hub: &str, lane: &str) -> bool {
+    use crate::db::board_store::BoardOwner;
+    let owner = BoardOwner::new(None, Some(hub));
+    matches!(owner, BoardOwner::Orchestration(_)) && owner == BoardOwner::new(None, Some(lane))
+}
+
 /// claim_pool_card's search without its writes: is there anything this lane
 /// could claim? Too-large or cross-board groups are reported here, from the
 /// read, once per card per window, so the write path rarely meets them.
@@ -826,7 +828,7 @@ pub fn plan_pool_pull(conn: &Connection, hub: &str, lane: &str, title_re: Option
     }
     if let Some(re) = title_re {
         for (card, status, source, n) in unblockers(conn, hub, lane, re)? {
-            if source != "hub" {
+            if source != "hub" || shared_hub_board(hub, lane) {
                 return Ok(Plan::Unblock(card, status, source, n));
             }
             match dependency_component(conn, hub, &card, cap)? {
@@ -854,6 +856,33 @@ pub fn plan_pool_pull(conn: &Connection, hub: &str, lane: &str, title_re: Option
 /// re-checks the card's status (take / take_group), so a card that changed
 /// since the read is simply not taken and the next pass plans again.
 pub fn execute_plan(conn: &Connection, hub: &str, lane: &str, plan: Plan, cap: usize) -> rusqlite::Result<Claim> {
+    // Planning happens on a read connection. Revalidate this one card in
+    // the claim transaction: a second lane, a new dependency or a changed
+    // trigger must never be overwritten by a stale plan.
+    if lane_has_work(conn, lane)? { return Ok(Claim::Busy); }
+    let selected = match &plan {
+        Plan::Own(card, status, _) => Some((card, status, lane)),
+        Plan::Pool(card, status, _) => Some((card, status, hub)),
+        Plan::Unblock(card, status, source, _) => Some((card, status, if *source == "hub" { hub } else { lane })),
+        _ => None,
+    };
+    if let Some((card, status, owner)) = selected {
+        type Current = (String, Option<String>, String, String, String);
+        let current: Option<Current> = conn.query_row(
+            "SELECT status, session, COALESCE(depends_on, '[]'), COALESCE(blocked_on, ''), COALESCE(source_ref, '') FROM issues WHERE id=?1 AND deleted IS NULL AND COALESCE(archived, 0)=0",
+            [card], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).optional()?;
+        let valid = match current {
+            Some((actual, assigned, deps, blocker, trigger)) => actual == *status && assigned.as_deref() == Some(owner)
+                && blocker.is_empty() && deps_resolved(conn, &deps)?
+                && crate::runtime_jobs::board_drive::trigger_waits_on_open_card(conn, card, Some(&trigger))?.is_none(),
+            None => false,
+        };
+        if !valid {
+            tracing::info!(card, lane, measured = true, n_considered = 1, verdict = "a2_plan_stale",
+                "pool claim replans after ownership, readiness or trigger changed");
+            return Ok(Claim::Empty(0));
+        }
+    }
     Ok(match plan {
         Plan::Busy => Claim::Busy,
         Plan::Nothing(pool) => Claim::Empty(pool),
@@ -874,7 +903,7 @@ pub fn execute_plan(conn: &Connection, hub: &str, lane: &str, plan: Plan, cap: u
         }
         Plan::Unblock(card, status, source, n) => {
             let line = format!("taken by idle lane {lane}: no proof card is ready and this unblocks {n} open proof card(s) (contract A2)");
-            if source == "hub" {
+            if source == "hub" && !shared_hub_board(hub, lane) {
                 match take_group(conn, hub, &card, status, lane, &line, cap)? {
                     GroupTake::Moved(size) => Claim::UnblocksGroup(card, n, size),
                     _ => Claim::Empty(0),
@@ -921,6 +950,89 @@ pub fn pool_census(conn: &Connection) -> rusqlite::Result<Vec<(String, usize, us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shared_hub_claims_a_leaf_without_moving_a_large_dependency_graph() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        for lane in ["hub", "lane-a", "lane-b"] {
+            std::fs::write(home.path().join(format!("sessions/{lane}.env")),
+                "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=hub\nAMUX_A2_POOL_TITLE_REGEX=^GS12 proof\n").unwrap();
+        }
+        let store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        store.write(|conn| {
+            conn.execute("INSERT INTO issues(id,title,status,session,depends_on,created,updated) VALUES('ROOT','Dependency','backlog','hub','[]',1,1)", [])?;
+            for n in 0..300 {
+                conn.execute("INSERT INTO issues(id,title,status,session,depends_on,created,updated) VALUES(?1,'GS12 proof','backlog','hub','[\"ROOT\"]',1,1)", [format!("P-{n}")])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let re = regex::Regex::new("^GS12 proof").unwrap();
+        let a = plan_pool_pull(&store.read().unwrap(), "hub", "lane-a", Some(&re), 8).unwrap();
+        let b = plan_pool_pull(&store.read().unwrap(), "hub", "lane-b", Some(&re), 8).unwrap();
+        assert_eq!(a, Plan::Unblock("ROOT".into(), "backlog".into(), "hub", 300));
+        store.write(move |conn| {
+            assert_eq!(execute_plan(conn, "hub", "lane-a", a, 8)?, Claim::Unblocks("ROOT".into(), "hub", 300));
+            assert_eq!(execute_plan(conn, "hub", "lane-b", b, 8)?, Claim::Empty(0), "a stale plan cannot steal an assignment");
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM issues WHERE session='hub' AND depends_on='[\"ROOT\"]'", [], |r| r.get::<_, i64>(0))?, 300);
+            conn.execute("UPDATE issues SET status='verified' WHERE id='ROOT'", [])?;
+            let ready = plan_pool_pull(conn, "hub", "lane-b", Some(&re), 8)?;
+            assert!(matches!(execute_plan(conn, "hub", "lane-b", ready, 8)?, Claim::Got(_, "hub", _)));
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+
+    #[test]
+    fn pool_claim_rechecks_dependency_archive_and_lane_readiness() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        store.write(|conn| {
+            conn.execute("INSERT INTO issues(id,title,status,session,depends_on,created,updated) VALUES('P','Pool','backlog','hub','[]',1,1),('D','Dependency','doing','hub','[]',1,1)", [])?;
+            let plan = || Plan::Pool("P".into(), "backlog".into(), false);
+            conn.execute("UPDATE issues SET depends_on='[\"D\"]' WHERE id='P'", [])?;
+            assert_eq!(execute_plan(conn, "hub", "lane", plan(), 8)?, Claim::Empty(0));
+            conn.execute("UPDATE issues SET depends_on='[]', archived=1 WHERE id='P'", [])?;
+            assert_eq!(execute_plan(conn, "hub", "lane", plan(), 8)?, Claim::Empty(0));
+            conn.execute("UPDATE issues SET archived=0 WHERE id='P'", [])?;
+            conn.execute("INSERT INTO issues(id,title,status,session,created,updated) VALUES('BUSY','Busy','todo','lane',1,1)", [])?;
+            assert_eq!(execute_plan(conn, "hub", "lane", plan(), 8)?, Claim::Busy);
+            assert_eq!(crate::db::board_store::get_issue(conn, "P")?.unwrap().session.as_deref(), Some("hub"));
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+
+    #[test]
+    fn proof_priority_follows_transitive_edges_and_deduplicates_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        store.write(|conn| {
+            for (id, title, deps) in [("P", "GS12 proof", "[\"A\",\"B\"]"), ("A", "Step", "[\"B\"]"), ("B", "Step", "[\"C\"]"), ("C", "Step", "[\"A\"]")] {
+                conn.execute("INSERT INTO issues(id,title,status,session,depends_on,created,updated) VALUES(?1,?2,'backlog','hub',?3,1,1)", rusqlite::params![id,title,deps])?;
+            }
+            let counts = proof_unblock_counts(conn, &regex::Regex::new("^GS12 proof").unwrap())?;
+            for id in ["A", "B", "C"] { assert_eq!(counts.get(id), Some(&1)); }
+            assert!(!counts.contains_key("P"));
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+
+    #[test]
+    fn card_budget_charges_attributed_spend_and_surfaces_accounting_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        store.write(|conn| {
+            conn.execute("INSERT INTO issues(id,title,status,session,entered_state_at,created,updated) VALUES('CARD','Work','doing','lane',1,1,1)", [])?;
+            for (task, cost) in [("",1000.0),("OTHER",1000.0),("CARD",1.0)] {
+                conn.execute("INSERT INTO token_ledger(ts,session,conversation,task,cost_usd) VALUES(2,'lane','conversation',?1,?2)", rusqlite::params![task,cost])?;
+            }
+            let limits = Limits { nudges: 100, hours: 100.0, usd: 10.0, repeats: 100 };
+            assert_eq!(charge_card(conn, "lane", "h", 3.0, &limits, "hub")?, None);
+            conn.execute("DROP TABLE token_ledger", [])?;
+            assert!(charge_card(conn, "lane", "different", 4.0, &limits, "hub").is_err(), "unknown spend must not be recorded as zero");
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
 
     /// A2 phase 2 through the shipped pull: an idle pilot lane takes one ready
     /// pool card from its hub; a card with an open dependency is skipped; two
@@ -1345,7 +1457,9 @@ mod tests {
 
     #[test]
     fn a_nudge_that_differs_only_in_numbers_is_the_same_nudge() {
-        assert_eq!(text_hash("3 cards waiting, 12:01"), text_hash("4 cards  waiting, 12:07"));
+        assert_eq!(text_hash("3 cards waiting"), text_hash("3 cards  waiting"));
+        assert_ne!(text_hash("pick up GE2-5"), text_hash("pick up GE2-6"));
+        assert_ne!(text_hash("revision 1 p95 100"), text_hash("revision 2 p95 120"));
         assert_ne!(text_hash("pick up GE2-5"), text_hash("verify GE2-5"));
     }
 

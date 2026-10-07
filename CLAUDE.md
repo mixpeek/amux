@@ -100,6 +100,15 @@ Verify a hook by what it WROTE, not by the settings file.
   was building" and every red looks like your fault. The wrapper prints that missing clause
   beside the result, in both directions. Use plain `cargo test` when you want the raw thing.
 
+## Crash and stateful recovery
+
+Every durable harness change includes recovery at its failure boundary. Use real
+SIGKILL/restart tests, preserve failed evidence, adopt completed receipts, and
+assert no duplicate delivery or false success. Supervise consumer futures and
+keep isolation, owner stops and authorization gates intact. See
+`docs/harness-recovery.md` and `scripts/test-harness-recovery.sh`; retaining rows
+alone is not proof that unfinished work recovers.
+
 ## Verification
 
 `VERIFY.md` names the proof for each surface: the literal command, and what a

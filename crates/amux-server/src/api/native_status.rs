@@ -19,6 +19,29 @@ use std::path::{Path, PathBuf};
 fn root() -> PathBuf {
     crate::config::amux_home().join("status-events")
 }
+
+/// Ship the passive observer with the server, not with a one-time install.
+/// A worker-token rollout otherwise leaves older installed hooks producing
+/// thousands of 403s while the checked-in hook is already correct.
+pub(crate) fn ensure_observer(home: &Path) -> std::io::Result<bool> {
+    const SCRIPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/hooks/native-status.py"));
+    let path = home.join("native-status.py");
+    if std::fs::read(&path).ok().as_deref() == Some(SCRIPT.as_bytes()) { return Ok(false); }
+    std::fs::create_dir_all(home)?;
+    let tmp = home.join(format!(".native-status-{}.tmp", ulid::Ulid::new()));
+    let result = (|| {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(SCRIPT.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &path)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    result?;
+    tracing::info!(measured = true, n_considered = 1, verdict = "native_status_observer_adopted",
+        "installed passive observer now matches this server's bundled bytes");
+    Ok(true)
+}
 fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
@@ -26,6 +49,7 @@ fn valid_name(s: &str) -> bool {
 }
 
 pub(crate) fn begin_launch(name: &str, provider: &str) -> std::io::Result<(String, f64)> {
+    ensure_observer(&crate::config::amux_home())?;
     let run = format!("{:032x}", u128::from(ulid::Ulid::new()));
     let ts = crate::config::now_f64();
     let dir = root().join(name);
@@ -327,6 +351,10 @@ fn submitted_prompt(event: &Value) -> Option<String> {
 /// Recover delivery without another model turn. Replay only complete, atomic
 /// files, in sequence; ACK deletion follows the committed database transaction.
 pub(crate) fn replay(state: &AppState) {
+    if let Err(error) = ensure_observer(&crate::config::amux_home()) {
+        tracing::warn!(%error, measured = false, n_considered = 1, verdict = "native_status_observer_adoption_failed",
+            "observer installation drift could not be repaired; retained status spool still replays");
+    }
     let Ok(workers) = std::fs::read_dir(root()) else {
         return;
     };
@@ -394,6 +422,24 @@ fn replay_run(state: &AppState, name: &str, dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_observer_repairs_drift_atomically_without_rewriting_current_bytes() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("native-status.py");
+        std::fs::write(&path, "obsolete observer").unwrap();
+        assert!(ensure_observer(home.path()).unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("X-Amux-Worker-Token"));
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(!ensure_observer(home.path()).unwrap());
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(ensure_observer(home.path()).is_err());
+        assert!(path.is_dir());
+        assert!(!std::fs::read_dir(home.path()).unwrap().any(|p| p.unwrap().file_name().to_string_lossy().starts_with(".native-status-")));
+    }
     fn event(seq: u64, ts: f64, turn: &str, kind: &str) -> Value {
         json!({"run_id":"run","provider":"codex","sequence":seq,"event_ts":ts,"state":"active","turn_id":turn,"event":kind})
     }

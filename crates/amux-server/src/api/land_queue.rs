@@ -441,7 +441,7 @@ pub async fn tick(state: &AppState) -> usize {
         }
         let st = state.clone();
         tokio::spawn(async move {
-            run_batch(&st, entries).await;
+            crate::runtime_jobs::registry::guard_job("land-batch", async { run_batch(&st, entries).await; }).await;
             if let Ok(mut s) = LIVE_ROWS.lock() {
                 for id in &ids {
                     s.remove(id);

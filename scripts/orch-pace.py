@@ -4,7 +4,7 @@
 Usage:
   scripts/orch-pace.py --orchestrator mixpeek-override --lane-prefix gs12- \
       --deadline 2026-10-04T23:59:00-04:00 \
-      --proof-prefix "GS12 proof" --proof-prefix "GS12 requirement" [--json]
+      --proof-prefix "GS12 proof" --proof-prefix "GS12 requirement" [--epic MO-3905] [--json]
 
 Counts the plan's cards on the board (the orchestrator's board plus every lane
 whose name starts with --lane-prefix; archived cards excluded), appends a
@@ -19,7 +19,9 @@ Finish lines, all from the board:
          2026-10-01: "the finish line is the 220 plan items and the 58 proofs").
   work:  every card on the boards that is terminal (done, verified,
          discarded), reported for context
-  proof: completion cards (titles starting with a --proof-prefix) at verified
+  proof: exact frozen done-line IDs with --epic; otherwise completion cards
+         matching --proof-prefix across every executor in the orchestration.
+         Moving an assignment never changes the proof or plan denominator.
 
 Pace is measured, never estimated: `rate_6h` is cards CLOSED done or verified
 in the last six hours (their closed_at), per hour, and `needed` is open cards
@@ -59,6 +61,8 @@ def main():
     ap.add_argument("--deadline", required=True, help="ISO-8601 with offset")
     ap.add_argument("--proof-prefix", action="append", default=[])
     ap.add_argument("--plan-regex", help="titles of the orchestrator's plan-item cards, e.g. '^GS12 (plan item )?\\d+\\.\\d+'")
+    ap.add_argument("--epic", help="use this epic's versioned frozen done line as the exact proof population")
+    ap.add_argument("--done-line-file", help="read the done-line API response from this JSON file (tests)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--board-file", help="read the board from this JSON file instead of the server (tests)")
     ap.add_argument("--now", help="ISO-8601 time to measure at (tests)")
@@ -68,16 +72,43 @@ def main():
     deadline = dt.datetime.fromisoformat(a.deadline)
     hours_left = max((deadline - now).total_seconds() / 3600, 0.0)
 
+    url = None if a.board_file else amux_url()
+    all_cards = json.load(open(a.board_file)) if a.board_file else board(url)
     cards = [
-        c for c in (json.load(open(a.board_file)) if a.board_file else board(amux_url()))
+        c for c in all_cards
         if not c.get("archived")
         and ((c.get("session") or "") == a.orchestrator or (c.get("session") or "").startswith(a.lane_prefix))
         and c.get("type") not in ("epic", "watch", "tripwire")
     ]
     total = len(cards)
     terminal = sum(1 for c in cards if c.get("status") in TERMINAL)
-    proof = [c for c in cards if c.get("session") == a.orchestrator
-             and any((c.get("title") or "").startswith(p) for p in a.proof_prefix)]
+    proof = [c for c in cards
+             if any((c.get("title") or "").startswith(p) for p in a.proof_prefix)]
+    scope = None
+    if a.epic:
+        try:
+            if a.done_line_file:
+                scope = json.load(open(a.done_line_file))
+            else:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(f"{url}/api/contract/done-line/{a.epic}", context=ctx, timeout=30) as response:
+                    scope = json.load(response)
+            if scope.get("measured") is not True or scope.get("epic") != a.epic or not scope.get("line") or not scope.get("version"):
+                raise ValueError("no nonempty versioned frozen done line")
+            by_id = {c["id"]: c for c in all_cards}
+            ids = [c["id"] for c in scope["line"]]
+            if len(ids) != len(set(ids)):
+                raise ValueError("duplicate card IDs in frozen done line")
+            proof = [by_id.get(id, {"id": id, "status": "missing"}) for id in ids]
+            invalid = [c["id"] for c in proof if c.get("archived") or c.get("deleted") or c.get("status") in ("missing", "discarded")]
+            if invalid:
+                raise ValueError("frozen scope contains missing, archived or discarded cards: " + ", ".join(invalid))
+        except Exception as error:
+            out = {"measured": False, "n_considered": 0, "verdict": "UNMEASURED", "why_unmeasured": str(error), "epic": a.epic}
+            print(json.dumps(out) if a.json else f"UNMEASURED: {error}")
+            return 1
     proof_verified = sum(1 for c in proof if c.get("status") == "verified")
     needsyou = sorted(c["id"] for c in cards if c.get("status") == "needsyou")
 
@@ -88,6 +119,7 @@ def main():
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             hist = [json.loads(l) for l in f if l.strip()]
+    os.makedirs(os.path.dirname(hist_path), exist_ok=True)
     with open(hist_path, "a") as f:
         f.write(json.dumps(snap) + "\n")
 
@@ -118,7 +150,7 @@ def main():
     if a.plan_regex:
         import re
         rx = re.compile(a.plan_regex)
-        items = [c for c in cards if c.get("session") == a.orchestrator and rx.match(c.get("title") or "")]
+        items = [c for c in cards if rx.match(c.get("title") or "")]
         live = [c for c in items if c.get("status") != "discarded"]
         ver = [c for c in live if c.get("status") == "verified"]
         ver_6h = sum(1 for c in ver if (closed_ts(c) or c.get("last_verified_at") or 0) and float(closed_ts(c) or c.get("last_verified_at") or 0) >= since)
@@ -141,6 +173,8 @@ def main():
     proof_verdict = "ON PACE" if proof_projected >= proof_target else "BEHIND"
 
     out = {
+        "measured": True, "n_considered": len(proof) if scope else total,
+        "done_line": None if scope is None else {"epic": a.epic, "version": scope["version"], "cards": [c["id"] for c in proof]},
         "verdict": verdict, "hours_left": round(hours_left, 1),
         "cards_total": total, "cards_terminal": terminal, "cards_open": open_cards,
         "needed_per_h": round(needed, 2),

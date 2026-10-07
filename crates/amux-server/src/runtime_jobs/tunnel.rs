@@ -275,7 +275,7 @@ async fn start_mode(target_port: Option<u16>, mcp_only: bool) -> Result<TunnelSt
     let _handle = super::registry::spawn_loop(
         super::registry::ids::TUNNEL,
         None,
-        run(token, gateway(), target_base, generation, mcp_only),
+        move || run(token.clone(), gateway(), target_base.clone(), generation, mcp_only),
     );
 
     // Wait briefly for the first registration so the caller's response can

@@ -659,7 +659,7 @@ pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
     // loop's first `tick_every` tightens this to the long-poll interval. This
     // also stays correct if the spawned task reaches its first tick before
     // `spawn_loop` has inserted the registry row.
-    registry::spawn_loop(JOB, Some(poll_cadence(false)), run(state))
+    registry::spawn_loop(JOB, Some(poll_cadence(false)), move || run(state.clone()))
 }
 
 #[cfg(test)]

@@ -498,7 +498,7 @@ async fn async_main() {
     jobs::spawn_loop(
         jobs::ids::STEER_DELIVER,
         Some(secs(api::session_verbs::STEER_TICK_SECS)),
-        api::session_verbs::steer_deliver_loop(state.clone()),
+        { let state = state.clone(); move || api::session_verbs::steer_deliver_loop(state.clone()) },
     );
 
     // pipe-pane reconciler (AMUX-2671). `pipe-pane` is attached in
@@ -510,13 +510,13 @@ async fn async_main() {
     jobs::spawn_loop(
         jobs::ids::EMAIL_THEMES,
         Some(secs(api::email_intel::THEME_REFRESH_SECS)),
-        api::email_intel::theme_refresh_loop(),
+        api::email_intel::theme_refresh_loop,
     );
 
     jobs::spawn_loop(
         jobs::ids::PIPE_RECONCILE,
         Some(secs(api::session_verbs::PIPE_RECONCILE_SECS)),
-        api::session_verbs::pipe_reconcile_loop(),
+        api::session_verbs::pipe_reconcile_loop,
     );
 
     // Continuous invariant checking (AMUX-2622). Spawned before the router
@@ -526,7 +526,7 @@ async fn async_main() {
     jobs::spawn_loop(
         jobs::ids::INVARIANTS,
         Some(secs(invariants::monitor::TICK_SECS)),
-        invariants::monitor::run(state.clone()),
+        { let state = state.clone(); move || invariants::monitor::run(state.clone()) },
     );
 
     // Ghost-rescue (AMUX-2629): the FALLBACK sweep for the keystroke delivery
@@ -712,13 +712,14 @@ async fn async_main() {
     // off. Delivery goes through `LiveDeliverer` — the one implementation, and
     // the same send path a human's message takes.
     {
+        let store = store.clone();
         let firing = runtime_jobs::firing_enabled();
         let deliverer: std::sync::Arc<dyn runtime_jobs::scheduler::Deliverer> =
             std::sync::Arc::new(runtime_jobs::scheduler::LiveDeliverer::new(state.clone()));
         jobs::spawn_loop(
             jobs::ids::SCHEDULER,
             Some(secs(runtime_jobs::SCHEDULER_TICK_SECS)),
-            runtime_jobs::run_scheduler(store.clone(), firing, deliverer),
+            move || runtime_jobs::run_scheduler(store.clone(), firing, deliverer.clone()),
         );
     }
 
@@ -854,7 +855,7 @@ async fn async_main() {
             jobs::spawn_loop(
                 jobs::ids::ORCH_RUNTIME,
                 Some(secs(orch_tick_secs)),
-                runtime.clone().run(),
+                move || runtime.clone().run(),
             );
         });
     }
@@ -872,13 +873,8 @@ async fn async_main() {
     jobs::spawn_loop(
         jobs::ids::EVENT_PROCESSORS,
         Some(secs(orchestrator::events::SUPERVISE_SECS)),
-        orchestrator::events::run_event_processors(
-            store.clone(),
-            runtime
-                .protocol
-                .clone()
-                .expect("protocol constructed above"),
-        ),
+        { let store = store.clone(); let protocol = runtime.protocol.clone().expect("protocol constructed above");
+            move || orchestrator::events::run_event_processors(store.clone(), protocol.clone()) },
     );
 
     // Terminal scan loop (RR-0067): the fallback voice for hookless
@@ -896,7 +892,7 @@ async fn async_main() {
     jobs::spawn_loop(
         jobs::ids::SCAN,
         Some(secs(scan_secs.max(5))),
-        scan.run(scan_secs),
+        move || scan.clone().run(scan_secs),
     );
 
     // Session bootstrap (backend::bootstrap): the spawn/registration glue
@@ -918,7 +914,7 @@ async fn async_main() {
     jobs::spawn_loop(
         jobs::ids::BOOTSTRAP,
         Some(secs(boot_secs.max(1))),
-        boot.run(boot_secs),
+        move || boot.clone().run(boot_secs),
     );
 
     // Self-adoption (parity with the Python server's own-mtime watch): when
@@ -982,7 +978,9 @@ async fn async_main() {
              binary change (AEAB-52: a test harness pins its build on purpose)"
         );
     } else {
-        jobs::spawn_loop(jobs::ids::SELF_ADOPT, Some(secs(5)), async move {
+        jobs::spawn_loop(jobs::ids::SELF_ADOPT, Some(secs(5)), move || {
+            let running_build = running_build.clone();
+            async move {
             let Ok(exe) = std::env::current_exe() else {
                 return;
             };
@@ -1044,6 +1042,7 @@ async fn async_main() {
                     tracing::warn!(%err, "exec failed — falling back to exit-for-relaunch");
                     std::process::exit(0);
                 }
+            }
             }
         });
     }

@@ -599,7 +599,7 @@ fn strip_html(html: &str) -> String {
 }
 
 pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
-    registry::spawn_loop(JOB, Some(Duration::from_secs(30)), run(state))
+    registry::spawn_loop(JOB, Some(Duration::from_secs(30)), move || run(state.clone()))
 }
 
 #[cfg(test)]

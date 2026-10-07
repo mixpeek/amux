@@ -516,13 +516,20 @@ pub fn board_delegation_allowed(session: Option<&str>) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardOwner {
     Project(String),
+    /// Legacy orchestration boards explicitly share a configured hub. Their
+    /// executor may change without erasing ordering edges or moving roll-ups.
+    Orchestration(String),
     Worker(Option<String>),
 }
 impl BoardOwner {
     pub fn new(project: Option<&str>, session: Option<&str>) -> Self {
         match project {
             Some(project) => Self::Project(project.into()),
-            None => Self::Worker(session.filter(|s| !s.is_empty()).map(str::to_owned)),
+            None => {
+                let worker = session.filter(|s| !s.is_empty());
+                let hub = worker.and_then(orchestration_owner);
+                hub.map(Self::Orchestration).unwrap_or_else(|| Self::Worker(worker.map(str::to_owned)))
+            }
         }
     }
     pub fn of(row: &IssueRow) -> Self {
@@ -531,9 +538,29 @@ impl BoardOwner {
     fn label(&self) -> String {
         match self {
             Self::Project(project) => format!("project:{project}"),
+            Self::Orchestration(hub) => format!("orchestration:{hub}"),
             Self::Worker(worker) => worker.clone().unwrap_or_else(|| "unassigned".into()),
         }
     }
+}
+
+/// Both ends must opt into the contract and name the same live hub. An
+/// isolated worker never joins this board, even with stale group settings.
+fn orchestration_owner(lane: &str) -> Option<String> {
+    let home = crate::config::amux_home();
+    if crate::api::session_verbs::session_is_isolated(lane)
+        || !crate::api::contract::enabled_for(&home, lane) {
+        return None;
+    }
+    let hub = crate::api::contract::lane_setting(&home, lane, crate::api::contract::HUB)?;
+    let hub = hub.trim().trim_matches('"');
+    if !crate::api::session_verbs::valid_session_name(hub)
+        || crate::api::session_verbs::session_is_isolated(hub)
+        || !crate::api::contract::enabled_for(&home, hub) {
+        return None;
+    }
+    let root = crate::api::contract::lane_setting(&home, hub, crate::api::contract::HUB)?;
+    (root.trim().trim_matches('"') == hub).then(|| hub.to_string())
 }
 
 /// Dependencies must share durable ownership; assignment is not ownership.
@@ -8743,6 +8770,36 @@ everything to a clean machine.";
 #[cfg(test)]
 mod dependency_owner_tests {
     use super::*;
+
+    #[test]
+    fn opted_in_hub_owns_edges_across_executors_but_never_isolated_or_foreign_workers() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        for (lane, hub, extra) in [("hub", "hub", ""), ("a", "hub", ""), ("b", "hub", ""), ("foreign", "foreign", ""), ("isolated", "hub", "CC_ISOLATED=1\n")] {
+            std::fs::write(home.path().join(format!("sessions/{lane}.env")), format!("AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB={hub}\n{extra}")).unwrap();
+        }
+        assert_eq!(BoardOwner::new(None, Some("a")), BoardOwner::Orchestration("hub".into()));
+        assert_eq!(BoardOwner::new(None, Some("a")), BoardOwner::new(None, Some("b")));
+        for lane in ["foreign", "isolated", "plain"] {
+            assert_ne!(BoardOwner::new(None, Some(lane)), BoardOwner::new(None, Some("a")));
+        }
+        assert_eq!(BoardOwner::new(Some("project"), Some("isolated")), BoardOwner::Project("project".into()));
+        let store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        store.write(|conn| {
+            conn.execute("INSERT INTO issues(id,title,status,session,depends_on,created,updated) VALUES('P','Parent','backlog','hub','[\"D\"]',1,1),('D','Dependency','backlog','a','[]',1,1)", [])?;
+            let mut dep = get_issue(conn, "D")?.unwrap();
+            dep.session = Some("b".into());
+            save_patched(conn, &mut dep)?;
+            for target in ["isolated", "foreign", "plain"] {
+                dep.session = Some(target.into());
+                assert!(save_patched(conn, &mut dep).is_err(), "incoming edge prevents move to {target}");
+            }
+            assert_eq!(get_issue(conn, "D")?.unwrap().session.as_deref(), Some("b"));
+            assert_eq!(get_issue(conn, "P")?.unwrap().depends_on, vec!["D"]);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
     #[test]
     fn project_dependency_owner_preserves_assignments_and_refuses_foreign_edges_both_directions() {
         let dir = tempfile::tempdir().unwrap();
