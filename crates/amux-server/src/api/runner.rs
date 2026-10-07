@@ -21,7 +21,7 @@
 //!   released does not wait for it to hand each card out.
 //!
 //! Verdicts: contract_dispatch_held, contract_budget_exhausted, a2_pool_assigned,
-//! a2_pool_empty, a2_pool_held.
+//! a2_pool_empty, a2_pool_held, a2_pool_skipped_parked.
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
@@ -289,6 +289,49 @@ fn reopened_by_review(conn: &Connection, id: &str, desc: &str) -> rusqlite::Resu
         || (desc.contains("Review round") && desc.contains("failed (contract rule 3")))
 }
 
+/// How long a card its lane parked back to backlog stays out of the pool
+/// (AMUX_A2_REPARK_COOLDOWN_S, default 4 h).
+fn repark_cooldown_s() -> i64 {
+    std::env::var("AMUX_A2_REPARK_COOLDOWN_S").ok().and_then(|v| v.trim().parse::<i64>().ok())
+        .or_else(|| crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
+            .get("AMUX_A2_REPARK_COOLDOWN_S").and_then(|v| v.trim().trim_matches('"').parse::<i64>().ok()))
+        .unwrap_or(4 * 3600)
+        .max(0)
+}
+
+/// The lane itself moved this card to backlog within the cooldown, and none
+/// of its dependencies changed status since (2026-10-07: gs12-tiering parked
+/// MO-4071 waiting on another lane's run and A2 pulled it back three times in
+/// three minutes). The lane's own move is read from the card's log line
+/// "`HH:MM` <lane>: <from> -> backlog", the board's transition record.
+fn reparked_by_lane(conn: &Connection, owner: &str, entered: i64, log: &str, deps: &str, now: i64) -> rusqlite::Result<bool> {
+    if entered <= 0 || now - entered >= repark_cooldown_s() {
+        return Ok(false);
+    }
+    let last_park = log.lines().rev().find(|l| l.contains("-> backlog"));
+    let by_lane = last_park.is_some_and(|l| {
+        let body = l.split_once("` ").map(|(_, b)| b).unwrap_or(l);
+        body.starts_with(&format!("{owner}:"))
+    });
+    if !by_lane {
+        return Ok(false);
+    }
+    let ids: Vec<String> = serde_json::from_str(deps).unwrap_or_default();
+    for id in ids {
+        let changed: Option<i64> = conn
+            .query_row("SELECT entered_state_at FROM issues WHERE id = ?1", [&id], |r| r.get::<_, Option<i64>>(0))
+            .optional()?
+            .flatten();
+        if changed.is_some_and(|t| t > entered) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Readiness for the pool: exactly board-drive's auto-park predicate
+/// (`board_store::dependency_resolved`, which `deps_blocking` uses), so a card
+/// the pool hands out is never one auto-park would park again.
 fn deps_resolved(conn: &Connection, depends_on: &str) -> rusqlite::Result<bool> {
     let ids: Vec<String> = serde_json::from_str(depends_on).unwrap_or_default();
     for id in ids {
@@ -307,7 +350,7 @@ pub type PoolCard = (String, String, bool, bool);
 /// `tag_ok`), or titled to match `title_re`. Reopened-by-review cards first,
 /// then board order.
 fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, tag_ok: bool) -> rusqlite::Result<Vec<PoolCard>> {
-    type Row = (String, String, String, String, String, bool, bool);
+    type Row = (String, String, String, String, String, bool, bool, i64, String);
     // A PARKED backlog card is not ready (gs12-tiering MO-4071, gs12-obs
     // MO-4086, gs12-cicd MO-4438, 2026-10-07): `amux board backlog --trigger`
     // stores the wait in source_ref and stamps last_verified_at, and A2 pulled
@@ -321,23 +364,27 @@ fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, t
             "SELECT i.id, i.status, COALESCE(i.depends_on, '[]'), COALESCE(i.title, ''), COALESCE(i.desc, ''), \
                     EXISTS(SELECT 1 FROM issue_tags t WHERE t.issue_id = i.id AND t.tag = ?2), \
                     (i.status = 'backlog' AND ((COALESCE(i.source_ref, '') <> '' AND COALESCE(i.last_verified_at, 0) > ?3) \
-                                               OR COALESCE(i.blocked_on, '') <> '')) \
+                                               OR COALESCE(i.blocked_on, '') <> '')), \
+                    COALESCE(i.entered_state_at, 0), COALESCE(i.log, '') \
              FROM issues i \
              WHERE i.session = ?1 AND i.status IN ('todo', 'backlog') \
                AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0 \
              ORDER BY i.pos, i.created, i.id",
         )?
-        .query_map(rusqlite::params![owner, POOL_TAG, verified_cut], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
+        .query_map(rusqlite::params![owner, POOL_TAG, verified_cut], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::new();
-    for (id, status, deps, title, desc, tagged, parked) in rows {
+    let now = crate::config::now_f64() as i64;
+    for (id, status, deps, title, desc, tagged, parked, entered, log) in rows {
         let by_title = title_re.is_some_and(|re| re.is_match(&title));
         if !((tag_ok && tagged) || by_title) {
             continue;
         }
-        if parked {
-            tracing::debug!(card = %id, measured = true, n_considered = 1, verdict = "a2_parked_card_skipped",
-                "A2 leaves a backlog card parked on a fresh trigger or blocker where it is");
+        let parked = parked || (status == "backlog" && reparked_by_lane(conn, owner, entered, &log, &deps, now)?);
+        // Once per card per 10 minutes, so the counter reads cards, not passes.
+        if parked && first_this_window(&format!("parked:{id}")) {
+            tracing::info!(card = %id, owner, measured = true, n_considered = 1, verdict = "a2_pool_skipped_parked",
+                "A2 leaves a backlog card its lane parked (fresh trigger, blocker, or its own move within the cooldown) where it is");
         }
         let ready = !parked && deps_resolved(conn, &deps)?;
         let reopened = reopened_by_review(conn, &id, &desc)?;
@@ -370,10 +417,96 @@ pub enum Claim {
     Empty(usize),
     /// card, source ("own" or "hub"), reopened by review
     Got(String, &'static str, bool),
+    /// No proof card was ready; this card unblocks `count` open proof cards.
+    Unblocks(String, &'static str, usize),
+}
+
+/// For each card, how many open proof cards (title matches `title_re`, not
+/// terminal) it blocks directly or through one more dependency hop.
+fn proof_unblock_counts(conn: &Connection, title_re: &regex::Regex) -> rusqlite::Result<std::collections::HashMap<String, usize>> {
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT COALESCE(title, ''), COALESCE(depends_on, '[]') FROM issues \
+                  WHERE status NOT IN ('done', 'verified', 'discarded') AND deleted IS NULL AND COALESCE(archived, 0) = 0 \
+                  AND COALESCE(depends_on, '') NOT IN ('', '[]')")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut counts: std::collections::HashMap<String, usize> = Default::default();
+    for (title, deps) in rows {
+        if !title_re.is_match(&title) {
+            continue;
+        }
+        let mut reach: std::collections::HashSet<String> = Default::default();
+        for d in serde_json::from_str::<Vec<String>>(&deps).unwrap_or_default() {
+            let second: String = conn
+                .query_row("SELECT COALESCE(depends_on, '[]') FROM issues WHERE id = ?1", [&d], |r| r.get(0))
+                .optional()?
+                .unwrap_or_default();
+            for d2 in serde_json::from_str::<Vec<String>>(&second).unwrap_or_default() {
+                reach.insert(d2);
+            }
+            reach.insert(d);
+        }
+        for d in reach {
+            *counts.entry(d).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
+}
+
+/// When no proof card is ready: the ready non-proof card, on the lane's own
+/// board first and then the hub's, that unblocks the most open proof cards
+/// (directly or one hop down), oldest first among equals. Returns
+/// (card, status, source, count).
+fn unblockers(conn: &Connection, hub: &str, lane: &str, title_re: &regex::Regex) -> rusqlite::Result<Vec<(String, String, &'static str, usize)>> {
+    let counts = proof_unblock_counts(conn, title_re)?;
+    let mut out = Vec::new();
+    if counts.is_empty() {
+        return Ok(out);
+    }
+    let any = regex::Regex::new(".?").expect("static regex");
+    for (owner, source) in [(lane, "own"), (hub, "hub")] {
+        let mut group: Vec<(String, String, &'static str, usize)> = Vec::new();
+        for (id, status, ready, _) in candidates(conn, owner, Some(&any), false)? {
+            let title: String = conn.query_row("SELECT COALESCE(title, '') FROM issues WHERE id = ?1", [&id], |r| r.get(0))?;
+            if !ready || title_re.is_match(&title) {
+                continue;
+            }
+            let n = counts.get(&id).copied().unwrap_or(0);
+            if n > 0 {
+                group.push((id, status, source, n));
+            }
+        }
+        // Most proof cards unblocked first; board order (oldest) among equals.
+        group.sort_by_key(|c| std::cmp::Reverse(c.3));
+        out.extend(group);
+    }
+    Ok(out)
 }
 
 /// Move `card` to `lane`'s todo from `status`, logged as harness:a2.
+///
+/// A board refusal (e.g. cross_board_dependency_forbidden: other cards on the
+/// hub's board depend on this one) skips the card instead of failing the whole
+/// claim: the move runs inside a savepoint that is rolled back on error, and
+/// the refusal is logged. Before this a refused move aborted the write and the
+/// pull read as an empty pool (2026-10-07).
 fn take(conn: &Connection, card: &str, status: String, lane: &str, line: String) -> rusqlite::Result<bool> {
+    conn.execute_batch("SAVEPOINT a2_take")?;
+    match take_inner(conn, card, status, lane, line) {
+        Ok(moved) => {
+            conn.execute_batch("RELEASE a2_take")?;
+            Ok(moved)
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK TO a2_take; RELEASE a2_take")?;
+            tracing::info!(card, lane, error = %e, measured = true, n_considered = 1, verdict = "a2_pool_move_refused",
+                "the board refused an A2 move; the card stays where it is and the pull tries the next one");
+            Ok(false)
+        }
+    }
+}
+
+fn take_inner(conn: &Connection, card: &str, status: String, lane: &str, line: String) -> rusqlite::Result<bool> {
     if status == "todo" {
         let Some(mut row) = crate::db::board_store::get_issue(conn, card)? else {
             return Ok(false);
@@ -419,12 +552,25 @@ pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Optio
     }
     let cards = pool_cards(conn, hub, title_re)?;
     let pool = cards.len();
-    let Some((card, status, _, reopened)) = cards.into_iter().find(|c| c.2) else {
+    let mut got = None;
+    for (card, status, ready, reopened) in cards {
+        if ready && take(conn, &card, status, lane, format!("pulled from {hub}'s pool by idle lane {lane} (contract A2)"))? {
+            got = Some((card, reopened));
+            break;
+        }
+    }
+    let Some((card, reopened)) = got else {
+        if let Some(re) = title_re {
+            for (card, status, source, n) in unblockers(conn, hub, lane, re)? {
+                let line = format!("taken by idle lane {lane}: no proof card is ready and this unblocks {n} open proof card(s) (contract A2)");
+                if take(conn, &card, status, lane, line)? {
+                    conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
+                    return Ok(Claim::Unblocks(card, source, n));
+                }
+            }
+        }
         return Ok(Claim::Empty(pool));
     };
-    if !take(conn, &card, status, lane, format!("pulled from {hub}'s pool by idle lane {lane} (contract A2)"))? {
-        return Ok(Claim::Empty(pool));
-    }
     // A pulled card has left the pool: it is the lane's now.
     conn.execute("DELETE FROM issue_tags WHERE issue_id = ?1 AND tag = ?2", rusqlite::params![card, POOL_TAG])?;
     Ok(Claim::Got(card, "hub", reopened))
@@ -481,15 +627,20 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
     let slot_w = slot.clone();
     let _ = store.write_async(move |conn| {
         let r = claim_pool_card(conn, &h, &l, title_re.as_ref())?;
-        let applied = matches!(r, Claim::Got(..));
+        let applied = matches!(r, Claim::Got(..) | Claim::Unblocks(..));
         *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         Ok(crate::db::WriteOutcome { applied, events: vec![] })
     }).await;
     let got = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
     match got {
         Some(Claim::Got(card, source, reopened)) => {
-            tracing::info!(session = lane, hub, card, source, reopened, measured = true, n_considered = 1, verdict = "a2_pool_assigned",
+            tracing::info!(session = lane, hub, card, source, reopened, reason = "proof", measured = true, n_considered = 1, verdict = "a2_pool_assigned",
                 "an idle lane took a ready pool card (contract A2)");
+            PoolPull::Assigned { card, hub }
+        }
+        Some(Claim::Unblocks(card, source, count)) => {
+            tracing::info!(session = lane, hub, card, source, reason = "unblocks_proof", count, measured = true, n_considered = count,
+                verdict = "a2_pool_assigned", "an idle lane took the ready card that unblocks the most open proof cards (contract A2)");
             PoolPull::Assigned { card, hub }
         }
         Some(Claim::Busy) => PoolPull::NotApplicable,
@@ -685,6 +836,110 @@ mod tests {
         assert_eq!(got(Some("hub"), "cap"), Some(("OB".into(), "own")), "its own backlog before the hub, never the non-proof todo");
         assert_eq!(got(Some("hub"), "cap3"), Some(("HB".into(), "hub")), "then the hub's pool");
         assert_eq!(got(Some("hub"), "cap4"), None, "nothing proof left");
+    }
+
+    /// (1) The pool's readiness is board-drive's auto-park predicate: for
+    /// every dependency status and type, a card the pool calls ready is one
+    /// `deps_blocking` would not park.
+    #[test]
+    fn pool_readiness_is_the_auto_park_predicate() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        let cases = [("todo", "code"), ("doing", "code"), ("done", "code"), ("verified", "code"),
+                     ("done", "chore"), ("done", "ops"), ("discarded", "code"), ("done", "")];
+        store.write(move |c| {
+            for (i, (st, ty)) in cases.iter().enumerate() {
+                c.execute("INSERT INTO issues (id, title, status, type, created, updated) VALUES (?1, ?1, ?2, ?3, 0, 0)",
+                    rusqlite::params![format!("D{i}"), st, ty])?;
+                c.execute("INSERT INTO issues (id, title, status, session, depends_on, created, updated) VALUES (?1, ?1, 'backlog', 'lane', ?2, 0, 0)",
+                    rusqlite::params![format!("C{i}"), format!("[\"D{i}\"]")])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let conn = store.read().unwrap();
+        for (i, case) in cases.iter().enumerate() {
+            let row = crate::db::board_store::get_issue(&conn, &format!("C{i}")).unwrap().unwrap();
+            let parks = !crate::runtime_jobs::board_drive::deps_blocking(&conn, &row).is_empty();
+            assert_eq!(deps_resolved(&conn, &format!("[\"D{i}\"]")).unwrap(), !parks, "case {case:?}");
+        }
+    }
+
+    /// (2) A card its lane parked to backlog stays out of the pool for the
+    /// cooldown, unless a dependency changed status since; a card parked by
+    /// someone else, or long ago, is pullable.
+    #[test]
+    fn a_card_its_lane_reparked_is_not_pulled_back_within_the_cooldown() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        let re = regex::Regex::new("^GS12 proof").unwrap();
+        let now = crate::config::now_f64() as i64;
+        let old = now - 5 * 3600;
+        store.write(move |c| {
+            c.execute("INSERT INTO issues (id, title, status, type, created, updated, entered_state_at) VALUES ('MOVED', 'MOVED', 'verified', 'code', 0, 0, ?1)", [now - 30])?;
+            c.execute("INSERT INTO issues (id, title, status, type, created, updated, entered_state_at) VALUES ('STILL', 'STILL', 'verified', 'code', 0, 0, ?1)", [now - 900])?;
+            for (id, actor, at, deps) in [("LANE", "lane", now - 60, "[\"STILL\"]"), ("PEER", "mixpeek-override", now - 60, "[]"),
+                                          ("OLD", "lane", old, "[]"), ("DEPMOVED", "lane", now - 600, "[\"MOVED\"]")] {
+                c.execute(
+                    "INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived, entered_state_at, log) \
+                     VALUES (?1, 'GS12 proof ' || ?1, 'backlog', 'lane', 'ops', ?2, 0, 0, 0, 0, ?3, ?4)",
+                    rusqlite::params![id, deps, at, format!("`09:10` Auto-picked up from queue by lane\n`09:11` {actor}: doing -> backlog")],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let conn = store.read().unwrap();
+        let ready: Vec<(String, bool)> = candidates(&conn, "lane", Some(&re), false).unwrap()
+            .into_iter().map(|(id, _, ready, _)| (id, ready)).collect();
+        let r = |id: &str| ready.iter().find(|(i, _)| i == id).map(|(_, r)| *r);
+        assert_eq!(r("LANE"), Some(false), "the lane parked it a minute ago");
+        assert_eq!(r("PEER"), Some(true), "parked by another actor");
+        assert_eq!(r("OLD"), Some(true), "past the cooldown");
+        assert_eq!(r("DEPMOVED"), Some(true), "a dependency moved since the park");
+    }
+
+    /// (3) With no ready proof card, an idle lane takes the ready non-proof
+    /// card that unblocks the most open proof cards (directly or one hop),
+    /// its own board first. A hub card the board refuses to move (proof cards
+    /// on the hub depend on it: cross_board_dependency_forbidden) stays put
+    /// and the pull reports the real pool size instead of failing.
+    #[tokio::test]
+    async fn an_idle_lane_with_no_ready_proof_takes_the_card_that_unblocks_the_most() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let store: crate::db::SharedStore = std::sync::Arc::new(crate::db::Store::open(&h.join("q.db")).unwrap());
+        for lane in ["ub-a", "ub-c"] {
+            std::fs::write(h.join(format!("sessions/{lane}.env")),
+                "AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=\"hub\"\nAMUX_A2_POOL_TITLE_REGEX=\"^GS12 proof\"\n").unwrap();
+        }
+        store.write(|c| {
+            for (id, title, session, deps, pos) in [
+                ("P1", "GS12 proof 1", "hub", "[\"A-HIGH\"]", 0.0),
+                ("P2", "GS12 proof 2", "hub", "[\"A-MID\"]", 0.1),
+                ("P3", "GS12 proof 3", "hub", "[\"A-MID\"]", 0.2),
+                ("A-MID", "GS12 plan item 5.5 mid", "ub-a", "[\"A-HIGH\"]", 0.3),
+                ("A-LOW", "GS12 plan item 1.1", "ub-a", "[]", 0.0),
+                ("A-HIGH", "GS12 plan item 2.2", "ub-a", "[]", 1.0),
+                ("P4", "GS12 proof 4", "hub", "[\"A-LOW\"]", 0.4),
+                ("HUB-DEP", "GS12 plan item 3.3", "hub", "[]", 0.0),
+                ("P5", "GS12 proof 5", "hub", "[\"HUB-DEP\"]", 0.5),
+            ] {
+                c.execute(
+                    "INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                     VALUES (?1, ?2, 'backlog', ?3, 'code', ?4, ?5, 0, 0, 0)",
+                    rusqlite::params![id, title, session, deps, pos],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let card = |id: &str| crate::db::board_store::get_issue(&store.read().unwrap(), id).unwrap().unwrap();
+        assert_eq!(pull_from_pool(&store, "ub-a").await, PoolPull::Assigned { card: "A-HIGH".into(), hub: "hub".into() },
+            "A-HIGH unblocks P1 directly and P2, P3 through A-MID: 3, against A-LOW's 1");
+        assert_eq!((card("A-HIGH").session.as_deref(), card("A-HIGH").status.as_str()), (Some("ub-a"), "todo"));
+        assert_eq!(pull_from_pool(&store, "ub-c").await, PoolPull::Empty { pool: 5 },
+            "HUB-DEP cannot leave the hub while P5 depends on it there; the pool size is real, not a swallowed error");
+        assert_eq!(card("HUB-DEP").session.as_deref(), Some("hub"));
     }
 
     /// MO-4071/MO-4086/MO-4438: a proof card parked with a fresh trigger, or a
