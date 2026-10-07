@@ -12512,7 +12512,32 @@ pub async fn patch_item(
                     // learn the card is not theirs to move.
                     let caller_wid = (!caller_lane.is_empty())
                         .then(|| crate::orchestrator::runtime::foreign_worker_id(&caller_lane));
-                    if let (Some(wid), false) = (&caller_wid, force) {
+                    // THE CARD'S OWN LANE OUTRANKS ANOTHER LANE'S LEASE (gs12-tiering,
+                    // 2026-10-07: amux-helper's attribution heal moved GT-286 to doing
+                    // and held its lease, so the owning lane could not park its own
+                    // card: lease_held). The invariant protects a lane's attempt from
+                    // other lanes; it was never meant to lock the owner out. The
+                    // foreign lease is released (generation bumped, so the holder's
+                    // in-flight work cannot act on it) and the move proceeds.
+                    let owner_over_foreign_lease = !caller_lane.is_empty()
+                        && next.session.as_deref() == Some(caller_lane.as_str())
+                        && next.lease_owner.as_deref().is_some_and(|h| {
+                            !h.is_empty() && h != caller_lane && caller_wid.as_ref().is_none_or(|w| w.to_string() != h)
+                        });
+                    if owner_over_foreign_lease {
+                        tracing::info!(
+                            target: "amux::board", card = %next.id, caller = %caller_lane,
+                            holder = next.lease_owner.as_deref().unwrap_or(""),
+                            measured = true, n_considered = 1, verdict = "lease_yielded_to_owner",
+                            "board: another lane's lease yielded to the card's own lane"
+                        );
+                        next.lease_owner = None;
+                        next.lease_acquired_at = None;
+                        next.lease_heartbeat_at = None;
+                        next.lease_expires_at = None;
+                        next.lease_generation += 1;
+                    }
+                    if let (Some(wid), false) = (&caller_wid, force || owner_over_foreign_lease) {
                         let as_worker = Actor::Worker { id: wid.clone() };
                         if amux_core::board::holder_guard(&task, &as_worker).is_err() {
                             if bs::lease_enforcement_enabled() {

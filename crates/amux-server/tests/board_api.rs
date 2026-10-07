@@ -8360,6 +8360,31 @@ async fn each_claim_opens_an_attempt_and_each_exit_closes_it_with_an_outcome() {
 
 // ---- RR-0052 Invariant 2: only the holder moves a leased card -------------
 
+/// The card's own lane can still move it when ANOTHER lane holds the lease
+/// (gs12-tiering, 2026-10-07: amux-helper's heal held GT-286's lease and the
+/// owner's `board backlog --trigger` was refused lease_held). The foreign
+/// lease is released; a third lane is still refused.
+#[tokio::test]
+async fn the_cards_own_lane_moves_it_when_another_lane_holds_the_lease() {
+    std::env::set_var("AMUX_LEASE_ENFORCE", "1");
+    let (app, _dir) = app();
+    let card = create(&app, json!({ "title": "owned", "session": "lane-a",
+        "desc": "artifact: crates/amux-server/src/api/board.rs" })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    move_as(&app, &id, "doing", "lane-b").await;
+    let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(d["lease"]["holder"].as_str(), Some("lane-b"), "precondition: lane-b holds it: {d}");
+    let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({ "status": "todo", "reason": "a third lane" })), &[("X-Amux-Session", "lane-c")]).await;
+    assert_eq!((st, v["error"].clone()), (StatusCode::CONFLICT, json!("lease_held")), "{v}");
+    let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({ "status": "backlog", "reason": "parked on a trigger" })), &[("X-Amux-Session", "lane-a")]).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (_, _, d) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(d["status"], json!("backlog"), "{d}");
+    assert!(d.get("lease").is_none() || d["lease"].is_null(), "the foreign lease is gone: {d}");
+}
+
 /// Every status move a non-holder worker can make on a leased card, including
 /// the ones core has no named transition for (doing -> backlog maps to Force in
 /// the PATCH door) and the ones core's six guarded arms never covered (release,
