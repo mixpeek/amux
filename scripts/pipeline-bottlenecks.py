@@ -44,6 +44,16 @@ scratch dir mapped to the amux session that records it). Thresholds: load per
 core >= 2.0, swap >= 90 percent, disk >= 95 percent. A trip logs
 verdict=host_bottleneck and routes one message to --host-route (default
 mac-ops, the Mac resource lane) under the same cooldown.
+
+TOP CONSTRAINT (AH-398, --constraints): ranks GS-12's candidate constraints by
+an estimate of the finish-date hours each costs (proof stalled, review backlog,
+owner asks blocking proof, idle lanes with ready work, blocked or cardless
+lanes, land queue wait, production stuck on one deploy), logs
+verdict=top_constraint, and acts: proof stalled 3 runs running alerts Ethan once
+a day (the former SCHED-620 tripwire); owner asks blocking proof alert Ethan;
+a stuck production deploy messages the ops deputy; orchestrator-owned
+constraints append one line to ~/.amux/state/orchestrator-asks.txt for
+amux-helper's hourly batched message (never a direct send).
 """
 import argparse, glob, json, os, re, ssl, statistics, subprocess, sys, time, urllib.request
 
@@ -284,6 +294,229 @@ def throughput(a, now):
     return rec, levers
 
 
+# TOP CONSTRAINT (AH-398, Ethan 2026-10-07: "each hour, name the top
+# constraint with numbers and trigger the recovery or route it, so it doesn't
+# depend on anyone noticing"). GS-12 proof sat at 1-5 verified a day for a week
+# while every check logged BEHIND and nobody escalated. This ranks candidate
+# constraints by an estimate of the finish-date hours each costs, names the top
+# one, and acts through a fixed mapping. The estimates are heuristics, printed
+# beside the numbers they come from, so a wrong rank is visible.
+PROOF_RE = re.compile(r"^GS12 (proof|requirement)")
+DONE_STATES = ("done", "verified", "discarded")
+
+
+def _deps(i):
+    d = i.get("depends_on") or []
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except ValueError:
+            d = []
+    return d
+
+
+def _at(i):
+    try:
+        return float(i.get("closed_at") or i.get("entered_state_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def constraints(a, now, state):
+    """Candidate constraints with numbers, ranked by estimated finish-date
+    hours. Returns (ranked, n_considered, unmeasured sources)."""
+    unmeasured, out, n = [], [], 0
+
+    def read(name, path, fixture):
+        try:
+            return _get_json(path, fixture)
+        except Exception:
+            unmeasured.append(name)
+            return None
+    board = read("board", "/api/board?all=1&slim=0", a.board_file)
+    sessions = read("sessions", "/api/sessions", a.sessions_file)
+    land = read("land", "/api/land", a.land_file)
+    try:
+        if a.prod_file:
+            prod = json.load(open(a.prod_file))
+        else:
+            with urllib.request.urlopen(a.prod_url, timeout=20) as r:
+                prod = json.load(r)
+    except Exception:
+        prod = None
+        unmeasured.append("prod")
+    pre, hub = a.lane_prefix or "gs12-", a.hub
+    ready = []
+    if board is not None:
+        by = {i.get("id"): i for i in board}
+        g = [i for i in board if not i.get("archived")
+             and ((i.get("session") or "").startswith(pre) or i.get("session") == hub)]
+        n += len(g)
+        proof = [i for i in g if PROOF_RE.search(i.get("title") or "")]
+        v24 = sum(1 for i in proof if i.get("status") == "verified" and _at(i) > now - 86400)
+        ver = sum(1 for i in proof if i.get("status") == "verified")
+        remaining = sum(1 for i in proof if i.get("status") not in DONE_STATES)
+        active = sum(1 for i in proof if i.get("status") in ("doing", "todo") and i.get("session") != hub)
+        ready = [i["id"] for i in proof if i.get("status") in ("backlog", "todo") and i.get("session") == hub
+                 and all((by.get(d) or {}).get("status") in ("done", "verified") for d in _deps(i))]
+        # Days to finish at the measured rate minus days at the needed rate.
+        lost_h = max(0.0, remaining / max(v24, 0.5) - remaining / a.proof_per_day) * 24
+        bad = v24 < a.proof_per_day or active < a.proof_min_active
+        out.append({"name": "proof_stalled" if bad else "proof_on_pace", "owner": "orchestrator",
+                    "est_hours": round(lost_h if bad else 0, 1),
+                    "numbers": {"proof_verified": ver, "proof_total": len(proof), "verified_24h": v24,
+                                "need_per_day": a.proof_per_day, "active_on_lanes": active,
+                                "need_active": a.proof_min_active, "remaining": remaining,
+                                "ready_on_hub": len(ready)}})
+        done = [i for i in g if i.get("status") == "done"]
+        ages = sorted((now - _at(i)) / 3600 for i in done if _at(i))
+        med = round(statistics.median(ages), 1) if ages else 0
+        out.append({"name": "review_backlog", "owner": "orchestrator",
+                    "est_hours": round(len(done) * 0.25 if med >= 6 else 0, 1),
+                    "numbers": {"done_waiting": len(done), "median_age_h": med}})
+        blocked_by_owner = []
+        for i in g:
+            if i.get("status") != "needsyou" or (i.get("ask_actor") or "").lower() != a.owner_name.lower():
+                continue
+            age = (now - _at(i)) / 3600
+            if age < 2:
+                continue
+            blocks = [p["id"] for p in proof if p.get("status") not in DONE_STATES and i.get("id") in _deps(p)]
+            if blocks or PROOF_RE.search(i.get("title") or ""):
+                blocked_by_owner.append({"id": i.get("id"), "age_h": round(age, 1), "blocks": blocks[:5]})
+        out.append({"name": "owner_ask_blocks_proof", "owner": "ethan",
+                    "est_hours": round(24.0 * len(blocked_by_owner), 1), "numbers": {"asks": blocked_by_owner}})
+    if sessions is not None:
+        lanes = [s for s in sessions if (s.get("name") or "").startswith(pre)]
+        n += len(lanes)
+        idle = [s["name"] for s in lanes if s.get("status") == "idle"]
+        a2_on = "A2" not in [x.strip() for x in (a.rules_off or "").split(",")]
+        out.append({"name": "idle_lanes_with_ready_work", "owner": "harness" if a2_on else "orchestrator",
+                    "est_hours": round(min(len(idle), len(ready)) * 1.0, 1),
+                    "numbers": {"idle": idle, "ready_proof_on_hub": len(ready), "a2_pool_on": a2_on}})
+        waiting = [s["name"] for s in lanes if s.get("status") == "waiting"
+                   and (s.get("waiting_reason") or s.get("status_reason") or "") != "owner"]
+        nocard = [s["name"] for s in lanes if (s.get("runtime_board") or {}).get("violation")]
+        out.append({"name": "lanes_blocked_or_cardless", "owner": "orchestrator",
+                    "est_hours": round(len(waiting) * 1.0 + len(nocard) * 0.5, 1),
+                    "numbers": {"waiting_not_on_owner": waiting, "active_no_valid_card": nocard}})
+    if land is not None:
+        p95 = land.get("wait_p95_min") or 0
+        out.append({"name": "land_wait", "owner": "harness", "est_hours": round(p95 / 60 if p95 >= 30 else 0, 1),
+                    "numbers": {"wait_p95_min": round(p95, 1), "items_24h": land.get("n_considered")}})
+    if prod is not None:
+        sha = prod.get("deploy_sha") or ""
+        ps = state.setdefault("_prod", {})
+        if ps.get("sha") != sha:
+            ps.update({"sha": sha, "since": now})
+        stale_h = (now - ps["since"]) / 3600
+        out.append({"name": "deploy_stalled", "owner": "ops-deputy",
+                    "est_hours": round(stale_h if stale_h >= a.prod_stale_h else 0, 1),
+                    "numbers": {"deploy_sha": sha[:12], "hours_on_this_sha": round(stale_h, 1)}})
+    out.sort(key=lambda c: -c["est_hours"])
+    return out, n, unmeasured
+
+
+def orchestrator_ask(a, now, st, key, text):
+    """Orchestrator-owned: one line for amux-helper's hourly batched message.
+    Never messages the orchestrator from here."""
+    if now - st.get("ask_" + key, 0) < 3600:
+        return "deduped: queued for the orchestrator within the hour"
+    if a.dry_run:
+        return "would queue for the orchestrator"
+    os.makedirs(os.path.dirname(a.orchestrator_asks), exist_ok=True)
+    with open(a.orchestrator_asks, "a") as f:
+        f.write(time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(now)) + " " + text + "\n")
+    st["ask_" + key] = now
+    return "queued for the orchestrator"
+
+
+def act(top, a, now, state):
+    """Recover or route the top constraint, deduped; returns what was done."""
+    st = state.setdefault("_constraints", {})
+    name, nums = top["name"], top["numbers"]
+    if name != "proof_stalled":
+        st["proof_bad_runs"] = 0
+    if top["est_hours"] <= 0:
+        return "none: no constraint costs measurable finish-date hours"
+
+    def alert(msg, why):
+        if a.dry_run:
+            return "would alert ethan"
+        r = subprocess.run(["amux", "alert", msg, why], capture_output=True, text=True)
+        return "alerted ethan" if r.returncode == 0 else "alert failed: " + (r.stderr or r.stdout).strip()[:120]
+    if name == "proof_stalled":
+        # The tripwire's rule (SCHED-620, folded in here): three consecutive
+        # stalled runs, then Ethan, at most once a day while it lasts.
+        bad = st.get("proof_bad_runs", 0) + 1
+        st["proof_bad_runs"] = bad
+        line = (f"GS-12 proof: {nums['proof_verified']}/{nums['proof_total']} verified, {nums['verified_24h']} in 24 h "
+                f"(need {nums['need_per_day']:g}/day), {nums['active_on_lanes']} proof cards active on lanes "
+                f"(need {nums['need_active']}), {nums['ready_on_hub']} ready on the orchestrator board")
+        done = []
+        if bad >= 3 and now - st.get("proof_alert", 0) >= 86400:
+            done.append(alert(line + f", stalled {bad} hourly runs.", "GS-12 proof stalled 3h+ (bottleneck detector)"))
+            if not a.dry_run:
+                st["proof_alert"] = now
+        done.append(orchestrator_ask(a, now, st, "proof", line + ": put lanes on the ready proof cards first."))
+        return "; ".join(done)
+    if name == "owner_ask_blocks_proof":
+        if now - st.get("owner_alert", 0) < 86400:
+            return "deduped: Ethan alerted within 24 h"
+        ids = ", ".join(f"{x['id']} ({x['age_h']} h)" for x in nums["asks"][:6])
+        r = alert(f"GS-12 proof cards wait on your answers: {ids}.", "owner asks block GS-12 proof (bottleneck detector)")
+        if not a.dry_run:
+            st["owner_alert"] = now
+        return r
+    if name == "deploy_stalled":
+        if now - st.get("deploy_route", 0) < 6 * 3600:
+            return "deduped: ops deputy messaged within 6 h"
+        if a.dry_run:
+            return "would message " + a.ops_lane
+        msg = (f"Ask (amux bottleneck detector): production has been on {nums['deploy_sha']} for "
+               f"{nums['hours_on_this_sha']} h, the top GS-12 constraint this hour. What blocks the next promote?")
+        r = subprocess.run(["amux", "send", a.ops_lane, "--stdin"], input=msg, capture_output=True, text=True)
+        if r.returncode == 0:
+            st["deploy_route"] = now
+        return ("messaged " if r.returncode == 0 else "message failed: ") + a.ops_lane
+    if name == "idle_lanes_with_ready_work" and nums.get("a2_pool_on"):
+        return "none extra: A2 pool dispatch hands idle lanes ready work"
+    if name == "lanes_blocked_or_cardless" and nums.get("waiting_not_on_owner") and not nums.get("active_no_valid_card"):
+        return "none extra: prompt_block alerts the lane's hub after 10 min"
+    if top["owner"] == "harness":
+        return "logged for amux-helper (harness-owned)"
+    return orchestrator_ask(a, now, st, name, f"{name}: {json.dumps(nums)[:400]}")
+
+
+def run_constraints(a, now):
+    try:
+        state = json.load(open(STATE))
+    except Exception:
+        state = {}
+    if not a.rules_off:
+        try:
+            for line in open(os.path.join(HOME, ".amux/env/gs12-platform.env")):
+                if line.startswith("AMUX_CONTRACT_RULES_OFF="):
+                    a.rules_off = line.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
+    ranked, ncons, unmeas = constraints(a, now, state)
+    top = ranked[0] if ranked else None
+    action = act(top, a, now, state) if top else "none: nothing measured"
+    rec = {"ts": int(now), "verdict": "top_constraint" if top and top["est_hours"] > 0 else "no_constraint",
+           "name": top["name"] if top else None, "est_hours": top["est_hours"] if top else 0,
+           "numbers": top["numbers"] if top else {}, "action": action,
+           "ranked": [{"name": c["name"], "est_hours": c["est_hours"]} for c in ranked],
+           "measured": bool(ranked), "n_considered": ncons}
+    if unmeas:
+        rec["why_unmeasured"] = "could not read: " + ", ".join(unmeas)
+    with open(OUT, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    print(json.dumps(rec))
+    json.dump(state, open(STATE, "w"))
+    return rec
+
+
 def holds_by_repo(since):
     """{repo_key: [minutes per completed hold]}, {repo_key: landings} since `since`."""
     holds, landed, open_ = {}, {}, {}
@@ -336,9 +569,28 @@ def main():
     ap.add_argument("--drive-file", help=argparse.SUPPRESS)
     ap.add_argument("--needsyou-file", help=argparse.SUPPRESS)
     ap.add_argument("--throughput-only", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--constraints", action="store_true", help="rank the top GS-12 constraint and act on it (AH-398)")
+    ap.add_argument("--constraints-only", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--hub", default="mixpeek-override")
+    ap.add_argument("--owner-name", default="ethan")
+    ap.add_argument("--ops-lane", default="gs12-ops-deputy")
+    ap.add_argument("--proof-per-day", type=float, default=7)
+    ap.add_argument("--proof-min-active", type=int, default=10)
+    ap.add_argument("--prod-stale-h", type=float, default=6)
+    ap.add_argument("--prod-url", default="https://api.mixpeek.com/version")
+    ap.add_argument("--rules-off", default="", help="gs12-platform AMUX_CONTRACT_RULES_OFF (read from its env file when empty)")
+    ap.add_argument("--orchestrator-asks", default=os.path.join(HOME, ".amux/state/orchestrator-asks.txt"))
+    ap.add_argument("--board-file", help=argparse.SUPPRESS)
+    ap.add_argument("--sessions-file", help=argparse.SUPPRESS)
+    ap.add_argument("--land-file", help=argparse.SUPPRESS)
+    ap.add_argument("--prod-file", help=argparse.SUPPRESS)
     a = ap.parse_args()
 
     now = time.time()
+    if a.constraints or a.constraints_only:
+        run_constraints(a, now)
+        if a.constraints_only:
+            return 0
     if a.deploy_repo or a.lane_prefix or a.owner:
         trec, tlevers = throughput(a, now)
         with open(OUT, "a") as f:
