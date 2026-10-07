@@ -698,8 +698,12 @@ pub const LOAD_HIGH_PER_CPU: f64 = 1.5;
 pub const LOAD_LOW_PER_CPU: f64 = 0.7;
 const CHECKS_MAX_DEFAULT: usize = 4;
 const CHECKS_MID: usize = 3;
-const REVIEWS_MAX_DEFAULT: usize = 3;
-const REVIEWS_MID: usize = 2;
+/// Reviews are a model call and a checkout, not a build: they barely load the
+/// host, so they are not held to the CPU bands. Ethan, 2026-10-07: raise review
+/// concurrency to clear the 82-card review backlog (the bottleneck detector's
+/// top constraint). Only an extreme load (REVIEW_HOLD_PER_CPU) halves them.
+const REVIEWS_MAX_DEFAULT: usize = 5;
+const REVIEW_HOLD_PER_CPU: f64 = 3.0;
 
 /// The cap for one kind of work at a given load per CPU. Pure, for tests.
 /// An unreadable load (None) gets the middle band, never the maximum.
@@ -709,6 +713,15 @@ pub fn adaptive_cap(max: usize, mid: usize, load_per_cpu: Option<f64>) -> usize 
         Some(l) if l >= LOAD_HIGH_PER_CPU => 1,
         Some(l) if l <= LOAD_LOW_PER_CPU => max,
         _ => mid.clamp(1, max),
+    }
+}
+
+/// The review cap at a given load per CPU. Pure, for tests.
+pub fn review_cap(max: usize, load_per_cpu: Option<f64>) -> usize {
+    let max = max.max(1);
+    match load_per_cpu {
+        Some(l) if l >= REVIEW_HOLD_PER_CPU => max.div_ceil(2),
+        _ => max,
     }
 }
 
@@ -742,10 +755,13 @@ fn current_cap(work: Work) -> usize {
         [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
     let (max, mid, slot, name) = match work {
         Work::Check => (configured_max("AMUX_CONTRACT_VERIFY_CONCURRENCY", CHECKS_MAX_DEFAULT), CHECKS_MID, 0, "check"),
-        Work::Review => (configured_max("AMUX_CONTRACT_REVIEW_CONCURRENCY", REVIEWS_MAX_DEFAULT), REVIEWS_MID, 1, "review"),
+        Work::Review => (configured_max("AMUX_CONTRACT_REVIEW_CONCURRENCY", REVIEWS_MAX_DEFAULT), 0, 1, "review"),
     };
     let load = load_per_cpu();
-    let cap = adaptive_cap(max, mid, load);
+    let cap = match work {
+        Work::Check => adaptive_cap(max, mid, load),
+        Work::Review => review_cap(max, load),
+    };
     let old = LAST[slot].swap(cap, std::sync::atomic::Ordering::Relaxed);
     if old != cap {
         tracing::info!(work = name, old, new = cap, load_per_cpu = ?load.map(|l| (l * 100.0).round() / 100.0),
@@ -1113,7 +1129,7 @@ pub async fn watch_deploys(state: &AppState) -> (usize, usize) {
 
 const REVIEW_ROUNDS: i64 = 3;
 const REVIEW_TIMEOUT_S: u64 = 1200;
-const REVIEWS_PER_PASS: usize = 2;
+const REVIEWS_PER_PASS: usize = 5;
 /// A review still `running` this long after it started died with the server.
 const REVIEW_STALE_S: f64 = 2.0 * 3600.0;
 
@@ -1886,6 +1902,9 @@ mod tests {
         assert_eq!(adaptive_cap(4, 3, None), 3, "an unreadable load is never read as quiet");
         assert_eq!(adaptive_cap(2, 3, Some(1.0)), 2, "the default never exceeds the configured maximum");
         assert_eq!(adaptive_cap(0, 3, Some(0.1)), 1, "never zero");
+        assert_eq!(review_cap(5, Some(1.2)), 5, "reviews are not held to the CPU bands");
+        assert_eq!(review_cap(5, None), 5);
+        assert_eq!(review_cap(5, Some(REVIEW_HOLD_PER_CPU)), 3, "only an extreme load halves them");
     }
 
     #[test]
