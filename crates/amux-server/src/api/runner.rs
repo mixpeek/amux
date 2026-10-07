@@ -621,8 +621,10 @@ fn take(conn: &Connection, card: &str, status: String, lane: &str, line: String)
         }
         Err(e) => {
             conn.execute_batch("ROLLBACK TO a2_take; RELEASE a2_take")?;
-            tracing::info!(card, lane, error = %e, measured = true, n_considered = 1, verdict = "a2_pool_move_refused",
-                "the board refused an A2 move; the card stays where it is and the pull tries the next one");
+            if first_this_window(&format!("refused:{card}")) {
+                tracing::info!(card, lane, error = %e, measured = true, n_considered = 1, verdict = "a2_pool_move_refused",
+                    "the board refused an A2 move; the card stays where it is and the pull tries the next one");
+            }
             Ok(false)
         }
     }
@@ -689,14 +691,18 @@ pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Optio
                     let cap = group_max();
                     match take_group(conn, hub, &card, status, lane, &line, cap)? {
                         GroupTake::Moved(size) => return Ok(Claim::UnblocksGroup(card, n, size)),
-                        GroupTake::TooLarge(size) => {
+                        // Once per card per 10 minutes: every idle lane's
+                        // pass hits the same group, which logged 2058 lines
+                        // an hour on GS-12 (2026-10-07).
+                        GroupTake::TooLarge(size) if first_this_window(&format!("toolarge:{card}")) => {
                             tracing::info!(card, lane, hub, size, cap, measured = true, n_considered = size, verdict = "a2_pool_group_too_large",
                                 "a blocking card's dependency group is larger than AMUX_A2_GROUP_MAX; it stays on the hub");
                         }
-                        GroupTake::Refused(why) => {
+                        GroupTake::Refused(why) if first_this_window(&format!("refused:{card}")) => {
                             tracing::info!(card, lane, hub, error = %why, measured = true, n_considered = 1, verdict = "a2_pool_move_refused",
                                 "a dependency group could not move as one unit; it stays on the hub and the pull tries the next card");
                         }
+                        GroupTake::TooLarge(_) | GroupTake::Refused(_) => {}
                     }
                     continue;
                 }
@@ -1134,6 +1140,16 @@ mod tests {
     /// MO-4071/MO-4086/MO-4438: a proof card parked with a fresh trigger, or a
     /// blocker, stays in backlog; a stale trigger (past SOURCE_REF_STALE_S)
     /// releases it, as the backlog drain does.
+    #[test]
+    fn a2_logs_a_repeat_once_per_card_per_window() {
+        // Keys are per card: a second pass over the same too-large group
+        // stays quiet, a different card still logs.
+        let k = format!("toolarge:T-{}", std::process::id());
+        assert!(first_this_window(&k));
+        assert!(!first_this_window(&k));
+        assert!(first_this_window(&format!("{k}-other")));
+    }
+
     #[test]
     fn a2_leaves_a_card_parked_on_a_fresh_trigger_in_backlog() {
         let home = tempfile::tempdir().unwrap();
