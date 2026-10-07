@@ -7467,6 +7467,13 @@ fn blocker_recoveries_with_policy(
 }
 
 async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTrace {
+    // First, before any skip: an isolated lane is also opted out of pickup
+    // (amux-helper: CC_AUTO_PICKUP=0), and the handoff placed at the isolated
+    // skip below was never reached for it (AMUX-5668, measured on the live
+    // /api/debug/board-drive trace).
+    if fleet.is_isolated(lane) {
+        hand_off_isolated(state, fleet, lane).await;
+    }
     if crate::api::session_verbs::parse_env(lane)
         .get("CC_PROJECT")
         .is_some()
@@ -7542,7 +7549,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         tracing::info!(target: "amux::board_drive", session = lane, measured = true, n_considered = 1,
             verdict = "isolated_not_claimed",
             "board_drive: isolated lane skipped before any claim; delivery would refuse amux automation");
-        hand_off_isolated(state, fleet, lane).await;
         return LaneTrace::skip(
             lane,
             "isolated",
@@ -11038,6 +11044,7 @@ mod tests {
         done_cap: std::sync::atomic::AtomicUsize,
         enabled: std::sync::atomic::AtomicBool,
         isolated: std::sync::atomic::AtomicBool,
+        extra_lanes: std::sync::Mutex<Vec<String>>,
         starts: std::sync::atomic::AtomicUsize,
         start_error: std::sync::Mutex<Option<String>>,
         delivery_error: std::sync::Mutex<Option<String>>,
@@ -11057,6 +11064,7 @@ mod tests {
                 done_cap: std::sync::atomic::AtomicUsize::new(0),
                 enabled: std::sync::atomic::AtomicBool::new(true),
                 isolated: std::sync::atomic::AtomicBool::new(false),
+                extra_lanes: std::sync::Mutex::new(Vec::new()),
                 starts: std::sync::atomic::AtomicUsize::new(0),
                 start_error: std::sync::Mutex::new(None),
                 delivery_error: std::sync::Mutex::new(None),
@@ -11067,7 +11075,9 @@ mod tests {
     }
     impl Fleet for BoundaryFleet {
         fn lanes(&self) -> Vec<String> {
-            vec!["lane".into()]
+            let mut v = vec!["lane".to_string()];
+            v.extend(self.extra_lanes.lock().unwrap().iter().cloned());
+            v
         }
         fn auto_pickup_enabled(&self, _: &str) -> bool {
             self.enabled.load(std::sync::atomic::Ordering::SeqCst)
@@ -11078,8 +11088,10 @@ mod tests {
         fn tags(&self, _: &str) -> Vec<String> {
             vec![]
         }
-        fn is_isolated(&self, _: &str) -> bool {
+        fn is_isolated(&self, lane: &str) -> bool {
+            // Extra lanes are the handoff targets a test adds: never isolated.
             self.isolated.load(std::sync::atomic::Ordering::SeqCst)
+                && !self.extra_lanes.lock().unwrap().iter().any(|l| l == lane)
         }
         async fn is_running(&self, _: &str) -> bool {
             self.running.load(std::sync::atomic::Ordering::SeqCst)
@@ -11479,6 +11491,33 @@ mod tests {
             assert_eq!(session, want, "{id}");
             assert_eq!(log.contains("handed off from isolated lane lane to worker"), want == "worker", "{id}: {log}");
         }
+    }
+
+    /// Through drive_lane: an isolated lane that is ALSO opted out of pickup
+    /// (amux-helper's shape, CC_AUTO_PICKUP=0) still hands its cards off. The
+    /// first version ran the handoff at the isolated skip, which an opted-out
+    /// lane never reaches.
+    #[tokio::test]
+    async fn an_isolated_lane_opted_out_of_pickup_still_hands_its_cards_off() {
+        let (_dir, state, store) = drive_state();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/lane.env"), "AMUX_ISOLATED_HANDOFF=worker\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        drive_card(&store, "OLD", "todo", "agent", "code");
+        let old = now_f64() - 3.0 * 3600.0;
+        store.write(move |c| {
+            c.execute("UPDATE issues SET updated=?1 WHERE id='OLD'", [old])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let fleet = BoundaryFleet::default();
+        fleet.isolated.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet.extra_lanes.lock().unwrap().push("worker".into());
+        drive_lane(&state, &fleet, "lane").await;
+        let session: String = store.read().unwrap()
+            .query_row("SELECT session FROM issues WHERE id='OLD'", [], |r| r.get(0)).unwrap();
+        assert_eq!(session, "worker");
     }
 
     #[test]
