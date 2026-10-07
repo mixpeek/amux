@@ -279,7 +279,8 @@ check "and it releases finished builds' cache older than 6 h, not only dangling 
 # 2026-10-06: the gs12 VM wrote build cache at ~78G/h, so 6h-old cache was
 # almost none of it. Under the urgent floor the window is 2h.
 echo "12e. an image's age is its last TAG, not its creation; in-use images are kept (disk RCA 20261007-081932)"
-NOW=$(date -u +%s); iso(){ date -u -r "$1" +%Y-%m-%dT%H:%M:%S.123456789Z; }
+# Python, not date: BSD date -r takes an epoch, GNU date -r a file (CI is Linux).
+NOW=$(date -u +%s); iso(){ python3 -c 'import sys,time;print(time.strftime("%Y-%m-%dT%H:%M:%S.123456789Z",time.gmtime(int(sys.argv[1]))))' "$1"; }
 cat > "$FIX/images.json" <<JSON
 [{"Id":"sha256:fresh","Created":"$(iso $((NOW-864000)))","Metadata":{"LastTagTime":"$(iso $((NOW-60)))"},"Size":9000000000},
  {"Id":"sha256:stale","Created":"$(iso $((NOW-864000)))","Metadata":{"LastTagTime":"$(iso $((NOW-86400)))"},"Size":2000000000},
