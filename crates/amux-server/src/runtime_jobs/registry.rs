@@ -945,6 +945,10 @@ struct Job {
     interval: Option<Duration>,
     spawned_at: f64,
     ticks: u64,
+    failures: u64,
+    consecutive_failures: u64,
+    recoveries: u64,
+    last_failure_at: Option<f64>,
     last_start: Option<f64>,
     last_end: Option<f64>,
     last_ms: Option<f64>,
@@ -1034,6 +1038,10 @@ pub fn register(
     register_inner(id, kind, interval, abort, None);
 }
 
+pub(crate) fn set_abort(id: &str, abort: tokio::task::AbortHandle) {
+    if let Ok(mut m) = reg().lock() { if let Some(j) = m.get_mut(id) { j.abort = Some(abort); } }
+}
+
 /// Register a job whose tick loop was deliberately NOT spawned because fleet
 /// isolation is on (AF-69). Called by [`super::spawn_periodic_every`] when a
 /// global switch (`AMUX_ISOLATED`/`AMUX_NO_FLEET`) or the per-job
@@ -1064,6 +1072,10 @@ fn register_inner(
                 interval,
                 spawned_at: unix_now(),
                 ticks: 0,
+                failures: 0,
+                consecutive_failures: 0,
+                recoveries: 0,
+                last_failure_at: None,
                 last_start: None,
                 last_end: None,
                 last_ms: None,
@@ -1089,6 +1101,7 @@ pub fn tick_end(id: &str) {
         if let Some(j) = m.get_mut(id) {
             let now = unix_now();
             j.ticks += 1;
+            if j.consecutive_failures > 0 { j.recoveries += 1; j.consecutive_failures = 0; }
             j.last_ms = j.last_start.map(|s| (now - s) * 1000.0);
             j.last_end = Some(now);
         }
@@ -1104,6 +1117,7 @@ pub fn tick(id: &str) {
         if let Some(j) = m.get_mut(id) {
             let now = unix_now();
             j.ticks += 1;
+            if j.consecutive_failures > 0 { j.recoveries += 1; j.consecutive_failures = 0; }
             j.last_start = Some(now);
             j.last_end = Some(now);
         }
@@ -1119,6 +1133,10 @@ pub struct Snapshot {
     pub interval_s: Option<f64>,
     pub spawned_at: f64,
     pub ticks: u64,
+    pub failures: u64,
+    pub consecutive_failures: u64,
+    pub recoveries: u64,
+    pub last_failure_at: Option<f64>,
     pub last_tick_at: Option<f64>,
     pub last_tick_ms: Option<f64>,
     pub in_flight_since: Option<f64>,
@@ -1141,6 +1159,10 @@ pub fn snapshot() -> Vec<Snapshot> {
             interval_s: j.interval.map(|d| d.as_secs_f64()),
             spawned_at: j.spawned_at,
             ticks: j.ticks,
+            failures: j.failures,
+            consecutive_failures: j.consecutive_failures,
+            recoveries: j.recoveries,
+            last_failure_at: j.last_failure_at,
             last_tick_at: j.last_end,
             last_tick_ms: j.last_ms,
             // In flight iff a start is recorded that no end has caught up to.
@@ -1165,6 +1187,7 @@ pub fn tick_every(id: &str, interval: Duration) {
             let now = unix_now();
             j.interval = Some(interval);
             j.ticks += 1;
+            if j.consecutive_failures > 0 { j.recoveries += 1; j.consecutive_failures = 0; }
             j.last_start = Some(now);
             j.last_end = Some(now);
         }
@@ -1173,13 +1196,14 @@ pub fn tick_every(id: &str, interval: Duration) {
 
 /// Spawn a long-lived internal loop AND register it in one call. The point is
 /// that there is no way to do the first without the second.
-pub fn spawn_loop<F>(
+pub fn spawn_loop<F, Fut>(
     id: &'static str,
     interval: Option<Duration>,
-    fut: F,
+    mut factory: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: std::future::Future<Output = ()> + Send + 'static,
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     if let Some(reason) = super::fleet_isolation_reason(id) {
         register_disabled(id, "loop", interval, reason.clone());
@@ -1190,9 +1214,47 @@ where
         );
         return tokio::spawn(async {});
     }
-    let h = super::executor::spawn(super::poll_watch::watch(id, fut));
-    register(id, "loop", interval, Some(h.abort_handle()));
+    register(id, "loop", interval, None);
+    let h = super::executor::spawn(async move {
+        let mut failures = 0u64;
+        loop {
+            if guard_job(id, async { super::poll_watch::watch(id, factory()).await }).await {
+                // Normal completion can mean an explicit stop (the tunnel's
+                // generation fence). Never resurrect an owner-stopped loop.
+                break;
+            }
+            failures = failures.saturating_add(1);
+            tokio::time::sleep(recovery_delay(interval.unwrap_or(Duration::from_secs(1)), failures)).await;
+        }
+    });
+    set_abort(id, h.abort_handle());
     h
+}
+
+/// Catch a failed poll without losing the consumer or its cleanup. Each
+/// consumer re-reads durable claims on its next pass; no side effect is replayed
+/// just because its future panicked. Do not include panic payloads in logs.
+pub(crate) async fn guard_job(id: &str, fut: impl std::future::Future<Output = ()>) -> bool {
+    use futures::FutureExt;
+    if std::panic::AssertUnwindSafe(fut).catch_unwind().await.is_ok() { return true; }
+    let mut failures = 1;
+    if let Ok(mut m) = reg().lock() {
+        if let Some(j) = m.get_mut(id) {
+            j.failures = j.failures.saturating_add(1);
+            j.consecutive_failures = j.consecutive_failures.saturating_add(1);
+            j.last_failure_at = Some(unix_now());
+            j.last_start = None;
+            failures = j.consecutive_failures;
+        }
+    }
+    tracing::error!(job = id, failures, measured = true, n_considered = 1,
+        verdict = "runtime_job_panic_recovering", "job panicked; durable state retained and recovery scheduled with bounded backoff");
+    false
+}
+
+pub(crate) fn recovery_delay(interval: Duration, failures: u64) -> Duration {
+    let base = interval.clamp(Duration::from_millis(10), Duration::from_secs(1));
+    (base * (1u32 << failures.saturating_sub(1).min(15))).min(Duration::from_secs(300))
 }
 
 /// Register a loop somebody else already spawned (its `spawn()` owns the
@@ -1368,8 +1430,9 @@ pub fn health_issues(now: f64) -> Vec<HealthIssue> {
                 .map(|x| x.ticks > 0 || x.in_flight_since.is_some())
                 .unwrap_or(false),
         };
-        let status = classify_observed(&f, l.and_then(|x| x.last_tick_ms), now);
-        if !matches!(status, "stalled" | "dead" | "hung" | "not_spawned" | "slow") {
+        let status = if !f.disabled && l.is_some_and(|x| x.consecutive_failures > 0) { "recovering" }
+            else { classify_observed(&f, l.and_then(|x| x.last_tick_ms), now) };
+        if !matches!(status, "stalled" | "dead" | "hung" | "not_spawned" | "slow" | "recovering") {
             continue;
         }
         out.push(HealthIssue {
@@ -1681,8 +1744,9 @@ pub async fn system_jobs(
                 .map(|x| x.ticks > 0 || x.in_flight_since.is_some())
                 .unwrap_or(false),
         };
-        let status = classify_observed(&f, l.and_then(|x| x.last_tick_ms), now);
-        if matches!(status, "stalled" | "dead" | "hung" | "not_spawned" | "slow") {
+        let status = if !f.disabled && l.is_some_and(|x| x.consecutive_failures > 0) { "recovering" }
+            else { classify_observed(&f, l.and_then(|x| x.last_tick_ms), now) };
+        if matches!(status, "stalled" | "dead" | "hung" | "not_spawned" | "slow" | "recovering") {
             unhealthy += 1;
         }
         jobs.push(json!({
@@ -1705,6 +1769,10 @@ pub async fn system_jobs(
             "spawned_at": f.spawned_at,
             "uptime_s": f.spawned_at.map(|s| now - s),
             "ticks": l.map(|x| x.ticks).unwrap_or(0),
+            "failures": l.map(|x| x.failures).unwrap_or(0),
+            "consecutive_failures": l.map(|x| x.consecutive_failures).unwrap_or(0),
+            "recoveries": l.map(|x| x.recoveries).unwrap_or(0),
+            "last_failure_at": l.and_then(|x| x.last_failure_at),
             "last_tick_at": f.last_tick_at,
             "last_tick_age_s": f.last_tick_at.map(|t| now - t),
             "last_tick_ms": l.and_then(|x| x.last_tick_ms),
@@ -1755,6 +1823,28 @@ pub fn routes() -> axum::Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn a_long_lived_consumer_recovers_a_panic_but_honors_normal_completion_and_abort() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let job = super::spawn_loop("supervision-loop-test", Some(std::time::Duration::from_millis(10)), move || {
+            let counted = counted.clone();
+            async move {
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 { panic!("injected consumer failure"); }
+                super::tick("supervision-loop-test");
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), job).await.unwrap().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "normal completion is not endlessly restarted");
+        let row = super::snapshot().into_iter().find(|r| r.id == "supervision-loop-test").unwrap();
+        assert_eq!((row.failures, row.consecutive_failures, row.recoveries), (1, 0, 1));
+        let aborted = super::spawn_loop("supervision-abort-test", None, || async { std::future::pending::<()>().await; });
+        aborted.abort();
+        assert!(aborted.await.unwrap_err().is_cancelled());
+        assert_eq!(super::recovery_delay(std::time::Duration::from_secs(60), 1000), std::time::Duration::from_secs(300));
+    }
     use super::*;
 
     /// AMUX-3817: `/api/system-jobs` printed AMUX_TUNNEL_TOKEN in plaintext.
@@ -2007,8 +2097,9 @@ mod tests {
 
         let spawned_count = Arc::new(AtomicUsize::new(0));
         let count = spawned_count.clone();
-        let spawned = spawn_loop(SPAWNED, Some(Duration::from_millis(20)), async move {
-            count.fetch_add(1, Ordering::SeqCst);
+        let spawned = spawn_loop(SPAWNED, Some(Duration::from_millis(20)), move || {
+            let count = count.clone();
+            async move { count.fetch_add(1, Ordering::SeqCst); }
         });
 
         let adopted_count = Arc::new(AtomicUsize::new(0));

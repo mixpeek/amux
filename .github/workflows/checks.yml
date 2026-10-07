@@ -375,7 +375,9 @@ jobs:
           ./scripts/test-mac-cleanup-user-tmp.sh
           ./scripts/test-mac-cleanup-lane-tmp.sh
       - name: orch-pace projects the proof rate to its checkpoint
-        run: ./scripts/test-orch-pace-proof.sh
+        run: |
+          ./scripts/test-orch-pace-proof.sh
+          python3 scripts/test-orch-pace-scope.py
       - name: the idle cargo-target reaper keeps anything it cannot prove idle and unopened (DESKT-51)
         run: |
           set -uo pipefail

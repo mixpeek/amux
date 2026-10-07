@@ -427,6 +427,10 @@ mod tests {
             interval_s: Some(30.0), // stall_after_s(30) = 90
             spawned_at,
             ticks,
+            failures: 0,
+            consecutive_failures: 0,
+            recoveries: 0,
+            last_failure_at: None,
             last_tick_at,
             last_tick_ms: None,
             in_flight_since: None,

@@ -708,7 +708,9 @@ async fn metrics(State(state): State<AppState>) -> Response {
             "quarantined": count(&conn, "SELECT COUNT(*) FROM issues WHERE deleted IS NULL AND status = 'quarantined'"),
         },
         "leases": {
-            "live": count(&conn, "SELECT COUNT(*) FROM _amux_leases WHERE expires_at > datetime('now')"),
+            // Lease expiry is RFC3339, while datetime('now') uses a space.
+            // Compare instants: lexical comparison labels expired leases live.
+            "live": count(&conn, "SELECT COUNT(*) FROM _amux_leases WHERE julianday(expires_at) > julianday('now')"),
             "total": count(&conn, "SELECT COUNT(*) FROM _amux_leases"),
         },
         "turns_recorded": count(&conn, "SELECT COUNT(*) FROM _amux_turns"),

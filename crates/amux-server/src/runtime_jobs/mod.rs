@@ -259,6 +259,7 @@ where
     // recorded by the SPAWNER: a job cannot forget to report, and cannot
     // report a tick it did not run. See registry's docs for the three loops
     // that were dead for hours with nothing visible anywhere.
+    registry::register(&name, "periodic", Some(interval), None);
     let job_id = name.clone();
     let handle = executor::spawn(async move {
         let mut tick = tokio::time::interval(interval);
@@ -291,16 +292,15 @@ where
                 }
             }
             registry::tick_start(&job_id);
-            poll_watch::watch(&job_id, f()).await;
-            registry::tick_end(&job_id);
+            if registry::guard_job(&job_id, async { poll_watch::watch(&job_id, f()).await }).await {
+                registry::tick_end(&job_id);
+            } else {
+                let failures = registry::snapshot().iter().find(|j| j.id == job_id).map(|j| j.consecutive_failures).unwrap_or(1);
+                tokio::time::sleep(registry::recovery_delay(interval, failures)).await;
+            }
         }
     });
-    registry::register(
-        &name,
-        "periodic",
-        Some(interval),
-        Some(handle.abort_handle()),
-    );
+    registry::set_abort(&name, handle.abort_handle());
     PeriodicTask {
         name,
         interval,
@@ -311,6 +311,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn periodic_consumer_recovers_constructor_and_poll_panics_without_losing_its_registry() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let job = spawn_periodic_every("supervision-periodic-test", Duration::from_millis(20), move || {
+            let n = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_ne!(n, 0, "injected constructor failure");
+            async move { assert_ne!(n, 1, "injected poll failure"); }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if registry::snapshot().iter().any(|r| r.id == "supervision-periodic-test" && r.recoveries == 1) { break; }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        let row = registry::snapshot().into_iter().find(|r| r.id == "supervision-periodic-test").unwrap();
+        assert_eq!((row.failures, row.consecutive_failures, row.recoveries), (2, 0, 1));
+        assert!(!job.is_finished());
+        job.abort();
+    }
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 

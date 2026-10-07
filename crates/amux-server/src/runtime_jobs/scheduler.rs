@@ -1728,8 +1728,8 @@ pub fn finish_manual_shell_run(
 ///
 /// Guarded on `status='running'` so it cannot overwrite a row a reconciler has
 /// already failed, and cannot resurrect one another path finished. Returns the
-/// rows updated: 0 means the provisional row is gone and the caller must insert,
-/// rather than drop the outcome.
+/// rows updated: 0 means the row disappeared OR was already finalized. The
+/// caller inserts only when it disappeared; reconciliation is never duplicated.
 pub fn finish_cron_run(
     conn: &Connection,
     run_id: i64,
@@ -1850,7 +1850,8 @@ impl LiveDeliverer {
                 let fut = async {
                     use tokio::io::AsyncReadExt;
                     let mut command = tokio::process::Command::new("/bin/bash");
-                    command.arg("-c").arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
+                    // A check piped into tail must report the check's failure.
+                    command.args(["-o", "pipefail", "-c"]).arg(cmd).env_remove("TMUX").env_remove("TMUX_PANE");
                     if owner.is_empty() {
                         command.env_remove("AMUX_SESSION");
                     } else {
@@ -1883,6 +1884,9 @@ impl LiveDeliverer {
                                 Ok(0) | Err(_) => break,
                                 Ok(n) => {
                                     all.extend_from_slice(&buf[..n]);
+                                    if all.len() > SHELL_COMBINED_KEEP {
+                                        all.drain(..all.len() - SHELL_COMBINED_KEEP);
+                                    }
                                     if let Ok(mut l) = log.lock() { l.write(&buf[..n]); }
                                     if let Ok(mut c) = combined.lock() {
                                         c.0.extend_from_slice(&buf[..n]);
@@ -2421,7 +2425,11 @@ async fn fire_one(
                         ScheduleExpr::Interval { every } => prev - *every,
                         _ => prev - ChronoDuration::minutes(1),
                     };
-                    runs_due(e, anchor, now, policy)
+                    // Replaying an identical model prompt ten times buys ten
+                    // context reads, not ten different occurrences. Shell
+                    // backfills retain the explicitly selected catch-up policy.
+                    let effective = if sched.str_field("kind") == "shell" { policy } else { MissedRunPolicy::Skip };
+                    runs_due(e, anchor, now, effective)
                 }
                 None => DueRuns {
                     runs: vec![now],
@@ -2582,6 +2590,11 @@ async fn fire_one(
 
     // ---- RECORD what actually happened ----
     let sid = claim.sched.id().to_string();
+    let retry_once = claim.sched.str_field("sched_type") == "once"
+        && outcomes.iter().all(|o| matches!(o, RunOutcome::Refused { reason } if reason.starts_with("schedule PAUSED: the plan window")));
+    let expected_version = claim.sched.i64_field("version", 0);
+    let expected_command = claim.sched.str_field("command").to_string();
+    let expected_session = claim.sched.str_field("session").to_string();
     let notes = claim.notes;
     let run_ids = claim.run_ids;
     let all_lost = should_warn_undelivered(&outcomes);
@@ -2602,8 +2615,26 @@ async fn fire_one(
                 // never silently drop the outcome. Without this a reconciled row
                 // would leave the real verdict unrecorded, which is the same
                 // silence one layer along.
-                if updated == 0 {
+                let receipt_exists = match run_ids.get(i) {
+                    Some(id) => conn.query_row("SELECT EXISTS(SELECT 1 FROM schedule_runs WHERE id=?1)", [id], |r| r.get::<_, bool>(0))?,
+                    None => false,
+                };
+                if updated == 0 && !receipt_exists {
                     insert_run(conn, &sid, now_ts, outcome, "cron-rs", note.as_deref())?;
+                }
+            }
+            // Definite reserve refusal consumed no input. Preserve a one-off
+            // until capacity returns; never replay queued/unknown delivery or
+            // resurrect a schedule its owner changed while delivery was running.
+            if retry_once {
+                let retry_at = fmt_minute(now + ChronoDuration::minutes(15));
+                let changed = conn.execute(
+                    "UPDATE schedules SET enabled=1, next_run=?1 WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
+                    rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?;
+                if changed > 0 {
+                    insert_audit(conn, &sid, "enabled", "0", "1", "capacity-retry-rs", "")?;
+                    tracing::info!(schedule = %sid, retry_at, measured = true, n_considered = 1,
+                        verdict = "schedule_capacity_deferred", "undelivered one-off retained for capacity recovery");
                 }
             }
             // AF-648: last_run/run_count already advanced in the CLAIM phase
@@ -2839,6 +2870,101 @@ mod shell_output_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn reserve_refusal_preserves_a_one_off_but_never_replays_uncertain_delivery() {
+        for outcome in [RunOutcome::Refused { reason: "schedule PAUSED: the plan window is 99% used".into() },
+            RunOutcome::Queued { queue_id: "q".into(), detail: "queued".into() },
+            RunOutcome::Failed { reason: "delivery unknown".into() },
+            RunOutcome::Refused { reason: "target archived".into() }] {
+            let (store, _dir) = store();
+            store.write(|conn| { insert_schedule(conn, &make_row("ONCE", "lane", None, "2020-01-01T00:00"))?; Ok(WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+            let now = Local::now();
+            let reserve = matches!(&outcome, RunOutcome::Refused {reason} if reason.starts_with("schedule PAUSED"));
+            let stub = StubDeliverer::new(outcome);
+            fire_one(&store, &stub, "ONCE", now, MissedRunPolicy::Skip).await.unwrap();
+            assert_eq!(stub.calls(), 1);
+            let sched = get_schedule(&store.read().unwrap(), "ONCE").unwrap().unwrap();
+            assert_eq!(sched.enabled(), reserve);
+            if reserve {
+                assert_eq!(sched.str_field("next_run"), fmt_minute(now + ChronoDuration::minutes(15)));
+                drop(store);
+                let reopened = std::sync::Arc::new(crate::db::Store::open(&_dir.path().join("sched-test.db")).unwrap());
+                let confirmed = StubDeliverer::confirmed();
+                fire_one(&reopened, &confirmed, "ONCE", now + ChronoDuration::minutes(16), MissedRunPolicy::Skip).await.unwrap();
+                assert_eq!(confirmed.calls(), 1);
+                assert!(!get_schedule(&reopened.read().unwrap(), "ONCE").unwrap().unwrap().enabled());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_late_delivery_cannot_duplicate_reconciled_receipts_or_resurrect_owner_edits() {
+        struct Racing { store: SharedStore, mode: &'static str }
+        #[async_trait::async_trait]
+        impl Deliverer for Racing {
+            async fn deliver(&self, _sched: &DurableSchedule, _source: &str) -> RunOutcome {
+                let mode = self.mode;
+                self.store.write_async(move |conn| {
+                    match mode {
+                        "reconciled" => { fail_orphaned_cron_runs(conn)?; },
+                        "missing" => { conn.execute("DELETE FROM schedule_runs", [])?; },
+                        "owner-edit" => { conn.execute("UPDATE schedules SET version=COALESCE(version,0)+1,command='owner replacement' WHERE id='RACE'", [])?; },
+                        _ => unreachable!(),
+                    }
+                    Ok(WriteOutcome { applied:true, events:vec![] })
+                }).await.unwrap();
+                if mode == "owner-edit" { RunOutcome::Refused { reason:"schedule PAUSED: the plan window is 99% used".into() } }
+                else { RunOutcome::Delivered { submission:"confirmed".into(), detail:"late confirmed delivery".into() } }
+            }
+        }
+        for mode in ["reconciled", "missing", "owner-edit"] {
+            let (store, _dir) = store();
+            store.write(|conn| { insert_schedule(conn, &make_row("RACE", "lane", None, "2020-01-01T00:00"))?; Ok(WriteOutcome { applied:true, events:vec![] }) }).unwrap();
+            fire_one(&store, &Racing { store:store.clone(), mode }, "RACE", Local::now(), MissedRunPolicy::Skip).await.unwrap();
+            let conn = store.read().unwrap();
+            let (count, status): (i64, String) = conn.query_row("SELECT COUNT(*),status FROM schedule_runs WHERE schedule_id='RACE'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(count, 1, "{mode}: one attempt cannot produce two receipts");
+            assert_eq!(status, match mode { "reconciled"=>"error", "missing"=>"delivered", _=>"refused" });
+            assert!(!get_schedule(&conn, "RACE").unwrap().unwrap().enabled(), "owner changes must fence the capacity retry");
+        }
+    }
+
+    #[tokio::test]
+    async fn missed_model_prompts_coalesce_while_shell_backfills_keep_their_policy() {
+        for kind in ["tmux", "shell"] {
+            let (store, _dir) = store();
+            let now = Local::now();
+            let due = fmt_minute(now - ChronoDuration::minutes(60));
+            let mut row = make_row("CATCHUP", "lane", Some("every 10m"), &due);
+            row.raw.insert("kind".into(), Value::from(kind));
+            store.write(move |conn| { insert_schedule(conn, &row)?; Ok(WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+            let stub = StubDeliverer::confirmed();
+            fire_one(&store, &stub, "CATCHUP", now, MissedRunPolicy::CatchUp).await.unwrap();
+            assert_eq!(stub.calls(), if kind == "shell" { 7 } else { 1 });
+            let conn = store.read().unwrap();
+            let note: String = conn.query_row("SELECT note FROM schedule_runs WHERE schedule_id='CATCHUP' AND note LIKE '%missed occurrence%' ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+            assert!(note.contains("missed occurrence"), "{note}");
+        }
+    }
+
+    #[tokio::test]
+    async fn shell_pipeline_failure_is_not_hidden_by_a_successful_tail() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let (store, _dir) = store();
+        let state = crate::api::AppState { store, started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let live = LiveDeliverer::new(state);
+        for (command, success) in [("(echo failure; exit 37) | tail -1", false), ("echo measured | tail -1", true), ("(exit 37) | tail -1 || echo explicitly-handled", true)] {
+            let mut row = make_row("PIPE", "", None, "2020-01-01T00:00");
+            row.raw.insert("kind".into(), Value::from("shell"));
+            row.raw.insert("command".into(), Value::from(command));
+            let out = live.run_shell(&row).await;
+            assert_eq!(matches!(out, RunOutcome::ShellOk { .. }), success, "{out:?}");
+            if !success { assert!(matches!(out, RunOutcome::ShellError { .. }), "{out:?}"); }
+        }
+    }
     /// AMUX-3546: a cadence has a number, and it is the number nobody saw.
     ///
     /// From the live board when the card was filed: 165 schedules enabled, ~1,650
@@ -4299,7 +4425,7 @@ mod tests {
             .write_async(move |conn| {
                 insert_schedule(
                     conn,
-                    &make_row("SCHED-9", "alpha", Some("every 10m"), &prev),
+                    &{ let mut row = make_row("SCHED-9", "alpha", Some("every 10m"), &prev); row.raw.insert("kind".into(), Value::from("shell")); row },
                 )?;
                 Ok(WriteOutcome {
                     applied: true,

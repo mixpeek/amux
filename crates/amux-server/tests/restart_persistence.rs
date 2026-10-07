@@ -111,10 +111,12 @@ impl Rig {
         let err = out.try_clone().unwrap();
         let child = Command::new(server_bin())
             .env_clear()
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("HOME", self.home.join("fixture-home"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("AMUX_HOME", &self.home)
             .env("AMUX_DB", &self.db)
+            .env("TMUX_TMPDIR", self._tmp.path())
+            .env("AMUX_NO_SELF_ADOPT", "1")
             .env("AMUX_RS_PORT", self.port.to_string())
             // Auth off: this is a loopback-only temp server.
             .env("AMUX_AUTH_TOKEN", "none")
@@ -379,6 +381,14 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
             &(now - chrono::Duration::hours(1)).to_rfc3339(),
         ],
     );
+    rig.seed(
+        "INSERT INTO _amux_leases (task_id, worker_id, acquired_at, expires_at, generation)
+         VALUES ('tsk_rr0150_live', ?1, ?2, ?3, 0)",
+        &[&worker_id, &now.to_rfc3339(), &(now + chrono::Duration::hours(1)).to_rfc3339()],
+    );
+    let (_, metrics_before) = rig.get("/api/metrics").await;
+    assert_eq!(metrics_before["leases"]["live"], 1, "expired RFC3339 leases must not appear live");
+    assert_eq!(metrics_before["leases"]["total"], 2);
     // A 'running' transcode whose heartbeat is long stale — the exact state
     // migration 0009 exists to make survivable (python held this in memory,
     // so a restart orphaned it invisibly).
@@ -636,20 +646,11 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     };
     let present = rig.count("SELECT COUNT(*) FROM _amux_leases WHERE task_id='tsk_rr0150_expired'");
     let (_, m) = rig.get("/api/metrics").await;
-    // NOTE (reported, not asserted here): /api/metrics reports
-    // `leases.live` as `SELECT COUNT(*) FROM _amux_leases` — no expiry
-    // predicate — so an expired lease is still counted as live. That is a
-    // labelling defect in the metric, not a restart-persistence failure, so
-    // it is surfaced in the detail rather than failing this subsystem.
     rep.add(
         "leases",
-        present == 1 && unexpired == 0,
-        format!(
-            "row_present={present} still_expired={} · /api/metrics leases.live={} \
-                 (metric counts ALL lease rows, expired included — no expiry predicate)",
-            unexpired == 0,
-            m["leases"]["live"]
-        ),
+        present == 1 && unexpired == 0 && m["leases"]["live"] == 1 && m["leases"]["total"] == 2,
+        format!("expired_row_present={present} still_expired={} · live={} total={} (one future lease)",
+            unexpired == 0, m["leases"]["live"], m["leases"]["total"]),
     );
 
     // 11. media jobs (seeded) — the stale 'running' row survives, so the next
@@ -695,4 +696,193 @@ async fn the_rig_can_tell_a_dead_server_from_a_live_one() {
         refused,
         "server still answered after kill — the restart in this suite proves nothing"
     );
+}
+
+/// Recovery is more than retaining table rows: pending observations are replayed,
+/// uncertain side effects stay uncertain, finished reviewers are adopted, and
+/// their full evidence remains after disposable checkout cleanup.
+#[tokio::test]
+async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_passes() {
+    recover_completed_review("0", "fail", false).await;
+    recover_completed_review("37", "pass", false).await;
+    recover_completed_review("0", "fail", true).await;
+}
+
+async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
+    let mut rig = Rig::new();
+    // A cached review must be adopted; this sentinel catches a paid rerun.
+    let repo = rig.home.join("fixture-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [vec!["init", "-q"], vec!["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], vec!["update-ref", "refs/remotes/origin/main", "HEAD"]] {
+        assert!(Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+    }
+    let sha = String::from_utf8(Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+    let lane = uniq("rr-recovery");
+    let card = "RR-RECOVERY";
+    std::fs::create_dir_all(rig.home.join("sessions")).unwrap();
+    let forbidden = rig.home.join("must-not-rerun-review");
+    let cli = rig.home.join("review-cli.sh");
+    let cli_script = if live {
+        format!("#!/bin/sh\necho launch >> '{}'\nsleep 20\necho '{{\"verdict\":\"fail\",\"findings\":[\"missing required measurement\"]}}'\nexit 0\n", forbidden.display())
+    } else { format!("#!/bin/sh\necho launch >> '{}'\nexit 1\n", forbidden.display()) };
+    std::fs::write(&cli, cli_script).unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap(); }
+    std::fs::write(rig.home.join(format!("sessions/{lane}.env")), format!("CC_DIR={}\nCC_NAME={lane}\nCC_ISOLATED=1\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI={}\n", repo.display(), cli.display())).unwrap();
+    rig.spawn();
+    let before = rig.wait_healthy().await;
+    // Create through the API before the crash, then seed only the internal
+    // execution states for which there is no API writer.
+    let (status, schedule) = rig.post("/api/schedules", json!({"title":"Interrupted shell", "kind":"shell", "command":"exit 0", "schedule_expr":"daily at 3am", "enabled":0})).await;
+    assert_eq!(status, 201, "{schedule}");
+    let sid = schedule["id"].as_str().unwrap();
+    rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','manual:fixture','shell','execution interrupted')", &[&sid]);
+    rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','cron-rs',NULL,'delivery interrupted')", &[&sid]);
+    rig.seed("INSERT INTO steering_queue(id,session,text,queued_at,delivering_since) VALUES('rr-claimed',?1,'uncertain delivery',1,1)", &[&lane]);
+    rig.seed("INSERT INTO steering_queue(id,session,text,queued_at) VALUES('rr-waiting',?1,'never attempted',2)", &[&lane]);
+    rig.seed("INSERT INTO issues(id,title,type,status,session,created,updated,evidence,desc) VALUES(?1,'Recovered independent review','ops','done',?2,1,1,'recorded server check','original full measurement requirements')", &[&card,&lane]);
+    rig.seed("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,review_state,review_at) VALUES(?1,'original criteria','exit 0','fixed-hash',1,'passed',?2,'running',1)", &[&card,&sha]);
+    let conn = rusqlite::Connection::open(&rig.db).unwrap();
+    let frozen = amux_server::api::contract::load(&conn, card).unwrap().unwrap();
+    let row = amux_server::db::board_store::get_issue(&conn, card).unwrap().unwrap();
+    let input = amux_server::api::contract::review_input_hash(&frozen, &row, 1);
+    drop(conn);
+    let review = rig.home.join("tmp/contract").join(format!("{card}-review-{}-{}", &sha[..12], &input[..16]));
+    if live {
+        // Start with the seeded intent present. The normal contract clock is
+        // five minutes; inserting after its first poll cannot launch in 45s.
+        rig.restart().await;
+        let deadline = Instant::now() + Duration::from_secs(45);
+        while !forbidden.exists() && Instant::now() < deadline { tokio::time::sleep(Duration::from_millis(100)).await; }
+        assert!(forbidden.exists(), "the real detached review must launch before the crash: {}", std::fs::read_to_string(&rig.log).unwrap_or_default());
+        assert!(review.join(".amux-review.pid").exists(), "launched reviewer PID is durable");
+    } else {
+        assert!(Command::new("git").arg("-C").arg(&repo).args(["worktree", "add", "--detach"]).arg(&review).arg(&sha).status().unwrap().success());
+        std::fs::write(review.join(".amux-review.out"), json!({"verdict":verdict,"findings":["missing required measurement"]}).to_string()).unwrap();
+        std::fs::write(review.join(".amux-review.exit"), exit).unwrap();
+        std::fs::write(review.join("card-source.md"), "original full measurement requirements").unwrap();
+        std::fs::write(review.join(".amux-review.prompt"), "original immutable review prompt").unwrap();
+    }
+    rig.kill();
+    assert!(rig.client.get(rig.url("/health")).send().await.is_err());
+    if live {
+        let pid = std::fs::read_to_string(review.join(".amux-review.pid")).unwrap();
+        assert!(Command::new("kill").args(["-0",pid.trim()]).status().unwrap().success(), "reviewer outlives the server PID");
+    }
+    // Provider hooks can arrive while the server is down. They must remain
+    // durable locally and be consumed by the next image without new prompts.
+    let run = "deadbeef";
+    let native = rig.home.join("status-events").join(&lane);
+    std::fs::create_dir_all(&native).unwrap();
+    let now = chrono::Utc::now().timestamp() as f64;
+    std::fs::write(native.join("current.json"), json!({"run_id":run,"provider":"claude","started":now-10.0}).to_string()).unwrap();
+    for event in ["UserPromptSubmit", "Stop"] {
+        use std::io::Write;
+        let mut hook = Command::new("python3").arg(rig.home.join("native-status.py")).arg("claude")
+            .env("AMUX_STATUS_HOME", &rig.home).env("AMUX_STATUS_WORKER", &lane).env("AMUX_STATUS_RUN_ID", run)
+            .env("AMUX_STATUS_URL", rig.url("")).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        hook.stdin.take().unwrap().write_all(json!({"hook_event_name":event,"turn_id":"fixture-turn"}).to_string().as_bytes()).unwrap();
+        assert!(hook.wait().unwrap().success());
+    }
+    assert_eq!(std::fs::read_dir(native.join(run)).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "json") && e.as_ref().unwrap().file_name() != "counter.json").count(), 2);
+    // Installation drift is repaired by passive recovery, not by restarting
+    // twenty workers or injecting a new context into an isolated worker.
+    std::fs::write(rig.home.join("native-status.py"), "obsolete observer").unwrap();
+    rig.spawn();
+    let after = rig.wait_healthy().await;
+    assert_ne!(before["pid"], after["pid"]);
+    assert_eq!(before["build"], after["build"]);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while Instant::now() < deadline {
+        let events = rig.count("SELECT COUNT(*) FROM session_events WHERE type='session.native_status' AND json_extract(data,'$.run_id')='deadbeef'");
+        let unfinished = rig.count("SELECT COUNT(*) FROM schedule_runs WHERE status='running'");
+        let failed_review = rig.count("SELECT COUNT(*) FROM card_contracts WHERE card='RR-RECOVERY' AND review_state='failed'");
+        if events == 2 && unfinished == 0 && failed_review == 1 { break; }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(rig.count("SELECT COUNT(*) FROM session_events WHERE type='session.native_status' AND json_extract(data,'$.run_id')='deadbeef'"), 2);
+    assert_eq!(rig.count("SELECT COUNT(*) FROM schedule_runs WHERE status='error'"), 2, "unknown execution and delivery must not become success");
+    assert_eq!(rig.count("SELECT COUNT(*) FROM steering_queue WHERE id='rr-waiting'"), 1, "unattempted owner input survives");
+    assert_eq!(rig.count("SELECT COUNT(*) FROM steering_history WHERE id='rr-claimed' AND outcome LIKE 'interrupted%'"), 1, "uncertain delivery remains explicit");
+    assert_eq!(rig.count("SELECT COUNT(*) FROM card_contracts WHERE card='RR-RECOVERY' AND review_state='failed'"), 1);
+    assert_eq!(rig.count("SELECT COUNT(*) FROM issues WHERE id='RR-RECOVERY' AND status='verified'"), 0);
+    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live), "review must be adopted, never duplicated");
+    assert_eq!(rig.count("SELECT review_rounds FROM card_contracts WHERE card='RR-RECOVERY'"), 1, "a completed failed/unmeasured attempt spends one bounded round");
+    if exit != "0" {
+        let conn = rusqlite::Connection::open(&rig.db).unwrap();
+        let log: String = conn.query_row("SELECT review_log FROM card_contracts WHERE card='RR-RECOVERY'", [], |r| r.get(0)).unwrap();
+        assert!(log.contains("no trustworthy verdict") && log.contains("37"), "{log}");
+    }
+    assert!(std::fs::read_to_string(rig.home.join("native-status.py")).unwrap().contains("X-Amux-Worker-Token"));
+    let archives = rig.home.join("review-evidence").join(card);
+    let artifact = std::fs::read_dir(&archives).unwrap().next().unwrap().unwrap().path();
+    assert!(std::fs::read_to_string(artifact.join(".amux-review.out")).unwrap().contains("missing required measurement"));
+    assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.exit")).unwrap().trim(), exit);
+    assert_eq!(std::fs::read_to_string(artifact.join("card-source.md")).unwrap(), "original full measurement requirements");
+    let prompt = std::fs::read_to_string(artifact.join(".amux-review.prompt")).unwrap();
+    if live { assert!(prompt.contains("original criteria") && prompt.contains("card-source.md")); }
+    else { assert_eq!(prompt, "original immutable review prompt"); }
+    rig.restart().await;
+    assert_eq!(rig.count("SELECT COUNT(*) FROM schedule_runs WHERE status='error'"), 2);
+    assert_eq!(rig.count("SELECT COUNT(*) FROM session_events WHERE type='session.native_status' AND json_extract(data,'$.run_id')='deadbeef'"), 2);
+    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live));
+}
+
+/// A real ffmpeg consumer must repair durable stale intent and lost output.
+/// The interrupted heartbeat is seeded explicitly; the resumed consumer, TLS
+/// polls, output and subsequent cache adoption are real, not metadata-only.
+#[tokio::test]
+async fn stale_media_intent_and_lost_output_recover_with_a_real_consumer() {
+    let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter()
+        .find(|p| std::path::Path::new(p).is_file());
+    let Some(ffmpeg) = ffmpeg else {
+        assert_ne!(std::env::var("AMUX_REQUIRE_MEDIA_RECOVERY").as_deref(), Ok("1"), "required real ffmpeg recovery cannot run");
+        eprintln!("UNMEASURED media consumer recovery: ffmpeg unavailable");
+        return;
+    };
+    let mut rig = Rig::new();
+    let src = rig.home.join("fixture-home/recovery.mkv");
+    std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+    let generated = Command::new(ffmpeg).args(["-y", "-f", "lavfi", "-i", "testsrc=duration=0.5:size=64x64:rate=10", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-shortest", "-c:v", "libx264", "-c:a", "aac"]).arg(&src).output().unwrap();
+    assert!(generated.status.success(), "fixture generation: {}", String::from_utf8_lossy(&generated.stderr));
+    let uri = format!("/api/file/prepare?path={}", src.to_string_lossy().bytes().map(|b| format!("%{b:02X}")).collect::<String>());
+    rig.spawn();
+    rig.wait_healthy().await;
+    let (status, first) = rig.get(&uri).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["started"], true, "{first}");
+    async fn completed(rig: &Rig, uri: &str) -> PathBuf {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        while Instant::now() < deadline {
+            let (status, result) = rig.get(uri).await;
+            assert_eq!(status, 200, "{result}");
+            assert!(result.get("error").is_none(), "{result}");
+            if result["ready"] == true {
+                let path = PathBuf::from(result["cached_path"].as_str().unwrap());
+                assert!(std::fs::metadata(&path).unwrap().len() > 0, "ready requires actual output");
+                assert_eq!(rig.count("SELECT COUNT(*) FROM _amux_media_jobs WHERE status='done' AND progress=100"), 1);
+                return path;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("real media consumer did not finish: {}", std::fs::read_to_string(&rig.log).unwrap_or_default());
+    }
+    let out = completed(&rig, &uri).await;
+    // The seeded stale heartbeat reproduces a lost task without waiting an hour.
+    rig.seed("UPDATE _amux_media_jobs SET status='running', progress=42, updated_at=?1", &[&(chrono::Utc::now().timestamp()-3600).to_string()]);
+    rig.kill();
+    std::fs::remove_file(&out).unwrap();
+    rig.spawn(); rig.wait_healthy().await;
+    let (_, restarted) = rig.get(&uri).await;
+    assert_eq!(restarted["started"], true, "stale intent must restart its consumer: {restarted}");
+    assert_eq!(completed(&rig, &uri).await, out);
+    rig.restart().await;
+    let (_, cached) = rig.get(&uri).await;
+    assert_eq!(cached["ready"], true, "completed output must be adopted: {cached}");
+    assert!(cached.get("started").is_none());
+    rig.kill();
+    std::fs::remove_file(&out).unwrap();
+    rig.spawn(); rig.wait_healthy().await;
+    let (_, lost) = rig.get(&uri).await;
+    assert_eq!(lost["started"], true, "a done row without its output cannot grant ready: {lost}");
+    assert_eq!(completed(&rig, &uri).await, out);
 }

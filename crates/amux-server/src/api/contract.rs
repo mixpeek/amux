@@ -826,7 +826,7 @@ fn spawn_verification(state: &AppState, card: &str, lane: &str) {
     let (st, c, l) = (state.clone(), card.to_string(), lane.to_string());
     tokio::spawn(async move {
         take_check_place().await;
-        run_verification(&st, &c, &l).await;
+        crate::runtime_jobs::registry::guard_job("contract-verify", async { run_verification(&st, &c, &l).await; }).await;
         CHECKS_RUNNING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         if let Ok(mut live) = LIVE_VERIFY.lock() {
             live.remove(&c);
@@ -1378,6 +1378,10 @@ async fn wait_review(dir: &Path) -> Result<(String, String), String> {
     }
     let text = std::fs::read_to_string(dir.join(REVIEW_OUT)).unwrap_or_default();
     let code = std::fs::read_to_string(dir.join(REVIEW_EXIT)).unwrap_or_default();
+    if code.trim() != "0" {
+        return Err(format!("reviewer exited {}; partial output cannot grant a verdict: {}", code.trim(),
+            tail(&format!("{text}{}", std::fs::read_to_string(dir.join(REVIEW_ERR)).unwrap_or_default()), 400)));
+    }
     Ok((text, code))
 }
 
@@ -1398,17 +1402,50 @@ fn reviewer_command(home: &Path, lane: &str, model: &str, budget_key: &str, defa
 }
 
 /// The directory a card's review runs in, for its verified sha.
-fn review_dir(card: &str, sha: &str) -> PathBuf {
-    crate::config::amux_home().join("tmp").join("contract").join(format!("{card}-review-{}", &sha[..12.min(sha.len())]))
+fn review_dir(card: &str, sha: &str, input_hash: &str) -> PathBuf {
+    crate::config::amux_home().join("tmp").join("contract").join(format!("{card}-review-{}-{}", &sha[..12.min(sha.len())], &input_hash[..16]))
+}
+
+/// Review recovery binds the exact frozen contract, source and evidence.
+/// A result at the same commit is not reusable after its criteria changed.
+pub fn review_input_hash(c: &Contract, row: &crate::db::board_store::IssueRow, round: i64) -> String {
+    use sha2::{Digest, Sha256};
+    let input = json!([c.card, c.acceptance, c.command, c.hash, c.sha, c.kind, c.deploy_check,
+        c.state, c.amended, row.title, row.item_type, row.desc, row.evidence,
+        row.acceptance_criteria, row.session, row.archived, round]);
+    format!("{:x}", Sha256::digest(input.to_string().as_bytes()))
+}
+
+/// Called inside the writer transaction immediately before applying a verdict.
+/// No verdict from an earlier generation may modify a newer contract or task.
+fn review_generation_current(conn: &Connection, card: &str, round: i64, expected: &str) -> rusqlite::Result<bool> {
+    let Some(c) = load(conn, card)? else { return Ok(false) };
+    let Some(row) = crate::db::board_store::get_issue(conn, card)? else { return Ok(false) };
+    let rounds: i64 = conn.query_row("SELECT review_rounds FROM card_contracts WHERE card=?1", [card], |r| r.get(0))?;
+    Ok(row.status == "done" && rounds + 1 == round && review_input_hash(&c, &row, round) == expected)
+}
+
+fn retain_review_evidence(home: &Path, card: &str, generation: &str, dir: &Path) -> Result<(), String> {
+    let archive = home.join("review-evidence").join(card).join(format!("{generation}-{}", ulid::Ulid::new()));
+    std::fs::create_dir_all(&archive).map_err(|e| format!("cannot retain review evidence: {e}"))?;
+    for file in [REVIEW_OUT, REVIEW_ERR, REVIEW_EXIT, REVIEW_PROMPT, "card-source.md"] {
+        let path = dir.join(file);
+        if path.exists() { std::fs::copy(path, archive.join(file)).map_err(|e| format!("cannot retain {file}: {e}"))?; }
+    }
+    Ok(())
+}
+
+fn write_review_source(dir: &Path, desc: &str) -> Result<(), String> {
+    std::fs::write(dir.join("card-source.md"), desc).map_err(|e| format!("cannot write full card source: {e}"))
 }
 
 /// Run one reviewer, or adopt the one a restarted server left behind.
 /// Ok((pass, findings, model)) or Err(why unmeasured).
-async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &str, round: i64) -> Result<(bool, Vec<String>, String), String> {
+async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &str, round: i64, row: &crate::db::board_store::IssueRow) -> Result<(bool, Vec<String>, String), String> {
     let home = crate::config::amux_home();
     let tree = lane_tree(lane).ok_or_else(|| format!("lane {lane} has no checkout"))?;
     let sha = c.sha.clone().ok_or("the contract has no verified sha")?;
-    let tmp = review_dir(card, &sha);
+    let tmp = review_dir(card, &sha, &review_input_hash(c, row, round));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
     let model = reviewer_model(&home, lane);
     match review_job(&tmp) {
@@ -1423,10 +1460,28 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
         ReviewJob::None => {
             fresh_checkout(&tree, &tmp, &sha).await?;
             let (cli, args) = reviewer_command(&home, lane, &model, "AMUX_CONTRACT_REVIEW_BUDGET_USD", 2.0);
-            launch_review(&tmp, &cli, &args, &review_prompt(card, title, c, evidence, round))?;
+            write_review_source(&tmp, &row.desc)?;
+            let prompt = review_prompt(card, title, c, evidence, round) + "\nThe full, unabridged card description is in card-source.md. Read it for the original and later measurement requirements; the prompt excerpt alone is not the full contract.\n";
+            launch_review(&tmp, &cli, &args, &prompt)?;
         }
     }
-    let result = collect_review(&tmp, &model).await;
+    let mut result = collect_review(&tmp, &model).await;
+    // Keep the original inputs and output independently of a disposable
+    // review checkout, including a failed or unmeasured result.
+    if matches!(review_job(&tmp), ReviewJob::Running(..)) { return result; }
+    retain_review_evidence(&home, card, &format!("{sha}-{round}"), &tmp)?;
+    // A completed model attempt with no trustworthy verdict spent a round.
+    // Reopen through the normal bounded failure path; retrying it forever as
+    // an unspent pending review burns tokens without improving the proof.
+    if matches!(review_job(&tmp), ReviewJob::Finished) {
+        if let Err(why) = &result {
+            tracing::warn!(card, round, measured = false, n_considered = 1, verdict = "contract_review_unmeasured",
+                why_unmeasured = %tail(why, 300), "completed review produced no trustworthy verdict; bounded failure recovery");
+            result = Ok((false, vec![format!("Independent review produced no trustworthy verdict: {why}")], format!("{model}/unmeasured")));
+        }
+    }
+    tracing::info!(card, sha, round, measured = true, n_considered = 1,
+        verdict = "contract_review_evidence_retained", "review input and output retained outside the temporary checkout");
     let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
     if tmp.exists() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1461,18 +1516,26 @@ async fn review_one(state: &AppState, card: String) {
         return;
     }
     let round = rounds + 1;
+    let input_hash = review_input_hash(&k, &row, round);
     tracing::info!(card, lane, round, measured = true, n_considered = 1, verdict = "contract_review_started",
-        "a fresh reviewer started for a verified-eligible card");
+        "completion review started; an unfinished frozen check is recovered before spending a model review");
     let evidence = format!("{}{}{}", row.evidence.as_deref().unwrap_or(""), proof_rules(&row.title, &row.desc),
         outcome_rules(&row.item_type, &row.title, &row.desc));
-    let result = review(&card, &lane, &row.title, &k, &evidence, round).await;
+    // A stale check is not a passed check. Recover the card deterministically
+    // through the usual failed-review transition, retaining its frozen command.
+    let result = if !k.is_uncontracted() && k.state != "passed" {
+        Ok((false, vec![format!("Frozen server check is {}: `{}` has no passing result at the pinned commit; rerun or explicitly amend it before completion.", k.state, k.command)], "server-check".into()))
+    } else {
+        review(&card, &lane, &row.title, &k, &evidence, round, &row).await
+    };
     let now = crate::config::now_f64();
     let (pass, findings, model) = match result {
         Ok(r) => r,
         Err(why) => {
             // Unmeasured: back to pending for the next pass, no round spent.
-            let (c, w) = (card.clone(), why.clone());
+            let (c, w, generation) = (card.clone(), why.clone(), input_hash.clone());
             let _ = state.store.write_async(move |conn| {
+                if !review_generation_current(conn, &c, round, &generation)? { return Ok(crate::db::WriteOutcome { applied: false, events: vec![] }); }
                 conn.execute("UPDATE card_contracts SET review_state = 'pending', review_log = ?2, review_at = ?3 WHERE card = ?1",
                     rusqlite::params![c, w, now])?;
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
@@ -1495,7 +1558,13 @@ async fn review_one(state: &AppState, card: String) {
     let owner = crate::api::turn_end::owner_name();
     let refused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let refused2 = refused.clone();
+    let stale = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stale2 = stale.clone();
     let r = state.store.write_async(move |conn| {
+        if !review_generation_current(conn, &c, round, &input_hash)? {
+            stale2.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+        }
         conn.execute("UPDATE card_contracts SET review_state = ?2, review_rounds = ?3, review_log = ?4, review_at = ?5 WHERE card = ?1",
             rusqlite::params![c, rstate, round, n, now])?;
         if ts == "doing" {
@@ -1535,6 +1604,11 @@ async fn review_one(state: &AppState, card: String) {
             }
         }
     }).await;
+    if stale.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!(card, lane, round, measured = true, n_considered = 1, verdict = "contract_review_stale",
+            "review inputs changed while it ran; retained result cannot modify the new generation");
+        return;
+    }
     let ok = r.is_ok() && !refused.load(std::sync::atomic::Ordering::Relaxed);
     match target {
         "verified" => tracing::info!(card, lane, round, model, ok, measured = true, n_considered = 1, verdict = "contract_review_passed",
@@ -1544,7 +1618,7 @@ async fn review_one(state: &AppState, card: String) {
         _ => tracing::info!(card, lane, round, model, ok, findings = findings.len(), measured = true, n_considered = 1,
             verdict = "contract_review_failed", "the harness reviewer failed the card; reopened with findings"),
     }
-    if target == "doing" {
+    if ok && target == "doing" {
         let text = format!("[amux contract] {card} is back in doing: the independent reviewer failed round {round} of {REVIEW_ROUNDS}.\n\n{list}\n\nAddress the findings and request done again, or PATCH {{\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}}.");
         let _ = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-review", ACTOR).await;
     }
@@ -1604,6 +1678,11 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
         if let Some(s) = evidence.as_deref().and_then(parse_sha) {
             if git(&tree, &["cat-file", "-e", &format!("{s}^{{commit}}")]).await.is_ok() {
                 sha = Some(s);
+            } else {
+                tracing::warn!(card, lane, sha = s, measured = false, n_considered = 1,
+                    verdict = "contract_review_unmeasured", why_unmeasured = "evidence commit unavailable",
+                    "review held until the named commit is available; no substitute checkout");
+                continue;
             }
         }
         if sha.is_none() {
@@ -1618,11 +1697,10 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
             let k = conn.execute(
                 "INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, kind, review_state, review_at) \
                  VALUES (?1, ?2, ?3, '', ?4, 'passed', ?5, 'code', 'pending', ?4) \
-                 ON CONFLICT(card) DO UPDATE SET review_state = 'pending', review_at = ?4, sha = ?5, \
+                 ON CONFLICT(card) DO UPDATE SET review_state = 'pending', review_at = ?4, sha = CASE WHEN card_contracts.command = ?3 THEN ?5 ELSE COALESCE(NULLIF(card_contracts.sha, ''), ?5) END, \
                    log = CASE WHEN card_contracts.state IN ('superseded', 'frozen', 'failed') \
-                         THEN COALESCE(card_contracts.log, '') || ' | check ' || card_contracts.state || ' and never reviewed, reviewed from evidence; was: ' || card_contracts.command \
-                         ELSE card_contracts.log END, \
-                   command = ?3, state = 'passed' \
+                         THEN COALESCE(card_contracts.log, '') || ' | stale check queued for recovery; original command and state retained' \
+                         ELSE card_contracts.log END \
                  WHERE (card_contracts.command = ?3 AND card_contracts.review_state = 'failed') \
                     OR (card_contracts.state IN ('superseded', 'frozen', 'failed') AND card_contracts.review_state IS NULL)",
                 rusqlite::params![c, a, UNCONTRACTED_CMD, now, sh])?;
@@ -1733,14 +1811,18 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
             };
             fresh_checkout(&tree, &dir, &sha).await?;
             let (cli, args) = reviewer_command(&home, &lane, &model, "AMUX_CONTRACT_PREREVIEW_BUDGET_USD", 1.0);
-            launch_review(&dir, &cli, &args, &prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or("")))?;
+            write_review_source(&dir, &row.desc)?;
+            let prompt = prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or(""))
+                + "\nRead card-source.md for the full unabridged description, including requirements outside the excerpt.\n";
+            launch_review(&dir, &cli, &args, &prompt)?;
         }
         let (text, code) = wait_review(&dir).await?;
+        retain_review_evidence(&home, &card, &format!("pre-{hash}"), &dir)?;
         let _ = git(&tree, &["worktree", "remove", "--force", &dir.to_string_lossy()]).await;
         parse_prereview(&text).ok_or_else(|| format!("pre-run reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(), tail(&text, 300)))
     };
     let result: Result<(bool, Vec<String>), String> = run.await;
-    if dir.exists() {
+    if result.is_ok() && dir.exists() {
         let _ = std::fs::remove_dir_all(&dir);
     }
     let (st, note) = match &result {
@@ -1749,9 +1831,10 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
             f.iter().map(|x| format!("- {x}")).collect::<Vec<_>>().join("\n"))),
         Err(_) => ("unmeasured", String::new()),
     };
-    let (c, n, s2, now) = (card.clone(), note.clone(), st.to_string(), crate::config::now_f64());
+    let (c, n, s2, now, generation) = (card.clone(), note.clone(), st.to_string(), crate::config::now_f64(), hash.clone());
     let _ = state.store.write_async(move |conn| {
-        conn.execute("UPDATE card_prereviews SET state = ?2, at = ?3 WHERE card = ?1", rusqlite::params![c, s2, now])?;
+        let changed = conn.execute("UPDATE card_prereviews SET state = ?2, at = ?3 WHERE card = ?1 AND hash=?4 AND state='running'", rusqlite::params![c, s2, now, generation])?;
+        if changed == 0 { return Ok(crate::db::WriteOutcome { applied: false, events: vec![] }); }
         if !n.is_empty() {
             if let Some(mut r) = crate::db::board_store::get_issue(conn, &c)? {
                 r.desc.push_str(&n);
@@ -1836,7 +1919,7 @@ pub async fn run_prereviews(state: &AppState) -> usize {
         }
         let st = state.clone();
         tokio::spawn(async move {
-            prereview_one(&st, card, hash).await;
+            crate::runtime_jobs::registry::guard_job("contract-prereview", async { prereview_one(&st, card, hash).await; }).await;
             if let Ok(mut l) = LIVE_REVIEW.lock() {
                 l.remove(&key);
             }
@@ -1894,7 +1977,7 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
                 live.insert(card.clone());
             }
             tokio::spawn(async move {
-                review_one(&st, card.clone()).await;
+                crate::runtime_jobs::registry::guard_job("contract-review", async { review_one(&st, card.clone()).await; }).await;
                 if let Ok(mut live) = LIVE_REVIEW.lock() {
                     live.remove(&card);
                 }
@@ -2005,6 +2088,106 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stale_check_recovery_retains_failure_command_criteria_and_commit() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [vec!["init", "-q"], vec!["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], vec!["update-ref", "refs/remotes/origin/main", "HEAD"]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/lane.env"), format!("CC_DIR={}\nAMUX_REVIEW_UNCONTRACTED=1\n", repo.display())).unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("db")).unwrap());
+        let pinned = sha.clone();
+        store.write(move |conn| {
+            for status in ["failed", "frozen", "superseded"] {
+                conn.execute("INSERT INTO issues(id,title,type,status,session,acceptance_criteria,entered_state_at,created,updated) VALUES(?1,'Measure all surfaces','ops','done','lane','new mutable criteria',1,1,1)", [status])?;
+                conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,log) VALUES(?1,'all original surfaces','false','hash',1,?1,?2,'original failure output')", rusqlite::params![status,pinned])?;
+            }
+            Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
+        }).unwrap();
+        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash:"test".into(), auth_token:None,
+            reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        assert_eq!(enqueue_uncontracted(&state).await, 3);
+        for status in ["failed", "frozen", "superseded"] {
+            let k = load(&store.read().unwrap(), status).unwrap().unwrap();
+            assert_eq!(k.state, status);
+            assert_eq!(k.command, "false");
+            assert_eq!(k.acceptance, "all original surfaces");
+            assert_eq!(k.sha.as_deref(), Some(sha.as_str()));
+            review_one(&state, status.into()).await;
+            let conn = store.read().unwrap();
+            assert_ne!(crate::db::board_store::get_issue(&conn, status).unwrap().unwrap().status, "verified");
+            let log: String = conn.query_row("SELECT log FROM card_contracts WHERE card=?1", [status], |r| r.get(0)).unwrap();
+            assert!(log.contains("original failure output"));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_reviewer_exit_cannot_turn_partial_pass_output_into_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(REVIEW_OUT), r#"{"verdict":"pass","findings":[]}"#).unwrap();
+        for code in ["37", "timeout", ""] {
+            std::fs::write(dir.path().join(REVIEW_EXIT), code).unwrap();
+            assert!(collect_review(dir.path(), "fixture").await.is_err(), "failed exit {code}");
+        }
+        std::fs::write(dir.path().join(REVIEW_EXIT), "0\n").unwrap();
+        assert!(collect_review(dir.path(), "fixture").await.unwrap().0, "zero exit with complete verdict is usable");
+    }
+
+    #[test]
+    fn review_verdict_is_fenced_by_current_inputs_and_status_in_the_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("db")).unwrap();
+        store.write(|conn| {
+            conn.execute("INSERT INTO issues(id,title,type,status,session,desc,evidence,created,updated) VALUES('RACE','Required measurement','ops','done','lane','full source','recorded evidence',1,1)", []).unwrap();
+            conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,review_rounds) VALUES('RACE','every surface','true','frozen-hash',1,'passed','pinned-sha',0)", []).unwrap();
+            let k = load(conn, "RACE").unwrap().unwrap();
+            let row = crate::db::board_store::get_issue(conn, "RACE").unwrap().unwrap();
+            let generation = review_input_hash(&k, &row, 1);
+            assert!(review_generation_current(conn, "RACE", 1, &generation).unwrap());
+            for (table, field, value) in [
+                ("issues", "status", "doing"), ("issues", "desc", "changed source"),
+                ("issues", "evidence", "new evidence"), ("issues", "session", "another lane"),
+                ("card_contracts", "acceptance", "more surfaces"), ("card_contracts", "state", "failed"),
+                ("card_contracts", "sha", "different-sha"), ("card_contracts", "review_rounds", "1"),
+            ] {
+                let key = if table == "issues" { "id" } else { "card" };
+                let select = format!("SELECT CAST({field} AS TEXT) FROM {table} WHERE {key}='RACE'");
+                let original: String = conn.query_row(&select, [], |r| r.get(0)).unwrap();
+                let update = format!("UPDATE {table} SET {field}=?1 WHERE {key}='RACE'");
+                conn.execute(&update, [value]).unwrap();
+                assert!(!review_generation_current(conn, "RACE", 1, &generation).unwrap(), "{table}.{field}");
+                conn.execute(&update, [&original]).unwrap();
+                assert!(review_generation_current(conn, "RACE", 1, &generation).unwrap(), "restored {table}.{field}");
+            }
+            conn.execute("DELETE FROM card_contracts WHERE card='RACE'", []).unwrap();
+            assert!(!review_generation_current(conn, "RACE", 1, &generation).unwrap());
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+
+    #[test]
+    fn reviewer_source_preserves_requirements_outside_both_excerpts() {
+        let c = frozen();
+        let mut row = crate::db::board_store::IssueRow::default();
+        let original = review_input_hash(&c, &row, 1);
+        row.desc = "new required measurement".into();
+        assert_ne!(review_input_hash(&c, &row, 1), original);
+        assert_ne!(review_input_hash(&c, &row, 2), review_input_hash(&c, &row, 1));
+        let mut amended = c.clone();
+        amended.acceptance = "changed original criterion".into();
+        assert_ne!(review_input_hash(&amended, &row, 1), review_input_hash(&c, &row, 1));
+        let dir = tempfile::tempdir().unwrap();
+        let desc = format!("ORIGINAL REQUIREMENT {} MIDDLE REQUIREMENT {} FINAL REQUIREMENT", "x".repeat(5000), "y".repeat(5000));
+        write_review_source(dir.path(), &desc).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("card-source.md")).unwrap(), desc);
+        assert!(write_review_source(&dir.path().join("missing"), &desc).is_err());
+    }
 
     /// The reviewer finishes in the instant between the two reads: the
     /// liveness probe below writes the exit file and then reports the pid

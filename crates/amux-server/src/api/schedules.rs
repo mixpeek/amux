@@ -562,6 +562,10 @@ pub struct ScheduleBody {
     pub session: Option<String>,
     #[serde(default)]
     pub command: Option<String>,
+    /// Snapshot a self-contained script into durable AMUX_HOME storage. The
+    /// command must contain one unquoted {script} token and kind must be shell.
+    #[serde(default)]
+    pub script_path: Option<String>,
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -612,6 +616,58 @@ pub struct ScheduleBody {
     /// five days while the scheduler (which reads the list) never fired it.
     #[serde(default)]
     pub resurrect: Option<bool>,
+}
+
+/// Bind a shell schedule to durable script bytes before its first fire. A
+/// transient /tmp path otherwise disappears at reboot while the schedule lives.
+fn prepare_script(body: &mut ScheduleBody, home: &std::path::Path) -> Result<(), String> {
+    let Some(source) = body.script_path.as_deref() else { return Ok(()) };
+    if body.kind.as_deref() != Some("shell") {
+        return Err("script_path requires explicit kind:'shell'".into());
+    }
+    let command = body.command.as_deref().ok_or("script_path requires command with one unquoted {script} token")?;
+    let placeholder = regex::Regex::new(r"(^|[ \t])\{script\}($|[ \t|;&])").expect("fixed pattern");
+    if command.matches("{script}").count() != 1 || !placeholder.is_match(command) {
+        return Err("command must contain exactly one unquoted {script} token".into());
+    }
+    let source = std::path::Path::new(source);
+    if !source.is_file() { return Err("script_path must name an existing regular file".into()); }
+    use std::io::{Read, Write};
+    let mut bytes = Vec::new();
+    std::fs::File::open(source).map_err(|e| e.to_string())?.take(1_048_577).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() > 1_048_576 { return Err("script_path exceeds the 1 MiB script limit".into()); }
+    use sha2::{Digest, Sha256};
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let extension = source.extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty() && e.bytes().all(|b| b.is_ascii_alphanumeric()));
+    let folder = home.join("schedule-artifacts");
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let path = folder.join(format!("{hash}{}", extension.map(|e| format!(".{e}")).unwrap_or_default()));
+    match std::fs::read(&path) {
+        Ok(existing) if existing != bytes => return Err("durable script digest mismatch; existing evidence retained".into()),
+        Ok(_) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let tmp = folder.join(format!(".{}.tmp", ulid::Ulid::new()));
+            let result = (|| -> std::io::Result<()> {
+                let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+                #[cfg(unix)] {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+                }
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                std::fs::rename(&tmp, &path)
+            })();
+            if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+            result.map_err(|e| e.to_string())?;
+        },
+        Err(e) => return Err(e.to_string()),
+    }
+    // POSIX single-quote escaping, including an AMUX_HOME containing a quote.
+    let quoted = format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+    body.command = Some(command.replace("{script}", &quoted));
+    tracing::info!(sha256 = hash, bytes = bytes.len(), measured = true, n_considered = 1,
+        verdict = "schedule_script_snapshotted", "shell schedule bound to durable script bytes");
+    Ok(())
 }
 
 /// The cadence note a caller sees AT CREATION (AMUX-3546).
@@ -719,8 +775,12 @@ fn attach_isolated_note(o: &mut serde_json::Map<String, Value>, verb: &str) {
 pub async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<ScheduleBody>,
+    Json(mut body): Json<ScheduleBody>,
 ) -> Response {
+    if let Err(error) = prepare_script(&mut body, &crate::config::amux_home()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error, "code": "schedule_script_invalid"}))).into_response();
+    }
+
     let title = match body.title.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => t.to_string(),
         _ => {
@@ -997,8 +1057,12 @@ pub async fn patch(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<ScheduleBody>,
+    Json(mut body): Json<ScheduleBody>,
 ) -> Response {
+    if let Err(error) = prepare_script(&mut body, &crate::config::amux_home()) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error, "code": "schedule_script_invalid"}))).into_response();
+    }
+
     // Validate a caller-supplied expr OUTSIDE the write (clean 400 before
     // the writer thread is touched). A stored legacy/garbage expr on a row
     // this PATCH does not touch falls back like Python instead of bricking
@@ -1899,6 +1963,33 @@ pub async fn audit_trail(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn script_snapshot_is_explicit_durable_and_refuses_corrupted_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home ' quoted");
+        let source = temp.path().join("scratch.py");
+        std::fs::write(&source, "print('first revision')\n").unwrap();
+        let body = || super::ScheduleBody { kind: Some("shell".into()), command: Some("python3 {script}".into()),
+            script_path: Some(source.to_string_lossy().into_owned()), ..Default::default() };
+        let mut request = body();
+        super::prepare_script(&mut request, &home).unwrap();
+        std::fs::remove_file(&source).unwrap();
+        let output = std::process::Command::new("/bin/bash").args(["-c", request.command.as_deref().unwrap()]).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "first revision\n");
+        let artifact = std::fs::read_dir(home.join("schedule-artifacts")).unwrap().next().unwrap().unwrap().path();
+        std::fs::write(&artifact, "corrupted evidence").unwrap();
+        std::fs::write(&source, "print('first revision')\n").unwrap();
+        assert!(super::prepare_script(&mut body(), &home).unwrap_err().contains("digest mismatch"));
+        assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "corrupted evidence");
+        for command in ["python3 '{script}'", "python3 {script} {script}", "python3 no-placeholder"] {
+            let mut invalid = body(); invalid.command = Some(command.into());
+            assert!(super::prepare_script(&mut invalid, &home).is_err());
+        }
+        let mut prompt = body(); prompt.kind = Some("tmux".into());
+        assert!(super::prepare_script(&mut prompt, &home).is_err());
+    }
     /// AMUX-3546: the note states the rate and the spend, and NEVER refuses.
     ///
     /// `every 15m` is the card's own specimen: eleven characters, 96 turns a

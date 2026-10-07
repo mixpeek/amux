@@ -16084,7 +16084,13 @@ mod af701_archive_guard_tests {
             }).unwrap();
             id
         };
-        let dir = |id: &str| h.join("tmp/contract").join(format!("{id}-review-{}", &sha[..12]));
+        let dir = |id: &str| {
+            let conn = store.read().unwrap();
+            let c = super::super::contract::load(&conn, id).unwrap().unwrap();
+            let row = crate::db::board_store::get_issue(&conn, id).unwrap().unwrap();
+            let input = super::super::contract::review_input_hash(&c, &row, 1);
+            h.join("tmp/contract").join(format!("{id}-review-{}-{}", &sha[..12], &input[..16]))
+        };
         let pass = r#"{"verdict": "pass", "findings": []}"#;
 
         // Finished while the server was down.
@@ -16268,7 +16274,7 @@ mod af701_archive_guard_tests {
     /// A done card whose check was abandoned (superseded) is reviewed from
     /// evidence; one already under review is left alone.
     #[tokio::test]
-    async fn a_done_card_whose_check_was_abandoned_is_reviewed_from_evidence() {
+    async fn a_done_card_whose_check_was_abandoned_recovers_without_fabricating_a_pass() {
         let (state, store) = fixture();
         let home = tempfile::tempdir().unwrap();
         let h = home.path();
@@ -16317,8 +16323,10 @@ mod af701_archive_guard_tests {
             |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap();
         let (rs, cmd, log) = row(&abandoned);
         assert_eq!(rs.as_deref(), Some("pending"));
-        assert_eq!(cmd, super::super::contract::UNCONTRACTED_CMD);
-        assert!(log.contains("was: pytest -q x"), "the abandoned command is kept: {log}");
+        assert_eq!(cmd, "pytest -q x", "the frozen command remains authoritative");
+        assert!(log.contains("original command and state retained"), "recovery provenance: {log}");
+        let check_state: String = store.read().unwrap().query_row("SELECT state FROM card_contracts WHERE card=?1", [&abandoned], |r| r.get(0)).unwrap();
+        assert_eq!(check_state, "superseded", "age alone never makes a check pass");
         assert_eq!(row(&reviewing).0.as_deref(), Some("running"), "a review in progress is not requeued");
         assert_eq!(row(&old_frozen).0.as_deref(), Some("pending"), "a check frozen at done for a day is reviewed");
         assert_eq!(row(&new_frozen).0, None, "a fresh frozen check is left to run");

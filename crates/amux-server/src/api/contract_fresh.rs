@@ -80,11 +80,19 @@ Your env, board cards and memory are unchanged.\n"
                 c.command,
                 c.deploy_check.as_deref().map(|d| format!("; post-deploy check: `{d}`")).unwrap_or_default()
             )),
-            None => b.push_str("No frozen contract yet: entering doing freezes acceptance criteria and a verify command (rule 1).\n"),
+            None => {
+                b.push_str("No frozen contract yet: entering doing freezes acceptance criteria and a verify command (rule 1).\n");
+                if let Some(criteria) = n.acceptance_criteria.as_deref().filter(|s| !s.trim().is_empty()) {
+                    b.push_str(&format!("Acceptance criteria: {criteria}\n"));
+                }
+                if let Some(action) = n.next_action.as_deref().filter(|s| !s.trim().is_empty()) {
+                    b.push_str(&format!("Next action: {action}\n"));
+                }
+            },
         }
         let d = tail(&n.desc, DESC_TAIL);
         if !d.is_empty() {
-            b.push_str(&format!("Description (tail):\n{d}\n"));
+            b.push_str(&format!("Description excerpt (tail; full card: GET /api/board/{}):\n{d}\n", n.id));
         }
     }
     if !recent.is_empty() {
@@ -216,7 +224,7 @@ mod tests {
 
     #[test]
     fn the_brief_carries_the_card_its_contract_and_the_last_outcomes() {
-        let next = IssueRow { id: "GE1-9".into(), title: "budget inherit".into(), desc: "x".repeat(2000) + "TAIL", ..Default::default() };
+        let next = IssueRow { id: "GE1-9".into(), title: "budget inherit".into(), desc: "x".repeat(2000) + "TAIL", acceptance_criteria: Some("measure original requirements".into()), next_action: Some("run all surfaces".into()), ..Default::default() };
         let c = crate::api::contract::Contract {
             card: "GE1-9".into(), acceptance: "ns inherits org budget".into(), command: "pytest server/tests/unit/test_b.py".into(),
             hash: "h".into(), state: "frozen".into(), sha: None, amended: false, kind: "code".into(), deploy_check: None,
@@ -231,5 +239,7 @@ mod tests {
         assert!(b.contains("GE1-3 (done): t3 | ev3") && !b.contains("GE1-4"), "three outcomes only");
         let none = brief("GE1-8", Some(&next), None, &[]);
         assert!(none.contains("No frozen contract yet"));
+        assert!(none.contains("measure original requirements") && none.contains("run all surfaces"));
+        assert!(none.contains("GET /api/board/GE1-9"));
     }
 }
