@@ -18,6 +18,8 @@
 
 pub mod brex;
 pub mod browser;
+pub mod browser_logins;
+pub mod browser_login_sync;
 pub mod calendar;
 pub mod computer;
 pub mod email;

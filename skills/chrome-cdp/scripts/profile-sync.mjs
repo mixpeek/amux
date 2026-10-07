@@ -94,17 +94,44 @@ export async function capture(cdp, sessionId) {
   if (!site) return null;
   const { cookies } = await cdp.send('Storage.getCookies', {});
   return {
-    site, host: url.hostname, origin: url.origin,
+    site, host: url.hostname, origin: url.origin, href: page.href,
     cookies: cookies.filter(c => onSite(c, site) && !c.partitionKey),
     allCookies: cookies,
     localStorage: page.ls,
   };
 }
 
+// A session cookie is given 30 days. Chrome drops session cookies when the
+// profile's browser closes, and importInto stops that browser right after the
+// copy, so they used to vanish: brex reported 9/9 landed and held 0, GitHub
+// kept 3 of 14, Cloudflare 3 of 43 (2026-10-07).
+const SESSION_TTL_S = 30 * 86400;
+
+// Does this cookie look like a signed-in session? Same rule as the server's
+// integrations::browser_logins::is_auth_cookie, so both sides agree.
+const NOT_AUTH = new Set(['__cf_bm', '_cfuvid', 'cf_clearance', '__cflb', '_ga', '_gid', '_gcl_au', '_fbp', '_fbc',
+  '__stripe_mid', '__stripe_sid', 'm', 'ajs_anonymous_id', 'ajs_user_id', 'nid', 'aec', 'ar_debug', 'datadome', 'aws-waf-token']);
+const AUTH_MARKERS = ['sess', 'auth', 'token', 'login', 'logged', 'sid', 'jwt', 'remember', 'li_at', 'access',
+  'refresh', 'user', 'account', 'identity', '_secure-'];
+export function isAuthCookie(name) {
+  const n = String(name || '').toLowerCase();
+  if (NOT_AUTH.has(n) || n.startsWith('_ga_') || n.startsWith('_hj')) return false;
+  return AUTH_MARKERS.some(m => n.includes(m));
+}
+
+// A sign-in page is not a login worth saving.
+export function looksLikeLoginPage(href) {
+  try {
+    const u = new URL(href);
+    return /(^|\/)(log-?in|sign-?in|signin|auth|sso|oauth|session\/new|account\/login)(\/|$|\?)/i.test(u.pathname + '/');
+  } catch { return false; }
+}
+
 function cookieParam(c) {
   const p = { name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly };
   if (c.sameSite) p.sameSite = c.sameSite;
   if (!c.session && c.expires > 0) p.expires = c.expires;
+  else p.expires = Math.floor(Date.now() / 1000) + SESSION_TTL_S;
   if (c.priority) p.priority = c.priority;
   if (c.sourceScheme) p.sourceScheme = c.sourceScheme;
   return p;
@@ -171,6 +198,20 @@ export async function syncSite(CDPClass, cdp, sessionId, { profile: explicit = '
   const cap = await capture(cdp, sessionId);
   if (!cap) return { skipped: 'not an http(s) page on a registrable domain' };
   if (!cap.cookies.length) return { skipped: `no cookies for ${cap.site}`, site: cap.site };
+  // An AUTOMATIC save needs a signed-in page: a logged-out Brex page once
+  // registered "brex" from its tracking cookies, and the next lane was sent to
+  // it (mixpeek-finances, 2026-10-07). An explicit save-profile is honoured.
+  if (reason !== 'explicit save-profile') {
+    const href = cap.origin + (cap.path || '');
+    if (looksLikeLoginPage(cap.href || href)) {
+      log({ skipped: 'login page', site: cap.site, reason });
+      return { skipped: `this is a sign-in page for ${cap.site}; nothing to save until you are signed in`, site: cap.site };
+    }
+    if (!cap.cookies.some(c => isAuthCookie(c.name))) {
+      log({ skipped: 'no session cookie', site: cap.site, reason });
+      return { skipped: `no session or auth cookie for ${cap.site}; not signed in, nothing saved`, site: cap.site };
+    }
+  }
   const profiles = list || profilesIndex();
   const cover = coveringProfile(cap.site, profiles);
   let profile = (explicit || cover?.name || cap.site.split('.')[0]).replace(/[^A-Za-z0-9._-]/g, '-');

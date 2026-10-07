@@ -127,6 +127,7 @@ pub mod ids {
     pub const CONTEXT_HEALTH: &str = "context-health";
     pub const DISK_WATCH: &str = "disk-watch";
     pub const STATUS_HISTORY: &str = "status-history";
+    pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
     pub const EPISODES: &str = "episodes";
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
@@ -182,6 +183,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::HOST_GUARD,
     ids::GOAL_KEEPER,
     ids::STATUS_HISTORY,
+    ids::BROWSER_LOGIN_SYNC,
     ids::EPISODES,
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
@@ -732,6 +734,18 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/metrics/host/pressure"),
+    },
+    Doc {
+        id: ids::BROWSER_LOGIN_SYNC,
+        name: "Browser login sync",
+        purpose: "Keeps opted-in browser profiles signed in by mirroring the listed sites' cookies from the owner's Chrome profile signed in as the same account; only sites named in the registry are ever copied.",
+        env: &[EnvControl {
+            var: "AMUX_BROWSER_LOGIN_SYNC_SECS",
+            effect: "pass interval in seconds (default 21600, 0 disables)",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/browser/profiles"),
     },
     Doc {
         id: ids::STATUS_HISTORY,

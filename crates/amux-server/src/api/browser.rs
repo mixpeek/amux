@@ -89,6 +89,12 @@ pub fn routes() -> Router<AppState> {
         .route("/profile/create", post(profile_create))
         .route("/profile/combine", post(profile_combine))
         .route("/profile/{name}", delete(profile_delete))
+        // Plural spelling, by analogy with GET /profiles: mixpeek-finances got
+        // a 404 deleting a dead profile on 2026-10-07 and the profile stayed.
+        .route("/profiles/{name}", delete(profile_delete))
+        .route("/profile-for", get(profile_for))
+        .route("/profile/meta", post(profile_meta))
+        .route("/sync-logins", post(sync_logins))
         .route("/navigate", post(navigate))
         .route("/screenshot", get(screenshot))
         .route("/screenshot/file", get(screenshot_file))
@@ -1284,7 +1290,19 @@ async fn start(
     headers: HeaderMap,
     body: Option<Json<StartBody>>,
 ) -> Response {
-    let Json(body) = body.unwrap_or_default();
+    let Json(mut body) = body.unwrap_or_default();
+    // NO PROFILE NAMED -> THE DEFAULT IDENTITY, said out loud (2026-10-07).
+    // Before, an empty name launched the grab-bag `default` profile, which is
+    // how a lane paying a vendor landed on Brex's login page. Resolved before
+    // the scope check, so a worker barred from the default is refused for it
+    // rather than handed it.
+    let mut profile_chosen_by: Option<&'static str> = None;
+    if body.profile.trim().is_empty() {
+        let worker = explicit_session(body.session.as_deref(), &headers).unwrap_or_default();
+        let (p, why) = default_browser_profile(&worker);
+        body.profile = p;
+        profile_chosen_by = Some(why);
+    }
     // Viewport request validated BEFORE launching — a 400 must not cost a
     // Chrome start, and the contract wording matches the viewport action's.
     let dev = body.device.as_deref().unwrap_or("").trim().to_lowercase();
@@ -1520,6 +1538,10 @@ async fn start(
                 }),
             )
             .await;
+            if let (Some(why), Some(o)) = (profile_chosen_by, v.as_object_mut()) {
+                o.insert("profile".into(), json!(body.profile));
+                o.insert("profile_chosen_by".into(), json!(why));
+            }
             Json(v).into_response()
         }
         Err(e) => {
@@ -2343,6 +2365,201 @@ pub(crate) fn profile_contents(dir: &std::path::Path) -> (Option<i64>, Vec<Strin
     }
 }
 
+/// The jar's live cookies and logins (integrations::browser_logins). Copy-first
+/// like `profile_contents`. None when the jar exists but cannot be read.
+pub(crate) fn profile_jar(dir: &std::path::Path) -> Option<crate::integrations::browser_logins::JarSummary> {
+    use crate::integrations::browser_logins as bl;
+    let Some(db) = profile_cookie_db(dir) else {
+        return Some(bl::JarSummary::default());
+    };
+    let tmp = std::env::temp_dir().join(format!(
+        "amux-profile-jar-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+    ));
+    std::fs::copy(&db, &tmp).ok()?;
+    let rows = bl::read_rows(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    rows.ok().map(|r| bl::summarize(&r, chrono::Utc::now().timestamp()))
+}
+
+/// (profile, why) for a worker that names none: the scoped setting
+/// AMUX_BROWSER_DEFAULT_PROFILE (process env, then worker > group > global),
+/// else the registry's primary profile, else `default`.
+pub(crate) fn default_browser_profile(worker: &str) -> (String, &'static str) {
+    let scoped = std::env::var("AMUX_BROWSER_DEFAULT_PROFILE").ok().filter(|v| !v.trim().is_empty()).or_else(|| {
+        (!worker.is_empty()).then(|| {
+            crate::api::session_verbs::scoped_setting_in(
+                &crate::api::session_verbs::home(),
+                worker,
+                "AMUX_BROWSER_DEFAULT_PROFILE",
+            )
+        }).flatten()
+    });
+    let reg = chrome::registry_load(&chrome::amux_home());
+    crate::integrations::browser_logins::default_profile_for(scoped, &reg)
+}
+
+#[derive(Deserialize)]
+struct ProfileForQuery {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    site: String,
+    #[serde(default)]
+    worker: Option<String>,
+}
+
+/// GET /profile-for?url=... — the ONE profile a worker should use for a site,
+/// whether it is signed in there, and why (2026-10-07). Answers for the
+/// calling worker's scope (X-Amux-Session, or ?worker= for the owner asking
+/// on a worker's behalf).
+async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Response {
+    use crate::integrations::browser_logins as bl;
+    let raw = if q.site.trim().is_empty() { q.url.trim().to_string() } else { q.site.trim().to_string() };
+    let host = reqwest::Url::parse(&raw)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| raw.split('/').next().unwrap_or("").to_string());
+    let Some(site) = bl::site_of(&host) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "pass ?url=<https://...> or ?site=<domain> naming a public site" }),
+        );
+    };
+    let worker = q.worker.clone().filter(|w| !w.trim().is_empty()).or_else(|| explicit_session(None, &headers)).unwrap_or_default();
+    let home = chrome::amux_home();
+    let w2 = worker.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let list = chrome::list_profiles(&home, false);
+        let chrome_dir = chrome::chrome_user_data_dir();
+        let cands: Vec<bl::Candidate> = list
+            .iter()
+            .filter(|p| p.on_disk)
+            .map(|p| bl::Candidate {
+                name: p.name.clone(),
+                role: p.role.clone(),
+                domains: p.domains.clone(),
+                allowed: w2.is_empty() || super::browser_scope::profile_allowed(&w2, &p.name).is_ok(),
+                jar: profile_jar(&crate::integrations::browser::resolve_profile_dir(&home, &chrome_dir, &p.name))
+                    .unwrap_or_default(),
+            })
+            .collect();
+        let (default_profile, _) = default_browser_profile(&w2);
+        (bl::resolve_for_site(&site, &cands, &default_profile), site, cands.len())
+    })
+    .await;
+    match out {
+        Ok((choice, site, n)) => {
+            tracing::info!(target: "amux::browser", site = %site, worker = %worker, profile = %choice.profile,
+                signed_in = choice.signed_in, measured = true, n_considered = n,
+                verdict = "browser_profile_resolved", "browser profile chosen for a site");
+            let mut v = serde_json::to_value(&choice).unwrap_or(Value::Null);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("site".into(), json!(site));
+                o.insert("worker".into(), json!(worker));
+                o.insert("measured".into(), json!(true));
+                o.insert("n_considered".into(), json!(n));
+            }
+            Json(v).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) })),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProfileMetaBody {
+    #[serde(alias = "profile")]
+    name: String,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    /// Replaces the registered domains when given.
+    #[serde(default)]
+    domains: Option<Vec<String>>,
+    /// Opt into the login sync: {"from":"chrome","chrome_identity":"...",
+    /// "sites":[...]}; `null` removes it. Only listed sites are ever copied.
+    #[serde(default)]
+    sync: Option<Value>,
+}
+
+/// POST /profile/meta — set a profile's declared role, identity, label and
+/// domains in the registry. The derived fields (logins, signed_in_to) need no
+/// maintenance; these are the ones a human decides.
+async fn profile_meta(headers: HeaderMap, Json(b): Json<ProfileMetaBody>) -> Response {
+    use crate::integrations::browser_logins as bl;
+    let name = b.name.trim().to_string();
+    if name.is_empty() {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": "name is required" }));
+    }
+    if let Some(r) = b.role.as_deref() {
+        if !bl::ROLES.contains(&r) {
+            return err(StatusCode::BAD_REQUEST, json!({ "error": format!("role must be one of {:?}", bl::ROLES) }));
+        }
+    }
+    let home = chrome::amux_home();
+    let mut reg = chrome::registry_load(&home);
+    let mut entry = match reg.get(&name) {
+        Some(Value::Object(m)) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    entry.entry("domains").or_insert_with(|| json!([]));
+    entry.entry("label").or_insert_with(|| json!(""));
+    if let Some(r) = b.role { entry.insert("role".into(), json!(r)); }
+    if let Some(i) = b.identity { entry.insert("identity".into(), json!(i.trim())); }
+    if let Some(l) = b.label { entry.insert("label".into(), json!(l.trim())); }
+    if let Some(sy) = b.sync {
+        if sy.is_null() {
+            entry.remove("sync");
+        } else {
+            let from_ok = sy.get("from").and_then(Value::as_str) == Some("chrome");
+            let sites_ok = sy.get("sites").and_then(Value::as_array).is_some_and(|a| !a.is_empty() && a.iter().all(Value::is_string));
+            let src_ok = sy.get("chrome_identity").and_then(Value::as_str).is_some()
+                || sy.get("chrome_profile").and_then(Value::as_str).is_some();
+            if !(from_ok && sites_ok && src_ok) {
+                return err(StatusCode::BAD_REQUEST, json!({
+                    "error": "sync must be {\"from\":\"chrome\", \"chrome_identity\" or \"chrome_profile\", \"sites\": [non-empty list]}",
+                }));
+            }
+            entry.insert("sync".into(), sy);
+        }
+    }
+    if let Some(d) = b.domains {
+        let d: Vec<String> = d.into_iter().map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect();
+        entry.insert("domains".into(), json!(d));
+    }
+    entry.insert("updated".into(), json!(chrono::Utc::now().timestamp()));
+    let by = explicit_session(None, &headers).unwrap_or_else(|| "owner".into());
+    entry.insert("updated_by".into(), json!(by));
+    let v = Value::Object(entry);
+    reg.insert(name.clone(), v.clone());
+    if let Err(e) = chrome::registry_save(&home, &reg) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) }));
+    }
+    tracing::info!(target: "amux::browser", profile = %name, by = %by, role = v["role"].as_str().unwrap_or(""),
+        measured = true, n_considered = 1, verdict = "browser_profile_meta_set", "browser profile metadata set");
+    Json(json!({ "ok": true, "name": name, "entry": v })).into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct SyncLoginsBody {
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+/// POST /sync-logins {profile?} — run the browser login sync now (the same
+/// pass the background job runs), for one profile or all that opt in.
+async fn sync_logins(body: Option<Json<SyncLoginsBody>>) -> Response {
+    let only = body.and_then(|Json(b)| b.profile).filter(|p| !p.trim().is_empty());
+    match tokio::task::spawn_blocking(move || crate::runtime_jobs::browser_login_sync::run_pass(only.as_deref())).await {
+        Ok(reports) => Json(json!({ "ok": true, "measured": true, "n_considered": reports.len(), "profiles": reports })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": with_cause(&e) })),
+    }
+}
+
 async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Response {
     let with_sizes = q
         .sizes
@@ -2416,9 +2633,17 @@ async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Respons
                     &p.name,
                 );
                 let (cookies, hosts) = profile_contents(&dir);
+                let jar = profile_jar(&dir);
+                // `signed_in_to` is the sites with a LIVE LOGIN cookie, not
+                // every host with any cookie: a tracker and a dead session
+                // used to read as signed in (mixpeek-finances, Brex, 2026-10-07).
+                let cookies = jar.as_ref().map(|j| j.cookies).or(cookies);
                 o.insert("cookies".into(), json!(cookies));
                 o.insert("cookies_measured".into(), json!(cookies.is_some()));
-                o.insert("signed_in_to".into(), json!(hosts));
+                o.insert("cookies_expired".into(), json!(jar.as_ref().map(|j| j.cookies_expired)));
+                o.insert("signed_in_to".into(), json!(jar.as_ref().map(|j| j.signed_in_to()).unwrap_or_default()));
+                o.insert("logins".into(), json!(jar.as_ref().map(|j| j.logins.clone()).unwrap_or_default()));
+                o.insert("cookie_hosts".into(), json!(hosts));
                 o.insert("empty".into(), json!(cookies == Some(0)));
                 // One sentence a human can read in a list, without launching
                 // anything. The label stays authoritative when somebody set
@@ -2428,8 +2653,11 @@ async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Respons
                     json!(match (cookies, hosts.first()) {
                         (Some(0), _) => "empty — no logins, nothing to reuse".to_string(),
                         (None, _) => "could not read this profile's cookie jar".to_string(),
-                        (Some(n), Some(top)) =>
-                            format!("{n} cookie(s) across {} site(s); mainly {top}", hosts.len()),
+                        (Some(n), Some(top)) => match jar.as_ref().map(|j| j.logins.len()) {
+                            Some(0) => format!("{n} cookie(s), no live login (mainly {top})"),
+                            Some(l) => format!("signed in to {l} site(s): {}", jar.as_ref().map(|j| j.signed_in_to().into_iter().take(6).collect::<Vec<_>>().join(", ")).unwrap_or_default()),
+                            None => format!("{n} cookie(s) across {} site(s); mainly {top}", hosts.len()),
+                        },
                         (Some(n), None) => format!("{n} cookie(s), no host could be read"),
                     }),
                 );
@@ -2445,8 +2673,19 @@ async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Respons
             v
         })
         .collect();
+    // Best role first, deprecated last, so the first rows ARE the answer.
+    let mut rows = rows;
+    rows.sort_by(|a, b| {
+        let ra = crate::integrations::browser_logins::role_rank(a["role"].as_str().unwrap_or(""));
+        let rb = crate::integrations::browser_logins::role_rank(b["role"].as_str().unwrap_or(""));
+        ra.cmp(&rb).then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    let (default_profile, default_why) = default_browser_profile(you.as_deref().unwrap_or(""));
     Json(json!({
         "profiles": rows,
+        "default_profile": default_profile,
+        "default_profile_chosen_by": default_why,
+        "how_to_choose": "GET /api/browser/profile-for?url=<url> (or `amux browser for <url>`) names the one profile to use for a site, whether it is signed in there, and why. With no profile, /api/browser/start uses default_profile.",
         "backends": ["native"],
         "chrome_profiles": chrome_profiles,
         "profile_ttl_days": ttl_days,
@@ -2454,7 +2693,10 @@ async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Respons
                              reaper. Registered profiles (a deliberate save with domains/label) \
                              are exempt at any age, as is any profile with a browser running on \
                              it. 0 disables the arm.",
-        "field_note": "`signed_in_to`, `cookies`, `empty` and `summary` are DERIVED from each \
+        "field_note": "`signed_in_to` lists sites with a live LOGIN cookie (an unexpired session or \
+                       auth cookie; trackers and expired sessions do not count) and `logins` gives \
+                       each one's expiry. `signed_in_to`, `logins`, `cookies`, `empty` and \
+                       `summary` are DERIVED from each \
                        profile's cookie jar on every read — they need no maintenance and cannot \
                        drift from what the profile holds. `label` and `domains` are what a human \
                        chose to record and stay authoritative where present. `cookies_measured` \
