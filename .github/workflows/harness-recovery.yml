@@ -1,0 +1,42 @@
+name: harness recovery
+on:
+  push:
+    branches: [main]
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'scripts/**', 'e2e/chaos/**', '.github/workflows/harness-recovery.yml']
+  pull_request:
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', 'scripts/**', 'e2e/chaos/**', '.github/workflows/harness-recovery.yml']
+permissions:
+  contents: read
+concurrency:
+  group: harness-recovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    # No user systemd scope is needed in this disposable container. The real
+    # compiler and consumers run here; every server HOME and tmux socket is private.
+    container: rust:bookworm
+    timeout-minutes: 30
+    steps:
+      - name: Install private harness runtime
+        run: apt-get update && apt-get install -y git tmux python3 ca-certificates procps
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Use the shared dependency target
+        run: echo "CARGO_TARGET_DIR=$HOME/.amux/rust-build-target" >> "$GITHUB_ENV"
+      - name: Real process crash and stateful recovery
+        env:
+          AMUX_RECOVERY_ARTIFACT_DIR: ${{ runner.temp }}/harness-recovery
+        run: bash scripts/test-harness-recovery.sh
+      - name: Retain measured recovery receipts even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-recovery-receipts
+          path: |
+            ${{ runner.temp }}/harness-recovery/*.log
+            ${{ runner.temp }}/harness-recovery/*.sha256
+            /tmp/amux-chaos-*/recovery-receipt.json
+          if-no-files-found: warn
