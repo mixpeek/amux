@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2432,
+  "n_considered": 2433,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1064,6 +1064,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fitRules": {
+      "kind": "command._fitRules",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_focusAnswer": {
       "kind": "command._focusAnswer",
       "feedback_required": true,
@@ -2006,6 +2012,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekHtml": {
+      "kind": "command._peekHtml",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekIdentityDiscard": {
       "kind": "command._peekIdentityDiscard",
       "feedback_required": true,
@@ -2036,6 +2048,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekLiveHtml": {
+      "kind": "command._peekLiveHtml",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekLoadEarlier": {
       "kind": "command._peekLoadEarlier",
       "feedback_required": true,
@@ -2056,6 +2074,12 @@
     },
     "_peekLookupSelection": {
       "kind": "command._peekLookupSelection",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekMarkupWarn": {
+      "kind": "command._peekMarkupWarn",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
