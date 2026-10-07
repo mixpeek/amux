@@ -782,6 +782,26 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
     }
     let (h, l) = (hub.clone(), lane.to_string());
     let title_re = pool_title_re(&home, lane);
+    // READ FIRST, WRITE ONLY FOR REAL WORK (gs12-deputy, 2026-10-07). The
+    // whole search ran inside the store's single writer: 5 to 7 s every
+    // minute, and 138 s once (19:16-19:18Z, measuring a 298-card dependency
+    // web), so every board write in amux queued behind it and a 300-byte
+    // desc_append timed out at 30 and 90 s. The search reads; only the claim
+    // writes. A pass with nothing claimable never takes the writer.
+    let (ph, pl, pre) = (hub.clone(), lane.to_string(), title_re.clone());
+    let cap = group_max(lane);
+    let planned = store.read_async(move |conn| Ok(plan_pool_pull(conn, &ph, &pl, pre.as_ref(), cap)?)).await;
+    match planned {
+        Ok(Plan::Busy) => return PoolPull::NotApplicable,
+        Ok(Plan::Nothing(pool)) => {
+            if first_this_window(lane) {
+                tracing::info!(session = lane, hub, pool, measured = true, n_considered = pool, verdict = "a2_pool_empty",
+                    "an idle lane found nothing ready in its hub's pool (contract A2)");
+            }
+            return PoolPull::Empty { pool };
+        }
+        Ok(Plan::Work) | Err(_) => {}
+    }
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot_w = slot.clone();
     let _ = store.write_async(move |conn| {
@@ -818,6 +838,54 @@ pub async fn pull_from_pool(store: &crate::db::SharedStore, lane: &str) -> PoolP
         }
         None => PoolPull::Empty { pool: 0 },
     }
+}
+
+/// What a read-only look at the pool found.
+#[derive(Debug, PartialEq)]
+pub enum Plan {
+    Busy,
+    Nothing(usize),
+    Work,
+}
+
+/// claim_pool_card's search without its writes: is there anything this lane
+/// could claim? Too-large or cross-board groups are reported here, from the
+/// read, once per card per window, so the write path rarely meets them.
+pub fn plan_pool_pull(conn: &Connection, hub: &str, lane: &str, title_re: Option<&regex::Regex>, cap: usize) -> rusqlite::Result<Plan> {
+    if lane_has_work(conn, lane)? {
+        return Ok(Plan::Busy);
+    }
+    if title_re.is_some() && candidates(conn, lane, title_re, false)?.iter().any(|c| c.2 && c.1 == "backlog") {
+        return Ok(Plan::Work);
+    }
+    let cards = pool_cards(conn, hub, title_re)?;
+    if cards.iter().any(|c| c.2) {
+        return Ok(Plan::Work);
+    }
+    if let Some(re) = title_re {
+        for (card, _status, source, _n) in unblockers(conn, hub, lane, re)? {
+            if source != "hub" {
+                return Ok(Plan::Work);
+            }
+            match dependency_component(conn, hub, &card, cap)? {
+                Ok(m) if m.len() <= cap => return Ok(Plan::Work),
+                Ok(_) => {
+                    if first_this_window(&format!("toolarge:{card}")) {
+                        let size = dependency_component(conn, hub, &card, COMPONENT_MEASURE_MAX)?.map_or(cap + 1, |all| all.len());
+                        tracing::info!(card, lane, hub, size, cap, measured = true, n_considered = size, verdict = "a2_pool_group_too_large",
+                            "a blocking card's dependency group is larger than AMUX_A2_GROUP_MAX; it stays on the hub");
+                    }
+                }
+                Err(other) => {
+                    if first_this_window(&format!("refused:{card}")) {
+                        tracing::info!(card, lane, hub, error = %format!("{other} is on another board"), measured = true, n_considered = 1,
+                            verdict = "a2_pool_move_refused", "a dependency group could not move as one unit; it stays on the hub and the pull tries the next card");
+                    }
+                }
+            }
+        }
+    }
+    Ok(Plan::Nothing(cards.len()))
 }
 
 /// a2_pool_empty once per lane per 10 minutes, not every board-drive pass.
@@ -1113,6 +1181,36 @@ mod tests {
 
     /// The group is all or nothing: over the cap it stays, and a member that
     /// cannot move (in doing) keeps every member on the hub.
+    /// The search runs on a read: a pool whose only blocker's group is too
+    /// large plans Nothing (no writer taken); a ready card plans Work; a lane
+    /// already holding work plans Busy (gs12-deputy, 2026-10-07).
+    #[test]
+    fn a_pool_with_nothing_claimable_is_planned_from_a_read() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("q.db")).unwrap();
+        let re = regex::Regex::new("^GS12 proof").unwrap();
+        store.write(|c| {
+            // B blocks proof P; B's group (B, P, D1, D2) is larger than a cap of 2.
+            for (id, title, status, deps) in [
+                ("B", "build the thing", "backlog", "[]"), ("P", "GS12 proof 1 run", "backlog", "[\"B\"]"),
+                ("D1", "d1", "backlog", "[\"B\"]"), ("D2", "d2", "backlog", "[\"B\"]"),
+            ] {
+                c.execute("INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                           VALUES (?1, ?2, ?3, 'hub', 'code', ?4, 0, 0, 0, 0)", rusqlite::params![id, title, status, deps])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let plan = |cap: usize| plan_pool_pull(&store.read().unwrap(), "hub", "lane", Some(&re), cap).unwrap();
+        assert!(matches!(plan(2), Plan::Nothing(_)), "only a too-large group: nothing to claim");
+        assert_eq!(plan(8), Plan::Work, "the group fits: claim it");
+        store.write(|c| {
+            c.execute("INSERT INTO issues (id, title, status, session, type, depends_on, pos, created, updated, archived) \
+                       VALUES ('L', 'mine', 'doing', 'lane', 'code', '[]', 0, 0, 0, 0)", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(plan(8), Plan::Busy, "a lane holding work is busy");
+    }
+
     #[test]
     fn a_dependency_group_moves_whole_or_not_at_all() {
         let home = tempfile::tempdir().unwrap();
