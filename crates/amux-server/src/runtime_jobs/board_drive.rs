@@ -2364,11 +2364,45 @@ fn drainable_backlog_rows(
     let mut eligible = Vec::new();
     for id in candidates {
         let row = bs::get_issue(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        if deps_blocking(conn, &row).is_empty() {
-            eligible.push(row);
+        if !deps_blocking(conn, &row).is_empty() {
+            continue;
         }
+        if let Some(open) = trigger_waits_on_open_card(conn, &row.id, row.source_ref.as_deref())? {
+            tracing::debug!(target: "amux::board_drive", card = %row.id, waits_on = %open, measured = true, n_considered = 1,
+                verdict = "backlog_trigger_card_open", "a backlog card's trigger names a card that is not finished; it stays parked");
+            continue;
+        }
+        eligible.push(row);
     }
     Ok(eligible)
+}
+
+/// A TRIGGER THAT NAMES A CARD IS CHECKED, NOT AGED OUT (gs12-mvs, 2026-10-07:
+/// GM-37, GM-110, GM-111, GM-138 and GM-150, parked on GE1-24 and GM-109,
+/// were drained back into pickup together once their triggers passed
+/// SOURCE_REF_STALE_S, while the cards they named were still open). The 24 h
+/// expiry exists for conditions the server cannot see; a card id it can.
+/// Returns the first card the trigger names that exists, is not this card,
+/// is not archived, and is not done, verified or discarded.
+pub(crate) fn trigger_waits_on_open_card(conn: &Connection, own: &str, source_ref: Option<&str>) -> rusqlite::Result<Option<String>> {
+    let Some(text) = source_ref.filter(|t| !t.trim().is_empty()) else { return Ok(None) };
+    static ID: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Z][A-Z0-9]{0,9}-[0-9]+\b").unwrap());
+    for m in ID.find_iter(text) {
+        let id = m.as_str();
+        if id == own {
+            continue;
+        }
+        let row: Option<(String, i64)> = conn
+            .query_row("SELECT status, COALESCE(archived, 0) FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        if let Some((status, archived)) = row {
+            if archived == 0 && !matches!(status.as_str(), "done" | "verified" | "discarded") {
+                return Ok(Some(id.to_string()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn drainable_backlog_ids(conn: &Connection, session: &str, now: f64) -> Vec<String> {
@@ -11474,6 +11508,31 @@ mod tests {
             ended.delivered.lock().unwrap().iter().any(|(_, t)| t.contains("BG")),
             "the To Do card was not delivered: {trace:?}"
         );
+    }
+
+    /// gs12-mvs, 2026-10-07: a backlog trigger that names an unfinished card
+    /// keeps the card out of the drain however old the trigger is; once that
+    /// card is done it drains as usual.
+    #[test]
+    fn a_trigger_naming_an_open_card_holds_the_card_past_the_stale_window() {
+        let (_dir, _state, store) = drive_state();
+        drive_card(&store, "GM-37", "backlog", "agent", "code");
+        drive_card(&store, "GE1-24", "doing", "agent", "code");
+        let stale = now_f64() as i64 - SOURCE_REF_STALE_S - 3600;
+        store.write(move |c| {
+            c.execute("UPDATE issues SET source_ref='GE1-24 lands on main, then rerun proof 43', last_verified_at=?1 WHERE id='GM-37'", [stale])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let ids = |s: &std::sync::Arc<crate::db::Store>| drainable_backlog_ids(&s.read().unwrap(), "lane", now_f64());
+        assert!(!ids(&store).contains(&"GM-37".to_string()), "GE1-24 is open: GM-37 stays parked");
+        store.write(|c| {
+            c.execute("UPDATE issues SET status='done' WHERE id='GE1-24'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(ids(&store).contains(&"GM-37".to_string()), "GE1-24 done: the stale trigger drains as before");
+        let conn = store.read().unwrap();
+        assert_eq!(trigger_waits_on_open_card(&conn, "X-1", Some("waiting on X-1 itself and NOPE-9")).unwrap(), None,
+            "its own id and unknown ids do not hold it");
     }
 
     /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a

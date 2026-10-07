@@ -350,7 +350,7 @@ pub type PoolCard = (String, String, bool, bool);
 /// `tag_ok`), or titled to match `title_re`. Reopened-by-review cards first,
 /// then board order.
 fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, tag_ok: bool) -> rusqlite::Result<Vec<PoolCard>> {
-    type Row = (String, String, String, String, String, bool, bool, i64, String);
+    type Row = (String, String, String, String, String, bool, bool, i64, String, String);
     // A PARKED backlog card is not ready (gs12-tiering MO-4071, gs12-obs
     // MO-4086, gs12-cicd MO-4438, 2026-10-07): `amux board backlog --trigger`
     // stores the wait in source_ref and stamps last_verified_at, and A2 pulled
@@ -365,17 +365,17 @@ fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, t
                     EXISTS(SELECT 1 FROM issue_tags t WHERE t.issue_id = i.id AND t.tag = ?2), \
                     (i.status = 'backlog' AND ((COALESCE(i.source_ref, '') <> '' AND COALESCE(i.last_verified_at, 0) > ?3) \
                                                OR COALESCE(i.blocked_on, '') <> '')), \
-                    COALESCE(i.entered_state_at, 0), COALESCE(i.log, '') \
+                    COALESCE(i.entered_state_at, 0), COALESCE(i.log, ''), COALESCE(i.source_ref, '') \
              FROM issues i \
              WHERE i.session = ?1 AND i.status IN ('todo', 'backlog') \
                AND i.deleted IS NULL AND COALESCE(i.archived, 0) = 0 \
              ORDER BY i.pos, i.created, i.id",
         )?
-        .query_map(rusqlite::params![owner, POOL_TAG, verified_cut], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))?
+        .query_map(rusqlite::params![owner, POOL_TAG, verified_cut], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::new();
     let now = crate::config::now_f64() as i64;
-    for (id, status, deps, title, desc, tagged, parked, entered, log) in rows {
+    for (id, status, deps, title, desc, tagged, parked, entered, log, source_ref) in rows {
         let by_title = title_re.is_some_and(|re| re.is_match(&title));
         if !((tag_ok && tagged) || by_title) {
             continue;
@@ -386,7 +386,11 @@ fn candidates(conn: &Connection, owner: &str, title_re: Option<&regex::Regex>, t
             tracing::info!(card = %id, owner, measured = true, n_considered = 1, verdict = "a2_pool_skipped_parked",
                 "A2 leaves a backlog card its lane parked (fresh trigger, blocker, or its own move within the cooldown) where it is");
         }
-        let ready = !parked && deps_resolved(conn, &deps)?;
+        // A backlog trigger naming an unfinished card holds it too, as the
+        // drain does (board_drive::trigger_waits_on_open_card).
+        let waits = status == "backlog"
+            && crate::runtime_jobs::board_drive::trigger_waits_on_open_card(conn, &id, Some(&source_ref))?.is_some();
+        let ready = !parked && !waits && deps_resolved(conn, &deps)?;
         let reopened = reopened_by_review(conn, &id, &desc)?;
         out.push((id, status, ready, reopened));
     }
