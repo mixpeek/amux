@@ -24455,7 +24455,8 @@ function _renderFileBody(data, mode) {
     body.innerHTML = '';
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
-    iframe.srcdoc = data.content;
+    const _purl = _htmlPreviewUrl(data.path);   // own URL: anchors/links stay in the document
+    if (_purl) iframe.src = _authUrl(_purl); else iframe.srcdoc = data.content;
     iframe.onload = function() {
       // Bind anchor links to scroll within the iframe. Cross-origin under the
       // sandbox above → contentDocument access throws; the try/catch makes this a
