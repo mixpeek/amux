@@ -43,7 +43,13 @@ json.dump([{"name":"gs12-a","status":"idle"},{"name":"gs12-b","status":"active"}
 json.dump({"wait_p95_min":5,"n_considered":3},open(f"{T}/land.json","w"))
 json.dump({"deploy_sha":"04bec9a4f2b8"},open(f"{T}/prod.json","w"))
 PY
-run() { python3 "$ROOT/scripts/pipeline-bottlenecks.py" --constraints-only --orchestrator-asks "$T/asks.txt" \
+python3 - "$T" <<'PY'
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]+"/db.sqlite")
+c.execute("CREATE TABLE card_contracts (card TEXT PRIMARY KEY, review_state TEXT)")
+c.commit()
+PY
+run() { python3 "$ROOT/scripts/pipeline-bottlenecks.py" --constraints-only --orchestrator-asks "$T/asks.txt" --db "$T/db.sqlite" \
         --sessions-file "$T/sessions.json" --land-file "$T/land.json" --prod-file "$T/prod.json" --rules-off "6,7" "$@" 2>&1 | grep '"top_constraint"\|"no_constraint"' | tail -1; }
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; fail=1; fi; }
@@ -70,4 +76,57 @@ out=$(run --board-file "$T/board_ok.json" --dry-run)
 check "proof on pace is not the constraint" "no" "$(v '"yes" if d["name"]=="proof_stalled" else "no"')"
 out=$(run --board-file "$T/missing.json" --dry-run)
 check "an unreadable board is reported as unmeasured" "yes" "$(v '"yes" if "board" in d.get("why_unmeasured","") else "no"')"
+
+# --- Lever feedback loop and the two 2026-10-07 probes ---------------------
+python3 - "$T" "$now" <<'PY'
+import json,sqlite3,sys
+T,now=sys.argv[1],int(sys.argv[2])
+# 12 open proof cards on the hub chained into one web through plan items.
+w=[{"id":f"PL-{i}","session":"mixpeek-override","title":f"plan {i}","status":"backlog","depends_on":[f"PL-{i-1}"] if i else []} for i in range(12)]
+w+=[{"id":f"WP-{i}","session":"mixpeek-override","title":f"GS12 proof w{i}","status":"backlog","depends_on":[f"PL-{i}"]} for i in range(12)]
+# Done cards 10 h old: D-1 is under review, D-2 has no review state, D-3 has no row, D-4 is an epic.
+w+=[{"id":f"D-{i}","session":"gs12-data","title":f"d{i}","status":"done","type":"epic" if i==4 else "code","entered_state_at":now-36000} for i in range(1,5)]
+json.dump(w,open(f"{T}/board_web.json","w"))
+c=sqlite3.connect(f"{T}/db.sqlite")
+c.executemany("INSERT INTO card_contracts VALUES (?,?)",[("D-1","pending"),("D-2",None)])
+c.commit()
+PY
+rm -f "$T/state.json" "$T/amux-calls.log" "$T/asks.txt"
+web() { run --board-file "$T/board_web.json" --now "$1" | python3 -c "import json,sys;d=json.loads(sys.stdin.read());r={x['name']:x['est_hours'] for x in d['ranked']};print($2)"; }
+check "proof cards inside a web over the cap are counted" "6.0" "$(web $now 'r["proof_blocked_by_web"]')"
+out=$(run --board-file "$T/board_web.json" --now $now --dry-run)
+check "done cards with no review state and no row are unreachable; review in progress and epics are not" "0.5" "$(v '{x["name"]:x["est_hours"] for x in d["ranked"]}["review_unreachable"]')"
+check "a lever reaches the web and the harness gap, not only the top constraint" "yes yes" "$(v '("yes" if "; proof_blocked_by_web: " in d["action"] else "no")+" "+("yes" if "; review_unreachable: " in d["action"] else "no")')"
+rm -f "$T/state.json" "$T/amux-calls.log" "$T/asks.txt" "$T/out.jsonl"
+for k in 0 1 2 3; do out=$(run --board-file "$T/board_stalled.json" --now $((now + k * 4 * 3600))); done
+check "each unmoved lever is judged no_effect after the eval window" "3" "$(grep '"name": "proof_stalled"' "$T/out.jsonl" | grep -c '"outcome": "no_effect"')"
+check "a proof escalation shares the tripwire's one alert a day" "1 1" "$(grep -c '^alert' "$T/amux-calls.log") $(grep -c 'deduped: the proof tripwire' "$T/out.jsonl")"
+check "the run publishes the lever record" "0/3" "$(v 'd["lever_record"].get("proof_stalled")')"
+python3 - "$T" "$now" <<'PY'
+import json,sys
+T,now=sys.argv[1],int(sys.argv[2])
+r=[{"id":f"V-{i}","session":"gs12-extra-1","title":f"GS12 proof {i}","status":"verified","closed_at":now-3600} for i in range(10)]
+r+=[{"id":f"A-{i}","session":"gs12-extra-2","title":f"GS12 proof a{i}","status":"doing"} for i in range(12)]
+r+=[{"id":f"R-{i}","session":"gs12-model","title":f"card {i}","status":"done","entered_state_at":now-30*3600} for i in range(40)]
+json.dump(r,open(f"{T}/board_review.json","w"))
+c=__import__("sqlite3").connect(f"{T}/db.sqlite")
+c.executemany("INSERT INTO card_contracts VALUES (?,?)",[(f"R-{i}","pending") for i in range(40)])
+c.commit()
+PY
+rm -f "$T/state.json" "$T/amux-calls.log" "$T/asks.txt"
+for k in 0 1 2 3; do out=$(run --board-file "$T/board_review.json" --now $((now + k * 4 * 3600))); done
+check "three no_effect levers on an orchestrator constraint escalate it to Ethan" "1" "$(grep -c '^alert GS-12 review_backlog: three levers' "$T/amux-calls.log")"
+check "the review lever names the action, oldest first" "yes" "$(grep -q 'verify or reopen them oldest first' "$T/asks.txt" && echo yes)"
+rm -f "$T/state.json" "$T/amux-calls.log" "$T/asks.txt"
+for k in 0 1; do out=$(run --board-file "$T/board_stalled.json" --now $((now + k * 4 * 3600))); done
+# A moved number is recorded as moved and resets the run.
+python3 - "$T" "$now" <<'PY'
+import json,sys
+T,now=sys.argv[1],int(sys.argv[2])
+b=json.load(open(f"{T}/board_stalled.json"))
+b+=[{"id":f"NV-{i}","session":"gs12-extra-1","title":f"GS12 proof n{i}","status":"verified","closed_at":now+15*3600} for i in range(2)]
+json.dump(b,open(f"{T}/board_moved.json","w"))
+PY
+out=$(run --board-file "$T/board_moved.json" --now $((now + 16 * 3600)))
+check "a lever whose number moved is recorded as moved" "1" "$(grep -c '"outcome": "moved"' "$T/out.jsonl")"
 exit $fail

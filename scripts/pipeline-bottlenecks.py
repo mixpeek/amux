@@ -54,8 +54,22 @@ a day (the former SCHED-620 tripwire); owner asks blocking proof alert Ethan;
 a stuck production deploy messages the ops deputy; orchestrator-owned
 constraints append one line to ~/.amux/state/orchestrator-asks.txt for
 amux-helper's hourly batched message (never a direct send).
+
+LEVER FEEDBACK LOOP (Ethan, 2026-10-07: "your recommendation should be
+automated and learned via the schedulers in a feedback loop"). Every action
+taken on a constraint is recorded as a lever with the number it targets. After
+--lever-eval-h hours the run compares that number and logs verdict=lever_outcome
+(moved or no_effect) to the same jsonl, and keeps per-constraint tries/moved
+counts in the state file. Three no_effect outcomes in a row climb the ladder:
+an orchestrator-owned constraint goes to Ethan with its numbers and lever
+history (once a day per constraint); a harness-owned one is filed as a card on
+--harness-lane's board (once a day per constraint), so harness gaps become work.
+Two probes cover what the 2026-10-07 checks missed: review_unreachable (done
+cards with no review state for over 6 h: no reviewer will ever pick them up)
+and proof_blocked_by_web (open proof cards inside a depends_on web on the hub
+larger than the A2 group cap, which no idle lane can take whole).
 """
-import argparse, glob, json, os, re, ssl, statistics, subprocess, sys, time, urllib.request
+import argparse, glob, json, os, re, sqlite3, ssl, statistics, subprocess, sys, time, urllib.request
 
 HOME = os.path.expanduser("~")
 LOCKS = os.path.join(HOME, ".amux", "locks")
@@ -416,8 +430,142 @@ def constraints(a, now, state):
         out.append({"name": "deploy_stalled", "owner": "ops-deputy",
                     "est_hours": round(stale_h if stale_h >= a.prod_stale_h else 0, 1),
                     "numbers": {"deploy_sha": sha[:12], "hours_on_this_sha": round(stale_h, 1)}})
+    if board is not None:
+        web = proof_webs(g, hub, proof, a.group_max)
+        out.append({"name": "proof_blocked_by_web", "owner": "orchestrator",
+                    "est_hours": round(len(web["blocked"]) * 0.5, 1), "numbers": web})
+        try:
+            stuck = review_unreachable(a.db, [i for i in g if i.get("status") == "done"], now, a.review_stuck_h)
+            out.append({"name": "review_unreachable", "owner": "harness",
+                        "est_hours": round(len(stuck) * 0.25, 1),
+                        "numbers": {"count": len(stuck), "cards": stuck[:10], "older_than_h": a.review_stuck_h}})
+        except Exception:
+            unmeasured.append("contracts")
     out.sort(key=lambda c: -c["est_hours"])
     return out, n, unmeasured
+
+
+def proof_webs(g, hub, proof, cap):
+    """Open proof cards on the hub whose depends_on component (both
+    directions, hub cards only) is larger than the A2 group cap, with the
+    largest web's size and its most-connected cards (where to cut)."""
+    on_hub = {i["id"]: i for i in g if i.get("session") == hub and i.get("id")}
+    adj = {k: set() for k in on_hub}
+    for k, i in on_hub.items():
+        for d in _deps(i):
+            if d in on_hub:
+                adj[k].add(d)
+                adj[d].add(k)
+    comp, sizes = {}, {}
+    for k in on_hub:
+        if k in comp:
+            continue
+        seen, q = {k}, [k]
+        while q:
+            for m in adj[q.pop()]:
+                if m not in seen:
+                    seen.add(m)
+                    q.append(m)
+        for m in seen:
+            comp[m] = k
+        sizes[k] = seen
+    blocked = [p["id"] for p in proof if p.get("id") in comp and p.get("status") not in DONE_STATES
+               and len(sizes[comp[p["id"]]]) > cap]
+    big = max(sizes.values(), key=len) if sizes else set()
+    hubs = sorted(big, key=lambda k: -len(adj[k]))[:5] if len(big) > cap else []
+    return {"blocked": blocked[:20], "blocked_count": len(blocked), "largest_web": len(big),
+            "group_cap": cap, "most_linked": [f"{k}({len(adj[k])})" for k in hubs]}
+
+
+def review_unreachable(db, done, now, older_h):
+    """Done cards (not epics/watches/tripwires) older than older_h hours with
+    no review state on their contract row, or no row: nothing will review
+    them. Read-only."""
+    ids = [i["id"] for i in done if i.get("id") and (i.get("type") or "") not in ("epic", "watch", "tripwire")
+           and _at(i) and now - _at(i) > older_h * 3600]
+    if not ids:
+        return []
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = dict(con.execute("SELECT card, review_state FROM card_contracts WHERE card IN (%s)"
+                                % ",".join("?" * len(ids)), ids).fetchall())
+    finally:
+        con.close()
+    return [k for k in ids if rows.get(k) is None]
+
+
+# The number each constraint's lever is judged by, and which way is better.
+LEVER_METRIC = {
+    "proof_stalled": ("proof_verified", +1),
+    "proof_on_pace": ("proof_verified", +1),
+    "review_backlog": ("done_waiting", -1),
+    "review_unreachable": ("count", -1),
+    "proof_blocked_by_web": ("blocked_count", -1),
+}
+
+
+def _metric(c):
+    key, sign = LEVER_METRIC.get(c["name"], (None, -1))
+    v = c["numbers"].get(key) if key else c["est_hours"]
+    return (float(v) if isinstance(v, (int, float)) else float(c["est_hours"])), sign
+
+
+def learn(ranked, a, now, state):
+    """Judge levers older than --lever-eval-h against the current numbers,
+    log each outcome, and climb the ladder after three no_effect in a row.
+    Returns the outcome records written."""
+    by = {c["name"]: c for c in ranked}
+    st = state.setdefault("_learn", {})
+    open_levers, outcomes = [], []
+    for lv in state.get("_levers", []):
+        c = by.get(lv["name"]) or by.get("proof_on_pace" if lv["name"] == "proof_stalled" else "")
+        if now - lv["at"] < a.lever_eval_h * 3600 or c is None:
+            open_levers.append(lv)
+            continue
+        cur, sign = _metric(c)
+        moved = (cur - lv["before"]) * sign > 0
+        rec = {"ts": int(now), "verdict": "lever_outcome", "name": lv["name"], "lever": lv["action"][:200],
+               "before": lv["before"], "after": cur, "outcome": "moved" if moved else "no_effect",
+               "measured": True, "n_considered": 1}
+        k = st.setdefault(lv["name"], {"tries": 0, "moved": 0, "no_effect_run": 0, "history": []})
+        k["tries"] += 1
+        k["moved"] += int(moved)
+        k["no_effect_run"] = 0 if moved else k["no_effect_run"] + 1
+        k["history"] = (k["history"] + [f"{lv['before']:g}->{cur:g} {'moved' if moved else 'no effect'}"])[-5:]
+        if k["no_effect_run"] >= 3 and now - k.get("escalated", 0) >= 86400:
+            rec["escalation"] = escalate(a, lv["name"], c, k, state, now)
+            if not a.dry_run:
+                k["escalated"] = now
+                k["no_effect_run"] = 0
+        outcomes.append(rec)
+    state["_levers"] = open_levers
+    return outcomes
+
+
+def escalate(a, name, c, k, state, now):
+    hist = "; ".join(k["history"][-3:])
+    # One owner alert a day about proof: the tripwire may have sent it.
+    cs = state.get("_constraints", {})
+    if name.startswith("proof_") and now - cs.get("proof_alert", 0) < 86400 and cs.get("proof_alert", 0) != now:
+        return "deduped: the proof tripwire alerted Ethan within 24 h"
+    if c["owner"] == "harness":
+        title = f"harness gap: {name} unmoved by 3 levers ({json.dumps(c['numbers'])[:160]})"
+        if a.dry_run:
+            return "would file a card for " + a.harness_lane
+        r = subprocess.run(["amux", "board", "add", "--stdin"], env=dict(os.environ, AMUX_SESSION=a.harness_lane),
+                           input=title, capture_output=True, text=True)
+        return ("filed card on " if r.returncode == 0 else "card failed: ") + a.harness_lane
+    return _alert(a, f"GS-12 {name}: three levers did not move it ({hist}). Now: {json.dumps(c['numbers'])[:300]}. "
+                     f"Lever record {k['moved']}/{k['tries']} moved.",
+                  f"GS-12 lever loop: {name} unmoved 3 times (bottleneck detector)")
+
+
+def record_lever(state, c, action, now):
+    """Remember an action that can move the constraint's number."""
+    if not re.match(r"(queued|alerted|messaged|filed)", action):
+        return
+    before, _ = _metric(c)
+    state.setdefault("_levers", []).append({"name": c["name"], "action": action, "before": before, "at": now})
 
 
 def orchestrator_ask(a, now, st, key, text):
@@ -500,8 +648,24 @@ def act(top, a, now, state):
         return "none extra: A2 pool dispatch hands idle lanes ready work"
     if name == "lanes_blocked_or_cardless" and nums.get("waiting_not_on_owner") and not nums.get("active_no_valid_card"):
         return "none extra: prompt_block alerts the lane's hub after 10 min"
+    if name == "proof_blocked_by_web":
+        return orchestrator_ask(a, now, st, name,
+            f"{nums['blocked_count']} open proof cards sit in depends_on webs larger than the A2 group cap "
+            f"({nums['group_cap']}); the largest is {nums['largest_web']} cards. Split it: drop edges that are not "
+            f"real ordering constraints, starting with the most-linked cards {', '.join(nums['most_linked'])}.")
+    if name == "review_backlog":
+        return orchestrator_ask(a, now, st, name,
+            f"{nums['done_waiting']} cards at done, median {nums['median_age_h']} h: verify or reopen them oldest first.")
     if top["owner"] == "harness":
-        return "logged for amux-helper (harness-owned)"
+        if now - st.get("harness_" + name, 0) < 86400:
+            return "deduped: harness gap filed within 24 h"
+        if a.dry_run:
+            return "would file a card for " + a.harness_lane
+        r = subprocess.run(["amux", "board", "add", "--stdin"], env=dict(os.environ, AMUX_SESSION=a.harness_lane),
+                           input=f"harness gap: {name} {json.dumps(nums)[:200]}", capture_output=True, text=True)
+        if r.returncode == 0:
+            st["harness_" + name] = now
+        return ("filed card on " if r.returncode == 0 else "card failed: ") + a.harness_lane
     return orchestrator_ask(a, now, st, name, f"{name}: {json.dumps(nums)[:400]}")
 
 
@@ -520,9 +684,19 @@ def run_constraints(a, now):
     ranked, ncons, unmeas = constraints(a, now, state)
     top = ranked[0] if ranked else None
     action = act(top, a, now, state) if top else "none: nothing measured"
+    # The feedback loop needs a lever on every constraint that costs hours,
+    # not just the first: the next two, and every harness-owned one.
+    acted = [(top, action)] if top else []
+    for c in [c for i, c in enumerate(ranked[1:], 1) if c["est_hours"] > 0 and (i < 3 or c["owner"] == "harness")]:
+        r = act(c, a, now, state)
+        acted.append((c, r))
+        action += f"; {c['name']}: {r}"
     tripped = proof_tripwire(ranked, a, now, state)
     if tripped:
         action += "; proof tripwire: " + tripped
+    outcomes = learn(ranked, a, now, state)
+    for c, r in acted:
+        record_lever(state, c, r, now)
     rec = {"ts": int(now), "verdict": "top_constraint" if top and top["est_hours"] > 0 else "no_constraint",
            "name": top["name"] if top else None, "est_hours": top["est_hours"] if top else 0,
            "numbers": top["numbers"] if top else {}, "action": action,
@@ -530,8 +704,14 @@ def run_constraints(a, now):
            "measured": bool(ranked), "n_considered": ncons}
     if unmeas:
         rec["why_unmeasured"] = "could not read: " + ", ".join(unmeas)
+    rec["levers_open"] = len(state.get("_levers", []))
+    rec["lever_record"] = {k: f"{v['moved']}/{v['tries']}" for k, v in state.get("_learn", {}).items()}
     with open(OUT, "a") as f:
+        for o in outcomes:
+            f.write(json.dumps(o) + "\n")
         f.write(json.dumps(rec) + "\n")
+    for o in outcomes:
+        print(json.dumps(o))
     print(json.dumps(rec))
     json.dump(state, open(STATE, "w"))
     return rec
@@ -600,13 +780,19 @@ def main():
     ap.add_argument("--prod-url", default="https://api.mixpeek.com/version")
     ap.add_argument("--rules-off", default="", help="gs12-platform AMUX_CONTRACT_RULES_OFF (read from its env file when empty)")
     ap.add_argument("--orchestrator-asks", default=os.path.join(HOME, ".amux/state/orchestrator-asks.txt"))
+    ap.add_argument("--group-max", type=int, default=8, help="A2 group cap (AMUX_A2_GROUP_MAX)")
+    ap.add_argument("--db", default=os.path.join(HOME, ".amux/amux.db"))
+    ap.add_argument("--review-stuck-h", type=float, default=6)
+    ap.add_argument("--lever-eval-h", type=float, default=3)
+    ap.add_argument("--harness-lane", default="amux-helper")
     ap.add_argument("--board-file", help=argparse.SUPPRESS)
+    ap.add_argument("--now", type=float, help=argparse.SUPPRESS)
     ap.add_argument("--sessions-file", help=argparse.SUPPRESS)
     ap.add_argument("--land-file", help=argparse.SUPPRESS)
     ap.add_argument("--prod-file", help=argparse.SUPPRESS)
     a = ap.parse_args()
 
-    now = time.time()
+    now = a.now or time.time()
     if a.constraints or a.constraints_only:
         run_constraints(a, now)
         if a.constraints_only:
