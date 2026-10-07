@@ -16176,14 +16176,17 @@ mod af701_archive_guard_tests {
         assert_ne!(review_state(&ops_proof).as_deref(), Some("pending"), "an ops-typed proof card is queued and claimed first too");
         assert!([&older_a, &older_b].iter().all(|c| review_state(c).as_deref() == Some("pending")), "ordinary cards wait behind proof");
         assert_eq!(review_state(&other), None, "a lane without the setting is untouched");
-        for _ in 0..300 {
+        // 60 s, not 15: CI failed at 17.1 s where a local run takes ~1.6 s.
+        // On failure, say whether the reviewer ran at all.
+        for _ in 0..1200 {
             if current(&store, &proof).status == "verified" {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let row = current(&store, &proof);
-        assert_eq!(row.status, "verified");
+        assert_eq!(row.status, "verified", "review_state={:?} reviewer={:?} log={:?}",
+            review_state(&proof), row.reviewer, row.log);
         assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
         // The record is not a contract: rules 1 and 2 still see no contract.
         let k = super::super::contract::load(&store.read().unwrap(), &proof).unwrap().unwrap();
