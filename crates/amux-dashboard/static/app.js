@@ -17288,14 +17288,44 @@ async function _peekLoadEarlier(options) {
 // .peek-box wrapper) and pushed the name tag off-screen. Replace rule lines
 // with width-fitted elements BEFORE wrapBoxBlocks so the input-box region
 // stops being a scrollable box; real tables keep their scroller.
+// A rule that is the first or last line of a collapsible block carries that
+// block's div markup (_wrapToolCalls joins it onto the line). Replacing the
+// whole line dropped a block's closing </div></div>, so every later block
+// nested inside a collapsed one and the peek looked frozen at an old tool call
+// (Ethan, 2026-10-07, amux-helper: "this isnt right"). The markup is peeled
+// off first, as _hangIndent does, and kept.
 function _fitRules(html) {
-  return html.split('\n').map(line => {
+  let dropped = 0;
+  const out = html.split('\n').map(line => {
+    let pre = '', post = '';
+    const bi = line.lastIndexOf(_PTC_BODY_OPEN);
+    if (bi >= 0) { pre = line.slice(0, bi + _PTC_BODY_OPEN.length); line = line.slice(pre.length); }
+    const close = line.match(/(?:<\/div>)+$/);
+    if (close) { post = close[0]; line = line.slice(0, line.length - post.length); }
     const t = line.replace(/<[^>]*>/g, '').trim();
-    if (/^─{30,}$/.test(t)) return '<span class="peek-rule"></span>';
-    const m = t.match(/^─{8,}\s(\S[^─]{0,120}?)\s(─{1,8})$/);
-    if (m) return '<span class="peek-rule"><span class="peek-rule-tag">' + esc(m[1]) + '</span></span>';
-    return line;
+    let rule = null;
+    if (/^─{30,}$/.test(t)) rule = '<span class="peek-rule"></span>';
+    else {
+      const m = t.match(/^─{8,}\s(\S[^─]{0,120}?)\s(─{1,8})$/);
+      if (m) rule = '<span class="peek-rule"><span class="peek-rule-tag">' + esc(m[1]) + '</span></span>';
+    }
+    if (rule && /<\/?div\b/.test(line)) { dropped++; rule = null; }
+    return pre + (rule || line) + post;
   }).join('\n');
+  if (dropped) _peekMarkupWarn('fit-rules-kept-block-markup', dropped);
+  return out;
+}
+// Log signal: a peek line whose block markup a render stage would have lost.
+let _peekMarkupWarned = '';
+function _peekMarkupWarn(reason, n) {
+  if (_peekMarkupWarned === reason) return;
+  _peekMarkupWarned = reason;
+  console.warn('[amux] peek-markup', reason, n);
+  try {
+    fetch(API + '/api/client-debug', {method:'POST', _skipOutbox:true,
+      headers:_authHeaders({'Content-Type':'application/json'}), signal:AbortSignal.timeout(5000),
+      body:JSON.stringify({kind:'peek-markup', reason, n, measured:true, ver:APP_VER})}).catch(() => {});
+  } catch (_) {}
 }
 
 const _peekRequests = new Map();

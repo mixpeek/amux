@@ -1690,6 +1690,14 @@ impl FleetSignals {
             || (self.agent_running(&format!("amux-{name}")) && !report_current)
     }
 
+    /// An `active` report whose last hook edge is over 5 minutes old: the lane
+    /// may be frozen on a prompt that fires no hook.
+    fn active_report_quiet(&self, name: &str) -> bool {
+        self.reports.get(name).is_some_and(|r| {
+            r["state"].as_str() == Some("active") && self.now - r["ts"].as_f64().unwrap_or(self.now) > 300.0
+        })
+    }
+
     /// A current, applying `idle` report: the main turn ended and nothing newer
     /// has superseded it.
     fn idle_report_current(&self, name: &str) -> bool {
@@ -1947,7 +1955,10 @@ impl FleetSignals {
             // gs12 workers read `idle` for an hour with pushes running). The
             // capture is used for that footer marker only; pane_of still
             // applies the freshness gate to every other pane-based claim.
-            .filter(|n| self.pane_probe_candidate(n) || self.idle_report_current(n))
+            // And an `active` report with no new hook edge for 5 minutes: a lane
+            // frozen on a permission prompt sends none and may not repaint
+            // (gs12-mvs, 2026-10-07), so only its pane can say it is blocked.
+            .filter(|n| self.pane_probe_candidate(n) || self.idle_report_current(n) || self.active_report_quiet(n))
             .map(String::from)
             .collect();
         for chunk in names.chunks(12) {
@@ -2317,6 +2328,27 @@ impl FleetSignals {
                 status = st.to_string();
                 if st == "idle" {
                     idle_report_age = Some(age);
+                }
+            }
+        }
+        // A PERMISSION PROMPT DRAWN NOW OUTRANKS AN `active` REPORT (gs12-mvs,
+        // 2026-10-07). A subagent's prompt can fire no hook, so the last edge
+        // stays `active` while the lane sits on "Do you want to proceed?" for an
+        // hour. The prompt on screen, with its options and no status bar below,
+        // is current evidence; the report is an older edge. amux never answers
+        // it (D2); it only stops calling the lane busy.
+        // The raw capture, not pane_of: a frozen prompt does not repaint, and the
+        // detector only accepts a prompt drawn at the bottom with no status bar
+        // below it. No capture this pass leaves the record as it was.
+        if let Some(raw) = self.panes.get(name).map(String::as_str).filter(|r| !r.trim().is_empty()) {
+            if let Some((line, since)) = crate::api::prompt_block::observe(name, Some(raw), self.now) {
+                ex.insert("permission_prompt".into(), json!({"line": line, "since": since}));
+                // `idle` too: once the edge ages past the heartbeat it is
+                // demoted to idle, which would invite dispatch into a lane that
+                // cannot take a prompt.
+                if matches!(status.as_str(), "active" | "idle") {
+                    decided = "pane_permission_prompt";
+                    status = "waiting".into();
                 }
             }
         }
@@ -5014,7 +5046,9 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "rate_limit_weekly": meta["rate_limited_weekly"].as_bool().unwrap_or(false),
             "rate_limited_until": meta["rate_limited_until"].as_i64().unwrap_or(0),
             "last_human_ts": 0,
-            "waiting_since": 0,
+            // Set when the lane is blocked on a permission prompt (prompt_block);
+            // the first sighting dates it.
+            "waiting_since": status_evidence["permission_prompt"]["since"].as_f64().map(|s| s as i64).unwrap_or(0),
             "self_report": serde_json::Value::Null,
             // Filled from the shared steering_queue table in build_array —
             // Python's card shape (py:20373), entries {id,text,queued_at,guard}.
@@ -6305,7 +6339,7 @@ pub(crate) fn authority_of(decided: &str) -> Option<&'static str> {
         "structured_live_children" | "contradiction_subagents_working"
         | "contradiction_subagents_reported_live" | "transition" | "provider_picker"
         | "contradiction_picker_waiting" | "api_error_banner" | "provider_auto_resume_quota"
-        | "pane_boundary" | "pane_interruptible" => "corroborated",
+        | "pane_boundary" | "pane_interruptible" | "pane_permission_prompt" => "corroborated",
         "pane" | "activity_fallback" | "contradiction_pane_generating"
         | "contradiction_pane_redrew_since_claim" | "contradiction_provider_background_working"
         | "codex_child_probe_unmeasured" => "inferred",
@@ -7600,6 +7634,34 @@ pub(crate) mod tests {
                 .into(),
         );
         assert_eq!(s.derive_status("x", true), "active");
+    }
+
+    /// gs12-mvs, 2026-10-07: a subagent's permission prompt fired no hook, the
+    /// last edge said `active`, and the lane read active for an hour while it
+    /// sat on "Do you want to proceed?". The drawn prompt outranks the edge.
+    #[test]
+    fn a_drawn_permission_prompt_outranks_an_active_report() {
+        let mut s = signals();
+        s.reports = json!({"pb-x": {"state": "active", "ts": s.now - 900.0, "event": "PostToolUse", "source": "claude-hook"}});
+        s.panes.insert("pb-x".into(), "\
+ Bash command \u{b7} from the general-purpose agent
+ \u{2502} bash -c 'rm -f \"${ZS:?}\"'
+ This shell -c script runs rm and could not be checked
+
+ Do you want to proceed?
+ \u{276f} 1. Yes
+   2. No
+
+ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+x ctrl+k twice to stop background agents".into());
+        let (status, ex) = s.derive_status_explain("pb-x", true);
+        assert_eq!(status, "waiting", "{ex}");
+        assert_eq!(ex["decided_by"], "pane_permission_prompt", "{ex}");
+        assert_eq!(ex["permission_prompt"]["line"], "This shell -c script runs rm and could not be checked");
+        assert!(s.active_report_quiet("pb-x"), "a quiet active report gets its pane captured");
+
+        // Answered: the same lane back at a live turn reads its report again.
+        s.panes.insert("pb-x".into(), "\u{23fa} Running the tests\n\u{276f}\n\u{23f5}\u{23f5} bypass permissions on \u{b7} esc to interrupt".into());
+        assert_ne!(s.derive_status_explain("pb-x", true).1["decided_by"], "pane_permission_prompt");
     }
 
     #[test]

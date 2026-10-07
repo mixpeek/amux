@@ -7050,6 +7050,48 @@ _land_pick_tree() {
 # AMUX_LAND_REGENERATE_TIMEOUT_S (default 300). Files it leaves that match an
 # amux.landRegenerable glob replace <tip>'s copies; matching files it removed
 # are deleted.
+# _land_regen_extract <tip> <inputs>: print a directory holding exactly what
+# `git archive <tip> -- <inputs>` would extract, kept between lands so only
+# changed files are written. The directory has no .git (generators see a plain
+# tree, as with a fresh extract); its index lives beside it, and git's own stat
+# check proves it clean. rc 1 means use a fresh extract. Runs under the land
+# lock, which is per repo and branch and keys the directory.
+_land_regen_extract() {
+  local tip="$1" inputs="$2" key dir idx fidx tidx T
+  [ "${AMUX_LAND_REGEN_REUSE:-1}" = 1 ] || return 1
+  [ -n "$inputs" ] || return 1
+  key="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | git hash-object --stdin | cut -c1-12)" || return 1
+  dir="${AMUX_LAND_REGEN_ROOT:-$HOME/.amux/land-regen}/$key-$(printf '%s' "${branch:-main}" | tr '/' '_')"
+  idx="$dir.index"
+  mkdir -p "$dir" || return 1
+  # The tree a fresh extract would hold: the tip's entries under the inputs,
+  # submodules excluded (an archive never extracts them).
+  fidx="$(mktemp "${TMPDIR:-/tmp}/amux-land-regen-f.XXXXXX")"; tidx="$fidx.t"; rm -f -- "${fidx:?}"
+  # shellcheck disable=SC2086  # one pathspec per line on purpose
+  T="$(GIT_INDEX_FILE="$fidx" git read-tree "$tip" 2>/dev/null \
+    && GIT_INDEX_FILE="$fidx" git ls-files -s -z -- $inputs 2>/dev/null \
+       | tr '\0' '\n' | awk '$1 != "160000"' | tr '\n' '\0' \
+       | GIT_INDEX_FILE="$tidx" git update-index -z --index-info 2>/dev/null \
+    && GIT_INDEX_FILE="$tidx" git write-tree 2>/dev/null)"
+  rm -f -- "${fidx:?}" "${tidx:?}"
+  [ -n "$T" ] || return 1
+  # Sparse checkout OFF: the repo's own sparse patterns must not hide files.
+  local G=(env GIT_INDEX_FILE="$idx" git -c core.hooksPath=/dev/null -c core.sparseCheckout=false -c core.sparseCheckoutCone=false --work-tree="$dir")
+  "${G[@]}" read-tree --reset -u "$T" >/dev/null 2>&1 || return 1
+  # Tracked files a previous run's generators changed, then everything untracked.
+  local dirty; dirty="$("${G[@]}" diff-files --name-only -z 2>/dev/null | tr '\0' '\n')"
+  if [ -n "$dirty" ]; then
+    printf '%s\n' "$dirty" | tr '\n' '\0' | "${G[@]}" checkout-index -f -z --stdin >/dev/null 2>&1 || return 1
+  fi
+  "${G[@]}" clean -fdqx >/dev/null 2>&1 || return 1
+  # PROOF: no skip-worktree entries, nothing modified, nothing untracked.
+  [ -z "$("${G[@]}" ls-files -v 2>/dev/null | grep -v '^H ' | head -1)" ] || return 1
+  "${G[@]}" diff-files --quiet >/dev/null 2>&1 || return 1
+  [ -z "$("${G[@]}" ls-files --others 2>/dev/null | head -1)" ] || return 1
+  _land_log "regenerate extract: reused $dir at $(git rev-parse --short "$tip") (verdict=land_regen_extract_reused)"
+  printf '%s\n' "$dir"
+}
+
 _land_regenerate() {
   local tip="$1" cmd inputs globs tmp idx rc=0 out t0 tree new n=0 p g hit
   local budget="${AMUX_LAND_REGENERATE_TIMEOUT_S:-300}"
@@ -7074,12 +7116,26 @@ _land_regenerate() {
   fi
   globs="$(git config --get-all amux.landRegenerable 2>/dev/null || true)"
   inputs="$(git config --get-all amux.landRegenerateInput 2>/dev/null || true)"
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-regen.XXXXXX")"
-  # shellcheck disable=SC2086  # one pathspec per line on purpose
-  if ! git archive "$tip" ${inputs:+-- $inputs} | tar -x -C "$tmp" 2>/dev/null; then
-    rm -rf -- "${tmp:?}"
-    _land_log "regenerate: could not extract $(git rev-parse --short "$tip") (inputs: ${inputs:-whole tree}); nothing pushed"
-    return 1
+  # A PERSISTENT EXTRACT, reconciled to <tip> by blob hash, instead of a fresh
+  # one per land (fseventsd escalation 20261007-030851: mixpeek's inputs
+  # include all of server/, so every land wrote and deleted tens of thousands
+  # of files in TMPDIR). It is a plain directory outside any repository, like
+  # the fresh extract, and _land_regen_extract proves its contents equal
+  # <tip>'s before a generator runs; on any doubt it falls back to a fresh
+  # extract. (d08ba296 used a sparse git worktree instead and rendered wrong
+  # output, because generators enumerating files through git saw tracked
+  # files it never wrote; reverted in 5a595e21.) AMUX_LAND_REGEN_REUSE=0 off.
+  local reused=0
+  if tmp="$(_land_regen_extract "$tip" "$inputs")"; then
+    reused=1
+  else
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-regen.XXXXXX")"
+    # shellcheck disable=SC2086  # one pathspec per line on purpose
+    if ! git archive "$tip" ${inputs:+-- $inputs} | tar -x -C "$tmp" 2>/dev/null; then
+      rm -rf -- "${tmp:?}"
+      _land_log "regenerate: could not extract $(git rev-parse --short "$tip") (inputs: ${inputs:-whole tree}); nothing pushed"
+      return 1
+    fi
   fi
   _matches() {
     local q="$1" gg
@@ -7125,7 +7181,7 @@ _land_regenerate() {
   if [ "$rc" != 0 ]; then
     local log; log="$HOME/.amux/logs/land/$(date -u +%Y%m%dT%H%M%SZ)-${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}-$$-regenerate.log"
     mkdir -p "${log%/*}"; printf '%s\n' "$out" > "$log"
-    rm -rf -- "${tmp:?}"
+    [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
     _land_log "regenerate failed (rc $rc after $(( $(date +%s) - t0 ))s: $cmd). Output: $log"
     return 1
   fi
@@ -7142,7 +7198,7 @@ _land_regenerate() {
     printf '%s\n' "$after" | grep -qxF -- "$p" || GIT_INDEX_FILE="$idx" git update-index --force-remove -- "$p"
   done <<< "$before"
   tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
-  rm -f -- "${idx:?}"; rm -rf -- "${tmp:?}"
+  rm -f -- "${idx:?}"; [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
   if [ "$tree" = "$(git rev-parse "$tip^{tree}")" ]; then
     _land_log "regenerate ran in $(( $(date +%s) - t0 ))s and changed nothing on $(git rev-parse --short "$tip")"
     printf '%s\n' "$tip"; return 0

@@ -10561,7 +10561,8 @@ async fn patch_item_route(
             .read_async(move |c| {
                 let row = bs::get_issue(c, &id2)?;
                 let contract = match &row {
-                    Some(_) => super::contract::load(c, &id2)?,
+                    // An uncontracted review record is not a contract (rules 1, 2).
+                    Some(_) => super::contract::load(c, &id2)?.filter(|k| !k.is_uncontracted()),
                     None => None,
                 };
                 Ok((row, contract))
@@ -16015,6 +16016,184 @@ mod af701_archive_guard_tests {
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         assert_eq!(super::super::contract::run_reviews(&state).await, (1, 1), "the orphaned review is pending again and claimed");
+    }
+
+    /// Rule 3 restart safety: a reviewer that finished while the server was
+    /// down is read, not rerun; one still running is waited on, not duplicated.
+    /// The stand-in CLI would FAIL the card and leaves a marker, so a rerun is
+    /// visible both ways.
+    #[tokio::test]
+    async fn a_review_that_outlived_a_restart_is_adopted_not_rerun() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let out = std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap();
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let marker = h.join("cli-ran");
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, format!("#!/bin/sh\ncat >/dev/null\ntouch '{}'\necho '{{\"verdict\": \"fail\", \"findings\": [\"rerun\"]}}'\n", marker.display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(h.join("sessions/lane-ad.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        let now = crate::config::now_f64();
+        let card = |sha: String| {
+            let id = seed(&store, "lane-ad", "done");
+            let id2 = id.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code' WHERE id=?1", [&id2])?;
+                conn.execute("INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, review_state, review_at) VALUES (?1, 'a', 'true', 'h', 0, 'passed', ?2, 'running', ?3)",
+                    rusqlite::params![id2, sha, now])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let dir = |id: &str| h.join("tmp/contract").join(format!("{id}-review-{}", &sha[..12]));
+        let pass = r#"{"verdict": "pass", "findings": []}"#;
+
+        // Finished while the server was down.
+        let a = card(sha.clone());
+        std::fs::create_dir_all(dir(&a)).unwrap();
+        std::fs::write(dir(&a).join(".amux-review.out"), format!("thinking\n{pass}\n")).unwrap();
+        std::fs::write(dir(&a).join(".amux-review.exit"), "0\n").unwrap();
+        // Still running: a detached stand-in that finishes in a moment.
+        let b = card(sha.clone());
+        std::fs::create_dir_all(dir(&b)).unwrap();
+        let mut child = std::process::Command::new("sh").arg("-c")
+            .arg(format!("sleep 1; echo '{pass}' > .amux-review.out; echo 0 > .amux-review.exit"))
+            .current_dir(dir(&b)).spawn().unwrap();
+        std::fs::write(dir(&b).join(".amux-review.pid"), child.id().to_string()).unwrap();
+
+        assert_eq!(super::super::contract::run_reviews(&state).await, (2, 2));
+        for _ in 0..200 {
+            if current(&store, &a).status == "verified" && current(&store, &b).status == "verified" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(current(&store, &a).status, "verified", "the finished result was consumed");
+        assert_eq!(current(&store, &b).status, "verified", "the running reviewer was waited on");
+        assert!(!marker.exists(), "no reviewer was started again");
+        assert!(!dir(&a).exists() && !dir(&b).exists(), "consumed review directories are cleared");
+        let _ = child.wait();
+    }
+
+    /// GS-230, 2026-10-06: a card verified another way while its review
+    /// waited was reviewed again every pass (12 paid reviews in an hour),
+    /// because the refused move rolled back the review's own state. A card
+    /// that left done gets no review, and its review state settles.
+    #[tokio::test]
+    async fn a_card_that_left_done_is_not_reviewed_again() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let marker = h.join("cli-ran");
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, format!("#!/bin/sh\ncat >/dev/null\ntouch '{}'\necho '{{\"verdict\": \"pass\", \"findings\": []}}'\n", marker.display())).unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(h.join("sessions/lane-lv.env"), format!("AMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", cli.display())).unwrap();
+        let id = seed(&store, "lane-lv", "verified");
+        let id2 = id.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE issues SET type='code' WHERE id=?1", [&id2])?;
+            conn.execute("INSERT INTO card_contracts (card, acceptance, command, hash, frozen_at, state, sha, review_state, review_at) VALUES (?1, 'a', 'true', 'h', 0, 'passed', 'abc', 'pending', 0)", [&id2])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let rs = |id: &str| -> Option<String> {
+            store.read().unwrap().query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(super::super::contract::run_reviews(&state).await.1, 1);
+        for _ in 0..100 {
+            if rs(&id).as_deref() == Some("superseded") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(rs(&id).as_deref(), Some("superseded"));
+        assert_eq!(super::super::contract::run_reviews(&state).await, (0, 0), "nothing left to review");
+        assert!(!marker.exists(), "no reviewer ran for a card that left done");
+    }
+
+    /// Rule 3 for cards that reached done with no contract (2026-10-07: 12
+    /// GS-12 proof cards waited 4+ hours at done with no reviewer). Opted-in
+    /// lanes only, proof cards first, verified only by the harness reviewer.
+    #[tokio::test]
+    async fn a_done_card_with_no_contract_is_reviewed_on_an_opted_in_lane_proof_first() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let sha = String::from_utf8(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+        let cli = h.join("reviewer.sh");
+        std::fs::write(&cli, "#!/bin/sh\ncat >/dev/null\necho '{\"verdict\": \"pass\", \"findings\": []}'\n").unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        std::fs::write(h.join("sessions/lane-u.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_REVIEW_UNCONTRACTED=1\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        std::fs::write(h.join("sessions/lane-n.env"),
+            format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        let done_card = |lane: &str, title: &str| {
+            let id = seed(&store, lane, "done");
+            let (id2, t, ev) = (id.clone(), title.to_string(), format!("ran it at {sha}"));
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code', title=?2, evidence=?3 WHERE id=?1", rusqlite::params![id2, t, ev])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let older_a = done_card("lane-u", "an ordinary card");
+        let older_b = done_card("lane-u", "another ordinary card");
+        let proof = done_card("lane-u", "GS12 proof 7 run: the thing holds");
+        let ops_proof = done_card("lane-u", "GS12 proof 9 run: an ops-typed proof card");
+        {
+            let id = ops_proof.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='ops' WHERE id=?1", [id])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        }
+        let other = done_card("lane-n", "GS12 proof 8 run: not opted in");
+        let review_state = |id: &str| -> Option<String> {
+            store.read().unwrap().query_row("SELECT review_state FROM card_contracts WHERE card = ?1", [id], |r| r.get(0)).ok()
+        };
+
+        let (pending, claimed) = super::super::contract::run_reviews(&state).await;
+        assert_eq!((pending, claimed), (4, 2), "four opted-in cards queued, two claimed per pass");
+        assert_ne!(review_state(&proof).as_deref(), Some("pending"), "the proof card is claimed first");
+        assert_ne!(review_state(&ops_proof).as_deref(), Some("pending"), "an ops-typed proof card is queued and claimed first too");
+        assert!([&older_a, &older_b].iter().all(|c| review_state(c).as_deref() == Some("pending")), "ordinary cards wait behind proof");
+        assert_eq!(review_state(&other), None, "a lane without the setting is untouched");
+        // 60 s, not 15: CI failed at 17.1 s where a local run takes ~1.6 s.
+        // On failure, say whether the reviewer ran at all.
+        for _ in 0..1200 {
+            if current(&store, &proof).status == "verified" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let row = current(&store, &proof);
+        let review_log: Option<String> = store.read().unwrap()
+            .query_row("SELECT review_log FROM card_contracts WHERE card = ?1", [&proof], |r| r.get(0)).ok().flatten();
+        assert_eq!(row.status, "verified", "review_state={:?} review_log={:?} reviewer={:?} log={:?}",
+            review_state(&proof), review_log, row.reviewer, row.log);
+        assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
+        // The record is not a contract: rules 1 and 2 still see no contract.
+        let k = super::super::contract::load(&store.read().unwrap(), &proof).unwrap().unwrap();
+        assert!(k.is_uncontracted());
+        assert_eq!(current(&store, &other).status, "done");
     }
 
     #[tokio::test]

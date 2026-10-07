@@ -1827,6 +1827,32 @@ gemini-2.5-pro";
         assert!(limits(&ev).is_empty());
     }
 
+    // gs12-mvs, 2026-10-07 ~08:00-09:00Z: a SUBAGENT's Bash call raised a
+    // permission prompt under a boxed command, despite bypass permissions.
+    // The lane read "active" for about an hour with steering queued behind it.
+    const FX_SUBAGENT_PERMISSION_PROMPT: &str = "\
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+ Bash command \u{b7} from the general-purpose agent
+ Run shell command
+\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}
+ \u{2502} D=/tmp/x; cd $D && cargo test --locked --lib gm170 2>&1 | grep \"test result\"
+ \u{2502} ZB_SHA=$(git rev-parse HEAD) bash -c 'ZS=$(mktemp ./zbclip.XXXX); bash $ZS; rm -f \"${ZS:?}\"' 2>&1 | tail -3
+\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}
+ This shell -c script runs rm and could not be checked
+
+ Do you want to proceed?
+ \u{276f} 1. Yes
+   2. No
+
+ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+x ctrl+k twice to stop background agents";
+
+    #[test]
+    fn a_subagent_permission_prompt_under_a_boxed_command_is_waiting() {
+        let ev = adapter("claude-code").scan(FX_SUBAGENT_PERMISSION_PROMPT);
+        let w = waiting_reasons(&ev);
+        assert!(!w.is_empty(), "a lane blocked on a permission prompt is waiting, not active: {ev:?}");
+    }
+
     #[test]
     fn claude_selector_prompt_emits_waiting() {
         let ev = adapter("claude-code").scan(FX_SELECTOR_PROMPT);
