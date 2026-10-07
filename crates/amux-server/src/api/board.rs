@@ -16185,8 +16185,10 @@ mod af701_archive_guard_tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let row = current(&store, &proof);
-        assert_eq!(row.status, "verified", "review_state={:?} reviewer={:?} log={:?}",
-            review_state(&proof), row.reviewer, row.log);
+        let review_log: Option<String> = store.read().unwrap()
+            .query_row("SELECT review_log FROM card_contracts WHERE card = ?1", [&proof], |r| r.get(0)).ok().flatten();
+        assert_eq!(row.status, "verified", "review_state={:?} review_log={:?} reviewer={:?} log={:?}",
+            review_state(&proof), review_log, row.reviewer, row.log);
         assert!(row.reviewer.as_deref().unwrap_or("").starts_with("harness:reviewer:"), "{:?}", row.reviewer);
         // The record is not a contract: rules 1 and 2 still see no contract.
         let k = super::super::contract::load(&store.read().unwrap(), &proof).unwrap().unwrap();
