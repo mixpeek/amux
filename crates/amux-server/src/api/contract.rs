@@ -1312,6 +1312,16 @@ fn launch_review(dir: &Path, cli: &str, args: &[String], prompt: &str) -> Result
 /// Wait for a reviewer run in `dir` to finish, up to REVIEW_TIMEOUT_S from its
 /// start, then read its verdict.
 async fn collect_review(dir: &Path, model: &str) -> Result<(bool, Vec<String>, String), String> {
+    let (text, code) = wait_review(dir).await?;
+    match parse_review(&text) {
+        Some((pass, findings)) => Ok((pass, findings, model.to_string())),
+        None => Err(format!("reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(),
+            tail(&format!("{text}{}", std::fs::read_to_string(dir.join(REVIEW_ERR)).unwrap_or_default()), 400))),
+    }
+}
+
+/// Wait for a reviewer run in `dir`; return its stdout and exit code.
+async fn wait_review(dir: &Path) -> Result<(String, String), String> {
     loop {
         match review_job(dir) {
             ReviewJob::Finished => break,
@@ -1326,11 +1336,23 @@ async fn collect_review(dir: &Path, model: &str) -> Result<(bool, Vec<String>, S
     }
     let text = std::fs::read_to_string(dir.join(REVIEW_OUT)).unwrap_or_default();
     let code = std::fs::read_to_string(dir.join(REVIEW_EXIT)).unwrap_or_default();
-    match parse_review(&text) {
-        Some((pass, findings)) => Ok((pass, findings, model.to_string())),
-        None => Err(format!("reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(),
-            tail(&format!("{text}{}", std::fs::read_to_string(dir.join(REVIEW_ERR)).unwrap_or_default()), 400))),
-    }
+    Ok((text, code))
+}
+
+/// The read-only reviewer CLI and its arguments for a lane, with the budget
+/// read from `budget_key` (default `default_budget` dollars).
+fn reviewer_command(home: &Path, lane: &str, model: &str, budget_key: &str, default_budget: f64) -> (String, Vec<String>) {
+    let cli = lane_setting(home, lane, "AMUX_CONTRACT_REVIEW_CLI").map(|v| v.trim().trim_matches('"').to_string())
+        .filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into());
+    let budget = lane_setting(home, lane, budget_key).and_then(|v| v.trim().trim_matches('"').parse::<f64>().ok())
+        .filter(|b| b.is_finite() && *b > 0.0).unwrap_or(default_budget);
+    let args: Vec<String> = ["--print", "--model", model, "--no-session-persistence",
+        "--allowedTools", "Read Grep Glob Bash(git log:*) Bash(git show:*) Bash(git diff:*)",
+        "--disallowedTools", "Edit Write NotebookEdit",
+        "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+        "--settings", "{\"disableAllHooks\":true}",
+        "--max-budget-usd", &budget.to_string()].iter().map(|s| s.to_string()).collect();
+    (cli, args)
 }
 
 /// The directory a card's review runs in, for its verified sha.
@@ -1358,16 +1380,7 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
         }
         ReviewJob::None => {
             fresh_checkout(&tree, &tmp, &sha).await?;
-            let cli = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_CLI").map(|v| v.trim().trim_matches('"').to_string())
-                .filter(|v| !v.is_empty()).unwrap_or_else(|| "claude".into());
-            let budget = lane_setting(&home, lane, "AMUX_CONTRACT_REVIEW_BUDGET_USD").and_then(|v| v.trim().trim_matches('"').parse::<f64>().ok())
-                .filter(|b| b.is_finite() && *b > 0.0).unwrap_or(2.0);
-            let args: Vec<String> = ["--print", "--model", model.as_str(), "--no-session-persistence",
-                "--allowedTools", "Read Grep Glob Bash(git log:*) Bash(git show:*) Bash(git diff:*)",
-                "--disallowedTools", "Edit Write NotebookEdit",
-                "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
-                "--settings", "{\"disableAllHooks\":true}",
-                "--max-budget-usd", &budget.to_string()].iter().map(|s| s.to_string()).collect();
+            let (cli, args) = reviewer_command(&home, lane, &model, "AMUX_CONTRACT_REVIEW_BUDGET_USD", 2.0);
             launch_review(&tmp, &cli, &args, &review_prompt(card, title, c, evidence, round))?;
         }
     }
@@ -1567,6 +1580,192 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
     n
 }
 
+// ---------------------------------------------------------------------------
+// Pre-run review of a proof card's plan (Ethan, 2026-10-07 16:20Z, item 1)
+// ---------------------------------------------------------------------------
+//
+// The reviewer failed most GS-12 proof cards on their first round, after
+// hours-long plane runs that never measured what the card requires (every
+// min-0 surface, per extractor, per template). So when a proof or requirement
+// card's contract is frozen (it entered doing), a cheaper read-only reviewer
+// reads the card, its measurement requirements and the frozen plan once per
+// contract hash, lists the measurements the planned run would not produce,
+// and sends them to the lane before it runs. It never blocks the card.
+
+/// A GS-12 completion-proof or requirement card.
+pub fn is_proof_title(title: &str) -> bool {
+    let t = title.trim_start();
+    t.starts_with("GS12 proof") || t.starts_with("GS12 requirement")
+}
+
+/// The pre-run verdict: Some((ready, findings)) from the last JSON line whose
+/// verdict is "ready" or "gaps". Anything else is unmeasured.
+pub fn parse_prereview(out: &str) -> Option<(bool, Vec<String>)> {
+    out.lines().rev().map(str::trim).filter(|l| l.starts_with('{')).find_map(|l| {
+        let v: Value = serde_json::from_str(l).ok()?;
+        let ready = match v.get("verdict")?.as_str()? {
+            "ready" => true,
+            "gaps" => false,
+            _ => return None,
+        };
+        let findings = v.get("findings").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect()).unwrap_or_default();
+        Some((ready, findings))
+    })
+}
+
+fn prereview_prompt(card: &str, title: &str, c: &Contract, desc: &str, prior: &str) -> String {
+    let tail: String = desc.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+    format!(
+"You are reviewing the PLAN for completion-proof card {card} BEFORE its run. Nothing has run yet; the run is expensive \
+(hours on a plane), so your job is to say now what it would fail to show. The working directory is a clean checkout of \
+origin/main. Do not modify files.
+
+Card: {title}
+Acceptance criteria (frozen): {acc}
+Planned check (the frozen verify command; the run it describes is the plan): {cmd}
+Earlier review findings for this card, if any: {prior}
+Card description (latest part, including any owner measurement requirements):
+{tail}
+
+Read the planned check and the scripts it runs. List every measurement the acceptance criteria or the description \
+require (per surface, per extractor, per template, wake time, idle timeout, billing after stop, and so on) that this \
+planned run would NOT produce as a recorded number, and every earlier finding it would not address. Be concrete: name \
+the surface or extractor and what is missing.
+
+Finish with exactly one line of JSON and nothing after it:
+{{\"verdict\": \"ready\" or \"gaps\", \"findings\": [\"one sentence per missing measurement\"]}}",
+        acc = c.acceptance,
+        cmd = c.command,
+        prior = if prior.trim().is_empty() { "none" } else { prior.trim() },
+    )
+}
+
+async fn prereview_one(state: &AppState, card: String, hash: String) {
+    let c2 = card.clone();
+    let facts = state.store.read_async(move |conn| {
+        let k = load(conn, &c2)?;
+        let row = crate::db::board_store::get_issue(conn, &c2)?;
+        let prior: Option<String> = conn.query_row("SELECT review_log FROM card_contracts WHERE card = ?1", [&c2], |r| r.get(0)).unwrap_or(None);
+        Ok((k, row, prior))
+    }).await.ok();
+    let Some((Some(k), Some(row), prior)) = facts else { return };
+    let lane = row.session.clone().unwrap_or_default();
+    let home = crate::config::amux_home();
+    let model = reviewer_model(&home, &lane);
+    let dir = home.join("tmp").join("contract").join(format!("{card}-pre-{}", &hash[..12.min(hash.len())]));
+    let _ = std::fs::create_dir_all(dir.parent().unwrap_or(&dir));
+    let run = async {
+        let tree = lane_tree(&lane).ok_or_else(|| format!("lane {lane} has no checkout"))?;
+        if review_job(&dir) == ReviewJob::None {
+            let sha = match git(&tree, &["rev-parse", "origin/main"]).await {
+                Ok(s) if !s.is_empty() => s,
+                _ => git(&tree, &["rev-parse", "HEAD"]).await?,
+            };
+            fresh_checkout(&tree, &dir, &sha).await?;
+            let (cli, args) = reviewer_command(&home, &lane, &model, "AMUX_CONTRACT_PREREVIEW_BUDGET_USD", 1.0);
+            launch_review(&dir, &cli, &args, &prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or("")))?;
+        }
+        let (text, code) = wait_review(&dir).await?;
+        let _ = git(&tree, &["worktree", "remove", "--force", &dir.to_string_lossy()]).await;
+        parse_prereview(&text).ok_or_else(|| format!("pre-run reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(), tail(&text, 300)))
+    };
+    let result: Result<(bool, Vec<String>), String> = run.await;
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let (st, note) = match &result {
+        Ok((true, _)) => ("ready", format!("\nPre-run review ({model}, contract {hash}): the planned run covers the required measurements.")),
+        Ok((false, f)) => ("gaps", format!("\nPre-run review ({model}, contract {hash}): before you run, these required measurements are missing from the plan:\n{}",
+            f.iter().map(|x| format!("- {x}")).collect::<Vec<_>>().join("\n"))),
+        Err(_) => ("unmeasured", String::new()),
+    };
+    let (c, n, s2) = (card.clone(), note.clone(), st.to_string());
+    let _ = state.store.write_async(move |conn| {
+        conn.execute("UPDATE card_contracts SET prereview_state = ?2 WHERE card = ?1", rusqlite::params![c, s2])?;
+        if !n.is_empty() {
+            if let Some(mut r) = crate::db::board_store::get_issue(conn, &c)? {
+                r.desc.push_str(&n);
+                crate::db::board_store::save_patched(conn, &mut r)?;
+            }
+        }
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    match result {
+        Ok((true, _)) => tracing::info!(card, lane, hash, measured = true, n_considered = 1, verdict = "contract_prereview_ready",
+            "pre-run review: the proof card's plan covers its required measurements"),
+        Ok((false, findings)) => {
+            tracing::info!(card, lane, hash, findings = findings.len(), measured = true, n_considered = 1, verdict = "contract_prereview_gaps",
+                "pre-run review: the proof card's plan misses required measurements; the lane is told before it runs");
+            let text = format!("[amux pre-run review] {card}: before you run, these required measurements are missing from the plan:\n{}\n\nThe card is not blocked; this is to save a review round.",
+                findings.iter().map(|x| format!("- {x}")).collect::<Vec<_>>().join("\n"));
+            let _ = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-prereview", ACTOR).await;
+        }
+        Err(why) => tracing::warn!(card, lane, hash, measured = false, n_considered = 1, verdict = "contract_prereview_unmeasured",
+            why_unmeasured = %tail(&why, 300), "pre-run review produced no verdict; the card is unaffected"),
+    }
+}
+
+/// One pass: start pre-run reviews for proof cards whose frozen contract has
+/// not had one, under the shared review cap. Returns how many were started.
+pub async fn run_prereviews(state: &AppState) -> usize {
+    let live: Vec<String> = LIVE_REVIEW.lock().map(|l| l.iter().cloned().collect()).unwrap_or_default();
+    // A pre-review a restart ended is claimed again; the next run adopts its
+    // detached reviewer's output instead of starting over.
+    let _ = state.store.write_async(move |conn| {
+        let running: Vec<String> = conn.prepare("SELECT card FROM card_contracts WHERE prereview_state = 'running'")?
+            .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        let mut n = 0;
+        for c in running.iter().filter(|c| !live.contains(&format!("pre:{c}"))) {
+            n += conn.execute("UPDATE card_contracts SET prereview_state = NULL, prereview_hash = NULL WHERE card = ?1 AND prereview_state = 'running'", [c])?;
+        }
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+    }).await;
+    let cands: Vec<(String, String, String)> = state.store.read_async(|conn| {
+        let mut st = conn.prepare(
+            "SELECT c.card, c.hash, COALESCE(i.session, '') FROM card_contracts c JOIN issues i ON i.id = c.card \
+             WHERE (i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%') AND i.status IN ('doing', 'todo') \
+             AND COALESCE(i.archived, 0) = 0 AND c.command <> ?1 \
+             AND (c.prereview_hash IS NULL OR c.prereview_hash <> c.hash) AND COALESCE(c.prereview_state, '') <> 'running' \
+             ORDER BY c.frozen_at")?;
+        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }).await.unwrap_or_default();
+    let home = crate::config::amux_home();
+    let mut started = 0;
+    for (card, hash, lane) in cands {
+        let busy = LIVE_REVIEW.lock().map(|l| l.len()).unwrap_or(0);
+        if busy >= current_cap(Work::Review) {
+            break;
+        }
+        if !enabled_for(&home, &lane) {
+            continue;
+        }
+        let (c, h) = (card.clone(), hash.clone());
+        let won = state.store.write_async(move |conn| {
+            let n = conn.execute("UPDATE card_contracts SET prereview_state = 'running', prereview_hash = ?2 \
+                WHERE card = ?1 AND COALESCE(prereview_state, '') <> 'running'", rusqlite::params![c, h])?;
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        }).await;
+        if !matches!(won, Ok(ref o) if o.applied) {
+            continue;
+        }
+        started += 1;
+        let key = format!("pre:{card}");
+        if let Ok(mut l) = LIVE_REVIEW.lock() {
+            l.insert(key.clone());
+        }
+        let st = state.clone();
+        tokio::spawn(async move {
+            prereview_one(&st, card, hash).await;
+            if let Ok(mut l) = LIVE_REVIEW.lock() {
+                l.remove(&key);
+            }
+        });
+    }
+    started
+}
+
 /// One pass: claim up to REVIEWS_PER_PASS pending reviews and run them in the
 /// background. Returns (pending before the pass, claimed).
 pub async fn run_reviews(state: &AppState) -> (usize, usize) {
@@ -1587,6 +1786,7 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
     enqueue_uncontracted(state).await;
+    run_prereviews(state).await;
     // Proof cards first: they decide a project's finish (GS-12, 2026-10-07).
     let pending: Vec<String> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
@@ -1636,7 +1836,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
-    ("3", &["contract_review_uncontracted_enqueued", "contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("3", &["contract_prereview_ready", "contract_prereview_gaps", "contract_prereview_unmeasured", "contract_review_uncontracted_enqueued","contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),

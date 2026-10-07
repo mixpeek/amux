@@ -618,6 +618,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0111_session_events_type_index",
         sql: include_str!("../../migrations/0111_session_events_type_index.sql"),
     },
+    Migration {
+        version: 112,
+        name: "0112_card_contract_prereview",
+        sql: include_str!("../../migrations/0112_card_contract_prereview.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

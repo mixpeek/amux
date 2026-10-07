@@ -1,0 +1,5 @@
+-- Pre-run review of a GS-12 proof card's plan (Ethan, 2026-10-07: "do 1 2 3
+-- and 4"). One per frozen contract hash: prereview_hash is the hash it ran
+-- for, prereview_state running / ready / gaps / unmeasured.
+-- ADDCOL: card_contracts prereview_hash TEXT
+-- ADDCOL: card_contracts prereview_state TEXT

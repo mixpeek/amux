@@ -16260,6 +16260,64 @@ mod af701_archive_guard_tests {
         assert_eq!(rs(&epic), None, "an epic is never reviewed this way");
     }
 
+    /// Ethan, 2026-10-07 (acceleration item 1): a proof card entering doing
+    /// gets one pre-run review of its plan, and its gaps reach the lane and
+    /// the card before the expensive run. A non-proof card gets none, and the
+    /// same frozen contract is never pre-reviewed twice.
+    #[tokio::test]
+    async fn a_proof_card_entering_doing_gets_one_pre_run_review_of_its_plan() {
+        let (state, store) = fixture();
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        let repo = h.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let cli = h.join("prereviewer.sh");
+        std::fs::write(&cli, "#!/bin/sh\ncat >/dev/null\necho reading\necho '{\"verdict\": \"gaps\", \"findings\": [\"no Ray Serve app is measured at 0 replicas\"]}'\n").unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&cli).status().unwrap();
+        for lane in ["lane-pre", "lane-pre2"] {
+            std::fs::write(h.join(format!("sessions/{lane}.env")),
+                format!("CC_DIR=\"{}\"\nAMUX_CONTRACT_DONE=1\nCC_VERIFY=\"true\"\nAMUX_CONTRACT_REVIEW_CLI=\"{}\"\n", repo.display(), cli.display())).unwrap();
+        }
+        // One card per lane: a lane holds one card in doing.
+        let card = |lane: &str, title: &str| {
+            let id = seed(&store, lane, "todo");
+            let (id2, t) = (id.clone(), title.to_string());
+            store.write(move |conn| {
+                conn.execute("UPDATE issues SET type='code', title=?2 WHERE id=?1", rusqlite::params![id2, t])?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            id
+        };
+        let proof = card("lane-pre", "GS12 proof 6 run: scale to zero");
+        let plain = card("lane-pre2", "an ordinary card");
+        for (lane, id) in [("lane-pre", &proof), ("lane-pre2", &plain)] {
+            assert_eq!(route(&state, id, owner_headers(lane), json!({"status": "doing", "acceptance_criteria": ["every min-0 surface reads 0"]})).await,
+                StatusCode::OK, "{id} enters doing");
+        }
+        assert_eq!(super::super::contract::run_prereviews(&state).await, 1, "only the proof card is pre-reviewed");
+        for _ in 0..300 {
+            if current(&store, &proof).desc.contains("missing from the plan") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let row = current(&store, &proof);
+        assert!(row.desc.contains("no Ray Serve app is measured at 0 replicas"), "{}", row.desc);
+        assert_eq!(row.status, "doing", "a pre-run review never moves the card");
+        let pst = |id: &str| store.read().unwrap().query_row("SELECT prereview_state FROM card_contracts WHERE card = ?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
+        assert_eq!(pst(&proof).as_deref(), Some("gaps"));
+        assert_eq!(pst(&plain), None, "a non-proof card gets none");
+        let queued: i64 = store.read().unwrap()
+            .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(queued, 1, "the findings are delivered to the lane once");
+        assert_eq!(super::super::contract::run_prereviews(&state).await, 0, "the same frozen contract is never pre-reviewed twice");
+    }
+
     #[tokio::test]
     async fn an_anonymous_caller_can_archive_with_authorized_by() {
         let (state, store) = fixture();
