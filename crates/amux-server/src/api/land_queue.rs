@@ -117,6 +117,21 @@ fn read_pid(lock: &Path) -> Option<i32> {
     t.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok()
 }
 
+/// Land locks and queue rows THIS process image is working. A self-adoption
+/// swap execs a new image under the SAME pid, so a lock naming our pid looked
+/// held forever while the task holding it had died with the old image
+/// (2026-10-07: taken 07:37:57Z, swap 07:39:13Z, 11 lands waited 30 minutes
+/// behind it). A lock or running row naming us that is not in these sets was
+/// left by an earlier image and is reclaimed at once.
+static LIVE_LOCKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+    std::sync::LazyLock::new(Default::default);
+static LIVE_ROWS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn lock_is_live_here(path: &Path) -> bool {
+    LIVE_LOCKS.lock().map(|s| s.contains(path)).unwrap_or(true)
+}
+
 /// A held land lock. Dropping it removes the lock only while this process
 /// still owns it, on every path out of a land, an error or a panic included.
 pub struct LandLock {
@@ -128,6 +143,9 @@ impl Drop for LandLock {
     fn drop(&mut self) {
         if read_pid(&self.path) == Some(self.pid as i32) {
             let _ = std::fs::remove_dir_all(&self.path);
+        }
+        if let Ok(mut s) = LIVE_LOCKS.lock() {
+            s.remove(&self.path);
         }
     }
 }
@@ -155,16 +173,26 @@ pub async fn acquire_lock(path: &Path, wait: Duration, poll: Duration) -> LockWa
             let _ = std::fs::write(path.join("who"), format!("{LOCK_WHO}\n"));
             tracing::info!(lock = %path.display(), pid = me, measured = true, n_considered = 1,
                 verdict = "land_lock_acquired", "the server took the land lock");
+            if let Ok(mut s) = LIVE_LOCKS.lock() {
+                s.insert(path.to_path_buf());
+            }
             return LockWait::Acquired(LandLock { path: path.to_path_buf(), pid: me });
         }
         let hpid = read_pid(path);
         let who = std::fs::read_to_string(path.join("who")).unwrap_or_default().trim().to_string();
         let age = std::fs::metadata(path).and_then(|m| m.modified()).ok()
             .and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
-        let stale = match hpid {
+        // Our own pid on a server lock this image does not hold: an earlier
+        // image of this process took it and died in a self-adoption swap.
+        let orphaned_by_swap = hpid == Some(me as i32) && who == LOCK_WHO && !lock_is_live_here(path);
+        let stale = orphaned_by_swap || match hpid {
             Some(p) => !pid_alive(p),
             None => age > LOCK_NO_PID_STALE_S,
         };
+        if orphaned_by_swap {
+            tracing::warn!(lock = %path.display(), pid = me, measured = true, n_considered = 1,
+                verdict = "land_lock_orphaned_by_swap", "a land lock an earlier image of this server held is reclaimed");
+        }
         if stale {
             tracing::warn!(lock = %path.display(), holder = %who, holder_pid = ?hpid, measured = true, n_considered = 1,
                 "taking over a stale land lock (its holder is gone)");
@@ -353,9 +381,23 @@ async fn record(state: &AppState, results: &[(i64, Outcome)], lanes: &HashMap<i6
 /// repository that has nothing running. Returns batches started.
 pub async fn tick(state: &AppState) -> usize {
     let now = crate::config::now_f64();
+    // Running rows this image is not working were started by an earlier image
+    // (a self-adoption swap ends the task): requeue them now, not after
+    // RUNNING_STALE_S.
+    let live: Vec<i64> = LIVE_ROWS.lock().map(|s| s.iter().copied().collect()).unwrap_or_default();
     let _ = state.store.write_async(move |conn| {
-        let n = conn.execute("UPDATE land_queue SET state = 'queued', started_at = NULL WHERE state = 'running' AND started_at < ?1",
+        let mut n = conn.execute("UPDATE land_queue SET state = 'queued', started_at = NULL WHERE state = 'running' AND started_at < ?1",
             [now - RUNNING_STALE_S])?;
+        let running: Vec<i64> = {
+            let mut st = conn.prepare("SELECT id FROM land_queue WHERE state = 'running'")?;
+            let v = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+            v
+        };
+        for id in running.into_iter().filter(|id| !live.contains(id)) {
+            n += conn.execute("UPDATE land_queue SET state = 'queued', started_at = NULL WHERE id = ?1 AND state = 'running'", [id])?;
+            tracing::warn!(id, measured = true, n_considered = 1, verdict = "land_row_orphaned_by_swap",
+                "a land an earlier image of this server was running is requeued");
+        }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
     type Row = (i64, String, String, String);
@@ -394,8 +436,18 @@ pub async fn tick(state: &AppState) -> usize {
             continue;
         }
         started += 1;
+        if let Ok(mut s) = LIVE_ROWS.lock() {
+            s.extend(ids.iter().copied());
+        }
         let st = state.clone();
-        tokio::spawn(async move { run_batch(&st, entries).await });
+        tokio::spawn(async move {
+            run_batch(&st, entries).await;
+            if let Ok(mut s) = LIVE_ROWS.lock() {
+                for id in &ids {
+                    s.remove(id);
+                }
+            }
+        });
     }
     started
 }
@@ -703,6 +755,30 @@ mod tests {
     /// Free: taken, pid/since/who written, released on drop. Live holder: the
     /// server waits, then times out (requeue) and leaves the lock alone. Dead
     /// holder: taken over.
+    /// A self-adoption swap keeps the pid: a lock naming this server that this
+    /// image does not hold is reclaimed at once; one it does hold still waits.
+    #[tokio::test]
+    async fn a_lock_an_earlier_image_of_this_server_held_is_reclaimed() {
+        let d = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let path = d.path().join("locks").join("land-swap");
+        let fast = Duration::from_millis(50);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("pid"), format!("{}\n", std::process::id())).unwrap();
+        std::fs::write(path.join("who"), format!("{LOCK_WHO}\n")).unwrap();
+        let held = match acquire_lock(&path, Duration::from_millis(300), fast).await {
+            LockWait::Acquired(l) => l,
+            LockWait::TimedOut(h) => panic!("an orphan from a previous image must be reclaimed, not waited on ({h})"),
+        };
+        // Now this image holds it: a second acquire must wait, not steal it.
+        match acquire_lock(&path, Duration::from_millis(300), fast).await {
+            LockWait::TimedOut(_) => {}
+            LockWait::Acquired(_) => panic!("a lock this image holds must not be reclaimed"),
+        }
+        drop(held);
+        assert!(!path.exists());
+    }
+
     #[tokio::test]
     async fn the_server_takes_waits_for_and_takes_over_the_land_lock() {
         let d = tempfile::tempdir().unwrap();
