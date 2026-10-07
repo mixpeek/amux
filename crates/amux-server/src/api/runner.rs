@@ -427,8 +427,14 @@ pub enum Claim {
 /// Largest dependency group A2 moves as one unit (AMUX_A2_GROUP_MAX).
 const GROUP_MAX_DEFAULT: usize = 8;
 
-fn group_max() -> usize {
-    crate::api::contract::lane_setting(&crate::config::amux_home(), "", "AMUX_A2_GROUP_MAX")
+/// Resolved at the pulling lane's scope (worker > group > global), so a
+/// group can raise it; a "" lane read only the global scope (2026-10-07).
+fn group_max(lane: &str) -> usize {
+    group_max_at(&crate::config::amux_home(), lane)
+}
+
+fn group_max_at(home: &std::path::Path, lane: &str) -> usize {
+    crate::api::contract::lane_setting(home, lane, "AMUX_A2_GROUP_MAX")
         .or_else(|| std::env::var("AMUX_A2_GROUP_MAX").ok())
         .and_then(|v| v.trim().trim_matches('"').parse::<usize>().ok())
         .filter(|n| *n > 0)
@@ -688,7 +694,7 @@ pub fn claim_pool_card(conn: &Connection, hub: &str, lane: &str, title_re: Optio
             for (card, status, source, n) in unblockers(conn, hub, lane, re)? {
                 let line = format!("taken by idle lane {lane}: no proof card is ready and this unblocks {n} open proof card(s) (contract A2)");
                 if source == "hub" {
-                    let cap = group_max();
+                    let cap = group_max(lane);
                     match take_group(conn, hub, &card, status, lane, &line, cap)? {
                         GroupTake::Moved(size) => return Ok(Claim::UnblocksGroup(card, n, size)),
                         // Once per card per 10 minutes: every idle lane's
@@ -1140,6 +1146,18 @@ mod tests {
     /// MO-4071/MO-4086/MO-4438: a proof card parked with a fresh trigger, or a
     /// blocker, stays in backlog; a stale trigger (past SOURCE_REF_STALE_S)
     /// releases it, as the backlog drain does.
+    #[test]
+    fn a2_group_cap_is_read_at_the_lanes_group_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(home.join("env")).unwrap();
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::write(home.join("env").join("gs12-platform.env"), "AMUX_A2_GROUP_MAX=10\n").unwrap();
+        std::fs::write(home.join("sessions").join("gs12-obs.env"), "CC_TAGS=gs12-platform\n").unwrap();
+        assert_eq!(group_max_at(home, "gs12-obs"), 10);
+        assert_eq!(group_max_at(home, "other"), GROUP_MAX_DEFAULT);
+    }
+
     #[test]
     fn a2_logs_a_repeat_once_per_card_per_window() {
         // Keys are per card: a second pass over the same too-large group
