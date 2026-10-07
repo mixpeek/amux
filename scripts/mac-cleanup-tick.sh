@@ -1395,7 +1395,7 @@ def utc(v):
     return calendar.timegm(time.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")) - off
 for im in json.load(sys.stdin):
     if im["Id"] in used: continue
-    t = utc(im.get("Created"))
+    t = utc((im.get("Metadata") or {}).get("LastTagTime")) or utc(im.get("Created"))
     if t is None or t > cutoff: continue
     print(im["Id"], im.get("Size", 0))
 ') || return 1
