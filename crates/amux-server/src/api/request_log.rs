@@ -2744,6 +2744,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/land/{id}",
+        methods: &["DELETE"],
+    },
+    RouteEntry {
         path: "/api/contract/done-line/{epic}",
         methods: &["GET", "POST"],
     },

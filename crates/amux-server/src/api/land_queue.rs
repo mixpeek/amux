@@ -508,6 +508,43 @@ pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/land", axum::routing::post(enqueue_route).get(status_route))
         .route("/api/land/policy", axum::routing::get(policy_route))
+        .route("/api/land/{id}", axum::routing::delete(withdraw_route))
+}
+
+/// DELETE /api/land/<id>: withdraw one QUEUED entry, by the lane that queued
+/// it. A running land is never touched here (gs12-extra-2, 2026-10-07: the
+/// only way back was `amux land --cancel`, which stops every land of the lane,
+/// one mid-attempt included).
+async fn withdraw_route(State(state): State<AppState>, headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<i64>) -> Response {
+    let lane = caller(&headers);
+    if lane.is_empty() {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "code": "land_withdraw_needs_lane",
+            "error": "send X-Amux-Session: only the lane that queued an entry may withdraw it"}))).into_response();
+    }
+    let row: Option<(String, String)> = state.store.read_async(move |c| {
+        use rusqlite::OptionalExtension;
+        Ok(c.query_row("SELECT lane, state FROM land_queue WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
+    }).await.ok().flatten();
+    let Some((owner, st)) = row else {
+        return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "code": "land_unknown_id", "error": format!("no land queue entry {id}")}))).into_response();
+    };
+    if owner != lane {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "code": "land_withdraw_not_yours",
+            "error": format!("entry {id} was queued by {owner}")}))).into_response();
+    }
+    let l2 = lane.clone();
+    let done = state.store.write_async(move |conn| {
+        let n = conn.execute("UPDATE land_queue SET state = 'withdrawn' WHERE id = ?1 AND lane = ?2 AND state = 'queued'",
+            rusqlite::params![id, l2])?;
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+    }).await;
+    if !matches!(done, Ok(ref o) if o.applied) {
+        return (StatusCode::CONFLICT, Json(json!({"ok": false, "code": "land_not_queued",
+            "error": format!("entry {id} is {st}; only a queued entry can be withdrawn"), "state": st}))).into_response();
+    }
+    tracing::info!(id, lane, measured = true, n_considered = 1, verdict = "land_withdrawn", "a lane withdrew one queued land");
+    (StatusCode::OK, Json(json!({"ok": true, "id": id, "state": "withdrawn"}))).into_response()
 }
 
 fn caller(headers: &HeaderMap) -> String {
@@ -706,6 +743,28 @@ mod tests {
         let st = r.status();
         let b = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         (st, serde_json::from_slice(&b).unwrap_or(Value::Null))
+    }
+
+    /// One queued entry is withdrawn by its own lane; another lane, a running
+    /// entry and a second withdraw are refused (gs12-extra-2, 2026-10-07).
+    #[tokio::test]
+    async fn a_lane_withdraws_one_queued_land_and_nothing_else() {
+        let state = app();
+        state.store.write(|conn| {
+            conn.execute("INSERT INTO land_queue (id, repo, lane, sha, priority, queued_at, state) VALUES (41, 'r', 'lane-w', 'a', 0, 1, 'queued')", [])?;
+            conn.execute("INSERT INTO land_queue (id, repo, lane, sha, priority, queued_at, state) VALUES (42, 'r', 'lane-w', 'b', 0, 1, 'running')", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(call(&state, "DELETE", "/api/land/41", "someone-else", json!(null)).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(call(&state, "DELETE", "/api/land/41", "", json!(null)).await.0, StatusCode::FORBIDDEN);
+        let (st, b) = call(&state, "DELETE", "/api/land/41", "lane-w", json!(null)).await;
+        assert_eq!((st, b["state"].as_str()), (StatusCode::OK, Some("withdrawn")), "{b}");
+        assert_eq!(call(&state, "DELETE", "/api/land/41", "lane-w", json!(null)).await.0, StatusCode::CONFLICT, "already withdrawn");
+        assert_eq!(call(&state, "DELETE", "/api/land/42", "lane-w", json!(null)).await.0, StatusCode::CONFLICT, "a running land is untouched");
+        assert_eq!(call(&state, "DELETE", "/api/land/99", "lane-w", json!(null)).await.0, StatusCode::NOT_FOUND);
+        let states: Vec<String> = state.store.read().unwrap().prepare("SELECT state FROM land_queue ORDER BY id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().flatten().collect();
+        assert_eq!(states, vec!["withdrawn", "running"]);
     }
 
     /// Through the real routes and job: off unless rule 5 is on for the lane;
