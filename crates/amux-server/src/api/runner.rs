@@ -442,9 +442,13 @@ fn group_max_at(home: &std::path::Path, lane: &str) -> usize {
 }
 
 /// What a group move did.
+/// Bound on the walk that measures an over-cap component for its log line.
+const COMPONENT_MEASURE_MAX: usize = 5000;
+
 #[derive(Debug, PartialEq)]
 pub enum GroupTake {
     Moved(usize),
+    /// The whole component's size (up to COMPONENT_MEASURE_MAX), not cap+1.
     TooLarge(usize),
     /// A member is in doing, archived, or tied to another board; or the
     /// board refused the batch.
@@ -504,7 +508,13 @@ fn dependency_component(conn: &Connection, hub: &str, root: &str, cap: usize) ->
 pub fn take_group(conn: &Connection, hub: &str, root: &str, root_status: String, lane: &str, line: &str, cap: usize) -> rusqlite::Result<GroupTake> {
     let members = match dependency_component(conn, hub, root, cap)? {
         Err(other) => return Ok(GroupTake::Refused(format!("{other} is on another board"))),
-        Ok(m) if m.len() > cap => return Ok(GroupTake::TooLarge(m.len())),
+        // The walk stops at cap+1, so measure the whole component for the
+        // report: a cap+1 "size" read as the real one and got a cap raised by
+        // one that could never fit a 298-card web (2026-10-07).
+        Ok(m) if m.len() > cap => {
+            let size = dependency_component(conn, hub, root, COMPONENT_MEASURE_MAX)?.map_or(m.len(), |all| all.len());
+            return Ok(GroupTake::TooLarge(size));
+        }
         Ok(m) => m,
     };
     for m in &members {
@@ -1134,6 +1144,7 @@ mod tests {
             r
         };
         assert_eq!(go("B", 3), GroupTake::TooLarge(4), "B, D1, D2 and D3 exceed a cap of 3");
+        assert_eq!(go("B", 1), GroupTake::TooLarge(4), "the report is the whole component, not cap+1");
         assert_eq!(owner("D3").as_deref(), Some("hub"));
         assert!(matches!(go("X", 8), GroupTake::Refused(_)), "XD is in doing");
         assert_eq!((owner("X").as_deref(), owner("XD").as_deref()), (Some("hub"), Some("hub")), "nothing moved");
