@@ -25,7 +25,7 @@ export AMUX_CLEANUP_SCOPE_FILE=/dev/null   # the live global scope must not conf
 export AMUX_CLEANUP_SESSIONS_CMD=false        # the VM-reference report must not read the live fleet (AMUX-5491)
 AMUX_CLEANUP_LIB_ONLY=1 . "$TICK"
 export AMUX_CLEANUP_STATE_DIR="$FIX/assess-state" AMUX_CLEANUP_ESCALATE_CMD="true" AMUX_CLEANUP_HISTORY_CMD="true" AMUX_CLEANUP_CARD_CMD="true" AMUX_CLEANUP_VM_LIST_CMD="true"   # never page a real lane from a test (DESKT-57)
-DEFAULT_KEEP=$TARGET_KEEP; DEFAULT_ROOTS=$TARGET_ROOTS; DEFAULT_VM_PRUNE=$VM_PRUNE_CMD; DEFAULT_VM_STOP=$VM_STOP_CMD      # what the scheduler actually runs with, before this file overrides the knobs
+DEFAULT_KEEP=$TARGET_KEEP; DEFAULT_ROOTS=$TARGET_ROOTS; DEFAULT_VM_PRUNE=$VM_PRUNE_CMD; DEFAULT_VM_CAP=$VM_PRUNE_CAP_CMD; DEFAULT_VM_IMAGE=$VM_IMAGE_PRUNE_CMD; DEFAULT_VM_MAX_USED=$VM_PRUNE_MAX_USED; DEFAULT_VM_STOP=$VM_STOP_CMD      # what the scheduler actually runs with, before this file overrides the knobs
 
 # Knobs the arm reads. Small budgets: nothing here should ever wait on them.
 TARGET_DEPTH=8; TARGET_SCAN_S=30; TARGET_WALK_S=30; TARGET_BUDGET_S=120
@@ -259,7 +259,7 @@ echo "12c. under disk pressure, build cache in running VMs is pruned and nothing
 VMREC="$FIX/vm-calls"; : > "$VMREC"
 printf '%s\n' '{"name":"gs12-a","status":"Running"}' '{"name":"gs12-b","status":"Stopped"}' '{"name":"gs12-c","status":"Running"}' > "$FIX/vms.json"
 printf '#!/bin/bash\necho "$@" >> %s\necho "Total:\t13.17GB"\n' "$VMREC" > "$FIX/vmrec.sh"; chmod +x "$FIX/vmrec.sh"
-VM_LIST_CMD="cat $FIX/vms.json"; VM_PRUNE_CMD="$FIX/vmrec.sh prune PROFILE"; VM_TRIM_CMD="$FIX/vmrec.sh trim PROFILE"; VM_STEP_S=20
+VM_LIST_CMD="cat $FIX/vms.json"; VM_PRUNE_CMD="$FIX/vmrec.sh prune PROFILE"; VM_TRIM_CMD="$FIX/vmrec.sh trim PROFILE"; VM_STEP_S=20; VM_PRUNE_MAX_USED=0
 check "only RUNNING profiles are listed" "gs12-a gs12-c" "$(running_vm_profiles | tr '\n' ' ' | sed 's/ $//')"
 prune_vm_build_caches 0 > "$FIX/out.txt"
 check "each running VM is pruned and trimmed once" "4" "$(grep -c . "$VMREC" | tr -d ' ')"
@@ -278,6 +278,60 @@ check "the default prune is build cache only" "yes" "$(printf '%s' "$DEFAULT_VM_
 check "and it releases finished builds' cache older than 6 h, not only dangling cache" "yes" "$(printf '%s' "$DEFAULT_VM_PRUNE" | grep -q -- '-af --filter until=AGE' && [ "$VM_PRUNE_AGE" = 6h ] && echo yes || echo no)"
 # 2026-10-06: the gs12 VM wrote build cache at ~78G/h, so 6h-old cache was
 # almost none of it. Under the urgent floor the window is 2h.
+echo "12e. an image's age is its last TAG, not its creation; in-use images are kept (disk RCA 20261007-081932)"
+# Python, not date: BSD date -r takes an epoch, GNU date -r a file (CI is Linux).
+NOW=$(date -u +%s); iso(){ python3 -c 'import sys,time;print(time.strftime("%Y-%m-%dT%H:%M:%S.123456789Z",time.gmtime(int(sys.argv[1]))))' "$1"; }
+cat > "$FIX/images.json" <<JSON
+[{"Id":"sha256:fresh","Created":"$(iso $((NOW-864000)))","Metadata":{"LastTagTime":"$(iso $((NOW-60)))"},"Size":9000000000},
+ {"Id":"sha256:stale","Created":"$(iso $((NOW-864000)))","Metadata":{"LastTagTime":"$(iso $((NOW-86400)))"},"Size":2000000000},
+ {"Id":"sha256:pinned","Created":"$(iso $((NOW-864000)))","Metadata":{"LastTagTime":"$(iso $((NOW-86400)))"},"Size":5000000000},
+ {"Id":"sha256:pulled","Created":"$(iso $((NOW-864000)))","Metadata":{"LastTagTime":"0001-01-01T00:00:00Z"},"Size":1000000000}]
+JSON
+RMI="$FIX/rmi.txt"; : > "$RMI"
+cat > "$FIX/fakedocker.sh" <<SH
+#!/bin/bash
+shift 2
+case "\$1 \$2" in
+  "images -q") printf 'sha256:fresh\nsha256:stale\nsha256:pinned\nsha256:pulled\n' ;;
+  "ps -aq") echo c1 ;;
+  "inspect -f") echo sha256:pinned ;;
+  "image inspect") cat "$FIX/images.json" ;;
+  "rmi "*) echo "\$2" >> "$RMI" ;;
+esac
+SH
+chmod +x "$FIX/fakedocker.sh"
+out=$(VM_DOCKER="$FIX/fakedocker.sh" vm_image_prune_by_tag colima-x 6h)
+check "a fresh tag on an old image is kept" "no" "$(yn grep -q fresh "$RMI")"
+check "a stale tag nobody uses is removed" "yes" "$(yn grep -q stale "$RMI")"
+check "an image a container uses is kept" "no" "$(yn grep -q pinned "$RMI")"
+check "a never-tagged image falls back to its creation time" "yes" "$(yn grep -q pulled "$RMI")"
+check "the summary reports bytes and its verdict" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "Total reclaimed space: 3.00GB (2 image(s), verdict=vm_images_pruned_by_tag_age)"' _ "$out")"
+check "the default image prune is the tag-age function" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "^vm_image_prune_by_tag colima-PROFILE AGE$"' _ "$DEFAULT_VM_IMAGE")"
+
+echo "12d. the build cache is also capped by size, after the age prune and before the trim (disk RCA 20261007-081932)"
+VM_LIST_CMD="cat $FIX/vms.json"; VM_PRUNE_CMD="$FIX/vmrec.sh prune PROFILE"; VM_PRUNE_CAP_CMD="$FIX/vmrec.sh cap PROFILE CAP"; VM_PRUNE_MAX_USED=40gb; : > "$VMREC"
+prune_vm_build_caches 0 > "$FIX/out.txt"
+check "each running VM is capped at the configured size" "2" "$(grep -c '^cap [^ ]* 40gb$' "$VMREC" | tr -d ' ')"
+check "the cap runs after the age prune and before the trim" "prune cap trim" "$(grep 'gs12-a' "$VMREC" | cut -d' ' -f1 | tr '\n' ' ' | sed 's/ $//')"
+check "the cap logs its verdict" "2" "$(grep -c 'verdict=vm_build_cache_capped' "$FIX/out.txt" | tr -d ' ')"
+VM_PRUNE_MAX_USED=0; : > "$VMREC"; prune_vm_build_caches 0 > "$FIX/out.txt"
+check "0 disables the cap" "0" "$(grep -c '^cap ' "$VMREC" | tr -d ' ')"
+check "the default cap is the measuring function" "yes" "$(printf '%s' "$DEFAULT_VM_CAP" | grep -q '^vm_build_cache_cap colima-PROFILE CAP$' && [ "$DEFAULT_VM_MAX_USED" = 40gb ] && echo yes || echo no)"
+DUREC="$FIX/du.rec"; : > "$DUREC"
+cat > "$FIX/dudocker.sh" <<SH
+#!/bin/bash
+shift 2
+if [ "\$1 \$2" = "builder du" ]; then printf 'Private:\t1GB\nTotal:\t%s\n' "\$DU_TOTAL"; exit 0; fi
+echo "\$@" >> "$DUREC"; printf 'Total:\t21.81GB\n'
+SH
+chmod +x "$FIX/dudocker.sh"
+out=$(DU_TOTAL=87.84GB VM_DOCKER="$FIX/dudocker.sh" VM_PRUNE_CAP_AGE=1h vm_build_cache_cap colima-x 40gb)
+check "over the cap, the cache is pruned by the short window" "yes" "$(yn grep -q 'prune -af --filter until=1h' "$DUREC")"
+check "and the reclaimed total is reported" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "Total:.21.81GB"' _ "$out")"
+: > "$DUREC"; out=$(DU_TOTAL=12.5GB VM_DOCKER="$FIX/dudocker.sh" vm_build_cache_cap colima-x 40gb)
+check "within the cap nothing is pruned" "0" "$(grep -c . "$DUREC" | tr -d ' ')"
+: > "$DUREC"; out=$(DU_TOTAL=512MB VM_DOCKER="$FIX/dudocker.sh" vm_build_cache_cap colima-x 1gb)
+check "units compare across MB and GB" "0" "$(grep -c . "$DUREC" | tr -d ' ')"
 VM_LIST_CMD="cat $FIX/vms.json"; VM_PRUNE_CMD="$FIX/vmrec.sh prune PROFILE AGE"; : > "$VMREC"
 prune_vm_build_caches 0 60 > "$FIX/out.txt"
 check "under the urgent floor the prune window is 2h" "yes" "$(grep -q '^prune gs12-a 2h' "$VMREC" && grep -q 'pruning cache unused for 2h' "$FIX/out.txt" && echo yes || echo no)"
@@ -373,7 +427,18 @@ echo "14. the whole tick reports the arm and deletes nothing in --dry-run (macOS
 if [ "$(uname)" = Darwin ]; then
   fresh_root e2e
   mk_target "$R/proj/target" old
-  tick_out=$(AMUX_CLEANUP_TARGET_ROOTS="$R" AMUX_CLEANUP_TARGET_KEEP="" AMUX_CLEANUP_LSOF_CMD="cat $FIX/lsof.base" bash "$TICK" --dry-run 2>&1)
+  # HERMETIC (cpu RCA 20261007-101721): every scan root points into the
+  # fixture. With only the target roots overridden this one dry run walked the
+  # real ~/Dev, /private/tmp and ~/.amux for 15+ minutes at a core or more,
+  # and the suite was itself a load source in two cpu escalations
+  # (AMUX-5635 (b), this one).
+  mkdir -p "$FIX/h/ctmp" "$FIX/h/ltmp" "$FIX/h/utmp" "$FIX/h/lima" "$FIX/h/wt"
+  t0=$(date +%s)
+  tick_out=$(AMUX_CLEANUP_TARGET_ROOTS="$R" AMUX_CLEANUP_TARGET_KEEP="" AMUX_CLEANUP_LSOF_CMD="cat $FIX/lsof.base" \
+    AMUX_CLEANUP_CHURN_ROOTS="$R" AMUX_CLEANUP_WORKTREE_ROOTS="$FIX/h/wt@1" AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/h/ctmp" \
+    AMUX_CLEANUP_LANE_TMP_ROOT="$FIX/h/ltmp" AMUX_CLEANUP_USER_TMP_ROOT="$FIX/h/utmp" AMUX_CLEANUP_LIMA_ROOT="$FIX/h/lima" \
+    bash "$TICK" --dry-run 2>&1)
+  check "the dry run stays inside the fixture (under 120 s)" "yes" "$(yn test $(( $(date +%s) - t0 )) -lt 120)"
   check "the tick prints the cargo-targets line"       "yes" "$(printf '%s' "$tick_out" | grep -q 'mac-cleanup: cargo targets: found 1' && echo yes || echo no)"
   check "the tick says it WOULD reap the fixture"      "yes" "$(printf '%s' "$tick_out" | grep -q "would reap .* $R/proj/target" && echo yes || echo no)"
   check "the done line carries targets_reaped=0"       "yes" "$(printf '%s' "$tick_out" | grep -q 'targets_reaped=0' && echo yes || echo no)"

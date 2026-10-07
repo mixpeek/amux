@@ -45,7 +45,7 @@
     "description": "Engineering managers use amux to give each developer a parallel AI teammate. Run dozens of Claude Code, Codex, or Gemini CLI agents from a shared dashboard with built-in kanban, real-time output, phone monitoring, and self-healing overnight runs.",
     "url": "https://amux.io/for/engineering-managers/",
     "datePublished": "2026-07-09",
-    "dateModified": "2026-08-24",
+    "dateModified": "2026-10-07",
     "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io"},
     "image": "https://amux.io/og-image.png",
@@ -155,24 +155,32 @@
         <strong style="color:#6ee7b7;">Give every developer a parallel AI teammate today</strong>
         <span style="color:var(--muted);margin-left:0.5rem;">amux — open-source fleet control plane for Claude Code, Codex, and Gemini CLI. Shared board, mobile dashboard, overnight self-healing. MIT licensed.</span>
       </div>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="btn btn-primary" style="white-space:nowrap;" onclick="posthog&&posthog.capture('exp059_eng_managers_topofpage_cta_click')">View amux on GitHub ★</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="btn btn-primary" style="white-space:nowrap;" onclick="posthog&&posthog.capture('exp121_eng_managers_topofpage_cta_click')">View amux on GitHub ★</a>
     </div>
 
     <h1>Give Your Dev Team AI Teammates</h1>
-    <p class="subtitle">Engineering managers use amux to deploy a fleet of Claude Code, Codex, or Gemini CLI agents alongside their engineers — each developer gains a parallel AI teammate that handles the backlog while they focus on architecture and review. Monitored from one dashboard or your phone. Updated August 2026.</p>
+    <p class="subtitle">Engineering managers use amux to deploy a fleet of Claude Code, Codex, or Gemini CLI agents alongside their engineers — each developer gains a parallel AI teammate that handles the backlog while they focus on architecture and review. Monitored from one dashboard or your phone. Updated October 2026.</p>
 
     <p>Engineering managers use amux to multiply team velocity without adding headcount. Instead of each developer working on one task at a time, amux lets every engineer run 3–5 parallel AI agent sessions — tackling the backlog, writing tests, fixing bugs, and drafting docs simultaneously. <strong>amux is the open-source control plane that makes running an AI-augmented engineering team possible at the team level, not just the individual level.</strong></p>
 
     <p>The result: your developers spend their time on the work that requires human judgment — architecture decisions, code review, customer conversations — while agents handle the parallel execution work that currently creates context-switching bottlenecks.</p>
 
-    <h2>What's New — August 2026</h2>
+    <h2>What's New — October 2026</h2>
     <p>Recent releases that matter for engineering managers running agent fleets:</p>
     <ul>
-      <li><strong>Board analytics: closed_at timestamp.</strong> Every task now records exactly when it closed. Query sprint velocity, throughput per agent, and backlog burn rate without exporting to a separate tool. Ask "what did this agent close this sprint?" and get a precise answer.</li>
-      <li><strong>Permission audit trail.</strong> Board transitions now record which permission layer approved each move — agent-auto, human-review, or force-override. Full governance visibility for the EM without adding process overhead to the team.</li>
-      <li><strong>Connectors tab: centralized OAuth tokens.</strong> Share Slack, Gmail, GitHub, and Jira tokens across all agent sessions from one interface. Agents can post notifications, open issues, and push to external services without credential sprawl. The EM configures once; every session inherits.</li>
-      <li><strong>Live config updates.</strong> server.env changes now reach a running server without restart. Update shared fleet config mid-sprint — change a token, add a new Connector, update agent defaults — and agents pick it up within seconds.</li>
-      <li><strong>Gmail inbox 4x faster.</strong> The email Connector loads large inboxes in 5 round-trips instead of 480. Agents monitoring email for customer signals or CI alerts no longer block waiting for slow inbox loads.</li>
+      <li><strong>Workspace isolation (<code>AMUX_WORKSPACE_ISOLATION=1</code>).</strong> Each agent now gets its own git worktree at startup. Two agents can work the same repo simultaneously without dirty-tree failures or last-write-wins clobbers. For teams running 5+ agents on a shared codebase, this removes the most common source of cross-agent interference.</li>
+      <li><strong>Standing approvals.</strong> Pre-approve categories of decisions at the fleet level: install packages matching a pattern, rewrite test files within a path, delete files matching a glob. Agents run overnight without stalling on routine choices. EMs set the rules once; the fleet applies them to every session. Particularly useful for automation-heavy tasks like dependency upgrades and test coverage gaps.</li>
+      <li><strong>Vault secrets (AMUX-5375).</strong> API keys scoped to a worker, group, or global fleet. Agents never see raw values. For teams with per-client API keys or environment-specific credentials, scoping to a group means each client's agents only access the right keys. No more pasting tokens into CLAUDE.md.</li>
+      <li><strong>Companion chat.</strong> Send a mid-run message to any agent from the iOS app. It arrives at the agent's next turn boundary without interrupting the current step. EMs checking in from a phone can redirect a session without opening a laptop.</li>
+      <li><strong>Goal keeper.</strong> Set a goal string per worker; amux checks progress every N turns and re-focuses if the agent drifts. For complex multi-hour tasks that need to stay on scope, goal keeper catches rabbit holes before they cost a full sprint slot.</li>
+    </ul>
+
+    <h2>What's New — August 2026</h2>
+    <ul>
+      <li><strong>Board analytics: closed_at timestamp.</strong> Every task records when it closed. Query sprint velocity and throughput per agent without exporting to a separate tool.</li>
+      <li><strong>Permission audit trail.</strong> Board transitions record which permission layer approved each move: agent-auto, human-review, or force-override.</li>
+      <li><strong>Connectors tab: centralized OAuth tokens.</strong> Share Slack, Gmail, GitHub, and Jira tokens across all agent sessions. The EM configures once; every session inherits.</li>
+      <li><strong>Live config updates.</strong> server.env changes reach a running server without restart. Update shared fleet config mid-sprint in seconds.</li>
     </ul>
 
     <h2>What Does the Team Look Like When Running amux?</h2>
@@ -295,12 +303,12 @@
     <p>A practical rollout for a 3–8 person engineering team takes less than a day:</p>
     <ol>
       <li><strong>Install amux per developer</strong> (5 minutes each):
-        <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
+        <pre><code>brew install mixpeek/amux/amux</code></pre>
         Each engineer runs their own amux instance. No shared server required for the initial rollout.
       </li>
       <li><strong>Register the shared project</strong> on each machine:
-        <pre><code>amux register myapp --dir ~/Dev/myapp --yolo</code></pre>
-        The <code>--yolo</code> flag disables per-command approval prompts — appropriate for feature branches where developers review at the PR level. For production-critical paths, omit it.
+        <pre><code>amux register myapp --dir ~/Dev/myapp</code></pre>
+        Use standing approvals to configure what agents auto-approve at the EM level, rather than the per-session <code>--yolo</code> flag.
       </li>
       <li><strong>Write a team CLAUDE.md</strong> in the project root. Check it into version control so every agent session on every machine reads the same context: project architecture, branch conventions, test commands, what to avoid. This is the single highest-leverage thing you can do to ensure consistent agent output quality across the team.</li>
       <li><strong>Define sprint tasks as amux board cards.</strong> The shared board is the coordination layer — everyone can see what is in-progress, who owns what, and what agents have completed. Map existing sprint issues from Jira or Linear into the amux board at the start of each sprint, or run both in parallel during an evaluation period.</li>
@@ -351,8 +359,8 @@
     <div class="cta-box">
       <h3>Start multiplying your team's velocity today</h3>
       <p>amux is open-source, free to self-host, and installs in minutes per developer. No per-seat fees, no vendor lock-in. Your engineers keep their existing workflows — amux adds the agent layer on top.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myapp --dir ~/Dev/myapp --yolo
+      <pre><code>brew install mixpeek/amux/amux
+amux register myapp --dir ~/Dev/myapp
 amux serve  # → https://localhost:8824</code></pre>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">View on GitHub</a>

@@ -177,7 +177,7 @@ const BACKLOG_STALE_AGE_S: i64 = 14 * 86400;
 /// un-drained for a NON-destructive NUDGE, which the owning session can
 /// answer by either re-confirming the trigger (bumps `last_verified_at`) or
 /// finally acting on the card — never by an automated status change.
-const SOURCE_REF_STALE_S: i64 = 24 * 3600;
+pub(crate) const SOURCE_REF_STALE_S: i64 = 24 * 3600;
 
 /// A source ref is an external-trigger block only while the owner has recently
 /// verified it. Older refs still preserve message/provenance links but do not
@@ -1724,6 +1724,120 @@ const DELIVERED_MESSAGE_CARD_SQL: &str = "SELECT 1 FROM cmd_history h \
 /// [`DISPATCHABLE_WHERE`]. Per-card refusals (junk shells, structured deps) still
 /// happen inside the loop and surface as `all-candidates-refused` — an honest
 /// difference, since those are judgments about a card, not queue membership.
+// ISOLATED LANES' CARDS GO TO A LANE THAT CAN WORK THEM (Ethan, 2026-10-07:
+// "when a worker is isolated it logs tasks on the board ... but these task
+// items never get picked up because its isolated"). amux-helper filed AH-395
+// to AH-399 for itself; dispatch skips an isolated lane before any claim
+// (AMUX-4542) and nothing else reads its board, so a card it did not finish in
+// the same turn waited forever. Its todo and backlog cards untouched for
+// AMUX_ISOLATED_HANDOFF_AFTER_H hours (default 2) move to the lane named by
+// AMUX_ISOLATED_HANDOFF, else the lane's AMUX_CONTRACT_HUB; the target must be
+// a live, non-isolated lane. Cards the lane is working (doing/review) stay.
+// With no target the cards stay and the gap is logged
+// (verdict=isolated_cards_unrouted), so it is visible where sweeps look.
+pub(crate) fn isolated_handoff_target(
+    lane: &str,
+    configured: Option<String>,
+    lanes: &[String],
+    is_isolated: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let t = configured?.trim().to_string();
+    (!t.is_empty() && t != lane && lanes.iter().any(|l| l == &t) && !is_isolated(&t)).then_some(t)
+}
+
+pub(crate) fn hand_off_isolated_cards(
+    conn: &Connection,
+    lane: &str,
+    target: &str,
+    untouched_before: f64,
+    now: f64,
+    hhmm: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let ids: Vec<String> = {
+        let mut st = conn.prepare(
+            "SELECT id FROM issues WHERE session=?1 AND status IN ('todo','backlog') \
+             AND owner_type='agent' AND deleted IS NULL AND COALESCE(archived,0)=0 \
+             AND COALESCE(type,'') NOT IN ('tripwire','watch','epic') AND updated < ?2 \
+             AND NOT EXISTS (SELECT 1 FROM issue_tags t WHERE t.issue_id=issues.id \
+                             AND lower(t.tag) LIKE 'needs:you%') ORDER BY id",
+        )?;
+        let v = st.query_map(rusqlite::params![lane, untouched_before], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        v
+    };
+    let note = format!(
+        "handed off from isolated lane {lane} to {target}: nothing dispatches an isolated lane's cards (AMUX_ISOLATED_HANDOFF)"
+    );
+    for id in &ids {
+        let old: Option<String> = conn
+            .query_row("SELECT log FROM issues WHERE id=?1", [id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        conn.execute(
+            "UPDATE issues SET session=?1, log=?2, updated=?3 WHERE id=?4 AND session=?5",
+            rusqlite::params![target, bs::append_log(old.as_deref(), hhmm, &note), now, id, lane],
+        )?;
+    }
+    Ok(ids)
+}
+
+static UNROUTED_WARNED: std::sync::LazyLock<std::sync::Mutex<HashMap<String, f64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+async fn hand_off_isolated<F: Fleet>(state: &AppState, fleet: &F, lane: &str) {
+    let home = crate::config::amux_home();
+    let configured = crate::api::contract::lane_setting(&home, lane, "AMUX_ISOLATED_HANDOFF")
+        .or_else(|| crate::api::contract::lane_setting(&home, lane, "AMUX_CONTRACT_HUB"));
+    let after_h = crate::api::contract::lane_setting(&home, lane, "AMUX_ISOLATED_HANDOFF_AFTER_H")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|h| *h >= 0.0)
+        .unwrap_or(2.0);
+    let now = crate::config::now_f64();
+    let cutoff = now - after_h * 3600.0;
+    let Some(target) = isolated_handoff_target(lane, configured.clone(), &fleet.lanes(), |l| fleet.is_isolated(l)) else {
+        let (l, c) = (lane.to_string(), cutoff);
+        let waiting: i64 = state.store.read_async(move |conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM issues WHERE session=?1 AND status IN ('todo','backlog') AND owner_type='agent' \
+                 AND deleted IS NULL AND COALESCE(archived,0)=0 AND updated < ?2",
+                rusqlite::params![l, c], |r| r.get(0))?)
+        }).await.unwrap_or(0);
+        // Once an hour per lane: the drive tick runs every minute.
+        let due = UNROUTED_WARNED.lock().map(|mut m| {
+            let last = m.get(lane).copied().unwrap_or(0.0);
+            let due = now - last >= 3600.0;
+            if due && waiting > 0 {
+                m.insert(lane.to_string(), now);
+            }
+            due
+        }).unwrap_or(true);
+        if waiting > 0 && due {
+            tracing::warn!(target: "amux::board_drive", session = lane, waiting, configured = ?configured,
+                measured = true, n_considered = waiting, verdict = "isolated_cards_unrouted",
+                "board_drive: an isolated lane holds cards nothing will dispatch; set AMUX_ISOLATED_HANDOFF to a lane that can work them");
+        }
+        return;
+    };
+    let hhmm = chrono::Utc::now().format("%H:%M").to_string();
+    let (l, t) = (lane.to_string(), target.clone());
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = out.clone();
+    let moved = state.store.write_async(move |conn| {
+        let ids = hand_off_isolated_cards(conn, &l, &t, cutoff, now, &hhmm)?;
+        let applied = !ids.is_empty();
+        if let Ok(mut v) = sink.lock() {
+            *v = ids;
+        }
+        Ok(crate::db::WriteOutcome { applied, events: vec![] })
+    }).await;
+    let ids = out.lock().map(|v| v.clone()).unwrap_or_default();
+    if moved.is_ok() && !ids.is_empty() {
+        tracing::info!(target: "amux::board_drive", session = lane, to = %target, cards = ?ids,
+            measured = true, n_considered = ids.len(), verdict = "isolated_cards_handed_off",
+            "board_drive: an isolated lane's untouched cards moved to a lane that can work them");
+    }
+}
+
 fn eligible_todo_count(conn: &Connection, session: &str, now: f64) -> i64 {
     let fresh_cut = pickup_fresh_cut(now);
     let reclaim_cut = now - reclaim_cooldown_s();
@@ -3965,6 +4079,35 @@ fn stale_gate_excluded_todos(conn: &Connection, session: &str, fresh_cut: i64) -
 fn delegated_only_pickup(session: &str) -> bool {
     crate::api::session_verbs::scoped_setting_in(&crate::api::session_verbs::home(), session, "AMUX_PICKUP_DELEGATED_ONLY")
         .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// AH-395: the proof card a lane at its done-WIP cap takes instead of
+/// waiting (see claim_proof_for_capped), with its pickup prompt. None when A2
+/// or the lane's AMUX_A2_POOL_TITLE_REGEX is off, or no proof card is ready.
+async fn proof_for_capped_lane(state: &AppState, lane: &str) -> Option<(String, String)> {
+    let home = crate::config::amux_home();
+    if !crate::api::contract::rule_on(&home, lane, "A2") {
+        return None;
+    }
+    let re = crate::api::runner::pool_title_re(&home, lane)?;
+    let hub = crate::api::contract::lane_setting(&home, lane, "AMUX_CONTRACT_HUB")
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .filter(|h| !h.is_empty() && h != lane);
+    let l = lane.to_string();
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot_w = slot.clone();
+    let _ = state.store.write_async(move |conn| {
+        let got = crate::api::runner::claim_proof_for_capped(conn, hub.as_deref(), &l, &re)?;
+        let applied = got.as_ref().is_some_and(|g| g.1 != "own-todo");
+        *slot_w.lock().unwrap_or_else(|e| e.into_inner()) = got;
+        Ok(crate::db::WriteOutcome { applied, events: vec![] })
+    }).await;
+    let (card, source, reopened) = slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let conn = state.store.read().ok()?;
+    let row = bs::get_issue(&conn, &card).ok().flatten()?;
+    tracing::info!(session = lane, card, source, reopened, cap = true, measured = true, n_considered = 1,
+        verdict = "a2_pool_assigned", "a lane at its done-WIP cap took a proof card instead of waiting (AH-395)");
+    Some((card, pickup_prompt(&conn, lane, &row)))
 }
 
 pub fn select_pickup(conn: &Connection, session: &str, now: f64) -> Pickup {
@@ -7336,6 +7479,13 @@ fn blocker_recoveries_with_policy(
 }
 
 async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTrace {
+    // First, before any skip: an isolated lane is also opted out of pickup
+    // (amux-helper: CC_AUTO_PICKUP=0), and the handoff placed at the isolated
+    // skip below was never reached for it (AMUX-5668, measured on the live
+    // /api/debug/board-drive trace).
+    if fleet.is_isolated(lane) {
+        hand_off_isolated(state, fleet, lane).await;
+    }
     if crate::api::session_verbs::parse_env(lane)
         .get("CC_PROJECT")
         .is_some()
@@ -7803,7 +7953,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         .with_counts(eligible, open);
     };
     let advance = select_advance(&conn, lane, &tags, now);
-    let pickup = select_pickup(&conn, lane, now);
+    let mut pickup = select_pickup(&conn, lane, now);
     drop(conn);
 
     let advance_reason = match &advance {
@@ -7952,7 +8102,13 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         let cap = fleet.done_wip_cap(lane);
         if cap > 0 {
             let done = state.store.read().ok().map(|c| lane_done_cards(&c, lane)).unwrap_or_default();
-            if done.len() >= cap {
+            // AH-395: proof work is exempt from the cap. Done cards wait on the
+            // harness reviewer, which a lane cannot hurry, and a proof card
+            // (often one the reviewer reopened) is exactly what closes them.
+            let proof = if done.len() >= cap { proof_for_capped_lane(state, lane).await } else { None };
+            if let Some((card, prompt)) = proof {
+                pickup = Pickup::Claim { card, prompt };
+            } else if done.len() >= cap {
                 // Hand back the oldest done card the lane has NOT already been
                 // handed while it sits in done. Re-asking about a card the lane
                 // answered ("waits for a reviewer") asks a question only the
@@ -10900,6 +11056,7 @@ mod tests {
         done_cap: std::sync::atomic::AtomicUsize,
         enabled: std::sync::atomic::AtomicBool,
         isolated: std::sync::atomic::AtomicBool,
+        extra_lanes: std::sync::Mutex<Vec<String>>,
         starts: std::sync::atomic::AtomicUsize,
         start_error: std::sync::Mutex<Option<String>>,
         delivery_error: std::sync::Mutex<Option<String>>,
@@ -10919,6 +11076,7 @@ mod tests {
                 done_cap: std::sync::atomic::AtomicUsize::new(0),
                 enabled: std::sync::atomic::AtomicBool::new(true),
                 isolated: std::sync::atomic::AtomicBool::new(false),
+                extra_lanes: std::sync::Mutex::new(Vec::new()),
                 starts: std::sync::atomic::AtomicUsize::new(0),
                 start_error: std::sync::Mutex::new(None),
                 delivery_error: std::sync::Mutex::new(None),
@@ -10929,7 +11087,9 @@ mod tests {
     }
     impl Fleet for BoundaryFleet {
         fn lanes(&self) -> Vec<String> {
-            vec!["lane".into()]
+            let mut v = vec!["lane".to_string()];
+            v.extend(self.extra_lanes.lock().unwrap().iter().cloned());
+            v
         }
         fn auto_pickup_enabled(&self, _: &str) -> bool {
             self.enabled.load(std::sync::atomic::Ordering::SeqCst)
@@ -10940,8 +11100,10 @@ mod tests {
         fn tags(&self, _: &str) -> Vec<String> {
             vec![]
         }
-        fn is_isolated(&self, _: &str) -> bool {
+        fn is_isolated(&self, lane: &str) -> bool {
+            // Extra lanes are the handoff targets a test adds: never isolated.
             self.isolated.load(std::sync::atomic::Ordering::SeqCst)
+                && !self.extra_lanes.lock().unwrap().iter().any(|l| l == lane)
         }
         async fn is_running(&self, _: &str) -> bool {
             self.running.load(std::sync::atomic::Ordering::SeqCst)
@@ -11312,6 +11474,73 @@ mod tests {
             ended.delivered.lock().unwrap().iter().any(|(_, t)| t.contains("BG")),
             "the To Do card was not delivered: {trace:?}"
         );
+    }
+
+    /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a
+    /// lane that can work them; its in-progress, fresh, needs-you and watch
+    /// cards stay, and each moved card says so in its log.
+    #[test]
+    fn an_isolated_lanes_untouched_cards_move_to_its_handoff_lane() {
+        let (_dir, _state, store) = drive_state();
+        for (id, status, kind) in [("T", "todo", "code"), ("B", "backlog", "code"), ("D", "doing", "code"),
+            ("W", "todo", "watch"), ("N", "todo", "code"), ("F", "todo", "code"), ("X", "done", "code")] {
+            drive_card(&store, id, status, "agent", kind);
+        }
+        let now = now_f64();
+        let moved = store.write(move |conn| {
+            conn.execute("UPDATE issues SET updated=?1 WHERE id<>'F'", [now - 3.0 * 3600.0])?;
+            conn.execute("INSERT INTO issue_tags (issue_id, tag) VALUES ('N', 'needs:you')", [])?;
+            let ids = hand_off_isolated_cards(conn, "lane", "worker", now - 2.0 * 3600.0, now, "09:00")?;
+            assert_eq!(ids, vec!["B".to_string(), "T".to_string()]);
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        });
+        assert!(moved.is_ok());
+        let rows: Vec<(String, String, String)> = store.read().unwrap()
+            .prepare("SELECT id, session, COALESCE(log,'') FROM issues ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().flatten().collect();
+        for (id, session, log) in rows {
+            let want = if id == "T" || id == "B" { "worker" } else { "lane" };
+            assert_eq!(session, want, "{id}");
+            assert_eq!(log.contains("handed off from isolated lane lane to worker"), want == "worker", "{id}: {log}");
+        }
+    }
+
+    /// Through drive_lane: an isolated lane that is ALSO opted out of pickup
+    /// (amux-helper's shape, CC_AUTO_PICKUP=0) still hands its cards off. The
+    /// first version ran the handoff at the isolated skip, which an opted-out
+    /// lane never reaches.
+    #[tokio::test]
+    async fn an_isolated_lane_opted_out_of_pickup_still_hands_its_cards_off() {
+        let (_dir, state, store) = drive_state();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/lane.env"), "AMUX_ISOLATED_HANDOFF=worker\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        drive_card(&store, "OLD", "todo", "agent", "code");
+        let old = now_f64() - 3.0 * 3600.0;
+        store.write(move |c| {
+            c.execute("UPDATE issues SET updated=?1 WHERE id='OLD'", [old])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let fleet = BoundaryFleet::default();
+        fleet.isolated.store(true, std::sync::atomic::Ordering::SeqCst);
+        fleet.enabled.store(false, std::sync::atomic::Ordering::SeqCst);
+        fleet.extra_lanes.lock().unwrap().push("worker".into());
+        drive_lane(&state, &fleet, "lane").await;
+        let session: String = store.read().unwrap()
+            .query_row("SELECT session FROM issues WHERE id='OLD'", [], |r| r.get(0)).unwrap();
+        assert_eq!(session, "worker");
+    }
+
+    #[test]
+    fn the_handoff_target_must_be_a_live_lane_that_is_not_isolated() {
+        let lanes = vec!["iso".to_string(), "amux".to_string(), "other-iso".to_string()];
+        let iso = |l: &str| l.ends_with("iso");
+        assert_eq!(isolated_handoff_target("iso", Some("amux".into()), &lanes, iso), Some("amux".into()));
+        assert_eq!(isolated_handoff_target("iso", None, &lanes, iso), None);
+        assert_eq!(isolated_handoff_target("iso", Some("other-iso".into()), &lanes, iso), None, "isolated target");
+        assert_eq!(isolated_handoff_target("iso", Some("gone".into()), &lanes, iso), None, "not a lane");
+        assert_eq!(isolated_handoff_target("iso", Some("iso".into()), &lanes, iso), None, "itself");
     }
 
     #[tokio::test]

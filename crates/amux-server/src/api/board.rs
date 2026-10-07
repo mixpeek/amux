@@ -16154,8 +16154,11 @@ mod af701_archive_guard_tests {
             }).unwrap();
             id
         };
-        let older_a = done_card("lane-u", "an ordinary card");
-        let older_b = done_card("lane-u", "another ordinary card");
+        // More ordinary cards than one pass claims, so some must wait behind
+        // the proof cards. Sized from REVIEWS_PER_PASS: e5917ff0 raised it
+        // from 2 to 5 and the fixed (4, 2) below went red on every run.
+        let per_pass = super::super::contract::REVIEWS_PER_PASS;
+        let ordinary: Vec<String> = (0..per_pass + 1).map(|i| done_card("lane-u", &format!("ordinary card {i}"))).collect();
         let proof = done_card("lane-u", "GS12 proof 7 run: the thing holds");
         let ops_proof = done_card("lane-u", "GS12 proof 9 run: an ops-typed proof card");
         {
@@ -16171,10 +16174,11 @@ mod af701_archive_guard_tests {
         };
 
         let (pending, claimed) = super::super::contract::run_reviews(&state).await;
-        assert_eq!((pending, claimed), (4, 2), "four opted-in cards queued, two claimed per pass");
+        assert_eq!((pending, claimed), (per_pass + 3, per_pass), "every opted-in card queued, one pass's worth claimed");
         assert_ne!(review_state(&proof).as_deref(), Some("pending"), "the proof card is claimed first");
         assert_ne!(review_state(&ops_proof).as_deref(), Some("pending"), "an ops-typed proof card is queued and claimed first too");
-        assert!([&older_a, &older_b].iter().all(|c| review_state(c).as_deref() == Some("pending")), "ordinary cards wait behind proof");
+        assert_eq!(ordinary.iter().filter(|c| review_state(c).as_deref() == Some("pending")).count(), 3,
+            "the ordinary cards past one pass wait behind proof");
         assert_eq!(review_state(&other), None, "a lane without the setting is untouched");
         // 60 s, not 15: CI failed at 17.1 s where a local run takes ~1.6 s.
         // On failure, say whether the reviewer ran at all.

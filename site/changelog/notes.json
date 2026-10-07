@@ -1,5 +1,32 @@
 [
   {
+    "hash": "844dd6f7",
+    "short": "844dd6f",
+    "title": "Multiplayer typing, vault logins, password connections, browser fixes for headless hosts",
+    "date": "2026-10-07",
+    "type": "feat",
+    "tags": ["dashboard", "vault", "browser"],
+    "description": "Typing indicators in the send composer show when another dashboard client is composing. Vault-scoped login credentials work for password-protected connections. Browser sessions on headless hosts no longer fail with missing display errors."
+  },
+  {
+    "hash": "e88db1f6",
+    "short": "e88db1f",
+    "title": "Cloud door: sandboxed file previews now follow links correctly",
+    "date": "2026-10-07",
+    "type": "fix",
+    "tags": ["cloud", "files"],
+    "description": "The cloud door view now sets the correct cookie scope so sandboxed file previews can follow internal links without authentication errors."
+  },
+  {
+    "hash": "25354b0e",
+    "short": "25354b0",
+    "title": "Peek live frame cut at transcript end, not at quoted lines",
+    "date": "2026-10-07",
+    "type": "fix",
+    "tags": ["peek", "dashboard"],
+    "description": "The peek overlay's live frame now ends where the transcript ends rather than at the last quoted line, so the live view no longer drops content that appears after an agent quotes its own previous output."
+  },
+  {
     "hash": "f714f5af",
     "short": "f714f5a",
     "title": "Board writer unblocked; orphaned verifications resume automatically",

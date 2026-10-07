@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Goal Keeper — Keep Claude Code On Task for Long Runs</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="The amux goal keeper checks whether your AI agent is still working toward its goal every N turns and re-prompts when it drifts. Prevents scope creep, rabbit holes, and premature done declarations on overnight coding runs.">
+  <meta name="keywords" content="ai agent goal keeper, keep ai agent on task, claude code goal tracking, ai coding agent goal setting, prevent ai agent scope creep, ai agent task focus, overnight coding agent goals">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-goal-keeper/">
+  <meta property="og:title" content="AI Agent Goal Keeper — Keep Claude Code On Task for Long Runs">
+  <meta property="og:description" content="Set a goal for your AI agent. amux checks progress every N turns and re-prompts when it drifts. Stops scope creep, rabbit holes, and false done declarations on overnight runs.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-goal-keeper/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Goal Keeper","item":"https://amux.io/guides/ai-agent-goal-keeper/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Goal Keeper — Keep Claude Code On Task for Long Runs","description":"How amux goal keeper prevents scope creep and premature done declarations on long AI coding runs. Set a goal string, choose a check interval, and amux re-prompts the agent if it has drifted.","url":"https://amux.io/guides/ai-agent-goal-keeper/","datePublished":"2026-10-07","dateModified":"2026-10-07","author":{"@type":"Organization","name":"amux","url":"https://amux.io"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to set up the amux goal keeper","description":"Configure the amux goal keeper to keep an AI agent on task across long overnight coding runs","step":[{"@type":"HowToStep","position":1,"name":"Open a session card","text":"In the amux dashboard, click any running session card to open the session controls. The goal keeper settings appear in the Goals section below the task input."},{"@type":"HowToStep","position":2,"name":"Write your goal","text":"Enter a concrete, verifiable goal for this session — the specific outcome you expect when the task is finished. Good goals name the deliverable and the acceptance criterion: 'Migrate all Postgres queries in server/db/ to use parameterized statements and ensure the full test suite passes.' Vague goals produce vague re-prompts."},{"@type":"HowToStep","position":3,"name":"Set the check interval","text":"Choose how often amux checks progress, measured in turns. The default is every 10 turns. For a complex multi-hour task, every 5 turns gives tighter steering. For a simple scripted task, every 20 turns avoids unnecessary interruptions."},{"@type":"HowToStep","position":4,"name":"Enable and start","text":"Toggle the goal keeper on. The agent continues its current work; amux will check in at the configured interval and ask the agent to report whether the goal is still on track. If the agent's response shows drift, amux sends a re-focus prompt."},{"@type":"HowToStep","position":5,"name":"Review the goal log","text":"Open the session peek view to read the goal check history. Each check records the agent's self-assessment and whether amux sent a re-focus prompt. The log stays visible in the dashboard for the full session lifetime."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the amux goal keeper?","acceptedAnswer":{"@type":"Answer","text":"The goal keeper is an amux feature that periodically asks your AI agent whether it is still working toward the goal you set. You write a goal string (a concrete outcome with an acceptance criterion), choose a check interval in turns, and amux inserts a progress check into the session at that cadence. If the agent's response indicates drift, amux automatically sends a re-focus prompt to steer it back."}},{"@type":"Question","name":"Why do AI agents drift off task?","acceptedAnswer":{"@type":"Answer","text":"Long-running AI coding agents can drift for several reasons: they encounter a tangential problem and pursue a solution that was not asked for; they declare a task done before all edge cases are handled; they get stuck on a subtask and start exploring alternatives without making progress; or a context compaction at a key moment leaves them without the original task framing. The goal keeper addresses all four by re-inserting the goal context and asking the agent to confirm alignment at regular intervals."}},{"@type":"Question","name":"What is a good goal string to write?","acceptedAnswer":{"@type":"Answer","text":"A good goal string is specific and verifiable. It names the deliverable, the scope, and the acceptance criterion in one or two sentences. Example: 'Add TypeScript strict-mode to the frontend package, fix all resulting type errors without changing any external API shapes, and ensure yarn build and yarn test both pass.' Avoid vague goals like 'improve the code' or 'fix the tests' — the agent cannot self-assess against those."}},{"@type":"Question","name":"How is the goal keeper different from pinned notes?","acceptedAnswer":{"@type":"Answer","text":"Pinned notes inject static text into every context reload passively — the agent reads them but does not report on them. The goal keeper actively asks the agent to confirm whether the current work aligns with the goal and sends a re-focus prompt if it does not. Use pinned notes for standing constraints (do not commit to main, always use TypeScript). Use the goal keeper for the specific outcome of the current task."}},{"@type":"Question","name":"Can I set a goal from the command line?","acceptedAnswer":{"@type":"Answer","text":"Yes. Use the Claude Code /goal command inside the session, or set the AMUX_GOAL environment variable for the worker. The CLI approach is useful for scripted deployments where you queue a task programmatically and want the goal to travel with the task description. The dashboard editor is easier for interactive sessions."}},{"@type":"Question","name":"Does the goal keeper interrupt the agent mid-thought?","acceptedAnswer":{"@type":"Answer","text":"No. amux waits for a turn boundary before inserting the check. A turn boundary is when the agent has just produced output and is waiting for the next input. The goal check arrives as the next input after the configured number of completed turns — the agent finishes its current step first."}},{"@type":"Question","name":"What happens when the goal keeper detects drift?","acceptedAnswer":{"@type":"Answer","text":"The goal keeper sends a structured re-focus prompt that includes the original goal, a summary of the detected drift, and an instruction to return to the goal before continuing. The agent responds by acknowledging the drift and re-orienting. Subsequent goal checks continue on the same cadence. You can read the full drift history in the session peek view."}},{"@type":"Question","name":"Can I pause or disable the goal keeper mid-run?","acceptedAnswer":{"@type":"Answer","text":"Yes. Toggle the goal keeper off from the session card in the dashboard, or set AMUX_GOAL_CONTINUE=0 for the worker. The ongoing turn completes normally; no further goal checks are sent. You can re-enable it at any time with the same or a revised goal."}},{"@type":"Question","name":"Does the goal keeper work with Codex CLI and Gemini CLI sessions?","acceptedAnswer":{"@type":"Answer","text":"Yes. The goal keeper inserts checks at the harness level using amux's standard session messaging — it is not specific to Claude Code. Any session that amux manages and that accepts text prompts (Codex CLI, Gemini CLI, or a custom CLI agent) works with the goal keeper."}},{"@type":"Question","name":"How do I use the goal keeper with workspace isolation?","acceptedAnswer":{"@type":"Answer","text":"Goal keeper and workspace isolation work independently and combine well. Set AMUX_WORKSPACE_ISOLATION=1 to give the agent its own git worktree, and set a goal string to keep it on task within that worktree. The goal check re-prompts if the agent starts working on files outside the intended scope, which is exactly the kind of drift that workspace isolation cannot prevent on its own."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+
+  <!-- EXP-119: /guides/ai-agent-goal-keeper/ top-of-page CTA -->
+  <div class="top-cta-bar" id="exp119-cta" onclick="posthog&&posthog.capture('exp119_goal_keeper_guide_topofpage_cta_click')">
+    <span>Set a goal. Walk away. Wake up to a finished task — not a rabbit hole. 514+ stars, free to self-host.</span>
+    <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp119_goal_keeper_guide_topofpage_cta_click')">View amux on GitHub ★ →</a>
+  </div>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Goal Keeper</span></div>
+
+    <h1>AI Agent Goal Keeper</h1>
+    <p class="subtitle">Set a goal for your Claude Code session, choose a check interval, and amux steers the agent back on track whenever it drifts — automatically, without waking you up.</p>
+    <p class="freshness-stamp">Published October 2026</p>
+
+    <p>An AI coding agent that starts on the right task can still end up somewhere else by hour three. It finds a bug adjacent to the one it was fixing and pursues it. It adds abstractions that were not requested. It declares done before finishing edge cases. On overnight runs, no one is watching — and by the time you check in the morning, the agent may have produced something useful but not what you asked for.</p>
+
+    <p>The amux goal keeper solves this by inserting a goal check at regular intervals. You write a goal string that describes the specific outcome you expect, set how often to check (every N turns), and amux asks the agent whether the current work still aligns. When it does not, amux sends a re-focus prompt and logs the drift. The agent continues; the check fires again at the next interval.</p>
+
+    <h2>Why agents drift</h2>
+
+    <p>There are four common patterns:</p>
+
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Drift pattern</th>
+            <th>What happens</th>
+            <th>How goal keeper helps</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Scope creep</strong></td>
+            <td>Agent encounters a related issue and fixes it unprompted, spending time outside the task boundary</td>
+            <td>Re-focus prompt names the original goal and asks the agent to defer the unrelated issue</td>
+          </tr>
+          <tr>
+            <td><strong>Rabbit hole</strong></td>
+            <td>Agent descends into debugging a subtask without making progress on the parent task</td>
+            <td>Check-in forces a progress report; if it shows no progress toward the goal, amux escalates</td>
+          </tr>
+          <tr>
+            <td><strong>Premature done</strong></td>
+            <td>Agent marks work done before the acceptance criterion is met</td>
+            <td>Goal string includes the criterion; agent must confirm it is satisfied to pass the check</td>
+          </tr>
+          <tr>
+            <td><strong>Context loss</strong></td>
+            <td>Context compaction removes the original task framing; agent restarts in a vague direction</td>
+            <td>Goal string is re-injected at every check, not just at the start</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Setting up the goal keeper</h2>
+
+    <p>Three things to configure: the goal string, the check interval, and whether to continue automatically when the goal is met.</p>
+
+    <h3>Writing a good goal string</h3>
+
+    <p>The goal string has two parts: what to produce, and how to verify it. Both must be specific.</p>
+
+    <p><strong>Good goal string:</strong> <em>Migrate all raw SQL queries in server/db/ to use the ORM's query builder. The test suite must pass. No changes outside server/db/ except imports.</em></p>
+
+    <p><strong>Weak goal string:</strong> <em>Improve the database layer.</em></p>
+
+    <p>The weak version cannot produce a useful self-assessment. The agent has no basis for "am I done?" A good goal string lets the agent answer yes or no unambiguously.</p>
+
+    <h3>Setting the check interval</h3>
+
+    <p>The interval is measured in completed turns — one agent response counts as one turn. Guidance by task type:</p>
+
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Task type</th>
+            <th>Recommended interval</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Mechanical refactor (rename, format, migrate)</td>
+            <td>Every 20 turns</td>
+            <td>Low drift risk; frequent checks add interruptions without value</td>
+          </tr>
+          <tr>
+            <td>Feature implementation</td>
+            <td>Every 10 turns (default)</td>
+            <td>Balanced; catches scope creep before too much time is lost</td>
+          </tr>
+          <tr>
+            <td>Complex debugging or architecture</td>
+            <td>Every 5 turns</td>
+            <td>Higher drift risk; tighter checks keep the agent from going deep on a wrong path</td>
+          </tr>
+          <tr>
+            <td>Research or exploration</td>
+            <td>Disable goal keeper</td>
+            <td>Exploration benefits from following tangents; goal keeper would fight the task</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Using the CLI</h3>
+
+    <p>Set a goal from inside a session with the <code>/goal</code> slash command:</p>
+
+    <pre><code>/goal Migrate all SQL queries in server/db/ to use parameterized statements. Tests must pass. No changes outside server/db/.</code></pre>
+
+    <p>Or set the goal at startup via the environment:</p>
+
+    <pre><code>AMUX_GOAL="Migrate SQL queries in server/db/ to parameterized statements. Tests must pass." amux start myproject</code></pre>
+
+    <p>To disable goal keeper continuation for a worker without removing the goal, set <code>AMUX_GOAL_CONTINUE=0</code>.</p>
+
+    <h2>What a goal check looks like</h2>
+
+    <p>At the check interval, amux sends a structured prompt to the agent. The agent responds with a brief self-assessment. amux reads the response and decides whether to send a re-focus prompt.</p>
+
+    <p>Example check prompt (sent by amux):</p>
+    <pre><code>Goal check — turn 10/10.
+
+Your goal: Migrate all SQL queries in server/db/ to use parameterized statements. Tests must pass. No changes outside server/db/.
+
+Current status: are you still working toward this goal? Report in one sentence. If you have drifted, say so explicitly.</code></pre>
+
+    <p>If the agent's response signals drift or uncertainty, amux follows up:</p>
+    <pre><code>Re-focus: return to the original goal before continuing. Defer or note unrelated issues rather than acting on them. Resume: migrate all SQL queries in server/db/ to parameterized statements.</code></pre>
+
+    <p>The goal check and any re-focus prompt are logged in the session peek view. You can read the full history when the run completes.</p>
+
+    <h2>Goal keeper vs pinned notes vs standing approvals</h2>
+
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Mechanism</th>
+            <th>What it does</th>
+            <th>Best for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Goal keeper</strong></td>
+            <td>Actively checks alignment with a specific goal at intervals; re-prompts on drift</td>
+            <td>Long task runs with a clear deliverable and acceptance criterion</td>
+          </tr>
+          <tr>
+            <td><strong>Pinned notes</strong></td>
+            <td>Passively injects standing text at every context reload</td>
+            <td>Persistent constraints and conventions that always apply (do not commit to main, use TypeScript)</td>
+          </tr>
+          <tr>
+            <td><strong>Standing approvals</strong></td>
+            <td>Pre-approves categories of actions so the agent does not pause to ask</td>
+            <td>Predictable routine decisions the agent should handle without human input</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>These three work well together. A practical combination for an overnight run: pinned notes for style and commit conventions, standing approvals for package installs and minor file deletes, and the goal keeper for the task's specific deliverable.</p>
+
+    <h2>Combining goal keeper with workspace isolation</h2>
+
+    <p>Set <code>AMUX_WORKSPACE_ISOLATION=1</code> alongside a goal to give the agent both a clean working context and a steering signal:</p>
+
+    <pre><code>AMUX_WORKSPACE_ISOLATION=1 \
+AMUX_GOAL="Add rate-limiting middleware to all /api/v2/ routes. Unit tests must cover the middleware. No changes outside server/middleware/ and server/routes/v2/." \
+amux start myproject</code></pre>
+
+    <p>Workspace isolation prevents shared-checkout conflicts with other agents. The goal keeper prevents the agent from drifting into unrelated parts of the codebase inside its own isolated worktree.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <h3>What is the amux goal keeper?</h3>
+    <p>The goal keeper is an amux feature that periodically asks your AI agent whether it is still working toward the goal you set. You write a goal string, choose a check interval in turns, and amux inserts a progress check at that cadence. When the agent's response shows drift, amux sends a re-focus prompt and logs the event.</p>
+
+    <h3>Why do AI agents drift off task?</h3>
+    <p>Scope creep, rabbit holes, premature done declarations, and context loss after compaction. Any of these can cause an agent that started correctly to produce something off-target by the time you check in. The goal keeper catches each class of drift actively rather than waiting for you to notice the output.</p>
+
+    <h3>What is a good goal string to write?</h3>
+    <p>Name the deliverable, the scope, and the acceptance criterion. "Migrate all Postgres queries in server/db/ to parameterized statements; tests must pass" is good. "Improve the database layer" is not. The agent needs a verifiable test to answer "am I done?" — vague strings produce vague self-assessments.</p>
+
+    <h3>How is the goal keeper different from pinned notes?</h3>
+    <p>Pinned notes inject static text passively at every context reload. The goal keeper actively asks the agent to confirm alignment and sends a re-focus prompt when it does not. Use pinned notes for standing constraints. Use the goal keeper for the specific outcome of the current task.</p>
+
+    <h3>Can I set a goal from the command line?</h3>
+    <p>Yes. Use the Claude Code <code>/goal</code> command inside the session, or set the <code>AMUX_GOAL</code> environment variable for the worker. The CLI approach is useful for scripted deployments where you queue a task programmatically.</p>
+
+    <h3>Does the goal keeper interrupt the agent mid-thought?</h3>
+    <p>No. amux waits for a turn boundary before inserting the check. The agent finishes its current response first; the goal check arrives as the next input after the configured number of completed turns.</p>
+
+    <h3>What happens when the goal keeper detects drift?</h3>
+    <p>amux sends a structured re-focus prompt that includes the original goal, a summary of the detected drift, and an instruction to return to goal before continuing. Subsequent checks continue on the same cadence. The full drift history is readable in the session peek view.</p>
+
+    <h3>Can I pause or disable the goal keeper mid-run?</h3>
+    <p>Yes. Toggle it off from the session card in the dashboard, or set <code>AMUX_GOAL_CONTINUE=0</code>. The ongoing turn completes; no further checks are sent. You can re-enable with the same or a revised goal.</p>
+
+    <h3>Does the goal keeper work with Codex CLI and Gemini CLI?</h3>
+    <p>Yes. Goal keeper inserts checks at the harness level using amux's session messaging. Any session amux manages accepts goal checks — Claude Code, Codex CLI, Gemini CLI, or a custom agent.</p>
+
+    <h3>How do I use the goal keeper with workspace isolation?</h3>
+    <p>Set both flags. <code>AMUX_WORKSPACE_ISOLATION=1</code> gives the agent its own git worktree; the goal string keeps it working within the right scope inside that worktree. They address different failure modes and combine without conflict.</p>
+
+    <div class="cta-box">
+      <h3>Run focused overnight coding tasks</h3>
+      <p>amux goal keeper, workspace isolation, pinned notes, and standing approvals work together to let a fleet of agents run through the night without supervision. Free, MIT licensed, installs in under a minute.</p>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="posthog&&posthog.capture('exp119_goal_keeper_guide_bottomofpage_cta_click')">View amux on GitHub (514+ stars)</a>
+    </div>
+
+    <p style="margin-top:2rem">Also see: <a href="/guides/ai-agent-pinned-notes/">pinned notes</a>, <a href="/guides/ai-agent-workspace-isolation/">workspace isolation</a>, <a href="/guides/ai-agent-secrets-vault/">secrets vault</a>, <a href="/guides/ai-coding-agents-overnight/">overnight coding agents</a></p>
+  </main>
+
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

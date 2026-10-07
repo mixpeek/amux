@@ -1411,6 +1411,17 @@ async fn isolated_owner_ask(state: &AppState, name: &str, records: &[Value], tur
     // parked as cards because amux may not steer them. The owner configured
     // this answer, so it is delivered as owner policy; boundary asks (money,
     // outbound, prod data, credentials) still become cards.
+    // A sentence naming a card already waiting on the owner is a status line,
+    // not a new ask (the steered path has had this guard since 2026-10-01;
+    // the isolated path did not: amux-helper, 2026-10-07, "AH-394 ... is still
+    // waiting on your yes" was answered "proceed" under owner policy).
+    if kind.is_none() {
+        if let Some(carded) = needsyou_card_named(state, &sentence) {
+            tracing::info!(session = %name, card = %carded, verdict = "isolated_ask_already_carded", sentence = %clip(&sentence, 160),
+                "turn-end: isolated lane's ask names a card already in needsyou; not auto-proceeded");
+            return;
+        }
+    }
     if kind.is_none() && enabled(name, AUTO_PROCEED_KEY) && !owner_said_hold(&turn.prompt) {
         let key = format!("isolated-proceed:{name}:{}:{}", question_key(&sentence), day_bucket());
         if claim_once(state, name, "turn_end.isolated_proceed", key, json!({"sentence": sentence, "uuid": turn.uuid})).await {
@@ -1969,6 +1980,22 @@ mod tests {
         let (a, _, _) = file_ask_card_via(&state, "peer", None, "First ask?", "c", "test", AskPath::NeedsYou, false).await.unwrap();
         let (b, created_b, _) = file_ask_card_via(&state, "peer", None, "Second ask?", "c", "test", AskPath::NeedsYou, false).await.unwrap();
         assert!(created_b && a != b);
+    }
+
+    #[tokio::test]
+    async fn an_isolated_lane_naming_a_card_waiting_on_the_owner_is_not_auto_proceeded() {
+        let (_tmp, state) = hermetic_state();
+        state.store.write(|conn| {
+            conn.execute("INSERT INTO issues (id, title, status, created, updated) VALUES ('AH-394', 'AH-394', 'needsyou', 1, 1)", [])?;
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+        }).unwrap();
+        let sentence = "AH-394, the proof-first instruction, is still waiting on your yes.";
+        let turn = TurnTail { uuid: "u1".into(), text: sentence.into(), ts: 1.0, prompt: String::new() };
+        isolated_owner_ask(&state, "iso-lane", &[], &turn, OwnerAsk::InBoundary { sentence: sentence.into() }).await;
+        // The proceed was never even claimed: the guard returns before it.
+        let key = format!("isolated-proceed:iso-lane:{}:{}", question_key(sentence), day_bucket());
+        assert!(claim_once(&state, "iso-lane", "turn_end.isolated_proceed", key, json!({})).await,
+            "no owner-policy proceed may be claimed for a sentence naming a needsyou card");
     }
 
     #[tokio::test]

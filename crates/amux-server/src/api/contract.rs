@@ -698,8 +698,12 @@ pub const LOAD_HIGH_PER_CPU: f64 = 1.5;
 pub const LOAD_LOW_PER_CPU: f64 = 0.7;
 const CHECKS_MAX_DEFAULT: usize = 4;
 const CHECKS_MID: usize = 3;
-const REVIEWS_MAX_DEFAULT: usize = 3;
-const REVIEWS_MID: usize = 2;
+/// Reviews are a model call and a checkout, not a build: they barely load the
+/// host, so they are not held to the CPU bands. Ethan, 2026-10-07: raise review
+/// concurrency to clear the 82-card review backlog (the bottleneck detector's
+/// top constraint). Only an extreme load (REVIEW_HOLD_PER_CPU) halves them.
+const REVIEWS_MAX_DEFAULT: usize = 5;
+const REVIEW_HOLD_PER_CPU: f64 = 3.0;
 
 /// The cap for one kind of work at a given load per CPU. Pure, for tests.
 /// An unreadable load (None) gets the middle band, never the maximum.
@@ -709,6 +713,15 @@ pub fn adaptive_cap(max: usize, mid: usize, load_per_cpu: Option<f64>) -> usize 
         Some(l) if l >= LOAD_HIGH_PER_CPU => 1,
         Some(l) if l <= LOAD_LOW_PER_CPU => max,
         _ => mid.clamp(1, max),
+    }
+}
+
+/// The review cap at a given load per CPU. Pure, for tests.
+pub fn review_cap(max: usize, load_per_cpu: Option<f64>) -> usize {
+    let max = max.max(1);
+    match load_per_cpu {
+        Some(l) if l >= REVIEW_HOLD_PER_CPU => max.div_ceil(2),
+        _ => max,
     }
 }
 
@@ -742,10 +755,13 @@ fn current_cap(work: Work) -> usize {
         [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
     let (max, mid, slot, name) = match work {
         Work::Check => (configured_max("AMUX_CONTRACT_VERIFY_CONCURRENCY", CHECKS_MAX_DEFAULT), CHECKS_MID, 0, "check"),
-        Work::Review => (configured_max("AMUX_CONTRACT_REVIEW_CONCURRENCY", REVIEWS_MAX_DEFAULT), REVIEWS_MID, 1, "review"),
+        Work::Review => (configured_max("AMUX_CONTRACT_REVIEW_CONCURRENCY", REVIEWS_MAX_DEFAULT), 0, 1, "review"),
     };
     let load = load_per_cpu();
-    let cap = adaptive_cap(max, mid, load);
+    let cap = match work {
+        Work::Check => adaptive_cap(max, mid, load),
+        Work::Review => review_cap(max, load),
+    };
     let old = LAST[slot].swap(cap, std::sync::atomic::Ordering::Relaxed);
     if old != cap {
         tracing::info!(work = name, old, new = cap, load_per_cpu = ?load.map(|l| (l * 100.0).round() / 100.0),
@@ -1113,7 +1129,7 @@ pub async fn watch_deploys(state: &AppState) -> (usize, usize) {
 
 const REVIEW_ROUNDS: i64 = 3;
 const REVIEW_TIMEOUT_S: u64 = 1200;
-const REVIEWS_PER_PASS: usize = 2;
+pub(crate) const REVIEWS_PER_PASS: usize = 5;
 /// A review still `running` this long after it started died with the server.
 const REVIEW_STALE_S: f64 = 2.0 * 3600.0;
 
@@ -1141,6 +1157,25 @@ pub fn parse_review(out: &str) -> Option<(bool, Vec<String>)> {
             .map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect()).unwrap_or_default();
         Some((pass, findings))
     })
+}
+
+/// Extra instructions for a completion-proof or requirement card (Ethan,
+/// 2026-10-07: "make sure its all measured"). The reviewer otherwise sees only
+/// the acceptance and evidence, not the card's description, so measurement
+/// requirements written there (per surface, per extractor) went unread.
+pub fn proof_rules(title: &str, desc: &str) -> String {
+    let t = title.trim_start();
+    if !(t.starts_with("GS12 proof") || t.starts_with("GS12 requirement")) {
+        return String::new();
+    }
+    let tail: String = desc.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+    format!(
+        "\n\nTHIS IS A COMPLETION PROOF. Fail it unless every criterion, and every measurement the card's description \
+         requires (per surface, per extractor, per template), has a recorded measured number from a run on origin/main: \
+         the command, its output, and the value. A statement that something works, or a measurement of some surfaces \
+         standing in for all of them, is a failure; name each missing measurement as a finding.\n\
+         Card description (latest part, including any owner measurement requirements):\n{tail}"
+    )
 }
 
 fn review_prompt(card: &str, title: &str, c: &Contract, evidence: &str, round: i64) -> String {
@@ -1354,7 +1389,8 @@ async fn review_one(state: &AppState, card: String) {
     let round = rounds + 1;
     tracing::info!(card, lane, round, measured = true, n_considered = 1, verdict = "contract_review_started",
         "a fresh reviewer started for a verified-eligible card");
-    let result = review(&card, &lane, &row.title, &k, row.evidence.as_deref().unwrap_or(""), round).await;
+    let evidence = format!("{}{}", row.evidence.as_deref().unwrap_or(""), proof_rules(&row.title, &row.desc));
+    let result = review(&card, &lane, &row.title, &k, &evidence, round).await;
     let now = crate::config::now_f64();
     let (pass, findings, model) = match result {
         Ok(r) => r,
@@ -1581,7 +1617,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
     ("A5", &["contract_dispatch_held", "a2_pool_held"]),
-    ("A2", &["a2_pool_assigned", "a2_pool_empty"]),
+    ("A2", &["a2_pool_assigned", "a2_pool_empty", "a2_pool_skipped_parked"]),
     ("8", &["contract_left_undone_recorded", "contract_left_undone_refused"]),
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),
@@ -1886,6 +1922,12 @@ mod tests {
         assert_eq!(adaptive_cap(4, 3, None), 3, "an unreadable load is never read as quiet");
         assert_eq!(adaptive_cap(2, 3, Some(1.0)), 2, "the default never exceeds the configured maximum");
         assert_eq!(adaptive_cap(0, 3, Some(0.1)), 1, "never zero");
+        assert_eq!(review_cap(5, Some(1.2)), 5, "reviews are not held to the CPU bands");
+        assert_eq!(review_cap(5, None), 5);
+        assert_eq!(review_cap(5, Some(REVIEW_HOLD_PER_CPU)), 3, "only an extreme load halves them");
+        let rules = proof_rules("GS12 proof 6: Scale to zero", "... Ethan: make sure its all measured. each Ray Serve app at min_replicas 0 ...");
+        assert!(rules.contains("COMPLETION PROOF") && rules.contains("Ray Serve app"), "{rules}");
+        assert_eq!(proof_rules("GS12 6.9 Dependency resilience", "x"), "", "plan items keep the ordinary prompt");
     }
 
     #[test]
