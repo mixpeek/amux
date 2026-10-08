@@ -16105,7 +16105,7 @@ fn provider_command_in_workspace(work_dir: &str, command: &str, isolated: bool) 
     } else {
         ""
     };
-    format!("{scrub}cd {} && {command}", sh_quote(work_dir))
+    crate::backend::tmux::native_shell_launch(&format!("{scrub}cd {} && {command}", sh_quote(work_dir)))
 }
 
 /// Start the exact provider configured for a board-driven worker, and do not
@@ -33107,6 +33107,22 @@ mod tests {
                 format!("{}|fixture-auth", [routing; 7].join("|"))
             );
         }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn worker_launch_resets_translated_tmux_preference_for_provider_children() {
+        let bare = "/bin/sh -c '/usr/sbin/sysctl -n sysctl.proc_translated'";
+        let probe = |script: &str| {
+            let out = std::process::Command::new("/usr/bin/arch")
+                .args(["-x86_64", "/bin/sh", "-c", script]).output().unwrap();
+            assert!(out.status.success(), "translated fixture must launch: {:?}", out);
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(probe(bare), "1", "the fixture must reproduce tmux's inherited translation");
+        let script = super::provider_command_in_workspace("/", bare, false);
+        let expected = if std::env::var("AMUX_NATIVE_ARCH").ok().as_deref() == Some("0") { "1" } else { "0" };
+        assert_eq!(probe(&script), expected, "the actual worker launcher must reset the preference seen by provider children");
     }
 
     #[test]

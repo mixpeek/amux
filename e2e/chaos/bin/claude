@@ -90,6 +90,10 @@ def main():
         rec = {"event": "launch", "bin": os.path.basename(sys.argv[0]),
                "cwd": os.getcwd(), "pid": os.getpid(),
                "argv": sys.argv[1:], "t": time.time()}
+        if os.environ.get("FAKE_CLAUDE_PROBE_CHILD_ARCH") == "1":
+            rec["child_translated"] = subprocess.check_output(
+                ["/bin/sh", "-c", "/usr/sbin/sysctl -n sysctl.proc_translated"],
+                text=True).strip()
         keys = [k for k in (os.environ.get("FAKE_CLAUDE_ENV_KEYS") or "").split(",") if k]
         if keys:
             rec["env_sha256"] = {k: (hashlib.sha256(os.environ[k].encode()).hexdigest()

@@ -20,6 +20,7 @@ AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/orchestration-pool-recovery.mjs 2>&1 
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/review-capacity-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/review-capacity.log"
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/api-error-background-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/api-error.log"
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/maintenance-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/maintenance.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/native-launch.mjs 2>&1 | tee "$ARTIFACT_DIR/native-launch.log"
 python3 scripts/test-orch-pace-scope.py 2>&1 | tee "$ARTIFACT_DIR/scope.log"
 bash scripts/test-orch-pace-proof.sh 2>&1 | tee "$ARTIFACT_DIR/pace.log"
 python3 - "$BINARY" "$ARTIFACT_DIR/binary.sha256" <<'PY'

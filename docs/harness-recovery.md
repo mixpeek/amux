@@ -200,3 +200,12 @@ and OCI digest. Readiness launches both Chromium and WebKit and records their
 versions and executable paths; a package mismatch fails. All browser projects,
 assertions, retries and runner deadlines remain the same. See
 https://playwright.dev/docs/docker for the upstream image and version requirements.
+
+On Apple Silicon, API worker starts/recovery and the Bash start command apply the
+same native architecture preference as backend argv launches. This prevents an
+Intel tmux server from handing its preference through a native provider into all
+its shell tools. Existing processes continue unchanged; their next launch adopts
+the preference. AMUX_NATIVE_ARCH=0 opts out and Intel-only executables retain the
+fallback. `e2e/chaos/native-launch.mjs` measures actual provider child architecture
+through private API/CLI starts and the opt-out. Linux reports this hardware probe
+unmeasured rather than claiming to have tested Rosetta.

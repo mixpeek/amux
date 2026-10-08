@@ -5169,3 +5169,14 @@ CARD: AF-968
 SYMPTOM: The real parent/child crash replay admitted a passed quota reset, then cleared its durable reset clock before transport. The unchanged native clock-only footer reparsed as a future limit and the steering consumer deferred the continuation.
 COST: Recovery reported a queued continuation but the parent remained stuck behind the quota it was resuming.
 FIX: Retain the positively observed passed clock through usage-reset delivery; clear future stamps only for account replacement. The actual process replay must observe one delivered continuation, a surviving child, and restart deduplication before retirement.
+
+## The real worker-start paths bypassed the native architecture launch helper
+AREA: performance
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: At 07:17Z all twenty live GS12/orchestrator pane shells were translated under an Intel tmux server; sampled children of the native Claude executable were translated too. TmuxBackend::spawn wrapped commands with a native architecture preference, but API start_session and Bash cmd_start constructed provider commands independently and bypassed that helper.
+COST: The existing host census measured a persistent translated tree. Thin-arm64 provider executables do not reset inherited child architecture preference; tool subprocesses retain avoidable Rosetta overhead.
+FIX: Apply the existing native preference at actual provider launch/recovery, preserve explicit opt-out, fallback, cwd, scoped environment and isolation scrubbing, and log native_provider_launch. Use translated private tmux/server and CLI starts with an actual child-architecture probe; do not interrupt live workers to make the census look better.

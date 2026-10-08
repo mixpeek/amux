@@ -15,6 +15,9 @@ unset -f exit
 resolve_session() { echo "$1"; }
 session_backend() { echo tmux; }
 need_tmux() { :; }
+# Exercise the local launch guard, independent of whether a real server is
+# reachable on this host. Never let a process-double fixture call that server.
+_curl() { return 7; }
 load_defaults() { :; }
 load_session() { CC_DIR="$GUARD_FIXTURE"; CC_PROVIDER=claude; CC_FLAGS="--model sonnet"; }
 is_running() { return 1; }
