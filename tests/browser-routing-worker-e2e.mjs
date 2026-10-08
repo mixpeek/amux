@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdirSync,writeFileSync,readFileSync,appendFileSync,renameSync,copyFileSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
+import {homedir} from 'node:os';
+import {readdirSync} from 'node:fs';
 import {createHash,randomBytes} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {chromium} from 'playwright';
@@ -76,14 +78,41 @@ writeFileSync(join(out,'owner-route-choices.json'),JSON.stringify(await api(base
 const route=(session,verb,body={})=>api(base,'/api/browser/routing/request','POST',{session,verb,body},session);
 const receiptFile=name=>join(home,'browser-routing','sessions',createHash('sha256').update(name).digest('hex').slice(0,24)+'.json');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+// Provider records survive terminal scrollback truncation. Inspect only this
+// test's owned workspaces; the final answer and a UI banner are not proof.
+function providerAudit(name,phase,dir) {
+ const folder=join(homedir(),'.claude','projects',dir.replace(/[^A-Za-z0-9]/g,'-'));
+ const calls=[],models=new Set();
+ for(const file of existsSync(folder)?readdirSync(folder).filter(f=>f.endsWith('.jsonl')):[]) {
+  for(const line of readFileSync(join(folder,file),'utf8').split('\n').filter(Boolean)) {
+   let row;try{row=JSON.parse(line);}catch{continue;}
+   if(row.message?.model)models.add(row.message.model);
+   for(const part of Array.isArray(row.message?.content)?row.message.content:[]) {
+    if(part?.type==='tool_use')calls.push({name:part.name,input:part.input||{},id:part.id});
+   }
+  }
+ }
+ const commands=calls.filter(c=>c.name==='Bash').map(c=>c.input.command||'');
+ const forbidden=commands.filter(c=>/fetch\s*\(|\.click\s*\(|\/resolve\b|\/api\/browser\/(?:start|action|navigate)|\b(?:pkill|killall|kill|osascript)\b/.test(c));
+ const checks={real_provider_records:[...models].some(m=>/claude/i.test(m))&&calls.length>0,
+  metadata_discovery:commands.some(c=>c.includes('amux browser profiles')),
+  route_start:commands.some(c=>c.includes('amux browser route start')),
+  no_forbidden_calls:forbidden.length===0,
+  browser_controls:phase==='exhausted'||commands.some(c=>c.includes('amux browser route action')),
+  screenshot_read_for_cua:!['cua','exhausted'].includes(phase)||calls.some(c=>c.name==='Read'&&/\.png/.test(JSON.stringify(c.input)))};
+ writeFileSync(join(out,name+'-tool-calls.json'),JSON.stringify(calls,null,2));
+ const audit={measured:true,n_considered:calls.length,models:[...models],checks,forbidden,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL'};
+ writeFileSync(join(out,name+'-provider-audit.json'),JSON.stringify(audit,null,2));return audit;
+}
+
 const phases=(process.env.AMUX_ROUTING_WORKER_PHASES||'native,cdp,cua,exhausted').split(',');
 try{
  for(const phase of phases){
   const name=`bw-${nonce}-${phase}`,dir=join(home,'worker-workspace',name);mkdirSync(dir,{recursive:true});workers.push(name);
-  const prompt=`Use the browser to resolve the urgent Acorn customer support case about Export retries at ${url}/portal?phase=${phase}. Use the ops@quartz.example.test Acorn customer support account, not Quartz headquarters, personal, or QA. Discover the most suitable saved Amux profile and its owner-configured matching Chrome fallback yourself; do not substitute another account. Enter the resolution reason exactly (including the final period): "Investigated export retries; retry queue repaired." Read the confirmation code from the case and check the review box. Verify the portal confirms the resolution. If the goal cannot be accomplished in a functioning browser session, recover using the approved route progression. If all approved routes fail, report inability honestly. Use amux browser route for all browser interactions. Do not submit with curl/fetch/eval or programmatic DOM clicks; eval may only read DOM. Do not inspect fixture code, private AMUX_HOME files or other workers. Metadata discovery via amux/browser APIs is allowed. Do not create or message other workers. Leave the browser open for review. Finish with your selected profile, backend and verified outcome.`;
+  const prompt=`Use the browser to resolve the urgent Acorn customer support case about Export retries at ${url}/portal?phase=${phase}. Use the ops@quartz.example.test Acorn customer support account, not Quartz headquarters, personal, or QA. Discover the most suitable saved Amux profile and its owner-configured matching Chrome fallback yourself; do not substitute another account. Enter the resolution reason exactly (including the final period): "Investigated export retries; retry queue repaired." Read the confirmation code from the case and check the review box. Verify the portal confirms the resolution. If the goal cannot be accomplished in a functioning browser session, recover using the approved route progression. If all approved routes fail, report inability honestly. Use amux browser route for all browser interactions. Do not submit with curl/fetch/eval or programmatic DOM clicks; eval may only read DOM. Do not inspect fixture code, private AMUX_HOME files or other workers. Metadata discovery via amux/browser APIs is allowed. Do not kill processes. If a route request runs in the background, wait for its completion or inspect route status; do not queue state/action while pending. Do not create or message other workers. Leave the browser open for review. Finish with your selected profile, backend and verified outcome.`;
   writeFileSync(join(out,name+'-prompt.txt'),prompt);
-  await api(base,'/api/sessions','POST',{name,dir,provider:'claude',yolo:true,start:false});
-  appendFileSync(join(home,'sessions',name+'.env'),`\nCC_AUTO_CONTINUE=0\nCC_AUTO_PICKUP=0\nCC_STANDING_ORDERS=0\nCC_MCP=off\nAMUX_HOME='${home}'\nCC_HOME='${home}'\nAMUX_API='${base}'\nAMUX_URL='${base}'\nPATH='${home}/worker-bin':"$PATH"\nAMUX_BROWSER_PROFILES_ALLOW='acct-*,Chrome-*'\n`);
+  await api(base,'/api/sessions','POST',{name,dir,provider:'claude',yolo:false,start:false});
+  appendFileSync(join(home,'sessions',name+'.env'),`\nCC_FLAGS=\"--model sonnet --permission-mode dontAsk --allowedTools 'Bash(amux browser *)' Read --disallowedTools 'Bash(pkill *)' 'Bash(killall *)' 'Bash(kill *)' Edit Write Agent\"\nCC_AUTO_CONTINUE=0\nCC_AUTO_PICKUP=0\nCC_STANDING_ORDERS=0\nCC_MCP=off\nAMUX_HOME='${home}'\nCC_HOME='${home}'\nAMUX_API='${base}'\nAMUX_URL='${base}'\nPATH='${home}/worker-bin':"$PATH"\nAMUX_BROWSER_PROFILES_ALLOW='acct-*,Chrome-*'\n`);
   const started=await api(base,`/api/sessions/${name}/start`,'POST',{});writeFileSync(join(out,name+'-start.json'),JSON.stringify(started,null,2));
   const sent=await api(base,`/api/sessions/${name}/send`,'POST',{text:prompt});writeFileSync(join(out,name+'-send.json'),JSON.stringify(sent,null,2));
   console.log('START real worker '+name);
@@ -96,7 +125,7 @@ try{
    if(phase==='exhausted'&&receipt?.backend==='cua'){
     const m=await api(base,`/api/sessions/${name}/last-message`);if(/CUA/i.test(m.text||'')&&/(unable|cannot|couldn.t|blocked|fail|insufficient)/i.test(m.text||'')&&(m.text||'').length>100&&!/esc to interrupt/.test(terminal.slice(-1000))&&events.some(e=>e.kind==='page'&&e.phase===phase&&e.linux)){done=true;break;}
    }
-   if(receipt && /Worked for|Baked for|Cogitated for/.test(terminal.slice(-3500)) && !/esc to interrupt/.test(terminal.slice(-1000))){break;}
+   if(receipt && /Worked for|Baked for|Cogitated for|Cooked for/.test(terminal.slice(-3500)) && !/esc to interrupt/.test(terminal.slice(-1000))){break;}
    await pause(3000);
   }
   try{terminal=execFileSync('tmux',['capture-pane','-p','-S','-10000','-t','amux-'+name],{env:{...process.env,TMUX_TMPDIR:home+'/tmux'},encoding:'utf8',stdio:['ignore','pipe','pipe']});writeFileSync(join(out,name+'-terminal.txt'),terminal);}catch{}
@@ -105,9 +134,10 @@ try{
   const rules=join(home,'rules',name+'.md');const rulesText=existsSync(rules)?readFileSync(rules,'utf8'):'';writeFileSync(join(out,name+'-launch-guide.txt'),rulesText);
   const accepted=events.filter(e=>e.kind==='resolve'&&e.phase===phase&&e.accepted);
   const expected=phase==='native'?'amux':phase==='cdp'?'cdp':'cua';
-  const checks={real_provider:/Claude Code|Sonnet/i.test(terminal),default_guide:rulesText.includes('route advance'),goal_observed:done,correct_amux_profile:receipt?.selected_profile==='acct-k7',live_customer_login:events.some(e=>e.kind==='page'&&e.phase===phase&&e.org==='Acorn'),correct_backend:receipt?.backend===expected,correct_fallback:expected==='amux'||receipt?.profile===(expected==='cdp'?'Chrome-C1':'acct-k7'),exactly_once:phase==='exhausted'?accepted.length===0:accepted.length===1,no_wrong_account:events.filter(e=>e.kind==='resolve'&&e.phase===phase).every(e=>e.org==='Acorn'),goal_level_handoff:expected==='amux'||receipt?.attempts?.some(a=>a.backend==='amux'&&a.verdict==='goal_unmet'),cdp_goal_handoff:expected!=='cua'||receipt?.attempts?.some(a=>a.backend==='cdp'&&a.verdict==='goal_unmet')};
+  const audit=providerAudit(name,phase,dir);
+  const checks={real_provider:audit.checks.real_provider_records,provider_tool_audit:audit.verdict==='PASS',default_guide:rulesText.includes('route advance'),goal_observed:done,correct_amux_profile:receipt?.selected_profile==='acct-k7',live_customer_login:events.some(e=>e.kind==='page'&&e.phase===phase&&e.org==='Acorn'),correct_backend:receipt?.backend===expected,correct_fallback:expected==='amux'||receipt?.profile===(expected==='cdp'?'Chrome-C1':'acct-k7'),exactly_once:phase==='exhausted'?accepted.length===0:accepted.length===1,no_wrong_account:events.filter(e=>e.kind==='resolve'&&e.phase===phase).every(e=>e.org==='Acorn'),goal_level_handoff:expected==='amux'||receipt?.attempts?.some(a=>a.backend==='amux'&&a.verdict==='goal_unmet'),cdp_goal_handoff:expected!=='cua'||receipt?.attempts?.some(a=>a.backend==='cdp'&&a.verdict==='goal_unmet')};
   try{const shot=await route(name,'screenshot');copyFileSync(shot.path,join(out,name+'.png'));}catch(e){checks.screenshot=false;}
-  results.push({phase,worker:name,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL',checks,receipt,accepted,last_message:message.text});writeFileSync(join(out,'worker-result.json'),JSON.stringify({verdict:results.every(r=>r.verdict==='PASS')&&results.length===phases.length?'PASS':'FAIL',measured:true,n_considered:results.length,phases:results},null,2));
+  results.push({phase,worker:name,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL',checks,receipt,accepted,provider_audit:audit,last_message:message.text});writeFileSync(join(out,'worker-result.json'),JSON.stringify({verdict:results.every(r=>r.verdict==='PASS')&&results.length===phases.length?'PASS':'FAIL',measured:true,n_considered:results.length,phases:results},null,2));
   console.log('VERDICT '+phase+' '+results.at(-1).verdict+' '+JSON.stringify(checks));
   await route(name,'stop').catch(()=>{});await api(base,`/api/sessions/${name}/stop`,'POST',{}).catch(()=>{});
   assert.equal(results.at(-1).verdict,'PASS','real worker phase '+phase+' failed; evidence retained');

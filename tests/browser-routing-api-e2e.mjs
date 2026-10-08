@@ -56,7 +56,16 @@ try{
   let revoked;try{await route(sessions[1],'state');}catch(e){revoked=e;}
   prove('receipt retains selected profile for authorization after handoff',revoked?.status===403);
   writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
+  const slowAction=route(sessions[1],'action',{action:'eval',script:'new Promise(r=>setTimeout(()=>r("pending-probe"),2200))'});
+  await new Promise(r=>setTimeout(r,350));
+  const begun=Date.now(),pending=await route(sessions[1],'status');
+  prove('status remains observable while a route request owns the lane',pending.pending===true&&pending.running===null&&pending.route.profile===chromeProfile&&Date.now()-begun<1000);
   writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+'\n');
+  let pendingRevoked;try{await route(sessions[1],'status');}catch(e){pendingRevoked=e;}
+  prove('pending status still enforces active Chrome scope',pendingRevoked?.status===403);
+  let spoofed;try{await api(base,'/api/browser/routing/request','POST',{session:sessions[1],verb:'status',body:{}},'another-worker');}catch(e){spoofed=e;}
+  prove('pending status refuses caller identity spoofing',spoofed?.status===403);
+  await slowAction;
   let chromeRevoked;try{await route(sessions[1],'state');}catch(e){chromeRevoked=e;}
   prove('active Chrome scope revocation refuses observation while Amux remains allowed',chromeRevoked?.status===403);
   let revokedAdvance;try{await route(sessions[1],'advance',{reason:'Try to bypass revoked active Chrome'});}catch(e){revokedAdvance=e;}
@@ -111,6 +120,8 @@ try{
   const afterStop=await api(base,'/api/computer/status');prove('stop after handoff removes only its own CUA desktop',!afterStop.sandboxes.some(b=>b.lane===sessions[3])&&afterStop.sandboxes.some(b=>b.lane===sessions[2]));
 
   const nativeStatus=await api(base,'/api/browser/status');prove('fallback preserved the native owner process',nativeStatus.browsers.some(b=>b.pid===native.pid&&b.profile===profile));
+  let conditionalStop;try{await api(base,'/api/browser/stop','POST',{profile,expected_started_by:'another-route'},sessions[0]);}catch(e){conditionalStop=e;}
+  prove('conditional route cleanup preserves a browser owned by another lane',conditionalStop?.status===409&&conditionalStop.payload.code==='browser_stop_ownership_changed'&&(await route(sessions[0],'status')).running);
   const driverBytes=readFileSync(new URL('../scripts/browser-route-driver.mjs',import.meta.url));
   const driverPath=join(home,'browser-routing','driver-'+createHash('sha256').update(driverBytes).digest('hex').slice(0,24)+'.mjs');
   assert(existsSync(driverPath),'server must materialize the exact embedded driver content');

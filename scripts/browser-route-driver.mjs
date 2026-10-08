@@ -216,7 +216,8 @@ export async function route(ctx,verb,b={}) {
   if(verb==='stop'&&state.backend!=='amux'&&state.native_started) {
     // Only release the original browser when this worker started it. A busy
     // fallback owned by somebody else has native_started=false.
-    try {await native(ctx,'stop',{profile:state.selected_profile});}catch(e){if(e.status!==403)throw e;}
+    try {await native(ctx,'stop',{profile:state.selected_profile,expected_started_by:ctx.session});}
+    catch(e){if(e.status!==403&&!(e.status===409&&['browser_stop_target_unresolved','browser_stop_ownership_changed'].includes(e.payload?.code)))throw e;}
     state.native_started=false;atomic(ctx.receipt,state);
   }
   if(verb==='stop') {

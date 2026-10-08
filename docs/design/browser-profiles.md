@@ -167,3 +167,15 @@ three minutes and retrying from scratch. Browser actions and ordinary backend
 transports retain their shorter deadlines. The worker may wait for its CLI
 background task; a setup error still reports failure and never reports a goal
 as completed.
+
+Route `status` returns HTTP 202 with `pending:true` and `running:null` while
+another request owns the lane. It remains scope checked and does not claim a
+ready desktop. Workers should wait for the background command, using status
+rather than queueing state/action behind a cold build. Global process kills
+are not a browser recovery mechanism; `route stop` owns lane cleanup.
+
+The real-worker suite uses Claude's `dontAsk` tool policy, allows browser CLI
+commands and screenshot reads, and denies process kills, writes and delegation.
+It retains actual provider tool inputs from only its owned workspaces, checks
+metadata discovery and route use, and rejects direct HTTP/programmatic goal
+writes or host process kills. Terminal banners are not provider evidence.

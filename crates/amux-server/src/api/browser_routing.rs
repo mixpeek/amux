@@ -270,7 +270,14 @@ async fn request(
     // Read the receipt under its session lock, so a concurrent start cannot
     // change the selected identity between authorization and execution.
     let lock = request_lock(format!("session:{}", r.session)).await;
-    let _guard = lock.lock().await;
+    // Status must remain observable while cold CUA provisioning owns the lane.
+    // The receipt is atomically published; this read reports pending, never ready.
+    let _guard = if r.verb == "status" {
+        lock.try_lock().ok()
+    } else {
+        Some(lock.lock().await)
+    };
+    let pending = _guard.is_none();
     let mut c = load();
     if c.native_profile.is_empty() {
         c.native_profile = super::browser::default_browser_profile(&r.session).0;
@@ -313,6 +320,15 @@ async fn request(
                 return denied.response();
             }
         }
+    }
+    if pending {
+        tracing::info!(session=%r.session, measured=true, n_considered=1,
+            verdict="browser_route_request_pending", "route status observed during an in-flight request");
+        return (StatusCode::ACCEPTED, Json(json!({
+            "ok":true,"pending":true,"running":null,"measured":true,"n_considered":1,
+            "note":"A route request is still running. Wait for its background task; cold CUA provisioning can take up to 30 minutes. Do not start another state/action request or kill processes.",
+            "route":receipt
+        }))).into_response();
     }
     // Serialize publication/launch of the shared Chrome snapshot across workers.
     // Unlike a filesystem lease, this recovers on driver/server termination.
