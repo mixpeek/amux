@@ -254,3 +254,12 @@ real child. Another SIGKILL explicitly seeds loss of the producer's metadata
 acknowledgement; queue/history adoption must prevent duplicate input. The fixture
 clock and acknowledgement loss are declared; real process crashes and terminal
 receipts supply the consumer proof.
+
+The land queue persists its exact composed SHA before a push. After restart,
+only positive ancestry of that SHA on origin/main permits adoption without
+replaying the original worker commits. Pending push_candidate_sha is intent,
+not merged_sha or a terminal receipt. The process case moves main, has a real
+bare remote accept the rebased feature and SIGKILL the controller before its
+acknowledgement, then checks one commit and one terminal landing after recovery.
+Unknown or incomplete candidates remain preserved; only the registered server
+candidate at an adopted SHA is cleaned while the repository lock is held.

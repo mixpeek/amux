@@ -3,6 +3,7 @@
 // controller crashes. Local bare origin only; no production pushes or models.
 import fs from 'node:fs';
 import path from 'node:path';
+import {execFileSync} from 'node:child_process';
 import {startAmux,waitFor,git} from './harness.mjs';
 const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{
   RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',
@@ -37,18 +38,36 @@ try {
   check('failure has a named retained signal',fs.readFileSync(amux.serverLog,'utf8').includes('land_candidate_start_failed'));
   await amux.down();
   fs.unlinkSync(hook);
+  // Move main so the accepted composition differs from the originally queued
+  // SHA. The bare remote kills the actual controller after accepting the push
+  // and before its output/terminal receipt can return.
+  const advance=path.join(amux.root,'advance');git(amux.root,'clone','-qb','main',origin,advance);
+  fs.writeFileSync(path.join(advance,'main-moved.txt'),'main moved\n');git(advance,'add','.');git(advance,'commit','-qm','main moves');git(advance,'push','-q','origin','HEAD:main');
+  const moved=git(origin,'rev-parse','refs/heads/main');
+  const acceptedHook=path.join(origin,'hooks/post-receive');
+  fs.writeFileSync(acceptedHook,'#!/bin/sh\nrm -f "$0"\n[ -n "$AMUX_LAND_HOLDER_PID" ] || exit 41\nkill -KILL "$AMUX_LAND_HOLDER_PID"\nsleep 1\n',{mode:0o755});
+  await amux.up();
+  await waitFor('remote accepted the rebased commit before controller receipt',()=>git(origin,'rev-parse','refs/heads/main')!==moved,45000);
+  await amux.down();
+  const accepted=git(origin,'rev-parse','refs/heads/main');
+  const pending=JSON.parse(execFileSync('python3',['-c','import sqlite3,json,sys;c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True);c.row_factory=sqlite3.Row;print(json.dumps(dict(c.execute("select state,merged_sha,done_at from land_queue where id=?",(sys.argv[2],)).fetchone())))',path.join(amux.home,'amux.db'),String(id)],{encoding:'utf8'}));
+  check('exact push intent is durable without a false terminal receipt',pending.state==='running'&&pending.merged_sha===accepted&&pending.done_at===null,pending);
+  check('accepted rebased commit differs from the worker original',accepted!==sha);
+  check('remote acceptance occurs exactly once before recovery',git(origin,'rev-list','--count','refs/heads/main')==='3');
   await amux.up();
   await waitFor('retained intent automatically lands after restart',async()=> (await items()).some(x=>x.id===id&&x.state==='merged'),45000);
+  check('lost acknowledgement adopts the accepted commit without another push',git(origin,'rev-parse','refs/heads/main')===accepted&&git(origin,'rev-list','--count','refs/heads/main')==='3');
   check('committed feature reached local main',git(origin,'show','refs/heads/main:feature.txt')==='only once');
   check('successful candidate is also cleaned',candidates().length===0&&!git(lane,'worktree','list','--porcelain').includes('/tmp/land/'));
   const merged=git(origin,'rev-parse','refs/heads/main');
   await amux.down();await amux.up();
   const final=await items();
   check('second crash retains one terminal landing',final.length===1&&final[0].id===id&&final[0].state==='merged',final);
-  check('already completed landing is never pushed twice',git(origin,'rev-parse','refs/heads/main')===merged&&git(origin,'rev-list','--count','refs/heads/main')==='2');
+  check('already completed landing is never pushed twice',git(origin,'rev-parse','refs/heads/main')===merged&&git(origin,'rev-list','--count','refs/heads/main')==='3');
+  check('accepted-push adoption has an actual completion signal',fs.readFileSync(amux.serverLog,'utf8').includes('land_push_receipt_adopted'));
   check('cleanup has an actual completion signal',fs.readFileSync(amux.serverLog,'utf8').includes('land_candidate_removed'));
 }catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});}
 finally{await amux.stop();}
 const receipt={measured:true,n_considered:checks.length,failed:checks.filter(x=>!x.ok).length,artifacts:amux.root,
-  fixture_boundary:'real HTTPS land queue, local git/bare origin, actual failed locked checkout, durable requeue and released lock, automatic retry, two controller SIGKILL restarts, no duplicate push',checks};
+  fixture_boundary:'real HTTPS land queue, local git/bare origin, actual failed locked checkout, durable requeue and released lock, automatic retry, three controller SIGKILL restarts including remote push acceptance before its receipt, no duplicate push',checks};
 fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);

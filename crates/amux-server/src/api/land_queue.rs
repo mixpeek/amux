@@ -255,23 +255,75 @@ async fn cleanup_candidate(tree: &Path, dir: &Path) {
     }
 }
 
-async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>) -> Result<Attempt, String> {
+/// A positive remote receipt also identifies the abandoned composed checkout.
+/// Only this repository's registered server candidates at that exact HEAD are
+/// removed, while its land lock is held. Unknown/incomplete candidates stay put.
+async fn cleanup_accepted_candidate(tree: &Path, accepted: &str, lock: Option<&LandLock>) {
+    if lock.is_none() { return; }
+    let Ok(list) = git(tree, &["worktree", "list", "--porcelain"]).await else { return; };
+    let Ok(parent) = std::fs::canonicalize(home().join("tmp").join("land")) else { return; };
+    for block in list.split("\n\n") {
+        let path = block.lines().find_map(|l| l.strip_prefix("worktree "));
+        let head = block.lines().find_map(|l| l.strip_prefix("HEAD "));
+        let Some(path) = path.filter(|_| head == Some(accepted)) else { continue; };
+        let dir = Path::new(path);
+        if dir.parent().and_then(|p| std::fs::canonicalize(p).ok()).as_deref() == Some(parent.as_path())
+            && dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("c-"))
+            && !dir.is_symlink()
+        {
+            cleanup_candidate(tree, dir).await;
+        }
+    }
+}
+
+async fn adopt_push_receipts(tree: &Path, entries: &[Entry], main: &str, lock: Option<&LandLock>, state: Option<&AppState>) -> Result<(Vec<Entry>, Vec<(i64, Outcome)>), String> {
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    if let Some(state) = state {
+        use rusqlite::OptionalExtension;
+        for entry in entries.iter().cloned() {
+            let id = entry.id;
+            let candidate: Option<String> = state.store.read_async(move |conn| {
+                Ok(conn.query_row("SELECT merged_sha FROM land_queue WHERE id=?1", [id], |r| r.get(0)).optional()?.flatten())
+            }).await.map_err(|e| e.to_string())?;
+            if let Some(candidate) = candidate {
+                if is_ancestor(tree, &candidate, main).await {
+                    tracing::info!(id, candidate, measured = true, n_considered = 1, verdict = "land_push_receipt_adopted",
+                        "remote ancestry proves the accepted push; do not replay its rebased commits");
+                    cleanup_accepted_candidate(tree, &candidate, lock).await;
+                    out.push((id, Outcome::Merged(candidate)));
+                    continue;
+                }
+            }
+            pending.push(entry);
+        }
+    } else { pending = entries.to_vec(); }
+    Ok((pending, out))
+}
+
+async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, state: Option<&AppState>) -> Result<Attempt, String> {
     for _ in 0..PUSH_TRIES {
         git(tree, &["fetch", "-q", "origin", "main"]).await?;
         let main = git(tree, &["rev-parse", "origin/main"]).await?;
+        // Reconcile before every retry as well as after controller recovery.
+        let (pending, mut adopted) = adopt_push_receipts(tree, entries, &main, lock, state).await?;
+        if pending.is_empty() { return Ok(Attempt::Done(adopted)); }
         let dir = home().join("tmp").join("land").join(format!("c-{}-{}", std::process::id(), ulid::Ulid::new()));
         std::fs::create_dir_all(dir.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
-        let result = compose_candidate(tree, entries, gate, prefix, lock, &dir, &main).await;
+        let result = compose_candidate(tree, &pending, gate, prefix, lock, (&dir, &main), state).await;
         cleanup_candidate(tree, &dir).await;
         match result {
             Ok(Attempt::Retry) => continue,
-            other => return other,
+            Ok(Attempt::Done(done)) => { adopted.extend(done); return Ok(Attempt::Done(adopted)); }
+            Ok(Attempt::Red(why, pending, done)) => { adopted.extend(done); return Ok(Attempt::Red(why, pending, adopted)); }
+            Err(why) => return Err(why),
         }
     }
     Err(format!("origin/main moved under {PUSH_TRIES} consecutive pushes; the batch stays queued"))
 }
 
-async fn compose_candidate(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, dir: &Path, main: &str) -> Result<Attempt, String> {
+async fn compose_candidate(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, candidate: (&Path, &str), state: Option<&AppState>) -> Result<Attempt, String> {
+    let (dir, main) = candidate;
     let cand = dir.to_string_lossy().into_owned();
     if let Err(why) = git(tree, &["worktree", "add", "-q", "--detach", &cand, main]).await {
         tracing::warn!(candidate = %dir.display(), reason = %why, measured = true, n_considered = 1,
@@ -318,6 +370,21 @@ async fn compose_candidate(tree: &Path, entries: &[Entry], gate: Option<&str>, p
         }
     }
     let merged = git(dir, &["rev-parse", "HEAD"]).await?;
+    if let Some(state) = state {
+        let ids: Vec<i64> = applied.iter().map(|e| e.id).collect();
+        let intended = merged.clone();
+        let saved = state.store.write_async(move |conn| {
+            for id in &ids {
+                if conn.execute("UPDATE land_queue SET merged_sha=?2 WHERE id=?1 AND state='running'", rusqlite::params![id, intended])? != 1 {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await.map_err(|e| format!("land push intent was not persisted; no push attempted: {e}"))?;
+        if !saved.applied { return Err("land push intent was not applied; no push attempted".into()); }
+        tracing::info!(candidate = %merged, measured = true, n_considered = applied.len(),
+            verdict = "land_push_intent_saved", "exact composed SHA persisted before remote push");
+    }
     match push(dir, &format!("{merged}:refs/heads/main"), lock).await {
         Ok(_) => {
             out.extend(applied.iter().map(|e| (e.id, Outcome::Merged(merged.clone()))));
@@ -336,10 +403,14 @@ async fn compose_candidate(tree: &Path, entries: &[Entry], gate: Option<&str>, p
 /// Land a batch. A red batch of more than one is split in halves until each
 /// red commit is alone, so nobody inherits another lane's refusal.
 pub async fn land(tree: &Path, entries: Vec<Entry>, gate: Option<&str>, prefix: &str, lock: Option<&LandLock>) -> Result<Vec<(i64, Outcome)>, String> {
+    land_with_receipts(tree, entries, gate, prefix, lock, None).await
+}
+
+async fn land_with_receipts(tree: &Path, entries: Vec<Entry>, gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, state: Option<&AppState>) -> Result<Vec<(i64, Outcome)>, String> {
     let mut stack = vec![entries];
     let mut out = Vec::new();
     while let Some(batch) = stack.pop() {
-        match compose(tree, &batch, gate, prefix, lock).await? {
+        match compose(tree, &batch, gate, prefix, lock, state).await? {
             Attempt::Retry => unreachable!("compose consumes retries"),
             Attempt::Done(o) => out.extend(o),
             Attempt::Red(why, applied, o) => {
@@ -494,7 +565,7 @@ async fn run_batch(state: &AppState, entries: Vec<Entry>) {
         },
         Err(_) => None,
     };
-    let result = land(&tree, entries.clone(), gate.as_deref(), &prefix, lock.as_ref()).await;
+    let result = land_with_receipts(&tree, entries.clone(), gate.as_deref(), &prefix, lock.as_ref(), Some(state)).await;
     drop(lock);
     match result {
         Ok(results) => record(state, &results, &lanes).await,
@@ -641,7 +712,8 @@ async fn status_route(State(state): State<AppState>, Query(q): Query<HashMap<Str
     let n = waits.len();
     let p95 = wait_p95(&mut waits);
     let items: Vec<Value> = rows.iter().map(|r| json!({"id": r.0, "repo": r.1, "lane": r.2, "sha": r.3, "priority": r.4 != 0,
-        "state": r.5, "merged_sha": r.6, "output": r.7.as_deref().map(|o| tail(o, 600)), "queued_at": r.8, "done_at": r.9})).collect();
+        "state": r.5, "merged_sha": if r.5 == "merged" { r.6.as_deref() } else { None },
+        "push_candidate_sha": if matches!(r.5.as_str(), "queued" | "running") { r.6.as_deref() } else { None }, "output": r.7.as_deref().map(|o| tail(o, 600)), "queued_at": r.8, "done_at": r.9})).collect();
     Json(json!({"since_h": since_h, "measured": true, "n_considered": n, "wait_p95_min": p95,
         "why_unmeasured": if n == 0 { Some("no land finished in the window") } else { None },
         "items": items, "contract": "docs/orchestration-contract.md (rule 5)"})).into_response()

@@ -5366,7 +5366,7 @@ SESSION: mixpeek-override; investigated by Codex gs12-live-flow
 CARD: MO-4463
 SYMPTOM: Three server-owned candidates under ~/.amux/tmp/land remain registered as locked initializing. compose returned from a failed git worktree add before reaching its cleanup closure; ordinary single-force removal also refused initializing locks. Land 119 ultimately merged and 121 was refused by the environment census, so neither terminal row proves a presently hung startup or justifies cancelling a push.
 COST: Failed retries leaked checkouts and registration state, making recovery increasingly expensive and obscuring useful execution versus startup delay.
-FIX: Separate candidate execution from the retry loop and always await cleanup on ordinary success/error, including startup failure. Use unique candidate names and double-force removal only for the server-created candidate. Keep lock release and durable requeue in the existing batch path. Test an actual post-checkout failure that locks its candidate, no main change, no orphan/held lock, automatic retry of retained intent after SIGKILL, and another crash with no duplicate push. Named signals: land_candidate_start_failed, land_candidate_removed, land_candidate_cleanup_failed. SIGKILL itself cannot run cleanup; existing orphaned land intent resumes and avoids duplicate pushes. Historical leaked candidates remain retained evidence until safe cleanup is proven.
+FIX: Separate candidate execution from the retry loop and always await cleanup on ordinary success/error, including startup failure. Use unique candidate names and double-force removal only for the server-created candidate. Keep lock release and durable requeue in the existing batch path. Test an actual post-checkout failure that locks its candidate, no main change, no orphan/held lock, automatic retry of retained intent after SIGKILL, and another crash with no duplicate push. Named signals: land_candidate_start_failed, land_candidate_removed, land_candidate_cleanup_failed. SIGKILL itself cannot run cleanup; ordinary failed-startup intent resumes; accepted-push recovery is tracked separately in the controller crash report below. Historical leaked candidates remain retained evidence until safe cleanup is proven.
 
 ## An escalated independent review accepted worker done moves without starting another review
 AREA: board contracts
@@ -5378,3 +5378,14 @@ CARD: AF-973
 SYMPTOM: GD-75 is done, but its review remains escalated after three failures and its owner question persists. The lane and coordinator initially read done as a fourth review resubmission; no fourth review had started. Worker status changes did not answer the required owner decision.
 COST: A false waiting-for-review state stalled proof progress and invited repeated prompts or an accidental review-budget bypass.
 FIX: Refuse worker todo/doing/done/verified writes in the shared board writer while the review is escalated, retaining findings, status, question and quality-round count. Name contract_review_owner_direction_required in the API and logs. Exercise actual escalation and the authenticated process API across controller crashes. Ask the owner separately about reopening for correction; no criteria, review limit or product acceptance changed.
+
+## Controller crash after accepted rebased push replayed the land and duplicated its commit
+AREA: lifecycle
+SEVERITY: breaks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow
+CARD: AF-974
+SYMPTOM: A real bare remote accepted a rebased feature and killed the controller before push acknowledgement. Restart replayed the original SHA and created another feature commit; the retained queue row had no composed SHA to reconcile.
+COST: A crash could duplicate a completed external landing and leave the original intent running.
+FIX: Persist the exact composed SHA in the existing land row before remote push. Adopt only positive remote ancestry after restart, keep pending push_candidate_sha distinct from successful merged_sha, and clean only the registered server candidate at the adopted SHA while holding the repository lock. Preserve unknown outcomes and historical incomplete candidates. Actual accepted-push SIGKILL and no-duplicate receipt/commit tests are required. Named signals: land_push_intent_saved, land_push_receipt_adopted.
