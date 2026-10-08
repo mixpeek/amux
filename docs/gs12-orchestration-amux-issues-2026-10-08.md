@@ -87,6 +87,7 @@ The proof-run bottleneck (one proof leg per ephemeral plane, 40 runs a day) is a
 | 6.3 | Steering was delivered mid-turn after waiting past AMUX_STEER_MAX_AGE_S | gs12-data, 2026-10-08 21:30Z | Open |
 | 6.4 | Concurrent steering notices could overwrite each other's queue receipt | | Open, AF-968 |
 | 6.5 | An isolated worker cannot be messaged, so after the handoff there is no incident path to GS-12 except through Ethan | By design | Accepted. Worth an owner-visible incident channel |
+| 6.6 | A long slash command sent from the dashboard reached the worker as a paste, so Claude Code wrapped it in `<pasted_content>` and never ran it | Ethan's 1,396-char `/goal ...` to mxp-gs12 at about 21:52Z; the transcript (12317e16-...jsonl) has no `/goal` command record. Measured on Claude Code 2.1.295: bracketed and unbracketed pastes are both collapsed and wrapped | Fixed: the command token is typed and only the rest is pasted, so the composer reads `/goal [Pasted text #1]` and Claude Code records `<command-name>/goal</command-name>`. Logs `slash_command_prefix_typed` |
 
 ## 7. Landing and git guards
 
