@@ -5433,3 +5433,14 @@ CARD: AMUX-5727
 SYMPTOM: GET /api/board logs board_list_slow with queued/conn/sql/sessions/rows phases. GET /api/sessions, 5,996 calls an hour with p95 2.96 s and max 41.3 s, logs nothing beside its latency except sessions_build_raced / _race_retried (8 and 7 in two hours). There is no way to tell tmux enumeration, git inventory, store reads and the race retry apart from the logs.
 COST: An owner-requested diagnosis could name the board's dominant wait but only infer the sessions route's, from its overlap with the board stalls. That is the instrument gap ethos rule 4 describes.
 FIX: Add a sessions_list_slow line, over a budget, with per-phase ms (tmux, git, store, build retries) and measured/n_considered, mirroring board_list_slow.
+
+## the turn-end classifier turns a worker's status sentence into an owner ask, and a blanket approval then lands on a production drop that was never ready
+AREA: board intake
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4469
+SYMPTOM: Three status sentences from gs12-extra-1 were filed as needsyou owner asks: GE1-46, GE1-48 and GE1-50 ("the flip waits on 4.8, 5.1 and 18.7, and dropping the copies needs your go"). When the owner wrote "approve all 19 left with me" at about 20:15Z, GE1-50, a copy of MO-3731's production drop whose prerequisites are still in backlog, carried an approval line. The lane ran nothing and folded it into MO-3731.
+COST: an owner approval attached to a production data deletion that no one had asked for yet; the orchestrator and the lane spent a turn each unwinding it, and the owner's batch approval now has to be re-read card by card.
+FIX: file an owner ask only from a sentence with a question and an unblock; never from a status line that names another card as the ask's owner; and show the source sentence on the card so a batch approval can be checked against it.
