@@ -16239,6 +16239,30 @@ fn resume_context_from_state(
     })
 }
 
+/// The directory a resume names: `cwd` unless its checkout is nested in the
+/// lane's configured checkout and has the older HEAD (contract::pick_tree),
+/// in which case the configured directory.
+pub(crate) fn resume_cwd(
+    cwd: &str,
+    configured: &str,
+    toplevel: impl Fn(&Path) -> Option<PathBuf>,
+    head_time: impl Fn(&Path) -> Option<i64>,
+) -> String {
+    let (Some(top), Some(conf)) = (toplevel(Path::new(cwd)), toplevel(Path::new(configured))) else {
+        return cwd.to_string();
+    };
+    match crate::api::contract::pick_tree(Some(conf.clone()), Some(top.clone()), head_time).0 {
+        Some(p) if p == conf && top != conf && top.starts_with(&conf) => configured.to_string(),
+        _ => cwd.to_string(),
+    }
+}
+
+fn git_toplevel(dir: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--show-toplevel"]).output().ok()?;
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !t.is_empty()).then(|| PathBuf::from(t))
+}
+
 fn resume_launch_context(
     conn: &rusqlite::Connection,
     name: &str,
@@ -16289,6 +16313,20 @@ fn resume_launch_context(
     } else {
         None
     };
+    // Whatever produced it (a saved swap snapshot, the runtime cwd), the
+    // directory a resume names goes through the same choice the verifier
+    // uses (gs12-data, GD-84, 2026-10-08: a saved context named a nested,
+    // sparse side worktree with 53,683 staged deletions, where a commit
+    // would have deleted the repo).
+    let context = context.map(|mut c| {
+        let chosen = resume_cwd(&c.cwd, configured_cwd, git_toplevel, crate::api::contract::head_time);
+        if chosen != c.cwd {
+            tracing::warn!(session = name, saved = %c.cwd, chosen = %chosen, measured = true, n_considered = 2,
+                verdict = "resume_cwd_corrected", "a resume would have named a nested checkout with an older HEAD; it names the lane's checkout");
+            c.cwd = chosen;
+        }
+        c
+    });
     if context.as_ref().is_some_and(|context| {
         !Path::new(&context.cwd).is_absolute() || !Path::new(&context.cwd).is_dir()
     }) {
@@ -35366,6 +35404,22 @@ mod tests {
     /// two properties the delivery depends on: ORDER (which decides precedence,
     /// because `source` lets the last assignment win) and that a missing layer is
     /// skipped rather than sourced as an empty file.
+    /// GD-84 (gs12-data, 2026-10-08): a saved resume naming a nested side
+    /// worktree with an older HEAD is corrected to the lane's checkout; a
+    /// nested checkout with the newer HEAD (GR-64's shape) is kept.
+    #[test]
+    fn a_resume_never_names_a_nested_checkout_with_the_older_head() {
+        let outer = "/m/.worktrees/gs12-data";
+        let nested = "/m/.worktrees/gs12-data/.worktrees/gs12-data";
+        let top = |p: &Path| Some(p.to_path_buf());
+        let older_nested = |p: &Path| Some(if p == Path::new(nested) { 100 } else { 200 });
+        let newer_nested = |p: &Path| Some(if p == Path::new(nested) { 300 } else { 200 });
+        assert_eq!(resume_cwd(nested, outer, top, older_nested), outer, "GD-84: the configured checkout");
+        assert_eq!(resume_cwd(nested, outer, top, newer_nested), nested, "GR-64 shape: the nested checkout");
+        assert_eq!(resume_cwd(outer, outer, top, older_nested), outer);
+        assert_eq!(resume_cwd("/elsewhere", outer, top, older_nested), "/elsewhere", "unrelated paths are left alone");
+    }
+
     #[test]
     fn scope_env_layers_orders_global_then_group_then_worker() {
         let dir = tempfile::tempdir().unwrap();

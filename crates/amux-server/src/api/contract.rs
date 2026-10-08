@@ -1004,7 +1004,7 @@ pub(crate) fn lane_tree(lane: &str) -> Option<PathBuf> {
 }
 
 /// HEAD's committer time in `dir`, as unix seconds.
-fn head_time(dir: &Path) -> Option<i64> {
+pub(crate) fn head_time(dir: &Path) -> Option<i64> {
     let out = std::process::Command::new("git").args(["-C"]).arg(dir).args(["log", "-1", "--format=%ct"]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
