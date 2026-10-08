@@ -5246,3 +5246,14 @@ CARD: AF-968
 SYMPTOM: Final-head CI 37757387357 failed the iOS group Reset assertion: the first control was empty. The retained WebKit trace shows normal /api/sessions responses with [] replacing the two workers inserted only into browser memory. The adjacent needs-input fixture already isolates its inventory source, but this group case did not.
 COST: The whole browser verdict went red on ambient test-server state; merely retrying would preserve the race.
 FIX: Serve the same fake fleet on normal inventory reads, exclude ambient SSE replacements, and force a real refresh before both Reset assertions. Keep the original first-control, text and exactly-one assertions, the route-use guard, failed CI trace, and local forced-refresh negative replay. No dashboard behavior, assertion, retry count or timeout changes.
+
+## A recovered recycle lost its send boundary before boot resumed it
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The actual owner recycle API persisted intent, then a private SIGKILL during its stop window lost the in-memory send boundary. The predecessor 6f52a0af confirmed a post-crash input as sent to the retiring provider before its fifteen-second boot pass replaced that provider. A simultaneous interrupted-start marker could also race the recycle's own replacement start.
+COST: Accepted input could reach the process about to be killed instead of the fresh conversation, and overlapping recovery operations could replace the provider twice.
+FIX: Derive the restart admission boundary from the persisted recycle marker, refuse actual queue drains until it clears, and reacquire the same send lock across boot stop/kill/start. The recycle owns overlapping start recovery; each new explicit owner recycle resets its own retry counter. Exercise the actual API, exit bytes, controller crash, replacement provider consumer, dual markers, capped/expired controls, unchanged workspace, and another crash; retain the predecessor's confirmed-to-retiring failure.

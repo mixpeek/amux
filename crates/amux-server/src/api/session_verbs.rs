@@ -12067,6 +12067,7 @@ impl ConversationRestart {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(name)
+            || meta_i64(&load_meta(name), RECYCLE_IN_PROGRESS_KEY) > 0
     }
 }
 impl Drop for ConversationRestart {
@@ -12355,6 +12356,15 @@ async fn send_text_inner_bound(
             session = %name, waited_ms = waited_ms as i64, verdict = "lane-send-serialised",
             "a concurrent send to this lane waited instead of clearing another send's composer"
         );
+    }
+    // A process-local lock disappears on exec/SIGKILL. The durable recycle
+    // intent keeps direct input and queue drains off the retiring provider
+    // until boot recovery has finished launching its replacement.
+    if meta_i64(&load_meta(name), RECYCLE_IN_PROGRESS_KEY) > 0 {
+        tracing::info!(session = name, delivery_id = delivery,
+            measured = true, n_considered = 1, verdict = "conversation_restart_delivery_held",
+            "the unfinished conversation recycle retains input for its replacement");
+        return (false, "worker is still starting (conversation recycle pending)".into());
     }
     // Every text amux types reaches this line, including sends that write no
     // Messages row (a raw curl without record_history). Noting it here is what
@@ -14071,6 +14081,7 @@ impl Drop for StartInProgress {
 pub(crate) fn interrupted_start_due(meta: &Map<String, Value>, now: i64) -> bool {
     let since = meta_i64(meta, StartInProgress::KEY);
     since > 0 && now - since < 3600 && meta_i64(meta, "start_resume_attempts") < 3
+        && meta_i64(meta, RECYCLE_IN_PROGRESS_KEY) <= 0
 }
 
 pub(crate) const RECYCLE_IN_PROGRESS_KEY: &str = "recycle_in_progress_since";
@@ -14117,7 +14128,11 @@ pub(crate) async fn resume_interrupted_recycles(state: &AppState) -> usize {
             "a conversation recycle was cut off by a server restart; finishing it");
         resumed += 1;
         let st = state.clone();
-        crate::db::interactions::spawn(async move { run_recycle(&st, &name).await });
+        crate::db::interactions::spawn(async move {
+            let _restart_notice = ConversationRestart::begin(&name);
+            let _send_guard = lane_send_lock(&name).lock_owned().await;
+            run_recycle(&st, &name).await;
+        });
     }
     resumed
 }
@@ -32916,7 +32931,7 @@ async fn config_patch_with_liveness(
         // window kills the task and nothing else finishes it (gs12-extra-2,
         // 2026-10-08: restart 18 s into a recycle left Claude on its exit
         // dialog and the lane refused every message for 4 h).
-        update_meta(&n, &[(RECYCLE_IN_PROGRESS_KEY, json!(now_i64()))]);
+        update_meta(&n, &[(RECYCLE_IN_PROGRESS_KEY, json!(now_i64())), ("recycle_resume_attempts", json!(0))]);
         crate::db::interactions::spawn(async move {
             let _restart_notice = restart_notice;
             let _send_guard = restart_send_guard;
@@ -41681,6 +41696,23 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         }
         assert!(!ConversationRestart::active("unrelated-lane"));
         drop(restart);
+        assert!(!ConversationRestart::active(name));
+        // Exec/SIGKILL loses the in-memory notice and send lock. The persisted
+        // operation must still admit input durably and refuse the real drain.
+        update_meta(name, &[(RECYCLE_IN_PROGRESS_KEY, json!(now_i64()))]);
+        assert!(ConversationRestart::active(name));
+        drop(_lane);
+        let refused = send_claimed_steering(&state, &queue_id, name,
+            "Read the complete uploaded assignment", SendMode::drained(false, false))
+            .await.expect("the queue row remains claimable");
+        assert!(!refused.0, "{refused:?}");
+        assert!(refused.1.contains("conversation recycle pending"));
+        let conn = state.store.read().unwrap();
+        let claim: Option<f64> = conn.query_row(
+            "SELECT delivering_since FROM steering_queue WHERE id=?1", [&queue_id], |r| r.get(0)).unwrap();
+        assert!(claim.is_none(), "the refused drain releases its claim, not its intent");
+        drop(conn);
+        update_meta(name, &[(RECYCLE_IN_PROGRESS_KEY, Value::Null)]);
         assert!(!ConversationRestart::active(name));
     }
 
@@ -50937,6 +50969,9 @@ mod amux4770_worktree_isolation_tests {
         };
         assert!(super::interrupted_recycle_due(&meta(now - 30, 0), now));
         assert!(super::interrupted_recycle_due(&meta(now - 30, 2), now));
+        let mut both = meta(now - 30, 1);
+        both.insert(super::StartInProgress::KEY.into(), serde_json::json!(now - 10));
+        assert!(!super::interrupted_start_due(&both, now), "the recycle owns its replacement start");
         assert!(!super::interrupted_recycle_due(&meta(now - 30, 3), now), "capped");
         assert!(!super::interrupted_recycle_due(&meta(now - 7200, 0), now), "too old to resume");
         assert!(!super::interrupted_recycle_due(&serde_json::Map::new(), now), "no marker");
