@@ -7150,7 +7150,7 @@ function _renderPeekWorkerActions(s) {
     // status refresh, detaching an iOS tap before its click handler ran.
     if (!_peekDecoratedMenuLogged && menu.classList.contains('open') && menu.innerHTML !== html) {
       _peekDecoratedMenuLogged = true;
-      fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'},
+      _origFetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({kind:'worker-action-menu',verdict:'decorated_menu_preserved',
           measured:true,n_considered:menu.querySelectorAll('[role="menuitem"]').length,ver:APP_VER})}).catch(() => {});
     }
