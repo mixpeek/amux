@@ -2417,8 +2417,8 @@ fn empty_foreground_boundary(pane: &str) -> bool {
 
 // A clocked quota stop has ended the parent too. Only a passed reset with the
 // provider's grace qualifies; future and unclocked caps still park all input.
-fn expired_limit_foreground_at_boundary(pane: &str, limit: Option<&ClaudeLimitObservation>, now: i64) -> bool {
-    limit.is_some_and(|l| !l.menu && l.kind != "credit-banner" && l.reset_at > 0
+fn expired_limit_foreground_at_boundary(pane: &str, limit: Option<&ClaudeLimitObservation>, api_error: Option<&str>, now: i64) -> bool {
+    api_error.is_none_or(api_error_is_retryable) && limit.is_some_and(|l| !l.menu && l.kind != "credit-banner" && l.reset_at > 0
         && now >= l.reset_at.saturating_add(AUTO_RESUME_RESET_GRACE_S))
         && empty_foreground_boundary(pane)
 }
@@ -20445,7 +20445,7 @@ pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64)
         let now = chrono::Local::now();
         let limit = signals.panes.get(name).and_then(|pane| observe_claude_limit_with(
             pane, meta_i64(&meta, "rate_limited_until"), now, transcript_rate_limit(&records)));
-        if signals.panes.get(name).is_some_and(|pane| expired_limit_foreground_at_boundary(pane, limit.as_ref(), now.timestamp())) {
+        if signals.panes.get(name).is_some_and(|pane| expired_limit_foreground_at_boundary(pane, limit.as_ref(), transcript_api_error(&records).as_deref(), now.timestamp())) {
             if first_in_window("usage_reset_boundary", name, 600.0) {
                 tracing::info!(session = name, measured = true, n_considered = 1,
                     verdict = "steer_usage_reset_boundary", "foreground quota reset passed; delivering by paste while background work survives");
@@ -23141,7 +23141,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let last_key = meta_str(&meta, "auto_resume_for");
             let inputs = AutoResumeInputs {
                 enabled: auto_resume_enabled(name) && !lane_is_paused(name),
-                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), now_i64())),
+                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), api_error.as_deref(), now_i64())),
                 now: now_i64(),
                 limit: observation.as_ref(),
                 limited_since: meta_i64(&meta, "rate_limited_since"),
@@ -40427,17 +40427,20 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let now = 1_790_000_000;
         let pane = LIMITED_IDLE_PANE.replace("bypass permissions on (shift+tab to cycle)", "bypass permissions on · 1 shell · ← 5 agents · ↓ to manage");
         let passed = ClaudeLimitObservation { menu:false, kind:"transcript", reset_at:now-120 };
-        assert!(expired_limit_foreground_at_boundary(&pane,Some(&passed),now));
-        let i = AutoResumeInputs { idle:expired_limit_foreground_at_boundary(&pane,Some(&passed),now),..resume_inputs(Some(&passed),None) };
+        assert!(expired_limit_foreground_at_boundary(&pane,Some(&passed),None,now));
+        let i = AutoResumeInputs { idle:expired_limit_foreground_at_boundary(&pane,Some(&passed),None,now),..resume_inputs(Some(&passed),None) };
         assert!(matches!(auto_resume_decision(&i),AutoResume::Send{reason:"usage_reset",..}));
         for limit in [ClaudeLimitObservation{menu:false,kind:"transcript",reset_at:now+120},ClaudeLimitObservation{menu:false,kind:"transcript",reset_at:now-30},ClaudeLimitObservation{menu:false,kind:"credit-banner",reset_at:0},ClaudeLimitObservation{menu:true,kind:"menu",reset_at:now-120}] {
-            assert!(!expired_limit_foreground_at_boundary(&pane,Some(&limit),now));
+            assert!(!expired_limit_foreground_at_boundary(&pane,Some(&limit),None,now));
         }
         for frame in [WORKING_PANE, "Permission required\n❯ 1. Allow\n  2. Deny", "limit reset passed without a measured composer"] {
-            assert!(!expired_limit_foreground_at_boundary(frame,Some(&passed),now));
+            assert!(!expired_limit_foreground_at_boundary(frame,Some(&passed),None,now));
         }
-        assert!(!expired_limit_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some(&passed),now));
-        assert!(!expired_limit_foreground_at_boundary(&pane,None,now));
+        assert!(!expired_limit_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some(&passed),None,now));
+        assert!(!expired_limit_foreground_at_boundary(&pane,None,None,now));
+        for error in ["authentication_failed","oauth_org_not_allowed","unknown_error"] {
+            assert!(!expired_limit_foreground_at_boundary(&pane,Some(&passed),Some(error),now), "a stale quota banner must not override a current authentication or unknown failure");
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { startAmux, waitFor } from './harness.mjs';
 const checks=[];
 const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw new Error(name+': '+JSON.stringify(detail));};
-const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',AMUX_RATE_LIMIT_SWEEP_S:'10',AMUX_AUTO_RESUME:'1',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GEMINI_API_KEY:'',GOOGLE_API_KEY:'',FAKE_CLAUDE_SPAWN_BACKGROUND:'1',FAKE_CLAUDE_EXTRA_FRAME:'API Error: Connection lost mid-response. The response above may be incomplete.\nChurned for 1m 30s · done · 1 shell still running',FAKE_CLAUDE_BACKGROUND_FOOTER:' · 1 shell · ← 5 agents · ↓ to manage'}});
+const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',AMUX_RATE_LIMIT_SWEEP_S:'10',AMUX_AUTO_RESUME:'1',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GEMINI_API_KEY:'',GOOGLE_API_KEY:'',FAKE_CLAUDE_SPAWN_BACKGROUND:'1',FAKE_CLAUDE_COMPOSER_FOOTER_FILE:'.native-quota-footer',FAKE_CLAUDE_EXTRA_FRAME:'API Error: Connection lost mid-response. The response above may be incomplete.\nChurned for 1m 30s · done · 1 shell still running',FAKE_CLAUDE_BACKGROUND_FOOTER:' · 1 shell · ← 5 agents · ↓ to manage'}});
 let backgroundPid;
 const ownedChildren=()=>amux.fakeLog().filter(r=>r.event==='background_child').map(r=>r.pid);
 const alive=()=>{try{process.kill(backgroundPid,0);return true;}catch{return false;}};
@@ -16,7 +16,12 @@ try{
  const before=(await amux.req('GET','/health')).body;
  const futureReset=Math.floor(Date.now()/1000)+600;
  for(const [index,name,kind,isolated] of [[1,'retry-parent','server_error',false],[2,'auth-parent','authentication_failed',false],[3,'isolated-parent','server_error',true],[4,'quota-parent','rate_limit',false],[5,'unclocked-parent','rate_limit',false]]){
-  const dir=path.join(amux.root,name);fs.mkdirSync(dir);const r=await amux.req('POST','/api/sessions',{name,dir,start:false});check('private worker created '+name,r.status===201,r.body);
+  const dir=path.join(amux.root,name);fs.mkdirSync(dir);
+  if(name==='quota-parent'){
+   const date=new Date(futureReset*1000);const h=date.getHours();const clock=`${h%12||12}:${String(date.getMinutes()).padStart(2,'0')}${h>=12?'pm':'am'}`;
+   fs.writeFileSync(path.join(dir,'.native-quota-footer'),`⚠ Usage limit reached · limit resets ${clock} · clau.de/wrap-up\nContinuing automatically at ${clock} · esc to cancel · /usage-credits to continue now`);
+  }
+  const r=await amux.req('POST','/api/sessions',{name,dir,start:false});check('private worker created '+name,r.status===201,r.body);
   fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_ISOLATED=${isolated?1:0}\nCC_AUTO_PICKUP=0\nCC_AUTO_CONTINUE=0\n`);
   const started=await amux.req('POST','/api/sessions/'+name+'/start');check('real terminal starts '+name,started.status<300,started.body);
   await waitFor('fake launch '+name,()=>amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===fs.realpathSync(dir)),30000);
@@ -38,11 +43,16 @@ try{
  check('authentication failure is never retried',received('auth-parent').length===0);
  check('isolation is never overridden',received('isolated-parent').length===0);
  check('future quota reset remains parked behind live child',received('quota-parent').length===0);
+ const quotaMetaPath=path.join(amux.home,'sessions','quota-parent.meta.json');
+ const quotaMeta=JSON.parse(fs.readFileSync(quotaMetaPath,'utf8'));
+ check('normal sweep recognizes actual split native footer',quotaMeta.rate_limited_by==='auto-resume'&&quotaMeta.rate_limited_until>Math.floor(Date.now()/1000),quotaMeta);
+
  check('unclocked limit is never retried',received('unclocked-parent').length===0);
  // Explicit fixture clock transition, never an API call against live state.
  const quota=lanes.find(l=>l.name==='quota-parent');
  const qp=path.join(amux.userHome,'.claude','projects',quota.realDir.replace(/[^a-zA-Z0-9]/g,'-'),'11111111-1111-4111-8111-000000000004.jsonl');
  const record=JSON.parse(fs.readFileSync(qp,'utf8'));record.quotaLimits.resetsAt=Math.floor(Date.now()/1000)-120;fs.writeFileSync(qp,JSON.stringify(record)+'\n');
+ const advancedMeta=JSON.parse(fs.readFileSync(quotaMetaPath,'utf8'));advancedMeta.rate_limited_until=record.quotaLimits.resetsAt;fs.writeFileSync(quotaMetaPath,JSON.stringify(advancedMeta));
  await waitFor('passed quota reset resumes stopped parent with surviving child',()=>received('quota-parent').length===1,30000);
  const qlaunch=amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===quota.realDir);
  const qchild=amux.fakeLog().find(r=>r.event==='background_child'&&r.parent_pid===qlaunch.pid);
@@ -59,4 +69,4 @@ try{
  check('controls remain untouched after crash',received('auth-parent').length===0&&received('isolated-parent').length===0);
 }catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});console.error(fs.readFileSync(amux.serverLog,'utf8').slice(-8000));}
 finally{for(const pid of ownedChildren()){try{process.kill(pid,'SIGKILL');}catch{}}await amux.stop();}
-const receipt={measured:checks.length>0,n_considered:checks.length,failed:checks.filter(c=>!c.ok).length,artifacts:amux.root,fixture_boundary:'seeded current failed transcript; API two-minute bound uses real periodic clock; quota future-to-passed clock is explicitly seeded; actual CLI children survive',checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);
+const receipt={measured:checks.length>0,n_considered:checks.length,failed:checks.filter(c=>!c.ok).length,artifacts:amux.root,fixture_boundary:'seeded current failed transcript; API two-minute bound uses real periodic clock; quota future-to-passed transcript/metadata clock is explicitly seeded; actual split native footer rendered in private terminal; actual CLI children survive',checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);

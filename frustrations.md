@@ -5125,3 +5125,14 @@ CARD: AF-968
 SYMPTOM: The failed-foreground admission fix covered retryable API failures, while automatic quota resumption still required all background shells and agents to stop. A transcript-confirmed passed reset could therefore wait behind a live child after the provider's own grace period.
 COST: Avoidable parent delay at reset; a cancelled native auto-continue would then depend on the unrelated background work ending or on a later message ceiling.
 FIX: Admit an empty stopped foreground after a positively observed clocked reset and its existing grace, retain future/unclocked/menu/authentication/typed-input boundaries, emit a distinct signal, and test actual child survival plus restart deduplication. This is a discovered predicate gap, not a claimed production reproduction after today's future reset.
+
+## Claude's split quota footer hid a stopped GS12 parent behind active background work
+AREA: state
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: At 06:26Z gs12-planes displayed a measured empty composer, a completed parent turn, and the current two-line footer: "Usage limit reached · limit resets 4:50am" followed by capitalized "Continuing automatically at 4:50am · esc to cancel". Its rate-limit metadata remained clear and the fleet reported active because one shell and five agents survived. The detector required the old lowercase interpunct sentence.
+COST: A known quota hold read as productive activity and lacked a durable reset stamp; automated messages could cancel the provider's native continuation before the real reset.
+FIX: Normalize the continuation wording inside the same live composer/chrome anchors; replay the captured split footer through observation, adapter events, preview and actual fleet status with a live-child signal. Keep active-turn, recovered-scrollback and unowned-prose controls.

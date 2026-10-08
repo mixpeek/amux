@@ -592,7 +592,10 @@ pub(crate) fn claude_auto_resume_banner(raw: &str) -> Option<String> {
     let footer = lines[start..bar].join(" ");
     let warning = footer.find("⚠ Usage limit reached")?;
     let warning = &footer[warning..];
-    if warning.contains("· continuing automatically at ") && warning.contains("esc to cancel") {
+    // Claude's current footer splits the reset warning and capitalized
+    // continuation across lines. The same composer/chrome anchors still own it.
+    let normalized = warning.to_ascii_lowercase();
+    if normalized.contains("continuing automatically at ") && normalized.contains("esc to cancel") {
         Some(warning.to_string())
     } else {
         None
