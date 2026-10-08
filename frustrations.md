@@ -5345,3 +5345,91 @@ CARD: AMUX-5726
 SYMPTOM: Reviewed head 0a7405e8. The prepare branch in decide() fires on any of acceptance_criteria, verify_cmd, verify_kind or deploy_check, for backlog, todo and doing. freeze_from fills the command from the lane's CC_VERIFY default. So on a contract lane with a default verify command, an orchestrator setting or refining acceptance criteria on a backlog card freezes the contract right then. After that, acceptance is owner-only and the lane gets one verify_cmd amend. The PR's own test covers only {verify_cmd, reason}, and its comment says "an explicit server check" while the condition accepts acceptance alone.
 COST: Planning edits made before anyone claims the card become frozen contracts. The next refinement draws contract_frozen 409 and needs the owner. Decomposition writes acceptance_criteria in bulk, so this can hit many backlog cards at once.
 FIX: Make the prepare branch require an explicit verify_cmd / verify_kind / deploy_check, which matches the comment. Leave acceptance_criteria on backlog and todo as a plain column write. Add an acceptance-only case to preparing_a_todo_contract_persists_the_command_without_claiming_work.
+
+## the needs-input policy auto-approved an ask that excludes itself from auto-approval and that the orchestrator had just kept for the owner
+AREA: needsyou
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-spend
+CARD: GS-246
+SYMPTOM: GS-199's ask (move production usage and invoices onto the rollups, retire two ledgers, add two fields to the usage breakdown API) was approved at about 16:55Z with "Approved automatically under the owner's needs-input policy. Proceed.", and the card moved needsyou to todo. The ask's own ask_unblocks said "An automatic needs-input approval does not cover these (production data and a customer-facing API)", and mixpeek-override had relayed Ethan's rule 9 instruction minutes earlier naming GS-199 as a card that keeps its ask. Both are stop-list items in ~/.claude/CLAUDE.md.
+COST: the lane had to recognise the approval as invalid, write it down and put the card back by hand. A lane that took "Proceed" literally would have started a production billing migration on an approval nobody gave.
+FIX: never auto-approve a needsyou whose text names production data, a customer-facing API, money or an outside reader; at minimum honour an ask that says automatic approval does not cover it.
+
+## amux land sits in state running for 15 to 50 minutes on a worktree start timeout, holds the queue, and the holder cannot cancel it
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4463
+SYMPTOM: Land 119 (about 50 min, morning) and land 121 (gs12-extra-2, over 15 min at 14:4xZ) both sat in state running on "git worktree timed out after 120s or failed to start" while holding the mixpeek land queue, then ended refused. DELETE /api/land answers 409 while a land runs, so the holder could not clear its own stuck entry; the amux lane was stopped and amux-helper refuses worker sends, so no one could. Logs under ~/.amux/logs/land/.
+COST: two queue stalls of 15 to 50 minutes with gs12 lanes waiting behind them on a day with 37 landings in 3 hours.
+FIX: a runner timeout that releases the lock when the worktree step fails to start, and a --cancel that works on a running land whose worktree never started.
+
+## a verify_cmd write on a todo contract card answers 200 with applied:false and no hint, and the lane reads it as a refusal
+AREA: board contracts
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4464
+SYMPTOM: GE1-4 (gs12-extra-1) in todo: PATCH {"verify_cmd": "...", "reason": "..."} returned 200 {"applied": false}. The lane asked the orchestrator to set it; the orchestrator's own write was dropped the same way. The command only lands inside the doing move body ({"status": "doing", "verify_cmd": "...", "reason": "..."}), which nothing in the response says.
+COST: one lane blocked on a contract it could not freeze, plus two orchestrator turns; every curl recipe in CLAUDE.md reads a 200 as success.
+FIX: answer 409 with the recipe (put verify_cmd in the doing move body) instead of a silent 200 with applied:false.
+
+## the needs-input policy bounced a group-scope configuration ask to the worker as a key or sign-in ask
+AREA: needsyou
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4465
+SYMPTOM: MO-4462, a decision card asking the owner for a group-scope setting (the contract review model for gs12-platform), came back with the key/sign-in/grant ladder text ("Mint keys in the UI you reach... Rotate by replacement"). The category match is by keyword, not by the ask type. The only worker route to a group layer is a header-less PUT /api/scope that the server treats as the dashboard, which is the write the scope policy refuses to sessions on purpose.
+COST: a configuration change made and reverted on a false premise, and an owner ask answered by a rule written for credentials.
+FIX: classify the bounce by ask_type and the target (a scope level) rather than by words; a group-scope ask stays with the owner or gets AMUX_SCOPE_WRITE_AGENTS for the orchestrator explicitly.
+
+## a done request on an escalated contract card skips the server check, so no round-4 review is ever queued
+AREA: board contracts
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4466
+SYMPTOM: GD-75 (gs12-deputy, the GS12 proof 12 run card) was escalated after three failed reviews, reopened with direction by the orchestrator (status todo with authorized_by, the option the ask offered), then requested done from doing twice by its lane (14:34Z to 14:46Z and 16:05:59Z to 16:06:31Z on 2026-10-08). Both landed as done, but card_contracts still reads state frozen (frozen_at 2026-10-07 01:40Z), review_state escalated (05:40Z), review_rounds 3, and the evidence has no Server-verified line. run_reviews claims only review_state pending, so the card can never be reviewed again; MO-3951 shows the same shape after its reopen.
+COST: the owner's first-priority proof run card sits at done with no path to verified; two lane resubmits and three orchestrator reads to find out that nothing was queued.
+FIX: when a card at review_state escalated re-enters doing and requests done, run the contract check and set review_state pending (round 4 runs; a pass grants verified, a fail escalates again), or refuse the done with a 409 that names the owner-only path.
+
+## a frozen contract can only be amended by the owner, so cards sit on wording the orchestrator has already ruled on
+AREA: board contracts
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4468
+SYMPTOM: PATCH acceptance_criteria with a reason from the gs12 orchestrator answers 409 contract_frozen ("the owner can change a frozen contract") on GE2-17 and GS-200, and the owning lanes get the same answer. GS-200's done-gap close then failed review round 2 on exactly the frozen criterion it named, so the lane parks rather than spend round 3. Eight gs12 cards sit this way (GS-200, GE2-17, GG-83, GG-31, GOD-2, GP-235, GC-58, GC-155) on wording the orchestrator ruled on, while the owner asked (18:30Z) that lanes resolve inside his standing authority without him.
+COST: eight cards parked on one-line wording changes, each a separate owner read, and review rounds spent on criteria everyone agrees are superseded.
+FIX: let the orchestrator (AMUX_ORCHESTRATOR at the group layer) amend a frozen criterion with a required reason and an audit line in the contract log, or add a group switch for it; keep the owner-only rule for lanes amending their own contracts.
+
+## Slow board GETs wait inside SQLite, and the orchestrator's window_stats rescans every task event every 3 s
+AREA: performance
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5727
+SYMPTOM: Hour to 18:44Z: 114 GET /api/sessions over 5 s (max 41.3 s) and 53 GET /api/board (max 29.9 s), while p50 stays at 26 ms and 2.7 ms. Every multi-second board_list_slow line has queued_ms=0 and conn_ms=0, with the time in sql_ms (up to 13.1 s) and sometimes sessions_ms (3.5 s). The wait is not the read pool and not the writer. It is not the WAL either: the file is 1.18 GB, but the -shm header showed mxFrame going 751 -> 4314 in 20 s from a reset, so only a few MB is ever live. Some outliers fall 10-160 s after the two self-adoptions (18:14, 18:21Z). The rest overlap orchestrator-runtime stalls whose worst section is window_stats: 3-70 s per tick, 25 of them over 4 s between 18:33 and 18:47Z. window_stats' first query (completed tasks, `mutation LIKE '%"to":"verified"%'`) is planned on idx_amux_state_events_entity, so every 3 s it reads all 64,336 task events, scattered through a 14.4 GB database, to count 11 rows from the last hour. Read-only timing: 185-231 ms warm on the planner's choice, 4.3 ms warm with INDEXED BY idx_amux_state_events_at. Cold, under this host's disk contention (load 24-29 on 28 cores), it is the seconds-long stall AMUX-5027 recorded as unexplained.
+COST: The dashboard and every lane's board and session reads stall for 10-40 s several times an hour. The orchestrator's circuit-breaker input arrives up to 70 s late.
+FIX: In window_stats, have the completed query use the time index (INDEXED BY idx_amux_state_events_at, or an (entity_type, at) index through a migration) and keep the tick_section_slow signal. Re-measure board_list_slow sql_ms and window_stats worst_ms over an hour against this baseline.
+
+## /api/sessions has no phase breakdown, so its slow calls cannot be attributed
+AREA: observability
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5727
+SYMPTOM: GET /api/board logs board_list_slow with queued/conn/sql/sessions/rows phases. GET /api/sessions, 5,996 calls an hour with p95 2.96 s and max 41.3 s, logs nothing beside its latency except sessions_build_raced / _race_retried (8 and 7 in two hours). There is no way to tell tmux enumeration, git inventory, store reads and the race retry apart from the logs.
+COST: An owner-requested diagnosis could name the board's dominant wait but only infer the sessions route's, from its overlap with the board stalls. That is the instrument gap ethos rule 4 describes.
+FIX: Add a sessions_list_slow line, over a budget, with per-phase ms (tmux, git, store, build retries) and measured/n_considered, mirroring board_list_slow.
