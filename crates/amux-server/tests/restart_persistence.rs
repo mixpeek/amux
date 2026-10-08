@@ -735,6 +735,10 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     let (status, schedule) = rig.post("/api/schedules", json!({"title":"Interrupted shell", "kind":"shell", "command":"exit 0", "schedule_expr":"daily at 3am", "enabled":0})).await;
     assert_eq!(status, 201, "{schedule}");
     let sid = schedule["id"].as_str().unwrap();
+    // These internal execution states and detached-review artifacts form one
+    // crash specimen. Seed them while down; a live contract clock could consume
+    // the artificial running intent before its cached outcome is on disk.
+    rig.kill();
     rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','manual:fixture','shell','execution interrupted')", &[&sid]);
     rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','cron-rs',NULL,'delivery interrupted')", &[&sid]);
     rig.seed("INSERT INTO steering_queue(id,session,text,queued_at,delivering_since) VALUES('rr-claimed',?1,'uncertain delivery',1,1)", &[&lane]);
