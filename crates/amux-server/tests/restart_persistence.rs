@@ -710,7 +710,8 @@ async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_pa
 
 async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     let mut rig = Rig::new();
-    // A cached review must be adopted; this sentinel catches a paid rerun.
+    // A cached completion review must be adopted. Advisory plan reviews after
+    // reopening are a distinct lifecycle step; count them separately.
     let repo = rig.home.join("fixture-repo");
     std::fs::create_dir_all(&repo).unwrap();
     for args in [vec!["init", "-q"], vec!["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], vec!["update-ref", "refs/remotes/origin/main", "HEAD"]] {
@@ -722,10 +723,12 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     std::fs::create_dir_all(rig.home.join("sessions")).unwrap();
     let forbidden = rig.home.join("must-not-rerun-review");
     let cli = rig.home.join("review-cli.sh");
-    let cli_script = if live {
+    let advisory = rig.home.join("advisory-plan-review");
+    let advisory_script = format!("#!/bin/sh\ncase \"$PWD\" in *'/RR-RECOVERY-pre-'*) echo advisory >> '{}'; echo '{{\"verdict\":\"gaps\",\"findings\":[\"missing required measurement\"]}}'; exit 0;; esac\n", advisory.display());
+    let completion_script = if live {
         format!("#!/bin/sh\necho launch >> '{}'\nsleep 20\necho '{{\"verdict\":\"fail\",\"findings\":[\"missing required measurement\"]}}'\nexit 0\n", forbidden.display())
     } else { format!("#!/bin/sh\necho launch >> '{}'\nexit 1\n", forbidden.display()) };
-    std::fs::write(&cli, cli_script).unwrap();
+    std::fs::write(&cli, advisory_script + &completion_script.replace("#!/bin/sh\n", "")).unwrap();
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap(); }
     std::fs::write(rig.home.join(format!("sessions/{lane}.env")), format!("CC_DIR={}\nCC_NAME={lane}\nCC_ISOLATED=1\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI={}\n", repo.display(), cli.display())).unwrap();
     rig.spawn();

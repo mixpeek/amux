@@ -156,6 +156,13 @@ decoys, personal and QA profiles. Headquarters is saved last to catch shared
 fallback bugs. Real workers independently select the customer profile, solve a
 multistep case, and handle functioning-but-blocked native/CDP sessions by
 advancing through CUA. An all-blocked case requires an honest inability report.
+`AMUX_ROUTING_WORKER_CHALLENGE=post-submit` enables a harder goal-denial case:
+the page and submit button look usable, real input dispatch succeeds, and only
+the server rejects the operation. The worker must observe that failure and
+advance; the oracle requires actual trusted-input denials from the earlier
+native/CDP sessions before the final success. No portal text names a fallback.
+`AMUX_ROUTING_WORKER_PINNED_CLI=1` supplies the installed private CLI's absolute
+path in the test prompt, preventing login shells from selecting another release.
 An independent HTTP oracle checks account, organization, trusted browser clicks,
 case, confirmation, exact reason and exact-once completion. Transcripts, route
 receipts, launch guidance and screenshots are retained. These are local task

@@ -2032,6 +2032,8 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
             write_review_source(&dir, &row.desc)?;
             let prompt = prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or(""))
                 + "\nRead card-source.md for the full unabridged description, including requirements outside the excerpt.\n";
+            tracing::info!(card, lane, dir = %dir.display(), measured = true, n_considered = 1,
+                verdict = "contract_prereview_started", "a separate advisory plan review is starting");
             launch_review(&dir, &cli, &args, &prompt)?;
         }
         let output = wait_review(&dir).await;

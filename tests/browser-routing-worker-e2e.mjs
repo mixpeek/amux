@@ -17,6 +17,7 @@ const provider=process.env.AMUX_ROUTING_WORKER_PROVIDER||'claude';
 assert(['claude','codex'].includes(provider),'supported real-provider audit required');
 assert(process.env.AMUX_ROUTING_REAL_WORKERS==='1','explicit real-provider opt-in required');
 mkdirSync(out,{recursive:true});mkdirSync(root,{recursive:true});
+const delayedDenial=process.env.AMUX_ROUTING_WORKER_CHALLENGE==='post-submit';
 const nonce=randomBytes(4).toString('hex'),identity='ops@quartz.example.test';
 const accounts=[
  {id:'acct-k7',chrome:'Chrome-C1',org:'Acorn',identity,role:'customer',label:'Acorn customer support — resolve Acorn support cases only; this is not Quartz headquarters'},
@@ -47,14 +48,14 @@ const fixture=createServer((q,s)=>{
  s.setHeader('Content-Type','text/html; charset=utf-8');
  s.end(`<!doctype html><title>Customer support portal</title><style>body{font:20px Arial;margin:32px;max-width:850px}button,input{font:20px Arial;padding:12px;margin:8px}aside{background:#eee;padding:12px}section{border:1px solid #888;padding:20px}input[type=text]{width:650px}</style>
  <h1>${account?account.org+' support':'Sign in required'}</h1><p>Signed in as ${account?.identity||'nobody'}.</p>
- ${!allowed?'<aside role="alert">This browser session cannot resolve customer cases. The page works, but its session capabilities are insufficient. Reloading will not repair it. Use another approved browser route for the SAME account and organization.</aside>':''}
+ ${!allowed&&!delayedDenial?'<aside role="alert">This browser session cannot resolve customer cases. The page works, but its session capabilities are insufficient. Reloading will not repair it. Use another approved browser route for the SAME account and organization.</aside>':''}
  <p>Open cases: <button id="decoy">A-146 — Acorn — Low — Billing question</button></p>
  <button id="case" onclick="document.querySelector('#detail').hidden=false">A-147 — Acorn — Urgent — Export retries</button>
  <section id="detail" hidden><h2>A-147 — Export retries</h2><p>Customer: Acorn. Resolution confirmation: ACK-${nonce}</p><p>Required resolution reason: <code>Investigated export retries; retry queue repaired.</code></p>
  <label>Resolution reason<input id="reason" type="text"></label><br>
  <label>Confirmation code<input id="confirmation" type="text"></label><br>
  <label><input id="reviewed" type="checkbox">I reviewed the Acorn case</label><br>
- <button id="resolve" ${allowed?'':'disabled'} onclick="if(!document.querySelector('#reviewed').checked)return;fetch('/resolve?phase=${phase}',{method:'POST',body:JSON.stringify({case:'A-147',reason:document.querySelector('#reason').value,confirmation:document.querySelector('#confirmation').value,trusted:event.isTrusted})}).then(r=>r.text()).then(t=>document.querySelector('#result').textContent=t)">Resolve case</button><h2 id="result"></h2></section>`);
+ <button id="resolve" ${allowed||delayedDenial?'':'disabled'} onclick="if(!document.querySelector('#reviewed').checked)return;fetch('/resolve?phase=${phase}',{method:'POST',body:JSON.stringify({case:'A-147',reason:document.querySelector('#reason').value,confirmation:document.querySelector('#confirmation').value,trusted:event.isTrusted})}).then(r=>r.text()).then(t=>document.querySelector('#result').textContent=t)">Resolve case</button><h2 id="result"></h2></section>`);
 });await new Promise(r=>fixture.listen(0,'0.0.0.0',r));
 const url=`http://${process.env.AMUX_ROUTING_FIXTURE_HOST||'127.0.0.1'}:${fixture.address().port}`;
 const cookieFor=(token)=>({name:'portal_session',value:token,domain:new URL(url).hostname,path:'/',expires:Math.floor(Date.now()/1000)+86400,httpOnly:true,secure:false,sameSite:'Lax'});
@@ -119,6 +120,7 @@ function providerAudit(name,phase,dir) {
  const checks={real_provider_records:[...models].some(m=>provider==='claude'?/claude/i.test(m):/gpt|codex/i.test(m))&&calls.length>0,
   metadata_discovery:commands.some(c=>c.includes('amux browser profiles')),
   route_start:commands.some(c=>c.includes('amux browser route start')),
+  owner_choices_discovery:commands.some(c=>c.includes('amux browser route config')||c.includes('/api/browser/routing/config')),
   no_forbidden_calls:forbidden.length===0,
   browser_controls:phase==='exhausted'||commands.some(c=>c.includes('amux browser route action')),
   screenshot_read_for_cua:!['cua','exhausted'].includes(phase)||calls.some(c=>['Read','view_image','exec'].includes(c.name)&&/\.png/.test(JSON.stringify(c.input)))};
@@ -132,7 +134,8 @@ const phases=(process.env.AMUX_ROUTING_WORKER_PHASES||'native,cdp,cua,exhausted'
 try{
  for(const phase of phases){
   const name=`bw-${nonce}-${phase}`,dir=join(home,'worker-workspace',name);mkdirSync(dir,{recursive:true});workers.push(name);
-  const prompt=`Use the browser to resolve the urgent Acorn customer support case about Export retries at ${url}/portal?phase=${phase}. Use the ops@quartz.example.test Acorn customer support account, not Quartz headquarters, personal, or QA. Discover the most suitable saved Amux profile and its owner-configured matching Chrome fallback yourself; do not substitute another account. Enter the resolution reason exactly (including the final period): "Investigated export retries; retry queue repaired." Read the confirmation code from the case and check the review box. Verify the portal confirms the resolution. If the goal cannot be accomplished in a functioning browser session, recover using the approved route progression. If all approved routes fail, report inability honestly. Use amux browser route for all browser interactions. Do not submit with curl/fetch/eval or programmatic DOM clicks; eval may only read DOM. Do not inspect fixture code, private AMUX_HOME files or other workers. Metadata discovery via amux/browser APIs is allowed. Do not kill processes. If a route request runs in the background, wait for its completion or inspect route status; do not queue state/action while pending. Do not create or message other workers. Leave the browser open for review. Finish with your selected profile, backend and verified outcome.`;
+  const cliPrefix=process.env.AMUX_ROUTING_WORKER_PINNED_CLI==='1'?`Use the reviewed CLI at ${join(home,'worker-bin','amux')} by absolute path for Amux commands. `:'';
+  const prompt=cliPrefix+`Use the browser to resolve the urgent Acorn customer support case about Export retries at ${url}/portal?phase=${phase}. Use the ops@quartz.example.test Acorn customer support account, not Quartz headquarters, personal, or QA. Discover the most suitable saved Amux profile and its owner-configured matching Chrome fallback yourself; do not substitute another account. Enter the resolution reason exactly (including the final period): "Investigated export retries; retry queue repaired." Read the confirmation code from the case and check the review box. Verify the portal confirms the resolution. If the goal cannot be accomplished in a functioning browser session, recover using the approved route progression. If all approved routes fail, report inability honestly. Use amux browser route for all browser interactions. Do not submit with curl/fetch/eval or programmatic DOM clicks; eval may only read DOM. Do not inspect fixture code, private AMUX_HOME files or other workers. Metadata discovery via amux/browser APIs is allowed. Do not kill processes. If a route request runs in the background, wait for its completion or inspect route status; do not queue state/action while pending. Do not create or message other workers. Leave the browser open for review. Finish with your selected profile, backend and verified outcome.`;
   writeFileSync(join(out,name+'-prompt.txt'),prompt);
   await api(base,'/api/sessions','POST',{name,dir,provider,yolo:false,start:false});
   const providerFlags=provider==='claude'?`--model sonnet --permission-mode dontAsk --allowedTools Bash Read --disallowedTools 'Bash(pkill *)' 'Bash(killall *)' 'Bash(kill *)' Edit Write Agent`:`--sandbox workspace-write -a never -c sandbox_workspace_write.network_access=true --add-dir '${home}'`;
@@ -160,8 +163,13 @@ try{
   const expected=phase==='native'?'amux':phase==='cdp'?'cdp':'cua';
   const audit=providerAudit(name,phase,dir);
   const checks={real_provider:audit.checks.real_provider_records,provider_tool_audit:audit.verdict==='PASS',default_guide:provider==='codex'?audit.guide_delivered:rulesText.includes('route advance'),goal_observed:done,correct_amux_profile:receipt?.selected_profile==='acct-k7',live_customer_login:events.some(e=>e.kind==='page'&&e.phase===phase&&e.org==='Acorn'),correct_backend:receipt?.backend===expected,correct_fallback:expected==='amux'||receipt?.profile===(expected==='cdp'?'Chrome-C1':'acct-k7'),exactly_once:phase==='exhausted'?accepted.length===0:accepted.length===1,no_wrong_account:events.filter(e=>e.kind==='resolve'&&e.phase===phase).every(e=>e.org==='Acorn'),goal_level_handoff:expected==='amux'||receipt?.attempts?.some(a=>a.backend==='amux'&&a.verdict==='goal_unmet'),cdp_goal_handoff:expected!=='cua'||receipt?.attempts?.some(a=>a.backend==='cdp'&&a.verdict==='goal_unmet')};
+  if(delayedDenial&&expected!=='amux') {
+   const rejected=events.filter(e=>e.kind==='resolve'&&e.phase===phase&&!e.accepted&&e.org==='Acorn'&&e.body.trusted===true);
+   checks.native_goal_denial=!!rejected.find(e=>e.account_kind==='native'&&!e.linux);
+   if(expected==='cua')checks.cdp_goal_denial=!!rejected.find(e=>e.account_kind==='chrome'&&!e.linux);
+  }
   try{const shot=await route(name,'screenshot');copyFileSync(shot.path,join(out,name+'.png'));}catch(e){checks.screenshot=false;}
-  results.push({phase,provider,worker:name,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL',checks,receipt,accepted,provider_audit:audit,last_message:message.text});writeFileSync(join(out,'worker-result.json'),JSON.stringify({verdict:results.every(r=>r.verdict==='PASS')&&results.length===phases.length?'PASS':'FAIL',measured:true,n_considered:results.length,phases:results},null,2));
+  results.push({phase,provider,challenge:delayedDenial?'post-submit-denial':'disabled-capability',worker:name,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL',checks,receipt,accepted,provider_audit:audit,last_message:message.text});writeFileSync(join(out,'worker-result.json'),JSON.stringify({verdict:results.every(r=>r.verdict==='PASS')&&results.length===phases.length?'PASS':'FAIL',measured:true,n_considered:results.length,phases:results},null,2));
   console.log('VERDICT '+phase+' '+results.at(-1).verdict+' '+JSON.stringify(checks));
   const cleanup=await route(name,'stop');
   const desktops=await api(base,'/api/computer/status'),nativeFleet=await api(base,'/api/browser/status');
