@@ -7853,7 +7853,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-10-02.54"
+LAND_BEHAVIOR_VERSION="2026-10-08.55"
 
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] | --cancel | --status
@@ -8385,13 +8385,16 @@ p.communicate(msg.encode())
     # mode in the batch). A WAITER whose installed CLI now carries a different
     # LAND_BEHAVIOR_VERSION re-execs the new code in place: same pid, so the
     # same ticket name, place and flags, and a foreground land keeps its
-    # output. Checked every 30 s, never by a holder. AMUX_LAND_SELF_UPGRADE=0
+    # output. Checked every 10 s, never by a holder. The old 60 s interval
+    # delayed every waiter after an install and cost a minute in the CI crash
+    # lifecycle; a version read each 10 s is cheap and bounds adoption time.
+    # AMUX_LAND_SELF_UPGRADE=0
     # opts out.
-    if [ "${AMUX_LAND_SELF_UPGRADE:-1}" = 1 ] && [ $(( $(date +%s) - ${_vchk:-0} )) -ge 60 ]; then
+    if [ "${AMUX_LAND_SELF_UPGRADE:-1}" = 1 ] && [ $(( $(date +%s) - ${_vchk:-0} )) -ge 10 ]; then
       _vchk=$(date +%s)
       _newv="$(grep -m1 '^LAND_BEHAVIOR_VERSION=' "$0" 2>/dev/null | cut -d'"' -f2 || true)"
       if [ -n "$_newv" ] && [ "$_newv" != "$LAND_BEHAVIOR_VERSION" ] && [ -e "${q:?}/${tname:?}" ]; then
-        _land_log "land code $_newv is installed (this waiter runs $LAND_BEHAVIOR_VERSION); re-executing at its place"
+        _land_log "land code $_newv is installed (this waiter runs $LAND_BEHAVIOR_VERSION); re-executing at its place verdict=land_self_upgrade_reexec check_interval_s=10"
         trap - EXIT INT TERM
         # Made batchable after starting with --no-batch: carry that across the
         # exec, which replays the original arguments.

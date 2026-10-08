@@ -5455,3 +5455,14 @@ CARD: GS-247
 SYMPTOM: Requesting done on GS-167 at 20:2xZ returned "server verification failed at 69c5016703bf...: could not check out ...: fatal: '/Users/ethan/.amux/tmp/contract/GS-167-69c5016703bf' is a missing but locked worktree; use 'add -f -f' to override, or 'unlock' and 'prune' or 'remove' to clear". The path is the verifier's own scratch checkout; the lane never created it. A few minutes later `git worktree list` no longer showed it, the directory was absent, and an identical done request started verification.
 COST: one false "GS-167 is not done" notice, a diagnosis round and a resubmission. The notice reads as the lane's failure, and a lane that took it at face value could have reopened finished work or moved the card to cannot_satisfy.
 FIX: before `git worktree add` for a contract checkout, run `git worktree prune` (or `remove -f -f` its own path) when the path is registered but missing, and report a checkout failure as a verifier infrastructure error, retried once, rather than as the card failing verification.
+
+## Land waiters check installed behavior once a minute, delaying adoption and the CI lifecycle gate
+AREA: CI and land lifecycle
+SEVERITY: degrades
+STATUS: fixed
+DATE: 2026-10-08
+SESSION: amux
+CARD: AGH-8
+SYMPTOM: The `checks` workflow's chained land precheck spent 167 s in one run. An unchanged-source `scripts/test-land-demote-sticks.sh` took 77.27 s locally, including a 60 s self-upgrade poll in a real land waiter. Its old 100 s test deadline hid the delay. A 30 s deadline failed on the unchanged CLI with `no re-exec within 30s`.
+COST: New land behavior can sit unapplied for a minute in queued processes, and the CI job spends most of that time waiting for the lifecycle test.
+FIX: Poll the installed behavior version every 10 s while waiting, emit `verdict=land_self_upgrade_reexec check_interval_s=10` on re-exec, and enforce a 30 s re-exec deadline in the lifecycle test. The same test passed in 27.50 s afterward. The whole chained land precheck passed locally in 239.50 s; that total is not comparable with the hosted runner's 167 s because it ran on different hardware.
