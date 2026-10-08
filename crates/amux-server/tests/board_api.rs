@@ -8980,6 +8980,30 @@ async fn create_preserves_acceptance_contract_and_rejects_malformed_criteria_ato
     assert_eq!(count(), before);
 }
 
+/// gs12-model, GM-184, 2026-10-08: a misnamed verify key is answered with the
+/// real field and the CLI flag, and an unknown key's 422 does not point at an
+/// ignored_hints that is not there.
+#[tokio::test]
+async fn a_misnamed_verify_key_names_verify_cmd_and_the_flag() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({ "title": "ship it", "session": "lane-a", "type": "code" })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    for key in ["verify_command", "verify_method", "verification"] {
+        let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+            Some(json!({ key: "pytest -q" })), &[("X-Amux-Session", "lane-a")]).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+        let h = &v["ignored_hints"][0];
+        assert_eq!((h["sent"].as_str(), h["meant"].as_str()), (Some(key), Some("verify_cmd")), "{v}");
+        assert!(h["how"].as_str().unwrap_or("").contains("--verify-cmd"), "{v}");
+        assert!(v["error"].as_str().unwrap_or("").contains("see ignored_hints"), "{v}");
+    }
+    let (_, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({ "no_such_field": 1 })), &[("X-Amux-Session", "lane-a")]).await;
+    assert!(v.get("ignored_hints").is_none(), "{v}");
+    let err = v["error"].as_str().unwrap_or("");
+    assert!(!err.contains("see ignored_hints") && err.contains("no field of that name exists"), "{v}");
+}
+
 /// gs12-model, GM-54, 2026-10-08: a PATCH whose only key is not writable
 /// answers 422 with a top-level reason, and a contract field on a non-code
 /// card says why it does not apply.

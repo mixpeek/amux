@@ -464,6 +464,7 @@ fn freeze_from(card: &Card, body: &Value, existing: Option<&Contract>, defaults:
                 json!({
                     "acceptance_criteria": "a list of testable statements, in this PATCH or already on the card",
                     "verify_cmd": format!("a command run from the repo root of the lane's committed HEAD, in this PATCH, or the lane's {DEFAULT_VERIFY} setting"),
+                    "cli": format!("amux board doing {} --verify-cmd '<command>'", card.id),
                 })))
         }
     }
@@ -2528,6 +2529,16 @@ mod tests {
             Action::PassThenFreeze(_) => "freeze".into(),
             Action::Amend(..) => "amend".into(),
         }
+    }
+
+    /// GM-184: the refusal named the field but not the flag that supplies it.
+    #[tokio::test]
+    async fn the_contract_required_refusal_names_the_verify_cmd_flag() {
+        let Action::Respond(r) = decide(&card("todo", "code", Some("it works")), &json!({"status": "doing"}), false, None, &dflt(None)) else {
+            panic!("a code card with no command must be refused");
+        };
+        let v: Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert!(v.to_string().contains("amux board doing T-1 --verify-cmd"), "{v}");
     }
 
     #[test]
