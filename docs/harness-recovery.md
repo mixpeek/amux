@@ -166,3 +166,22 @@ CLI process, SQLite and SIGKILL. Its retry-clock boundary is explicitly seeded;
 the Rust integration tests cover fresh headroom and reserve decisions. The
 private fake-provider PATH also shadows macOS `security`: a private HOME alone
 does not isolate the operating system's keychain.
+
+A transcript-confirmed retryable foreground API failure is a parent turn boundary
+when its normal composer is empty and no foreground generation or selector is
+present. Surviving background shells/agents do not prevent the bounded retry.
+The existing paste transport retains those children and queues safely if another
+turn begins. Authentication errors, quotas, isolation, paused/disabled lanes,
+nonempty composers and unknown frames retain their respective gates.
+`api-error-background-recovery.mjs` tests the real periodic sweep and terminal,
+a real background PID, authentication/isolation controls and durable retry-key
+recovery after SIGKILL. Its failed transcript is a fixture
+seed; the normal two-minute retry clock elapses, and it makes no provider call.
+
+Maintenance yields the shared writer between tables and deletes at most 256 aged
+eligible rows per table per pass. The survivor/unit guard and pending capture/chat
+protection remain authoritative. A saturated batch logs that fact; remaining work
+is discovered from the database on later passes, including after a crash. Checkpoint
+contention defers immediately and restores the normal mutation busy timeout.
+Archived project-owner discovery and steering retention use covering indexes, and
+slow retention tables/project reconciliation phases announce their measured latency.

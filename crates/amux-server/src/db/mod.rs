@@ -962,7 +962,14 @@ static LAST_BEGIN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 fn apply_maintenance(conn: &Connection, operation: Maintenance) -> rusqlite::Result<WriteReply> {
     // Checkpoint reports contention in its result row, not as a SQL error.
-    let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    // Maintenance must yield immediately to readers, rather than occupy the
+    // only writer for its normal five-second lock timeout. Restore the policy
+    // even when SQLite returns an error; ordinary mutations still need it.
+    let timeout_ms: u64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0))?;
+    conn.busy_timeout(std::time::Duration::ZERO)?;
+    let checkpoint = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get::<_, i64>(0));
+    conn.busy_timeout(std::time::Duration::from_millis(timeout_ms))?;
+    let busy = checkpoint?;
     if busy != 0 {
         return Err(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
@@ -2036,6 +2043,22 @@ mod storage_maintenance_tests {
     }
 
     #[test]
+    fn maintenance_history_queries_use_covering_indexes_without_live_only_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("history-index.db")).unwrap();
+        let c = store.read().unwrap();
+        for (query, index) in [
+            ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM steering_history WHERE queued_at>=0", "idx_steering_history_queued_at"),
+            ("EXPLAIN QUERY PLAN SELECT acceptance_criteria FROM issues WHERE project_group='fixture'", "idx_issues_project_history"),
+            ("EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM issues WHERE project_group='fixture' AND source='original')", "idx_issues_project_history"),
+        ] {
+            let plan = c.prepare(query).unwrap().query_map([], |r| r.get::<_,String>(3)).unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("; ");
+            assert!(plan.contains(index) && plan.contains("COVERING INDEX"), "{plan}");
+        }
+    }
+
+    #[test]
     fn maintenance_checkpoint_contention_is_not_reported_as_completed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("busy.db");
@@ -2046,18 +2069,23 @@ mod storage_maintenance_tests {
             )
             .unwrap();
         writer
-            .busy_timeout(std::time::Duration::from_millis(1))
+            .busy_timeout(std::time::Duration::from_secs(5))
             .unwrap();
         let reader = Connection::open(&path).unwrap();
         reader
             .execute_batch("BEGIN; SELECT * FROM example;")
             .unwrap();
         writer.execute("INSERT INTO example VALUES(2)", []).unwrap();
+        let started = std::time::Instant::now();
         let error = match apply_maintenance(&writer, Maintenance::Checkpoint) {
             Err(error) => error,
             Ok(_) => panic!("active snapshot should defer checkpoint"),
         };
         assert!(error.to_string().contains("checkpoint deferred"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "maintenance must not wait behind an active snapshot");
+        assert_eq!(writer.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u64>(0)).unwrap(), 5000);
+        writer.execute("INSERT INTO example VALUES(3)", []).unwrap();
+        assert_eq!(writer.query_row("SELECT COUNT(*) FROM example", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
         assert!(writer.is_autocommit());
         reader.execute_batch("ROLLBACK").unwrap();
     }

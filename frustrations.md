@@ -5081,3 +5081,25 @@ CARD: AF-968
 SYMPTOM: run_reviews started run_prereviews before claiming pending completion reviews, under the same shared cap. A full advisory cohort could leave completed proof unclaimed until a later five-minute pass.
 COST: Completion could wait behind advisory work even when its passing check and evidence were ready; each extra model turn competed for the same slots and account capacity.
 FIX: Claim completion reviews first and offer remaining slots to advisory plans. Test the actual CLI invocation order with one shared slot and three advisory plans.
+
+## A failed GS12 foreground was held indefinitely behind surviving background work
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: gs12-planes ended its foreground on server_error at 04:34Z with an empty composer, one background shell and five agents. The two-minute API retry logged auto_resume_held/lane_busy at 04:36Z and the foreground was still stuck at 04:50Z. The unrelated background work prevented the parent from recovering from a definite transport failure.
+COST: At least sixteen minutes of avoidable foreground delay after an explicitly retryable stream abort.
+FIX: Treat a current transcript-confirmed retryable failure with a measured empty foreground as a boundary; retain the existing bounded retry and non-interrupting paste transport. Test the actual periodic sweep, authentication/isolation controls, a real surviving background PID and SIGKILL dedupe before retirement.
+
+## GS12 commands stalled behind database maintenance and retained-history scans
+AREA: performance
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: Four of twelve live health probes reported degraded/hung with writer queues of fifteen or sixteen. Retention held the writer for 15.6 seconds and checkpoints waited behind readers before honestly reporting deferred maintenance. Steering retention and archived project-owner discovery used full-table scans rather than covering timestamp/project indexes.
+COST: Worker updates and health probes waited behind maintenance; last successful writer probes were over twenty seconds old during a measured live window.
+FIX: Non-waiting checkpoint with restored ordinary lock policy, bounded retention batches yielding between tables, covering indexes preserving archived ownership, and named table/phase latency signals. Validate active-reader contention, preserved pending capture, restart recovery and live writer latency before retirement.

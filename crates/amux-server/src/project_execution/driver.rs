@@ -1445,14 +1445,29 @@ pub(crate) async fn drive_project(state: &AppState, name: &str) -> anyhow::Resul
         .write_async({
             let name = name.to_string();
             move |c| {
+                let mut started = std::time::Instant::now();
+                let mut mark = |phase: &str| {
+                    let elapsed_ms = started.elapsed().as_millis() as u64;
+                    if elapsed_ms >= 100 {
+                        tracing::warn!(verdict="project.reconciliation_slow", project=%name,
+                            phase, elapsed_ms, measured=true, n_considered=1,
+                            "project reconciliation occupied the shared writer");
+                    }
+                    started = std::time::Instant::now();
+                };
                 let mut result=crate::api::board_lifecycle::reconcile_project_intake_order(c,&name)?;
+                mark("intake_order");
                 let bindings=super::acceptance::reconcile_contract_ownership(c,&name).map_err(store::sql_error)?;
+                mark("contract_ownership");
                 result.applied|=bindings.applied;result.events.extend(bindings.events);
                 let reviews=super::acceptance::reconcile_review_preparation(c,&name).map_err(store::sql_error)?;
+                mark("review_preparation");
                 result.applied|=reviews.applied;result.events.extend(reviews.events);
                 let statuses=planner::reconcile_issue_statuses(c,&name).map_err(store::sql_error)?;
+                mark("issue_statuses");
                 result.applied|=statuses.applied;result.events.extend(statuses.events);
                 let preparation=super::preparation::reconcile(c,&name).map_err(store::sql_error)?;
+                mark("authorization_preparation");
                 result.applied|=preparation.applied;result.events.extend(preparation.events);Ok(result)
             }
         })

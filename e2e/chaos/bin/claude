@@ -54,13 +54,17 @@ def draw():
     out.write("\x1b[2J\x1b[H")
     for line in said[-10:]:
         out.write("> " + line + "\r\n")
+    extra_frame = os.environ.get("FAKE_CLAUDE_EXTRA_FRAME", "")
+    if extra_frame:
+        out.write(extra_frame.replace("\n", "\r\n") + "\r\n")
     out.write(RULE + " fake-claude " + RULE + "\r\n")
     out.write("❯ " + "".join(buf) + "\r\n")
     out.write(RULE + RULE + "\r\n")
     if time.time() < busy_until:
         out.write("⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\r\n")
     else:
-        out.write("⏵⏵ bypass permissions on (shift+tab to cycle)\r\n")
+        footer = os.environ.get("FAKE_CLAUDE_BACKGROUND_FOOTER", "")
+        out.write("⏵⏵ bypass permissions on (shift+tab to cycle)" + footer + "\r\n")
     out.flush()
 
 def submit():

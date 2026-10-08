@@ -1059,6 +1059,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("land_queue", "started_at", false),
     ("card_contracts", "frozen_at", false), // measured: 1791242852.2 on 2026-10-06
     ("card_contracts", "review_at", false),
+    ("card_contracts", "review_retry_at", false), // unix_now + retry seconds
+    ("card_contracts", "review_capacity_refunded_at", false), // original review_at
+    ("card_prereviews", "retry_at", false), // unix_now + retry seconds
     ("prod_change_notices", "raised_at", false), // prod_change.rs: now + NOTICE_LEAD_S, epoch seconds
     ("_amux_media_jobs", "created_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows
     ("_amux_media_jobs", "updated_at", false), // UNVERIFIED: no rows yet; seconds is the convention every sibling follows

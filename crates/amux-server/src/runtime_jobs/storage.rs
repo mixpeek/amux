@@ -579,7 +579,8 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
 
     match conn.execute(
         &format!(
-            "DELETE FROM {} WHERE {} < ?1 AND {}",
+            "DELETE FROM {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} < ?1 AND {} LIMIT 256)",
+            spec.table,
             spec.table,
             spec.ts_col,
             retention_eligible(spec)
@@ -594,6 +595,8 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
                 tracing::info!(
                     table = spec.table,
                     deleted = rows,
+                    batch_limit = 256,
+                    batch_saturated = rows == 256,
                     kept,
                     retain_days = days,
                     knob = spec.env,
@@ -1342,38 +1345,31 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
         ..Default::default()
     };
 
-    // DB retention runs on the writer thread — one transaction, and
-    // `applied: false` so retention never bumps `_amux_rev`. A delete of aged
-    // rows is not a state change any client needs to delta-sync (the
-    // request-log sweep established this; without it, every sweep would look
-    // like a fleet-wide mutation and trigger a sync storm).
-    // Results travel back on an Arc the closure captures: `write` must return a
-    // `WriteOutcome`, so there is no other channel for them, and a module-level
-    // static would let two ticks (or a test) overwrite each other's results.
-    let sink: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
-    let sink2 = sink.clone();
-    let res = state
-        .store
-        .write_async(move |conn| {
-            let mut out = Vec::new();
-            for spec in SPECS {
-                out.push((
-                    spec.table.to_string(),
-                    format!("{:?}", sweep_one(conn, spec, now)),
-                ));
+    // Yield the sole writer between tables. Each sweep remains atomic and
+    // revision-free, but worker commands can interleave with maintenance.
+    for spec in SPECS {
+        let sink: std::sync::Arc<std::sync::Mutex<Option<SweepResult>>> = Default::default();
+        let sink2 = sink.clone();
+        let result = state.store.write_async(move |conn| {
+            let started = std::time::Instant::now();
+            let result = sweep_one(conn, spec, now);
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            if elapsed_ms >= 100 {
+                tracing::warn!(verdict="storage_retention_slow", table=spec.table,
+                    elapsed_ms, measured=true, n_considered=1, result=?result,
+                    "retention occupied the shared writer");
             }
-            if let Ok(mut s) = sink2.lock() {
-                *s = out;
-            }
-            Ok(crate::db::WriteOutcome {
-                applied: false,
-                events: vec![],
-            })
-        })
-        .await;
-    match res {
-        Err(e) => rep.tables.push(("<write>".into(), format!("Error({e})"))),
-        Ok(_) => rep.tables = sink.lock().map(|s| s.clone()).unwrap_or_default(),
+            if let Ok(mut output) = sink2.lock() { *output = Some(result); }
+            Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
+        }).await;
+        let outcome = match result {
+            Err(error) => format!("Error({error})"),
+            Ok(_) => sink.lock().ok().and_then(|v| v.clone())
+                .map(|v| format!("{v:?}"))
+                .unwrap_or_else(|| "Error(retention receipt unavailable)".into()),
+        };
+        rep.tables.push((spec.table.to_string(), outcome));
+        tokio::task::yield_now().await;
     }
 
     let logs = home.join("logs");
@@ -1983,6 +1979,41 @@ mod tests {
             assert_eq!(conn.query_row("SELECT COUNT(*) FROM cmd_history WHERE id=2",[],|r| r.get::<_,i64>(0))?,0);
             Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
         }).unwrap();
+    }
+
+    #[test]
+    fn retention_batches_preserve_protected_rows_and_resume_remaining_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("batch.db");
+        let now = unix_now();
+        let spec = SweepSpec { table:"cmd_history", ts_col:"ts", unit:TsUnit::Millis,
+            env:"AMUX_TEST_CAPTURE_RETAIN_DAYS_UNUSED", default_days:90.0 };
+        {
+            let store = crate::db::Store::open(&path).unwrap();
+            store.write(move |c| {
+                for id in 1..=600 {
+                    c.execute("INSERT INTO cmd_history(id,text,type,session,ts,capture_pending) VALUES(?1,'aged','user','fixture',1,0)",[id])?;
+                }
+                c.execute("INSERT INTO cmd_history(id,text,type,session,ts,capture_pending) VALUES(601,'pending','user','fixture',1,1),(602,'recent','user','fixture',?1,0)",[(now*1000.0) as i64])?;
+                Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+            }).unwrap();
+            store.write(move |c| {
+                assert_eq!(sweep_one(c, &spec, now), SweepResult::Deleted {rows:256, kept:346});
+                Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+            }).unwrap();
+        }
+        // Reopening the same store is sufficient: unfinished batches have no
+        // volatile cursor and protected pending capture remains ineligible.
+        let store = crate::db::Store::open(&path).unwrap();
+        let rev = store.current_rev().unwrap();
+        store.write(move |c| {
+            assert_eq!(sweep_one(c,&spec,now), SweepResult::Deleted {rows:256,kept:90});
+            assert_eq!(sweep_one(c,&spec,now), SweepResult::Deleted {rows:88,kept:2});
+            assert_eq!(sweep_one(c,&spec,now), SweepResult::Deleted {rows:0,kept:2});
+            assert_eq!(c.query_row("SELECT capture_pending FROM cmd_history WHERE id=601",[],|r|r.get::<_,i64>(0))?,1);
+            Ok(crate::db::WriteOutcome {applied:false,events:vec![]})
+        }).unwrap();
+        assert_eq!(store.current_rev().unwrap(),rev);
     }
 
     #[test]

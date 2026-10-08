@@ -2399,6 +2399,19 @@ pub(crate) fn auto_resume_pane_idle(pane: &str, agents_live: bool) -> bool {
         && composer_state(pane).typed().is_none()
 }
 
+/// A transcript-confirmed transport failure ended the foreground turn. Live
+/// background shells/agents may finish independently; they must not prevent
+/// the parent from receiving its bounded retry. Require a normal empty composer
+/// and recheck generation/selectors, never infer this boundary from silence.
+fn failed_foreground_at_boundary(pane: &str, api_error: Option<&str>) -> bool {
+    api_error.is_some_and(api_error_is_retryable)
+        && !pane_bar_says_generating(pane)
+        && !is_rate_limit_menu(pane)
+        && !is_resume_mode_prompt(pane)
+        && idle_hook_frame(pane) != IdleHookFrame::Selector
+        && matches!(composer_state(pane), ComposerState::Empty | ComposerState::Placeholder(_))
+}
+
 /// Seconds a lane must sit idle on a retryable API error before amux retries.
 pub(crate) const AUTO_RESUME_API_IDLE_S: i64 = 120;
 /// Grace after a provider reset before amux speaks: Claude's own
@@ -20405,6 +20418,20 @@ pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64)
             warn_background_override_once(name, raw, status == "idle");
         }
     }
+    // A failed foreground turn is an actual boundary even while its children
+    // survive. Use the existing non-interrupting paste transport: another turn
+    // starting after this read queues the input at the provider, without Escape.
+    let meta = load_meta(name);
+    if provider_of(&parse_env(name)) == "claude" && meta_i64(&meta, "api_error_since") > 0 {
+        let records = session_jsonl_path(name).map(|p| iter_jsonl_tail(&p, 256 * 1024)).unwrap_or_default();
+        if signals.panes.get(name).is_some_and(|pane| failed_foreground_at_boundary(pane, transcript_api_error(&records).as_deref())) {
+            if first_in_window("api_error_boundary", name, 600.0) {
+                tracing::info!(session = name, measured = true, n_considered = 1,
+                    verdict = "steer_api_error_boundary", "foreground transport failed; delivering by paste while background work survives");
+            }
+            return SteerDelivery::OverdueMidTurn;
+        }
+    }
     let held = steer_decide_with_background(
         Some(&status),
         None,
@@ -23093,7 +23120,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let last_key = meta_str(&meta, "auto_resume_for");
             let inputs = AutoResumeInputs {
                 enabled: auto_resume_enabled(name) && !lane_is_paused(name),
-                idle: !send_in_flight && auto_resume_pane_idle(&pane, agents_live),
+                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref())),
                 now: now_i64(),
                 limit: observation.as_ref(),
                 limited_since: meta_i64(&meta, "rate_limited_since"),
@@ -40355,6 +40382,23 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(!auto_resume_pane_idle(menu, false), "the menu is answered with a key, never text");
         let typed = API_ERROR_IDLE_PANE.replace("\u{276f}\u{a0}", "\u{276f} half a message");
         assert!(!auto_resume_pane_idle(&typed, false), "text in the composer holds it");
+    }
+
+    #[test]
+    fn a_failed_foreground_can_retry_while_background_work_survives() {
+        let pane = API_ERROR_IDLE_PANE.replace("bypass permissions on (shift+tab to cycle)", "bypass permissions on · 1 shell · ← 5 agents · ↓ to manage");
+        assert!(!auto_resume_pane_idle(&pane, true), "ordinary pickup still waits for background work");
+        assert!(failed_foreground_at_boundary(&pane, Some("server_error")), "the parent's failed turn can resume independently");
+        let i = AutoResumeInputs { idle: failed_foreground_at_boundary(&pane,Some("server_error")),api_error_since:1_789_999_800,..resume_inputs(None,Some("server_error")) };
+        assert!(matches!(auto_resume_decision(&i),AutoResume::Send{reason:"api_error",..}));
+        for error in [None,Some("authentication_failed"),Some("rate_limit")] {
+            assert!(!failed_foreground_at_boundary(&pane,error));
+        }
+        assert!(!failed_foreground_at_boundary(WORKING_PANE,Some("server_error")));
+        assert!(!failed_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some("server_error")));
+        assert!(!failed_foreground_at_boundary("What do you want to do?\n❯ 1. Stop and wait for limit to reset\n  2. Switch to usage credits",Some("server_error")));
+        assert!(!failed_foreground_at_boundary("Permission required\n❯ 1. Allow\n  2. Deny",Some("server_error")));
+        assert!(!failed_foreground_at_boundary("API Error: Connection lost mid-response",Some("server_error")),"no visible composer is unmeasured");
     }
 
     #[test]

@@ -18,6 +18,8 @@ AMUX_RESTART_BIN="$BINARY" scripts/test-contended.sh -p amux-server --test resta
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/orchestration-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/orchestration.log"
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/orchestration-pool-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/pool.log"
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/review-capacity-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/review-capacity.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/api-error-background-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/api-error.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/maintenance-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/maintenance.log"
 python3 scripts/test-orch-pace-scope.py 2>&1 | tee "$ARTIFACT_DIR/scope.log"
 bash scripts/test-orch-pace-proof.sh 2>&1 | tee "$ARTIFACT_DIR/pace.log"
 python3 - "$BINARY" "$ARTIFACT_DIR/binary.sha256" <<'PY'
