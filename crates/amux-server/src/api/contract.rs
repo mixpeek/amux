@@ -1902,6 +1902,13 @@ pub fn parse_prereview(out: &str) -> Option<(bool, Vec<String>)> {
     })
 }
 
+fn measured_prereview(out: &str, code: &str, model: &str) -> Result<(bool, Vec<String>), String> {
+    if code.trim() == "0" {
+        if let Some(verdict) = parse_prereview(out) { return Ok(verdict); }
+    }
+    Err(format!("pre-run reviewer ({model}, exit {}) gave no trustworthy verdict: {}", code.trim(), tail(out, 300)))
+}
+
 /// The plan a pre-run review judges: the card's acceptance (its title when it
 /// has none) and its frozen verify command when one exists. The description
 /// is not part of it: the pre-review's own note lands there.
@@ -1978,7 +1985,7 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
         retain_review_evidence(&home, &card, &format!("pre-{hash}"), &dir)?;
         let _ = git(&tree, &["worktree", "remove", "--force", &dir.to_string_lossy()]).await;
         let (text, code) = output?;
-        parse_prereview(&text).ok_or_else(|| format!("pre-run reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(), tail(&text, 300)))
+        measured_prereview(&text, &code, &model)
     };
     let result: Result<(bool, Vec<String>), String> = run.await;
     if !matches!(review_job(&dir), ReviewJob::Running(..)) && dir.exists() {
@@ -2270,6 +2277,15 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prereview_requires_successful_process_even_with_a_valid_verdict() {
+        let valid = r#"{"verdict":"ready","findings":[]}"#;
+        assert!(measured_prereview(valid,"0","fixture").unwrap().0);
+        assert!(measured_prereview(valid,"1","fixture").is_err());
+        assert!(measured_prereview(valid,"","fixture").is_err());
+        assert!(measured_prereview("partial response","0","fixture").is_err());
+    }
 
     #[test]
     fn review_capacity_requires_fresh_relevant_windows_and_preserves_reserve() {
