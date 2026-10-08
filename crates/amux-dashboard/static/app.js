@@ -13996,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1270';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1271';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16498,11 +16498,12 @@ function _linkifyPaths(safeHtml) {
 // THIN PASS-THROUGH (Ethan, 2026-10-08). When the server serves the peek from
 // tmux's own scrollback (history_source "tmux-scrollback": a Claude pane on the
 // normal screen), the terminal already drew everything, so the peek only turns
-// colour codes into HTML and makes links clickable: no prompt labels, no tool
+// colour codes into HTML, makes links clickable and draws full-width rules as a
+// line (a 216-column rule would otherwise wrap into broken rows); there are no prompt labels, no tool
 // collapsing, no rule rewriting, no composer split, no overlap trim.
 let _peekThin = false;
 function _peekHtml(raw) {
-  if (_peekThin) return _linkifyPaths(ansiToHtml(raw));
+  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
 
@@ -16626,7 +16627,7 @@ function _draftEchoesSteering(input) {
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
 function _peekLiveHtml(raw) {
-  if (_peekThin) return _linkifyPaths(ansiToHtml(raw));
+  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
@@ -17237,7 +17238,9 @@ let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
 function _peekEarlierHTML() {
-  if (_peekEarlier.hidden) return '';
+  // Thin mode: tmux's scrollback is already the whole history; the bar would
+  // page in the transcript re-render this mode exists to drop.
+  if (_peekEarlier.hidden || _peekThin) return '';
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
