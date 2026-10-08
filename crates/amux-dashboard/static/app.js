@@ -13996,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1270';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1271';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14298,6 +14298,7 @@ function _paintCachedPeek(cached) {
   // won the race often enough to replace a chat with its terminal snapshot.
   if (peekSession && _workerRenderer(peekSession) !== 'terminal') return false;
   _peekHistoryRaw = cached.history || '';
+  _peekModePainted = null;
   _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
   _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
@@ -15035,7 +15036,7 @@ function openPeek(name, opts) {
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
-  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false;   // and its transcript history
+  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
   // CRITICAL: also drop the previous session's rendered live frame — the region
   // painter renders _lastLiveHTML directly, so a stale value briefly showed the
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
@@ -16502,6 +16503,10 @@ function _linkifyPaths(safeHtml) {
 // line (a 216-column rule would otherwise wrap into broken rows); there are no prompt labels, no tool
 // collapsing, no rule rewriting, no composer split, no overlap trim.
 let _peekThin = false;
+// The mode the current paint was made in (null = unknown, e.g. painted from
+// the IndexedDB cache by older code). A mode change repaints even when the raw
+// text is unchanged; otherwise a cached transcript-mode paint survives.
+let _peekModePainted = null;
 function _peekHtml(raw) {
   if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
@@ -17533,6 +17538,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
     if (typeof rawOutput !== 'string' || (histRaw !== null && typeof histRaw !== 'string')) throw new Error('Malformed terminal frame');
     if (histRaw !== null) _peekThin = data.history_source === 'tmux-scrollback';
+    const modeChanged = _peekModePainted !== _peekThin;
     const overlapBase = histRaw !== null ? histRaw : _peekHistoryRaw;
     // A delayed history response may add history, but must not rewind a
     // newer live frame. Trim against the history actually displayed here;
@@ -17554,7 +17560,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // poll tick. This also applies with an active search: the highlights are already in
     // the DOM, so re-running applyPeekSearch would needlessly scroll the view back to
     // the current match every tick (the "force-scroll back to result" bug on idle sessions).
-    if (output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
+    if (!modeChanged && output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       acceptFrame();
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
@@ -17563,7 +17569,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // failed conversion must remain retryable just like a failed body read.
     const newHTML = _peekLiveHtml(output);
     let histChanged = false;
-    if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
+    if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
       _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
       _peekHistoryRaw = histRaw;
@@ -17588,6 +17594,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // so scrollback exists in peek the way it does in a real terminal.
     _lastLiveHTML = newHTML;
     lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+    _peekModePainted = _peekThin;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // Chat tab owns #peek-body: keep the terminal data fresh, touch no DOM
     // and no scroll position (the chat was being replaced by terminal output).
