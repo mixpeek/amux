@@ -23177,46 +23177,76 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                     }
                 }
                 AutoResume::Send { reason, key } => {
-                    // Stamp the key FIRST: whatever the send does, this
-                    // occurrence is never resumed twice.
-                    update_meta(name, &[("auto_resume_for", json!(key))]);
+                    // Persist the continuation before its causal metadata. A
+                    // crash before enqueue must rediscover the stop; a crash
+                    // after enqueue adopts the same queue/history identity.
+                    let guard = format!("auto-resume:{key}");
+                    let identity = format!("auto-resume:{name}:{key}");
+                    tracing::info!(session = name, reason, key, measured = true, n_considered = 1,
+                        verdict = "auto_resume_staging", "staging a durable continuation before its resume stamp");
+                    let already_persisted = state.store.read_async({
+                        let identity = identity.clone();
+                        move |conn| Ok(conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM steering_queue WHERE id=?1 UNION ALL SELECT 1 FROM steering_history WHERE id=?1)",
+                            [identity], |row| row.get::<_, bool>(0))?)
+                    }).await.unwrap_or(false);
+                    // Stable transport identities must not exempt a new resume
+                    // from the ordinary per-card gate. Adopting a persisted one
+                    // is not another nudge, and must not charge it twice.
+                    if !already_persisted && super::runner::applies(&guard, None) {
+                        let gate = if reason == "account_changed" {
+                            super::runner::gate_after_account_change(&state.store, name, &guard, "continue").await
+                        } else {
+                            super::runner::gate(&state.store, name, &guard, "continue").await
+                        };
+                        if let Err(why) = gate {
+                            tracing::warn!(session = name, reason, key, why, verdict = "auto_resume_refused",
+                                "continuation not queued; the stop remains discoverable");
+                            continue;
+                        }
+                    }
+                    let queued = match steer_enqueue_idempotent_report(state, name, "continue", &guard, "", &identity).await {
+                        Ok(queued) => queued,
+                        Err(why) => {
+                            tracing::warn!(session = name, reason, key, why, verdict = "auto_resume_refused",
+                                "continuation not queued; no resume key was stamped");
+                            continue;
+                        }
+                    };
+                    let mut updates = vec![("auto_resume_for", json!(key))];
                     if reason == "api_error" {
-                        let (start, count) = if inputs.now - inputs.api_window_start
-                            < AUTO_RESUME_API_WINDOW_S
-                        {
+                        let (start, count) = if inputs.now - inputs.api_window_start < AUTO_RESUME_API_WINDOW_S {
                             (inputs.api_window_start, inputs.api_count + 1)
                         } else {
                             (inputs.now, 1)
                         };
-                        update_meta(name, &[
+                        updates.extend([
                             ("auto_resume_api_window_start", json!(start)),
                             ("auto_resume_api_count", json!(count)),
                         ]);
                     } else if reason == "account_changed" {
-                        // An account switch must release the former account's
-                        // future limit. A usage_reset instead retains its passed
-                        // clock through delivery: clearing it here makes the
-                        // same native footer parse as a new future reset, parking
-                        // the continuation behind its own expired limit.
-                        // The observer clears that stamp when the footer leaves.
-                        update_meta(name, &[
+                        // Release the former account's future clock in the
+                        // same atomic metadata update as the accepted identity.
+                        // Usage resets retain their passed clock for transport.
+                        updates.extend([
                             ("rate_limited_since", json!(0)),
                             ("rate_limited_until", json!(0)),
                             ("rate_limited_by", json!("")),
                             ("rate_limited_weekly", json!(false)),
                         ]);
                     }
-                    let d = deliver_automated(state, name, "continue", &format!("auto-resume:{key}")).await;
-                    let verdict = if d.refused { "auto_resume_refused" } else { "auto_resume_sent" };
-                    tracing::warn!(target: "amux::usage_reset", session = %name, reason, key = %key,
-                        submission = d.submission, detail = %d.message, verdict,
-                        "sent \"continue\" to a lane stopped by a usage limit, an account switch or an API error");
+                    update_meta(name, &updates);
+                    let verdict = "auto_resume_queued";
+                    tracing::warn!(target: "amux::usage_reset", session = name, reason, key, queue_id = %queued.id,
+                        disposition = ?queued.disposition, verdict,
+                        "continuation accepted by the durable consumer; terminal submission has its own receipt");
                     emit_event(
                         state,
                         name,
                         "session.auto_resumed",
                         Some(json!({"reason": reason, "key": key, "verdict": verdict,
-                            "submission": d.submission, "detail": d.message})),
+                            "submission": "deferred", "queue_id": queued.id,
+                            "disposition": format!("{:?}", queued.disposition)})),
                         Some(format!("auto-resume:{name}:{key}")),
                         "rate-limit",
                     )

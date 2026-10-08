@@ -215,3 +215,20 @@ so it inherits the launch preference like the native-capable real provider. The
 host's other Python launcher can force an Intel interpreter; that is a legitimate
 fallback rather than evidence that the preference wrapper failed. No actual
 Claude/model call is made by this fixture.
+
+Automatic resume stages the existing steering queue under one stable worker/stop
+identity before atomically recording its resume key and retry counter. A refusal
+leaves no key; a crash before handoff rediscovers the stop, and a crash after
+handoff adopts queue/history instead of repeating input. New nudges retain card
+budgets; adoption is not another nudge. A positively observed account replacement
+releases only the former account's capacity hold while retaining ordinary card
+budgets and terminal gates. Staging and durable acceptance have separate named
+signals from actual terminal submission.
+
+`auto-resume-handoff-recovery.mjs` locks only its private SQLite writer, enables
+a seeded expired retry, and SIGKILLs the controller at decision/handoff before
+any provider input. It requires one continuation after restart with a surviving
+real child. Another SIGKILL explicitly seeds loss of the producer's metadata
+acknowledgement; queue/history adoption must prevent duplicate input. The fixture
+clock and acknowledgement loss are declared; real process crashes and terminal
+receipts supply the consumer proof.

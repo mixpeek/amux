@@ -5180,3 +5180,14 @@ CARD: AF-968
 SYMPTOM: At 07:17Z all twenty live GS12/orchestrator pane shells were translated under an Intel tmux server; sampled children of the native Claude executable were translated too. TmuxBackend::spawn wrapped commands with a native architecture preference, but API start_session and Bash cmd_start constructed provider commands independently and bypassed that helper.
 COST: The existing host census measured a persistent translated tree. Thin-arm64 provider executables do not reset inherited child architecture preference; tool subprocesses retain avoidable Rosetta overhead.
 FIX: Apply the existing native preference at actual provider launch/recovery, preserve explicit opt-out, fallback, cwd, scoped environment and isolation scrubbing, and log native_provider_launch. Use translated private tmux/server and CLI starts with an actual child-architecture probe; do not interrupt live workers to make the census look better.
+
+## Resume deduplication could permanently suppress a continuation lost before handoff
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The sweep wrote auto_resume_for before attempting delivery. A controller crash between the file stamp and steering persistence made the same stopped turn look already resumed without any durable continuation.
+COST: Preserving the metadata alone suppresses unfinished recovery forever; post-delivery crash tests did not cover this earlier boundary.
+FIX: Stable session/occurrence identity in the existing steering queue/history, durable handoff before one atomic causal metadata update, no key on refusal, existing per-card gates for new nudges, and named staging/queued signals. Kill a real controller with the private database writer locked at this handoff, then require one continuation after restart and no duplicate on another crash.
