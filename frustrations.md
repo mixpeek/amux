@@ -5444,3 +5444,14 @@ CARD: MO-4469
 SYMPTOM: Three status sentences from gs12-extra-1 were filed as needsyou owner asks: GE1-46, GE1-48 and GE1-50 ("the flip waits on 4.8, 5.1 and 18.7, and dropping the copies needs your go"). When the owner wrote "approve all 19 left with me" at about 20:15Z, GE1-50, a copy of MO-3731's production drop whose prerequisites are still in backlog, carried an approval line. The lane ran nothing and folded it into MO-3731.
 COST: an owner approval attached to a production data deletion that no one had asked for yet; the orchestrator and the lane spent a turn each unwinding it, and the owner's batch approval now has to be re-read card by card.
 FIX: file an owner ask only from a sentence with a question and an unblock; never from a status line that names another card as the ask's owner; and show the source sentence on the card so a batch approval can be checked against it.
+
+## Contract verification refuses on its own stale locked worktree under ~/.amux/tmp/contract
+AREA: board contract verification
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-spend
+CARD: GS-247
+SYMPTOM: Requesting done on GS-167 at 20:2xZ returned "server verification failed at 69c5016703bf...: could not check out ...: fatal: '/Users/ethan/.amux/tmp/contract/GS-167-69c5016703bf' is a missing but locked worktree; use 'add -f -f' to override, or 'unlock' and 'prune' or 'remove' to clear". The path is the verifier's own scratch checkout; the lane never created it. A few minutes later `git worktree list` no longer showed it, the directory was absent, and an identical done request started verification.
+COST: one false "GS-167 is not done" notice, a diagnosis round and a resubmission. The notice reads as the lane's failure, and a lane that took it at face value could have reopened finished work or moved the card to cannot_satisfy.
+FIX: before `git worktree add` for a contract checkout, run `git worktree prune` (or `remove -f -f` its own path) when the path is registered but missing, and report a checkout failure as a verifier infrastructure error, retried once, rather than as the card failing verification.
