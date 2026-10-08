@@ -4840,7 +4840,22 @@ fn tool_result_text(content: &Value) -> String {
 /// be read aloud). Reuses the same `session_jsonl_path` + `iter_jsonl_tail` the
 /// transcript renderer uses, so it cannot disagree with it about where the
 /// transcript is or how it is parsed (D1: a real interface, not a scrape).
+fn last_codex_assistant_text(events: Vec<crate::opencode::events::TranscriptEvent>, max_chars: usize) -> String {
+    events.into_iter().rev().find_map(|event| match event {
+        crate::opencode::events::TranscriptEvent::Assistant { text } => Some(text),
+        _ => None,
+    }).unwrap_or_default().chars().take(max_chars).collect()
+}
+
 pub(crate) fn last_assistant_message(name: &str, max_chars: usize) -> String {
+    if matches!(provider_of(&parse_env(name)).as_str(), "codex" | "ollama") {
+        let text = last_codex_assistant_text(codex_transcript_events(name, 400).unwrap_or_default(), max_chars);
+        if text.is_empty() {
+            tracing::debug!(session = name, measured = true, n_considered = 1,
+                verdict = "codex_last_message_empty", "no assistant text in the resolved Codex rollout");
+        }
+        return text;
+    }
     let Some(path) = session_jsonl_path(name) else {
         return String::new();
     };
@@ -33288,6 +33303,20 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_latest_message_reads_real_rollout_text_and_skips_later_tools() {
+        let records = vec![
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Unable after CUA. é"}],"phase":"final_answer"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"t"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"duplicate mirror"}}),
+        ];
+        let events = crate::opencode::events::codex_rollout_transcript(&records);
+        assert_eq!(super::last_codex_assistant_text(events.clone(), 100), "Unable after CUA. é");
+        assert_eq!(super::last_codex_assistant_text(events, 6), "Unable");
+        assert!(super::last_codex_assistant_text(vec![], 100).is_empty());
+    }
+
     #[test]
     fn native_claude_interrupt_requires_latest_explicit_provider_boundary() {
         let interrupted = serde_json::json!({"type":"user","timestamp":"2026-09-24T01:54:18.202Z",

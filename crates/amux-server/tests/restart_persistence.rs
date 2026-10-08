@@ -123,7 +123,7 @@ impl Rig {
             // Bootstrap would try to give a created worker a real terminal.
             // Nothing here starts a worker; push it out of the way anyway.
             .env("AMUX_RS_BOOTSTRAP_SECS", "3600")
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", "warn,amux_server::api::contract=info")
             .stdout(out)
             .stderr(err)
             .spawn()
@@ -809,7 +809,14 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     assert_eq!(rig.count("SELECT COUNT(*) FROM steering_history WHERE id='rr-claimed' AND outcome LIKE 'interrupted%'"), 1, "uncertain delivery remains explicit");
     assert_eq!(rig.count("SELECT COUNT(*) FROM card_contracts WHERE card='RR-RECOVERY' AND review_state='failed'"), 1);
     assert_eq!(rig.count("SELECT COUNT(*) FROM issues WHERE id='RR-RECOVERY' AND status='verified'"), 0);
-    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live), "review must be adopted, never duplicated");
+    let conn = rusqlite::Connection::open(&rig.db).unwrap();
+    let recovered = amux_server::api::contract::load(&conn, card).unwrap().unwrap();
+    let recovered_row = amux_server::db::board_store::get_issue(&conn, card).unwrap().unwrap();
+    let recovered_input = amux_server::api::contract::review_input_hash(&recovered, &recovered_row, 1);
+    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live),
+        "review must be adopted, never duplicated (live={live}, exit={exit}, seeded_input={input}, recovered_input={recovered_input}, cached_path={}); server log: {}",
+        review.display(), std::fs::read_to_string(&rig.log).unwrap_or_default());
+    drop(conn);
     assert_eq!(rig.count("SELECT review_rounds FROM card_contracts WHERE card='RR-RECOVERY'"), 1, "a completed failed/unmeasured attempt spends one bounded round");
     if exit != "0" {
         let conn = rusqlite::Connection::open(&rig.db).unwrap();
