@@ -549,6 +549,8 @@ async fn async_main() {
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
             let n = crate::api::session_verbs::resume_interrupted_starts(&state).await;
             tracing::info!(resumed = n, measured = true, "interrupted-start resume pass complete");
+            let r = crate::api::session_verbs::resume_interrupted_recycles(&state).await;
+            tracing::info!(resumed = r, measured = true, "interrupted-recycle resume pass complete");
         });
     }
     // Chat workers have no tmux to outlive this exec(): report turns it cut
