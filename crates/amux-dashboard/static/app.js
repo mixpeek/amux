@@ -13996,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1267';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1268';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -26534,7 +26534,9 @@ function _filesNewFile() {
 }
 
 // ═══════ SCRATCHPAD ═══════
-const _SP_ROOT = '~/.amux/scratchpad';
+// Ethan, 2026-10-08: the scratchpad's default home is the Vault, beside his
+// other notes. Created on first open.
+const _SP_ROOT = '~/Vault/Scratchpad';
 let _spPath = _SP_ROOT;
 let _spLastData = null;
 let _spLoadGen = 0;
