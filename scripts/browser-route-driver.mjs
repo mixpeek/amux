@@ -13,7 +13,7 @@ const key = s => createHash('sha256').update(s).digest('hex').slice(0, 24);
 const component = s => typeof s === 'string' && s.length > 0 && s !== '.' && s !== '..' && !/[\/\\\x00]/.test(s);
 class RouteError extends Error { constructor(message, status = 502) { super(message); this.status = status; } }
 const terminal = e => [400, 401, 403, 404, 409, 422].includes(e.status);
-export function api(base, path, method = 'GET', body, session = '', token = '') {
+export function api(base, path, method = 'GET', body, session = '', token = '', timeoutMs = 180000) {
   const u = new URL(path, base);
   if (!['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) throw new RouteError('browser route requires a loopback Amux endpoint', 400);
   return new Promise((resolveResult, reject) => {
@@ -30,7 +30,7 @@ export function api(base, path, method = 'GET', body, session = '', token = '') 
         else resolveResult(v);
       } catch(e) { reject(e); } });
     });
-    req.setTimeout(180000, () => req.destroy(new Error('browser request timed out')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('browser request timed out')));
     req.on('error', reject); if (data) req.write(data); req.end();
   });
 }
@@ -186,7 +186,7 @@ async function launch(ctx,b,attempts=[],from=0) {
       let state,result;
       if(backend==='amux') {result=await native(ctx,'start',{...b,profile});state={backend,profile:result.profile,url:b.url};}
       else if(backend==='cdp') {state=await directStart(ctx,b.url,attempts);result={ok:true,profile:state.profile,cdp_port:state.cdp_port,launch_url:b.url};}
-      else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
+      else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token,1980000);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
       attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;atomic(ctx.receipt,state);
       return {...result,ok:true,route:state,profile:state.profile};
     } catch(e) {

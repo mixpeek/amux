@@ -3721,6 +3721,9 @@
     max-height: var(--tc-max-h, 60vh); overflow-y: auto; overscroll-behavior: contain;
   }
   #peek-tab-customizer-menu { position: fixed; z-index: 300; }
+  .tab-cust-search-wrap {
+    padding: 6px 10px 4px; position: sticky; top: 0; background: var(--card); z-index: 1;
+  }
   .tab-customizer-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 14px;
     font-size: 0.82rem; cursor: pointer; color: var(--fg); user-select: none;

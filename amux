@@ -5558,7 +5558,7 @@ print(json.dumps({"verb":os.environ["VERB"],"session":os.environ["SESSION"],"bod
 PYROUTE
       ) || die "route body must be JSON"
       local result
-      result=$(_curl -sk -m 250 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
+      result=$(_curl -sk -m 2760 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
       RESULT="$result" python3 - <<'PYRESULT'
 import os, json, sys
 v=json.loads(os.environ["RESULT"])

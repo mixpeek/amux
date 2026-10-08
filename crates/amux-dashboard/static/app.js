@@ -8461,9 +8461,12 @@ function _capTabCustomizerHeight(menu) {
 function _renderTabCustomizerMenu() {
   const menu = document.getElementById('tab-customizer-menu');
   if (!menu) return;
-  // Render in tabOrder order
   const orderedTabs = tabOrder.map(id => ALL_TABS.find(t => t.id === id)).filter(Boolean);
-  let html = orderedTabs.map(t => {
+  let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
+    + '<input type="text" id="tab-cust-search" class="input" placeholder="Filter tabs…" '
+    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterTabCustomizer(this.value)">'
+    + '</div>';
+  html += orderedTabs.map(t => {
     const checked = !hiddenTabs.has(t.id);
     const req = t.required ? ' required' : '';
     const disabled = t.required ? ' disabled' : '';
@@ -8473,7 +8476,6 @@ function _renderTabCustomizerMenu() {
       ${t.label}
     </label>`;
   }).join('');
-  // Presets section
   html += '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">';
   html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
   html += '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>';
@@ -8482,6 +8484,7 @@ function _renderTabCustomizerMenu() {
   html += '<div id="preset-list" style="font-size:0.82rem;"></div>';
   html += '</div>';
   menu.innerHTML = html;
+  requestAnimationFrame(() => { const s = document.getElementById('tab-cust-search'); if (s) s.focus(); });
   // Load presets
   fetch('/api/layout-presets').then(r=>r.json()).then(presets => {
     const list = document.getElementById('preset-list');
@@ -8511,6 +8514,28 @@ function _renderTabCustomizerMenu() {
       }
     });
   }
+}
+
+function _filterTabCustomizer(q) {
+  const menu = document.getElementById('tab-customizer-menu');
+  if (!menu) return;
+  const lc = (q || '').trim().toLowerCase();
+  menu.querySelectorAll('.tab-customizer-item[data-tab-id]').forEach(el => {
+    const label = (el.textContent || '').toLowerCase();
+    el.style.display = !lc || label.includes(lc) ? '' : 'none';
+  });
+  const preset = menu.querySelector('.tab-preset-section');
+  if (preset) preset.style.display = lc ? 'none' : '';
+}
+
+function _filterPeekTabCustomizer(q) {
+  const menu = document.getElementById('peek-tab-customizer-menu');
+  if (!menu) return;
+  const lc = (q || '').trim().toLowerCase();
+  menu.querySelectorAll('.tab-customizer-item').forEach(el => {
+    const label = (el.textContent || '').toLowerCase();
+    el.style.display = !lc || label.includes(lc) ? '' : 'none';
+  });
 }
 
 // ── Peek (session) tab customizer (AMUX-2185) ──────────────────────────────
@@ -8810,7 +8835,11 @@ function _renderPeekTabCustomizer() {
   const menu = document.getElementById('peek-tab-customizer-menu');
   if (!menu) return;
   const ordered = peekTabOrder.map(id => PEEK_TABS.find(t => t.id === id)).filter(Boolean);
-  let html = '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
+  let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
+    + '<input type="text" id="peek-tab-cust-search" class="input" placeholder="Filter tabs\u2026" '
+    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterPeekTabCustomizer(this.value)">'
+    + '</div>';
+  html += '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
     + '<span style="padding:0 4px 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
   html += ordered.map(t => {
     const req = PEEK_REQUIRED_TABS.has(t.id);
@@ -8820,6 +8849,7 @@ function _renderPeekTabCustomizer() {
       + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
   menu.innerHTML = html;
+  requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
   if (window.Sortable) {
     if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
     _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
@@ -13966,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1264';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1266';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16688,7 +16718,7 @@ function _peekPromptNormalized(text) {
   // peer envelopes and board notes read Unclassified because the wrapper, not
   // the "[amux-origin:" marker, was what the text started with).
   return String(text || '').replace(glyph, '')
-    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content>\s*$/i, '')
+    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content\b[^>]*>\s*$/i, '')
     .replace(/^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*/i, '').replace(/\s+/g, ' ').trim();
 }
 // CLASSIFICATION MUST NOT WAIT ON THE MESSAGES TAB'S FULL PAGE.
@@ -16791,6 +16821,25 @@ function _classifyPromptKind(promptText) {
   // be told.
   return 'unknown';
 }
+// Claude Code records a long paste wrapped in <pasted_content id="...">
+// ... </pasted_content id="..."> (the closing tag carries the id too). The
+// wrapper is transport, not what the person typed, so the peek drops both tags
+// and lifts the first pasted line up beside the prompt glyph (Ethan,
+// 2026-10-08: "this saying pasted content doesnt seem right"). Works on the
+// escaped, possibly span-coloured terminal HTML of one prompt block.
+const _PEEK_PASTE_TAG = /&lt;\/?pasted_content\b(?:(?!&gt;).)*&gt;/g;
+function _peekUnwrapPaste(blockLines) {
+  if (!blockLines.some(line => line.includes('pasted_content'))) return blockLines;
+  const visible = line => line.replace(/<[^>]*>/g, '').replace(/&nbsp;| /g, ' ');
+  const out = blockLines.map(line => line.replace(_PEEK_PASTE_TAG, ''));
+  // A line that held only a tag is gone; the opening line keeps its glyph.
+  const kept = out.filter((line, n) => n === 0 || visible(line).trim() || !visible(blockLines[n]).includes('pasted_content'));
+  if (kept.length > 1 && /^[ \t]*[❯›>]?[ \t]*$/.test(visible(kept[0]))) {
+    const lifted = kept[1].replace(/^((?:<[^>]+>)*)(?:[ \t ]|&nbsp;)+/, '$1');
+    kept.splice(0, 2, kept[0].replace(/(?:[ \t ]|&nbsp;)*((?:<\/[^>]+>)*)$/, ' $1') + lifted);
+  }
+  return kept;
+}
 function highlightPrompts(html) {
   const gemini = _peekGeminiPrompts();
   const promptStart = gemini ? /^[ \t]{0,2}[❯›>](?:[ \t]+|$)/ : /^[ \t]{0,2}[❯›](?:[ \t]+|$)/;
@@ -16836,7 +16885,7 @@ function highlightPrompts(html) {
     // Close each block before opening its successor. Nested prompt wrappers
     // made scrollIntoView target a whole conversation instead of one message.
     out.push('<span class="peek-prompt peek-prompt-' + kind + '" data-msg-kind="' + kind
-      + '" data-msg-label="' + esc(label) + '">' + lines.slice(i, end).join('\n') + '</span>');
+      + '" data-msg-label="' + esc(label) + '">' + _peekUnwrapPaste(lines.slice(i, end)).join('\n') + '</span>');
     i = end;
   }
   return out.join('\n');
@@ -25498,7 +25547,8 @@ async function _fileSave() {
       if (_fileData._isNew) {
         _fileData._isNew = false;
         document.getElementById('file-title').textContent = _fileData.path.split('/').pop();
-        loadFiles(_filesPath); // refresh file list
+        loadFiles(_filesPath);
+        if (activeView === 'scratchpad') _scratchpadLoad();
       }
       btn.textContent = 'Saved!';
       setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
@@ -26481,6 +26531,161 @@ function _filesNewFile() {
   wrap.style.display = 'flex';
   document.getElementById('file-overlay').classList.add('active');
   setTimeout(() => ta.focus(), 100);
+}
+
+// ═══════ SCRATCHPAD ═══════
+const _SP_ROOT = '~/.amux/scratchpad';
+let _spPath = _SP_ROOT;
+let _spLastData = null;
+let _spLoadGen = 0;
+let _spSort = { col: 'modified', dir: -1 };
+
+function _spSortEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    const { col, dir } = _spSort;
+    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
+    return dir * ((a.modified || 0) - (b.modified || 0));
+  });
+}
+function _spSortBy(col) {
+  if (_spSort.col === col) _spSort.dir *= -1;
+  else { _spSort.col = col; _spSort.dir = col === 'name' ? 1 : -1; }
+  _spUpdateSortHeaders();
+  if (_spLastData) _spRender(_spLastData.path, _spLastData.data);
+}
+function _spUpdateSortHeaders() {
+  ['name','size','modified'].forEach(c => {
+    const el = document.getElementById('sp-sort-' + c);
+    if (el) el.textContent = _spSort.col === c ? (_spSort.dir > 0 ? '▲' : '▼') : '';
+  });
+}
+
+async function _scratchpadLoad() {
+  const gen = ++_spLoadGen;
+  const body = document.getElementById('scratchpad-body');
+  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  const bc = document.getElementById('sp-breadcrumb');
+  if (_spPath !== _SP_ROOT) {
+    const rel = _spPath.slice(_SP_ROOT.length + 1);
+    let html = '<span class="fe-crumb" onclick="_spNav(\'' + _SP_ROOT + '\')">Scratchpad</span>';
+    let cum = _SP_ROOT;
+    for (const part of rel.split('/').filter(Boolean)) {
+      cum += '/' + part;
+      html += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="_spNav(\'' + cum.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
+    }
+    bc.innerHTML = html;
+    bc.style.display = '';
+  } else {
+    bc.style.display = 'none';
+  }
+  try {
+    let r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    if (r.status === 400 && _spPath === _SP_ROOT) {
+      await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: _spPath }) });
+      r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    }
+    const data = await r.json();
+    if (gen !== _spLoadGen) return;
+    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    _spLastData = { path: _spPath, data };
+    _spRender(_spPath, data);
+  } catch(e) {
+    if (gen !== _spLoadGen) return;
+    body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load scratchpad.</div>';
+  }
+}
+
+function _spRender(path, data) {
+  const body = document.getElementById('scratchpad-body');
+  body.innerHTML = '';
+  const hdrs = document.getElementById('sp-col-headers');
+  if (hdrs) hdrs.style.display = 'grid';
+  _spUpdateSortHeaders();
+  const entries = _spSortEntries(data.entries || []);
+  if (path !== _SP_ROOT && data.parent) {
+    const back = document.createElement('div');
+    back.className = 'fe-back-row';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
+    back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
+    body.appendChild(back);
+  }
+  if (!entries.length) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
+    msg.textContent = 'No notes yet. Click "New Note" to get started.';
+    body.appendChild(msg);
+    return;
+  }
+  for (const entry of entries) {
+    const ep = (path.replace(/\/$/, '') + '/' + entry.name);
+    const row = document.createElement('div');
+    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+    row.dataset.path = ep;
+    const icon = _fileTypeIcon(entry.name, entry.type);
+    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
+    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+    const epEsc = ep.replace(/'/g, "\\'");
+    row.innerHTML =
+      '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
+      '<div class="fe-cell-size">' + sizeStr + '</div>' +
+      '<div class="fe-cell-date">' + dateStr + '</div>' +
+      '<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
+    if (entry.type === 'dir') {
+      row.onclick = () => _spNav(ep);
+    } else {
+      row.onclick = () => openFilePreview(ep);
+    }
+    body.appendChild(row);
+  }
+}
+
+function _spNav(path) {
+  _spPath = path;
+  _scratchpadLoad();
+}
+
+async function _scratchpadNewNote() {
+  const name = prompt('Note name:', 'untitled.md');
+  if (!name || !name.trim()) return;
+  let fname = name.trim();
+  if (!/\.\w+$/.test(fname)) fname += '.md';
+  const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
+  _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
+  _fileViewMode = 'edit';
+  document.getElementById('file-title').textContent = fname + ' (new)';
+  document.getElementById('file-body').className = 'file-overlay-body';
+  document.getElementById('file-body').style.display = 'none';
+  document.getElementById('file-view-tabs').style.display = '';
+  document.getElementById('file-tab-preview').classList.remove('active');
+  document.getElementById('file-tab-raw').classList.remove('active');
+  const editTab = document.getElementById('file-tab-edit');
+  if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
+  document.getElementById('file-save-btn').style.display = '';
+  document.getElementById('file-download-btn').style.display = 'none';
+  const ta = document.getElementById('file-edit-ta');
+  const wrap = document.getElementById('file-edit-wrap');
+  ta.value = '';
+  wrap.style.display = 'flex';
+  document.getElementById('file-overlay').classList.add('active');
+  setTimeout(() => ta.focus(), 100);
+}
+
+async function _scratchpadNewFolder() {
+  const name = prompt('Folder name:');
+  if (!name || !name.trim()) return;
+  const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
+  try {
+    await fetch(API + '/api/fs/mkdir', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: dirPath })
+    });
+    _scratchpadLoad();
+  } catch(e) {
+    showToast('Could not create folder');
+  }
 }
 
 // ═══════ MDAI: computed markdown DAG nodes (.mdai) ═══════
@@ -31245,7 +31450,7 @@ function switchView(view) {
   const _svViews = [
     ['projects', 'projects', ''], ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
-    ['files', 'files', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
+    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
@@ -31283,6 +31488,7 @@ function switchView(view) {
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
   if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
+  if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();

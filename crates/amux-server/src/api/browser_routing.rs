@@ -375,7 +375,16 @@ async fn request(
             return error(StatusCode::BAD_GATEWAY, e);
         }
     }
-    let result = tokio::time::timeout(Duration::from_secs(240), child.wait_with_output()).await;
+    // CUA may provision the exact desktop image (Docker's bounded 30-minute
+    // build). An outer 240s limit otherwise repeatedly cancels every cold build.
+    // Ordinary driver calls retain their own shorter transport/action limits.
+    let deadline_s = if c.allow_cua && r.verb != "stop" {
+        2700
+    } else {
+        240
+    };
+    let result =
+        tokio::time::timeout(Duration::from_secs(deadline_s), child.wait_with_output()).await;
     match result {
         Ok(Ok(out)) => match serde_json::from_slice::<Value>(&out.stdout) {
             Ok(v) => {
@@ -399,7 +408,7 @@ async fn request(
         Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
         Err(_) => error(
             StatusCode::GATEWAY_TIMEOUT,
-            "browser route exceeded 240 seconds",
+            format!("browser route exceeded {deadline_s} seconds"),
         ),
     }
 }

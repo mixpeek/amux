@@ -160,3 +160,10 @@ An independent HTTP oracle checks account, organization, trusted browser clicks,
 case, confirmation, exact reason and exact-once completion. Transcripts, route
 receipts, launch guidance and screenshots are retained. These are local task
 acceptance cases, not a WebArena/WASP benchmark or a universal model guarantee.
+
+A cold CUA image may need Docker's existing bounded 30-minute provisioning
+step. The route allows that setup to finish instead of cancelling it after
+three minutes and retrying from scratch. Browser actions and ordinary backend
+transports retain their shorter deadlines. The worker may wait for its CLI
+background task; a setup error still reports failure and never reports a goal
+as completed.
