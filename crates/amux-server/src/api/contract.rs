@@ -354,6 +354,24 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
     {
         return freeze_from(card, body, existing, defaults);
     }
+    // A contract field sent to a card BEFORE doing, without the status, used
+    // to fall through and be dropped as an unwritable key, with a hint that
+    // the lane was not a contract lane (gs12-extra-1, GE1-4, 2026-10-08):
+    // `board doing` then refused contract_required and the lane had no way
+    // to supply the command. The fields freeze when the card enters doing, so
+    // they ride on that same PATCH.
+    if card.status != "doing" && existing.is_none() && status.is_empty()
+        && ["verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some())
+    {
+        tracing::info!(card = %card.id, lane = %card.lane, from = %card.status, measured = true, n_considered = 1,
+            verdict = "contract_fields_before_doing_refused", "contract fields were sent to a card outside doing without the status");
+        return Action::Respond(refuse(StatusCode::CONFLICT, "contract_fields_need_doing",
+            format!("{} is {}; its verify command freezes as it enters doing, so send it with the status in the same request (contract rule 1)", card.id, card.status),
+            json!({
+                "patch": {"status": "doing", "verify_cmd": "..."},
+                "cli": format!("amux board doing {} --verify-cmd '<command>'", card.id),
+            })));
+    }
     match body.get("status").and_then(Value::as_str).unwrap_or("") {
         "cannot_satisfy" => cannot_satisfy(card, body),
         "doing" if card.status != "doing" => freeze_from(card, body, existing, defaults),
@@ -2498,6 +2516,20 @@ mod tests {
         let inline = json!({"status": "doing", "acceptance_criteria": ["it works"], "verify_cmd": "cargo test"});
         assert_eq!(code(&decide(&card("todo", "code", None), &inline, false, None, &dflt(None))), "freeze", "fields in the PATCH count");
         assert_eq!(code(&decide(&card("todo", "chore", None), &b, false, None, &dflt(None))), "pass", "only code cards");
+    }
+
+    #[test]
+    fn a_verify_cmd_sent_before_doing_is_refused_with_the_one_request_path() {
+        // GE1-4: dropped as unwritable, then `board doing` refused contract_required.
+        let only_cmd = json!({"verify_cmd": "true"});
+        match decide(&card("todo", "code", Some("it works")), &only_cmd, false, None, &dflt(None)) {
+            Action::Respond(r) => assert_eq!(r.status().as_u16(), 409),
+            _ => panic!("a contract field before doing must say how to send it"),
+        }
+        let with_status = json!({"status": "doing", "verify_cmd": "true"});
+        assert_eq!(code(&decide(&card("todo", "code", Some("it works")), &with_status, false, None, &dflt(None))), "freeze");
+        assert_eq!(code(&decide(&card("todo", "code", Some("it works")), &json!({"title": "x"}), false, None, &dflt(None))), "pass",
+            "a PATCH without contract fields is untouched");
     }
 
     #[test]
