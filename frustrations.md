@@ -5467,3 +5467,14 @@ CARD: GC-183
 SYMPTOM: Four commits in the mixpeek worktree .worktrees/gs12-cicd between 20:50Z and 21:25Z printed "amux staged-guard: NOT ENFORCED: could not reach the amux server at https://localhost:8824/api/git/staged-guard after 3 attempts over 18.2s (TimeoutError)". Board PATCHes from the same session in the same minutes returned 200. At 21:25Z, one failure-free minute later, GET /api/board/GC-183 took 0.08-0.11 s and POST /api/git/staged-guard answered in 0.004-0.009 s. At 21:23Z git-shared-guard.py blocked a whole Bash call (a `git checkout <sha> -- <paths>` plus `amux land --cancel` and five other segments) on the same TimeoutError. ~/.amux/staged-guard-unenforced.jsonl holds 1,611 records (all sessions).
 COST: four commits made with cross-session sweep protection off, and one compound command that did not run at all, including its land cancel. The lane rebuilt the step around the guard (cancel, cherry-pick --no-commit, one commit) and spent a land cycle.
 FIX: give the guard endpoints their own short path that does not wait behind whatever stalls them while the board stays fast, or a deadline under 2 s with a cached co-tenancy answer. Count NOT ENFORCED outcomes per hour as a health signal, since the jsonl already records each one.
+
+## A session-swap auto-pickup reopens a card the contract granted done 69 seconds earlier
+AREA: amux board, auto-pickup on session restart, contract done
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-extra-1
+CARD: GE1-33 (mixpeek, gs12-extra-1's board)
+SYMPTOM: GE1-33's done request (PATCH status done with evidence, gate_checked and left_undone, 202) was granted by harness:contract at 21:35:54Z (attempt 33, outcome done, "Server-verified (contract rule 2) at 815cfa20dd6"). The lane's Claude Code session was then recycled, and the restart prompt read "[amux auto-pickup] Claimed GE1-33, resume this still-owned task now". At 21:37:03Z attempt 34 started with gs12-extra-1 holding the lease, and the log reads "terminal summary retired on reopen to doing; prior Final outcome remains in history". Nothing the lane did moved it; the pickup chose the card while the done grant was landing, and its claim reopened it.
+COST: a verified-done card back in doing with the done line retired, found only by reading the attempts list, and a second done request that re-ran the frozen cargo verify (minutes of compile on a host at load 35 to 50). A lane that trusted the restart prompt would have redone finished work.
+FIX: a pickup must never claim a card whose status is terminal or whose contract state is verifying or granted; read the card's status inside the same transaction as the claim, and drop a restart's "resume" target that is already done.
