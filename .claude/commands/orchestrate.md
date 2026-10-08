@@ -24,7 +24,7 @@ one large model for every role or enable paid credits to keep a loop running.
   historic reply/grant exceptions do not authorize another group. File harness
   defects in the Amux repository's `frustrations.md` with a linked
   `amux-frustrations` card and evidence; do not prompt outside-group workers.
-- Use Mixpeek **platform** worktrees (`CC_WORKTREE_PROFILE=platform`), widened to every folder the work reads (below).
+- Use the project’s configured checkout and repository instructions. For Mixpeek GS12, retain the existing **platform** profile and widen only folders the assigned work actually reads.
 - A project owns one durable worktree and branch. Bind its workers to that
   checkout, serialize conflicting writes, and reuse it across retries. Adopt
   already active legacy lanes without moving their unfinished work.
@@ -46,11 +46,11 @@ These stop you, every time, whatever the plan says:
 - Anything an outside person reads.
 - Every decision the MD lists as stopping at Ethan.
 
-On your first pass, file every one of those decisions as its own `needsyou` card on your board, with `ask_question` (the question in one sentence) and `ask_unblocks` (what it unblocks, in one sentence). Then keep driving every branch of the graph that does not depend on them. A blocked branch is a card state, not a reason to stop the loop. Workers inherit this list in their assignment text.
+First read existing owner decisions, approvals and budget bounds. Reuse authorization that already covers the action; do not ask the same question again. File each still-unanswered decision as its own `needsyou` card on your board, with `ask_question` (the question in one sentence) and `ask_unblocks` (what it unblocks, in one sentence). Then keep driving every branch of the graph that does not depend on them. A blocked branch is a card state, not a reason to stop the loop. Workers inherit this list in their assignment text.
 
 ## Setup (first pass)
 
-1. **Group scope.** Put yourself in the orchestration group first: delegation is checked for the sender and the target, so both need it. Group settings are written by Ethan from the dashboard Scope tab (a worker's writes to a group layer are refused, and delegation is not something a worker grants itself). File it as the first `needsyou` card, and do not create workers until it reads back set:
+1. **Group scope.** Read the effective settings and existing membership first. The coordinator and workers must share the orchestration group. Reuse owner-configured membership and delegation; workers cannot broaden their own authority. If required group settings are missing, record the specific missing owner decision and continue independent work. Do not invent approval or duplicate an answered request. Read back the required settings before dispatch:
 
    ```
    AMUX_BOARD_DELEGATION=1              # lets you put cards on your workers' boards (request_to)
@@ -59,7 +59,6 @@ On your first pass, file every one of those decisions as its own `needsyou` card
    CC_AUTO_CONTINUE=1                   # re-nudges a worker that stops before its card is terminal
    AMUX_DISPATCH_BACKLOG_WHEN_IDLE=0    # backlog is yours to release, never auto-drained
    AMUX_BOARD_FORCE_ADHERENCE=1         # advance nudges, needs:you re-nags, review routing
-   AMUX_WORKSPACE_ISOLATION=1           # own worktree at origin/main, own TMPDIR, rebase pushes
    ```
 
    Why these values: `CC_STANDING_ORDERS` gates both pickup and continuation, so with it off `CC_AUTO_CONTINUE` does nothing. Auto-pickup is safe here because these workers' boards hold only the cards you assign. Decompose stays off, and with it off force adherence never withholds a message; it only turns on the board reminders.
@@ -96,20 +95,20 @@ curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $AMUX_S
 
 Check the response: 201 is a new card, 200 means intake folded it into an existing one, and a 403 means delegation is not set yet. Dispatch starts it at the worker's next turn boundary, and you are notified when it finishes, so you do not need to watch the pane.
 
-Give each worker a bounded objective with enough context and acceptance criteria, then let it operate autonomously in its worktree. Workers may inspect code, edit files, run commands and tests, and make reasonable implementation decisions without approval cycles.
+Give each worker a bounded objective with enough context and acceptance criteria, then let it operate autonomously in the project-owned checkout. Workers may inspect code, edit files, run commands and tests, and make reasonable implementation decisions without approval cycles.
 
 The orchestrator keeps responsibility for decomposition, assignment, dependencies, integration, replanning, and what happens next.
 
 ## Integration and proof
 
-- Workers land their own work: gates on their worktree, then `amux land`, which fetches, rebases onto origin/main and pushes while holding a per-branch lock, so pushers queue in arrival order instead of losing races. The holder also lands up to three queued pushes in one gate run; a waiter landed that way returns 0 with its checkout at origin/main. A rebase conflict returns 2 with nothing pushed. They never graft.
-- A card is `done` when the change is on origin/main and its acceptance check was run, with the command and its output as evidence. It is `verified` only when the same check passes on the plane the card names. You review it with `--reviewer`; a worker's own claim is not verification.
-- Re-run the acceptance check yourself before you move a card to `verified`. Read committed bytes (`git show origin/main:<path>`), never a worktree.
-- Local proof has a slot limit. Each local stack of the standalone image needs about 16 GB, and they share ports, so hold at most four at once. You hand out the slots and keep the count on a card. A worker that needs one parks its card with `amux signal wait <card> local-proof-<worker>` and tells you. When a slot frees, you run `amux signal raise local-proof-<worker>` for the next one. Use one name per worker: a raise frees every card waiting on that name.
+- Serialize conflicting changes in the project-owned checkout. Publish committed candidates through the existing `amux land` path. On contract lanes the server composes, gates and lands the queued commits under its repository lock; an enqueue receipt is not a merge receipt. Read the terminal receipt before claiming integration.
+- A worker's `done` request starts the configured server check and independent review on contract lanes. `verified` requires the harness reviewer’s passing evidence against the named revision and plane. Preserve frozen criteria and outstanding owner-direction gates; a status move cannot reset exhausted review rounds.
+- Validate integrated committed bytes (`git show origin/main:<path>`). Local tests do not replace a required deployed-plane check, and one supporting card does not establish the entire acceptance criterion.
+- Read measured host capacity and the project's existing resource limits before running proofs in parallel. Reuse bounded slots, card state and signals for conflicting resource use; do not hardcode the GS12 standalone stack’s memory estimate or slot count for another project. Existing approved infrastructure and spend bounds remain gates.
 
 ## Closed loop
 
-Use the scheduler to re-enter on a fixed cadence. Target this orchestrator worker with a `tmux` schedule and a one-line prompt: "Orchestration tick: read board and repo state, act, record state on your cards." You keep your conversation between ticks, so the tick does not need a full brief. Set the cadence on purpose, since every tick costs a full turn. Ethan launches you with a Claude Code `/goal` whose condition is every completion-proof card at `verified` (you cannot type a slash command yourself); the goal keeper re-prompts you while it is unmet. If you were started without one, ask him for it on a `needsyou` card.
+Resume from existing finished-card callbacks, signals, goal/contract runners and durable state. Reuse an owner-set provider goal when present. If the project needs a scheduler fallback, use a bounded cadence appropriate to the expected next event and current budget; do not add another general reminder while an existing consumer is active. A provider slash-command goal that only the owner can start is optional supporting control, not a reason to stop otherwise authorized work.
 
 On each tick, read a compact delta of changed cards, completed receipts, current
 provider capacity and readiness. Load full logs or plan sections only for a named
