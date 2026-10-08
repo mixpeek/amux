@@ -5290,3 +5290,14 @@ CARD: AF-968
 SYMPTOM: The deployed 303be399 process replay held a private SQLite writer and never reached auto_resume_staging within the original twenty-second handoff bound. Every steering tick awaited serialized superseded-packet cleanup even with no eligible project packets, blocking the following quota recovery sweep behind boot housekeeping writes.
 COST: Two failed deployed handoff replays, delayed recovery decisions, and needless serialized writer work on empty fleets.
 FIX: Read whether an unclaimed project packet exists before enqueueing cleanup. Keep the transactional supersession proof and normal delivery guards unchanged. Log the empty-cleanup verdict at debug level without adding recurring production noise. Exercise a genuinely held writer with empty and already-claimed queues, existing stale-packet safety tests, and the unchanged process SIGKILL/lost-acknowledgement handoff replay; preserve the deployed failure.
+
+## Authenticated workers lost edit reports because the Python hook omitted their credential
+AREA: attribution
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: After the owner's quota reset, gs12-extra-1 and gs12-extra-2 made real edits but POST /api/git/observed-edits returned worker_identity_refused with token=none. The Python post-hook supplied X-Amux-Session but omitted its inherited AMUX_WORKER_TOKEN. Its installed copy was dated September 9 and no normal builder path refreshed it.
+COST: Legitimate edit attribution was discarded, creating avoidable downstream ownership-gate friction while GS12 resumed.
+FIX: Send only the launching worker's inherited credential and log numeric HTTP refusal status without secrets. Refresh existing regular hook files atomically from the exact authorized builder commit on hook-only deployments. Verify real authenticated middleware, actual stored reports, missing/wrong credentials, no duplicate report timestamps, persistent credentials and reports across controller SIGKILL, and actual builder authority/source refusal. Preserve a predecessor-hook negative replay.

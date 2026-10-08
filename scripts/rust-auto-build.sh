@@ -79,6 +79,32 @@ sync_bash_cli() {
   rm -f "$tmp"
 }
 
+# Hook-only fixes also ship on authorized ticks, even without a Rust rebuild.
+# Replace only existing regular files: no settings changes or isolated-worker
+# hook enrollment. Read exact elected bytes, validate and verify the rename.
+sync_observed_edits_hooks() {
+  local sha="$1" half rel dest tmp
+  for half in pre post; do
+    rel="scripts/claude-hooks/observed-edits-${half}.py"
+    dest="${AMUX_OBSERVED_HOOK_DIR:-$HOME/.amux/hooks}/observed-edits-${half}.py"
+    [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$(dirname "$dest")" ] || continue
+    tmp="$(mktemp "$(dirname "$dest")/.observed-hook.XXXXXX")" || continue
+    if ! git -C "$REPO" show "${sha}:${rel}" > "$tmp" 2>/dev/null \
+       || ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$tmp" 2>/dev/null; then
+      echo "== OBSERVED HOOK SYNC FAILED sha=$sha half=$half verdict=observed_hook_source_invalid" >> "$LOG"
+      rm -f "$tmp"; continue
+    fi
+    if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; continue; fi
+    if chmod 0755 "$tmp" && mv -f "$tmp" "$dest" \
+       && git -C "$REPO" show "${sha}:${rel}" | cmp -s - "$dest"; then
+      echo "== OBSERVED HOOK SYNCED sha=$sha half=$half verdict=observed_hook_synced" >> "$LOG"
+    else
+      echo "== OBSERVED HOOK SYNC FAILED sha=$sha half=$half verdict=observed_hook_sync_failed" >> "$LOG"
+    fi
+    rm -f "$tmp"
+  done
+}
+
 # The sha that will actually be BUILT — the worktree below is created from
 # `rev-parse HEAD`. `$head` is a different thing: the last commit that touched
 # the build inputs, used as the rebuild stamp key. They differ routinely on a
@@ -227,6 +253,7 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
     exit 0
   fi
   sync_bash_cli "$built_sha"
+  sync_observed_edits_hooks "$built_sha"
   # ADOPTION COOLDOWN: batch rapid commits from multiple lanes into fewer
   # rebuilds. Each self-adoption kills all SSE connections (6-12s of
   # "Worker updates unavailable" on every client). With 28 lanes committing

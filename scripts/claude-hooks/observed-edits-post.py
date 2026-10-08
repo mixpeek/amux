@@ -387,13 +387,22 @@ def main():
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        headers = {"Content-Type": "application/json", "X-Amux-Session": session}
+        # Rule 10 authenticates the launching worker. Use only its inherited
+        # credential; never read a peer's token or fall back to owner identity.
+        token = (os.environ.get("AMUX_WORKER_TOKEN") or "").strip()
+        if token:
+            headers["X-Amux-Worker-Token"] = token
         req = urllib.request.Request(
             url.rstrip("/") + "/api/git/observed-edits",
             data=json.dumps({"paths": hits}).encode(),
-            headers={"Content-Type": "application/json", "X-Amux-Session": session},
+            headers=headers,
             method="POST")
         urllib.request.urlopen(req, timeout=2, context=ctx).read()
         outcome = "sent"
+    except urllib.error.HTTPError as e:
+        # Distinguish authentication refusals without logging secrets or bodies.
+        outcome = f"send-failed:HTTPError status={e.code}"
     except Exception as e:
         outcome = f"send-failed:{e.__class__.__name__}"
     # LOG WHAT WAS CLAIMED, NOT ONLY HOW MANY (AF-179). This said `n=3 sent`,

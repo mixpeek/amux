@@ -31,6 +31,11 @@ expect() { if "$@"; then ok; else bad "$*"; fi; }
 
 git init -q -b main "$AUTH"
 mkdir -p "$AUTH/crates" "$AUTH/scripts" "$FAKE_HOME/.amux/rust-build-target"
+mkdir -p "$AUTH/scripts/claude-hooks" "$FAKE_HOME/.amux/hooks"
+for half in pre post; do
+  printf '# elected hook\n' > "$AUTH/scripts/claude-hooks/observed-edits-${half}.py"
+  printf '# stale hook\n' > "$FAKE_HOME/.amux/hooks/observed-edits-${half}.py"
+done
 printf '[workspace]\n' > "$AUTH/Cargo.toml"
 printf 'elected source\n' > "$AUTH/crates/input.rs"
 cat > "$AUTH/scripts/safe-cargo.sh" <<'EOF'
@@ -92,12 +97,18 @@ expect test -x "$INSTALL"
 expect grep -q "$ELECTED" "$INSTALL"
 expect test "$(cat "$STAMP")" = "$ELECTED"
 expect test "$(grep -c '^build ' "$TRACE")" = 1
+for half in pre post; do
+  expect cmp -s "$AUTH/scripts/claude-hooks/observed-edits-${half}.py" "$FAKE_HOME/.amux/hooks/observed-edits-${half}.py"
+done
+expect grep -q 'verdict=observed_hook_synced' "$LOG"
 
 # Chaos: a separately-running stale checkout uses the same normal activation
 # path and shared install locations. It must be refused before cargo/install;
 # keeping the return status zero makes the timer quiet but the builder log is
 # the durable sweep signal.
+printf '# foreign hook\n' > "$FOREIGN/scripts/claude-hooks/observed-edits-post.py"
 run_builder "$FOREIGN"
+expect cmp -s "$AUTH/scripts/claude-hooks/observed-edits-post.py" "$FAKE_HOME/.amux/hooks/observed-edits-post.py"
 expect grep -q "$ELECTED" "$INSTALL"
 expect test "$(grep -c '^build ' "$TRACE")" = 1
 expect grep -q "ACTIVATION AUTHORITY REFUSED $STALE" "$LOG"
@@ -156,6 +167,21 @@ printf '{"commit":"%s-dirty"}\n' "${STALE:0:12}" > "$HEALTH"
 run_builder "$AUTH"
 expect test "$(grep -c '^build ' "$TRACE")" = 2
 expect grep -q "ACTIVATION AWAITING ADOPTION expected=$ELECTED live=${STALE:0:12}-dirty" "$LOG"
+
+# An elected image may already be running while its hook is stale. Refresh the
+# hook without rebuilding that image or taking an uncommitted edit's bytes.
+printf '# new elected hook\n' > "$AUTH/scripts/claude-hooks/observed-edits-post.py"
+git -C "$AUTH" add scripts/claude-hooks/observed-edits-post.py
+git -C "$AUTH" -c user.name=test -c user.email=test@example.com commit -qm hook-only
+HOOK_SHA=$(git -C "$AUTH" rev-parse HEAD)
+git -C "$AUTH" update-ref refs/remotes/origin/main "$HOOK_SHA"
+printf '{"commit":"%s"}\n' "$HOOK_SHA" > "$HEALTH"
+printf '# uncommitted hook\n' > "$AUTH/scripts/claude-hooks/observed-edits-post.py"
+run_builder "$AUTH"
+expect grep -q '^# new elected hook$' "$FAKE_HOME/.amux/hooks/observed-edits-post.py"
+expect test "$(grep -c '^build ' "$TRACE")" = 2
+expect grep -q "OBSERVED HOOK SYNCED sha=$HOOK_SHA half=post" "$LOG"
+git -C "$AUTH" restore scripts/claude-hooks/observed-edits-post.py
 
 # Worker-attributed diagnostic runs must remain offline, while a real install
 # of that same commit must still fail closed without a measured overlap permit.
