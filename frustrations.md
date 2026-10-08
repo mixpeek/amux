@@ -5268,3 +5268,14 @@ CARD: AF-968
 SYMPTOM: A private cap-boundary consumer replay on 0c8ec00d showed boot clearing the recycle marker when attempts reached three. The API then confirmed intent-after-cap-for-replacement to the original provider (PID 41524), even though the requested replacement had never happened. Expired intents took the same cancellation path.
 COST: A protective retry cap reopened input into the wrong conversation and hid the unfinished owner operation.
 FIX: Keep the durable marker at either automatic recovery bound, emit interrupted_recycle_held once per boot, and report owner retry required on queued input. Preserve both controls across another controller crash. A new explicit owner recycle still resets only its own counter and delivers the retained capped input exactly once to its actual replacement; an unretried expired intent remains held.
+
+## A pipe-deadline fixture timed child startup instead of productive pipe draining
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: CI job 113284044565 failed bounded_probe_deadline_survives_continuous_output_and_inherited_pipes: its 150ms deadline elapsed with stdout_bytes=0. A successful spawn was treated as proof that the producer had run, so this missed the productive-output boundary the test claims to exercise.
+COST: The complete Rust verdict went red while the real drain correctly timed out a producer that had not produced output.
+FIX: Separate spawning from the unchanged bounded consumer, wait for an actually readable producer pipe before measuring, and witness the direct parent's exit for the inherited-pipe case. Deliberately delay producer startup 300ms. Retain the original 150ms deadline, one-second completion bound, nonzero-byte assertion, measured flag and exact timeout phases; retain the failed CI log and an identical-consumer-body source proof.
