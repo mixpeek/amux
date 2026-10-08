@@ -48,11 +48,15 @@ try{
  check('normal sweep recognizes actual split native footer',quotaMeta.rate_limited_by==='auto-resume'&&quotaMeta.rate_limited_until>Math.floor(Date.now()/1000),quotaMeta);
 
  check('unclocked limit is never retried',received('unclocked-parent').length===0);
- // Explicit fixture clock transition, never an API call against live state.
+ // Explicit private fixture clock transition while the controller is killed:
+ // metadata cannot race a consumer write, and recovery must rediscover the hold.
+ await amux.down();
  const quota=lanes.find(l=>l.name==='quota-parent');
  const qp=path.join(amux.userHome,'.claude','projects',quota.realDir.replace(/[^a-zA-Z0-9]/g,'-'),'11111111-1111-4111-8111-000000000004.jsonl');
  const record=JSON.parse(fs.readFileSync(qp,'utf8'));record.quotaLimits.resetsAt=Math.floor(Date.now()/1000)-120;fs.writeFileSync(qp,JSON.stringify(record)+'\n');
  const advancedMeta=JSON.parse(fs.readFileSync(quotaMetaPath,'utf8'));advancedMeta.rate_limited_until=record.quotaLimits.resetsAt;fs.writeFileSync(quotaMetaPath,JSON.stringify(advancedMeta));
+ await amux.up();
+ check('quota clock advancement is rediscovered after SIGKILL',(await amux.req('GET','/health')).body.pid!==before.pid);
  await waitFor('passed quota reset resumes stopped parent with surviving child',()=>received('quota-parent').length===1,30000);
  const qlaunch=amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===quota.realDir);
  const qchild=amux.fakeLog().find(r=>r.event==='background_child'&&r.parent_pid===qlaunch.pid);

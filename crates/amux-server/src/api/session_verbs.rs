@@ -2465,6 +2465,11 @@ pub(crate) enum AutoResume {
 }
 
 pub(crate) fn auto_resume_decision(i: &AutoResumeInputs) -> AutoResume {
+    // A current authentication/unknown failure wins over older quota chrome.
+    // Infrastructure continuation cannot repair or authorize that failure.
+    if i.api_error.is_some_and(|kind| !api_error_is_retryable(kind)) {
+        return AutoResume::Nothing;
+    }
     let candidate: Option<(&'static str, String)> = match i.limit {
         // A credit cap has no clock and the lane is still working on credits:
         // there is nothing to resume. The menu is answered by the sweep's own
@@ -40440,6 +40445,8 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(!expired_limit_foreground_at_boundary(&pane,None,None,now));
         for error in ["authentication_failed","oauth_org_not_allowed","unknown_error"] {
             assert!(!expired_limit_foreground_at_boundary(&pane,Some(&passed),Some(error),now), "a stale quota banner must not override a current authentication or unknown failure");
+            let stopped = AutoResumeInputs { api_error:Some(error),..resume_inputs(Some(&passed),None) };
+            assert_eq!(auto_resume_decision(&stopped),AutoResume::Nothing, "current failure also blocks ordinary idle admission");
         }
     }
 
