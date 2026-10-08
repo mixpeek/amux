@@ -32,10 +32,23 @@ try{
  await p.goto(base+'/?view=browser');if(await p.getByText('Skip',{exact:true}).isVisible())await p.getByText('Skip',{exact:true}).click();await p.waitForFunction(()=>typeof window.switchView==='function');await p.evaluate(()=>window.switchView('browser'));
  await p.locator('#bw-routing summary').click();await p.waitForFunction(value=>Array.from(document.querySelector('#bw-cdp-profile').options).some(o=>o.value===value),chromeProfile);
  await p.selectOption('#bw-profile','routing-work');await p.selectOption('#bw-cdp-profile',chromeProfile);await p.selectOption('#bw-cua-profile','routing-work');await p.locator('#bw-cua-enabled').check();
- await p.locator('#bw-routing button').click();await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.startsWith('Saved:'));
+ await p.locator('#bw-routing').getByRole('button',{name:'Save route',exact:true}).click();await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.startsWith('Saved:'));
  const config=await api(base,'/api/browser/routing/config');prove('Browser tab saves selected native/CDP/CUA profiles',config.config.native_profile==='routing-work'&&config.config.chrome_profile===chromeProfile&&config.config.cua_profile==='routing-work'&&config.config.allow_cua);
+ await p.selectOption('#bw-profile','routing-personal');
+ prove('unconfigured profile does not inherit the previous account fallback',await p.inputValue('#bw-cdp-profile')===''&&!(await p.locator('#bw-cua-enabled').isChecked()));
+ await p.selectOption('#bw-cua-profile','routing-personal');
+ await p.locator('#bw-routing').getByRole('button',{name:'Save route',exact:true}).click();await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.startsWith('Saved:'));
+ await p.selectOption('#bw-profile','routing-work');
+ prove('selecting the work profile restores its saved fallback',await p.inputValue('#bw-cdp-profile')===chromeProfile&&await p.inputValue('#bw-cua-profile')==='routing-work'&&await p.locator('#bw-cua-enabled').isChecked());
+ const retained=await api(base,'/api/browser/routing/config');prove('owner choices survive saving a second profile',retained.config.profile_routes['routing-work'].chrome_profile===chromeProfile&&retained.config.profile_routes['routing-personal'].chrome_profile==='');
+
  await p.fill('#bw-url',`http://127.0.0.1:${fixture.address().port}`);await p.evaluate(()=>window._bwGo());
  await p.waitForFunction(()=>document.querySelector('#bw-img')?.naturalWidth>0,{},{timeout:45000});prove('Browser tab displays a real browser frame',await p.locator('#bw-img').evaluate(e=>e.naturalWidth>0));
+ const sessionBefore=await p.evaluate(()=>_bwSession);
+ await p.locator('#bw-routing').getByRole('button',{name:'Try next route',exact:true}).click();
+ await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.includes('Active: cdp'));
+ const advanced=await api(base,'/api/browser/routing/request','POST',{verb:'status',session:sessionBefore,body:{}},sessionBefore);
+ prove('Browser tab advances the unmet goal to the selected work CDP profile',advanced.route.backend==='cdp'&&advanced.route.profile===chromeProfile&&advanced.route.selected_profile==='routing-work'&&advanced.route.attempts.some(a=>a.verdict==='goal_unmet'));
  await p.screenshot({path:join(out,'dashboard-desktop.png'),fullPage:true});
  await p.setViewportSize({width:375,height:812});await p.screenshot({path:join(out,'dashboard-mobile.png'),fullPage:true});
  const bounds=await p.locator('#bw-routing').evaluate(e=>({scroll:e.scrollWidth,width:e.clientWidth}));prove('route settings fit phone width',bounds.scroll<=bounds.width+1);

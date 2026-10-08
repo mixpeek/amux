@@ -5524,6 +5524,29 @@ PYEOF
       ;;
     route)
       local verb="${1:-state}"; shift || true
+      if [[ "$verb" == "config" ]]; then
+        _curl -sk -m 20 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" "$AMUX_API/api/browser/routing/config"
+        return $?
+      fi
+      if [[ "$verb" == "help" || "$verb" == "--help" ]]; then
+        cat <<'ROUTE_HELP'
+Select the task's account AND organization with amux browser profiles.
+amux browser route config
+amux browser route start '{"profile":"chosen-profile","url":"https://target"}'
+amux browser route state
+amux browser route shot
+amux browser route action '{"action":"click","selector":"#observed-control"}'
+amux browser route action '{"action":"type","text":"exact text"}'
+Click the observed input before typing. Read back values before submitting.
+Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
+Verify the intended page effect after each action; ok means dispatch only.
+If the session cannot accomplish the goal:
+amux browser route advance '{"reason":"describe the unmet goal"}'
+Observe again after advancing. Never replay an uncertain submission.
+CUA is the final route. If it fails, report the unmet goal honestly.
+ROUTE_HELP
+        return 0
+      fi
       [[ "$verb" == "shot" ]] && verb="screenshot"
       local session="${AMUX_SESSION:-${AMUX_WORKER:-browser-owner}}"
       local body="${1:-}"
@@ -6077,6 +6100,8 @@ ${BOLD}Browser:${RESET}
                                  Optional: --identity EMAIL --role ROLE; verify live access
   amux browser route start JSON  Amux → selected Chrome CDP → CUA
   amux browser route state|shot  Observe; route action JSON; route stop when done
+  amux browser route config     Read profile-specific Chrome/CUA choices and identities
+  amux browser route advance JSON  Goal blocked? Next configured route; reason required
   amux browser profiles [--all]  Relevant profiles; --all includes QA/recovery;
                                  '+' marks access allowed for this worker
   amux browser identify [prof]   Make the amux Chrome window say it IS the amux

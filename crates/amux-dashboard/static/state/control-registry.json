@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2466,
+  "n_considered": 2468,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -340,6 +340,12 @@
     },
     "_bwAction": {
       "kind": "command._bwAction",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwAdvanceRouting": {
+      "kind": "command._bwAdvanceRouting",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

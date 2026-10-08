@@ -29057,6 +29057,9 @@ pub(crate) fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> V
         (true, false) => lane,
         (false, false) => format!("{rules}\n\n{lane}"),
     };
+    let block = if isolated { block } else {
+        format!("{block}\n\n# Browser profile selection and recovery\n\n{}", crate::orchestrator::context::BROWSER_SELECTION_GUIDE)
+    };
     let file = worker_rules_file(name);
     if block.is_empty() {
         let _ = std::fs::remove_file(&file);
@@ -50574,7 +50577,8 @@ mod commit_shape_tests {
         std::fs::create_dir_all(h.join("memory")).unwrap();
         let _g = crate::api::settings::test_env::set_home(h);
         std::fs::write(h.join("sessions/lanemem.env"), "CC_TAGS=\"\"\n").unwrap();
-        assert!(super::worker_rules_args("lanemem", "claude", false).is_empty(), "no rules and no memory: no file");
+        let defaults = super::worker_rules_args("lanemem", "claude", false);
+        assert!(std::fs::read_to_string(&defaults[1]).unwrap().contains("amux browser route advance"), "ordinary workers receive browser recovery guidance without custom memory");
         std::fs::write(super::mem_file("lanemem"), "LANEONLY note").unwrap();
         let args = super::worker_rules_args("lanemem", "claude", false);
         assert_eq!(args.first().map(String::as_str), Some("--append-system-prompt-file"), "{args:?}");
@@ -50687,12 +50691,13 @@ mod commit_shape_tests {
         assert!(super::worker_rules_args("ruled", "claude", true).is_empty(), "isolated gets nothing");
         assert!(super::worker_rules_args("ruled", "gemini", false).is_empty());
 
-        // Removing the rules removes the launch argument and the stale file.
+        // Removing binding rules leaves only the default browser capability.
         for f in ["_rules.md", "tags/alpha.rules.md", "ruled.rules.md"] {
             std::fs::remove_file(h.join("memory").join(f)).unwrap();
         }
-        assert!(super::worker_rules_args("ruled", "claude", false).is_empty());
-        assert!(!super::worker_rules_file("ruled").exists());
+        let defaults = read(&super::worker_rules_args("ruled", "claude", false));
+        assert!(!defaults.contains("GLOBALRULE") && !defaults.contains("GROUPRULE") && !defaults.contains("WORKERRULE"));
+        assert!(defaults.contains("amux browser route advance"));
     }
 }
 

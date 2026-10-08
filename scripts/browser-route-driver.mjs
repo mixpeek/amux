@@ -187,7 +187,7 @@ async function launch(ctx,b,attempts=[],from=0) {
       if(backend==='amux') {result=await native(ctx,'start',{...b,profile});state={backend,profile:result.profile,url:b.url};}
       else if(backend==='cdp') {state=await directStart(ctx,b.url,attempts);result={ok:true,profile:state.profile,cdp_port:state.cdp_port,launch_url:b.url};}
       else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
-      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';atomic(ctx.receipt,state);
+      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;atomic(ctx.receipt,state);
       return {...result,ok:true,route:state,profile:state.profile};
     } catch(e) {
       attempts.push({backend,verdict:'failed',status:e.status||502,error:e.message,elapsed_ms:Date.now()-begun});
@@ -204,6 +204,19 @@ export async function route(ctx,verb,b={}) {
   const state=read(ctx.receipt,null);
   if(!state) {if(verb==='status')return {running:false};throw new RouteError('select a profile and start the browser route first',409);}
   ctx.identity=state.identity||ctx.identity;
+  ctx.native_started=!!state.native_started;
+  if(verb==='advance') {
+    const reason=typeof b.reason==='string'?b.reason.trim():'';
+    if(!reason)throw new RouteError('advance requires a reason describing the unmet goal',400);
+    if(state.backend==='cua')throw new RouteError('CUA is the final configured route; report the unmet goal instead of switching accounts',409);
+    return launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'goal_unmet',reason:reason.slice(0,500)}],state.backend==='amux'?1:2);
+  }
+  if(verb==='stop'&&state.backend!=='amux'&&state.native_started) {
+    // Only release the original browser when this worker started it. A busy
+    // fallback owned by somebody else has native_started=false.
+    try {await native(ctx,'stop',{profile:state.selected_profile});}catch(e){if(e.status!==403)throw e;}
+    state.native_started=false;atomic(ctx.receipt,state);
+  }
   try {
     const result=state.backend==='amux'?await native(ctx,verb,b):state.backend==='cdp'?await directVerb(ctx,state,verb,b):await cua(ctx,state,verb,b);
     if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state};

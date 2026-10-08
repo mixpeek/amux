@@ -73,6 +73,9 @@ fn memory_layer(level: ScopeLevel) -> (u32, &'static str) {
     }
 }
 
+/// Browser guidance shared by normal CLI workers and orchestrated tasks.
+pub(crate) const BROWSER_SELECTION_GUIDE: &str = "For browser work: `amux browser profiles` explains each profile's identity, purpose, role and scope. Choose the account AND organization/use case matching the task; personal/customer/restricted/QA accounts are not substitutes. `amux browser for URL` recommends with reasons; identity/role filters are at /api/browser/profile-for. Owner-selected Chrome/CUA choices are saved per Amux profile; inspect /api/browser/routing/config to verify the matching Chrome identity and profile route. Use `amux browser route config` to inspect the owner choices. Start with `amux browser route start '{\"profile\":\"chosen-profile\",\"url\":\"https://target\"}'`, then `amux browser route state`, `amux browser route shot`, and `amux browser route action JSON` (Amux → configured Chrome CDP → CUA). `amux browser route help` describes the action payloads. Verify live site access and the intended effect after each action. Read back form values before submitting; if a form rejects them, correct the observed validation problem before advancing. If the browser runs but cannot accomplish the goal, use `amux browser route advance '{\"reason\":\"describe the unmet goal\"}'`. This moves forward to the next configured backend without repeating an action or changing accounts. Observe state/screenshot after every handoff before acting; mutations are not replayed. On CUA use route shot, read the returned PNG, then observed x,y clicks, typing and keys. If CUA cannot accomplish the goal, report the failure instead of claiming success.";
+
 /// Assemble the context snapshot for assigning `task` to `worker`.
 ///
 /// Deterministic by construction: every input is read from the DB in this
@@ -117,7 +120,7 @@ pub fn assemble_context_with_budget(
     fragments.push(ContextFragment {
         priority: 32,
         source: "browser:selection-guide".into(),
-        content: "For browser work: `amux browser profiles` explains each profile's identity, purpose, role and scope. Choose the identity matching the task; personal/customer/restricted/QA accounts are not substitutes. `amux browser for URL` recommends with reasons; identity/role filters are at /api/browser/profile-for. Verify live site access, then use `amux browser route` (Amux → configured Chrome CDP → CUA). Observe again after a handoff; mutations are not replayed.".into(),
+        content: BROWSER_SELECTION_GUIDE.into(),
         trust: TrustLevel::Trusted,
         provenance: "browser-capability".into(),
     });
@@ -625,9 +628,34 @@ mod tests {
     fn ordinary_task_receives_browser_identity_and_handoff_guidance() {
         let c = conn();
         let snap = assemble_context(&c, &wid(1), &task(1)).unwrap();
-        let guide=snap.fragments.iter().find(|f|f.source=="browser:selection-guide").expect("browser capability is available by default");
-        for requirement in ["identity", "purpose", "scope", "amux browser profiles", "amux browser for URL", "Amux → configured Chrome CDP → CUA", "mutations are not replayed"] {
-            assert!(guide.content.contains(requirement), "missing worker instruction: {requirement}");
+        let example = BROWSER_SELECTION_GUIDE
+            .split("route advance '")
+            .nth(1)
+            .unwrap()
+            .split("'`")
+            .next()
+            .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(example).expect("worker example must be literal valid JSON");
+        assert_eq!(payload["reason"], "describe the unmet goal");
+        let guide = snap
+            .fragments
+            .iter()
+            .find(|f| f.source == "browser:selection-guide")
+            .expect("browser capability is available by default");
+        for requirement in [
+            "identity",
+            "purpose",
+            "scope",
+            "amux browser profiles",
+            "amux browser for URL",
+            "Amux → configured Chrome CDP → CUA",
+            "mutations are not replayed",
+        ] {
+            assert!(
+                guide.content.contains(requirement),
+                "missing worker instruction: {requirement}"
+            );
         }
     }
 
@@ -684,7 +712,7 @@ mod tests {
         // Isolation: the other worker's memory is absent.
         assert!(!snap.fragments.iter().any(|f| f.content.contains("secret")));
         // Task fragment carries title, desc and deps.
-        let task_frag = snap.fragments.iter().find(|f|f.source=="task").unwrap();
+        let task_frag = snap.fragments.iter().find(|f| f.source == "task").unwrap();
         assert!(task_frag.content.contains("Fix the login redirect loop"));
         assert!(task_frag.content.contains("Users bounce"));
         assert!(task_frag.content.contains(tid(900).as_str()));

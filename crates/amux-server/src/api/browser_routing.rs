@@ -24,6 +24,59 @@ pub struct Config {
     pub cua_profile: String,
     #[serde(default)]
     pub allow_cua: bool,
+    /// Owner choices, retained independently for each saved Amux profile.
+    #[serde(default)]
+    pub profile_routes: std::collections::BTreeMap<String, ProfileRoute>,
+}
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRoute {
+    #[serde(default)]
+    pub chrome_profile: String,
+    #[serde(default)]
+    pub cua_profile: String,
+    #[serde(default)]
+    pub allow_cua: bool,
+}
+impl Config {
+    fn selected(&self, profile: &str) -> Self {
+        let mut selected = self.clone();
+        selected.native_profile = profile.to_owned();
+        if let Some(route) = self.profile_routes.get(profile) {
+            selected.chrome_profile = route.chrome_profile.clone();
+            selected.cua_profile = route.cua_profile.clone();
+            selected.allow_cua = route.allow_cua;
+        } else if !self.profile_routes.is_empty() {
+            // Another account's last-saved fallback is not this account's choice.
+            selected.chrome_profile.clear();
+            selected.cua_profile.clear();
+            selected.allow_cua = false;
+        }
+        selected
+    }
+    fn retain_choices(&mut self, mut previous: Self) {
+        if !previous.native_profile.is_empty() {
+            previous
+                .profile_routes
+                .entry(previous.native_profile.clone())
+                .or_insert(ProfileRoute {
+                    chrome_profile: previous.chrome_profile,
+                    cua_profile: previous.cua_profile,
+                    allow_cua: previous.allow_cua,
+                });
+        }
+        self.profile_routes = previous.profile_routes;
+        if !self.native_profile.is_empty() {
+            self.profile_routes.insert(
+                self.native_profile.clone(),
+                ProfileRoute {
+                    chrome_profile: self.chrome_profile.clone(),
+                    cua_profile: self.cua_profile.clone(),
+                    allow_cua: self.allow_cua,
+                },
+            );
+        }
+    }
 }
 fn root() -> PathBuf {
     crate::config::amux_home().join("browser-routing")
@@ -48,7 +101,24 @@ async fn request_lock(key: String) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 
 #[cfg(test)]
 mod tests {
-    use super::request_lock;
+    use super::{request_lock, Config};
+
+    #[test]
+    fn owner_choices_are_retained_per_profile_without_cross_account_defaults() {
+        let mut work: Config = serde_json::from_value(serde_json::json!({"native_profile":"work","chrome_profile":"Profile 14","cua_profile":"work","allow_cua":true})).unwrap();
+        assert_eq!(work.selected("work").chrome_profile, "Profile 14");
+        work.retain_choices(Config::default());
+        let mut personal: Config = serde_json::from_value(serde_json::json!({"native_profile":"personal","chrome_profile":"Profile 11","cua_profile":"personal","allow_cua":false})).unwrap();
+        personal.retain_choices(work);
+        assert_eq!(personal.selected("work").chrome_profile, "Profile 14");
+        assert!(personal.selected("work").allow_cua);
+        assert_eq!(personal.selected("personal").chrome_profile, "Profile 11");
+        assert!(!personal.selected("unconfigured").allow_cua);
+        assert!(personal.selected("unconfigured").chrome_profile.is_empty());
+        let saved = serde_json::to_vec(&personal).unwrap();
+        let reloaded: Config = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(reloaded.selected("work").cua_profile, "work");
+    }
 
     #[tokio::test]
     async fn selected_chrome_profile_serializes_workers_and_recovers_after_abort() {
@@ -96,7 +166,7 @@ async fn config() -> Response {
     let profiles:Vec<Value>=v.pointer("/profile/info_cache").and_then(Value::as_object).map(|cache|cache.iter().map(|(name,m)|json!({"name":name,"label":m.get("name"),"identity":m.get("user_name"),"on_disk":chrome_root.join(name).is_dir()})).collect()).unwrap_or_default();
     Json(json!({"config":load(),"chrome_profiles":profiles,"measured":true,"n_considered":profiles.len(),"ladder":["amux","cdp","cua"],"note":"CDP uses a persistent isolated copy of the selected Chrome profile. CUA uses the selected saved Amux profile; sandbox transfer currently covers cookies only."})).into_response()
 }
-async fn save(headers: HeaderMap, Json(c): Json<Config>) -> Response {
+async fn save(headers: HeaderMap, Json(mut c): Json<Config>) -> Response {
     // The fallback identity is an owner choice, never a worker's silent edit.
     if headers
         .get("x-amux-session")
@@ -106,6 +176,12 @@ async fn save(headers: HeaderMap, Json(c): Json<Config>) -> Response {
         return error(
             StatusCode::FORBIDDEN,
             "only the owner may change the shared browser routing configuration",
+        );
+    }
+    if !c.profile_routes.is_empty() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "save a route by selecting its native_profile; profile_routes is read-only",
         );
     }
     let chrome = crate::integrations::browser::chrome_user_data_dir();
@@ -127,6 +203,7 @@ async fn save(headers: HeaderMap, Json(c): Json<Config>) -> Response {
             );
         }
     }
+    c.retain_choices(load());
     let out = (|| -> anyhow::Result<()> {
         std::fs::create_dir_all(root())?;
         let temp = root().join(format!("config-{}.tmp", ulid::Ulid::new()));
@@ -166,6 +243,7 @@ async fn request(
         "inspect",
         "inspect/clear",
         "status",
+        "advance",
     ];
     if !verbs.contains(&r.verb.as_str()) {
         return error(StatusCode::BAD_REQUEST, "unsupported browser route verb");
@@ -211,10 +289,12 @@ async fn request(
     } else {
         receipt.get("selected_profile").and_then(Value::as_str)
     }
-    .unwrap_or(&c.native_profile);
-    if let Err(denied) = super::browser_scope::profile_allowed(&r.session, chosen) {
+    .unwrap_or(&c.native_profile)
+    .to_owned();
+    if let Err(denied) = super::browser_scope::profile_allowed(&r.session, &chosen) {
         return denied.response();
     }
+    c = c.selected(&chosen);
     // Serialize publication/launch of the shared Chrome snapshot across workers.
     // Unlike a filesystem lease, this recovers on driver/server termination.
     let chrome_lock = request_lock(format!("chrome:{}", c.chrome_profile)).await;
@@ -247,7 +327,7 @@ async fn request(
         super::browser_scope::Policy::for_worker(&super::session_verbs::home(), &r.session);
     context["chrome_access"] = json!(policy.decide(&c.chrome_profile));
     context["cua_access"] = json!(policy.decide(if c.cua_profile.is_empty() {
-        chosen
+        &chosen
     } else {
         &c.cua_profile
     }));
