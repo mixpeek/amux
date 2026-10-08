@@ -1230,7 +1230,8 @@ pub async fn export_profile_cookies(
 pub fn context_text(profiles: &[(String, Vec<String>)], lim: &Limits) -> String {
     let mut s = String::new();
     s.push_str("amux computer: a disposable Linux desktop (XFCE/Kasm, Chromium, Firefox, terminal) driven by pixels.\n");
-    s.push_str("Access ladder: 1) amux browser (/api/browser, amux Chrome profiles)  2) CDP into Ethan's real Chrome (chrome-cdp skill)  3) this sandbox, only when 1 and 2 cannot reach it.\n");
+    s.push_str("Access ladder: 1) amux browser (/api/browser, amux Chrome profiles)  2) CDP through the Chrome profile selected in Browser tab → fallback settings  3) this sandbox, only when 1 and 2 cannot reach it.\n");
+    s.push_str("Choose identity and purpose first with amux browser profiles / amux browser for URL. Use amux browser route for the shared ladder. Cookie evidence needs a live site check; observe again after any handoff.\n");
     s.push_str("Verbs: amux computer start | screenshot (then Read the path) | click X Y | double-click X Y | move X Y | type TEXT | key KEY (enter, ctrl+l) | scroll DX DY | open URL [--profile NAME] | stop\n");
     s.push_str("Loop: screenshot, read coordinates off the image, act, screenshot again to confirm. Stop when done.\n");
     s.push_str(&format!(

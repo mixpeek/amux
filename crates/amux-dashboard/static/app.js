@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1262';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1263';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -48375,6 +48375,7 @@ async function _bwInit() {
   _bwSessionLabelSync();
   await _bwLoadProfiles();
   await _bwLoadTargets();
+  await _bwLoadRouting();
 }
 
 // Show WHICH session's browser is on screen. The view defaults to 'amux' and
@@ -48402,7 +48403,7 @@ async function _bwLoadProfiles() {
     if (!sel) return;
     const cur = sel.value;
     // Rebuild: Auto (empty) + registered profiles + real Chrome profiles
-    sel.innerHTML = '<option value="">Auto profile</option>';
+    sel.innerHTML = '<option value="">Configured default profile</option>';
     // SAVED PROFILES FIRST (AMUX-3670, Ethan: "i have saved profiles in amux
     // browser… i want it to be simple").
     //
@@ -48419,8 +48420,10 @@ async function _bwLoadProfiles() {
     // real work (it is the user's data, not ours to judge). They move below a
     // separator and keep their names.
     const all = d.profiles || [];
-    const saved = all.filter(p => p.registered);
+    const saved = all.filter(p => p.registered && !['test','deprecated'].includes(p.role));
     const scratch = all.filter(p => !p.registered);
+    const tests = all.filter(p => p.role === 'test');
+    const deprecated = all.filter(p => p.role === 'deprecated');
     const opt = (p, icon) => {
       const o = document.createElement('option');
       o.value = p.name;
@@ -48429,6 +48432,7 @@ async function _bwLoadProfiles() {
       // show; the directory name stays alongside because it is what the API and
       // AMUX_PROFILE take.
       const lbl = (p.label || '').trim();
+      const shortLabel = lbl.length > 68 ? lbl.slice(0, 65) + '…' : lbl;
       // A REGISTERED PROFILE WHOSE DIRECTORY IS GONE still carries its saved
       // domains, so without this it renders as a normal signed-in profile and
       // picking it silently starts an empty one (AMUX-5020). `on_disk` is the
@@ -48440,16 +48444,18 @@ async function _bwLoadProfiles() {
       const acc = p.access || null;
       const limited = acc && acc.all_workers === false;
       o.textContent = (missing ? '⚠' : icon) + ' '
-                    + (lbl ? lbl + ' (' + p.name + ')' : p.name)
+                    + (shortLabel ? shortLabel + ' (' + p.name + ')' : p.name)
                     + (missing ? ' — no profile directory, starts logged out'
                                : (doms ? ' — ' + doms : ''))
+                    + (p.identity ? ' · ' + p.identity : '')
+                    + (p.role ? ' [' + p.role + ']' : '')
                     + (limited ? ' · ' + acc.workers_allowed + '/' + acc.workers_total + ' workers' : '');
       if (missing) {
         o.title = 'Saved for ' + (doms || 'no recorded domains')
                 + ', but the directory is gone. Starting it creates an empty '
                 + 'profile and you will not be signed in.';
       } else if (doms) {
-        o.title = doms;
+        o.title = [lbl, doms, p.cookies_measured === false ? 'Login cookies could not be measured' : (p.signed_in_to || []).length + ' sites have unexpired login cookies; verify live access'].filter(Boolean).join('\n');
       }
       if (acc) {
         o.title = (o.title ? o.title + '\n' : '') + (limited
@@ -48468,6 +48474,11 @@ async function _bwLoadProfiles() {
       sel.appendChild(sep);
     }
     scratch.forEach(p => sel.appendChild(opt(p, '🔓')));
+    for (const [label, rows] of [['QA / synthetic accounts', tests], ['Deprecated / retained for recovery', deprecated]]) {
+      if (!rows.length) continue;
+      const group = document.createElement('optgroup'); group.label = label;
+      rows.forEach(p => group.appendChild(opt(p, '◇'))); sel.appendChild(group);
+    }
     const isolatedNames = new Set(all.map(p => p.name));
     (d.chrome_profiles || []).filter(p => !isolatedNames.has(p)).forEach(p => {
       const o = document.createElement('option');
@@ -48482,7 +48493,35 @@ async function _bwLoadProfiles() {
     // there rather than offered and always failing.
     const bs = document.getElementById('bw-backend');
     if (bs) bs.style.display = '';
-  } catch(e) {}
+  } catch(e) { _bwStatus('Profile discovery failed: ' + e.message); }
+}
+
+async function _bwLoadRouting() {
+  try {
+    const response = await fetch('/api/browser/routing/config');
+    const d = await response.json();
+    if (!response.ok) throw new Error(d.error || 'Could not load route');
+    const c = d.config || {};
+    const cd = document.getElementById('bw-cdp-profile');
+    cd.replaceChildren(new Option('Select Chrome profile', ''));
+    for (const p of d.chrome_profiles || []) { const o = new Option([p.label || p.name, p.identity, '(' + p.name + ')'].filter(Boolean).join(' · '), p.name); o.disabled = !p.on_disk; cd.add(o); }
+    cd.value = c.chrome_profile || '';
+    const cu = document.getElementById('bw-cua-profile');
+    cu.replaceChildren(new Option('Same saved profile as above', ''));
+    document.getElementById('bw-profile').querySelectorAll('option[value]').forEach(o => { if (o.value) cu.add(new Option(o.textContent, o.value)); });
+    cu.value = c.cua_profile || '';
+    document.getElementById('bw-cua-enabled').checked = !!c.allow_cua;
+    if (c.native_profile) document.getElementById('bw-profile').value = c.native_profile;
+    document.getElementById('bw-routing-status').textContent = c.chrome_profile ? 'Fallback configured: ' + c.chrome_profile : 'Select a Chrome profile to enable the CDP fallback.';
+  } catch (e) { document.getElementById('bw-routing-status').textContent = 'Route discovery failed: ' + e.message; }
+}
+async function _bwSaveRouting() {
+  try {
+    const c = { native_profile: document.getElementById('bw-profile').value, chrome_profile: document.getElementById('bw-cdp-profile').value, cua_profile: document.getElementById('bw-cua-profile').value, allow_cua: document.getElementById('bw-cua-enabled').checked };
+    const response = await fetch('/api/browser/routing/config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
+    const d = await response.json(); if (!response.ok) throw new Error(d.error || 'Save failed');
+    document.getElementById('bw-routing-status').textContent = 'Saved: Amux → ' + (c.chrome_profile ? 'CDP ' + c.chrome_profile : 'CDP unconfigured') + (c.allow_cua ? ' → CUA' : '');
+  } catch(e) { document.getElementById('bw-routing-status').textContent = 'Save failed: ' + e.message; }
 }
 
 function _bwBackend() {
@@ -48495,13 +48534,20 @@ function _bwBackend() {
 let _bwTargetGeneration = 0;
 async function _bwFetch(path, options) {
   const generation = _bwTargetGeneration;
+  let response;
   if (_bwBackend().startsWith('ios:')) {
     path = path.replace('/api/browser/', '/api/browser/ios/');
     options = { ...options, headers: { ...(options && options.headers), 'X-Amux-Simulator': _bwBackend().slice(4) } };
+    response = await fetch(path, options);
+  } else {
+    const parsed = new URL(path, location.origin);
+    const verb = parsed.pathname.replace('/api/browser/', '');
+    const body = options?.body ? JSON.parse(options.body) : Object.fromEntries(parsed.searchParams);
+    response = await fetch('/api/browser/routing/request', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({verb,body,session:_bwSession})});
   }
-  const response = await fetch(path, options);
   const data = await response.json();
   if (generation !== _bwTargetGeneration) throw new Error('Browser target changed; retry on the selected target');
+  if (data.route) document.getElementById('bw-routing-status').textContent = 'Active: ' + data.route.backend + ' · ' + data.route.profile + ' · ' + (data.route.attempts || []).map(a => a.backend + ': ' + a.verdict).join(' → ');
   if (!response.ok || data.error) throw new Error(data.error || ('HTTP ' + response.status));
   return { ok: true, json: async () => data };
 }
@@ -48567,7 +48613,7 @@ function _bwShowProfile(profile, auto) {
   if (!el) return;
   if (!profile) { el.style.display = 'none'; return; }
   el.style.display = '';
-  el.textContent = (auto ? '🔒 auto: ' : '🔓 ') + profile;
+  el.textContent = (auto ? 'Auto profile: ' : 'Profile: ') + profile;
   el.style.background = 'var(--surface)';
   el.style.border = '1px solid var(--border)';
   el.style.color = 'var(--fg)';
@@ -48584,7 +48630,6 @@ async function _bwGo() {
     const body = { url, session: _bwSession };
     const backend = _bwBackend();
     if (backend.startsWith('ios:')) body.udid = backend.slice(4);
-    else if (backend) body.backend = backend;
     else if (profile) body.profile = profile;   // empty = auto-select by URL
     const r = await _bwFetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
@@ -48652,6 +48697,7 @@ async function _bwScreenshot(retries, silent) {
     const r = await _bwFetch('/api/browser/screenshot?session=' + _bwSession + '&t=' + Date.now());
     const d = await r.json();
     if (d.path) {
+      if (d.width && d.height) _bwViewport = {w:d.width,h:d.height};
       if (d.viewport) _bwViewport = d.viewport;
       const img = document.getElementById('bw-img');
       img.onerror = () => _bwViewportFail('the screenshot could not be loaded');

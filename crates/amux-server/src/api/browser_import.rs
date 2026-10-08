@@ -390,11 +390,16 @@ fn do_import(
         .join("playwright-auth")
         .join("profiles")
         .join(destination);
-    std::fs::create_dir_all(&dest_dir)
+    if dest_dir.exists() {return Err("destination already exists; import into a new profile to preserve its current logins".into());}
+    let stage=dest_dir.with_file_name(format!(".{}-import-{}",destination,ulid::Ulid::new()));
+    std::fs::create_dir_all(&stage)
         .map_err(|e| format!("cannot create destination profile: {e}"))?;
 
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup { fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);} }
+    let _cleanup=Cleanup(stage.clone());
     // Write cookies as a Playwright-compatible cookies.json
-    let cookies_file = dest_dir.join("cookies.json");
+    let cookies_file = stage.join("cookies.json");
     let json_cookies: Vec<Value> = cookies
         .iter()
         .map(|c| {
@@ -421,7 +426,7 @@ fn do_import(
     .map_err(|e| format!("cannot write cookies.json: {e}"))?;
 
     // Also write a Playwright state.json that Playwright's storageState expects
-    let state_file = dest_dir.join("state.json");
+    let state_file = stage.join("state.json");
     let state = json!({
         "cookies": json_cookies,
         "origins": [],
@@ -432,6 +437,14 @@ fn do_import(
     )
     .map_err(|e| format!("cannot write state.json: {e}"))?;
 
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [&cookies_file,&state_file] {std::fs::set_permissions(p,std::fs::Permissions::from_mode(0o600)).map_err(|e|format!("protecting cookie import: {e}"))?;}
+    }
+    if dest_dir.exists(){let _=std::fs::remove_dir_all(&stage);return Err("destination appeared during import; refusing to replace it".into());}
+    std::fs::rename(&stage,&dest_dir).map_err(|e|format!("publishing cookie import: {e}"))?;
+    crate::integrations::browser::registry_register(&home,destination,"",&format!("Imported from {} / {}; pending first-launch validation",desc.name,profile_name)).map_err(|e|format!("registering imported profile: {e}"))?;
+    warnings.push("Cookies are installed and verified on first launch. This import does not include localStorage or IndexedDB; use a full Chrome profile snapshot for those logins.".into());
     if imported_count == 0 {
         warnings.push("no cookies found in the source profile".to_string());
     }

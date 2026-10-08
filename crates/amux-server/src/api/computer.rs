@@ -312,13 +312,15 @@ async fn context_payload() -> Value {
     .await
     .unwrap_or_default();
     let lim = cu::limits();
+    let cards:Vec<Value>=crate::integrations::browser::list_profiles(&crate::integrations::browser::amux_home(),false).iter().filter(|p|!matches!(p.role.as_str(),"test"|"deprecated")).map(super::browser::profile_selection_card).collect();
     json!({
-        "text": cu::context_text(&profiles, &lim),
+        "text": format!("{}\nProfile selection cards (check scope before use): {}",cu::context_text(&profiles, &lim),serde_json::to_string(&cards).unwrap_or_default()),
+        "selection_cards":cards,
         "profiles": profiles.iter().map(|(n, h)| json!({"name": n, "top_sites": h})).collect::<Vec<_>>(),
         "profiles_note": "top six sites per profile by cookie count; full lists at GET /api/browser/profiles",
         "ladder": [
             "1. amux browser: /api/browser/* on amux Chrome profiles",
-            "2. CDP into Ethan's real Chrome (chrome-cdp skill)",
+            "2. CDP using the owner-selected Chrome fallback in Browser tab",
             "3. amux computer: this sandbox, only when 1 and 2 cannot reach it",
         ],
         "routes": CATALOG,

@@ -23,6 +23,7 @@ pub mod branding;
 pub mod brex;
 pub mod browser;
 pub mod browser_import;
+pub mod browser_routing;
 pub mod browser_scope;
 pub mod calendar;
 pub mod channels;

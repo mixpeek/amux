@@ -2255,6 +2255,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     // -- browser
     RouteEntry {
+        path: "/api/browser/routing/config",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/browser/routing/request",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/browser/start",
         methods: &["POST"],
     },

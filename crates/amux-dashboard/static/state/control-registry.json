@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2464,
+  "n_considered": 2466,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -356,6 +356,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_bwClearInspect": {
+      "kind": "command._bwClearInspect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bwClick": {
       "kind": "command._bwClick",
       "feedback_required": true,
@@ -364,6 +370,18 @@
     },
     "_bwClickIndex": {
       "kind": "command._bwClickIndex",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwFetch": {
+      "kind": "command._bwFetch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwFetchViewport": {
+      "kind": "command._bwFetchViewport",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -404,6 +422,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_bwLoadElements": {
+      "kind": "command._bwLoadElements",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwLoadInspect": {
+      "kind": "command._bwLoadInspect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bwLoadTargets": {
       "kind": "command._bwLoadTargets",
       "feedback_required": true,
@@ -422,8 +452,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_bwRefreshInspect": {
+      "kind": "command._bwRefreshInspect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bwSaveProfile": {
       "kind": "command._bwSaveProfile",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwSaveRouting": {
+      "kind": "command._bwSaveRouting",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -454,6 +496,18 @@
     },
     "_bwStopLive": {
       "kind": "command._bwStopLive",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwToggleElements": {
+      "kind": "command._bwToggleElements",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwToggleInspect": {
+      "kind": "command._bwToggleInspect",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

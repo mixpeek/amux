@@ -1743,10 +1743,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <!-- Nav row -->
   <div class="bw-row" style="padding-top:8px;">
     <select id="bw-backend" class="bw-in" style="min-width:104px;max-width:100%;" onchange="_bwOnBackend()" aria-label="Browser operating system and device" title="Browser on the server machine">
-      <option value="">Desktop Chrome</option>
+      <option value="">Amux → CDP → CUA</option>
     </select>
     <button id="bw-ios-stop" class="bw-btn" style="display:none;" onclick="_bwStopIos()">Stop Safari</button>
-    <select id="bw-profile" class="bw-in" style="min-width:120px;" title="Profile — 'Auto' matches the URL to a logged-in profile">
+    <select id="bw-profile" class="bw-in" style="min-width:120px;max-width:100%;" title="Profile identity and purpose — select before Go">
       <option value="">Auto profile</option>
     </select>
     <button class="bw-btn" onclick="_bwBack()" title="Back">&larr;</button>
@@ -1759,6 +1759,17 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <button class="bw-btn" data-bw-chrome onclick="_bwImportProfile()" title="Import cookies from Chrome, Firefox, etc.">&#8615; Import</button>
     <button class="bw-btn" data-bw-chrome onclick="_bwSaveProfile()" title="Register current site to a profile">&#128190; Save</button>
   </div>
+  <details id="bw-routing" style="margin:0 8px 8px;padding:8px;border:1px solid var(--border);border-radius:6px;" data-bw-chrome>
+    <summary>Browser route settings</summary>
+    <div class="bw-row" style="margin-top:8px;">
+      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
+      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
+      <label><input id="bw-cua-enabled" type="checkbox"> Use CUA if both browser routes fail</label>
+      <button class="bw-btn" onclick="_bwSaveRouting()">Save route</button>
+    </div>
+    <p style="font-size:0.75rem;color:var(--dim);">Select a saved profile above, then Go. CDP keeps an isolated copy of the Chrome profile selected here. CUA transfers saved cookies; site access is verified when opened.</p>
+    <div id="bw-routing-status" role="status" style="font-size:0.75rem;"></div>
+  </details>
   <!-- Status / logged-in indicator -->
   <div class="bw-row" style="padding-bottom:4px;">
     <span id="bw-session" title="Whose browser you are viewing (set by a #browser= deep link)" style="display:none;font-size:0.7rem;padding:2px 8px;border-radius:10px;background:var(--accent);color:#fff;font-weight:500;"></span>
