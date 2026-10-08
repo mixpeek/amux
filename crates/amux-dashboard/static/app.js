@@ -25528,7 +25528,8 @@ async function _fileSave() {
       if (_fileData._isNew) {
         _fileData._isNew = false;
         document.getElementById('file-title').textContent = _fileData.path.split('/').pop();
-        loadFiles(_filesPath); // refresh file list
+        loadFiles(_filesPath);
+        if (activeView === 'scratchpad') _scratchpadLoad();
       }
       btn.textContent = 'Saved!';
       setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
@@ -26514,7 +26515,7 @@ function _filesNewFile() {
 }
 
 // ═══════ SCRATCHPAD ═══════
-const _SP_ROOT = '.amux/scratchpad';
+const _SP_ROOT = '~/.amux/scratchpad';
 let _spPath = _SP_ROOT;
 let _spLastData = null;
 let _spLoadGen = 0;
@@ -26658,7 +26659,7 @@ async function _scratchpadNewFolder() {
   if (!name || !name.trim()) return;
   const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
   try {
-    await fetch(API + '/api/files/mkdir', {
+    await fetch(API + '/api/fs/mkdir', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: dirPath })
     });
