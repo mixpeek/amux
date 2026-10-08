@@ -6957,7 +6957,14 @@ pub async fn get_item(
         let verified_gate = bs::effective_gate_trail(&conn, &row, TaskStatus::Verified, &groups);
         let verification = crate::db::verification_store::coverage(&conn, &row, &verified_gate.criteria)?;
         let attempts = crate::db::attempts::list_for_card(&conn, &row.id)?;
-        Ok(Some((row, children, messages, artifacts, asset_links, gate_requirements, verification, attempts)))
+        // gs12-model, GM-140, 2026-10-08: after `board doing --verify-cmd` the
+        // card GET carried the command nowhere, so a lane could not read back
+        // what froze. The frozen contract rides on the card it governs.
+        let contract = super::contract::load(&conn, &row.id)?.map(|c| json!({
+            "frozen": !c.is_uncontracted(), "state": c.state, "verify_cmd": c.command,
+            "verify_kind": c.kind, "deploy_check": c.deploy_check, "amended": c.amended, "sha": c.sha,
+        }));
+        Ok(Some((row, children, messages, artifacts, asset_links, gate_requirements, verification, (attempts, contract))))
     })
     .await;
     match joined {
@@ -6969,7 +6976,7 @@ pub async fn get_item(
             asset_links,
             gate_requirements,
             verification,
-            attempts,
+            (attempts, contract),
         )))) => {
             // Weak ETag for read-modify-write callers (AMUX-1711 parity).
             let mut headers = HeaderMap::new();
@@ -6983,6 +6990,7 @@ pub async fn get_item(
             body["asset_links"] = json!(asset_links);
             body["gate_requirements"] = json!(gate_requirements);
             body["verification"] = verification;
+            body["contract"] = contract.unwrap_or_else(|| json!({"frozen": false}));
             // AMUX-4956: `done` means implemented, not delivered. Measured
             // 2026-09-20: three fan-out deliverables, ONE on origin/main, board
             // reported three of three done.
@@ -14827,6 +14835,18 @@ pub async fn patch_item(
                                 "set the card's type to code first (PATCH {\"type\":\"code\"}) if it really ships code, or leave the field out"
                             },
                         })),
+                        // gs12-model, GM-184, 2026-10-08: verify_command,
+                        // verify_method and verification were each refused 422,
+                        // and the refusal pointed at ignored_hints, which was empty.
+                        "verify_command" | "verify_method" | "verification" | "verify" | "verify_cmdline" => {
+                            tracing::info!(sent = %k, measured = true, n_considered = 1, verdict = "board_patch_verify_alias_hinted",
+                                "a misnamed verify-command key was refused; the hint names verify_cmd and the CLI flag");
+                            Some(json!({
+                                "sent": k,
+                                "meant": "verify_cmd",
+                                "how": "`amux board doing <ID> --verify-cmd '<command>'`, or PATCH {\"status\":\"doing\",\"verify_cmd\":\"...\"} in one request: the command freezes with the acceptance criteria as the card enters doing",
+                            }))
+                        }
                         "trigger" => Some(json!({
                             "sent": "trigger",
                             "meant": ["source_ref", "last_verified_at"],
@@ -14860,8 +14880,11 @@ pub async fn patch_item(
                 // A top-level reason, so the 422 explains itself without the
                 // caller digging the card body or the interaction record.
                 let names: Vec<String> = ignored.iter().map(|k| k.to_string()).collect();
+                // Point at ignored_hints only when it exists (GM-184: it was
+                // named and absent).
+                let see = if body.get("ignored_hints").is_some() { "see ignored_hints" } else { "no field of that name exists; see ignored_note" };
                 body["error"] = json!(format!(
-                    "nothing was written: {} {} not writable on this card (see ignored_hints)",
+                    "nothing was written: {} {} not writable on this card ({see})",
                     names.join(", "),
                     if names.len() == 1 { "is" } else { "are" }
                 ));
@@ -15589,6 +15612,10 @@ mod af701_archive_guard_tests {
         assert_eq!(route(&state, &id, me(), json!({"status": "doing", "acceptance_criteria": ["ok.txt exists"]})).await, StatusCode::OK);
         let frozen = super::super::contract::load(&store.read().unwrap(), &id).unwrap().expect("contract frozen at doing");
         assert_eq!(frozen.command, "test -f ok.txt");
+        // GM-140: the card GET carries what froze.
+        let got = get_item(State(state.clone()), Path(id.to_string()), HeaderMap::new()).await;
+        let got: Value = serde_json::from_slice(&to_bytes(got.into_body(), 1 << 22).await.unwrap()).unwrap();
+        assert_eq!((got["contract"]["frozen"].as_bool(), got["contract"]["verify_cmd"].as_str()), (Some(true), Some("test -f ok.txt")), "{}", got["contract"]);
         assert_eq!(route(&state, &id, me(), json!({"verify_cmd": "true"})).await, StatusCode::CONFLICT, "a worker cannot edit a frozen contract");
         assert_eq!(route(&state, &id, me(), json!({"status": "done", "force": true, "reason": "x"})).await, StatusCode::FORBIDDEN);
 
