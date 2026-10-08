@@ -7980,3 +7980,15 @@ body.light .bd-answer-head { color: #bc4c00; }
   .sp-actions .fe-tb-btn span { display:none; }
   .sp-copy-btn { min-width:44px; min-height:44px; }
 }
+/* Scratchpad rows carry two actions (copy, menu); the shared 30px column
+   overflowed every row by 10px and pushed both off-screen. */
+#scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
+  grid-template-columns: minmax(0,1fr) 60px 92px 72px;
+}
+#scratchpad-view .fe-cell-actions { display:flex; gap:4px; justify-content:flex-end; align-items:center; }
+@media (max-width: 600px) {
+  #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
+    grid-template-columns: minmax(0,1fr) 92px 96px;
+  }
+  #scratchpad-view .fe-cell-size { display:none; }
+}

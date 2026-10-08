@@ -5478,3 +5478,14 @@ CARD: GE1-33 (mixpeek, gs12-extra-1's board)
 SYMPTOM: GE1-33's done request (PATCH status done with evidence, gate_checked and left_undone, 202) was granted by harness:contract at 21:35:54Z (attempt 33, outcome done, "Server-verified (contract rule 2) at 815cfa20dd6"). The lane's Claude Code session was then recycled, and the restart prompt read "[amux auto-pickup] Claimed GE1-33, resume this still-owned task now". At 21:37:03Z attempt 34 started with gs12-extra-1 holding the lease, and the log reads "terminal summary retired on reopen to doing; prior Final outcome remains in history". Nothing the lane did moved it; the pickup chose the card while the done grant was landing, and its claim reopened it.
 COST: a verified-done card back in doing with the done line retired, found only by reading the attempts list, and a second done request that re-ran the frozen cargo verify (minutes of compile on a host at load 35 to 50). A lane that trusted the restart prompt would have redone finished work.
 FIX: a pickup must never claim a card whose status is terminal or whose contract state is verifying or granted; read the card's status inside the same transaction as the claim, and drop a restart's "resume" target that is already done.
+
+## amux browser resize reports a phone viewport while the page keeps its desktop width
+AREA: browser
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5744
+SYMPTOM: Testing the scratchpad at phone width, POST /api/browser/resize {"width":390,"height":844} and POST /api/browser/action {"action":"viewport","device":"iphone"} both answered ok with measured {"w":390,"h":844}. An immediate /api/browser/eval of innerWidth returned 756, the layout stayed desktop (no 600px media query applied), and the screenshot was 756 wide. Repeated three times across both routes.
+COST: The mobile half of a UI verification could not be done in the amux browser, so the phone-width check had to be reported as not done. The "measured" field reads as proof the viewport changed when the page never saw it.
+FIX: Make measured come from the page (window.innerWidth after the emulation call, on the same target eval uses), and apply the emulation to that target. Add a test that resizes, then evals innerWidth.
