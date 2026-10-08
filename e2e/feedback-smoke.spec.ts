@@ -7,7 +7,8 @@
 // Runs against the throwaway-AMUX_HOME Rust server from playwright.config.ts —
 // never the live server. Both projects run it, so every action here is also
 // exercised at 375px (mobile-first); each test ends with an overflow check.
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 import { clickSnapped } from './helpers';
 
 // The clipboard permission is granted INSIDE the one test that needs it, not

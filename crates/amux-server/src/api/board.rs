@@ -16477,7 +16477,8 @@ mod af701_archive_guard_tests {
         assert_eq!(pst(&plain), None, "a non-proof card gets none");
         let queued: i64 = store.read().unwrap()
             .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap();
-        assert_eq!(queued, 1, "the findings are delivered to the lane once");
+        let queued_rows: Vec<(String,String)> = store.read().unwrap().prepare("SELECT id,session FROM steering_queue ORDER BY id").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(queued, 1, "the findings are queued for the lane once; all queue identities={queued_rows:?}, resolved_home={:?}",crate::config::amux_home());
         assert_eq!(super::super::contract::run_prereviews(&state).await, 0, "the same plan is never pre-reviewed twice");
     }
 

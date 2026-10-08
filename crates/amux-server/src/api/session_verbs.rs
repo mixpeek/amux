@@ -8527,6 +8527,12 @@ pub(crate) async fn enqueue_board_conversation(
     .map_err(str::to_string)
 }
 
+// A clock orders messages; it cannot identify concurrent producers. Entropy
+// keeps independent receipts distinct even at the exact same clock tick.
+fn fresh_steering_id_at(at: std::time::SystemTime) -> String {
+    format!("steer-{}", ulid::Ulid::from_datetime(at))
+}
+
 async fn steer_enqueue_precond_with_id(
     store: &crate::db::SharedStore,
     name: &str,
@@ -8655,7 +8661,7 @@ async fn steer_enqueue_precond_with_id(
     }
     let msg_id = stable_id
         .map(str::to_string)
-        .unwrap_or_else(|| format!("steer-{}", (now_f64() * 1000.0) as i64));
+        .unwrap_or_else(|| fresh_steering_id_at(std::time::SystemTime::now()));
     let id = msg_id.clone();
     // The id we RETURN must be the row that actually exists. When a guarded
     // re-enqueue updates the prior row in place (AMUX-3557) the freshly minted
@@ -8800,7 +8806,7 @@ async fn steer_enqueue_precond_with_id(
                     )?;
                 }
                 conn.execute(
-                    "INSERT OR REPLACE INTO steering_queue\
+                    "INSERT INTO steering_queue\
                      (id, session, text, queued_at, guard, sender, precond_card, precond_rev) \
                      VALUES(?,?,?,?,?,?,?,?)",
                     rusqlite::params![
@@ -8818,7 +8824,10 @@ async fn steer_enqueue_precond_with_id(
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
-    if persisted.is_err() {
+    if let Err(ref error) = persisted {
+        tracing::error!(session = name, message_id = %msg_id, %error,
+            measured = true, n_considered = 1, verdict = "steering_persist_failed",
+            "steering identity or write failed; an existing message was not overwritten");
         return Err("could not persist steering message");
     }
     if should_emit.load(std::sync::atomic::Ordering::SeqCst) {
@@ -23183,12 +23192,13 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                             ("auto_resume_api_window_start", json!(start)),
                             ("auto_resume_api_count", json!(count)),
                         ]);
-                    } else {
-                        // Clear the limit stamps BEFORE the send: the send path's
-                        // `lane_block_reason` still reads a future reset (the
-                        // account case) as rate-limited and would park the
-                        // continue behind the very limit it is resuming. If the
-                        // limit is still real, the next sweep re-stamps it.
+                    } else if reason == "account_changed" {
+                        // An account switch must release the former account's
+                        // future limit. A usage_reset instead retains its passed
+                        // clock through delivery: clearing it here makes the
+                        // same native footer parse as a new future reset, parking
+                        // the continuation behind its own expired limit.
+                        // The observer clears that stamp when the footer leaves.
                         update_meta(name, &[
                             ("rate_limited_since", json!(0)),
                             ("rate_limited_until", json!(0)),
@@ -40425,6 +40435,17 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(!failed_foreground_at_boundary("What do you want to do?\n❯ 1. Stop and wait for limit to reset\n  2. Switch to usage credits",Some("server_error")));
         assert!(!failed_foreground_at_boundary("Permission required\n❯ 1. Allow\n  2. Deny",Some("server_error")));
         assert!(!failed_foreground_at_boundary("API Error: Connection lost mid-response",Some("server_error")),"no visible composer is unmeasured");
+    }
+
+    #[test]
+    fn independent_steering_messages_at_one_clock_tick_keep_distinct_receipts() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let ids: std::collections::HashSet<String> = (0..1024).map(|_| fresh_steering_id_at(at)).collect();
+        assert_eq!(ids.len(),1024,"simultaneous notices cannot overwrite each other's durable queue identity");
+        for id in ids {
+            let token: ulid::Ulid = id.strip_prefix("steer-").unwrap().parse().unwrap();
+            assert_eq!(token.timestamp_ms(),1_790_000_000_000);
+        }
     }
 
     #[test]

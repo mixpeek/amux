@@ -5136,3 +5136,36 @@ CARD: AF-968
 SYMPTOM: At 06:26Z gs12-planes displayed a measured empty composer, a completed parent turn, and the current two-line footer: "Usage limit reached · limit resets 4:50am" followed by capitalized "Continuing automatically at 4:50am · esc to cancel". Its rate-limit metadata remained clear and the fleet reported active because one shell and five agents survived. The detector required the old lowercase interpunct sentence.
 COST: A known quota hold read as productive activity and lacked a durable reset stamp; automated messages could cancel the provider's native continuation before the real reset.
 FIX: Normalize the continuation wording inside the same live composer/chrome anchors; replay the captured split footer through observation, adapter events, preview and actual fleet status with a live-child signal. Keep active-turn, recovered-scrollback and unowned-prose controls.
+
+## Concurrent steering notices could overwrite each other's queue receipt
+AREA: messages
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: CI saved both proof prereview findings but found zero queued notices for one lane. Independently minted queue IDs contained only epoch milliseconds, and INSERT OR REPLACE used that ID as a global primary key. Concurrent producers at one clock tick therefore overwrite another lane's message.
+COST: The producer can report a persisted queue ID after its row has been replaced; the lane loses an advisory that was supposed to save a quality-review round. The CI notice-count assertion waited sixty seconds for data already lost.
+FIX: Entropic time-ordered identities for ordinary enqueues, plain INSERT failing closed on an unexpected collision, preserved caller-supplied idempotence/coalescing, and a named persistence-failure signal. A fixed-clock identity test must fail with the former timestamp-only generator; exercise both simultaneous prereview notices and broad crash recovery before retirement.
+
+## Browser dependency installation exhausted a healthy shard's runner deadline
+AREA: ci
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: PR 236 browser shard four spent 19m13s installing browser OS dependencies, then was cancelled at its thirty-minute job deadline after 110 tests without an assertion failure. Setup consumed the evidence window.
+COST: A cancelled gate and another full build/test cycle despite healthy executed cases.
+FIX: Use the official Playwright image pinned to the lockfile version and OCI digest, keep all projects and existing deadlines, require deterministic npm ci and launch Chromium/WebKit during readiness with named version/executable receipts. A mismatched version or missing browser must fail rather than silently install or skip.
+
+## Clearing an expired reset before transport parked its continuation again
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The real parent/child crash replay admitted a passed quota reset, then cleared its durable reset clock before transport. The unchanged native clock-only footer reparsed as a future limit and the steering consumer deferred the continuation.
+COST: Recovery reported a queued continuation but the parent remained stuck behind the quota it was resuming.
+FIX: Retain the positively observed passed clock through usage-reset delivery; clear future stamps only for account replacement. The actual process replay must observe one delivered continuation, a surviving child, and restart deduplication before retirement.

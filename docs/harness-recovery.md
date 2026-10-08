@@ -187,3 +187,16 @@ Archived project-owner discovery and steering retention use covering indexes, an
 slow retention tables/project reconciliation phases announce their measured latency.
 
 The foreground process replay also holds a future quota reset with a real provider child alive, explicitly advances only its private transcript clock to a passed reset, and observes one normal-consumer continuation across SIGKILL. Unclocked limits remain parked. The provider reset grace and empty-composer/selector checks apply before background work can be ignored.
+
+Usage-reset delivery retains the positively observed passed reset through the
+steering consumer. Clearing it early would reparse unchanged clock-only chrome as
+a future reset. Account replacement alone releases the previous account's future
+stamp; leaving quota chrome clears it normally. Ordinary queue identities include
+entropy even within one clock tick, and unexpected primary-key collisions fail
+with a named persistence error instead of replacing another lane's receipt.
+
+Browser CI uses the official Playwright image pinned to the package-lock version
+and OCI digest. Readiness launches both Chromium and WebKit and records their
+versions and executable paths; a package mismatch fails. All browser projects,
+assertions, retries and runner deadlines remain the same. See
+https://playwright.dev/docs/docker for the upstream image and version requirements.

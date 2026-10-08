@@ -2020,7 +2020,10 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
                 "pre-run review: the proof card's plan misses required measurements; the lane is told before it runs");
             let text = format!("[amux pre-run review] {card}: before you run, these required measurements are missing from the plan:\n{}\n\nThe card is not blocked; this is to save a review round.",
                 findings.iter().map(|x| format!("- {x}")).collect::<Vec<_>>().join("\n"));
-            let _ = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-prereview", ACTOR).await;
+            if let Err(reason) = crate::api::session_verbs::steer_enqueue(state, &lane, &text, "contract-prereview", ACTOR).await {
+                tracing::warn!(card, lane, hash, reason, measured = true, n_considered = 1,
+                    verdict = "contract_prereview_notice_refused", "findings remain on the card; the lane notification was not queued");
+            }
         }
         Err(why) => tracing::warn!(card, lane, hash, measured = false, n_considered = 1, verdict = "contract_prereview_unmeasured",
             why_unmeasured = %tail(&why, 300), "pre-run review produced no verdict; the card is unaffected"),
