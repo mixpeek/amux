@@ -18623,6 +18623,18 @@ async fn peek_response_at(
     };
     let is_alt = tmux_alt_screen(name).await;
     let has_codex_history = matches!(provider.as_str(), "codex" | "ollama");
+    // THIN PASS-THROUGH (Ethan, 2026-10-08: "how we display shit should be
+    // extremely thin pass through"). A Claude pane on the NORMAL screen
+    // (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1) keeps its real scrollback in
+    // tmux, so the peek shows exactly what the terminal drew: history is the
+    // scrollback above the screen, live is the screen. No transcript
+    // re-render, no overlap trim. The alternate-screen path below stays for
+    // panes still on it (tmux keeps no scrollback there).
+    if provider == "claude" && !is_alt && session_backend(name) != "herdr" {
+        if let Some(resp) = tmux_scrollback_peek(name).await {
+            return resp;
+        }
+    }
     // Saved Claude history must survive normal-screen mode after resume.
     if is_alt || has_codex_history || provider == "claude" {
         let mut history_measurement = None;
@@ -18752,6 +18764,35 @@ async fn peek_response_at(
         output
     };
     json!({"name": name, "output": collapse_blank_runs(&fallback)})
+}
+
+/// The peek for a normal-screen pane, straight from tmux: `history` is the
+/// scrollback above the visible screen (`-E -1` ends at the last scrollback
+/// line, so nothing is shown twice) and `live` is the screen. `None` when
+/// tmux cannot be read, so the caller falls back rather than showing nothing.
+async fn tmux_scrollback_peek(name: &str) -> Option<Value> {
+    let ptq = pt(name);
+    let hist = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-e", "-S", "-20000", "-E", "-1"], CAPTURE_TIMEOUT).await?;
+    let screen = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-e"], CAPTURE_TIMEOUT).await?;
+    if !hist.status.success() || !screen.status.success() {
+        return None;
+    }
+    let history = String::from_utf8_lossy(&hist.stdout).trim_end().to_string();
+    let live = String::from_utf8_lossy(&screen.stdout).trim_end().to_string();
+    let hl = history.lines().count();
+    let ol = live.lines().count();
+    tracing::debug!(session = name, history_lines = hl, measured = true, n_considered = hl + ol,
+        verdict = "peek_tmux_scrollback", "peek served from tmux scrollback (normal screen)");
+    Some(json!({
+        "name": name,
+        "history": history,
+        "live": if live.is_empty() { "(no output)".to_string() } else { live.clone() },
+        "output": live,
+        "output_lines": ol,
+        "history_lines": hl,
+        "history_source": "tmux-scrollback",
+        "output_is_viewport_only": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------

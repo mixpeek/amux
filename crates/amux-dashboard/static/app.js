@@ -13996,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1268';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1269';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15035,7 +15035,7 @@ function openPeek(name, opts) {
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
-  _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
+  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false;   // and its transcript history
   // CRITICAL: also drop the previous session's rendered live frame — the region
   // painter renders _lastLiveHTML directly, so a stale value briefly showed the
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
@@ -16495,7 +16495,14 @@ function _linkifyPaths(safeHtml) {
 // ONE peek render pipeline. The four call sites each spelled the chain out, so
 // adding a stage meant finding all of them — which is how the path linkifier
 // would have been half-wired.
+// THIN PASS-THROUGH (Ethan, 2026-10-08). When the server serves the peek from
+// tmux's own scrollback (history_source "tmux-scrollback": a Claude pane on the
+// normal screen), the terminal already drew everything, so the peek only turns
+// colour codes into HTML and makes links clickable: no prompt labels, no tool
+// collapsing, no rule rewriting, no composer split, no overlap trim.
+let _peekThin = false;
 function _peekHtml(raw) {
+  if (_peekThin) return _linkifyPaths(ansiToHtml(raw));
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
 
@@ -16619,6 +16626,7 @@ function _draftEchoesSteering(input) {
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
 function _peekLiveHtml(raw) {
+  if (_peekThin) return _linkifyPaths(ansiToHtml(raw));
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
@@ -17521,11 +17529,12 @@ async function _refreshPeekFrame(liveOnly, request) {
     const rawOutput = (data.live != null) ? data.live : (data.output || '(no output)');
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
     if (typeof rawOutput !== 'string' || (histRaw !== null && typeof histRaw !== 'string')) throw new Error('Malformed terminal frame');
+    if (histRaw !== null) _peekThin = data.history_source === 'tmux-scrollback';
     const overlapBase = histRaw !== null ? histRaw : _peekHistoryRaw;
     // A delayed history response may add history, but must not rewind a
     // newer live frame. Trim against the history actually displayed here;
     // live requests skip the server's expensive transcript read entirely.
-    const output = _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
+    const output = _peekThin ? (staleLive ? _lastPeekRaw : rawOutput) : _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
     const acceptFrame = () => {
       if (!_peekFrameSequence) {
         _peekPollBeacon('first-frame', name, { elapsed_ms: Math.round(performance.now() - _peekFirstFrameAt),
