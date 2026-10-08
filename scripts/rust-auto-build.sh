@@ -79,27 +79,34 @@ sync_bash_cli() {
   rm -f "$tmp"
 }
 
-# Hook-only fixes also ship on authorized ticks, even without a Rust rebuild.
+# Existing worker helpers also ship on authorized ticks without a Rust rebuild.
 # Replace only existing regular files: no settings changes or isolated-worker
 # hook enrollment. Read exact elected bytes, validate and verify the rename.
 sync_observed_edits_hooks() {
-  local sha="$1" half rel dest tmp
-  for half in pre post; do
-    rel="scripts/claude-hooks/observed-edits-${half}.py"
-    dest="${AMUX_OBSERVED_HOOK_DIR:-$HOME/.amux/hooks}/observed-edits-${half}.py"
+  local sha="$1" half rel dest tmp mode verdict
+  for half in pre post orchestrate; do
+    mode=0755; verdict=observed_hook
+    if [ "$half" = orchestrate ]; then
+      rel=".claude/commands/orchestrate.md"
+      dest="${AMUX_CLAUDE_COMMAND_DIR:-$HOME/.claude/commands}/orchestrate.md"
+      mode=0644; verdict=orchestration_command
+    else
+      rel="scripts/claude-hooks/observed-edits-${half}.py"
+      dest="${AMUX_OBSERVED_HOOK_DIR:-$HOME/.amux/hooks}/observed-edits-${half}.py"
+    fi
     [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$(dirname "$dest")" ] || continue
     tmp="$(mktemp "$(dirname "$dest")/.observed-hook.XXXXXX")" || continue
     if ! git -C "$REPO" show "${sha}:${rel}" > "$tmp" 2>/dev/null \
-       || ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$tmp" 2>/dev/null; then
-      echo "== OBSERVED HOOK SYNC FAILED sha=$sha half=$half verdict=observed_hook_source_invalid" >> "$LOG"
+       || { [ "$half" != orchestrate ] && ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$tmp" 2>/dev/null; }; then
+      echo "== WORKER HELPER SYNC FAILED sha=$sha half=$half verdict=${verdict}_source_invalid" >> "$LOG"
       rm -f "$tmp"; continue
     fi
     if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; continue; fi
-    if chmod 0755 "$tmp" && mv -f "$tmp" "$dest" \
+    if chmod "$mode" "$tmp" && mv -f "$tmp" "$dest" \
        && git -C "$REPO" show "${sha}:${rel}" | cmp -s - "$dest"; then
-      echo "== OBSERVED HOOK SYNCED sha=$sha half=$half verdict=observed_hook_synced" >> "$LOG"
+      echo "== WORKER HELPER SYNCED sha=$sha half=$half verdict=${verdict}_synced" >> "$LOG"
     else
-      echo "== OBSERVED HOOK SYNC FAILED sha=$sha half=$half verdict=observed_hook_sync_failed" >> "$LOG"
+      echo "== WORKER HELPER SYNC FAILED sha=$sha half=$half verdict=${verdict}_sync_failed" >> "$LOG"
     fi
     rm -f "$tmp"
   done

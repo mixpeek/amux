@@ -90,18 +90,16 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
     await panel.locator('[data-worker-config="mcp"]').getByRole('button', { name: 'Edit' }).click();
     await Promise.all([configWrite(), page.locator('#edit-select').selectOption('')]);
 
-    // Permission value path: unlike the old all-or-nothing toggle, the UI can
-    // express an exact allow-list and clear it again.
-    await panel.locator('[data-worker-config="cross_group"]').getByRole('button', { name: 'Edit' }).click();
-    await page.locator('#edit-input').fill('e2e-destination');
-    await Promise.all([configWrite(), page.locator('#edit-overlay').getByRole('button', { name: 'Save' }).click()]);
-    await expect.poll(async () => {
-      const rows = await getSessionsResilient(request, auth);
-      return (await rows.json()).find((s: any) => s.name === name)?.spans_groups_value;
-    }, settled).toBe('e2e-destination');
-    await panel.locator('[data-worker-config="cross_group"]').getByRole('button', { name: 'Edit' }).click();
-    await page.locator('#edit-input').fill('');
-    await Promise.all([configWrite(), page.locator('#edit-overlay').getByRole('button', { name: 'Save' }).click()]);
+    // Worker messaging has a hard group boundary; a configuration control
+    // must not advertise a legacy allowance as an effective permission.
+    const messaging = panel.locator('[data-worker-config="cross_group"]');
+    await expect(messaging).toContainText('Shared groups only');
+    await expect(messaging.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    const widening = await request.patch('/api/sessions/' + name + '/config', {
+      headers: auth, data: { send_allow: '*' },
+    });
+    expect(widening.status()).toBe(403);
+    expect((await widening.json()).code).toBe('worker_group_boundary');
 
     // The server advertises seven worker-level capabilities. Every one must
     // open the shared editor; the old UI offered a button only for text and

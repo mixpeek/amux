@@ -49,6 +49,13 @@ try {
   // override is a negative control and is recorded by its content hash.
   const source = path.join(amux.root, 'hook-source');
   fs.mkdirSync(path.join(source, 'scripts', 'claude-hooks'), {recursive: true});
+  const commands = path.join(amux.root, 'private-commands');
+  fs.mkdirSync(commands);
+  fs.mkdirSync(path.join(source, '.claude', 'commands'), {recursive: true});
+  fs.copyFileSync(path.join(repo, '.claude', 'commands', 'orchestrate.md'), path.join(source, '.claude', 'commands', 'orchestrate.md'));
+  const command = path.join(commands, 'orchestrate.md');
+  fs.writeFileSync(command, 'stale orchestration command\n');
+  const commandBefore = fs.statSync(command).ino;
   for (const half of ['pre', 'post']) {
     const src = half === 'post' && process.env.AMUX_CHAOS_OBSERVED_HOOK
       ? process.env.AMUX_CHAOS_OBSERVED_HOOK : path.join(repo, 'scripts', 'claude-hooks', `observed-edits-${half}.py`);
@@ -63,15 +70,27 @@ try {
   check('actual builder hook consumer exists', !!sync);
   const before = fs.statSync(path.join(hooks, 'observed-edits-post.py')).ino;
   const deployLog = path.join(amux.root, 'hook-sync.log');
-  const syncEnv = {...amux.env, REPO: source, LOG: deployLog, AMUX_OBSERVED_HOOK_DIR: hooks};
+  const syncEnv = {...amux.env, REPO: source, LOG: deployLog, AMUX_OBSERVED_HOOK_DIR: hooks, AMUX_CLAUDE_COMMAND_DIR: commands};
   execFileSync('bash', ['-euo', 'pipefail', '-c', sync + '\nsync_observed_edits_hooks "$1"', 'fixture', sha], {env: syncEnv});
   check('committed hooks installed by rename and verified', ['pre', 'post'].every(half =>
     fs.readFileSync(path.join(source, 'scripts', 'claude-hooks', `observed-edits-${half}.py`)).equals(fs.readFileSync(path.join(hooks, `observed-edits-${half}.py`))))
     && fs.statSync(path.join(hooks, 'observed-edits-post.py')).ino !== before
     && fs.readFileSync(deployLog, 'utf8').includes('verdict=observed_hook_synced'));
   const installedInode = fs.statSync(path.join(hooks, 'observed-edits-post.py')).ino;
+  check('existing orchestrate command adopts exact committed source atomically',
+    fs.readFileSync(command).equals(fs.readFileSync(path.join(source, '.claude', 'commands', 'orchestrate.md')))
+    && fs.statSync(command).ino !== commandBefore
+    && fs.readFileSync(deployLog, 'utf8').includes('verdict=orchestration_command_synced'));
+  const commandInode = fs.statSync(command).ino;
   execFileSync('bash', ['-euo', 'pipefail', '-c', sync + '\nsync_observed_edits_hooks "$1"', 'fixture', sha], {env: syncEnv});
   check('unchanged committed hook needs no replacement', fs.statSync(path.join(hooks, 'observed-edits-post.py')).ino === installedInode);
+  check('unchanged command needs no replacement', fs.statSync(command).ino === commandInode);
+  const protectedFile = path.join(amux.root, 'protected-command');
+  fs.writeFileSync(protectedFile, 'owner-managed symlink target\n');
+  fs.unlinkSync(command); fs.symlinkSync(protectedFile, command);
+  execFileSync('bash', ['-euo', 'pipefail', '-c', sync + '\nsync_observed_edits_hooks "$1"', 'fixture', sha], {env: syncEnv});
+  check('builder preserves owner-managed command symlinks', fs.lstatSync(command).isSymbolicLink()
+    && fs.readFileSync(protectedFile, 'utf8') === 'owner-managed symlink target\n');
   const created = await amux.req('POST', '/api/sessions', {name, dir, start: false});
   check('private worker created', created.status === 201, created.status);
   fs.appendFileSync(path.join(amux.home, 'sessions', name + '.env'), '\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_RULES_OFF="1,2,3,4,5,6,7,8,9"\nCC_AUTO_PICKUP=0\nCC_AUTO_CONTINUE=0\n');

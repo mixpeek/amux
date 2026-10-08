@@ -52,6 +52,28 @@ their existing boundaries. Isolation remains direct owner transport plus
 passive lifecycle observation and its documented owner-configured exceptions.
 A shared board does not authorize peer steering, spending or outbound actions.
 
+Worker-origin input requires a shared group at admission and again before
+pending delivery. Sender wildcards, receiver-open settings, historic replies,
+old approval grants and the legacy enforcement toggle cannot widen membership.
+Direct owner and self input remain permitted. Canonical group fan-out checks
+all recipients before persisting a parent or child. Board routing, review
+callbacks and steering preserve the original worker identity. A pending refusal
+retains its body and an audit record, releases the FIFO, and never claims delivery.
+The dashboard and both configuration routes report this enforced policy.
+Harness bug reports belong in `frustrations.md` and linked `amux-frustrations`
+cards with evidence; they must not become unsolicited prompts to another group.
+
+An owner can set `CC_RECEIVE_DENY=group-a,group-b` in a receiver's scoped
+environment to exclude worker input from those groups (`*` excludes all peers).
+This exclusion wins over sender wildcards, open receivers and reply exemptions.
+Owner and self input stay permitted. Pending, unattempted input receives a
+durable refusal without reaching the provider; its text and origin remain in
+steering history across controller recovery. Pending native message commands
+record a failed command before calling the provider, retain the message body,
+and allow subsequent owner input to progress. File harness bugs in the Amux
+repository's `frustrations.md` with a linked amux-frustrations card and evidence;
+do not reroute a refused report to another harness worker.
+
 ## Durable scheduler scripts
 
 Prefer a shell schedule for deterministic work. For a **self-contained** script,

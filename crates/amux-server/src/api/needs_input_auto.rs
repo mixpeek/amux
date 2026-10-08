@@ -600,8 +600,12 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
         // cannot grant itself a host change, an approval for an unnamed thing,
         // or a public surface (AH-391, 2026-10-06: a launchd removal was sent
         // back as "yours to do").
-        let owner_only = matches!(why, "public_surface" | "host_service" | "no_artifact_named" | "owner_voice");
-        if policy.send_back && !owner_only && can_send_back(item) {
+        // Only an actual credential/access step belongs on the access ladder.
+        // MO-4465: "Can you change the group setting?" is an owner action,
+        // not a credential ask the worker can perform by dropping its header.
+        let access_step = matches!(item["ask_type"].as_str(), Some("credential" | "access"))
+            && matches!(why, "credential_or_access" | "owner_must_act");
+        if policy.send_back && access_step && can_send_back(item) {
             return Decision::SendBack(why);
         }
         return Decision::Never(why);

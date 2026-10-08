@@ -180,7 +180,7 @@ printf '# uncommitted hook\n' > "$AUTH/scripts/claude-hooks/observed-edits-post.
 run_builder "$AUTH"
 expect grep -q '^# new elected hook$' "$FAKE_HOME/.amux/hooks/observed-edits-post.py"
 expect test "$(grep -c '^build ' "$TRACE")" = 2
-expect grep -q "OBSERVED HOOK SYNCED sha=$HOOK_SHA half=post" "$LOG"
+expect grep -q "WORKER HELPER SYNCED sha=$HOOK_SHA half=post" "$LOG"
 git -C "$AUTH" restore scripts/claude-hooks/observed-edits-post.py
 
 # Worker-attributed diagnostic runs must remain offline, while a real install

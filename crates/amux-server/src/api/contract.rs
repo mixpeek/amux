@@ -306,7 +306,12 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
     if body.get("status").and_then(Value::as_str) == Some("cannot_satisfy") {
         return cannot_satisfy(card, body);
     }
-    if card.item_type != "code" {
+    let edits_contract = ["acceptance_criteria", "verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some());
+    // Non-code cards retain evidence-based review unless a caller explicitly
+    // supplies a server check. GE1-42 supplied verify_cmd on an ops proof,
+    // which was silently ignored by the old type-only early return.
+    let explicit_check = ["verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some());
+    if card.item_type != "code" && existing.is_none() && !explicit_check {
         return Action::Pass;
     }
     // The verify command (HOW it is checked) may be amended once by the lane
@@ -327,7 +332,6 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             };
         }
     }
-    let edits_contract = ["acceptance_criteria", "verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some());
     if edits_contract && existing.is_some() && !owner {
         tracing::info!(card = %card.id, lane = %card.lane, measured = true, n_considered = 1,
             verdict = "contract_frozen_edit_refused", "a frozen contract was edited by a worker");
@@ -342,14 +346,12 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
             "force on a contract card is the owner's; a worker's exit is cannot_satisfy".into(),
             json!({"worker": "PATCH {\"status\":\"cannot_satisfy\",\"reason\":\"...\",\"left_undone\":[]}"})));
     }
-    // A card already in doing with no frozen contract (it entered doing before
-    // contracts, or by a route that skipped the freeze) gets one from a PATCH
-    // that carries the fields, so "add acceptance_criteria and verify_cmd,
-    // then request done again" is a path that exists. Before this the fields
-    // passed through untouched and were dropped: verify_cmd is not a card
-    // column (gs12-spend, GS-215, 2026-10-06).
+    // Preparing a contract must persist its fields without claiming the card.
+    // MO-4464: verify_cmd on todo returned 200/applied:false and disappeared.
+    // Use the same freeze path as doing; no second draft-contract store.
     let status = body.get("status").and_then(Value::as_str).unwrap_or("");
-    if card.status == "doing" && existing.is_none() && (status.is_empty() || status == "doing")
+    if matches!(card.status.as_str(), "backlog" | "todo" | "doing") && existing.is_none()
+        && (status.is_empty() || status == card.status)
         && ["acceptance_criteria", "verify_cmd", "verify_kind", "deploy_check"].iter().any(|k| body.get(*k).is_some())
     {
         return freeze_from(card, body, existing, defaults);
@@ -392,8 +394,8 @@ pub fn decide(card: &Card, body: &Value, owner: bool, existing: Option<&Contract
 }
 
 /// Build and freeze a contract from the PATCH, the card and the lane's
-/// defaults, or refuse saying which half is missing. Shared by entering doing
-/// and by adding the contract to a card already in doing.
+/// defaults, or refuse saying which half is missing. Preparing a contract and
+/// entering doing share this path.
 fn freeze_from(card: &Card, body: &Value, existing: Option<&Contract>, defaults: &Defaults) -> Action {
     let acceptance = nonempty(body.get("acceptance_criteria").map(|v| v.to_string()).as_deref().map(|s| s.trim_matches('"')))
         .or_else(|| nonempty(card.acceptance.as_deref()));
@@ -2498,6 +2500,19 @@ mod tests {
         let inline = json!({"status": "doing", "acceptance_criteria": ["it works"], "verify_cmd": "cargo test"});
         assert_eq!(code(&decide(&card("todo", "code", None), &inline, false, None, &dflt(None))), "freeze", "fields in the PATCH count");
         assert_eq!(code(&decide(&card("todo", "chore", None), &b, false, None, &dflt(None))), "pass", "only code cards");
+    }
+
+    #[test]
+    fn preparing_a_todo_contract_persists_the_command_without_claiming_work() {
+        let body = json!({"verify_cmd": "make test", "reason": "prepare the next task"});
+        for status in ["backlog", "todo"] {
+            let c = card(status, "code", Some("it works"));
+            assert_eq!(code(&decide(&card(status, "ops", Some("it works")), &body, false, None, &dflt(None))), "freeze", "an explicit ops check must not disappear");
+            assert_eq!(code(&decide(&card(status, "ops", Some("it works")), &json!({"status":"doing"}), false, None, &dflt(None))), "pass", "ordinary ops cards retain evidence review");
+            assert_eq!(code(&decide(&c, &body, false, None, &dflt(None))), "freeze");
+            assert_eq!(code(&decide(&card(status, "code", None), &body, false, None, &dflt(None))), "409");
+            assert_eq!(code(&decide(&c, &json!({"status":"done"}), false, Some(&frozen()), &dflt(None))), "409");
+        }
     }
 
     #[test]

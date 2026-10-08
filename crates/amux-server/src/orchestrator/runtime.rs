@@ -1652,6 +1652,33 @@ impl Runtime {
             };
             let Some(cmd) = head else { continue };
 
+            // An owner receive-policy change also fences already queued native
+            // messages. Persist a refusal before timing/protocol calls; preserve
+            // the message body and let the next FIFO command progress.
+            if let amux_core::protocol::WorkerCommand::DeliverMessage(message) = &cmd.command {
+                let refused = {
+                    let conn = self.store.read()?;
+                    crate::api::messages::pending_receive_refusal(&conn, message.as_str(), &wid_str)?
+                };
+                if refused.is_some() {
+                    let (id, message, receiver) = (cmd.id.clone(), message.clone(), wid_str.clone());
+                    self.store.write_async(move |conn| {
+                        let Some(reason) = crate::api::messages::pending_receive_refusal(conn, message.as_str(), &receiver)? else {
+                            return Ok(WriteOutcome { applied: false, events: vec![] });
+                        };
+                        crate::db::commands::transition(conn, &id,
+                            amux_core::protocol::CommandTransition::Fail { reason }, 3)?;
+                        Ok(WriteOutcome { applied: true, events: vec![PendingEvent {
+                            entity_type: EntityType::Other("command_receive_refused".into()),
+                            entity_id: id.as_str().to_string(),
+                            mutation: MutationKind::StatusChanged { from: "queued".into(), to: "failed".into() },
+                            payload: None,
+                        }] })
+                    }).await?;
+                    continue;
+                }
+            }
+
             // Timing gate.
             let mut released_after_reset = false;
             let due = match cmd.timing {
@@ -3348,8 +3375,8 @@ mod adherence_tests {
                      VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)",
                     params![
                         id,
-                        r#"{"kind":"human","name":"ethan"}"#,
-                        r#"{"kind":"worker","id":"wrk_x"}"#,
+                        serde_json::to_string(&amux_core::events::Actor::Human { name: "ethan".into() }).unwrap(),
+                        serde_json::to_string(&amux_core::message::MessageTarget::Worker(wid(1))).unwrap(),
                         body,
                         Utc::now().to_rfc3339(),
                         r#"{"state":"queued"}"#

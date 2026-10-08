@@ -33,7 +33,7 @@ use amux_core::protocol::{DeliveryTiming, WorkerCommand};
 use amux_core::revision::{EntityType, MutationKind};
 use amux_core::search::PagedResponse;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -107,6 +107,42 @@ pub(crate) fn message_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Opt
         row_to_message,
     )
     .optional()
+}
+
+pub(crate) fn native_peer_input_refusal(
+    conn: &Connection, origin: &str, target: &str,
+) -> rusqlite::Result<Option<super::session_verbs::PeerInputRefusal>> {
+    if origin.is_empty() || origin == target { return Ok(None); }
+    let Some(source) = queries::get_worker(conn, origin)? else {
+        return Ok(Some(super::session_verbs::PeerInputRefusal { code:"worker_identity_refused",
+            reason:"Pending worker input has no registered sender identity; membership cannot be verified.".into() }));
+    };
+    let Some(receiver) = queries::get_worker(conn, target)? else { return Ok(None); };
+    if let Some(reason) = super::session_verbs::peer_receive_refusal(&source.display_name, &receiver.display_name) {
+        return Ok(Some(super::session_verbs::PeerInputRefusal { code:"peer_receive_denied", reason }));
+    }
+    if source.group_id.is_none() && receiver.group_id.is_none() {
+        return Ok(super::session_verbs::peer_input_refusal(&source.display_name, &receiver.display_name));
+    }
+    let source_groups = source.group_id.into_iter().collect();
+    let receiver_groups = receiver.group_id.into_iter().collect();
+    Ok(super::session_verbs::worker_group_refusal(&source.id, &receiver.id, &source_groups, &receiver_groups))
+}
+
+/// Recheck current group membership before a pending native message delivery.
+pub(crate) fn pending_receive_refusal(conn: &Connection, message: &str, target: &str) -> rusqlite::Result<Option<String>> {
+    let actor: Option<String> = conn.query_row("SELECT from_actor FROM _amux_messages WHERE id=?1",[message],|r|r.get(0)).optional()?;
+    let Some(actor) = actor else { return Ok(None); };
+    let actor: Actor = match serde_json::from_str(&actor) {
+        Ok(actor) => actor,
+        Err(_) => {
+            tracing::warn!(message, target, verdict="message_origin_unreadable", measured=true,n_considered=1,
+                "pending native message has no verifiable sender identity");
+            return Ok(Some("message origin unreadable: pending input cannot be attributed to an owner or a registered worker".into()));
+        }
+    };
+    let Actor::Worker { id } = actor else { return Ok(None); };
+    Ok(native_peer_input_refusal(conn, id.as_str(), target)?.map(|refusal| refusal.reason))
 }
 
 /// Queue the AtTurnBoundary delivery command for one recipient. The
@@ -291,16 +327,14 @@ pub struct CreateMessageBody {
     /// Parent message id, for replies.
     #[serde(default)]
     pub thread: Option<String>,
-    /// Sender as an `Actor` object. Defaults to the owner: the bearer token
-    /// IS the owner's identity on this single-user API. A worker relaying a
-    /// message must pass its own actor — per-caller identity stamping lands
-    /// with auth identities, and until then the default is the honest
-    /// reading of an authenticated request.
+    /// Owner-supplied actor metadata. Worker-origin requests are stamped from
+    /// their authenticated header identity and cannot claim to be the owner.
     #[serde(default)]
     pub from: Option<Value>,
 }
 
 enum CreateOutcome {
+    Refused { code: &'static str, why: String },
     NotFound {
         what: String,
     },
@@ -313,6 +347,7 @@ enum CreateOutcome {
 
 pub async fn create_message(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<CreateMessageBody>,
 ) -> Response {
     if body.body.trim().is_empty() {
@@ -366,6 +401,8 @@ pub async fn create_message(
         None => None,
     };
     let text = body.body;
+    let origin = if super::org::local_member_actor(&headers).is_some() { String::new() }
+        else { super::session_verbs::hdr_worker(&headers) };
 
     let slot: Arc<Mutex<Option<CreateOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -373,6 +410,12 @@ pub async fn create_message(
     let write = state
         .store
         .write_async(move |conn| {
+            let (from, origin) = if origin.is_empty() { (from, origin) } else {
+                let Some(worker) = queries::get_worker(conn, &origin)? else {
+                    return finish(&slot_w, CreateOutcome::Refused { code:"worker_identity_refused", why: "worker sender identity is not registered; use the worker session send route".into() }, no_write());
+                };
+                (Actor::Worker { id: WorkerId::parse(&worker.id).map_err(corrupt)? }, worker.display_name)
+            };
             // Resolve the recipient against current state, inside the writer
             // transaction so it cannot race a delete — through the SAME resolver
             // /api/env/apply uses (ethos D6).
@@ -402,6 +445,20 @@ pub async fn create_message(
                         },
                         no_write(),
                     );
+                }
+            }
+            let recipients = match &target {
+                MessageTarget::Worker(worker) => vec![worker.clone()],
+                MessageTarget::Group(group) => group_members(conn, group)?,
+                MessageTarget::Human => Vec::new(),
+            };
+            // Check the actual recipients before writing the parent or any
+            // fan-out child. Body actor metadata cannot bypass receive policy.
+            for recipient in recipients {
+                if let Some(worker) = queries::get_worker(conn, recipient.as_str())? {
+                    if let Some(refusal) = native_peer_input_refusal(conn, &origin, &worker.id)? {
+                        return finish(&slot_w, CreateOutcome::Refused { code:refusal.code, why:refusal.reason }, no_write());
+                    }
                 }
             }
             if let Some(t) = &thread {
@@ -448,6 +505,8 @@ pub async fn create_message(
     let outcome = slot.lock().expect("outcome slot poisoned").take();
     match outcome {
         None => internal("create produced no outcome"),
+        Some(CreateOutcome::Refused { code, why }) => err(StatusCode::FORBIDDEN,
+            json!({"ok":false,"code":code,"error":why,"submitted":false})),
         Some(CreateOutcome::NotFound { what }) => err(
             StatusCode::NOT_FOUND,
             json!({ "error": "recipient not found", "missing": what }),
@@ -1112,6 +1171,159 @@ mod tests {
             pickup_unowned: false,
             resume_stagger_secs: 5,
         }
+    }
+
+    #[tokio::test]
+    async fn pending_input_with_an_unknown_or_malformed_actor_is_a_refusal_not_a_pump_error() {
+        let (app,store,dir)=app();
+        let _guard=crate::api::settings::test_env::set_home(dir.path());
+        let target=create_worker(&app,"receiver",None).await;
+        let (status,response)=send(&app,"POST","/api/messages",Some(json!({"to":target,"body":"preserved uncertain origin"}))).await;
+        assert_eq!(status,StatusCode::CREATED);
+        let message=response["message"]["id"].as_str().unwrap().to_string();
+        let lost=WorkerId::from_ulid(ulid::Ulid::new());
+        for actor in [serde_json::to_string(&Actor::Worker {id:lost}).unwrap(),"malformed historical actor".to_string()] {
+            let mid=message.clone();
+            store.write(move |conn| {
+                conn.execute("UPDATE _amux_messages SET from_actor=?1 WHERE id=?2",params![actor,mid])?;
+                Ok(WriteOutcome {applied:true,events:vec![]})
+            }).unwrap();
+            assert!(pending_receive_refusal(&store.read().unwrap(),&message,&target).unwrap().is_some());
+        }
+        let protocol=Arc::new(MockProtocol::new());
+        protocol.register(WorkerId::parse(&target).unwrap(),AgentState::Idle);
+        let runtime=pump_runtime(store.clone(),protocol.clone());
+        runtime.pump_commands(Utc::now(),&std::collections::BTreeMap::new()).await.unwrap();
+        assert!(protocol.calls().is_empty());
+        let conn=store.read().unwrap();
+        let state:String=conn.query_row("SELECT state FROM _amux_commands",[],|r|r.get(0)).unwrap();
+        assert!(state.contains("failed") && state.contains("message origin unreadable"),"{state}");
+        let body:String=conn.query_row("SELECT body FROM _amux_messages",[],|r|r.get(0)).unwrap();
+        assert_eq!(body,"preserved uncertain origin");
+    }
+
+    #[tokio::test]
+    async fn native_worker_group_fanout_is_atomic_and_body_identity_cannot_widen_it() {
+        let (app, store, dir) = app();
+        let _guard = crate::api::settings::test_env::set_home(dir.path());
+        let own = GroupId::from_ulid(ulid::Ulid::new());
+        let other = GroupId::from_ulid(ulid::Ulid::new());
+        let peer = create_worker(&app, "source", Some(own.as_str())).await;
+        let target = create_worker(&app, "target", Some(other.as_str())).await;
+        let _second = create_worker(&app, "second", Some(other.as_str())).await;
+        let (status, _) = send(&app,"POST","/api/messages",Some(json!({"to":target,"body":"owner control"}))).await;
+        assert_eq!(status,StatusCode::CREATED);
+        let count = || store.read().unwrap().query_row("SELECT count(*) FROM _amux_messages",[],|r|r.get::<_,i64>(0)).unwrap();
+        let before = count();
+        for to in [json!(target),json!({"kind":"group","data":other.as_str()})] {
+            let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+                .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
+                .body(Body::from(json!({"to":to,"body":"forbidden fanout","from":{"type":"human","name":"owner"}}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::FORBIDDEN);
+            assert_eq!(count(),before,"no partial parent/child persistence");
+        }
+        let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+            .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
+            .body(Body::from(json!({"to":{"kind":"group","data":own.as_str()},"body":"same group control"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::CREATED);
+        assert_eq!(count(),before+2,"group parent and one member child");
+    }
+
+    #[tokio::test]
+    async fn native_membership_changes_fence_queued_input_and_preserve_owner_fifo() {
+        let (app, store, dir) = app();
+        let _guard = crate::api::settings::test_env::set_home(dir.path());
+        let own = GroupId::from_ulid(ulid::Ulid::new());
+        let other = GroupId::from_ulid(ulid::Ulid::new());
+        let peer = create_worker(&app,"source",Some(own.as_str())).await;
+        let target = create_worker(&app,"target",Some(own.as_str())).await;
+        let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+            .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
+            .body(Body::from(json!({"to":target,"body":"old peer input"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        let message = response["message"]["id"].as_str().unwrap();
+        let (status, _) = send(&app,"POST","/api/messages",Some(json!({"to":target,"body":"owner FIFO control"}))).await;
+        assert_eq!(status,StatusCode::CREATED);
+        let changed_target=target.clone();
+        store.write(move |conn| {
+            conn.execute("UPDATE _amux_workers SET group_id=?1 WHERE id=?2",params![other.as_str(),changed_target])?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).unwrap();
+        let protocol = Arc::new(MockProtocol::new());
+        protocol.register(WorkerId::parse(&target).unwrap(),AgentState::Idle);
+        let runtime = pump_runtime(store.clone(),protocol.clone());
+        runtime.pump_commands(Utc::now(),&std::collections::BTreeMap::new()).await.unwrap();
+        assert!(protocol.calls().is_empty());
+        {
+            let conn=store.read().unwrap();
+            let state:String=conn.query_row("SELECT state FROM _amux_commands WHERE command LIKE ?1",[format!("%{message}%")],|r|r.get(0)).unwrap();
+            assert!(state.contains("failed") && state.contains("worker group boundary"),"{state}");
+            assert_eq!(message_by_id(&conn,message).unwrap().unwrap().delivery,DeliveryState::Queued);
+        }
+        runtime.pump_commands(Utc::now(),&std::collections::BTreeMap::new()).await.unwrap();
+        assert!(matches!(&protocol.calls()[..],[RecordedCall::DeliverMessage {body,..}] if body=="owner FIFO control"));
+    }
+
+    #[tokio::test]
+    async fn worker_header_cannot_bypass_receive_policy_with_a_human_body_actor() {
+        let (app, store, dir) = app();
+        let _guard = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/product-peer.env"), "CC_TAGS=product\n").unwrap();
+        std::fs::write(dir.path().join("sessions/harness-peer.env"), "CC_TAGS=product\nCC_RECEIVE_ANY=1\nCC_RECEIVE_DENY=product\n").unwrap();
+        let peer = create_worker(&app, "product-peer", None).await;
+        let target = create_worker(&app, "harness-peer", None).await;
+        let body = json!({"to":target,"body":"forbidden injected command","from":{"type":"human","name":"owner"}});
+        let res = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+            .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
+            .body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let conn = store.read().unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM _amux_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "refusal precedes persistence and command enqueue");
+        drop(conn);
+        let (status, response) = send(&app,"POST","/api/messages",Some(body)).await;
+        assert_eq!(status,StatusCode::CREATED,"owner input remains permitted: {response}");
+    }
+
+    #[tokio::test]
+    async fn changed_receive_policy_fences_pending_commands_without_blocking_owner_input() {
+        let (app, store, dir) = app();
+        let _guard = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/product-peer.env"), "CC_TAGS=product\n").unwrap();
+        let receiver_env = dir.path().join("sessions/harness-peer.env");
+        std::fs::write(&receiver_env, "CC_TAGS=product\nCC_RECEIVE_ANY=1\n").unwrap();
+        let peer = create_worker(&app, "product-peer", None).await;
+        let target = create_worker(&app, "harness-peer", None).await;
+        let body = json!({"to":target,"body":"pre-policy peer input"});
+        let res = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+            .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
+            .body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let created: Value = serde_json::from_slice(&bytes).unwrap();
+        let message = created["message"]["id"].as_str().unwrap();
+        let (status, _) = send(&app,"POST","/api/messages",Some(json!({"to":target,"body":"retained owner input"}))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        std::fs::write(&receiver_env, "CC_TAGS=product\nCC_RECEIVE_ANY=1\nCC_RECEIVE_DENY=product\n").unwrap();
+        let protocol = Arc::new(MockProtocol::new());
+        protocol.register(WorkerId::parse(&target).unwrap(), AgentState::Idle);
+        let runtime = pump_runtime(store.clone(), protocol.clone());
+        runtime.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        assert!(protocol.calls().is_empty(), "pending peer message must not reach the provider");
+        {
+            let conn = store.read().unwrap();
+            let state: String = conn.query_row("SELECT state FROM _amux_commands WHERE command LIKE ?1", [format!("%{message}%")], |r| r.get(0)).unwrap();
+            assert!(state.contains("failed") && state.contains("peer receive policy refused"), "durable refusal: {state}");
+            let saved = message_by_id(&conn, message).unwrap().unwrap();
+            assert_eq!(saved.body, "pre-policy peer input");
+            assert_eq!(saved.delivery, DeliveryState::Queued, "no false delivery receipt");
+        }
+        runtime.pump_commands(Utc::now(), &std::collections::BTreeMap::new()).await.unwrap();
+        assert!(matches!(&protocol.calls()[..], [RecordedCall::DeliverMessage { body, .. }] if body == "retained owner input"));
     }
 
     #[tokio::test]

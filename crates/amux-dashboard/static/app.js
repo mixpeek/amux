@@ -384,11 +384,9 @@ async function toggleCrossGroupDefault(checked) {
       return;
     }
     if (cb) cb.checked = !!saved.enabled;
-    showToast(d.message || (checked ? 'Cross-group messaging on' : 'Cross-group messaging off'));
+    showToast(d.message || 'Worker messaging stays within shared groups');
     if (note) {
-      note.textContent = saved.gate_enforcing === false
-        ? 'Note: AMUX_GROUP_SEND_ENFORCE is off, so all cross-group sends pass regardless of this switch.'
-        : (saved.note || 'An explicit empty group or worker setting can deny this for that scope.');
+      note.textContent = saved.note || 'Workers may message only workers in a shared group. Direct owner input remains permitted.';
     }
   } catch (e) {
     rollback();
@@ -400,9 +398,8 @@ async function toggleCrossGroupDefault(checked) {
   try {
     const d = await readCrossGroupDefault();
     const cb = document.getElementById('crossgroup-default-checkbox');
-    if (cb) cb.checked = !!d.enabled;
-    // SAY IT OUT LOUD when the gate is not enforcing at all. Otherwise an
-    // operator reads an OFF switch as a closed door that is not there.
+    if (cb) { cb.checked = !!d.enabled; cb.disabled = d.editable === false; }
+    // Show the effective worker authority returned by the server.
     const note = document.getElementById('crossgroup-default-note');
     if (note) {
       note.textContent = d.gate_enforcing === false
@@ -7084,9 +7081,9 @@ function _workerActionDefinitions(s) {
       title: 'When this worker runs out of todo cards, pull its oldest eligible backlog card into todo automatically. Human, trigger, and dependency blocks stay parked.',
       run: "toggleAutoDrain('" + name + "')" } : null,
     !s.isolated ? { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
-      labelHtml: 'Spans groups' + _spansLabel(s),
-      title: 'Let this worker message workers in other groups according to its resolved cross-group configuration.',
-      run: "toggleSpansGroups('" + name + "')" } : null,
+      label: 'Messaging: shared groups only',
+      title: 'Worker messages stay within a shared group. Owner input remains permitted.',
+      run: "showToast('Worker messages stay within a shared group.')" } : null,
     { key: 'directory', icon: '&#x1F4C1;', label: 'Change directory',
       run: "editField('" + name + "','dir','" + escJs(s.dir || '') + "')" },
     s.dir ? { key: 'copy-directory-link', icon: '&#x1F517;', label: 'Copy directory link',
@@ -11421,7 +11418,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   const permissions = [
     _workerConfigurationRow('yolo', 'Model tool approval bypass (YOLO)', s.yolo ? 'Enabled' : 'Disabled', 'Uses the selected provider’s native tool-permission flag.', sw(!!s.yolo, 'toggleYolo', 'Toggle model tool approval bypass')),
     _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'Direct CLI messages; no boards, task intake, injected prompts, behavioral hooks, MCP config, or peer discovery. Passive lifecycle hooks report status only. Restart to remove an already-loaded harness.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
-    s.isolated ? '' : _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
+    s.isolated ? '' : _workerConfigurationRow('cross_group', 'Worker messaging', 'Shared groups only', 'Owner input remains permitted.', ''),
     s.isolated ? '' : _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
   ];
   const advanced = [
@@ -13966,7 +13963,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1262';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1263';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
