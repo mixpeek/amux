@@ -380,6 +380,15 @@ check "both running VMs are trimmed, the stopped one is not" "a b" "$(tr '\n' ' 
 check "and the line counts them" "yes" "$(grep -q 'vm trim: trimmed 2 running VM(s), failed 0' "$FIX/out.txt" && echo yes || echo no)"
 : > "$FIX/trims"; trim_vms 1 > "$FIX/out.txt"
 check "a dry run trims nothing" "0" "$(grep -c . "$FIX/trims" | tr -d ' ')"
+echo "12c3. the build-cache cap runs on a normal tick too, before the trim (disk RCA 20261008-124643)"
+printf '#!/bin/bash\necho "cap $1 $2" >> %s\n' "$FIX/trims" > "$FIX/vmcap.sh"; chmod +x "$FIX/vmcap.sh"
+_cc=$VM_PRUNE_CAP_CMD; _mu=$VM_PRUNE_MAX_USED; VM_PRUNE_CAP_CMD="$FIX/vmcap.sh PROFILE CAP"; VM_PRUNE_MAX_USED=40gb; : > "$FIX/trims"
+trim_vms 0 > "$FIX/out.txt"
+check "each running VM is capped, then trimmed" "cap a 40gb|a|cap b 40gb|b" "$(tr '\n' '|' < "$FIX/trims" | sed 's/|$//')"
+check "the cap logs its verdict on a normal tick" "2" "$(grep -c 'verdict=vm_build_cache_capped' "$FIX/out.txt" | tr -d ' ')"
+VM_PRUNE_MAX_USED=0; : > "$FIX/trims"; trim_vms 0 > "$FIX/out.txt"
+check "0 disables the cap on a normal tick" "a b" "$(tr '\n' ' ' < "$FIX/trims" | sed 's/ $//')"
+VM_PRUNE_CAP_CMD=$_cc; VM_PRUNE_MAX_USED=$_mu
 check "the tick calls trim_vms when the disk is not tight" "yes" "$(grep -q 'then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi' "$TICK" && echo yes || echo no)"
 VM_LIST_CMD=$_lc; VM_TRIM_CMD=$_tc
 
