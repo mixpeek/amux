@@ -69,6 +69,11 @@ fn delegate_messages(h: &Value) -> usize {
     h["messages"].as_array().map(|m| m.iter().filter(|m| m["origin"] == "delegate").count()).unwrap_or(0)
 }
 
+fn delegate_job_messages(h: &Value, id: &str) -> usize {
+    let turn = format!("delegate-{id}");
+    h["messages"].as_array().map(|m| m.iter().filter(|m| m["origin"] == "delegate" && m["turn_id"] == turn).count()).unwrap_or(0)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chat_delegate_reads_the_live_worker_without_ever_touching_it() {
     let tmp = tempfile::tempdir().unwrap();
@@ -259,6 +264,9 @@ async fn a_chat_delegate_reads_the_live_worker_without_ever_touching_it() {
     let (_, r) = call(&app, "POST", "/api/chat-delegate", "social@chat", Some(json!({"prompt": "big", "wait_s": 0}))).await;
     assert_eq!(r["job"]["mode"], "fresh", "{r}");
     assert!(r["job"]["fork_skipped"].as_str().unwrap_or("").contains("fork cap"), "{r}");
+    let capped_id = r["job"]["id"].as_str().unwrap();
+    let capped_job = wait_done(&app, capped_id, 30).await;
+    assert_eq!(capped_job["outcome"], "ok", "{capped_job}");
     let (code, r) = call(&app, "POST", "/api/chat-delegate", "social@chat", Some(json!({"prompt": "big", "mode": "fork"}))).await;
     assert_eq!(code, 400, "an explicit fork of an over-cap conversation is refused with the reason: {r}");
     assert!(r["error"].as_str().unwrap_or("").contains("fork cap"), "{r}");
@@ -284,23 +292,28 @@ async fn a_chat_delegate_reads_the_live_worker_without_ever_touching_it() {
             .to_string(),
     )
     .unwrap();
-    // Let earlier jobs' deliveries land first, so the count isolates this one.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let before = { let (_, h) = call(&app, "GET", "/api/sessions/social@chat/chat", "", None).await; delegate_messages(&h) };
+    // Earlier jobs can finish during this recovery. Count the durable identity,
+    // not all delegate messages after an arbitrary sleep (CI exposed that race).
+    let (_, h) = call(&app, "GET", "/api/sessions/social@chat/chat", "", None).await;
+    assert_eq!(delegate_job_messages(&h, id5), 0);
     let n = amux_server::api::chat_delegate::recover_all(&state).await;
     assert_eq!(n, 1, "the running job is re-attached");
     let j5 = wait_done(&app, id5, 30).await;
     assert_eq!(j5["outcome"], "ok", "{j5}");
-    let mut after = before;
+    let mut after = 0;
     for _ in 0..80 {
         let (_, h) = call(&app, "GET", "/api/sessions/social@chat/chat", "", None).await;
-        after = delegate_messages(&h);
-        if after > before {
+        after = delegate_job_messages(&h, id5);
+        if after > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(after, before + 1, "the re-attached job's answer is delivered once");
+    assert_eq!(after, 1, "the re-attached job's answer is delivered once");
+    amux_server::api::chat_delegate::recover_all(&state).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, h) = call(&app, "GET", "/api/sessions/social@chat/chat", "", None).await;
+    assert_eq!(delegate_job_messages(&h, id5), 1, "another recovery does not redeliver this identity");
 }
 
 /// No code path in the delegate module can put input into a worker: no tmux

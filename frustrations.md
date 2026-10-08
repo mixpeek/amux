@@ -5191,3 +5191,14 @@ CARD: AF-968
 SYMPTOM: The sweep wrote auto_resume_for before attempting delivery. A controller crash between the file stamp and steering persistence made the same stopped turn look already resumed without any durable continuation.
 COST: Preserving the metadata alone suppresses unfinished recovery forever; post-delivery crash tests did not cover this earlier boundary.
 FIX: Stable session/occurrence identity in the existing steering queue/history, durable handoff before one atomic causal metadata update, no key on refusal, existing per-card gates for new nudges, and named staging/queued signals. Kill a real controller with the private database writer locked at this handoff, then require one continuation after restart and no duplicate on another crash.
+
+## Aggregate chat-delegate counts confused an older completion with a duplicate
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The full final-head Linux gate failed chat_delegate recovery with four total answers versus an expected three. The fixture used a two-second sleep to assume earlier delegates had delivered, although delivery has its own three-second grace and jobs can finish concurrently.
+COST: An unrelated answer crossing the snapshot can invalidate the crash-recovery gate without identifying a duplicate of the recovered job.
+FIX: Assert the durable delegate turn identity, wait for that identity and recover again to require exactly one retained answer. Keep the failed CI log and the original once-only transport assertions; do not change runtime delivery or relax the duplicate count.
