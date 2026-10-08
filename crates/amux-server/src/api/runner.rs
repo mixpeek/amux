@@ -111,16 +111,30 @@ fn provider_limited(lane: &str) -> bool {
     let since = crate::api::session_verbs::meta_i64(&meta, "rate_limited_since");
     let until = crate::api::session_verbs::meta_i64(&meta, "rate_limited_until");
     let by = meta.get("rate_limited_by").and_then(|v| v.as_str()).unwrap_or("");
-    let held = provider_limit_active(since, until, by, crate::config::now_f64() as i64);
-    if since > 0 && by != "auto-resume" && !held {
+    let held = limited_at(&meta, crate::config::now_f64() as i64);
+    if since > 0 && by != "auto-resume" && !held
+        && first_this_window(&format!("limit-expired:{lane}"))
+    {
         tracing::info!(session = lane, reset_at = until, measured = true, n_considered = 1,
             verdict = "contract_dispatch_capacity_expired", "the known provider reset and grace passed; ordinary pane and card gates still apply");
     }
     held
 }
 
+/// A known provider reset releases the hold after the same grace used by
+/// automatic resume. Unknown reset times continue to hold the lane.
+fn limited_at(meta: &serde_json::Map<String, serde_json::Value>, now: i64) -> bool {
+    provider_limit_active(
+        crate::api::session_verbs::meta_i64(meta, "rate_limited_since"),
+        crate::api::session_verbs::meta_i64(meta, "rate_limited_until"),
+        meta.get("rate_limited_by").and_then(|v| v.as_str()).unwrap_or(""),
+        now,
+    )
+}
+
 fn provider_limit_active(since: i64, until: i64, by: &str, now: i64) -> bool {
     since > 0 && by != "auto-resume" && (until <= 0 || now < until.saturating_add(60))
+
 }
 
 /// Who decides a split: the lane's `AMUX_ORCHESTRATOR`, else the owner.
@@ -1425,6 +1439,21 @@ mod tests {
         std::fs::write(home.join("sessions").join("gs12-obs.env"), "CC_TAGS=gs12-platform\n").unwrap();
         assert_eq!(group_max_at(home, "gs12-obs"), 10);
         assert_eq!(group_max_at(home, "other"), GROUP_MAX_DEFAULT);
+    }
+
+    #[test]
+    fn a_usage_limit_past_its_reset_time_no_longer_holds_the_lane() {
+        let m = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let now = 1_791_450_000;
+        let past = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "transcript", "rate_limited_until": now - 600}));
+        let live = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "transcript", "rate_limited_until": now + 600}));
+        let no_reset = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "transcript", "rate_limited_until": 0}));
+        let resumed = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "auto-resume"}));
+        assert!(!limited_at(&past, now), "a reset that has passed releases the hold");
+        assert!(limited_at(&live, now), "a reset still ahead holds");
+        assert!(limited_at(&no_reset, now), "no known reset holds");
+        assert!(!limited_at(&resumed, now));
+        assert!(!limited_at(&serde_json::Map::new(), now));
     }
 
     #[test]
