@@ -11621,6 +11621,22 @@ fn boot_delivery_held(
 /// pane to reach, which is precisely the shape that ships untested — and this
 /// one shipped wrong (AMUX-2909: short text typed into a generating lane, the
 /// mode measured as lossy 1/1).
+/// Split a message that starts with a slash command into the command token
+/// with its following space (typed) and the rest (pasted). `None` for anything
+/// else, including a lone command with no argument and a path like `/Users/x`.
+pub(crate) fn slash_command_split(text: &str) -> Option<(&str, &str)> {
+    let t = text.trim_start();
+    let body = t.strip_prefix('/')?;
+    let end = body.find(char::is_whitespace)?;
+    let cmd = &body[..end];
+    if cmd.is_empty() || !cmd.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')) {
+        return None;
+    }
+    let split = 1 + end + body[end..].chars().next().map(char::len_utf8).unwrap_or(0);
+    let (prefix, rest) = t.split_at(split);
+    (!rest.trim().is_empty()).then_some((prefix, rest))
+}
+
 pub(crate) fn must_paste(generating: bool, chars: usize, picker_shaped: bool) -> bool {
     // `generating` first because it is the one that was missing: mid-turn, paste
     // is the only mode measured as non-lossy, regardless of size or shape.
@@ -13173,6 +13189,28 @@ async fn send_text_inner_bound(
     if staged.len() != text.len() {
         tracing::info!(session = %name, verdict = "trailing_mention_closed",
             "message ends in an @-mention; staged a trailing space so Enter submits");
+    }
+    // A SLASH COMMAND MUST STAY THE FIRST TOKEN (Ethan, 2026-10-08, mxp-gs12):
+    // a 1,396-char `/goal ...` went in as one paste, Claude Code recorded it as
+    // `<pasted_content id="bf0b">/goal ...</pasted_content>`, and /goal never
+    // ran. A paste is collapsed and wrapped whether bracketed or not (measured
+    // on Claude Code 2.1.295), so the command token is TYPED and only the rest
+    // is pasted: the composer reads `/goal [Pasted text #1]`, and Claude Code
+    // records <command-name>/goal</command-name> with the full text as args.
+    let (typed_prefix, staged) = match slash_command_split(&staged) {
+        Some((prefix, rest)) if use_paste => {
+            tracing::info!(session = %name, command = %prefix.trim(), chars = staged.chars().count(),
+                measured = true, n_considered = 1, verdict = "slash_command_prefix_typed",
+                "a long message starting with a slash command: typed the command, pasted the rest");
+            (Some(prefix.to_string()), rest.to_string())
+        }
+        _ => (None, staged.to_string()),
+    };
+    if let Some(prefix) = typed_prefix.as_deref() {
+        if !send_literal(name, prefix).await {
+            return (false, "send-keys failed".into());
+        }
+        sleep_ms(60).await;
     }
     if use_paste {
         // Named tmux buffer + paste-buffer -p (py:25630). Also the picker-safe
@@ -18585,6 +18623,18 @@ async fn peek_response_at(
     };
     let is_alt = tmux_alt_screen(name).await;
     let has_codex_history = matches!(provider.as_str(), "codex" | "ollama");
+    // THIN PASS-THROUGH (Ethan, 2026-10-08: "how we display shit should be
+    // extremely thin pass through"). A Claude pane on the NORMAL screen
+    // (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1) keeps its real scrollback in
+    // tmux, so the peek shows exactly what the terminal drew: history is the
+    // scrollback above the screen, live is the screen. No transcript
+    // re-render, no overlap trim. The alternate-screen path below stays for
+    // panes still on it (tmux keeps no scrollback there).
+    if provider == "claude" && !is_alt && session_backend(name) != "herdr" {
+        if let Some(resp) = tmux_scrollback_peek(name).await {
+            return resp;
+        }
+    }
     // Saved Claude history must survive normal-screen mode after resume.
     if is_alt || has_codex_history || provider == "claude" {
         let mut history_measurement = None;
@@ -18714,6 +18764,35 @@ async fn peek_response_at(
         output
     };
     json!({"name": name, "output": collapse_blank_runs(&fallback)})
+}
+
+/// The peek for a normal-screen pane, straight from tmux: `history` is the
+/// scrollback above the visible screen (`-E -1` ends at the last scrollback
+/// line, so nothing is shown twice) and `live` is the screen. `None` when
+/// tmux cannot be read, so the caller falls back rather than showing nothing.
+async fn tmux_scrollback_peek(name: &str) -> Option<Value> {
+    let ptq = pt(name);
+    let hist = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-e", "-S", "-20000", "-E", "-1"], CAPTURE_TIMEOUT).await?;
+    let screen = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-e"], CAPTURE_TIMEOUT).await?;
+    if !hist.status.success() || !screen.status.success() {
+        return None;
+    }
+    let history = String::from_utf8_lossy(&hist.stdout).trim_end().to_string();
+    let live = String::from_utf8_lossy(&screen.stdout).trim_end().to_string();
+    let hl = history.lines().count();
+    let ol = live.lines().count();
+    tracing::debug!(session = name, history_lines = hl, measured = true, n_considered = hl + ol,
+        verdict = "peek_tmux_scrollback", "peek served from tmux scrollback (normal screen)");
+    Some(json!({
+        "name": name,
+        "history": history,
+        "live": if live.is_empty() { "(no output)".to_string() } else { live.clone() },
+        "output": live,
+        "output_lines": ol,
+        "history_lines": hl,
+        "history_source": "tmux-scrollback",
+        "output_is_viewport_only": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -48903,6 +48982,21 @@ mod pipe_reconcile_tests {
 #[cfg(test)]
 mod delivery_mode_tests {
     use super::*;
+
+    /// mxp-gs12, 2026-10-08: a long `/goal ...` was pasted whole and Claude
+    /// Code wrapped it, so /goal never ran. The command token is typed.
+    #[test]
+    fn a_slash_command_keeps_its_token_out_of_the_paste() {
+        assert_eq!(slash_command_split("/goal Execute the plan"), Some(("/goal ", "Execute the plan")));
+        assert_eq!(slash_command_split("  /model claude-opus-5-5"), Some(("/model ", "claude-opus-5-5")));
+        assert_eq!(slash_command_split("/plugin:run do it"), Some(("/plugin:run ", "do it")));
+        assert_eq!(slash_command_split("/goal\nmulti\nline"), Some(("/goal\n", "multi\nline")));
+        assert_eq!(slash_command_split("/compact"), None, "no argument: nothing to paste");
+        assert_eq!(slash_command_split("/goal   "), None);
+        assert_eq!(slash_command_split("/Users/ethan/x.png look"), None, "a path is not a command");
+        assert_eq!(slash_command_split("fix /goal later"), None);
+        assert_eq!(slash_command_split("<pasted_content> /goal x"), None);
+    }
 
     /// AMUX-2909, pinned. Ethan's report: a message typed into a lane that was
     /// visibly working. This FAILS against the pre-fix predicate

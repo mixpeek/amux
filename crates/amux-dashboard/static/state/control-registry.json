@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2479,
+  "n_considered": 2487,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -3026,6 +3026,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_spCaptureSave": {
+      "kind": "command._spCaptureSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spCaptureSaveTyped": {
+      "kind": "command._spCaptureSaveTyped",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spHandlePaste": {
+      "kind": "command._spHandlePaste",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_spNav": {
       "kind": "command._spNav",
       "feedback_required": true,
@@ -3038,8 +3056,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_spSaveImage": {
+      "kind": "command._spSaveImage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_spSortBy": {
       "kind": "command._spSortBy",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spWireCapture": {
+      "kind": "command._spWireCapture",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

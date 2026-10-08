@@ -174,8 +174,9 @@ ready desktop. Workers should wait for the background command, using status
 rather than queueing state/action behind a cold build. Global process kills
 are not a browser recovery mechanism; `route stop` owns lane cleanup.
 
-The real-worker suite uses Claude's `dontAsk` tool policy, allows browser CLI
-commands and screenshot reads, and denies process kills, writes and delegation.
+The real-worker suite uses Claude's `dontAsk` tool policy, allows Bash and Read
+(including JSON formatting and screenshot reads), and denies process-kill
+commands, file-edit tools and delegation. This is a task tool policy, not an OS sandbox.
 It retains actual provider tool inputs from only its owned workspaces, checks
 metadata discovery and route use, and rejects direct HTTP/programmatic goal
 writes or host process kills. Terminal banners are not provider evidence.

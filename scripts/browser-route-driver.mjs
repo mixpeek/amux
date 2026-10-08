@@ -197,6 +197,13 @@ async function launch(ctx,b,attempts=[],from=0) {
   }
   throw Object.assign(new RouteError('all configured browser routes failed',503),{attempts});
 }
+async function stopOwnedNative(ctx,state) {
+  try {return await native(ctx,'stop',{profile:state.selected_profile||state.profile,expected_started_by:ctx.session});}
+  catch(e){
+    if(e.status!==403&&!(e.status===409&&['browser_stop_target_unresolved','browser_stop_ownership_changed'].includes(e.payload?.code)))throw e;
+    return {ok:true,stopped:false,note:'Original native browser was already released or its ownership changed; preserved the replacement.'};
+  }
+}
 export async function route(ctx,verb,b={}) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
   ctx.receipt=join(ctx.home,'browser-routing','sessions',key(ctx.session)+'.json');
@@ -216,8 +223,7 @@ export async function route(ctx,verb,b={}) {
   if(verb==='stop'&&state.backend!=='amux'&&state.native_started) {
     // Only release the original browser when this worker started it. A busy
     // fallback owned by somebody else has native_started=false.
-    try {await native(ctx,'stop',{profile:state.selected_profile,expected_started_by:ctx.session});}
-    catch(e){if(e.status!==403&&!(e.status===409&&['browser_stop_target_unresolved','browser_stop_ownership_changed'].includes(e.payload?.code)))throw e;}
+    await stopOwnedNative(ctx,state);
     state.native_started=false;atomic(ctx.receipt,state);
   }
   if(verb==='stop') {
@@ -231,7 +237,7 @@ export async function route(ctx,verb,b={}) {
     }
   }
   try {
-    const result=state.backend==='amux'?await native(ctx,verb,b):state.backend==='cdp'?await directVerb(ctx,state,verb,b):await cua(ctx,state,verb,b);
+    const result=state.backend==='amux'?(verb==='stop'?await stopOwnedNative(ctx,state):await native(ctx,verb,b)):state.backend==='cdp'?await directVerb(ctx,state,verb,b):await cua(ctx,state,verb,b);
     if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state};
   } catch(e) {
     if(terminal(e)||state.backend==='cua'||verb==='stop')throw e;

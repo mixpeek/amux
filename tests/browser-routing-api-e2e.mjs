@@ -127,6 +127,14 @@ try{
   assert(existsSync(driverPath),'server must materialize the exact embedded driver content');
   writeFileSync(driverPath,'process.stdout.write(JSON.stringify({error:"stale cached driver"}));');
   const repaired=await route(sessions[0],'state');prove('server repairs a stale cached driver before execution',repaired.ok&&readFileSync(driverPath).equals(driverBytes));
+  await api(base,'/api/browser/stop','POST',{profile,expected_started_by:sessions[0]},sessions[0]);
+  const replacement='routing-api-replacement',replacementOwner='routing-api-replacement-owner';
+  const replacementDir=join(home,'playwright-auth','profiles',replacement);mkdirSync(replacementDir,{recursive:true});writeFileSync(join(replacementDir,'cookies.json'),JSON.stringify(cookies),{mode:0o600});
+  await api(base,'/api/browser/profile/meta','POST',{name:replacement,identity:'replacement@example.test',role:'test',label:'Owned replacement fixture'});
+  const replacementBrowser=await api(base,'/api/browser/start','POST',{profile:replacement,url:url+'/protected',session:replacementOwner},replacementOwner);
+  await route(sessions[0],'stop');
+  prove('stopping an expired native route preserves the sole unrelated native replacement',(await api(base,'/api/browser/status')).browsers.some(b=>b.pid===replacementBrowser.pid&&b.started_by===replacementOwner));
+  await api(base,'/api/browser/stop','POST',{profile:replacement,expected_started_by:replacementOwner},replacementOwner);
   writeFileSync(join(out,'api-result.json'),JSON.stringify({verdict:'PASS',measured:true,n_considered:checks.length,checks,submissions,chrome_profile:chromeProfile},null,2));console.log(`VERDICT: PASS (${checks.length} endpoint checks)`);
 }catch(e){writeFileSync(join(out,'api-result.json'),JSON.stringify({verdict:'FAIL',measured:true,n_considered:checks.length,checks,error:e.stack},null,2));throw e;}
 finally{await dashboard?.close();if(moved&&existsSync(join(root,chromeProfile+'-disabled')))renameSync(join(root,chromeProfile+'-disabled'),join(root,chromeProfile));for(const session of sessions.reverse())await route(session,'stop').catch(()=>{});site.close();}
