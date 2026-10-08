@@ -52,6 +52,15 @@ try{
   let refused;try{await route('routing-api-refusal','start',{url:url+'/protected',profile});}catch(e){refused=e;}
   prove('routing API refuses out-of-scope CDP without bypassing into CUA',refused?.status===403&&refused.payload.attempts.some(a=>a.backend==='cdp'&&a.status===403)&&!refused.payload.attempts.some(a=>a.backend==='cua'));
   const cdp=await route(sessions[1],'start',{url:url+'/protected',profile});prove('routing API reaches CDP after actual native contention',cdp.route.backend==='cdp'&&cdp.route.attempts[0].status===409);await perform(sessions[1],'api-cdp');
+  const goneSession='routing-api-gone-target';
+  writeFileSync(join(home,'sessions',goneSession+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
+  const gone=await route(goneSession,'start',{url:url+'/protected',profile});
+  const ownedBrowser=await chromium.connectOverCDP(`http://127.0.0.1:${gone.route.cdp_port}`);
+  try {const protocol=await ownedBrowser.newBrowserCDPSession();await protocol.send('Target.closeTarget',{targetId:gone.route.target});} finally {await ownedBrowser.close();}
+  const retired=await route(goneSession,'stop');
+  const goneReceipt=join(home,'browser-routing','sessions',createHash('sha256').update(goneSession).digest('hex').slice(0,24)+'.json');
+  prove('shipped API retires an already-closed owned CDP target and its receipt',retired.cleanup_verdict==='owned_cdp_already_closed'&&retired.cleanup_events.some(e=>e.target===gone.route.target)&&!existsSync(goneReceipt));
+  prove('already-closed target cleanup preserves the other worker tab',(await route(sessions[1],'state')).route.target===cdp.route.target);
   writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW=Profile*\n');
   let revoked;try{await route(sessions[1],'state');}catch(e){revoked=e;}
   prove('receipt retains selected profile for authorization after handoff',revoked?.status===403);

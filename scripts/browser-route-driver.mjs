@@ -106,7 +106,7 @@ async function directStartLocked(ctx, url, previous) {
 async function target(state) {
   const tabs=await api(`http://127.0.0.1:${state.cdp_port}`,'/json/list');
   const page=tabs.find(t=>t.id===state.target&&t.type==='page');
-  if(!page)throw new RouteError('this worker\'s CDP tab is gone; reopen the route',502);
+  if(!page)throw Object.assign(new RouteError('this worker\'s CDP tab is gone; reopen the route',502),{code:'cdp_target_gone'});
   return page;
 }
 async function directVerb(ctx,state,verb,b) {
@@ -204,10 +204,24 @@ async function stopOwnedNative(ctx,state) {
     return {ok:true,stopped:false,note:'Original native browser was already released or its ownership changed; preserved the replacement.'};
   }
 }
+async function stopOwnedCdp(ctx,state) {
+  try {return await directVerb(ctx,state,'stop',{});}
+  catch(e) {
+    // A reset pooled HTTP socket is inconclusive. Re-observe once without
+    // replaying Target.closeTarget; only definite absence permits retirement.
+    if(e.code==='ECONNRESET') {try {await target(state);}catch(observed){e=observed;}}
+    // A refused local port or a confirmed absent target is already released.
+    // Timeouts, protocol errors and authorization failures remain errors.
+    if(!['ECONNREFUSED','cdp_target_gone'].includes(e.code))throw e;
+    ctx.cleanup_events.push({backend:'cdp',profile:state.profile,target:state.target,verdict:'owned_cdp_already_closed'});
+    return {ok:true,stopped:false,cleanup_verdict:'owned_cdp_already_closed',measured:true,n_considered:1};
+  }
+}
 export async function route(ctx,verb,b={}) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
+  ctx.cleanup_events=[];
   ctx.receipt=join(ctx.home,'browser-routing','sessions',key(ctx.session)+'.json');
-  if(verb==='start')return launch(ctx,b);
+  if(verb==='start') {ctx.native_started=false;ctx.previous_routes=[];return launch(ctx,b);}
   const state=read(ctx.receipt,null);
   if(!state) {if(verb==='status')return {running:false};throw new RouteError('select a profile and start the browser route first',409);}
   ctx.identity=state.identity||ctx.identity;
@@ -231,14 +245,14 @@ export async function route(ctx,verb,b={}) {
     // Keep each completed cleanup durable so a retry does not repeat it.
     for(const prior of [...(state.previous_routes||[])]) {
       if(prior.backend==='cdp') {
-        try {await directVerb(ctx,prior,'stop',{});}catch(e){if(![404,502].includes(e.status)&&e.code!=='ECONNREFUSED')throw e;}
+        await stopOwnedCdp(ctx,prior);
       }
       state.previous_routes=state.previous_routes.filter(p=>p!==prior);atomic(ctx.receipt,state);
     }
   }
   try {
-    const result=state.backend==='amux'?(verb==='stop'?await stopOwnedNative(ctx,state):await native(ctx,verb,b)):state.backend==='cdp'?await directVerb(ctx,state,verb,b):await cua(ctx,state,verb,b);
-    if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state};
+    const result=state.backend==='amux'?(verb==='stop'?await stopOwnedNative(ctx,state):await native(ctx,verb,b)):state.backend==='cdp'?(verb==='stop'?await stopOwnedCdp(ctx,state):await directVerb(ctx,state,verb,b)):await cua(ctx,state,verb,b);
+    if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
   } catch(e) {
     if(terminal(e)||state.backend==='cua'||verb==='stop')throw e;
     ctx.previous_routes.push({...state,previous_routes:undefined});
@@ -249,7 +263,7 @@ export async function route(ctx,verb,b={}) {
   }
 }
 export async function run(input) {
-  try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route};}
+  try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route,...(input.context.cleanup_events?.length?{cleanup_events:input.context.cleanup_events}:{})};}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
   let text='';for await(const chunk of process.stdin)text+=chunk;

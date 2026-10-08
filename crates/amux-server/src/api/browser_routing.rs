@@ -456,7 +456,7 @@ async fn request(
                     .pointer("/route/backend")
                     .and_then(Value::as_str)
                     .unwrap_or("none");
-                tracing::info!(verdict="browser_route_result",session=%r.session,verb=%r.verb,backend,status=code.as_u16(),attempts=?v.get("attempts").or_else(||v.pointer("/route/attempts")),"browser ladder request completed");
+                tracing::info!(verdict="browser_route_result",session=%r.session,verb=%r.verb,backend,status=code.as_u16(),attempts=?v.get("attempts").or_else(||v.pointer("/route/attempts")),cleanup_verdict=?v.get("cleanup_verdict"),cleanup_events=?v.get("cleanup_events"),"browser ladder request completed");
                 (code, Json(v)).into_response()
             }
             Err(e) => error(
