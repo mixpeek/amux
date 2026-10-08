@@ -15,6 +15,10 @@ try {
  // Explicit fixture rows: genuine pending capture and a fresh survivor.
  sql("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<600) INSERT INTO cmd_history(id,text,type,session,ts,capture_pending) SELECT 10000+x,'aged','user','retention-fixture',1,0 FROM n");
  sql(`INSERT INTO cmd_history(id,text,type,session,ts,capture_pending) VALUES(10601,'pending','user','retention-fixture',1,1),(10602,'recent','user','retention-fixture',${Date.now()},0)`);
+ // Project capture stays pending until its project policy exists. This
+ // exercises genuine retained unfinished input without another consumer
+ // legitimately completing it during startup reconciliation.
+ sql("UPDATE cmd_history SET project_group='retention-held-project' WHERE id=10601");
  const run=async()=>{const r=await a.req('POST','/api/system-jobs/storage/run',{});check('normal storage consumer accepted',r.status===200,r.body);};
  await run(); await waitFor('first bounded batch',()=>counts()[0]===346,15000);
  check('first pass preserves unfinished and recent history',counts()[1]===1&&counts()[2]===1,counts());
