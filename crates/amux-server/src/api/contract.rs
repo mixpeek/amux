@@ -2121,6 +2121,32 @@ pub async fn run_prereviews(state: &AppState) -> usize {
 
 /// One pass: claim up to REVIEWS_PER_PASS pending reviews and run them in the
 /// background. Returns (pending before the pass, claimed).
+/// A card whose review FAILED and that was then requested done again outside
+/// doing (from backlog or review) never got a second review: a review is
+/// queued only on the done request from doing, so GD-78 and GP-238 sat at
+/// done with a stale failed round for two days (mixpeek-override, MO-3964,
+/// 2026-10-08). A done card that entered done after its last failed review
+/// goes back to pending. Logs verdict=contract_review_requeued_after_redone.
+pub(crate) async fn requeue_failed_redone(state: &AppState) -> usize {
+    let now = crate::config::now_f64();
+    write_value(state, move |conn| {
+        let cards: Vec<String> = conn.prepare(
+            "SELECT c.card FROM card_contracts c JOIN issues i ON i.id = c.card \
+             WHERE c.review_state = 'failed' AND c.command <> ?1 AND i.status = 'done' \
+             AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
+             AND COALESCE(i.entered_state_at, 0) > COALESCE(c.review_at, 0) + 60")?
+            .query_map([UNCONTRACTED_CMD], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        let mut n = 0;
+        for card in &cards {
+            n += conn.execute("UPDATE card_contracts SET review_state = 'pending', review_at = ?2 WHERE card = ?1 AND review_state = 'failed'",
+                rusqlite::params![card, now])?;
+            tracing::warn!(card = %card, measured = true, n_considered = cards.len(), verdict = "contract_review_requeued_after_redone",
+                "a card requested done again after a failed review was queued for a new review round");
+        }
+        Ok(n)
+    }).await.unwrap_or(0)
+}
+
 pub async fn run_reviews(state: &AppState) -> (usize, usize) {
     refund_capacity_rounds(state).await;
     let waiting = state.store.read_async(|conn| Ok(conn.query_row("SELECT (SELECT COUNT(*) FROM card_contracts WHERE review_state='capacity_wait') + (SELECT COUNT(*) FROM card_prereviews WHERE state='capacity_wait')", [], |r| r.get::<_,i64>(0))?)).await.unwrap_or(0);
@@ -2150,6 +2176,7 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
     enqueue_uncontracted(state).await;
+    requeue_failed_redone(state).await;
     // Proof cards first: they decide a project's finish (GS-12, 2026-10-07).
     let pending: Vec<String> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
@@ -2516,6 +2543,37 @@ mod tests {
         let inline = json!({"status": "doing", "acceptance_criteria": ["it works"], "verify_cmd": "cargo test"});
         assert_eq!(code(&decide(&card("todo", "code", None), &inline, false, None, &dflt(None))), "freeze", "fields in the PATCH count");
         assert_eq!(code(&decide(&card("todo", "chore", None), &b, false, None, &dflt(None))), "pass", "only code cards");
+    }
+
+    /// MO-3964: GD-78 and GP-238 failed review, were requested done again from
+    /// backlog / review, and no second review was ever queued.
+    #[tokio::test]
+    async fn a_card_done_again_after_a_failed_review_is_reviewed_again() {
+        let home = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("db")).unwrap());
+        store.write(|conn| {
+            // redone: done at 5000 after a failed review at 1000
+            // stale: failed at 1000, still at done since 900 (not redone)
+            // reopened: failed, now doing
+            // evidence: an uncontracted review; enqueue_uncontracted owns it
+            for (id, status, entered, cmd) in [("redone", "done", 5000, "make test"), ("stale", "done", 900, "make test"),
+                ("reopened", "doing", 5000, "make test"), ("evidence", "done", 5000, UNCONTRACTED_CMD)] {
+                conn.execute("INSERT INTO issues(id,title,type,status,session,entered_state_at,created,updated) VALUES(?1,'t','code',?2,'lane',?3,1,1)",
+                    rusqlite::params![id, status, entered])?;
+                conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_at,review_rounds) VALUES(?1,'a',?2,'h',1,'frozen','failed',1000,1)",
+                    rusqlite::params![id, cmd])?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        assert_eq!(requeue_failed_redone(&state).await, 1);
+        let conn = store.read().unwrap();
+        let st = |c: &str| conn.query_row("SELECT review_state FROM card_contracts WHERE card=?1", [c], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!((st("redone").as_str(), st("stale").as_str(), st("reopened").as_str(), st("evidence").as_str()),
+            ("pending", "failed", "failed", "failed"));
+        drop(conn);
+        assert_eq!(requeue_failed_redone(&state).await, 0, "a pending review is not queued twice");
     }
 
     #[test]
