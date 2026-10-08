@@ -5114,3 +5114,14 @@ CARD: AF-968
 SYMPTOM: PR 236's iOS browser trace showed Clear done POST returning 200 and the server logging archived=1, while a pre-commit board response restored the same done card to the browser. The existing snapshot fence covered stream updates but not this local mutation.
 COST: One browser gate failed after sixteen minutes; the owner could see completed work reappear despite a successful server archive.
 FIX: Fence/cancel shared reads at both mutation boundaries, reconcile with a fresh server readback, retain newer same-id changes on failure, and emit named reconciliation/restoration events. Exercise delayed real reads, rollback and browser reload on desktop, mobile and iOS before retirement.
+
+## A passed quota reset can leave its parent held behind unrelated background work
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The failed-foreground admission fix covered retryable API failures, while automatic quota resumption still required all background shells and agents to stop. A transcript-confirmed passed reset could therefore wait behind a live child after the provider's own grace period.
+COST: Avoidable parent delay at reset; a cancelled native auto-continue would then depend on the unrelated background work ending or on a later message ceiling.
+FIX: Admit an empty stopped foreground after a positively observed clocked reset and its existing grace, retain future/unclocked/menu/authentication/typed-input boundaries, emit a distinct signal, and test actual child survival plus restart deduplication. This is a discovered predicate gap, not a claimed production reproduction after today's future reset.

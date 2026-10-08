@@ -2404,12 +2404,23 @@ pub(crate) fn auto_resume_pane_idle(pane: &str, agents_live: bool) -> bool {
 /// the parent from receiving its bounded retry. Require a normal empty composer
 /// and recheck generation/selectors, never infer this boundary from silence.
 fn failed_foreground_at_boundary(pane: &str, api_error: Option<&str>) -> bool {
-    api_error.is_some_and(api_error_is_retryable)
-        && !pane_bar_says_generating(pane)
+    api_error.is_some_and(api_error_is_retryable) && empty_foreground_boundary(pane)
+}
+
+fn empty_foreground_boundary(pane: &str) -> bool {
+    !pane_bar_says_generating(pane)
         && !is_rate_limit_menu(pane)
         && !is_resume_mode_prompt(pane)
         && idle_hook_frame(pane) != IdleHookFrame::Selector
         && matches!(composer_state(pane), ComposerState::Empty | ComposerState::Placeholder(_))
+}
+
+// A clocked quota stop has ended the parent too. Only a passed reset with the
+// provider's grace qualifies; future and unclocked caps still park all input.
+fn expired_limit_foreground_at_boundary(pane: &str, limit: Option<&ClaudeLimitObservation>, now: i64) -> bool {
+    limit.is_some_and(|l| !l.menu && l.kind != "credit-banner" && l.reset_at > 0
+        && now >= l.reset_at.saturating_add(AUTO_RESUME_RESET_GRACE_S))
+        && empty_foreground_boundary(pane)
 }
 
 /// Seconds a lane must sit idle on a retryable API error before amux retries.
@@ -20422,12 +20433,22 @@ pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64)
     // survive. Use the existing non-interrupting paste transport: another turn
     // starting after this read queues the input at the provider, without Escape.
     let meta = load_meta(name);
-    if provider_of(&parse_env(name)) == "claude" && meta_i64(&meta, "api_error_since") > 0 {
+    if provider_of(&parse_env(name)) == "claude" && (background_working || meta_i64(&meta, "api_error_since") > 0) {
         let records = session_jsonl_path(name).map(|p| iter_jsonl_tail(&p, 256 * 1024)).unwrap_or_default();
         if signals.panes.get(name).is_some_and(|pane| failed_foreground_at_boundary(pane, transcript_api_error(&records).as_deref())) {
             if first_in_window("api_error_boundary", name, 600.0) {
                 tracing::info!(session = name, measured = true, n_considered = 1,
                     verdict = "steer_api_error_boundary", "foreground transport failed; delivering by paste while background work survives");
+            }
+            return SteerDelivery::OverdueMidTurn;
+        }
+        let now = chrono::Local::now();
+        let limit = signals.panes.get(name).and_then(|pane| observe_claude_limit_with(
+            pane, meta_i64(&meta, "rate_limited_until"), now, transcript_rate_limit(&records)));
+        if signals.panes.get(name).is_some_and(|pane| expired_limit_foreground_at_boundary(pane, limit.as_ref(), now.timestamp())) {
+            if first_in_window("usage_reset_boundary", name, 600.0) {
+                tracing::info!(session = name, measured = true, n_considered = 1,
+                    verdict = "steer_usage_reset_boundary", "foreground quota reset passed; delivering by paste while background work survives");
             }
             return SteerDelivery::OverdueMidTurn;
         }
@@ -23120,7 +23141,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let last_key = meta_str(&meta, "auto_resume_for");
             let inputs = AutoResumeInputs {
                 enabled: auto_resume_enabled(name) && !lane_is_paused(name),
-                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref())),
+                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), now_i64())),
                 now: now_i64(),
                 limit: observation.as_ref(),
                 limited_since: meta_i64(&meta, "rate_limited_since"),
@@ -40399,6 +40420,24 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(!failed_foreground_at_boundary("What do you want to do?\n❯ 1. Stop and wait for limit to reset\n  2. Switch to usage credits",Some("server_error")));
         assert!(!failed_foreground_at_boundary("Permission required\n❯ 1. Allow\n  2. Deny",Some("server_error")));
         assert!(!failed_foreground_at_boundary("API Error: Connection lost mid-response",Some("server_error")),"no visible composer is unmeasured");
+    }
+
+    #[test]
+    fn quota_reset_releases_only_an_empty_stopped_parent_despite_live_children() {
+        let now = 1_790_000_000;
+        let pane = LIMITED_IDLE_PANE.replace("bypass permissions on (shift+tab to cycle)", "bypass permissions on · 1 shell · ← 5 agents · ↓ to manage");
+        let passed = ClaudeLimitObservation { menu:false, kind:"transcript", reset_at:now-120 };
+        assert!(expired_limit_foreground_at_boundary(&pane,Some(&passed),now));
+        let i = AutoResumeInputs { idle:expired_limit_foreground_at_boundary(&pane,Some(&passed),now),..resume_inputs(Some(&passed),None) };
+        assert!(matches!(auto_resume_decision(&i),AutoResume::Send{reason:"usage_reset",..}));
+        for limit in [ClaudeLimitObservation{menu:false,kind:"transcript",reset_at:now+120},ClaudeLimitObservation{menu:false,kind:"transcript",reset_at:now-30},ClaudeLimitObservation{menu:false,kind:"credit-banner",reset_at:0},ClaudeLimitObservation{menu:true,kind:"menu",reset_at:now-120}] {
+            assert!(!expired_limit_foreground_at_boundary(&pane,Some(&limit),now));
+        }
+        for frame in [WORKING_PANE, "Permission required\n❯ 1. Allow\n  2. Deny", "limit reset passed without a measured composer"] {
+            assert!(!expired_limit_foreground_at_boundary(frame,Some(&passed),now));
+        }
+        assert!(!expired_limit_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some(&passed),now));
+        assert!(!expired_limit_foreground_at_boundary(&pane,None,now));
     }
 
     #[test]

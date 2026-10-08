@@ -185,3 +185,5 @@ is discovered from the database on later passes, including after a crash. Checkp
 contention defers immediately and restores the normal mutation busy timeout.
 Archived project-owner discovery and steering retention use covering indexes, and
 slow retention tables/project reconciliation phases announce their measured latency.
+
+The foreground process replay also holds a future quota reset with a real provider child alive, explicitly advances only its private transcript clock to a passed reset, and observes one normal-consumer continuation across SIGKILL. Unclocked limits remain parked. The provider reset grace and empty-composer/selector checks apply before background work can be ignored.

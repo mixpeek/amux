@@ -14,7 +14,8 @@ const lanes=[];
 const received=name=>{const pid=amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===lanes.find(l=>l.name===name)?.realDir)?.pid;return amux.fakeLog().filter(r=>r.pid===pid&&r.text==='continue');};
 try{
  const before=(await amux.req('GET','/health')).body;
- for(const [index,name,kind,isolated] of [[1,'retry-parent','server_error',false],[2,'auth-parent','authentication_failed',false],[3,'isolated-parent','server_error',true]]){
+ const futureReset=Math.floor(Date.now()/1000)+600;
+ for(const [index,name,kind,isolated] of [[1,'retry-parent','server_error',false],[2,'auth-parent','authentication_failed',false],[3,'isolated-parent','server_error',true],[4,'quota-parent','rate_limit',false],[5,'unclocked-parent','rate_limit',false]]){
   const dir=path.join(amux.root,name);fs.mkdirSync(dir);const r=await amux.req('POST','/api/sessions',{name,dir,start:false});check('private worker created '+name,r.status===201,r.body);
   fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_ISOLATED=${isolated?1:0}\nCC_AUTO_PICKUP=0\nCC_AUTO_CONTINUE=0\n`);
   const started=await amux.req('POST','/api/sessions/'+name+'/start');check('real terminal starts '+name,started.status<300,started.body);
@@ -22,7 +23,7 @@ try{
   lanes.push({name,dir,realDir:fs.realpathSync(dir)});
   const cid=`11111111-1111-4111-8111-${String(index).padStart(12,'0')}`;
   const folder=path.join(amux.userHome,'.claude','projects',fs.realpathSync(dir).replace(/[^a-zA-Z0-9]/g,'-'));fs.mkdirSync(folder,{recursive:true});
-  fs.writeFileSync(path.join(folder,cid+'.jsonl'),JSON.stringify({type:'assistant',error:kind,isApiErrorMessage:true,timestamp:new Date().toISOString(),message:{role:'assistant',content:[{type:'text',text:'API Error: Connection lost mid-response. The response above may be incomplete.'}]}})+'\n');
+  fs.writeFileSync(path.join(folder,cid+'.jsonl'),JSON.stringify({type:'assistant',error:kind,isApiErrorMessage:true,...(kind==='rate_limit'?{quotaLimits:{status:'rejected',resetsAt:name==='quota-parent'?futureReset:0}}:{}),timestamp:new Date().toISOString(),message:{role:'assistant',content:[{type:'text',text:'API Error: Connection lost mid-response. The response above may be incomplete.'}]}})+'\n');
   const mp=path.join(amux.home,'sessions',name+'.meta.json');const meta=fs.existsSync(mp)?JSON.parse(fs.readFileSync(mp,'utf8')):{};
   Object.assign(meta,{cc_conversation_id:cid,cc_cwd:dir});fs.writeFileSync(mp,JSON.stringify(meta));
  }
@@ -36,13 +37,26 @@ try{
  check('foreground retry preserves background PID',alive(),backgroundPid);
  check('authentication failure is never retried',received('auth-parent').length===0);
  check('isolation is never overridden',received('isolated-parent').length===0);
+ check('future quota reset remains parked behind live child',received('quota-parent').length===0);
+ check('unclocked limit is never retried',received('unclocked-parent').length===0);
+ // Explicit fixture clock transition, never an API call against live state.
+ const quota=lanes.find(l=>l.name==='quota-parent');
+ const qp=path.join(amux.userHome,'.claude','projects',quota.realDir.replace(/[^a-zA-Z0-9]/g,'-'),'11111111-1111-4111-8111-000000000004.jsonl');
+ const record=JSON.parse(fs.readFileSync(qp,'utf8'));record.quotaLimits.resetsAt=Math.floor(Date.now()/1000)-120;fs.writeFileSync(qp,JSON.stringify(record)+'\n');
+ await waitFor('passed quota reset resumes stopped parent with surviving child',()=>received('quota-parent').length===1,30000);
+ const qlaunch=amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===quota.realDir);
+ const qchild=amux.fakeLog().find(r=>r.event==='background_child'&&r.parent_pid===qlaunch.pid);
+ check('quota recovery preserves actual provider child',!!qchild&&(()=>{try{process.kill(qchild.pid,0);return true;}catch{return false;}})(),qchild);
+ check('quota boundary emits its distinct signal',fs.readFileSync(amux.serverLog,'utf8').includes('steer_usage_reset_boundary'));
  check('recovery emits its named boundary signal',fs.readFileSync(amux.serverLog,'utf8').includes('steer_api_error_boundary'));
  await amux.down();await amux.up();
  const after=(await amux.req('GET','/health')).body;check('SIGKILL restarts same binary',after.pid!==before.pid&&after.build===before.build,{before,after});
  await new Promise(r=>setTimeout(r,12500));
  check('durable retry key prevents a second continue after crash',received('retry-parent').length===1,received('retry-parent'));
  check('background PID survives server SIGKILL and resumed foreground',alive(),backgroundPid);
+ check('quota reset is deduplicated across server crash',received('quota-parent').length===1);
+ check('unclocked limit stays parked across crash',received('unclocked-parent').length===0);
  check('controls remain untouched after crash',received('auth-parent').length===0&&received('isolated-parent').length===0);
 }catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});console.error(fs.readFileSync(amux.serverLog,'utf8').slice(-8000));}
 finally{for(const pid of ownedChildren()){try{process.kill(pid,'SIGKILL');}catch{}}await amux.stop();}
-const receipt={measured:checks.length>0,n_considered:checks.length,failed:checks.filter(c=>!c.ok).length,artifacts:amux.root,fixture_boundary:'seeded current failed transcript; two-minute bound measured on real periodic clock and terminal',checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);
+const receipt={measured:checks.length>0,n_considered:checks.length,failed:checks.filter(c=>!c.ok).length,artifacts:amux.root,fixture_boundary:'seeded current failed transcript; API two-minute bound uses real periodic clock; quota future-to-passed clock is explicitly seeded; actual CLI children survive',checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);
