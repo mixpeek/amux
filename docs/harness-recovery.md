@@ -261,5 +261,8 @@ replaying the original worker commits. Pending push_candidate_sha is intent,
 not merged_sha or a terminal receipt. The process case moves main, has a real
 bare remote accept the rebased feature and SIGKILL the controller before its
 acknowledgement, then checks one commit and one terminal landing after recovery.
-Unknown or incomplete candidates remain preserved; only the registered server
-candidate at an adopted SHA is cleaned while the repository lock is held.
+One reusable candidate per repository preserves the deployed checkout optimization.
+A registered checkout interrupted before acknowledgement resets in place on restart;
+positive remote ancestry adopts a saved push before any reset or replay. Ordinary
+failed creation removes its own locked candidate. Stale cleanup is restricted to
+registered candidates in the same repository, preserving unrelated directories.

@@ -1219,6 +1219,27 @@ for line in sys.stdin:
     if str(o.get("status","")).lower()=="running" and o.get("name"): print(o["name"])' 2>/dev/null
 }
 
+# Hold one VM's build cache under VM_PRUNE_MAX_USED. Runs on EVERY tick, not
+# only when disk is tight (disk RCA 20261008-124643: the cap lived inside the
+# tight-disk branch, so a normal tick never ran it and goal-shared's cache
+# reached 64G against a 40G cap while the host burned 34G/h).
+cap_vm_build_cache() { # <profile>
+  local p=$1 cmd out rc=0
+  [ "$VM_PRUNE_MAX_USED" != 0 ] || return 0
+  cmd=${VM_PRUNE_CAP_CMD//PROFILE/$p}; cmd=${cmd//CAP/$VM_PRUNE_MAX_USED}
+  case "$cmd" in
+    vm_build_cache_cap\ *)
+      export -f vm_build_cache_cap; export VM_DOCKER VM_PRUNE_CAP_AGE
+      out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c "$cmd" 2>&1) || rc=$? ;;
+    *) out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$? ;;
+  esac
+  if [ "$rc" = 0 ]; then
+    echo "mac-cleanup:   vm $p build cache capped at $VM_PRUNE_MAX_USED: $(printf '%s' "$out" | grep -iE 'total|build cache' | head -1 | tr -s ' \t' ' ' | cut -c1-60); $(printf '%s' "$out" | grep -i 'total' | tail -1 | tr -s ' \t' ' ' | cut -c1-60) (verdict=vm_build_cache_capped)"
+  else
+    echo "mac-cleanup:   vm $p build-cache cap FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120) (verdict=vm_build_cache_cap_failed)"
+  fi
+}
+
 # Prune build cache in every running VM and trim its disk so the host gets the
 # blocks back. Sets VMS_PRUNED / VMS_FAILED. Each step is time-boxed.
 prune_vm_build_caches() { # <dry:0|1> [free_gb]
@@ -1238,20 +1259,7 @@ prune_vm_build_caches() { # <dry:0|1> [free_gb]
     if [ "$rc" != 0 ]; then
       VMS_FAILED=$((VMS_FAILED+1)); echo "mac-cleanup:   vm $p build-cache prune FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120)"; continue
     fi
-    if [ "$VM_PRUNE_MAX_USED" != 0 ]; then
-      cmd=${VM_PRUNE_CAP_CMD//PROFILE/$p}; cmd=${cmd//CAP/$VM_PRUNE_MAX_USED}; rc=0
-      case "$cmd" in
-        vm_build_cache_cap\ *)
-          export -f vm_build_cache_cap; export VM_DOCKER VM_PRUNE_CAP_AGE
-          out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" bash -c "$cmd" 2>&1) || rc=$? ;;
-        *) out=$(perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd 2>&1) || rc=$? ;;
-      esac
-      if [ "$rc" = 0 ]; then
-        echo "mac-cleanup:   vm $p build cache capped at $VM_PRUNE_MAX_USED: $(printf '%s' "$out" | grep -i 'total' | tail -1 | tr -s ' \t' ' ' | cut -c1-60) (verdict=vm_build_cache_capped)"
-      else
-        echo "mac-cleanup:   vm $p build-cache cap FAILED (rc $rc): $(printf '%s' "$out" | tail -1 | cut -c1-120) (verdict=vm_build_cache_cap_failed)"
-      fi
-    fi
+    cap_vm_build_cache "$p"
     cmd=${VM_TRIM_CMD//PROFILE/$p}
     perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd >/dev/null 2>&1 || echo "mac-cleanup:   vm $p fstrim did not complete (build cache was still pruned)"
     VMS_PRUNED=$((VMS_PRUNED+1))
@@ -1531,7 +1539,8 @@ trim_vms() { # <dry:0|1>
   [ -n "$profiles" ] || { echo "mac-cleanup: vm trim: no running colima VM"; return 0; }
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    if [ "$dry" = 1 ]; then echo "mac-cleanup:   would trim colima VM $p (dry run)"; continue; fi
+    if [ "$dry" = 1 ]; then echo "mac-cleanup:   would cap the build cache of and trim colima VM $p (dry run)"; continue; fi
+    cap_vm_build_cache "$p"
     cmd=${VM_TRIM_CMD//PROFILE/$p}
     if perl -e 'alarm shift; exec @ARGV' "$VM_STEP_S" $cmd >/dev/null 2>&1; then VMS_TRIMMED=$((VMS_TRIMMED+1)); else n_fail=$((n_fail+1)); fi
   done <<EOF

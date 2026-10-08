@@ -255,28 +255,89 @@ async fn cleanup_candidate(tree: &Path, dir: &Path) {
     }
 }
 
-/// A positive remote receipt also identifies the abandoned composed checkout.
-/// Only this repository's registered server candidates at that exact HEAD are
-/// removed, while its land lock is held. Unknown/incomplete candidates stay put.
-async fn cleanup_accepted_candidate(tree: &Path, accepted: &str, lock: Option<&LandLock>) {
-    if lock.is_none() { return; }
-    let Ok(list) = git(tree, &["worktree", "list", "--porcelain"]).await else { return; };
-    let Ok(parent) = std::fs::canonicalize(home().join("tmp").join("land")) else { return; };
-    for block in list.split("\n\n") {
-        let path = block.lines().find_map(|l| l.strip_prefix("worktree "));
-        let head = block.lines().find_map(|l| l.strip_prefix("HEAD "));
-        let Some(path) = path.filter(|_| head == Some(accepted)) else { continue; };
-        let dir = Path::new(path);
-        if dir.parent().and_then(|p| std::fs::canonicalize(p).ok()).as_deref() == Some(parent.as_path())
-            && dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("c-"))
-            && !dir.is_symlink()
-        {
-            cleanup_candidate(tree, dir).await;
+/// ONE REUSED CANDIDATE PER REPOSITORY (gs12-extra-2, land 119, 2026-10-08:
+/// running -> queued twice in 35 min on "git worktree timed out after 120s",
+/// holding the mixpeek queue ~50 min). A fresh `git worktree add` of mixpeek
+/// checks out 39k files, measured at 237 s under load (258 s with hooks off,
+/// so hooks are not the cost), and every timeout left a partial ~1 GB
+/// checkout under ~/.amux/tmp/land. The candidate is now created once (15 min
+/// budget) and reset to origin/main for each land, which rewrites only what
+/// changed. Old per-land c-* directories are swept. Logs
+/// verdict=land_candidate_reused / land_candidate_created.
+async fn candidate(tree: &Path, main: &str) -> Result<PathBuf, String> {
+    let key = repo_key(tree).await?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&key, &mut h);
+    let root = home().join("tmp").join("land");
+    let _ = std::fs::create_dir_all(&root);
+    let dir = root.join(format!("cand-{:016x}", std::hash::Hasher::finish(&h)));
+    sweep_old_candidates(tree, &root).await;
+    if dir.join(".git").exists() && git(&dir, &["rev-parse", "--git-dir"]).await.is_ok() {
+        let _ = git(&dir, &["cherry-pick", "--abort"]).await;
+        let reset = async {
+            git(&dir, &["-c", "core.hooksPath=/dev/null", "checkout", "-q", "--detach", "-f", main]).await?;
+            git(&dir, &["reset", "-q", "--hard", main]).await?;
+            git(&dir, &["clean", "-fdq"]).await
+        };
+        match reset.await {
+            Ok(_) => {
+                tracing::info!(dir = %dir.display(), main, measured = true, n_considered = 1, verdict = "land_candidate_reused",
+                    "the land candidate was reset to origin/main instead of checked out again");
+                return Ok(dir);
+            }
+            Err(e) => tracing::warn!(dir = %dir.display(), error = %e, measured = true, n_considered = 1,
+                verdict = "land_candidate_reset_failed", "the land candidate could not be reset; it is recreated"),
+        }
+    }
+    let d = dir.to_string_lossy().into_owned();
+    cleanup_candidate(tree, &dir).await;
+    let _ = git(tree, &["worktree", "prune"]).await;
+    let t = tree.to_string_lossy().into_owned();
+    let out = crate::api::session_verbs::run_cmd("git", &["-C", &t, "-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "--detach", &d, main],
+        Duration::from_secs(CANDIDATE_CREATE_S)).await;
+    match out {
+        Some(o) if o.status.success() => {
+            tracing::info!(dir = %dir.display(), main, measured = true, n_considered = 1, verdict = "land_candidate_created",
+                "created the reusable land candidate");
+            Ok(dir)
+        }
+        other => {
+            tracing::warn!(dir = %dir.display(), measured = true, n_considered = 1, verdict = "land_candidate_start_failed", "land candidate could not start; cleanup runs before requeue");
+            cleanup_candidate(tree, &dir).await;
+            Err(match other {
+                Some(o) => format!("git worktree add failed: {}", tail(String::from_utf8_lossy(&o.stderr).trim(), 400)),
+                None => format!("git worktree add timed out after {CANDIDATE_CREATE_S}s"),
+            })
         }
     }
 }
 
-async fn adopt_push_receipts(tree: &Path, entries: &[Entry], main: &str, lock: Option<&LandLock>, state: Option<&AppState>) -> Result<(Vec<Entry>, Vec<(i64, Outcome)>), String> {
+const CANDIDATE_CREATE_S: u64 = 900;
+
+/// Per-land checkouts from before the reusable candidate (c-<pid>-<ts>), an
+/// hour old or more, are removed with their worktree registration.
+async fn sweep_old_candidates(tree: &Path, root: &Path) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    let Ok(registered) = git(tree, &["worktree", "list", "--porcelain"]).await else { return };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() > 3600);
+        if name.starts_with("c-") && old && !p.is_symlink()
+            && std::fs::canonicalize(&p).ok().is_some_and(|p| registered.lines().any(|l| l == format!("worktree {}", p.display()))) {
+            cleanup_candidate(tree, &p).await;
+            if !p.exists() { n += 1; }
+        }
+    }
+    if n > 0 {
+        let _ = git(tree, &["worktree", "prune"]).await;
+        tracing::info!(removed = n, measured = true, n_considered = n, verdict = "land_candidate_leftovers_swept",
+            "removed per-land checkouts left by earlier lands");
+    }
+}
+
+async fn adopt_push_receipts(tree: &Path, entries: &[Entry], main: &str, state: Option<&AppState>) -> Result<(Vec<Entry>, Vec<(i64, Outcome)>), String> {
     let mut out = Vec::new();
     let mut pending = Vec::new();
     if let Some(state) = state {
@@ -290,7 +351,6 @@ async fn adopt_push_receipts(tree: &Path, entries: &[Entry], main: &str, lock: O
                 if is_ancestor(tree, &candidate, main).await {
                     tracing::info!(id, candidate, measured = true, n_considered = 1, verdict = "land_push_receipt_adopted",
                         "remote ancestry proves the accepted push; do not replay its rebased commits");
-                    cleanup_accepted_candidate(tree, &candidate, lock).await;
                     out.push((id, Outcome::Merged(candidate)));
                     continue;
                 }
@@ -306,12 +366,10 @@ async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &st
         git(tree, &["fetch", "-q", "origin", "main"]).await?;
         let main = git(tree, &["rev-parse", "origin/main"]).await?;
         // Reconcile before every retry as well as after controller recovery.
-        let (pending, mut adopted) = adopt_push_receipts(tree, entries, &main, lock, state).await?;
+        let (pending, mut adopted) = adopt_push_receipts(tree, entries, &main, state).await?;
         if pending.is_empty() { return Ok(Attempt::Done(adopted)); }
-        let dir = home().join("tmp").join("land").join(format!("c-{}-{}", std::process::id(), ulid::Ulid::new()));
-        std::fs::create_dir_all(dir.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
+        let dir = candidate(tree, &main).await?;
         let result = compose_candidate(tree, &pending, gate, prefix, lock, (&dir, &main), state).await;
-        cleanup_candidate(tree, &dir).await;
         match result {
             Ok(Attempt::Retry) => continue,
             Ok(Attempt::Done(done)) => { adopted.extend(done); return Ok(Attempt::Done(adopted)); }
@@ -324,12 +382,6 @@ async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &st
 
 async fn compose_candidate(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, candidate: (&Path, &str), state: Option<&AppState>) -> Result<Attempt, String> {
     let (dir, main) = candidate;
-    let cand = dir.to_string_lossy().into_owned();
-    if let Err(why) = git(tree, &["worktree", "add", "-q", "--detach", &cand, main]).await {
-        tracing::warn!(candidate = %dir.display(), reason = %why, measured = true, n_considered = 1,
-            verdict = "land_candidate_start_failed", "land candidate could not start; cleanup runs before requeue");
-        return Err(why);
-    }
     let mut out: Vec<(i64, Outcome)> = Vec::new();
     let mut applied: Vec<Entry> = Vec::new();
     for e in entries {
@@ -770,6 +822,34 @@ mod tests {
         sh(tree, &["rev-parse", "HEAD"])
     }
 
+    /// gs12-extra-2's land 119: the candidate is created once per repository
+    /// and every later land resets the same checkout to origin/main, dropping
+    /// a previous land's leftovers; a per-land c-* dir an hour old is swept.
+    #[tokio::test]
+    async fn the_land_candidate_is_reused_and_reset_per_land() {
+        let d = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let lane = fixture(d.path());
+        sh(&lane, &["fetch", "-q", "origin"]);
+        let main = sh(&lane, &["rev-parse", "origin/main"]);
+        let old = home().join("tmp").join("land").join("c-1-1");
+        sh(&lane, &["worktree", "add", "-q", "--detach", &old.to_string_lossy(), &main]);
+        let hour_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        std::fs::File::open(&old).unwrap().set_modified(hour_ago).unwrap();
+        let first = candidate(&lane, &main).await.unwrap();
+        assert!(!old.exists(), "an hour-old per-land checkout is swept");
+        std::fs::write(first.join("a.txt"), "dirty\n").unwrap();
+        std::fs::write(first.join("stray.txt"), "x\n").unwrap();
+        let ino = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(first.join(".git")).unwrap());
+        let second = candidate(&lane, &main).await.unwrap();
+        assert_eq!(first, second, "one candidate per repository");
+        assert_eq!(ino, std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(second.join(".git")).unwrap()),
+            "the candidate is reset in place, not checked out again");
+        assert_eq!(std::fs::read_to_string(second.join("a.txt")).unwrap(), "1\n");
+        assert!(!second.join("stray.txt").exists());
+        assert_eq!(sh(&second, &["rev-parse", "HEAD"]), main);
+    }
+
     /// The core of rule 5: a green batch lands together; a red one is bisected
     /// so the good commits still land and only the red one is refused, with
     /// nothing of it merged; a conflicting commit is refused alone.
@@ -865,18 +945,19 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let _guard = crate::api::settings::test_env::set_home(d.path());
         let lane = fixture(d.path());
-        let sha = commit(&lane, "feature.txt", "x\n");
-        let hook = lane.join(".git/hooks/post-checkout");
-        std::fs::write(&hook, "#!/bin/sh\ngit worktree lock --reason initializing \"$PWD\"\necho fixture-checkout-failed >&2\nexit 37\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit(&lane, "feature.txt", "x\n");
+        sh(&lane, &["fetch", "-q", "origin", "main"]);
+        let main = sh(&lane, &["rev-parse", "origin/main"]);
+        let dir = candidate(&lane, &main).await.unwrap();
+        sh(&lane, &["worktree", "lock", "--reason", "initializing", &dir.to_string_lossy()]);
         let path = d.path().join("locks/failed-candidate");
         let lock = match acquire_lock(&path, Duration::from_millis(100), Duration::from_millis(10)).await {
             LockWait::Acquired(lock) => lock,
             LockWait::TimedOut(_) => panic!("private lock unexpectedly held"),
         };
-        let result = land(&lane, vec![Entry { id:1,repo:"r".into(),lane:"l".into(),sha }], None, "", Some(&lock)).await;
-        assert!(result.unwrap_err().contains("fixture-checkout-failed"));
+        // Cleanup's consumer must remove a real locked candidate. The process
+        // case additionally fails real creation before exercising requeue.
+        cleanup_candidate(&lane, &dir).await;
         assert!(!sh(&lane, &["worktree","list","--porcelain"]).contains("locked initializing"));
         assert_eq!(std::fs::read_dir(d.path().join("tmp/land")).unwrap().count(), 0);
         drop(lock);

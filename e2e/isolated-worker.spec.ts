@@ -28,7 +28,7 @@ test('LC-ISOLATED-BOUNDARY: refused peer sends create no board work or queued me
     for (const [name, raw] of [[isolated, true], [peer, false], [outside, false]] as const) {
       const created = await request.post('/api/sessions', {
         headers: auth,
-        data: { name, dir: '/tmp', tags: [name === outside ? 'e2e-outside' : 'e2e-isolation'], isolated: raw },
+        data: { name, dir: '/tmp', start: false, tags: [name === outside ? 'e2e-outside' : 'e2e-isolation'], isolated: raw },
       });
       expect(created.status(), `create ${name}`).toBe(201);
     }
@@ -55,10 +55,12 @@ test('LC-ISOLATED-BOUNDARY: refused peer sends create no board work or queued me
     // It must also leave no task card behind: raw lanes do not participate in
     // the board as a side effect of amux-mediated traffic.
     for (const sender of [peer, outside]) {
-      // An explicit allowance cannot punch through isolation, either.
-      expect((await request.patch(`/api/sessions/${sender}/config`, {
+      // A wildcard cannot widen automatic group routing. Isolation still
+      // independently refuses both the same-group and outside-group peer.
+      const allowance = await request.patch(`/api/sessions/${sender}/config`, {
         headers: auth, data: { send_allow: '*' },
-      })).ok()).toBe(true);
+      });
+      expect(allowance.status()).toBe(403);
       for (const route of ['send', 'steer']) {
         const relay = await request.post(`/api/sessions/${isolated}/${route}`, {
           headers: { ...auth, 'X-Amux-Worker': sender },
@@ -100,7 +102,7 @@ test('LC-ISOLATED-OWNER: owner queue survives reload and UI isolation toggles in
   try {
     for (const [worker, isolated] of [[name, true], [peer, false]] as const) {
       const created = await request.post('/api/sessions', { headers,
-        data: { name: worker, dir: '/tmp', tags: ['e2e-isolation'], isolated } });
+        data: { name: worker, dir: '/tmp', start: false, tags: ['e2e-isolation'], isolated } });
       expect(created.status()).toBe(201);
     }
     const text = `Owner-only queued assignment ${name}`;

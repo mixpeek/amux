@@ -13,7 +13,7 @@ test('LC-COORD-POLICY: peer task awareness spans groups; stopped targets and iso
     for (const [name, group, isolated] of [[author, 'build', false], [peer, 'build', false],
       [outside, 'review', false], [raw, 'build', true]] as const) {
       const made = await request.post('/api/sessions', { headers,
-        data: { name, dir: '/tmp', tags: [`lc-${group}-${suffix}`], isolated } });
+        data: { name, dir: '/tmp', start: false, tags: [`lc-${group}-${suffix}`], isolated } });
       expect(made.status()).toBe(201);
     }
     const cards: any[] = [];
