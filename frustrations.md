@@ -5312,3 +5312,36 @@ CARD: GG-104 (mixpeek side; the amux-frustrations card could not be created from
 SYMPTOM: runtime_jobs/scheduler.rs runs kind=shell under tokio timeout(SHELL_TIMEOUT_S) with kill_on_drop(true) and no process group. On timeout only the direct /bin/bash dies; its children reparent to pid 1. SCHED-552's 17:25Z run recorded "timed out after 600s" while bash pid 22204 (ppid 1) and its python child were still running 19 minutes later. The every-20m schedule would then start a second copy on the same worktree.
 COST: Three runs read as failed when they were still working, a 20-minute investigation, and a near-collision where the next fire would reset a git worktree under the live run that was about to commit and land from it.
 FIX: Spawn the shell job in its own process group (process_group(0)) and killpg it on timeout. Fixed when a shell schedule whose grandchild sleeps past SHELL_TIMEOUT_S leaves no surviving process after the timeout.
+
+## PR #239's worker group boundary refuses the Mac cleanup tick's escalations to the amux lane
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5724
+SYMPTOM: Reviewed head 0a7405e8. worker_group_refusal has no exception besides shared membership, self and owner input. The Mac cleanup tick is SCHED-465, a shell schedule whose session is `desktop` (CC_TAGS="system"), and it escalates with `amux send amux --file` (scripts/mac-cleanup-tick.sh:369). The amux lane is CC_TAGS=amux. The two sets are disjoint, so every escalation is refused worker_group_boundary. Today's fseventsd, cpu and disk escalations all arrived by this path.
+COST: After the merge, each constraint escalation logs "escalation to amux FAILED (n in a row)" and goes no further. The RCA loop (cause, fix, re-measure, .card file) stops with no lane to drive it, while the tick keeps applying only symptom fixes.
+FIX: Before merge, put desktop and amux in one shared group, or have the tick escalate through an owner-origin or system path the boundary allows. Then replay one escalation against the installed image and confirm it reaches the lane.
+
+## PR #239's land candidate() cannot recover an unregistered cand-<hash> directory
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5725
+SYMPTOM: Reviewed head 0a7405e8. When ~/.amux/tmp/land/cand-<hash> exists but is not a registered worktree (admin dir pruned, a half-created directory, a .git file pointing nowhere), `rev-parse --git-dir` fails and candidate() falls through to re-creation. The PR replaced main's `remove_dir_all` with cleanup_candidate(), which is `git worktree remove --force --force` and fails on an unregistered path. `worktree add` into the existing non-empty directory then fails with "already exists". sweep_old_candidates now also skips unregistered c-* directories, so a stale unregistered checkout leaks and is never logged.
+COST: One stray directory fails every land for that repository, one after another, each logging land_candidate_cleanup_failed, until someone removes it by hand. That is the manual-override shape the repo CLAUDE.md treats as an amux defect. On main the same state self-heals.
+FIX: In candidate() only, for the exact cand-<hash> path under ~/.amux/tmp/land, not a symlink and not registered, remove it with remove_dir_all after the worktree remove fails, and log a verdict. Give unregistered old c-* leftovers the same path, or at least one counted WARN. Test: create a plain non-empty cand-<hash> directory, call candidate(), expect land_candidate_created.
+
+## PR #239 freezes a whole contract from an acceptance_criteria-only PATCH on a backlog or todo card
+AREA: board
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5726
+SYMPTOM: Reviewed head 0a7405e8. The prepare branch in decide() fires on any of acceptance_criteria, verify_cmd, verify_kind or deploy_check, for backlog, todo and doing. freeze_from fills the command from the lane's CC_VERIFY default. So on a contract lane with a default verify command, an orchestrator setting or refining acceptance criteria on a backlog card freezes the contract right then. After that, acceptance is owner-only and the lane gets one verify_cmd amend. The PR's own test covers only {verify_cmd, reason}, and its comment says "an explicit server check" while the condition accepts acceptance alone.
+COST: Planning edits made before anyone claims the card become frozen contracts. The next refinement draws contract_frozen 409 and needs the owner. Decomposition writes acceptance_criteria in bulk, so this can hit many backlog cards at once.
+FIX: Make the prepare branch require an explicit verify_cmd / verify_kind / deploy_check, which matches the comment. Leave acceptance_criteria on backlog and todo as a plain column write. Add an acceptance-only case to preparing_a_todo_contract_persists_the_command_without_claiming_work.
