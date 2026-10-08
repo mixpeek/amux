@@ -7967,3 +7967,16 @@ body.light .bd-answer-head { color: #bc4c00; }
   .file-overlay-body.file-xlsx-editor { border-radius: 0; border-left: 0; border-right: 0; }
   #file-save-btn { min-height: 44px; }
 }
+
+/* Scratchpad: its own toolbar class (.fe-tb-actions is hidden at every width,
+   which hid New Note / New Folder / Refresh), and the paste-to-save box. */
+.sp-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.sp-capture-row { display:flex; gap:8px; padding:8px 12px; align-items:stretch; }
+.sp-capture { flex:1; min-height:44px; resize:vertical; font-family:inherit; font-size:0.85rem; }
+.sp-capture-save { min-width:64px; min-height:44px; }
+.sp-copy-btn { min-width:32px; }
+@media (max-width: 600px) {
+  .sp-actions .fe-tb-btn { min-height:44px; min-width:44px; }
+  .sp-actions .fe-tb-btn span { display:none; }
+  .sp-copy-btn { min-width:44px; min-height:44px; }
+}

@@ -13996,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1265';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1266';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -26563,6 +26563,7 @@ function _spUpdateSortHeaders() {
 }
 
 async function _scratchpadLoad() {
+  _spWireCapture();
   const gen = ++_spLoadGen;
   const body = document.getElementById('scratchpad-body');
   body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
@@ -26614,7 +26615,7 @@ function _spRender(path, data) {
   if (!entries.length) {
     const msg = document.createElement('div');
     msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
-    msg.textContent = 'No notes yet. Click "New Note" to get started.';
+    msg.textContent = 'Nothing here yet. Paste anywhere on this tab and it is saved.';
     body.appendChild(msg);
     return;
   }
@@ -26632,7 +26633,8 @@ function _spRender(path, data) {
       '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
       '<div class="fe-cell-size">' + sizeStr + '</div>' +
       '<div class="fe-cell-date">' + dateStr + '</div>' +
-      '<div class="fe-cell-actions"><button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
+      '<div class="fe-cell-actions">' + (entry.type === 'dir' ? '' : '<button class="fe-menu-btn sp-copy-btn" title="Copy to clipboard" onclick="event.stopPropagation();_spCopy(\'' + epEsc + '\')">⧉</button>') +
+      '<button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
     if (entry.type === 'dir') {
       row.onclick = () => _spNav(ep);
     } else {
@@ -26647,11 +26649,98 @@ function _spNav(path) {
   _scratchpadLoad();
 }
 
+// A dumping ground, not a document editor (Ethan, 2026-10-08: "an extremely
+// quick and reliable/durable way to paste ... a makeshift clipboard dumping
+// ground ... with a file store"). A paste saves at once under a timestamp
+// name; nothing asks for a name first. PUT /api/file goes through apiCall, so
+// an offline paste is queued and replayed rather than lost.
+function _spStamp() {
+  const d = new Date(), z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '-' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
+}
+function _spUniqueName(base, ext) {
+  const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
+  let name = base + ext, n = 2;
+  while (taken.has(name)) name = base + '-' + (n++) + ext;
+  return name;
+}
+async function _spCaptureSave(text) {
+  if (!text || !text.trim()) return false;
+  const name = _spUniqueName(_spStamp(), '.md');
+  const path = _spPath.replace(/\/$/, '') + '/' + name;
+  const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
+  if (_spLastData && _spLastData.path === _spPath) {
+    _spLastData.data.entries = [entry, ...(_spLastData.data.entries || [])];
+    _spRender(_spPath, _spLastData.data);
+  }
+  const r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content: text }) });
+  if (!r) { showToast(online ? 'Could not save ' + name : 'Saved offline: ' + name + ' syncs when you reconnect'); return !online; }
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast('Could not save ' + name + (d.error ? ': ' + d.error : '')); _scratchpadLoad(); return false; }
+  showToast('Saved ' + name);
+  return true;
+}
+async function _spSaveImage(file) {
+  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+  const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+  const name = _spUniqueName(_spStamp(), '.' + ext);
+  const fd = new FormData();
+  fd.append('dir', dir);
+  fd.append('file', file, name);
+  try {
+    const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !(d.saved || []).length) throw new Error(d.error || ('HTTP ' + r.status));
+    showToast('Saved ' + name);
+  } catch (e) { showToast('Could not save the image: ' + e.message); }
+  _scratchpadLoad();
+}
+// One paste path for the box and for the whole tab: images are stored as
+// files, text as a note. A paste into a box that already holds typing joins
+// the typing instead (the person is composing).
+function _spHandlePaste(e, box) {
+  const items = [...(e.clipboardData?.items || [])];
+  const images = items.filter(i => i.kind === 'file' && i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+  const text = e.clipboardData?.getData('text/plain') || '';
+  if (box && box.value.trim()) return;
+  if (!images.length && !text.trim()) return;
+  e.preventDefault();
+  images.forEach(_spSaveImage);
+  if (text.trim()) _spCaptureSave(text);
+}
+async function _spCaptureSaveTyped() {
+  const box = document.getElementById('sp-capture');
+  if (!box || !box.value.trim()) return;
+  const text = box.value;
+  box.value = '';
+  if (!(await _spCaptureSave(text))) box.value = text;
+}
+async function _spCopy(path) {
+  try {
+    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(path), { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    if (typeof d.content !== 'string') throw new Error(d.error || 'not a text file');
+    await navigator.clipboard.writeText(d.content);
+    showToast('Copied ' + path.split('/').pop());
+  } catch (e) { showToast('Could not copy: ' + e.message); }
+}
+function _spWireCapture() {
+  const box = document.getElementById('sp-capture');
+  if (!box || box._spWired) return;
+  box._spWired = true;
+  box.addEventListener('paste', e => _spHandlePaste(e, box));
+  box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _spCaptureSaveTyped(); } });
+  document.addEventListener('paste', e => {
+    if (activeView !== 'scratchpad' || e.target === box) return;
+    const t = e.target;
+    if (t && (t.closest?.('input, textarea, [contenteditable="true"], #file-overlay'))) return;
+    _spHandlePaste(e, null);
+  });
+}
+
 async function _scratchpadNewNote() {
-  const name = prompt('Note name:', 'untitled.md');
-  if (!name || !name.trim()) return;
-  let fname = name.trim();
-  if (!/\.\w+$/.test(fname)) fname += '.md';
+  const fname = _spUniqueName(_spStamp(), '.md');
   const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
   _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
   _fileViewMode = 'edit';
