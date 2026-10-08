@@ -5103,3 +5103,14 @@ CARD: AF-968
 SYMPTOM: Four of twelve live health probes reported degraded/hung with writer queues of fifteen or sixteen. Retention held the writer for 15.6 seconds and checkpoints waited behind readers before honestly reporting deferred maintenance. Steering retention and archived project-owner discovery used full-table scans rather than covering timestamp/project indexes.
 COST: Worker updates and health probes waited behind maintenance; last successful writer probes were over twenty seconds old during a measured live window.
 FIX: Non-waiting checkpoint with restored ordinary lock policy, bounded retention batches yielding between tables, covering indexes preserving archived ownership, and named table/phase latency signals. Validate active-reader contention, preserved pending capture, restart recovery and live writer latency before retirement.
+
+## A successful board archive was undone in the dashboard by an older poll
+AREA: state
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: PR 236's iOS browser trace showed Clear done POST returning 200 and the server logging archived=1, while a pre-commit board response restored the same done card to the browser. The existing snapshot fence covered stream updates but not this local mutation.
+COST: One browser gate failed after sixteen minutes; the owner could see completed work reappear despite a successful server archive.
+FIX: Fence/cancel shared reads at both mutation boundaries, reconcile with a fresh server readback, retain newer same-id changes on failure, and emit named reconciliation/restoration events. Exercise delayed real reads, rollback and browser reload on desktop, mobile and iOS before retirement.

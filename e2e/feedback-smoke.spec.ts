@@ -159,6 +159,50 @@ test('board: create shows the card; Clear done visibly removes it', async ({ pag
   await expectNoOverflow(page);
 });
 
+test('board: a delayed pre-clear poll cannot resurrect an archived card after recovery', async ({page, request}) => {
+  await settle(page);
+  const token = await appToken(page);
+  const title = `fbk-clear-race-${Date.now()}`;
+  const response = await request.post('/api/board', {
+    headers:{Authorization:`Bearer ${token}`},
+    data:{title,status:'done',type:'ops'},
+  });
+  expect(response.status()).toBe(201);
+  const id = (await response.json()).id;
+  await page.click('#tab-board');
+  await page.evaluate(async () => { await (window as any).fetchBoard(); });
+  await expect(page.locator('#board-view')).toContainText(title);
+  let release!: () => void;
+  let observed!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  const captured = new Promise<void>(r => { observed = r; });
+  let armed = true;
+  await page.route('**/api/board?*', async route => {
+    if (armed && route.request().url().includes('archived=0')) {
+      armed = false;
+      const older = await route.fetch();
+      observed();
+      await gate;
+      await route.fulfill({response:older});
+    } else await route.continue();
+  });
+  await page.evaluate(() => { (window as any).__delayedBoardRead = (window as any).fetchBoard(); });
+  await captured;
+  const cleared = page.waitForResponse(r => r.url().endsWith('/api/board/clear-done') && r.request().method() === 'POST');
+  await clickSnapped(page.locator('#board-view button', {hasText:'Clear done'}).first(), 'Clear done');
+  expect((await cleared).status()).toBe(200);
+  release();
+  await page.evaluate(async () => { await (window as any).__delayedBoardRead; });
+  await expect(page.locator('#board-view')).not.toContainText(title);
+  const persisted = await request.get(`/api/board/${id}`, {headers:{Authorization:`Bearer ${token}`}});
+  expect(persisted.status()).toBe(200);
+  expect((await persisted.json()).archived).toBe(1);
+  await page.unroute('**/api/board?*');
+  await page.reload();
+  await page.click('#tab-board');
+  await expect(page.locator('#board-view')).not.toContainText(title);
+});
+
 test('alert settings toggle: save answers with a toast (new no-silent-actions feedback)', async ({ page }) => {
   await settle(page);
   await page.click('#settings-btn');
