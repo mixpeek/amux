@@ -760,6 +760,13 @@ fn turn_args(provider: &str, flags: &str, cc_model: &str, conv: &str, fresh: boo
     // answering the accountability nudge). Only the harness CLI is allowed;
     // every other tool keeps the worker's own permission setting.
     a.extend(["--allowedTools".into(), "Bash(amux:*)".into()]);
+    // READ-ONLY TOOLS TOO (Ethan, 2026-10-07, mixpeek-override's chat: "what
+    // is the progress of gs12?" got "I couldn't pull a fresher pace reading").
+    // With only Bash(amux:*) a pipe through grep and any read of a log was
+    // refused, so the companion could not look things up. Reading cannot
+    // change anything, so Read, Grep and Glob are allowed as well.
+    a.extend(["--allowedTools".into(), "Read,Grep,Glob".into()]);
+    a.extend(["--add-dir".into(), home().join("logs").to_string_lossy().into_owned()]);
     // Files the owner attaches in the Chat tab are saved under the amux
     // uploads folder, outside the worker's directory, so a headless turn was
     // refused them with no way to grant it (2026-10-04, mixpeek-override's
@@ -990,7 +997,7 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
              and briefly unless asked for detail. Each message starts with a [context] block amux computed \
              just now; trust it over your memory of earlier turns. For more, use the amux CLI: \
              `amux peek {worker}` shows its terminal, `amux info {worker}` its configuration, `amux board ls` \
-             the board, and you can read files in its directory. To direct the work, send the worker an \
+             the board, and you can read files in its directory and in ~/.amux/logs (Read, Grep, Glob). To direct the work, send the worker an \
              instruction with `amux send {worker} --stdin` and tell the owner what you sent. Leave edits in \
              its checkout to the worker unless the owner asks you to make them.\n\n"
         ));
@@ -1118,6 +1125,9 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     if !last.trim().is_empty() {
         out.push_str(&format!("- its last reply (may be cut): {}\n", clip(last.trim(), 1500)));
     }
+    if let Some(fleet) = hub_fleet_section(state, worker).await {
+        out.push_str(&fleet);
+    }
     // THE ESCALATION LADDER (AMUX-5432, Ethan 2026-10-01). Sent every turn,
     // not only on a fresh conversation, so existing Chats learn it too.
     out.push_str(&format!(
@@ -1136,6 +1146,66 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     out.push_str("\n[owner]\n");
     out.push_str(text);
     out
+}
+
+/// For a hub (other lanes name it AMUX_CONTRACT_HUB, as every GS-12 lane names
+/// mixpeek-override), the lanes reporting to it and the plan's last pace
+/// line, computed (Ethan, 2026-10-07: chat "should have the ability to review
+/// all worker stuff asking the orchestrator of progress"). None for a worker
+/// nobody reports to.
+async fn hub_fleet_section(state: &AppState, worker: &str) -> Option<String> {
+    let home = home();
+    let lanes: Vec<String> = super::session_verbs::all_lane_names()
+        .into_iter()
+        .filter(|l| l != worker)
+        .filter(|l| {
+            crate::api::contract::lane_setting(&home, l, "AMUX_CONTRACT_HUB")
+                .is_some_and(|h| h.trim().trim_matches('"') == worker)
+        })
+        .collect();
+    let pace = std::fs::read_to_string(home.join("logs").join(format!("orch-pace-{worker}.jsonl")))
+        .ok()
+        .and_then(|t| t.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string))
+        .and_then(|l| serde_json::from_str::<Value>(&l).ok());
+    if lanes.is_empty() && pace.is_none() {
+        return None;
+    }
+    let mut out = String::new();
+    if let Some(p) = pace {
+        let n = |k: &str| p.get(k).and_then(Value::as_i64).unwrap_or(0);
+        let when = p.get("ts").and_then(Value::as_f64)
+            .and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
+            .map(|d| d.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "- plan pace ({when}): proof cards {} of {} verified; cards {} of {} terminal (file: ~/.amux/logs/orch-pace-{worker}.jsonl)\n",
+            n("proof_verified"), n("proof_total"), n("terminal"), n("total")
+        ));
+    }
+    if !lanes.is_empty() {
+        let ls = lanes.clone();
+        let rows: Vec<(String, i64, i64, i64, String)> = state.store.read_async(move |c| {
+            let mut out = Vec::new();
+            for l in &ls {
+                let (doing, todo, ask): (i64, i64, i64) = c.query_row(
+                    "SELECT SUM(status='doing'), SUM(status='todo'), SUM(status='needsyou') FROM issues \
+                     WHERE session=?1 AND deleted IS NULL AND COALESCE(archived,0)=0",
+                    [l], |r| Ok((r.get::<_, Option<i64>>(0)?.unwrap_or(0), r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<i64>>(2)?.unwrap_or(0))))?;
+                let card: String = c.query_row(
+                    "SELECT id || ' ' || title FROM issues WHERE session=?1 AND status='doing' AND deleted IS NULL ORDER BY updated DESC LIMIT 1",
+                    [l], |r| r.get(0)).unwrap_or_default();
+                out.push((l.clone(), doing, todo, ask, card));
+            }
+            Ok(out)
+        }).await.unwrap_or_default();
+        out.push_str(&format!("- lanes reporting to {worker} ({}): doing card, todo, waiting on the owner\n", rows.len()));
+        for (l, _doing, todo, ask, card) in &rows {
+            let on = if card.is_empty() { "nothing in doing".to_string() } else { clip(card, 90) };
+            out.push_str(&format!("  {l}: {on}; {todo} todo; {ask} waiting on the owner\n"));
+        }
+        out.push_str("  For more on one lane: `amux peek <lane>`, `amux board ls --session <lane>`. Read files and logs directly (Read, Grep).\n");
+    }
+    Some(out)
 }
 
 /// The reply says, in so many words, that it did not look.
@@ -2105,6 +2175,10 @@ mod tests {
             fresh.windows(2).any(|w| w == ["--allowedTools", "Bash(amux:*)"]),
             "the harness CLI must be usable from a headless turn"
         );
+        assert!(
+            fresh.windows(2).any(|w| w == ["--allowedTools", "Read,Grep,Glob"]),
+            "read-only tools let the companion look things up"
+        );
         let uploads = home().join("uploads").to_string_lossy().into_owned();
         assert!(
             fresh.windows(2).any(|w| w[0] == "--add-dir" && w[1] == uploads),
@@ -2179,6 +2253,40 @@ mod tests {
 #[cfg(test)]
 mod companion_tests {
     use super::*;
+
+    /// Ethan, 2026-10-07: an orchestrator's chat sees the lanes reporting to
+    /// it and the plan's last pace line, computed; a worker nobody reports to
+    /// gets no section.
+    #[tokio::test]
+    async fn a_hubs_companion_sees_its_lanes_and_the_plan_pace() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = dir.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        std::fs::create_dir_all(h.join("logs")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/hubz.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        std::fs::write(h.join("sessions/lane-r.env"), "AMUX_CONTRACT_HUB=hubz\n").unwrap();
+        std::fs::write(h.join("sessions/lane-x.env"), "AMUX_CONTRACT_HUB=elsewhere\n").unwrap();
+        std::fs::write(h.join("logs/orch-pace-hubz.jsonl"),
+            "{\"ts\": 1791432943.8, \"total\": 1801, \"terminal\": 1079, \"proof_total\": 62, \"proof_verified\": 14}\n").unwrap();
+        let store = crate::db::Store::open(&h.join("c.db")).unwrap();
+        let state = AppState {
+            store: std::sync::Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "t".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        state.store.write(|c| {
+            c.execute("INSERT INTO issues (id,title,desc,status,session,created,updated,type,archived,owner_type) VALUES ('LR-1','Prove scale to zero','', 'doing','lane-r',1,1,'code',0,'agent')", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let s = hub_fleet_section(&state, "hubz").await.expect("a hub gets a section");
+        assert!(s.contains("proof cards 14 of 62 verified"), "{s}");
+        assert!(s.contains("lane-r: LR-1 Prove scale to zero"), "{s}");
+        assert!(!s.contains("lane-x"), "a lane with another hub is not listed: {s}");
+        assert!(hub_fleet_section(&state, "lane-x").await.is_none(), "nobody reports to lane-x");
+    }
 
     #[tokio::test]
     async fn a_companion_turn_carries_the_workers_state_and_the_owners_words_last() {
