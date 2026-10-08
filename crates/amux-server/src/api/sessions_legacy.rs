@@ -276,6 +276,23 @@ fn run_bounded_output(
     budget: std::time::Duration,
     lane: &str,
 ) -> Option<std::process::Output> {
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!(target: "amux::sessions", lane, %error,
+                verdict = "probe_spawn_failed", measured = false,
+                "fleet probe could not start; no tmux response was measured");
+            return None;
+        }
+    };
+    drain_bounded_child_output(child, budget, lane)
+}
+
+fn drain_bounded_child_output(
+    mut child: std::process::Child,
+    budget: std::time::Duration,
+    lane: &str,
+) -> Option<std::process::Output> {
     use std::io::{self, Read};
     use std::os::fd::AsRawFd;
 
@@ -315,15 +332,6 @@ fn run_bounded_output(
         Ok(progressed)
     }
 
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            tracing::warn!(target: "amux::sessions", lane, %error,
-                verdict = "probe_spawn_failed", measured = false,
-                "fleet probe could not start; no tmux response was measured");
-            return None;
-        }
-    };
     let pid = child.id();
     let start = std::time::Instant::now();
     let mut stdout_pipe = child.stdout.take();
@@ -6635,18 +6643,39 @@ pub(crate) mod tests {
     #[test]
     fn bounded_probe_deadline_survives_continuous_output_and_inherited_pipes() {
         let _guard = PROBE_TEST_LOCK.lock().unwrap();
+        use std::os::fd::AsRawFd;
         use std::process::{Command, Stdio};
         for (script, phase) in [
-            ("exec yes x", "child_exit"),
+            ("sleep 0.3; exec yes x", "child_exit"),
             ("sleep 2 & printf finished", "pipe_eof"),
         ] {
             let mut cmd = Command::new("sh");
             cmd.args(["-c", script])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
+            let mut child = cmd.spawn().expect("start the real pipe producer");
+            // Establish the intended boundary before timing it. A successful
+            // spawn does not prove the child ran: under CI load the original
+            // 150ms expired with zero bytes, so it never tested a productive
+            // writer. Deliberate startup delay makes that distinction explicit.
+            let mut ready = libc::pollfd {
+                fd: child.stdout.as_ref().unwrap().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: child owns the live descriptor and ready is one pollfd.
+            assert_eq!(unsafe { libc::poll(&mut ready, 1, 5000) }, 1);
+            assert_ne!(ready.revents & libc::POLLIN, 0, "producer wrote before the deadline boundary");
+            if phase == "pipe_eof" {
+                let setup = std::time::Instant::now();
+                while child.try_wait().unwrap().is_none() {
+                    assert!(setup.elapsed() < std::time::Duration::from_secs(1), "fixture parent did not exit");
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             let started = std::time::Instant::now();
-            assert!(run_bounded_output(
-                cmd,
+            assert!(drain_bounded_child_output(
+                child,
                 std::time::Duration::from_millis(150),
                 "deadline-probe"
             )

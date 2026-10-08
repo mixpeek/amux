@@ -6,7 +6,9 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {startAmux,waitFor} from './harness.mjs';
-const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',AMUX_RATE_LIMIT_SWEEP_S:'2',AMUX_AUTO_RESUME:'',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',FAKE_CLAUDE_SPAWN_BACKGROUND:'1',FAKE_CLAUDE_EXTRA_FRAME:'API Error: Connection lost mid-response. The response above may be incomplete.\nChurned for 1m 30s · done · 1 shell still running',FAKE_CLAUDE_BACKGROUND_FOOTER:' · 1 shell · ← 5 agents · ↓ to manage'}});
+// The production sweep rejects intervals below ten seconds. A two-second
+// fixture value silently selected sixty seconds and raced a fast deploy boot.
+const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',AMUX_RATE_LIMIT_SWEEP_S:'10',AMUX_AUTO_RESUME:'',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',FAKE_CLAUDE_SPAWN_BACKGROUND:'1',FAKE_CLAUDE_EXTRA_FRAME:'API Error: Connection lost mid-response. The response above may be incomplete.\nChurned for 1m 30s · done · 1 shell still running',FAKE_CLAUDE_BACKGROUND_FOOTER:' · 1 shell · ← 5 agents · ↓ to manage'}});
 const checks=[];const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw Error(name+': '+JSON.stringify(detail));};
 let lock;let lockExit;
 const received=()=>amux.fakeLog().filter(x=>x.text==='continue');

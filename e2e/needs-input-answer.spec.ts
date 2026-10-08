@@ -121,21 +121,32 @@ test('needs-input chip has its own row, is not clipped, and opens the card with 
 });
 
 test('group row: Reset is the first control when a group is active, absent otherwise', async ({ page }) => {
+  const workers = [
+    { name: 'gr-a', tags: ['alpha'], running: true, status: 'idle', lifecycle: 'active', dir: '/tmp' },
+    { name: 'gr-b', tags: ['beta'], running: true, status: 'idle', lifecycle: 'active', dir: '/tmp' },
+  ];
+  // The fleet must have one source of truth through boot, refresh and SSE.
+  // CI's real inventory replaced the memory-only workers with [] mid-assertion.
+  await page.route('**/api/events**', r => r.abort());
+  allowUnusedRoute(page, '**/api/events**');
+  const sessionsList = /\/api\/sessions(?:\?.*)?$/;
+  await page.route(sessionsList, r => r.request().method() === 'GET'
+    ? r.fulfill({ json: workers }) : r.fallback());
   await boot(page);
+  await page.evaluate(() => (globalThis as any).fetchSessions());
   const first = () => page.evaluate(() => {
     const el = document.getElementById('tag-filters')!.firstElementChild as HTMLElement | null;
     return { cls: el?.className || '', text: el?.textContent || '', resets: document.querySelectorAll('#tag-filters .tag-reset-btn').length };
   });
   await page.evaluate(() => {
     const g = globalThis as any;
-    const list = g.eval('sessions');
-    list.push({ name: 'gr-a', tags: ['alpha'], running: true, status: 'idle', lifecycle: 'active', dir: '/tmp' },
-               { name: 'gr-b', tags: ['beta'], running: true, status: 'idle', lifecycle: 'active', dir: '/tmp' });
     g.eval('activeTag = ""; hiddenTags.clear()');
     g.render();
   });
   expect((await first()).resets).toBe(0);
   await page.evaluate(() => { (globalThis as any).eval('activeTag = "alpha"'); (globalThis as any).render(); });
+  // Force the same inventory refresh that replaced the memory-only fleet in CI.
+  await page.evaluate(() => (globalThis as any).fetchSessions());
   const f = await first();
   expect(f.cls).toContain('tag-reset-btn');
   expect(f.text).toContain('Reset');

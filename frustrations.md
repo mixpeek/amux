@@ -5202,3 +5202,80 @@ CARD: AF-968
 SYMPTOM: The full final-head Linux gate failed chat_delegate recovery with four total answers versus an expected three. The fixture used a two-second sleep to assume earlier delegates had delivered, although delivery has its own three-second grace and jobs can finish concurrently.
 COST: An unrelated answer crossing the snapshot can invalidate the crash-recovery gate without identifying a duplicate of the recovered job.
 FIX: Assert the durable delegate turn identity, wait for that identity and recover again to require exactly one retained answer. Keep the failed CI log and the original once-only transport assertions; do not change runtime delivery or relax the duplicate count.
+
+## A known expired transcript quota still blocked its own recovery gate
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: After the real 04:50 Eastern reset, gs12-extra-1's usage-reset producer repeatedly reached auto_resume_staging then was refused by A5: provider_limited tested only rate_limited_since and the source, ignoring the positively known expired rate_limited_until. Its claim was repeatedly released without a provider continuation while seventeen other lanes progressed.
+COST: A stale transcript stamp creates a circular wait: recovery cannot pass the gate until recovery clears that same stamp.
+FIX: A5 releases a known clock only after reset plus the existing sixty-second grace; unknown and future capacity remain held, and pane/card gates remain enforced. Log contract_dispatch_capacity_expired. Exercise transcript-classified capacity with the A5 gate explicitly enabled through real SIGKILL/terminal consumers, rather than only the auto-resume-source exemption.
+
+## The bottleneck detector crashed under the scheduler's non-login PATH
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: SCHED-550 exited one at 04:42 Eastern with FileNotFoundError lsof: the installed utility is in /usr/sbin, outside the shell PATH. The old host_measure reproduces this failure under that exact restricted PATH; its optional lane attribution aborted the entire constraint report.
+COST: The hourly observer fails instead of identifying stalled proof, deploy and host constraints.
+FIX: Preserve caller lookup precedence and resolve standard system utilities explicitly; bound each probe, retain raw measurements when attribution is unavailable, and log host_probe_partial with unknown fields rather than false zero or host_ok. Repair the live schedule PATH and replay with its no-send flag. Keep utility failure/timeout tests in CI.
+
+## The handoff fixture requested a sweep cadence production rejects
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The real deployed binary's handoff replay timed out before staging. The fixture requested AMUX_RATE_LIMIT_SWEEP_S=2, below the production ten-second floor, so it actually ran at sixty seconds; a fast boot could run its first sweep before resume was enabled, outside the fixture's twenty-second boundary wait.
+COST: A deployed-image replay failed before reaching its intended crash boundary; debug/CI boot timing had masked the unsupported fixture setting.
+FIX: Use the valid ten-second interval without relaxing production cadence or assertions. The same deployed image then passes all nine handoff checks; retain the failed pre-boundary replay separately.
+
+## A group Reset browser fixture let ambient inventory replace its fake fleet
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: Final-head CI 37757387357 failed the iOS group Reset assertion: the first control was empty. The retained WebKit trace shows normal /api/sessions responses with [] replacing the two workers inserted only into browser memory. The adjacent needs-input fixture already isolates its inventory source, but this group case did not.
+COST: The whole browser verdict went red on ambient test-server state; merely retrying would preserve the race.
+FIX: Serve the same fake fleet on normal inventory reads, exclude ambient SSE replacements, and force a real refresh before both Reset assertions. Keep the original first-control, text and exactly-one assertions, the route-use guard, failed CI trace, and local forced-refresh negative replay. No dashboard behavior, assertion, retry count or timeout changes.
+
+## A recovered recycle lost its send boundary before boot resumed it
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The actual owner recycle API persisted intent, then a private SIGKILL during its stop window lost the in-memory send boundary. The predecessor 6f52a0af confirmed a post-crash input as sent to the retiring provider before its fifteen-second boot pass replaced that provider. A simultaneous interrupted-start marker could also race the recycle's own replacement start.
+COST: Accepted input could reach the process about to be killed instead of the fresh conversation, and overlapping recovery operations could replace the provider twice.
+FIX: Derive the restart admission boundary from the persisted recycle marker, refuse actual queue drains until it clears, and reacquire the same send lock across boot stop/kill/start. The recycle owns overlapping start recovery; each new explicit owner recycle resets its own retry counter. Exercise the actual API, exit bytes, controller crash, replacement provider consumer, dual markers, capped/expired controls, unchanged workspace, and another crash; retain the predecessor's confirmed-to-retiring failure.
+
+## Reaching a recycle retry bound silently cancelled the replacement intent
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: A private cap-boundary consumer replay on 0c8ec00d showed boot clearing the recycle marker when attempts reached three. The API then confirmed intent-after-cap-for-replacement to the original provider (PID 41524), even though the requested replacement had never happened. Expired intents took the same cancellation path.
+COST: A protective retry cap reopened input into the wrong conversation and hid the unfinished owner operation.
+FIX: Keep the durable marker at either automatic recovery bound, emit interrupted_recycle_held once per boot, and report owner retry required on queued input. Preserve both controls across another controller crash. A new explicit owner recycle still resets only its own counter and delivers the retained capped input exactly once to its actual replacement; an unretried expired intent remains held.
+
+## A pipe-deadline fixture timed child startup instead of productive pipe draining
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: CI job 113284044565 failed bounded_probe_deadline_survives_continuous_output_and_inherited_pipes: its 150ms deadline elapsed with stdout_bytes=0. A successful spawn was treated as proof that the producer had run, so this missed the productive-output boundary the test claims to exercise.
+COST: The complete Rust verdict went red while the real drain correctly timed out a producer that had not produced output.
+FIX: Separate spawning from the unchanged bounded consumer, wait for an actually readable producer pipe before measuring, and witness the direct parent's exit for the inherited-pipe case. Deliberately delay producer startup 300ms. Retain the original 150ms deadline, one-second completion bound, nonzero-byte assertion, measured flag and exact timeout phases; retain the failed CI log and an identical-consumer-body source proof.
