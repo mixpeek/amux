@@ -13996,7 +13996,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1264';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1265';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16718,7 +16718,7 @@ function _peekPromptNormalized(text) {
   // peer envelopes and board notes read Unclassified because the wrapper, not
   // the "[amux-origin:" marker, was what the text started with).
   return String(text || '').replace(glyph, '')
-    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content>\s*$/i, '')
+    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content\b[^>]*>\s*$/i, '')
     .replace(/^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*/i, '').replace(/\s+/g, ' ').trim();
 }
 // CLASSIFICATION MUST NOT WAIT ON THE MESSAGES TAB'S FULL PAGE.
@@ -16821,6 +16821,25 @@ function _classifyPromptKind(promptText) {
   // be told.
   return 'unknown';
 }
+// Claude Code records a long paste wrapped in <pasted_content id="...">
+// ... </pasted_content id="..."> (the closing tag carries the id too). The
+// wrapper is transport, not what the person typed, so the peek drops both tags
+// and lifts the first pasted line up beside the prompt glyph (Ethan,
+// 2026-10-08: "this saying pasted content doesnt seem right"). Works on the
+// escaped, possibly span-coloured terminal HTML of one prompt block.
+const _PEEK_PASTE_TAG = /&lt;\/?pasted_content\b(?:(?!&gt;).)*&gt;/g;
+function _peekUnwrapPaste(blockLines) {
+  if (!blockLines.some(line => line.includes('pasted_content'))) return blockLines;
+  const visible = line => line.replace(/<[^>]*>/g, '').replace(/&nbsp;| /g, ' ');
+  const out = blockLines.map(line => line.replace(_PEEK_PASTE_TAG, ''));
+  // A line that held only a tag is gone; the opening line keeps its glyph.
+  const kept = out.filter((line, n) => n === 0 || visible(line).trim() || !visible(blockLines[n]).includes('pasted_content'));
+  if (kept.length > 1 && /^[ \t]*[❯›>]?[ \t]*$/.test(visible(kept[0]))) {
+    const lifted = kept[1].replace(/^((?:<[^>]+>)*)(?:[ \t ]|&nbsp;)+/, '$1');
+    kept.splice(0, 2, kept[0].replace(/(?:[ \t ]|&nbsp;)*((?:<\/[^>]+>)*)$/, ' $1') + lifted);
+  }
+  return kept;
+}
 function highlightPrompts(html) {
   const gemini = _peekGeminiPrompts();
   const promptStart = gemini ? /^[ \t]{0,2}[❯›>](?:[ \t]+|$)/ : /^[ \t]{0,2}[❯›](?:[ \t]+|$)/;
@@ -16866,7 +16885,7 @@ function highlightPrompts(html) {
     // Close each block before opening its successor. Nested prompt wrappers
     // made scrollIntoView target a whole conversation instead of one message.
     out.push('<span class="peek-prompt peek-prompt-' + kind + '" data-msg-kind="' + kind
-      + '" data-msg-label="' + esc(label) + '">' + lines.slice(i, end).join('\n') + '</span>');
+      + '" data-msg-label="' + esc(label) + '">' + _peekUnwrapPaste(lines.slice(i, end)).join('\n') + '</span>');
     i = end;
   }
   return out.join('\n');
