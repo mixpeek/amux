@@ -33,6 +33,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 /// Chrome removes these on clean exit; their presence after exit means the
 /// profile was never flushed (Python `_CHROME_SINGLETONS`).
@@ -42,6 +43,11 @@ pub use crate::config::amux_home;
 
 /// The user's real Chrome user-data-dir (Python `_chrome_user_data_dir`).
 pub fn chrome_user_data_dir() -> PathBuf {
+    // Allows an owner-selected Chrome installation/profile root and isolated
+    // acceptance fixtures without borrowing the human browser's directories.
+    if let Some(root) = std::env::var_os("AMUX_BROWSER_CHROME_USER_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(root);
+    }
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"));
@@ -215,7 +221,7 @@ pub fn import_chrome_profile(
     }
     if !name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
     {
         anyhow::bail!("Chrome profile name must be [A-Za-z0-9._-]+");
     }
@@ -2160,6 +2166,26 @@ pub async fn start(
         }
     }
 
+    // Imported cookies.json must reach Chrome BEFORE the first authenticated
+    // navigation. Consume once; subsequent logouts must not resurrect old tokens.
+    if target.user_data_dir.join("cookies.json").is_file() {
+        match apply_imported_cookies(&target.user_data_dir, port).await {
+            Ok(count) => tracing::info!(profile, count, verdict="browser_import_applied", "imported cookies applied and read back from Chrome"),
+            Err(e) => {
+                tracing::warn!(profile, error=%e, verdict="browser_import_failed", "imported cookies could not be installed");
+                let _ = child.kill().await;
+                return Err(e);
+            }
+        }
+        // The initial tab may have loaded before cookies were installed.
+        if !url.is_empty() {
+            if let Some(ws) = cdp_list(port).await?.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()) {
+                let mut c=CdpClient::connect(ws).await?;
+                navigate_and_settle(&mut c,url).await?;
+            }
+        }
+    }
+
     // AC-336: CLAIM THE TAB WE JUST OPENED, FOR THE LANE THAT ASKED FOR IT.
     //
     // `resolve_page` treats a page tab as available unless it appears in
@@ -2434,7 +2460,18 @@ pub async fn stop_profile_as_reason(
     let signalable = checked_process_id(running.pid).is_some();
     // std/tokio only offer SIGKILL; /bin/kill sends the TERM Chrome needs to
     // flush Cookies and Local Storage. `run_kill` validates before spawning.
-    let _ = run_kill(running.pid, "-TERM", "browser stop").await;
+    // Browser.close runs Chrome's normal shutdown path, which commits cookies
+    // installed through CDP. TERM alone can exit before that store is flushed.
+    if let Ok(tabs)=cdp_list(running.cdp_port).await {
+        if let Some(ws)=tabs.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()) {
+            if let Ok(mut c)=CdpClient::connect(ws).await {
+                let _=c.call("Browser.close",serde_json::json!({}),Duration::from_secs(3)).await;
+            }
+        }
+    }
+    let close_deadline=std::time::Instant::now()+Duration::from_secs(8);
+    while pid_alive(running.pid)&&std::time::Instant::now()<close_deadline {tokio::time::sleep(Duration::from_millis(100)).await;}
+    if pid_alive(running.pid){let _ = run_kill(running.pid, "-TERM", "browser stop").await;}
     match running.child.as_mut() {
         Some(ch) => {
             let graceful = tokio::time::timeout(std::time::Duration::from_secs(8), ch.wait()).await;
@@ -2478,6 +2515,39 @@ pub async fn stop_profile_as_reason(
 
 /// CDP over plain HTTP: the tab list. (Command traffic — screenshot, eval,
 /// input — is the WebSocket client below, [`CdpClient`].)
+/// Apply a pending import once and verify each cookie's value in the running
+/// browser. Verification never logs values. The retained receipt has counts only.
+async fn apply_imported_cookies(dir: &Path, port: u16) -> anyhow::Result<usize> {
+    let file=dir.join("cookies.json");
+    let mut cookies:Vec<Value>=serde_json::from_slice(&std::fs::read(&file)?)?;
+    // Retain imported session cookies across normal Chrome shutdown, using the
+    // same bounded policy as login sync; the site can still revoke the session.
+    for cookie in &mut cookies {
+        if cookie.get("expires").and_then(Value::as_f64).is_none_or(|e|e<=0.0) {
+            cookie["expires"]=serde_json::json!(chrono::Utc::now().timestamp()+crate::integrations::browser_login_sync::SESSION_TTL_DAYS*86400);
+            cookie["session"]=serde_json::json!(false);
+        }
+    }
+    let tabs=cdp_list(port).await?;
+    let ws=tabs.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()).ok_or_else(||anyhow::anyhow!("no tab available to install imported cookies"))?;
+    let mut c=CdpClient::connect(ws).await?;
+    let cookies=crate::integrations::computer::cookie_params(&cookies);
+    c.call("Storage.setCookies",serde_json::json!({"cookies":cookies}),Duration::from_secs(20)).await?;
+    let seen=c.call("Storage.getCookies",serde_json::json!({}),Duration::from_secs(20)).await?;
+    let rows=seen["cookies"].as_array().ok_or_else(||anyhow::anyhow!("cookie readback missing"))?;
+    let now=chrono::Utc::now().timestamp() as f64;
+    for expected in &cookies {
+        if expected["expires"].as_f64().is_some_and(|e|e>0.0&&e<=now) {continue;}
+        anyhow::ensure!(rows.iter().any(|r|r["name"]==expected["name"]&&r["domain"]==expected["domain"]&&r["path"]==expected["path"]&&r["value"]==expected["value"]),"imported cookie readback mismatch (values withheld)");
+    }
+    let count=cookies.len();
+    std::fs::write(dir.join("import-receipt.json"),serde_json::to_vec(&serde_json::json!({"applied":true,"cookies":count,"verified_at":chrono::Utc::now().timestamp()}))?)?;
+    std::fs::remove_file(file)?;
+    // state.json is a second plaintext copy of the same imported secrets.
+    let _=std::fs::remove_file(dir.join("state.json"));
+    Ok(count)
+}
+
 pub async fn cdp_list(port: u16) -> anyhow::Result<serde_json::Value> {
     let r = reqwest::Client::new()
         .get(format!("http://127.0.0.1:{port}/json/list"))

@@ -41,14 +41,23 @@ account, for a named list of sites only.
 | `persona-*` | test | synthetic Studio users | tests |
 | everything else | deprecated | | still usable, ranked last |
 
+The access column describes the intended policy. Workers must use the current
+registry scope; a role or label does not enforce that policy. In the 2026-10-08
+audit, personal and finance still allowed all 189 workers, so their login imports
+and sync remain held until the owner chooses narrower worker/group allowlists.
+
 Roles live in the registry (`playwright-auth/profiles.json`, `role` and
 `identity`), set with `POST /api/browser/profile/meta`. Nothing is deleted.
 
 ## How a worker chooses
 
-It does not. `amux browser for <url>` (or `GET /api/browser/profile-for?url=`)
-returns the one profile to use for that site, for that worker's scope, whether
-it is signed in there, and why. `POST /api/browser/start` with no profile uses
+Workers choose by account identity, declared purpose, allowed scope and observed
+site access. `amux browser profiles` includes those semantics; QA and deprecated
+profiles remain discoverable with `--all`. `amux browser for <url>` (or `GET /api/browser/profile-for?url=`)
+recommends a profile for that worker's scope and explains its cookie evidence.
+`GET /api/browser/profile-for?url=...&identity=...&role=...` constrains the
+recommendation to the task's required identity/purpose and includes semantic
+selection cards and alternatives. Verify the live account before acting. `POST /api/browser/start` with no profile uses
 the default identity (`AMUX_BROWSER_DEFAULT_PROFILE`, else the registry's
 primary). The profile list is sorted by role, so its first rows are the answer.
 
@@ -73,3 +82,27 @@ cookies from the owner's Chrome into each opted-in profile:
 `signed_in_to` now counts only unexpired session or auth cookies, and `logins`
 gives each site's expiry, so a dead session reads as not signed in without
 launching anything.
+### Browser routing acceptance
+
+The owner may set `AMUX_BROWSER_CHROME_USER_DATA_DIR` to select a Chrome profile
+root; it defaults to the platform's normal Chrome directory. Routing still
+copies the selected profile into its private automation directory.
+
+For acceptance, launch an isolated server with its own `AMUX_HOME`, port and
+`AMUX_BROWSER_CHROME_USER_DATA_DIR` beneath that home. Set
+`AMUX_ROUTING_E2E_BASE`, `AMUX_ROUTING_E2E_HOME`, `AMUX_ROUTING_EVIDENCE`, and
+`AMUX_ROUTING_CHROME_ROOT` to those matching paths. Then run:
+
+```
+node tests/browser-routing-api-e2e.mjs
+AMUX_ROUTING_CUA=1 node tests/browser-routing-e2e.mjs
+AMUX_ROUTING_UI_CHROME_PROFILE='<chrome_profile from api-result.json>' AMUX_ROUTING_UI_WORK_IDENTITY=api-proof@example.test node tests/browser-routing-ui-e2e.mjs
+```
+
+The API test uses actual native profile contention and a temporarily unavailable
+fixture Chrome directory to force CDP and CUA through the shipped endpoint. The
+driver test independently injects transport failures, verifies no mutation
+replay, kills the isolated CDP Chrome with SIGKILL and verifies persistence after
+reopening. Both require an available Docker computer sandbox. For a Docker VM,
+set `AMUX_ROUTING_FIXTURE_HOST` to a host address reachable from that VM. Receipts
+include measured check counts, HTTP submissions and real browser screenshots.

@@ -256,7 +256,7 @@ pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) 
         return Choice {
             profile: best.name.clone(),
             why: format!(
-                "{} holds a live login for {site}{}",
+                "{} holds unexpired login-cookie evidence for {site}; verify that the site accepts it before acting{}",
                 best.name,
                 if best.role.is_empty() { String::new() } else { format!(" (role: {})", best.role) }
             ),
@@ -275,7 +275,7 @@ pub fn resolve_for_site(site: &str, cands: &[Candidate], default_profile: &str) 
         return Choice {
             profile: best.name.clone(),
             why: format!(
-                "{} is registered for {site} but holds no live login for it: expect a sign-in page \
+                "{} is registered for {site} but holds no unexpired login-cookie evidence for it: expect a sign-in page \
                  (its session expired or was never saved)",
                 best.name
             ),

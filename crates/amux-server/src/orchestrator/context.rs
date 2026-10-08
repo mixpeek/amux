@@ -114,6 +114,14 @@ pub fn assemble_context_with_budget(
 
     let mut fragments: Vec<ContextFragment> = Vec::new();
 
+    fragments.push(ContextFragment {
+        priority: 32,
+        source: "browser:selection-guide".into(),
+        content: "For browser work: `amux browser profiles` explains each profile's identity, purpose, role and scope. Choose the identity matching the task; personal/customer/restricted/QA accounts are not substitutes. `amux browser for URL` recommends with reasons; identity/role filters are at /api/browser/profile-for. Verify live site access, then use `amux browser route` (Amux → configured Chrome CDP → CUA). Observe again after a handoff; mutations are not replayed.".into(),
+        trust: TrustLevel::Trusted,
+        provenance: "browser-capability".into(),
+    });
+
     // Memory layers: org -> global -> group -> worker (general to specific,
     // so the more specific layer lands closer to the task and can override
     // in the model's reading — the same precedence direction as Invariant 2).
@@ -614,6 +622,16 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_task_receives_browser_identity_and_handoff_guidance() {
+        let c = conn();
+        let snap = assemble_context(&c, &wid(1), &task(1)).unwrap();
+        let guide=snap.fragments.iter().find(|f|f.source=="browser:selection-guide").expect("browser capability is available by default");
+        for requirement in ["identity", "purpose", "scope", "amux browser profiles", "amux browser for URL", "Amux → configured Chrome CDP → CUA", "mutations are not replayed"] {
+            assert!(guide.content.contains(requirement), "missing worker instruction: {requirement}");
+        }
+    }
+
+    #[test]
     fn layers_ordered_global_before_group_before_worker_then_task() {
         let c = conn();
         let (w, g) = (wid(1), gid(2));
@@ -644,6 +662,7 @@ mod tests {
                 "memory:global",
                 "memory:group",
                 "memory:worker",
+                "browser:selection-guide",
                 "harness_version",
                 "task"
             ],
@@ -657,6 +676,7 @@ mod tests {
                 PRIO_MEMORY_GLOBAL,
                 PRIO_MEMORY_GROUP,
                 PRIO_MEMORY_WORKER,
+                32,
                 PRIO_GUIDES,
                 PRIO_TASK
             ]
@@ -664,7 +684,7 @@ mod tests {
         // Isolation: the other worker's memory is absent.
         assert!(!snap.fragments.iter().any(|f| f.content.contains("secret")));
         // Task fragment carries title, desc and deps.
-        let task_frag = &snap.fragments[4];
+        let task_frag = snap.fragments.iter().find(|f|f.source=="task").unwrap();
         assert!(task_frag.content.contains("Fix the login redirect loop"));
         assert!(task_frag.content.contains("Users bounce"));
         assert!(task_frag.content.contains(tid(900).as_str()));

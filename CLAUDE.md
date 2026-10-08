@@ -521,4 +521,11 @@ and lives only in `server.env`. Never commit the actual URL (repo is public).
 
 ## Browser Automation
 
-Use `/chrome-cdp`: `node skills/chrome-cdp/scripts/cdp.mjs <list|snap|shot|click|type|eval|nav> <target>`.
+Use `amux browser route start '{"profile":"<saved-profile>","url":"https://..."}'`,
+then `amux browser route state`, `amux browser route shot`, and
+`amux browser route action '{"action":"click","selector":"..."}'`.
+The shared route tries Amux → direct CDP with the Chrome profile configured in
+Browser → Browser route settings → CUA when enabled. The result's `route`
+names the actual backend/profile and failed attempts. After a handoff, observe
+again before acting; uncertain actions are never replayed. Scope refusals remain refusals; an occupied native profile can use the configured isolated CDP copy while preserving its owner’s browser. Login-cookie evidence is not live auth proof.
+Standalone `/chrome-cdp` remains available for explicit tab work.

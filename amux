@@ -5473,11 +5473,20 @@ cmd_browser() {
       # signed in there (2026-10-07). Prints the name alone on stdout's first
       # line so `P=$(amux browser for URL | head -1)` works in a script.
       local target="${1:-}"
-      [[ -n "$target" ]] || die "usage: amux browser for <url-or-domain>"
-      local q; q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$target")
+      [[ -n "$target" ]] || die "usage: amux browser for <url-or-domain> [--identity EMAIL] [--role ROLE]"
+      shift
+      local identity="" role=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --identity) identity="${2:?--identity needs an account}"; shift 2 ;;
+          --role) role="${2:?--role needs a role}"; shift 2 ;;
+          *) die "unknown browser for option: $1" ;;
+        esac
+      done
+      local q; q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlencode({k:v for k,v in zip(["url","identity","role"],sys.argv[1:]) if v}))' "$target" "$identity" "$role")
       local resp
-      resp=$(_curl -sk -m 60 -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-        "$AMUX_API/api/browser/profile-for?url=$q" 2>/dev/null) || resp=""
+      resp=$(_curl -sk -m 60 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" \
+        "$AMUX_API/api/browser/profile-for?$q" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
       RESP="$resp" python3 - <<'PYEOF'
 import json, os, sys
@@ -5488,7 +5497,11 @@ except Exception:
 if d.get("error"):
     print("amux browser for:", d["error"], file=sys.stderr); sys.exit(1)
 print(d["profile"])
-state = "signed in" if d.get("signed_in") else "NOT signed in"
+card = d.get("selection") or {}
+print("  identity: " + (card.get("identity") or "unknown") + "; role: " + (card.get("role") or "ordinary"), file=sys.stderr)
+print("  use for: " + (card.get("use_for") or "purpose not recorded"), file=sys.stderr)
+print("  avoid: " + (card.get("avoid") or "verify identity before acting"), file=sys.stderr)
+state = "login-cookie evidence (verify live access)" if d.get("signed_in") else "no login-cookie evidence"
 lg = d.get("login") or {}
 exp = f", login expires in {lg['days_left']} day(s)" if lg.get("days_left") is not None else ""
 print(f"  {d['site']}: {state}{exp}", file=sys.stderr)
@@ -5496,12 +5509,33 @@ print(f"  why: {d.get('why','')}", file=sys.stderr)
 if d.get("alternatives"):
     # Live-login alternatives when the pick is signed in; otherwise these are
     # only REGISTERED for the site, which is not the same claim.
-    what = "also signed in" if d.get("signed_in") else "also registered (not signed in)"
+    what = "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)"
     print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
-print(f'  start it: POST /api/browser/start {{"profile":"{d["profile"]}"}}', file=sys.stderr)
+print(f'  start it: amux browser route start {{"url":"https://{d["site"]}","profile":"{d["profile"]}"}}', file=sys.stderr)
 sys.exit(0 if d.get("signed_in") else 3)
 PYEOF
       return $?
+      ;;
+    route)
+      local verb="${1:-state}"; shift || true
+      [[ "$verb" == "shot" ]] && verb="screenshot"
+      local session="${AMUX_SESSION:-${AMUX_WORKER:-browser-owner}}"
+      local body="${1:-}"
+      [[ -n "$body" ]] || body='{}'
+      local payload
+      payload=$(VERB="$verb" SESSION="$session" BODY="$body" python3 - <<'PYROUTE'
+import json, os
+print(json.dumps({"verb":os.environ["VERB"],"session":os.environ["SESSION"],"body":json.loads(os.environ["BODY"])}))
+PYROUTE
+      ) || die "route body must be JSON"
+      local result
+      result=$(_curl -sk -m 250 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
+      RESULT="$result" python3 - <<'PYRESULT'
+import os, json, sys
+v=json.loads(os.environ["RESULT"])
+print(json.dumps(v))
+sys.exit(1 if v.get("error") else 0)
+PYRESULT
       ;;
     identify|id|which)
       local profile="${1:-}"
@@ -5509,7 +5543,7 @@ PYEOF
       [[ -n "$profile" ]] && body=$(printf '{"profile":"%s"}' "$profile")
       local resp
       resp=$(_curl -sk -m 30 -X POST -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$body" \
+        -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" -d "$body" \
         "$AMUX_API/api/browser/identify" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
       RESP="$resp" python3 - <<'PYEOF'
@@ -5545,7 +5579,7 @@ PYEOF
       resp=$(_curl -sk -m 30 -H "X-Amux-Session: ${me}" \
         "$AMUX_API/api/browser/profiles" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
-      RESP="$resp" ME="$me" python3 - <<'PYEOF'
+      RESP="$resp" ME="$me" ALL="${1:-}" python3 - <<'PYEOF'
 import json, os, sys
 try:
     d = json.loads(os.environ["RESP"])
@@ -5556,7 +5590,10 @@ if d.get("error"):
 me = os.environ.get("ME") or ""
 rows = d.get("profiles", [])
 n_ok = 0
+print("Choose by task identity and purpose, then scope and live site access. Cookie evidence is not a confirmed login.")
 for p in rows:
+    if p.get("role") in ("test", "deprecated") and os.environ.get("ALL") != "--all":
+        continue
     a = p.get("access") or {}
     ok = a.get("allowed_for_you", True)
     n_ok += 1 if ok else 0
@@ -5566,18 +5603,21 @@ for p in rows:
     who = "all workers" if a.get("all_workers", True) else (
         f"{a.get('workers_allowed', '?')}/{a.get('workers_total', '?')} workers")
     print(f" {mark} {p['name']:<28} {who:<16} {sites}")
+    print(f"     identity: {p.get('identity') or 'unknown'}; role: {p.get('role') or 'ordinary'}")
+    card = p.get("selection") or {}
+    if card.get("avoid"): print("     avoid: " + card["avoid"])
     if desc:
         print(f"     {desc}")
     if not ok and a.get("you"):
         r = a["you"].get("rule") or {}
         print(f"     not for you: {r.get('key')}={r.get('value')} at {r.get('scope')}")
 whom = me or "the owner (no worker identity)"
-print(f"{len(rows)} profile(s); {n_ok} allowed for {whom}. '+' = you may use it, 'x' = out of your scope.")
+print(f"{len(rows)} profile(s) discovered (use --all for QA and deprecated); {n_ok} shown and allowed for {whom}. '+' = you may use it, 'x' = out of your scope.")
 PYEOF
       ;;
     ""|help|-h|--help)
       cat <<'EOF'
-amux browser profiles             — list every saved profile; '+' marks the ones you may use
+amux browser profiles [--all]     — relevant profiles first; --all includes QA/recovery; '+' marks the ones you may use
 amux browser identify [profile]   — make the amux Chrome window say it is the amux window
 amux browser create <name> [url]  : create a saved profile (logins persist on disk)
 amux browser start <profile> [url] [--headed] : launch a profile (headless by default)
@@ -5598,7 +5638,7 @@ EOF
       # Thin wrappers over /api/browser/*: the server owns the logic, and every
       # call carries X-Amux-Session so a stop is attributed (an unattributed
       # stop of another lane's browser is refused).
-      local me="${AMUX_SESSION:-}" method="POST" path body='{}'
+      local me="${AMUX_SESSION:-${AMUX_WORKER:-}}" method="POST" path body='{}'
       case "$sub" in
         create|new)
           [[ -n "${1:-}" ]] || die "usage: amux browser create <name> [url]"
@@ -5678,7 +5718,7 @@ EOF
 
 _computer_call() { # <METHOD> <path> [json-body] [max-seconds]
   local method="$1" path="$2" body="${3:-}" max="${4:-120}"
-  local args=(-sk -m "$max" -X "$method" -H "X-Amux-Session: ${AMUX_SESSION:-}")
+  local args=(-sk -m "$max" -X "$method" -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}")
   [[ -n "$body" ]] && args+=(-H 'Content-Type: application/json' -d "$body")
   _curl "${args[@]}" "$AMUX_API/api/computer/$path" 2>/dev/null
 }
@@ -6027,11 +6067,12 @@ ${BOLD}Computer use (rung 3, after amux browser and CDP):${RESET}
   amux help computer             Verbs, ladder, and which profile has which site's cookies
 
 ${BOLD}Browser:${RESET}
-  amux browser for <url>         The ONE profile to use for a site, for this worker:
-                                 prints its name, whether it is signed in there and
-                                 why (exit 3 when it is not signed in)
-  amux browser profiles          List every saved profile; '+' marks the ones this
-                                 worker may use (scoped allow/deny, worker > group > global)
+  amux browser for <url>         Recommend with identity, purpose and cookie evidence
+                                 Optional: --identity EMAIL --role ROLE; verify live access
+  amux browser route start JSON  Amux → selected Chrome CDP → CUA
+  amux browser route state|shot  Observe; route action JSON; route stop when done
+  amux browser profiles [--all]  Relevant profiles; --all includes QA/recovery;
+                                 '+' marks access allowed for this worker
   amux browser identify [prof]   Make the amux Chrome window say it IS the amux
                                  window: a blue bar naming the profile, and the
                                  window raised when you name one. ${DIM}Run it before${RESET}

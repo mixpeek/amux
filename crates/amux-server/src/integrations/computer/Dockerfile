@@ -1,7 +1,7 @@
 # amux computer-use sandbox (AMUX-5300), built locally on first `amux computer start`.
 #
-# Base: trycua/cua-ubuntu, CUA's Kasm Ubuntu desktop. It runs `computer-server`
-# (the HTTP /cmd API amux drives) on :8000 and noVNC on :6901, and it is the one
+# Base: trycua/cua-ubuntu, CUA's Kasm Ubuntu desktop. We install the HTTP
+# /cmd API explicitly on :8000; the base runs noVNC on :6901 and is the one
 # CUA desktop image published for linux/arm64 WITH computer-server inside
 # (trycua/cua-xfce is amd64-only at 7.4 GB; trycua/xfce-cua ships cua-driver, an
 # MCP-over-stdio runtime, without the HTTP API).
@@ -21,10 +21,12 @@ RUN python3.12 -m playwright install --with-deps chromium \
  && chmod -R a+rX /opt/pw-browsers \
  && rm -rf /root/.cache /var/lib/apt/lists/*
 
-# Upstream's startup runs `pip install --upgrade cua-computer-server cua-agent`
-# on EVERY boot: a network dependency and a minute of CPU per sandbox start, on
-# a box that is often CPU-pressured. Start the server that is already installed.
-RUN printf '#!/bin/bash\nexec /usr/bin/python3 -m computer_server\n' > /dockerstartup/custom_startup.sh \
+# Install the existing /cmd protocol at build time with its supported Python.
+# No package download at sandbox boot. Bind inside the container; Docker still
+# publishes this API only on the host's loopback interface.
+RUN python3.12 -m pip install 'cua-computer-server[linux]==0.3.46' \
+ && python3.12 -c 'import computer_server' \
+ && printf '#!/bin/bash\nexec python3.12 -m computer_server --host 0.0.0.0\n' > /dockerstartup/custom_startup.sh \
  && chmod +x /dockerstartup/custom_startup.sh
 
 LABEL amux-computer.image="1"
