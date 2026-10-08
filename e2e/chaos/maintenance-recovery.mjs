@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { startAmux, waitFor } from './harness.mjs';
 const checks=[];
 const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw new Error(name);};
-const a=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_STORAGE_SWEEP_SECS:'3600',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0'}});
+const a=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_STORAGE_SWEEP_SECS:'3600',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0'}});
 const db=path.join(a.home,'amux.db');
 const sql=(q)=>JSON.parse(execFileSync('python3',['-c','import sqlite3,json,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute(sys.argv[2]);o=r.fetchall() if r.description else [];c.commit();print(json.dumps(o))',db,q],{encoding:'utf8'}));
 const counts=()=>sql("SELECT COUNT(*),SUM(capture_pending=1),SUM(ts>1000) FROM cmd_history WHERE session='retention-fixture'")[0];
