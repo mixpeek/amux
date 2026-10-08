@@ -5411,3 +5411,25 @@ CARD: MO-4468
 SYMPTOM: PATCH acceptance_criteria with a reason from the gs12 orchestrator answers 409 contract_frozen ("the owner can change a frozen contract") on GE2-17 and GS-200, and the owning lanes get the same answer. GS-200's done-gap close then failed review round 2 on exactly the frozen criterion it named, so the lane parks rather than spend round 3. Eight gs12 cards sit this way (GS-200, GE2-17, GG-83, GG-31, GOD-2, GP-235, GC-58, GC-155) on wording the orchestrator ruled on, while the owner asked (18:30Z) that lanes resolve inside his standing authority without him.
 COST: eight cards parked on one-line wording changes, each a separate owner read, and review rounds spent on criteria everyone agrees are superseded.
 FIX: let the orchestrator (AMUX_ORCHESTRATOR at the group layer) amend a frozen criterion with a required reason and an audit line in the contract log, or add a group switch for it; keep the owner-only rule for lanes amending their own contracts.
+
+## Slow board GETs wait inside SQLite, and the orchestrator's window_stats rescans every task event every 3 s
+AREA: performance
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5727
+SYMPTOM: Hour to 18:44Z: 114 GET /api/sessions over 5 s (max 41.3 s) and 53 GET /api/board (max 29.9 s), while p50 stays at 26 ms and 2.7 ms. Every multi-second board_list_slow line has queued_ms=0 and conn_ms=0, with the time in sql_ms (up to 13.1 s) and sometimes sessions_ms (3.5 s). The wait is not the read pool and not the writer. It is not the WAL either: the file is 1.18 GB, but the -shm header showed mxFrame going 751 -> 4314 in 20 s from a reset, so only a few MB is ever live. Some outliers fall 10-160 s after the two self-adoptions (18:14, 18:21Z). The rest overlap orchestrator-runtime stalls whose worst section is window_stats: 3-70 s per tick, 25 of them over 4 s between 18:33 and 18:47Z. window_stats' first query (completed tasks, `mutation LIKE '%"to":"verified"%'`) is planned on idx_amux_state_events_entity, so every 3 s it reads all 64,336 task events, scattered through a 14.4 GB database, to count 11 rows from the last hour. Read-only timing: 185-231 ms warm on the planner's choice, 4.3 ms warm with INDEXED BY idx_amux_state_events_at. Cold, under this host's disk contention (load 24-29 on 28 cores), it is the seconds-long stall AMUX-5027 recorded as unexplained.
+COST: The dashboard and every lane's board and session reads stall for 10-40 s several times an hour. The orchestrator's circuit-breaker input arrives up to 70 s late.
+FIX: In window_stats, have the completed query use the time index (INDEXED BY idx_amux_state_events_at, or an (entity_type, at) index through a migration) and keep the tick_section_slow signal. Re-measure board_list_slow sql_ms and window_stats worst_ms over an hour against this baseline.
+
+## /api/sessions has no phase breakdown, so its slow calls cannot be attributed
+AREA: observability
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5727
+SYMPTOM: GET /api/board logs board_list_slow with queued/conn/sql/sessions/rows phases. GET /api/sessions, 5,996 calls an hour with p95 2.96 s and max 41.3 s, logs nothing beside its latency except sessions_build_raced / _race_retried (8 and 7 in two hours). There is no way to tell tmux enumeration, git inventory, store reads and the race retry apart from the logs.
+COST: An owner-requested diagnosis could name the board's dominant wait but only infer the sessions route's, from its overlap with the board stalls. That is the instrument gap ethos rule 4 describes.
+FIX: Add a sessions_list_slow line, over a budget, with per-phase ms (tmux, git, store, build retries) and measured/n_considered, mirroring board_list_slow.
