@@ -14073,6 +14073,55 @@ pub(crate) fn interrupted_start_due(meta: &Map<String, Value>, now: i64) -> bool
     since > 0 && now - since < 3600 && meta_i64(meta, "start_resume_attempts") < 3
 }
 
+pub(crate) const RECYCLE_IN_PROGRESS_KEY: &str = "recycle_in_progress_since";
+
+/// Stop, kill and start on a fresh conversation, then clear the marker.
+async fn run_recycle(state: &AppState, n: &str) {
+    let _ = stop_session(state, n).await;
+    kill_tmux_session(n).await;
+    // skip_conv_id=true AND the meta already cleared: belt and braces,
+    // because either one alone still leaves a path that could resume.
+    let (ok, msg) = start_session(state, n, "", true).await;
+    update_meta(n, &[(RECYCLE_IN_PROGRESS_KEY, Value::Null), ("recycle_resume_attempts", Value::Null)]);
+    if !ok {
+        tracing::warn!(session = %n, reason = %chars_truncate(&msg, 200),
+            "conversation_recycle_failed: worker stopped but did not come back");
+    }
+}
+
+/// Whether a recycle recorded in `meta` was cut off and should be run again:
+/// begun within the last hour and resumed fewer than three times.
+pub(crate) fn interrupted_recycle_due(meta: &Map<String, Value>, now: i64) -> bool {
+    let since = meta_i64(meta, RECYCLE_IN_PROGRESS_KEY);
+    since > 0 && now - since < 3600 && meta_i64(meta, "recycle_resume_attempts") < 3
+}
+
+/// Boot-time pass: finish every conversation recycle the previous process
+/// started and did not complete. Returns how many were resumed.
+pub(crate) async fn resume_interrupted_recycles(state: &AppState) -> usize {
+    let now = now_i64();
+    let mut resumed = 0;
+    for name in all_lane_names() {
+        let meta = load_meta(&name);
+        if meta_i64(&meta, RECYCLE_IN_PROGRESS_KEY) == 0 {
+            continue;
+        }
+        if !interrupted_recycle_due(&meta, now) {
+            update_meta(&name, &[(RECYCLE_IN_PROGRESS_KEY, Value::Null)]);
+            continue;
+        }
+        let attempts = meta_i64(&meta, "recycle_resume_attempts") + 1;
+        update_meta(&name, &[("recycle_resume_attempts", json!(attempts))]);
+        tracing::warn!(session = %name, attempts, measured = true, n_considered = 1,
+            verdict = "interrupted_recycle_resumed",
+            "a conversation recycle was cut off by a server restart; finishing it");
+        resumed += 1;
+        let st = state.clone();
+        crate::db::interactions::spawn(async move { run_recycle(&st, &name).await });
+    }
+    resumed
+}
+
 /// Boot-time pass: re-run every start the previous process did not finish.
 /// Returns how many were resumed. Logs one WARN per resume so a sweep sees
 /// how often deploys cut starts off.
@@ -32863,20 +32912,17 @@ async fn config_patch_with_liveness(
         }
         let st2 = state.clone();
         let n = name.to_string();
+        // Recorded before the detached task: a deploy exec() inside the stop
+        // window kills the task and nothing else finishes it (gs12-extra-2,
+        // 2026-10-08: restart 18 s into a recycle left Claude on its exit
+        // dialog and the lane refused every message for 4 h).
+        update_meta(&n, &[(RECYCLE_IN_PROGRESS_KEY, json!(now_i64()))]);
         crate::db::interactions::spawn(async move {
             let _restart_notice = restart_notice;
             let _send_guard = restart_send_guard;
             tracing::info!(session = %n, verdict = "conversation_restart_send_boundary",
                 "new sends wait for the replacement provider instead of entering the retiring process");
-            let _ = stop_session(&st2, &n).await;
-            kill_tmux_session(&n).await;
-            // skip_conv_id=true AND the meta already cleared: belt and braces,
-            // because either one alone still leaves a path that could resume.
-            let (ok, msg) = start_session(&st2, &n, "", true).await;
-            if !ok {
-                tracing::warn!(session = %n, reason = %chars_truncate(&msg, 200),
-                    "conversation_recycle_failed: worker stopped but did not come back");
-            }
+            run_recycle(&st2, &n).await;
         });
         return jresp(
             StatusCode::ACCEPTED,
@@ -50880,6 +50926,29 @@ mod amux4770_worktree_isolation_tests {
     /// prune ran while its directory still existed, so the registration
     /// survived every delete. Pinned at source: reproducing needs a remove that
     /// is killed half way.
+    #[test]
+    fn a_recycle_cut_off_by_a_restart_is_finished_on_boot_a_bounded_number_of_times() {
+        let now = 1_790_000_000;
+        let meta = |since: i64, attempts: i64| {
+            let mut m = serde_json::Map::new();
+            m.insert(super::RECYCLE_IN_PROGRESS_KEY.into(), serde_json::json!(since));
+            m.insert("recycle_resume_attempts".into(), serde_json::json!(attempts));
+            m
+        };
+        assert!(super::interrupted_recycle_due(&meta(now - 30, 0), now));
+        assert!(super::interrupted_recycle_due(&meta(now - 30, 2), now));
+        assert!(!super::interrupted_recycle_due(&meta(now - 30, 3), now), "capped");
+        assert!(!super::interrupted_recycle_due(&meta(now - 7200, 0), now), "too old to resume");
+        assert!(!super::interrupted_recycle_due(&serde_json::Map::new(), now), "no marker");
+        // Wiring: the marker is written before the detached task, and boot runs the pass.
+        let src = include_str!("session_verbs.rs");
+        let recycle = src.split_once("if body.get(\"new_conversation\")").unwrap().1;
+        let mark = recycle.find("update_meta(&n, &[(RECYCLE_IN_PROGRESS_KEY").expect("recycle records its marker");
+        let spawn = recycle.find("run_recycle(&st2, &n)").expect("recycle runs through run_recycle");
+        assert!(mark < spawn, "the marker precedes the task a restart can kill");
+        assert!(include_str!("../lib.rs").contains("resume_interrupted_recycles(&state)"), "boot finishes cut-off recycles");
+    }
+
     #[test]
     fn a_start_cut_off_by_a_restart_is_resumed_a_bounded_number_of_times() {
         let now = 1_790_000_000;
