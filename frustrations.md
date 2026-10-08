@@ -5467,3 +5467,14 @@ CARD: GC-183
 SYMPTOM: Four commits in the mixpeek worktree .worktrees/gs12-cicd between 20:50Z and 21:25Z printed "amux staged-guard: NOT ENFORCED: could not reach the amux server at https://localhost:8824/api/git/staged-guard after 3 attempts over 18.2s (TimeoutError)". Board PATCHes from the same session in the same minutes returned 200. At 21:25Z, one failure-free minute later, GET /api/board/GC-183 took 0.08-0.11 s and POST /api/git/staged-guard answered in 0.004-0.009 s. At 21:23Z git-shared-guard.py blocked a whole Bash call (a `git checkout <sha> -- <paths>` plus `amux land --cancel` and five other segments) on the same TimeoutError. ~/.amux/staged-guard-unenforced.jsonl holds 1,611 records (all sessions).
 COST: four commits made with cross-session sweep protection off, and one compound command that did not run at all, including its land cancel. The lane rebuilt the step around the guard (cancel, cherry-pick --no-commit, one commit) and spent a land cycle.
 FIX: give the guard endpoints their own short path that does not wait behind whatever stalls them while the board stays fast, or a deadline under 2 s with a cached co-tenancy answer. Count NOT ENFORCED outcomes per hour as a health signal, since the jsonl already records each one.
+
+## Feedback decoration rebuilt an open worker menu on every status refresh
+AREA: dashboard worker actions and mobile E2E
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-08
+SESSION: amux-gs12-helper
+CARD: AGH-8
+SYMPTOM: PR #241's iOS Safari shard failed worker-pause.spec.ts after tapping an enabled Resume item: no POST /api/workers/pause-probe/resume followed. The trace showed the item detached twice during click retries. _renderPeekWorkerActions compared live menu.innerHTML to the pristine template, but the feedback layer adds data-action and related attributes after insertion, so each updatePeekStatus replaced the still-open menu even when its actions were unchanged.
+COST: a real mobile tap could vanish, and an unrelated PR lost a 17-minute E2E shard plus review time.
+FIX: Cache the last generated template per menu element and update only when the action definition changes; retain a regression assertion that repeated status refreshes preserve the enabled Resume node. Emit one worker-action-menu decorated_menu_preserved client-debug verdict when the formerly destructive comparison would have replaced a live open menu.

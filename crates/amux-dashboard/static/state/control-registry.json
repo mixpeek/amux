@@ -2738,6 +2738,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_renderPeekWorkerActions": {
+      "kind": "command._renderPeekWorkerActions",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_reportWorkFrontier": {
       "kind": "command._reportWorkFrontier",
       "feedback_required": true,
