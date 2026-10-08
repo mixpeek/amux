@@ -187,7 +187,7 @@ async function launch(ctx,b,attempts=[],from=0) {
       if(backend==='amux') {result=await native(ctx,'start',{...b,profile});state={backend,profile:result.profile,url:b.url};}
       else if(backend==='cdp') {state=await directStart(ctx,b.url,attempts);result={ok:true,profile:state.profile,cdp_port:state.cdp_port,launch_url:b.url};}
       else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token,1980000);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
-      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;atomic(ctx.receipt,state);
+      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;state.previous_routes=ctx.previous_routes||[];atomic(ctx.receipt,state);
       return {...result,ok:true,route:state,profile:state.profile};
     } catch(e) {
       attempts.push({backend,verdict:'failed',status:e.status||502,error:e.message,elapsed_ms:Date.now()-begun});
@@ -205,10 +205,12 @@ export async function route(ctx,verb,b={}) {
   if(!state) {if(verb==='status')return {running:false};throw new RouteError('select a profile and start the browser route first',409);}
   ctx.identity=state.identity||ctx.identity;
   ctx.native_started=!!state.native_started;
+  ctx.previous_routes=[...(state.previous_routes||[])];
   if(verb==='advance') {
     const reason=typeof b.reason==='string'?b.reason.trim():'';
     if(!reason)throw new RouteError('advance requires a reason describing the unmet goal',400);
     if(state.backend==='cua')throw new RouteError('CUA is the final configured route; report the unmet goal instead of switching accounts',409);
+    ctx.previous_routes.push({...state,previous_routes:undefined});
     return launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'goal_unmet',reason:reason.slice(0,500)}],state.backend==='amux'?1:2);
   }
   if(verb==='stop'&&state.backend!=='amux'&&state.native_started) {
@@ -217,11 +219,22 @@ export async function route(ctx,verb,b={}) {
     try {await native(ctx,'stop',{profile:state.selected_profile});}catch(e){if(e.status!==403)throw e;}
     state.native_started=false;atomic(ctx.receipt,state);
   }
+  if(verb==='stop') {
+    // Handoffs retain the worker's old tabs for inspection until explicit stop.
+    // Keep each completed cleanup durable so a retry does not repeat it.
+    for(const prior of [...(state.previous_routes||[])]) {
+      if(prior.backend==='cdp') {
+        try {await directVerb(ctx,prior,'stop',{});}catch(e){if(![404,502].includes(e.status)&&e.code!=='ECONNREFUSED')throw e;}
+      }
+      state.previous_routes=state.previous_routes.filter(p=>p!==prior);atomic(ctx.receipt,state);
+    }
+  }
   try {
     const result=state.backend==='amux'?await native(ctx,verb,b):state.backend==='cdp'?await directVerb(ctx,state,verb,b):await cua(ctx,state,verb,b);
     if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state};
   } catch(e) {
     if(terminal(e)||state.backend==='cua'||verb==='stop')throw e;
+    ctx.previous_routes.push({...state,previous_routes:undefined});
     const next=await launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'failed',error:e.message}],state.backend==='amux'?1:2);
     // An uncertain mutation must never be repeated in a second identity/context.
     if(verb==='action')throw Object.assign(new RouteError('browser route changed; action was not replayed. Observe state/screenshot before retrying.',409),{route:next.route});

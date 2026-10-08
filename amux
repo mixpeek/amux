@@ -5494,7 +5494,7 @@ cmd_browser() {
       resp=$(_curl -sk -m 60 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" \
         "$AMUX_API/api/browser/profile-for?$q" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
-      RESP="$resp" python3 - <<'PYEOF'
+      TARGET="$target" RESP="$resp" python3 - <<'PYEOF'
 import json, os, sys
 try:
     d = json.loads(os.environ["RESP"])
@@ -5517,7 +5517,10 @@ if d.get("alternatives"):
     # only REGISTERED for the site, which is not the same claim.
     what = "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)"
     print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
-print(f'  start it: amux browser route start {{"url":"https://{d["site"]}","profile":"{d["profile"]}"}}', file=sys.stderr)
+import shlex
+target = os.environ["TARGET"]
+url = target if "://" in target else "https://" + target
+print("  start it: amux browser route start " + shlex.quote(json.dumps({"url":url,"profile":d["profile"]})), file=sys.stderr)
 sys.exit(0 if d.get("signed_in") else 3)
 PYEOF
       return $?

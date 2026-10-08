@@ -32,10 +32,11 @@ writeFileSync(join(dir,'cookies.json'),JSON.stringify(cookies),{mode:0o600});
 await api(base,'/api/browser/profile/meta','POST',{name:profile,identity:'api-proof@example.test',role:'test',label:'Isolated API acceptance'});
 const discovered=await api(base,'/api/browser/routing/config');prove('candidate discovers only the configured Chrome fixture',discovered.chrome_profiles.some(p=>p.name===chromeProfile&&p.identity==='api-proof@example.test')&&!discovered.chrome_profiles.some(p=>p.name==='Profile 14'));
 await api(base,'/api/browser/routing/config','POST',{native_profile:profile,chrome_profile:chromeProfile,cua_profile:profile,allow_cua:true});
-const sessions=['routing-api-native','routing-api-cdp','routing-api-cua'];
+const sessions=['routing-api-native','routing-api-cdp','routing-api-cua','routing-api-goal'];
 mkdirSync(join(home,'sessions'),{recursive:true});
 writeFileSync(join(home,'sessions',sessions[0]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+'\n');
 writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
+writeFileSync(join(home,'sessions',sessions[3]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
 writeFileSync(join(home,'sessions','routing-api-refusal.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+'\n');
 const route=(session,verb,body={})=>api(base,'/api/browser/routing/request','POST',{session,verb,body},session);
 const wait=async(fn)=>{const end=Date.now()+15000;do{if(await fn())return;await new Promise(r=>setTimeout(r,100));}while(Date.now()<end);throw Error('acceptance observation timed out');};
@@ -54,6 +55,13 @@ try{
   writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW=Profile*\n');
   let revoked;try{await route(sessions[1],'state');}catch(e){revoked=e;}
   prove('receipt retains selected profile for authorization after handoff',revoked?.status===403);
+  writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
+  writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+'\n');
+  let chromeRevoked;try{await route(sessions[1],'state');}catch(e){chromeRevoked=e;}
+  prove('active Chrome scope revocation refuses observation while Amux remains allowed',chromeRevoked?.status===403);
+  let revokedAdvance;try{await route(sessions[1],'advance',{reason:'Try to bypass revoked active Chrome'});}catch(e){revokedAdvance=e;}
+  prove('active Chrome refusal cannot advance around its scope into CUA',revokedAdvance?.status===403&&(await api(base,'/api/computer/status')).running===0);
+
   writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
   const observation=await route(sessions[1],'state');
   prove('CDP state shares the native shape and provides fresh element references',observation.elements.some(e=>e.tag==='INPUT'&&Number.isInteger(e.index))&&observation.observation_id&&observation.viewport.w>0);
@@ -89,6 +97,19 @@ try{
     await ui.screenshot({path:join(out,'dashboard-cua.png'),fullPage:true});
   }finally{await browser.close();}
   prove('all three endpoint paths submitted exactly once',submissions.length===3);
+  renameSync(join(root,chromeProfile+'-disabled'),join(root,chromeProfile));moved=false;
+  const goal=await route(sessions[3],'start',{url:url+'/protected',profile});prove('goal recovery fixture begins on real CDP after native contention',goal.route.backend==='cdp');
+  let missingReason;try{await route(sessions[3],'advance');}catch(e){missingReason=e;}
+  prove('advance requires an explicit unmet-goal reason',missingReason?.status===400);
+  const goalCua=await route(sessions[3],'advance',{reason:'Synthetic functioning browser cannot complete this goal'});
+  prove('advance retains the prior CDP target for owned cleanup',goalCua.route.backend==='cua'&&goalCua.route.previous_routes.some(r=>r.backend==='cdp'&&r.target===goal.route.target));
+  let exhausted;try{await route(sessions[3],'advance',{reason:'Still cannot complete goal'});}catch(e){exhausted=e;}
+  prove('exhausted CUA refuses another route without changing accounts',exhausted?.status===409&&submissions.length===3);
+  await route(sessions[3],'stop');
+  const tabs=await api('http://127.0.0.1:'+goal.route.cdp_port,'/json/list');
+  prove('stop after CDP to CUA closes exactly its previous CDP tab',!tabs.some(t=>t.id===goal.route.target)&&tabs.some(t=>t.id===cdp.route.target));
+  const afterStop=await api(base,'/api/computer/status');prove('stop after handoff removes only its own CUA desktop',!afterStop.sandboxes.some(b=>b.lane===sessions[3])&&afterStop.sandboxes.some(b=>b.lane===sessions[2]));
+
   const nativeStatus=await api(base,'/api/browser/status');prove('fallback preserved the native owner process',nativeStatus.browsers.some(b=>b.pid===native.pid&&b.profile===profile));
   const driverBytes=readFileSync(new URL('../scripts/browser-route-driver.mjs',import.meta.url));
   const driverPath=join(home,'browser-routing','driver-'+createHash('sha256').update(driverBytes).digest('hex').slice(0,24)+'.mjs');

@@ -46,7 +46,7 @@ impl Config {
             selected.chrome_profile = route.chrome_profile.clone();
             selected.cua_profile = route.cua_profile.clone();
             selected.allow_cua = route.allow_cua;
-        } else if !self.profile_routes.is_empty() {
+        } else if profile != self.native_profile || !self.profile_routes.is_empty() {
             // Another account's last-saved fallback is not this account's choice.
             selected.chrome_profile.clear();
             selected.cua_profile.clear();
@@ -107,6 +107,10 @@ mod tests {
     fn owner_choices_are_retained_per_profile_without_cross_account_defaults() {
         let mut work: Config = serde_json::from_value(serde_json::json!({"native_profile":"work","chrome_profile":"Profile 14","cua_profile":"work","allow_cua":true})).unwrap();
         assert_eq!(work.selected("work").chrome_profile, "Profile 14");
+        assert!(
+            work.selected("other-customer").chrome_profile.is_empty(),
+            "legacy fallback belongs only to its selected account"
+        );
         work.retain_choices(Config::default());
         let mut personal: Config = serde_json::from_value(serde_json::json!({"native_profile":"personal","chrome_profile":"Profile 11","cua_profile":"personal","allow_cua":false})).unwrap();
         personal.retain_choices(work);
@@ -295,10 +299,49 @@ async fn request(
         return denied.response();
     }
     c = c.selected(&chosen);
+    // Revalidate the actual active fallback, not just the original Amux
+    // profile or a newly edited owner choice. Cleanup may close a revoked tab.
+    if r.verb != "start"
+        && r.verb != "stop"
+        && matches!(
+            receipt.get("backend").and_then(Value::as_str),
+            Some("cdp" | "cua")
+        )
+    {
+        if let Some(active) = receipt.get("profile").and_then(Value::as_str) {
+            if let Err(denied) = super::browser_scope::profile_allowed(&r.session, active) {
+                return denied.response();
+            }
+        }
+    }
     // Serialize publication/launch of the shared Chrome snapshot across workers.
     // Unlike a filesystem lease, this recovers on driver/server termination.
-    let chrome_lock = request_lock(format!("chrome:{}", c.chrome_profile)).await;
-    let _chrome_guard = chrome_lock.lock().await;
+    let mut chrome_profiles = std::collections::BTreeSet::new();
+    if !c.chrome_profile.is_empty() {
+        chrome_profiles.insert(c.chrome_profile.clone());
+    }
+    for route in std::iter::once(&receipt).chain(
+        receipt
+            .get("previous_routes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten(),
+    ) {
+        if route.get("backend").and_then(Value::as_str) == Some("cdp") {
+            if let Some(profile) = route.get("profile").and_then(Value::as_str) {
+                chrome_profiles.insert(profile.to_owned());
+            }
+        }
+    }
+    let mut chrome_guards = Vec::new();
+    for profile in chrome_profiles {
+        chrome_guards.push(
+            request_lock(format!("chrome:{profile}"))
+                .await
+                .lock_owned()
+                .await,
+        );
+    }
     let home = crate::config::amux_home();
     let script_source = include_str!("../../../../scripts/browser-route-driver.mjs");
     let script_hash = format!("{:x}", Sha256::digest(script_source.as_bytes()));
