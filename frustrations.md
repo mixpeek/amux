@@ -5345,3 +5345,14 @@ CARD: AMUX-5726
 SYMPTOM: Reviewed head 0a7405e8. The prepare branch in decide() fires on any of acceptance_criteria, verify_cmd, verify_kind or deploy_check, for backlog, todo and doing. freeze_from fills the command from the lane's CC_VERIFY default. So on a contract lane with a default verify command, an orchestrator setting or refining acceptance criteria on a backlog card freezes the contract right then. After that, acceptance is owner-only and the lane gets one verify_cmd amend. The PR's own test covers only {verify_cmd, reason}, and its comment says "an explicit server check" while the condition accepts acceptance alone.
 COST: Planning edits made before anyone claims the card become frozen contracts. The next refinement draws contract_frozen 409 and needs the owner. Decomposition writes acceptance_criteria in bulk, so this can hit many backlog cards at once.
 FIX: Make the prepare branch require an explicit verify_cmd / verify_kind / deploy_check, which matches the comment. Leave acceptance_criteria on backlog and todo as a plain column write. Add an acceptance-only case to preparing_a_todo_contract_persists_the_command_without_claiming_work.
+
+## the needs-input policy auto-approved an ask that excludes itself from auto-approval and that the orchestrator had just kept for the owner
+AREA: needsyou
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-spend
+CARD: GS-246
+SYMPTOM: GS-199's ask (move production usage and invoices onto the rollups, retire two ledgers, add two fields to the usage breakdown API) was approved at about 16:55Z with "Approved automatically under the owner's needs-input policy. Proceed.", and the card moved needsyou to todo. The ask's own ask_unblocks said "An automatic needs-input approval does not cover these (production data and a customer-facing API)", and mixpeek-override had relayed Ethan's rule 9 instruction minutes earlier naming GS-199 as a card that keeps its ask. Both are stop-list items in ~/.claude/CLAUDE.md.
+COST: the lane had to recognise the approval as invalid, write it down and put the card back by hand. A lane that took "Proceed" literally would have started a production billing migration on an approval nobody gave.
+FIX: never auto-approve a needsyou whose text names production data, a customer-facing API, money or an outside reader; at minimum honour an ask that says automatic approval does not cover it.
