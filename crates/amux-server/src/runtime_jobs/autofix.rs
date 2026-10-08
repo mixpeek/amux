@@ -4138,6 +4138,26 @@ fn detect_schedule_run_health(conn: &Connection, now: f64) -> (Vec<Finding>, Vec
         if message_exists {
             continue;
         }
+        // DELIVERED THROUGH STEERING (gs12-gates, SCHED-616 / GG-95,
+        // 2026-10-08): a run queued to a lane mid-turn is delivered at its
+        // next boundary through the steering queue, which writes no
+        // cmd_history 'schedule' row and carries no [SCHED-id] tag; 19 of 19
+        // such runs were filed as missing. The link is the queue time: the
+        // run queued a steering row for its session within the window, and
+        // that row was delivered (however late: SCHED-616's came 4.6 min on).
+        let steered = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM steering_history \
+                 WHERE session=?1 AND queued_at BETWEEN ?2 AND ?3 AND delivered_at IS NOT NULL)",
+                rusqlite::params![run.session, run.ran_at as f64 - 60.0, run.ran_at as f64 + 120.0],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        if steered {
+            tracing::debug!(schedule = %run.id, session = %run.session, measured = true, n_considered = 1,
+                verdict = "schedule_message_steered", "a schedule run was delivered through the steering queue");
+            continue;
+        }
         match downtime_window_covering(run.ran_at as f64, &downtime_windows, downtime_pad) {
             Some(window_id) => {
                 missing_by_outage.entry(window_id).or_default().push(run);
@@ -9577,6 +9597,26 @@ mod tests {
             super::fault_identity("silent|schedule-errors|SCHED-9|1").unwrap(),
             super::fault_identity("silent|schedule-errors|SCHED-8|1").unwrap()
         );
+    }
+
+    /// gs12-gates, SCHED-616 / GG-95, 2026-10-08: a run delivered through the
+    /// steering queue (no cmd_history row, no [SCHED-id] tag, delivered
+    /// minutes later) is not "missing"; an undelivered steering row still is.
+    #[test]
+    fn a_schedule_run_delivered_through_steering_is_not_missing() {
+        let conn = schedule_health_conn();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS steering_history (id TEXT PRIMARY KEY, session TEXT NOT NULL, text TEXT NOT NULL, \
+                            queued_at REAL, delivered_at REAL NOT NULL, outcome TEXT, guard TEXT, sender TEXT);").unwrap();
+        let now = 1_788_000_000i64;
+        let ran = now - 900;
+        conn.execute("INSERT INTO schedule_runs(schedule_id,ran_at,status,note,source) VALUES('SCHED-9',?1,'delivered','queued (steering)','cron-rs')", [ran]).unwrap();
+        let session: String = conn.query_row("SELECT session FROM schedules WHERE id='SCHED-9'", [], |r| r.get(0)).unwrap_or_else(|_| "worker-a".into());
+        let missing = |c: &rusqlite::Connection| super::detect_schedule_run_health(c, now as f64).0
+            .iter().any(|f| f.signature == "silent|schedule-message-missing|SCHED-9");
+        assert!(missing(&conn), "precondition: no artifact at all is missing");
+        conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,sender) VALUES('steer-1',?1,'run it',?2,?3,'')",
+            rusqlite::params![session, ran as f64 + 1.0, ran as f64 + 276.0]).unwrap();
+        assert!(!missing(&conn), "a steering row queued at run time and delivered is the artifact");
     }
 
     #[test]
