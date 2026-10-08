@@ -877,13 +877,14 @@ async fn verify(state: &AppState, card: &str, lane: &str, timeout: Duration) -> 
     let card_s = card.to_string();
     let contract = state.store.read_async(move |c| Ok(load(c, &card_s)?)).await.ok().flatten()
         .ok_or((None, "the card has no frozen contract".to_string()))?;
-    let tree: PathBuf = crate::api::session_verbs::worker_worktree(lane)
-        .or_else(|| Some(PathBuf::from(crate::api::session_verbs::session_work_dir(lane))).filter(|p| p.join(".git").exists()))
+    let tree: PathBuf = lane_tree(lane)
         .ok_or((None, format!("lane {lane} has no git checkout to measure")))?;
-    let sha = git(&tree, &["rev-parse", "HEAD"]).await.map_err(|e| (None, format!("could not read HEAD: {e}")))?;
+    let sha = git(&tree, &["rev-parse", "HEAD"]).await.map_err(|e| (None, format!("could not read HEAD of {}: {e}", tree.display())))?;
+    // Every failure names what was measured, so a wrong checkout is visible.
+    let at = format!("(measured {} at {})", tree.display(), &sha[..12.min(sha.len())]);
     let tmp = crate::config::amux_home().join("tmp").join("contract").join(format!("{card}-{}", &sha[..12.min(sha.len())]));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
-    fresh_checkout(&tree, &tmp, &sha).await.map_err(|e| (Some(sha.clone()), e))?;
+    fresh_checkout(&tree, &tmp, &sha).await.map_err(|e| (Some(sha.clone()), format!("{e}\n{at}")))?;
     let ws = crate::fanout_workspace::Workspace {
         repo: tree.to_string_lossy().into_owned(),
         path: tree.to_string_lossy().into_owned(),
@@ -895,7 +896,7 @@ async fn verify(state: &AppState, card: &str, lane: &str, timeout: Duration) -> 
     let _ = git(&tree, &["worktree", "remove", "--force", &tmp.to_string_lossy()]).await;
     match r {
         Ok(()) => Ok((sha, contract.command, contract.acceptance)),
-        Err(e) => Err((Some(sha), e)),
+        Err(e) => Err((Some(sha), format!("{e}\n{at}"))),
     }
 }
 
@@ -990,8 +991,41 @@ pub fn parse_sha(out: &str) -> Option<String> {
 
 /// The lane's checkout: its worktree, else its work dir if that is a repo.
 pub(crate) fn lane_tree(lane: &str) -> Option<PathBuf> {
-    crate::api::session_verbs::worker_worktree(lane)
-        .or_else(|| Some(PathBuf::from(crate::api::session_verbs::session_work_dir(lane))).filter(|p| p.join(".git").exists()))
+    let configured = crate::api::session_verbs::worker_worktree(lane)
+        .or_else(|| Some(PathBuf::from(crate::api::session_verbs::session_work_dir(lane))).filter(|p| p.join(".git").exists()));
+    let live = live_checkout(lane);
+    let picked = pick_tree(configured.clone(), live);
+    if picked != configured {
+        tracing::info!(lane, configured = ?configured, live = ?picked, measured = true, n_considered = 1,
+            verdict = "contract_tree_live_nested", "the lane works in a checkout nested in its configured one; that is the one measured");
+    }
+    picked
+}
+
+/// THE CHECKOUT THE LANE IS WORKING IN (gs12-retrievers, GR-64, 2026-10-07):
+/// its session ran in a worktree nested inside its configured one, and the
+/// verifier read the OUTER checkout's stale HEAD, so tests already on main
+/// were "not found" (exit 4). The live pane's checkout wins when it is the
+/// configured one or nested inside it; anything else keeps the configured.
+pub(crate) fn pick_tree(configured: Option<PathBuf>, live: Option<PathBuf>) -> Option<PathBuf> {
+    match (configured, live) {
+        (Some(c), Some(l)) if l.starts_with(&c) => Some(l),
+        (None, Some(l)) => Some(l),
+        (c, _) => c,
+    }
+}
+
+/// The git toplevel of the lane's live tmux pane, if it is in one.
+fn live_checkout(lane: &str) -> Option<PathBuf> {
+    let pt = crate::backend::tmux::pane_target(&format!("amux-{lane}"));
+    let out = std::process::Command::new("tmux").args(["display-message", "-p", "-t", &pt, "#{pane_current_path}"]).output().ok()?;
+    let cwd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || cwd.is_empty() {
+        return None;
+    }
+    let top = std::process::Command::new("git").args(["-C", &cwd, "rev-parse", "--show-toplevel"]).output().ok()?;
+    let t = String::from_utf8_lossy(&top.stdout).trim().to_string();
+    (top.status.success() && !t.is_empty()).then(|| PathBuf::from(t))
 }
 
 /// Run `cmd` with `sh -c` in `dir`, the lane's interpreters first on PATH.
@@ -2281,6 +2315,19 @@ mod tests {
 
     /// GE3-15 (gs12-extra-3, 2026-10-07): the reviewer offers cannot_satisfy
     /// for an ops-typed proof card too, so the exit works for every type.
+    /// GR-64: the lane's live checkout, nested in its configured worktree,
+    /// is the one measured; a live checkout elsewhere does not replace it.
+    #[test]
+    fn the_verifier_measures_the_checkout_the_lane_works_in() {
+        let outer = PathBuf::from("/m/.worktrees/gs12-retrievers");
+        let nested = PathBuf::from("/m/.worktrees/gs12-retrievers/.worktrees/gs12-retrievers");
+        assert_eq!(pick_tree(Some(outer.clone()), Some(nested.clone())), Some(nested), "nested wins");
+        assert_eq!(pick_tree(Some(outer.clone()), Some(outer.clone())), Some(outer.clone()));
+        assert_eq!(pick_tree(Some(outer.clone()), Some(PathBuf::from("/elsewhere/repo"))), Some(outer.clone()), "unrelated cwd does not");
+        assert_eq!(pick_tree(Some(outer.clone()), None), Some(outer));
+        assert_eq!(pick_tree(None, Some(PathBuf::from("/r"))), Some(PathBuf::from("/r")));
+    }
+
     #[test]
     fn cannot_satisfy_is_honoured_on_a_card_of_any_type() {
         match decide(&card("doing", "ops", None), &json!({"status": "cannot_satisfy", "reason": "the drill cannot run here", "left_undone": []}), false, None, &dflt(None)) {
