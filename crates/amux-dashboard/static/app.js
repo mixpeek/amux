@@ -13966,7 +13966,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1261';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1262';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -38652,29 +38652,49 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   });
 }
 
+async function _fenceBoardMutationReads() {
+  _boardSnapshotEpoch++;
+  _boardReadAppliedGeneration = ++_boardReadGeneration;
+  // Invalidate the shared response promise as well as the local snapshot.
+  // A poll started during the mutation must not be reused by its readback.
+  await _stateQuery.client.cancelQueries({queryKey:['board']});
+  _boardEtag = null;
+  lastBoardJSON = '';
+}
+
 async function clearDone() {
-  // The optimistic hide is the reason AMUX-2630 stayed invisible for so long:
-  // the cards vanished, the POST 405'd, and they came back on the next refresh
-  // with nothing ever said. So the hide is now UNDONE on failure, and success
-  // reports the server's own count rather than a silent disappearance.
   const cleared = boardItems.filter(i => i.status === 'done');
   if (!cleared.length) { showToast('No done cards to clear'); return; }
-  boardItems = boardItems.filter(i => i.status !== 'done');
+  const ids = new Set(cleared.map(i => i.id));
+  await _fenceBoardMutationReads();
+  boardItems = boardItems.filter(i => !ids.has(i.id));
   saveBoardCache();
   renderBoard();
   const r = await apiCall(API + '/api/board/clear-done', { method: 'POST' });
+  await _fenceBoardMutationReads();
   if (!r) {
-    // apiCall already toasted the server's reason; put the cards back rather
-    // than leave the board asserting a clear that did not happen. Restoring
-    // locally (not refetching) on purpose: the server state is unchanged, so
-    // fetchBoard's ETag would answer 304 and leave the lie in place.
-    boardItems = boardItems.concat(cleared);
+    // Keep any newer same-id stream update while restoring missing cards.
+    const restored = new Map(boardItems.map(i => [i.id, i]));
+    for (const item of cleared) if (!restored.has(item.id)) restored.set(item.id, item);
+    boardItems = [...restored.values()];
     saveBoardCache();
     renderBoard();
+    amuxTrack('board_clear_restored', {measured:true, n_considered:cleared.length});
+    return;
+  }
+  boardItems = boardItems.filter(i => !ids.has(i.id));
+  saveBoardCache();
+  renderBoard();
+  if (_isLocallyQueued(r)) {
+    amuxTrack('board_clear_queued', {measured:true, n_considered:cleared.length});
+    showToast('Clear queued — awaiting server confirmation');
     return;
   }
   let n = cleared.length;
   try { const d = await r.json(); if (typeof d.archived === 'number') n = d.archived; } catch (e) {}
+  await _stateQuery.invalidate(['board']);
+  await fetchBoard();
+  amuxTrack('board_clear_reconciled', {archived:n, measured:true, n_considered:cleared.length});
   showToast(n ? 'Archived ' + n + ' done card' + (n === 1 ? '' : 's') + ' — still under Archived'
               : 'Nothing to clear');
 }

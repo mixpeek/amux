@@ -289,6 +289,15 @@ jobs:
     # PR Full Gate tier (plan §CI tiers): the golden scenarios in a real
     # browser against the real server + real extracted dashboard.
     runs-on: ubuntu-latest
+    # AF-968: browser dependencies consumed 19m13s of one 30m runner,
+    # cancelling a healthy shard. Keep the tests/deadlines; install them once
+    # in the official image. Pin both version and digest, and verify below.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+      options: --init --ipc=host
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -307,19 +316,36 @@ jobs:
       # asserts on real running-session state has nothing graceful to show
       # instead, so the gap surfaced as `element(s) not found` /
       # `toBeVisible()` failures rather than as this job's own missing step.
-      - name: Install tmux (dashboard session state depends on it)
-        run: command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; }
-      - name: Install Playwright
-        # webkit is NOT optional: the ios-safari project (devices['iPhone 15'])
-        # is a webkit project, and this job runs EVERY project (no --project
-        # filter below). A missing browser is a hard error, not a skip:
-        # "browserType.launch: Executable doesn't exist at .../webkit-2336".
-        # Installing it here rather than gating the project to skip is
-        # deliberate — a skipping ios-safari target reads as covered and is
-        # worse than none, and the whole reason that project exists is that
-        # desktop+mobile chromium at 375px went green while the real phone was
-        # broken (AMUX-3057).
-        run: npm ci --ignore-scripts 2>/dev/null || npm install; npx playwright install --with-deps chromium webkit
+      - name: Install compiler and private server runtime
+        # The browser image contains browser libraries, not Rust's C compiler
+        # or the private HTTPS/tmux fixture tools. Install this smaller set.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential pkg-config python3 tmux openssl lsof procps
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
+      - name: Install locked packages and verify preinstalled browsers
+        env:
+          AMUX_PLAYWRIGHT_IMAGE_VERSION: '1.62.1'
+        run: |
+          npm ci --ignore-scripts
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import {createRequire} from 'node:module';
+          const require = createRequire(import.meta.url);
+          const version = require('@playwright/test/package.json').version;
+          if (version !== process.env.AMUX_PLAYWRIGHT_IMAGE_VERSION) {
+            throw new Error(`Playwright image/package mismatch: image=${process.env.AMUX_PLAYWRIGHT_IMAGE_VERSION} package=${version}`);
+          }
+          const {chromium, webkit} = require('playwright');
+          for (const browser of [chromium, webkit]) {
+            const executable = browser.executablePath();
+            if (!fs.existsSync(executable)) throw new Error(`Missing ${browser.name()}: ${executable}`);
+            const instance = await browser.launch({headless: true});
+            console.log(JSON.stringify({verdict: 'ci_browser_ready', measured: true, n_considered: 1, browser: browser.name(), version: instance.version(), package: version, executable}));
+            await instance.close();
+          }
+          JS
       - name: SPA static gate (no-undef kills the silent-dead-handler class)
         # Two silent-dead-handler bugs shipped in one week (schedule delete,
         # worker delete 2026-08-09): an undefined name in an async handler makes

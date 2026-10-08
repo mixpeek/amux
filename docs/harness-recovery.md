@@ -134,6 +134,7 @@ that no test ran. Retry after those consumers finish.
 | Interrupted manual shell and cron delivery | Real restart: error/unknown result retained, no false pass or automatic replay |
 | Native lifecycle spool and installed observer | Hooks run during downtime; boot consumes edges once and repairs installed bytes |
 | Pending independent review | Cached results and a real detached reviewer surviving SIGKILL are adopted without a second CLI launch; full evidence retained |
+| Reviewer provider capacity | A nonzero quota exit creates a durable capacity wait without reopening work or spending a quality round; SIGKILL retains the deadline, unknown readings respect backoff, and the normal consumer retries once. A positive fresh model-scoped capacity reading releases the wait earlier. Completion reviews get shared slots before advisory pre-run reviews. |
 | Media prepare | Seeded stale intent resumes a real ffmpeg consumer after SIGKILL; completed output is adopted, and lost output is regenerated |
 | Lease expiry | Real API counts expired and live RFC3339 leases correctly before and after SIGKILL |
 | Idle pool and dependency graph | Real idle-worker claim from an over-cap graph, SIGKILL between claim and dispatch, one pickup command at the fake terminal, and intact roll-up edges; transactional stale-plan, dependency change, archive, busy lane, transitive/cyclic graph and 300-card tests |
@@ -148,3 +149,86 @@ providers prove harness transport and state, not real provider flags, model
 reasoning, an external plane's correctness, or every possible interleaving.
 For work involving those surfaces, add a real consumer test and a failing
 control at the actual failure boundary. Human authorization gates remain gates.
+
+Provider-capacity waits retain failed output in `review-evidence`, independently
+of the disposable checkout. `review_retry_at` and the blocked model persist in
+SQLite. Fresh exhausted windows and the existing human reserve hold the retry;
+missing or stale readings allow one new attempt only after fifteen minutes.
+They never grant a verdict. The capacity recovery also refunds a positively
+identified, quota-only legacy failure once per recorded attempt, retaining its
+original log and preserving current task status, criteria, source and check.
+Ordinary failed reviews still consume their bounded rounds and escalate normally.
+Pre-run quota failures are retriable, rather than permanently caching an
+unmeasured plan. A healthy completed review is never repeated after restart.
+
+`e2e/chaos/review-capacity-recovery.mjs` uses the real board API, contract clock,
+CLI process, SQLite and SIGKILL. Its retry-clock boundary is explicitly seeded;
+the Rust integration tests cover fresh headroom and reserve decisions. The
+private fake-provider PATH also shadows macOS `security`: a private HOME alone
+does not isolate the operating system's keychain.
+
+A transcript-confirmed retryable foreground API failure is a parent turn boundary
+when its normal composer is empty and no foreground generation or selector is
+present. Surviving background shells/agents do not prevent the bounded retry.
+The existing paste transport retains those children and queues safely if another
+turn begins. Authentication errors, quotas, isolation, paused/disabled lanes,
+nonempty composers and unknown frames retain their respective gates.
+`api-error-background-recovery.mjs` tests the real periodic sweep and terminal,
+a real background PID, authentication/isolation controls and durable retry-key
+recovery after SIGKILL. Its failed transcript is a fixture
+seed; the normal two-minute retry clock elapses, and it makes no provider call.
+
+Maintenance yields the shared writer between tables and deletes at most 256 aged
+eligible rows per table per pass. The survivor/unit guard and pending capture/chat
+protection remain authoritative. A saturated batch logs that fact; remaining work
+is discovered from the database on later passes, including after a crash. Checkpoint
+contention defers immediately and restores the normal mutation busy timeout.
+Archived project-owner discovery and steering retention use covering indexes, and
+slow retention tables/project reconciliation phases announce their measured latency.
+
+The foreground process replay also holds a future quota reset with a real provider child alive, explicitly advances only its private transcript clock to a passed reset, and observes one normal-consumer continuation across SIGKILL. Unclocked limits remain parked. The provider reset grace and empty-composer/selector checks apply before background work can be ignored.
+
+Usage-reset delivery retains the positively observed passed reset through the
+steering consumer. Clearing it early would reparse unchanged clock-only chrome as
+a future reset. Account replacement alone releases the previous account's future
+stamp; leaving quota chrome clears it normally. Ordinary queue identities include
+entropy even within one clock tick, and unexpected primary-key collisions fail
+with a named persistence error instead of replacing another lane's receipt.
+
+Browser CI uses the official Playwright image pinned to the package-lock version
+and OCI digest. Readiness launches both Chromium and WebKit and records their
+versions and executable paths; a package mismatch fails. All browser projects,
+assertions, retries and runner deadlines remain the same. See
+https://playwright.dev/docs/docker for the upstream image and version requirements.
+
+On Apple Silicon, API worker starts/recovery and the Bash start command apply the
+same native architecture preference as backend argv launches. This prevents an
+Intel tmux server from handing its preference through a native provider into all
+its shell tools. Existing processes continue unchanged; their next launch adopts
+the preference. AMUX_NATIVE_ARCH=0 opts out and Intel-only executables retain the
+fallback. `e2e/chaos/native-launch.mjs` measures actual provider child architecture
+through private API/CLI starts and the opt-out. Linux reports this hardware probe
+unmeasured rather than claiming to have tested Rosetta.
+
+The architecture fixture uses system universal Python as its provider stand-in,
+so it inherits the launch preference like the native-capable real provider. The
+host's other Python launcher can force an Intel interpreter; that is a legitimate
+fallback rather than evidence that the preference wrapper failed. No actual
+Claude/model call is made by this fixture.
+
+Automatic resume stages the existing steering queue under one stable worker/stop
+identity before atomically recording its resume key and retry counter. A refusal
+leaves no key; a crash before handoff rediscovers the stop, and a crash after
+handoff adopts queue/history instead of repeating input. New nudges retain card
+budgets; adoption is not another nudge. A positively observed account replacement
+releases only the former account's capacity hold while retaining ordinary card
+budgets and terminal gates. Staging and durable acceptance have separate named
+signals from actual terminal submission.
+
+`auto-resume-handoff-recovery.mjs` locks only its private SQLite writer, enables
+a seeded expired retry, and SIGKILLs the controller at decision/handoff before
+any provider input. It requires one continuation after restart with a surviving
+real child. Another SIGKILL explicitly seeds loss of the producer's metadata
+acknowledgement; queue/history adoption must prevent duplicate input. The fixture
+clock and acknowledgement loss are declared; real process crashes and terminal
+receipts supply the consumer proof.

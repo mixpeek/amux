@@ -2399,6 +2399,30 @@ pub(crate) fn auto_resume_pane_idle(pane: &str, agents_live: bool) -> bool {
         && composer_state(pane).typed().is_none()
 }
 
+/// A transcript-confirmed transport failure ended the foreground turn. Live
+/// background shells/agents may finish independently; they must not prevent
+/// the parent from receiving its bounded retry. Require a normal empty composer
+/// and recheck generation/selectors, never infer this boundary from silence.
+fn failed_foreground_at_boundary(pane: &str, api_error: Option<&str>) -> bool {
+    api_error.is_some_and(api_error_is_retryable) && empty_foreground_boundary(pane)
+}
+
+fn empty_foreground_boundary(pane: &str) -> bool {
+    !pane_bar_says_generating(pane)
+        && !is_rate_limit_menu(pane)
+        && !is_resume_mode_prompt(pane)
+        && idle_hook_frame(pane) != IdleHookFrame::Selector
+        && matches!(composer_state(pane), ComposerState::Empty | ComposerState::Placeholder(_))
+}
+
+// A clocked quota stop has ended the parent too. Only a passed reset with the
+// provider's grace qualifies; future and unclocked caps still park all input.
+fn expired_limit_foreground_at_boundary(pane: &str, limit: Option<&ClaudeLimitObservation>, api_error: Option<&str>, now: i64) -> bool {
+    api_error.is_none_or(api_error_is_retryable) && limit.is_some_and(|l| !l.menu && l.kind != "credit-banner" && l.reset_at > 0
+        && now >= l.reset_at.saturating_add(AUTO_RESUME_RESET_GRACE_S))
+        && empty_foreground_boundary(pane)
+}
+
 /// Seconds a lane must sit idle on a retryable API error before amux retries.
 pub(crate) const AUTO_RESUME_API_IDLE_S: i64 = 120;
 /// Grace after a provider reset before amux speaks: Claude's own
@@ -2441,6 +2465,11 @@ pub(crate) enum AutoResume {
 }
 
 pub(crate) fn auto_resume_decision(i: &AutoResumeInputs) -> AutoResume {
+    // A current authentication/unknown failure wins over older quota chrome.
+    // Infrastructure continuation cannot repair or authorize that failure.
+    if i.api_error.is_some_and(|kind| !api_error_is_retryable(kind)) {
+        return AutoResume::Nothing;
+    }
     let candidate: Option<(&'static str, String)> = match i.limit {
         // A credit cap has no clock and the lane is still working on credits:
         // there is nothing to resume. The menu is answered by the sweep's own
@@ -8498,6 +8527,12 @@ pub(crate) async fn enqueue_board_conversation(
     .map_err(str::to_string)
 }
 
+// A clock orders messages; it cannot identify concurrent producers. Entropy
+// keeps independent receipts distinct even at the exact same clock tick.
+fn fresh_steering_id_at(at: std::time::SystemTime) -> String {
+    format!("steer-{}", ulid::Ulid::from_datetime(at))
+}
+
 async fn steer_enqueue_precond_with_id(
     store: &crate::db::SharedStore,
     name: &str,
@@ -8626,7 +8661,7 @@ async fn steer_enqueue_precond_with_id(
     }
     let msg_id = stable_id
         .map(str::to_string)
-        .unwrap_or_else(|| format!("steer-{}", (now_f64() * 1000.0) as i64));
+        .unwrap_or_else(|| fresh_steering_id_at(std::time::SystemTime::now()));
     let id = msg_id.clone();
     // The id we RETURN must be the row that actually exists. When a guarded
     // re-enqueue updates the prior row in place (AMUX-3557) the freshly minted
@@ -8771,7 +8806,7 @@ async fn steer_enqueue_precond_with_id(
                     )?;
                 }
                 conn.execute(
-                    "INSERT OR REPLACE INTO steering_queue\
+                    "INSERT INTO steering_queue\
                      (id, session, text, queued_at, guard, sender, precond_card, precond_rev) \
                      VALUES(?,?,?,?,?,?,?,?)",
                     rusqlite::params![
@@ -8789,7 +8824,10 @@ async fn steer_enqueue_precond_with_id(
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
         .await;
-    if persisted.is_err() {
+    if let Err(ref error) = persisted {
+        tracing::error!(session = name, message_id = %msg_id, %error,
+            measured = true, n_considered = 1, verdict = "steering_persist_failed",
+            "steering identity or write failed; an existing message was not overwritten");
         return Err("could not persist steering message");
     }
     if should_emit.load(std::sync::atomic::Ordering::SeqCst) {
@@ -16067,7 +16105,7 @@ fn provider_command_in_workspace(work_dir: &str, command: &str, isolated: bool) 
     } else {
         ""
     };
-    format!("{scrub}cd {} && {command}", sh_quote(work_dir))
+    crate::backend::tmux::native_shell_launch(&format!("{scrub}cd {} && {command}", sh_quote(work_dir)))
 }
 
 /// Start the exact provider configured for a board-driven worker, and do not
@@ -20443,6 +20481,30 @@ pub(crate) async fn steer_delivery_for(state: &AppState, name: &str, age_s: f64)
             warn_background_override_once(name, raw, status == "idle");
         }
     }
+    // A failed foreground turn is an actual boundary even while its children
+    // survive. Use the existing non-interrupting paste transport: another turn
+    // starting after this read queues the input at the provider, without Escape.
+    let meta = load_meta(name);
+    if provider_of(&parse_env(name)) == "claude" && (background_working || meta_i64(&meta, "api_error_since") > 0) {
+        let records = session_jsonl_path(name).map(|p| iter_jsonl_tail(&p, 256 * 1024)).unwrap_or_default();
+        if signals.panes.get(name).is_some_and(|pane| failed_foreground_at_boundary(pane, transcript_api_error(&records).as_deref())) {
+            if first_in_window("api_error_boundary", name, 600.0) {
+                tracing::info!(session = name, measured = true, n_considered = 1,
+                    verdict = "steer_api_error_boundary", "foreground transport failed; delivering by paste while background work survives");
+            }
+            return SteerDelivery::OverdueMidTurn;
+        }
+        let now = chrono::Local::now();
+        let limit = signals.panes.get(name).and_then(|pane| observe_claude_limit_with(
+            pane, meta_i64(&meta, "rate_limited_until"), now, transcript_rate_limit(&records)));
+        if signals.panes.get(name).is_some_and(|pane| expired_limit_foreground_at_boundary(pane, limit.as_ref(), transcript_api_error(&records).as_deref(), now.timestamp())) {
+            if first_in_window("usage_reset_boundary", name, 600.0) {
+                tracing::info!(session = name, measured = true, n_considered = 1,
+                    verdict = "steer_usage_reset_boundary", "foreground quota reset passed; delivering by paste while background work survives");
+            }
+            return SteerDelivery::OverdueMidTurn;
+        }
+    }
     let held = steer_decide_with_background(
         Some(&status),
         None,
@@ -23131,7 +23193,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             let last_key = meta_str(&meta, "auto_resume_for");
             let inputs = AutoResumeInputs {
                 enabled: auto_resume_enabled(name) && !lane_is_paused(name),
-                idle: !send_in_flight && auto_resume_pane_idle(&pane, agents_live),
+                idle: !send_in_flight && (auto_resume_pane_idle(&pane, agents_live) || failed_foreground_at_boundary(&pane, api_error.as_deref()) || expired_limit_foreground_at_boundary(&pane, observation.as_ref(), api_error.as_deref(), now_i64())),
                 now: now_i64(),
                 limit: observation.as_ref(),
                 limited_since: meta_i64(&meta, "rate_limited_since"),
@@ -23153,45 +23215,76 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                     }
                 }
                 AutoResume::Send { reason, key } => {
-                    // Stamp the key FIRST: whatever the send does, this
-                    // occurrence is never resumed twice.
-                    update_meta(name, &[("auto_resume_for", json!(key))]);
+                    // Persist the continuation before its causal metadata. A
+                    // crash before enqueue must rediscover the stop; a crash
+                    // after enqueue adopts the same queue/history identity.
+                    let guard = format!("auto-resume:{key}");
+                    let identity = format!("auto-resume:{name}:{key}");
+                    tracing::info!(session = name, reason, key, measured = true, n_considered = 1,
+                        verdict = "auto_resume_staging", "staging a durable continuation before its resume stamp");
+                    let already_persisted = state.store.read_async({
+                        let identity = identity.clone();
+                        move |conn| Ok(conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM steering_queue WHERE id=?1 UNION ALL SELECT 1 FROM steering_history WHERE id=?1)",
+                            [identity], |row| row.get::<_, bool>(0))?)
+                    }).await.unwrap_or(false);
+                    // Stable transport identities must not exempt a new resume
+                    // from the ordinary per-card gate. Adopting a persisted one
+                    // is not another nudge, and must not charge it twice.
+                    if !already_persisted && super::runner::applies(&guard, None) {
+                        let gate = if reason == "account_changed" {
+                            super::runner::gate_after_account_change(&state.store, name, &guard, "continue").await
+                        } else {
+                            super::runner::gate(&state.store, name, &guard, "continue").await
+                        };
+                        if let Err(why) = gate {
+                            tracing::warn!(session = name, reason, key, why, verdict = "auto_resume_refused",
+                                "continuation not queued; the stop remains discoverable");
+                            continue;
+                        }
+                    }
+                    let queued = match steer_enqueue_idempotent_report(state, name, "continue", &guard, "", &identity).await {
+                        Ok(queued) => queued,
+                        Err(why) => {
+                            tracing::warn!(session = name, reason, key, why, verdict = "auto_resume_refused",
+                                "continuation not queued; no resume key was stamped");
+                            continue;
+                        }
+                    };
+                    let mut updates = vec![("auto_resume_for", json!(key))];
                     if reason == "api_error" {
-                        let (start, count) = if inputs.now - inputs.api_window_start
-                            < AUTO_RESUME_API_WINDOW_S
-                        {
+                        let (start, count) = if inputs.now - inputs.api_window_start < AUTO_RESUME_API_WINDOW_S {
                             (inputs.api_window_start, inputs.api_count + 1)
                         } else {
                             (inputs.now, 1)
                         };
-                        update_meta(name, &[
+                        updates.extend([
                             ("auto_resume_api_window_start", json!(start)),
                             ("auto_resume_api_count", json!(count)),
                         ]);
-                    } else {
-                        // Clear the limit stamps BEFORE the send: the send path's
-                        // `lane_block_reason` still reads a future reset (the
-                        // account case) as rate-limited and would park the
-                        // continue behind the very limit it is resuming. If the
-                        // limit is still real, the next sweep re-stamps it.
-                        update_meta(name, &[
+                    } else if reason == "account_changed" {
+                        // Release the former account's future clock in the
+                        // same atomic metadata update as the accepted identity.
+                        // Usage resets retain their passed clock for transport.
+                        updates.extend([
                             ("rate_limited_since", json!(0)),
                             ("rate_limited_until", json!(0)),
                             ("rate_limited_by", json!("")),
                             ("rate_limited_weekly", json!(false)),
                         ]);
                     }
-                    let d = deliver_automated(state, name, "continue", &format!("auto-resume:{key}")).await;
-                    let verdict = if d.refused { "auto_resume_refused" } else { "auto_resume_sent" };
-                    tracing::warn!(target: "amux::usage_reset", session = %name, reason, key = %key,
-                        submission = d.submission, detail = %d.message, verdict,
-                        "sent \"continue\" to a lane stopped by a usage limit, an account switch or an API error");
+                    update_meta(name, &updates);
+                    let verdict = "auto_resume_queued";
+                    tracing::warn!(target: "amux::usage_reset", session = name, reason, key, queue_id = %queued.id,
+                        disposition = ?queued.disposition, verdict,
+                        "continuation accepted by the durable consumer; terminal submission has its own receipt");
                     emit_event(
                         state,
                         name,
                         "session.auto_resumed",
                         Some(json!({"reason": reason, "key": key, "verdict": verdict,
-                            "submission": d.submission, "detail": d.message})),
+                            "submission": "deferred", "queue_id": queued.id,
+                            "disposition": format!("{:?}", queued.disposition)})),
                         Some(format!("auto-resume:{name}:{key}")),
                         "rate-limit",
                     )
@@ -33084,6 +33177,22 @@ mod tests {
         }
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn worker_launch_resets_translated_tmux_preference_for_provider_children() {
+        let bare = "/bin/sh -c '/usr/sbin/sysctl -n sysctl.proc_translated'";
+        let probe = |script: &str| {
+            let out = std::process::Command::new("/usr/bin/arch")
+                .args(["-x86_64", "/bin/sh", "-c", script]).output().unwrap();
+            assert!(out.status.success(), "translated fixture must launch: {:?}", out);
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(probe(bare), "1", "the fixture must reproduce tmux's inherited translation");
+        let script = super::provider_command_in_workspace("/", bare, false);
+        let expected = if std::env::var("AMUX_NATIVE_ARCH").ok().as_deref() == Some("0") { "1" } else { "0" };
+        assert_eq!(probe(&script), expected, "the actual worker launcher must reset the preference seen by provider children");
+    }
+
     #[test]
     fn provider_launch_and_recovery_pin_workspace_even_after_shell_profile_changes_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -40409,6 +40518,57 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(!auto_resume_pane_idle(menu, false), "the menu is answered with a key, never text");
         let typed = API_ERROR_IDLE_PANE.replace("\u{276f}\u{a0}", "\u{276f} half a message");
         assert!(!auto_resume_pane_idle(&typed, false), "text in the composer holds it");
+    }
+
+    #[test]
+    fn a_failed_foreground_can_retry_while_background_work_survives() {
+        let pane = API_ERROR_IDLE_PANE.replace("bypass permissions on (shift+tab to cycle)", "bypass permissions on · 1 shell · ← 5 agents · ↓ to manage");
+        assert!(!auto_resume_pane_idle(&pane, true), "ordinary pickup still waits for background work");
+        assert!(failed_foreground_at_boundary(&pane, Some("server_error")), "the parent's failed turn can resume independently");
+        let i = AutoResumeInputs { idle: failed_foreground_at_boundary(&pane,Some("server_error")),api_error_since:1_789_999_800,..resume_inputs(None,Some("server_error")) };
+        assert!(matches!(auto_resume_decision(&i),AutoResume::Send{reason:"api_error",..}));
+        for error in [None,Some("authentication_failed"),Some("rate_limit")] {
+            assert!(!failed_foreground_at_boundary(&pane,error));
+        }
+        assert!(!failed_foreground_at_boundary(WORKING_PANE,Some("server_error")));
+        assert!(!failed_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some("server_error")));
+        assert!(!failed_foreground_at_boundary("What do you want to do?\n❯ 1. Stop and wait for limit to reset\n  2. Switch to usage credits",Some("server_error")));
+        assert!(!failed_foreground_at_boundary("Permission required\n❯ 1. Allow\n  2. Deny",Some("server_error")));
+        assert!(!failed_foreground_at_boundary("API Error: Connection lost mid-response",Some("server_error")),"no visible composer is unmeasured");
+    }
+
+    #[test]
+    fn independent_steering_messages_at_one_clock_tick_keep_distinct_receipts() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let ids: std::collections::HashSet<String> = (0..1024).map(|_| fresh_steering_id_at(at)).collect();
+        assert_eq!(ids.len(),1024,"simultaneous notices cannot overwrite each other's durable queue identity");
+        for id in ids {
+            let token: ulid::Ulid = id.strip_prefix("steer-").unwrap().parse().unwrap();
+            assert_eq!(token.timestamp_ms(),1_790_000_000_000);
+        }
+    }
+
+    #[test]
+    fn quota_reset_releases_only_an_empty_stopped_parent_despite_live_children() {
+        let now = 1_790_000_000;
+        let pane = LIMITED_IDLE_PANE.replace("bypass permissions on (shift+tab to cycle)", "bypass permissions on · 1 shell · ← 5 agents · ↓ to manage");
+        let passed = ClaudeLimitObservation { menu:false, kind:"transcript", reset_at:now-120 };
+        assert!(expired_limit_foreground_at_boundary(&pane,Some(&passed),None,now));
+        let i = AutoResumeInputs { idle:expired_limit_foreground_at_boundary(&pane,Some(&passed),None,now),..resume_inputs(Some(&passed),None) };
+        assert!(matches!(auto_resume_decision(&i),AutoResume::Send{reason:"usage_reset",..}));
+        for limit in [ClaudeLimitObservation{menu:false,kind:"transcript",reset_at:now+120},ClaudeLimitObservation{menu:false,kind:"transcript",reset_at:now-30},ClaudeLimitObservation{menu:false,kind:"credit-banner",reset_at:0},ClaudeLimitObservation{menu:true,kind:"menu",reset_at:now-120}] {
+            assert!(!expired_limit_foreground_at_boundary(&pane,Some(&limit),None,now));
+        }
+        for frame in [WORKING_PANE, "Permission required\n❯ 1. Allow\n  2. Deny", "limit reset passed without a measured composer"] {
+            assert!(!expired_limit_foreground_at_boundary(frame,Some(&passed),None,now));
+        }
+        assert!(!expired_limit_foreground_at_boundary(&pane.replace("❯\u{a0}","❯ draft"),Some(&passed),None,now));
+        assert!(!expired_limit_foreground_at_boundary(&pane,None,None,now));
+        for error in ["authentication_failed","oauth_org_not_allowed","unknown_error"] {
+            assert!(!expired_limit_foreground_at_boundary(&pane,Some(&passed),Some(error),now), "a stale quota banner must not override a current authentication or unknown failure");
+            let stopped = AutoResumeInputs { api_error:Some(error),..resume_inputs(Some(&passed),None) };
+            assert_eq!(auto_resume_decision(&stopped),AutoResume::Nothing, "current failure also blocks ordinary idle admission");
+        }
     }
 
     #[test]

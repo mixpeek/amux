@@ -5059,3 +5059,146 @@ CARD: AH-401
 SYMPTOM: Concluding `git merge origin/main` on the shared checkout, a bare `git commit` was refused as sweeping 28 files of index-vs-HEAD drift. Those 28 files ARE the merge (every one matches origin/main). The refusal prescribes `AMUX_ALLOW_SWEEP_COMMIT=@<file> git commit ...`; run exactly that, it refused again with a NEW consent file each time, three times. The PreToolUse hook reads `os.environ` of its own process (git-shared-guard.py:722), and an inline assignment in the tool's command string never reaches it, so the advertised escape has no truthful path from a tool call. `git merge --continue` was not matched by the guard and concluded the merge (with the repo staged-guard's documented AMUX_ALLOW_UNCLAIMED=1).
 COST: about 6 tool calls and two refusals on a merge the owner asked for; the working route (`merge --continue`) is one the guard does not know about, which is the opposite of the honest path being the easy one.
 FIX: treat MERGE_HEAD present plus drift equal to the merged side as a merge, not a sweep; and parse a leading VAR=value prefix from the command for the consent pin.
+
+## GS12 quota failures reopened passing work and consumed review rounds
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: GS-235 had a passing frozen check, but the reviewer exited 1 with the Claude weekly-limit banner. The harness classified that as a failed quality round, reopened the card and retained review_rounds=1. Pre-run quota failures were cached unmeasured for the same plan indefinitely.
+COST: Passing work was reopened without a quality verdict; exhausted-account attempts used finite quality rounds and required the lane to repeat completion. The Oct 8 reset did not distinguish those failures from findings.
+FIX: Durable capacity waits, bounded retry and fresh-headroom recovery, retained provider evidence, and idempotent refunds of positively identified quota-only legacy rounds while preserving current task/check state. Test real CLI failure and recovery across SIGKILL before retirement.
+
+## Advisory review claims preceded completed GS12 proofs
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: run_reviews started run_prereviews before claiming pending completion reviews, under the same shared cap. A full advisory cohort could leave completed proof unclaimed until a later five-minute pass.
+COST: Completion could wait behind advisory work even when its passing check and evidence were ready; each extra model turn competed for the same slots and account capacity.
+FIX: Claim completion reviews first and offer remaining slots to advisory plans. Test the actual CLI invocation order with one shared slot and three advisory plans.
+
+## A failed GS12 foreground was held indefinitely behind surviving background work
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: gs12-planes ended its foreground on server_error at 04:34Z with an empty composer, one background shell and five agents. The two-minute API retry logged auto_resume_held/lane_busy at 04:36Z and the foreground was still stuck at 04:50Z. The unrelated background work prevented the parent from recovering from a definite transport failure.
+COST: At least sixteen minutes of avoidable foreground delay after an explicitly retryable stream abort.
+FIX: Treat a current transcript-confirmed retryable failure with a measured empty foreground as a boundary; retain the existing bounded retry and non-interrupting paste transport. Test the actual periodic sweep, authentication/isolation controls, a real surviving background PID and SIGKILL dedupe before retirement.
+
+## GS12 commands stalled behind database maintenance and retained-history scans
+AREA: performance
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: Four of twelve live health probes reported degraded/hung with writer queues of fifteen or sixteen. Retention held the writer for 15.6 seconds and checkpoints waited behind readers before honestly reporting deferred maintenance. Steering retention and archived project-owner discovery used full-table scans rather than covering timestamp/project indexes.
+COST: Worker updates and health probes waited behind maintenance; last successful writer probes were over twenty seconds old during a measured live window.
+FIX: Non-waiting checkpoint with restored ordinary lock policy, bounded retention batches yielding between tables, covering indexes preserving archived ownership, and named table/phase latency signals. Validate active-reader contention, preserved pending capture, restart recovery and live writer latency before retirement.
+
+## A successful board archive was undone in the dashboard by an older poll
+AREA: state
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: PR 236's iOS browser trace showed Clear done POST returning 200 and the server logging archived=1, while a pre-commit board response restored the same done card to the browser. The existing snapshot fence covered stream updates but not this local mutation.
+COST: One browser gate failed after sixteen minutes; the owner could see completed work reappear despite a successful server archive.
+FIX: Fence/cancel shared reads at both mutation boundaries, reconcile with a fresh server readback, retain newer same-id changes on failure, and emit named reconciliation/restoration events. Exercise delayed real reads, rollback and browser reload on desktop, mobile and iOS before retirement.
+
+## A passed quota reset can leave its parent held behind unrelated background work
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The failed-foreground admission fix covered retryable API failures, while automatic quota resumption still required all background shells and agents to stop. A transcript-confirmed passed reset could therefore wait behind a live child after the provider's own grace period.
+COST: Avoidable parent delay at reset; a cancelled native auto-continue would then depend on the unrelated background work ending or on a later message ceiling.
+FIX: Admit an empty stopped foreground after a positively observed clocked reset and its existing grace, retain future/unclocked/menu/authentication/typed-input boundaries, emit a distinct signal, and test actual child survival plus restart deduplication. This is a discovered predicate gap, not a claimed production reproduction after today's future reset.
+
+## Claude's split quota footer hid a stopped GS12 parent behind active background work
+AREA: state
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: At 06:26Z gs12-planes displayed a measured empty composer, a completed parent turn, and the current two-line footer: "Usage limit reached · limit resets 4:50am" followed by capitalized "Continuing automatically at 4:50am · esc to cancel". Its rate-limit metadata remained clear and the fleet reported active because one shell and five agents survived. The detector required the old lowercase interpunct sentence.
+COST: A known quota hold read as productive activity and lacked a durable reset stamp; automated messages could cancel the provider's native continuation before the real reset.
+FIX: Normalize the continuation wording inside the same live composer/chrome anchors; replay the captured split footer through observation, adapter events, preview and actual fleet status with a live-child signal. Keep active-turn, recovered-scrollback and unowned-prose controls.
+
+## Concurrent steering notices could overwrite each other's queue receipt
+AREA: messages
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: CI saved both proof prereview findings but found zero queued notices for one lane. Independently minted queue IDs contained only epoch milliseconds, and INSERT OR REPLACE used that ID as a global primary key. Concurrent producers at one clock tick therefore overwrite another lane's message.
+COST: The producer can report a persisted queue ID after its row has been replaced; the lane loses an advisory that was supposed to save a quality-review round. The CI notice-count assertion waited sixty seconds for data already lost.
+FIX: Entropic time-ordered identities for ordinary enqueues, plain INSERT failing closed on an unexpected collision, preserved caller-supplied idempotence/coalescing, and a named persistence-failure signal. A fixed-clock identity test must fail with the former timestamp-only generator; exercise both simultaneous prereview notices and broad crash recovery before retirement.
+
+## Browser dependency installation exhausted a healthy shard's runner deadline
+AREA: ci
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: PR 236 browser shard four spent 19m13s installing browser OS dependencies, then was cancelled at its thirty-minute job deadline after 110 tests without an assertion failure. Setup consumed the evidence window.
+COST: A cancelled gate and another full build/test cycle despite healthy executed cases.
+FIX: Use the official Playwright image pinned to the lockfile version and OCI digest, keep all projects and existing deadlines, require deterministic npm ci and launch Chromium/WebKit during readiness with named version/executable receipts. A mismatched version or missing browser must fail rather than silently install or skip.
+
+## Clearing an expired reset before transport parked its continuation again
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The real parent/child crash replay admitted a passed quota reset, then cleared its durable reset clock before transport. The unchanged native clock-only footer reparsed as a future limit and the steering consumer deferred the continuation.
+COST: Recovery reported a queued continuation but the parent remained stuck behind the quota it was resuming.
+FIX: Retain the positively observed passed clock through usage-reset delivery; clear future stamps only for account replacement. The actual process replay must observe one delivered continuation, a surviving child, and restart deduplication before retirement.
+
+## The real worker-start paths bypassed the native architecture launch helper
+AREA: performance
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: At 07:17Z all twenty live GS12/orchestrator pane shells were translated under an Intel tmux server; sampled children of the native Claude executable were translated too. TmuxBackend::spawn wrapped commands with a native architecture preference, but API start_session and Bash cmd_start constructed provider commands independently and bypassed that helper.
+COST: The existing host census measured a persistent translated tree. Thin-arm64 provider executables do not reset inherited child architecture preference; tool subprocesses retain avoidable Rosetta overhead.
+FIX: Apply the existing native preference at actual provider launch/recovery, preserve explicit opt-out, fallback, cwd, scoped environment and isolation scrubbing, and log native_provider_launch. Use translated private tmux/server and CLI starts with an actual child-architecture probe; do not interrupt live workers to make the census look better.
+
+## Resume deduplication could permanently suppress a continuation lost before handoff
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The sweep wrote auto_resume_for before attempting delivery. A controller crash between the file stamp and steering persistence made the same stopped turn look already resumed without any durable continuation.
+COST: Preserving the metadata alone suppresses unfinished recovery forever; post-delivery crash tests did not cover this earlier boundary.
+FIX: Stable session/occurrence identity in the existing steering queue/history, durable handoff before one atomic causal metadata update, no key on refusal, existing per-card gates for new nudges, and named staging/queued signals. Kill a real controller with the private database writer locked at this handoff, then require one continuation after restart and no duplicate on another crash.
+
+## Aggregate chat-delegate counts confused an older completion with a duplicate
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The full final-head Linux gate failed chat_delegate recovery with four total answers versus an expected three. The fixture used a two-second sleep to assume earlier delegates had delivered, although delivery has its own three-second grace and jobs can finish concurrently.
+COST: An unrelated answer crossing the snapshot can invalidate the crash-recovery gate without identifying a duplicate of the recovered job.
+FIX: Assert the durable delegate turn identity, wait for that identity and recover again to require exactly one retained answer. Keep the failed CI log and the original once-only transport assertions; do not change runtime delivery or relax the duplicate count.

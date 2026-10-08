@@ -290,6 +290,19 @@ fn native_launch_argv(command: &[String]) -> Vec<String> {
     argv
 }
 
+/// The interactive worker launcher passes shell programs rather than argv.
+/// Use the same native preference as backend spawns; escaping the entire program
+/// preserves scoped environment assignments, isolation scrubbing and cwd gates.
+pub(crate) fn native_shell_launch(command: &str) -> String {
+    if !should_prefer_native_arch() {
+        return command.to_string();
+    }
+    tracing::info!(measured = true, n_considered = 1, verdict = "native_provider_launch",
+        "provider launch resets inherited architecture preference for its children");
+    native_launch_argv(&["/bin/sh".to_string(), "-c".to_string(), command.to_string()])
+        .iter().map(|arg| sh_quote(arg)).collect::<Vec<_>>().join(" ")
+}
+
 impl TmuxBackend {
     pub fn new() -> Self {
         Self { bin: "tmux".into() }

@@ -67,7 +67,7 @@ jobs:
               for receipt in receipts:
                   data = receipt.read_text()
                   assert '# rc\t0\n' in data and '# source_state\tstable_before_after\n' in data, data[:1000]
-              assert len(list(target.glob('amux-chaos-*/recovery-receipt.json'))) == 2, 'missing orchestration receipts'
+              assert len(list(target.glob('amux-chaos-*/recovery-receipt.json'))) == 6, 'missing orchestration receipts'
           PY
       - name: Retain measured recovery receipts even on failure
         if: always()

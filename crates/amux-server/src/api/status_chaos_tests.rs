@@ -252,3 +252,34 @@ fn all_core_states_project_by_tag_not_model_output_or_reason() {
         }
     }
 }
+
+#[test]
+fn split_quota_footer_with_live_children_is_current_clocked_capacity() {
+    use crate::api::session_verbs::observe_claude_limit;
+    use chrono::TimeZone;
+    // gs12-planes, 2026-10-08 06:26Z. The warning is below a measured
+    // empty composer; the parent is done while one shell and five agents live.
+    let raw = "✻ Crunched for 27m 16s · done 2:16 AM · 1 shell still running\n────────────────\n❯\u{a0}\n────────────────\n  ⚠ Usage limit reached · limit resets 4:50am · clau.de/wrap-up\n    Continuing automatically at 4:50am · esc to cancel · /usage-credits to continue now\n  ⏵⏵ bypass permissions on · 1 shell · ← 5 agents · ↓ to manage";
+    let now = chrono::Local.with_ymd_and_hms(2026,10,8,2,20,0).single().unwrap();
+    let expected = chrono::Local.with_ymd_and_hms(2026,10,8,4,50,0).single().unwrap().timestamp();
+    for frame in [raw.to_string(),format!("\x1b[31m{raw}\x1b[0m")] {
+        assert!(claude_auto_resume_banner(&frame).is_some());
+        let limit = observe_claude_limit(&frame,0,now).expect("split footer must be observed without a transcript fallback");
+        assert_eq!(limit.kind,"auto-resume");
+        assert_eq!(limit.reset_at,expected);
+        assert!(!limit.menu);
+        assert!(matches!(TerminalAdapter::new(ProviderId::new("claude")).scan(&frame).as_slice(),[WorkerEvent::RateLimited(_)]));
+        let mut v = json!({"running":true,"model":"claude-opus-5","status":"active"});
+        apply_preview_waiting_status(&mut v,&frame);
+        assert_eq!(v["status"],"rate_limited");
+        assert_eq!(v["credit_limited"],false);
+        let mut state = signals();
+        state.panes.insert("chaos".into(),frame);
+        state.provider_child_activity.insert("chaos".into());
+        state.reports = json!({"chaos":{"state":"active","ts":state.now-5.0}});
+        assert_eq!(state.derive_status("chaos",true),"rate_limited");
+    }
+    for frame in [format!("{raw}\n⏺ Resumed\n❯\n⏵⏵ bypass permissions on"),raw.replace("⏵⏵ bypass permissions on","⏵⏵ bypass permissions on · esc to interrupt"),"⚠ Usage limit reached · limit resets 4:50am\nContinuing automatically at 4:50am · esc to cancel".into()] {
+        assert!(claude_auto_resume_banner(&frame).is_none(),"scrollback, active turns and unowned prose must not become a current quota footer");
+    }
+}

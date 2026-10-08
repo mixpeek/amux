@@ -7,7 +7,8 @@
 // Runs against the throwaway-AMUX_HOME Rust server from playwright.config.ts —
 // never the live server. Both projects run it, so every action here is also
 // exercised at 375px (mobile-first); each test ends with an overflow check.
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 import { clickSnapped } from './helpers';
 
 // The clipboard permission is granted INSIDE the one test that needs it, not
@@ -157,6 +158,56 @@ test('board: create shows the card; Clear done visibly removes it', async ({ pag
   );
   await expect(page.locator('#board-view')).not.toContainText(title, { timeout: 5_000 });
   await expectNoOverflow(page);
+});
+
+test('board: a delayed pre-clear poll cannot resurrect an archived card after recovery', async ({page, request}) => {
+  await settle(page);
+  const token = await appToken(page);
+  const title = `fbk-clear-race-${Date.now()}`;
+  const response = await request.post('/api/board', {
+    headers:{Authorization:`Bearer ${token}`},
+    data:{title,status:'done',type:'ops'},
+  });
+  expect(response.status()).toBe(201);
+  const id = (await response.json()).id;
+  await page.click('#tab-board');
+  await page.evaluate(async () => { await (window as any).fetchBoard(); });
+  await expect(page.locator('#board-view')).toContainText(title);
+  let release!: () => void;
+  let observed!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  const captured = new Promise<void>(r => { observed = r; });
+  let armed = true;
+  await page.route('**/api/board?*', async route => {
+    if (armed && route.request().url().includes('archived=0')) {
+      armed = false;
+      // Force an actual pre-commit body rather than an ETag 304: the stale
+      // card must be present in the delayed response for this to prove fencing.
+      const headers = {...route.request().headers()};
+      delete headers['if-none-match'];
+      const older = await route.fetch({headers});
+      expect(older.status()).toBe(200);
+      expect((await older.json()).some((card: any) => card.id === id)).toBe(true);
+      observed();
+      await gate;
+      await route.fulfill({response:older});
+    } else await route.continue();
+  });
+  await page.evaluate(() => { (window as any).__delayedBoardRead = (window as any).fetchBoard(); });
+  await captured;
+  const cleared = page.waitForResponse(r => r.url().endsWith('/api/board/clear-done') && r.request().method() === 'POST');
+  await clickSnapped(page.locator('#board-view button', {hasText:'Clear done'}).first(), 'Clear done');
+  expect((await cleared).status()).toBe(200);
+  release();
+  await page.evaluate(async () => { await (window as any).__delayedBoardRead; });
+  await expect(page.locator('#board-view')).not.toContainText(title);
+  const persisted = await request.get(`/api/board/${id}`, {headers:{Authorization:`Bearer ${token}`}});
+  expect(persisted.status()).toBe(200);
+  expect((await persisted.json()).archived).toBe(1);
+  await page.unroute('**/api/board?*');
+  await page.reload();
+  await page.click('#tab-board');
+  await expect(page.locator('#board-view')).not.toContainText(title);
 });
 
 test('alert settings toggle: save answers with a toast (new no-silent-actions feedback)', async ({ page }) => {

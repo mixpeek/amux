@@ -132,12 +132,25 @@ pub fn applies(guard: &str, stable_id: Option<&str>) -> bool {
 
 /// The gate. `Ok` lets the nudge through; `Err` says why it was not queued.
 pub async fn gate(store: &crate::db::SharedStore, lane: &str, guard: &str, text: &str) -> Result<(), &'static str> {
+    gate_with_account_state(store, lane, guard, text, false).await
+}
+
+/// Only the resume producer calls this after positively observing an account
+/// replacement newer than the held limit. Preserve all card budgets and pane
+/// checks while releasing the previous account's hold, as the old launcher did.
+pub(crate) async fn gate_after_account_change(store: &crate::db::SharedStore, lane: &str, guard: &str, text: &str) -> Result<(), &'static str> {
+    tracing::info!(session = lane, guard, measured = true, n_considered = 1,
+        verdict = "contract_dispatch_account_replaced", "previous account capacity hold released; ordinary card budgets still apply");
+    gate_with_account_state(store, lane, guard, text, true).await
+}
+
+async fn gate_with_account_state(store: &crate::db::SharedStore, lane: &str, guard: &str, text: &str, account_replaced: bool) -> Result<(), &'static str> {
     let home = crate::config::amux_home();
     if !crate::api::contract::rule_on(&home, lane, "6") {
         return Ok(());
     }
     for (held, why, reason) in [
-        (provider_limited(lane), "provider_limit", "held: the lane is on its provider's usage limit (contract A5)"),
+        (!account_replaced && provider_limited(lane), "provider_limit", "held: the lane is on its provider's usage limit (contract A5)"),
         (!pane_alive(lane), "crash", "held: the lane's pane is gone (contract A5)"),
     ] {
         if held {
@@ -1469,6 +1482,25 @@ mod tests {
         assert!(!applies("", None), "the owner's own send");
         assert!(!applies("board-drive", Some("board-blocker:X")), "stable-id callbacks");
         assert!(!applies("contract-verify", None));
+    }
+
+    #[tokio::test]
+    async fn replacing_an_account_releases_only_its_capacity_hold_and_keeps_pane_gate() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("account.db")).unwrap());
+        let lane = "runner-account-no-live-pane";
+        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        crate::api::session_verbs::update_meta(lane, &[
+            ("rate_limited_since", serde_json::json!((crate::config::now_f64() as i64)-60)),
+            ("rate_limited_until", serde_json::json!((crate::config::now_f64() as i64)+3600)),
+            ("rate_limited_by", serde_json::json!("weekly-banner")),
+        ]);
+        let ordinary = gate(&store, lane, "auto-resume:account:fixture", "continue").await;
+        assert!(ordinary.is_err_and(|why| why.contains("usage limit")), "an ordinary nudge retains the provider gate");
+        let replaced = gate_after_account_change(&store, lane, "auto-resume:account:fixture", "continue").await;
+        assert!(replaced.is_err_and(|why| why.contains("pane is gone")), "replacement releases old capacity only; it cannot bypass pane admission");
     }
 
     /// Through the shipped chokepoint: a contract lane with no live pane is

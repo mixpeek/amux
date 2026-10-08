@@ -1334,6 +1334,14 @@ sys.exit(0 if any(line.startswith("n/") and os.path.realpath(line[1:].strip().sp
     # resume" exits within a second or two; 30s separates the two cleanly.
     launch="_amux_t0=\$SECONDS; $cmd || { if (( SECONDS - _amux_t0 < 30 )); then echo '[amux] nothing to resume here; starting a new conversation' >&2; $resume_fallback; fi; }"
   fi
+  # Intel tmux can pass an x86 preference through a native provider into all
+  # its Bash tools. Reset the preference for new launches, without restarting
+  # the shared tmux server; retain the existing explicit opt-out and fallback.
+  if [[ "${AMUX_NATIVE_ARCH:-1}" != 0 && "$(uname -s)" == Darwin ]] \
+     && [[ -x /usr/bin/arch && "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == 1 ]]; then
+    launch="/usr/bin/arch -arm64 -x86_64 /bin/sh -c $(printf '%q' "$launch")"
+    printf '[amux] verdict=native_provider_launch measured=true n_considered=1 worker=%s\n' "$name" >&2
+  fi
   tmux ${tmux_start_flag:+-N} new-session -d -s "$tname" -n "$name" -c "$dir" \
     -e "AMUX_SESSION=$name" -e "AMUX_WORKER=$name" -e "AMUX_URL=$AMUX_API" \
     "${shell_setup}cd $(printf '%q' "$dir"); $launch"
