@@ -108,8 +108,28 @@ fn pane_alive(lane: &str) -> bool {
 
 fn provider_limited(lane: &str) -> bool {
     let meta = crate::api::session_verbs::load_meta(lane);
-    crate::api::session_verbs::meta_i64(&meta, "rate_limited_since") > 0
+    let now = crate::config::now_f64() as i64;
+    let limited = limited_at(&meta, now);
+    if !limited && crate::api::session_verbs::meta_i64(&meta, "rate_limited_since") > 0
+        && first_this_window(&format!("limit-expired:{lane}"))
+    {
+        tracing::info!(session = lane, until = crate::api::session_verbs::meta_i64(&meta, "rate_limited_until"),
+            measured = true, n_considered = 1, verdict = "contract_provider_limit_expired",
+            "the lane's usage limit has passed its reset time; capacity holds release it");
+    }
+    limited
+}
+
+/// On a usage limit at `now`: marked, not by auto-resume, and not past a
+/// known reset. The marker clears only when the lane takes its next turn, and
+/// the hold refused the auto-resume "continue" that turn needed, so a lane sat
+/// limited past its reset (gs12-extra-1, 2026-10-08: reset 08:50Z, still held
+/// at 09:02Z, every pool pull and continuation refused).
+fn limited_at(meta: &serde_json::Map<String, serde_json::Value>, now: i64) -> bool {
+    let until = crate::api::session_verbs::meta_i64(meta, "rate_limited_until");
+    crate::api::session_verbs::meta_i64(meta, "rate_limited_since") > 0
         && meta.get("rate_limited_by").and_then(|v| v.as_str()) != Some("auto-resume")
+        && !(until > 0 && until <= now)
 }
 
 /// Who decides a split: the lane's `AMUX_ORCHESTRATOR`, else the owner.
@@ -1414,6 +1434,21 @@ mod tests {
         std::fs::write(home.join("sessions").join("gs12-obs.env"), "CC_TAGS=gs12-platform\n").unwrap();
         assert_eq!(group_max_at(home, "gs12-obs"), 10);
         assert_eq!(group_max_at(home, "other"), GROUP_MAX_DEFAULT);
+    }
+
+    #[test]
+    fn a_usage_limit_past_its_reset_time_no_longer_holds_the_lane() {
+        let m = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let now = 1_791_450_000;
+        let past = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "transcript", "rate_limited_until": now - 600}));
+        let live = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "transcript", "rate_limited_until": now + 600}));
+        let no_reset = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "transcript", "rate_limited_until": 0}));
+        let resumed = m(serde_json::json!({"rate_limited_since": now - 8000, "rate_limited_by": "auto-resume"}));
+        assert!(!limited_at(&past, now), "a reset that has passed releases the hold");
+        assert!(limited_at(&live, now), "a reset still ahead holds");
+        assert!(limited_at(&no_reset, now), "no known reset holds");
+        assert!(!limited_at(&resumed, now));
+        assert!(!limited_at(&serde_json::Map::new(), now));
     }
 
     #[test]
