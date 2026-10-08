@@ -180,7 +180,13 @@ test('board: a delayed pre-clear poll cannot resurrect an archived card after re
   await page.route('**/api/board?*', async route => {
     if (armed && route.request().url().includes('archived=0')) {
       armed = false;
-      const older = await route.fetch();
+      // Force an actual pre-commit body rather than an ETag 304: the stale
+      // card must be present in the delayed response for this to prove fencing.
+      const headers = {...route.request().headers()};
+      delete headers['if-none-match'];
+      const older = await route.fetch({headers});
+      expect(older.status()).toBe(200);
+      expect((await older.json()).some((card: any) => card.id === id)).toBe(true);
       observed();
       await gate;
       await route.fulfill({response:older});
