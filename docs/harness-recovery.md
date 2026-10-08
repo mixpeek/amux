@@ -134,6 +134,7 @@ that no test ran. Retry after those consumers finish.
 | Interrupted manual shell and cron delivery | Real restart: error/unknown result retained, no false pass or automatic replay |
 | Native lifecycle spool and installed observer | Hooks run during downtime; boot consumes edges once and repairs installed bytes |
 | Pending independent review | Cached results and a real detached reviewer surviving SIGKILL are adopted without a second CLI launch; full evidence retained |
+| Reviewer provider capacity | A nonzero quota exit creates a durable capacity wait without reopening work or spending a quality round; SIGKILL retains the deadline, unknown readings respect backoff, and the normal consumer retries once. A positive fresh model-scoped capacity reading releases the wait earlier. Completion reviews get shared slots before advisory pre-run reviews. |
 | Media prepare | Seeded stale intent resumes a real ffmpeg consumer after SIGKILL; completed output is adopted, and lost output is regenerated |
 | Lease expiry | Real API counts expired and live RFC3339 leases correctly before and after SIGKILL |
 | Idle pool and dependency graph | Real idle-worker claim from an over-cap graph, SIGKILL between claim and dispatch, one pickup command at the fake terminal, and intact roll-up edges; transactional stale-plan, dependency change, archive, busy lane, transitive/cyclic graph and 300-card tests |
@@ -148,3 +149,20 @@ providers prove harness transport and state, not real provider flags, model
 reasoning, an external plane's correctness, or every possible interleaving.
 For work involving those surfaces, add a real consumer test and a failing
 control at the actual failure boundary. Human authorization gates remain gates.
+
+Provider-capacity waits retain failed output in `review-evidence`, independently
+of the disposable checkout. `review_retry_at` and the blocked model persist in
+SQLite. Fresh exhausted windows and the existing human reserve hold the retry;
+missing or stale readings allow one new attempt only after fifteen minutes.
+They never grant a verdict. The capacity recovery also refunds a positively
+identified, quota-only legacy failure once per recorded attempt, retaining its
+original log and preserving current task status, criteria, source and check.
+Ordinary failed reviews still consume their bounded rounds and escalate normally.
+Pre-run quota failures are retriable, rather than permanently caching an
+unmeasured plan. A healthy completed review is never repeated after restart.
+
+`e2e/chaos/review-capacity-recovery.mjs` uses the real board API, contract clock,
+CLI process, SQLite and SIGKILL. Its retry-clock boundary is explicitly seeded;
+the Rust integration tests cover fresh headroom and reserve decisions. The
+private fake-provider PATH also shadows macOS `security`: a private HOME alone
+does not isolate the operating system's keychain.

@@ -1,0 +1,4 @@
+#!/bin/sh
+# The private HOME cannot isolate macOS's OS-wide keychain. Never read the
+# owner's credential while exercising fake providers and recovery fixtures.
+exit 1

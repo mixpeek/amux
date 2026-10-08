@@ -5059,3 +5059,25 @@ CARD: AH-401
 SYMPTOM: Concluding `git merge origin/main` on the shared checkout, a bare `git commit` was refused as sweeping 28 files of index-vs-HEAD drift. Those 28 files ARE the merge (every one matches origin/main). The refusal prescribes `AMUX_ALLOW_SWEEP_COMMIT=@<file> git commit ...`; run exactly that, it refused again with a NEW consent file each time, three times. The PreToolUse hook reads `os.environ` of its own process (git-shared-guard.py:722), and an inline assignment in the tool's command string never reaches it, so the advertised escape has no truthful path from a tool call. `git merge --continue` was not matched by the guard and concluded the merge (with the repo staged-guard's documented AMUX_ALLOW_UNCLAIMED=1).
 COST: about 6 tool calls and two refusals on a merge the owner asked for; the working route (`merge --continue`) is one the guard does not know about, which is the opposite of the honest path being the easy one.
 FIX: treat MERGE_HEAD present plus drift equal to the merged side as a merge, not a sweep; and parse a leading VAR=value prefix from the command for the consent pin.
+
+## GS12 quota failures reopened passing work and consumed review rounds
+AREA: gates
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: GS-235 had a passing frozen check, but the reviewer exited 1 with the Claude weekly-limit banner. The harness classified that as a failed quality round, reopened the card and retained review_rounds=1. Pre-run quota failures were cached unmeasured for the same plan indefinitely.
+COST: Passing work was reopened without a quality verdict; exhausted-account attempts used finite quality rounds and required the lane to repeat completion. The Oct 8 reset did not distinguish those failures from findings.
+FIX: Durable capacity waits, bounded retry and fresh-headroom recovery, retained provider evidence, and idempotent refunds of positively identified quota-only legacy rounds while preserving current task/check state. Test real CLI failure and recovery across SIGKILL before retirement.
+
+## Advisory review claims preceded completed GS12 proofs
+AREA: scheduler
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: run_reviews started run_prereviews before claiming pending completion reviews, under the same shared cap. A full advisory cohort could leave completed proof unclaimed until a later five-minute pass.
+COST: Completion could wait behind advisory work even when its passing check and evidence were ready; each extra model turn competed for the same slots and account capacity.
+FIX: Claim completion reviews first and offer remaining slots to advisory plans. Test the actual CLI invocation order with one shared slot and three advisory plans.

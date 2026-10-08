@@ -944,6 +944,9 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
                 verdict = "contract_verify_passed", "server verification passed; done granted");
             if r.is_ok() {
                 crate::api::contract_fresh::mark_pending(lane, card); // rule 7
+                // Reuse the coalescing periodic clock. A completed check need
+                // not wait another five minutes before its first review.
+                crate::runtime_jobs::registry::trigger(crate::runtime_jobs::registry::ids::CONTRACT_WATCH);
             }
         }
         Err((sha, why)) => {
@@ -1209,6 +1212,105 @@ const REVIEW_TIMEOUT_S: u64 = 1200;
 pub(crate) const REVIEWS_PER_PASS: usize = 5;
 /// A review still `running` this long after it started died with the server.
 const REVIEW_STALE_S: f64 = 2.0 * 3600.0;
+const REVIEW_CAPACITY_RETRY_S: f64 = 15.0 * 60.0;
+
+fn capacity_failure(why: &str) -> bool {
+    // This receives failed CLI output, never the review prompt or card source.
+    crate::api::lookup::helper_cli_rate_limited("claude", why)
+}
+
+/// Fresh, model-scoped capacity can release a hold immediately after an owner
+/// reset. Missing/stale readings use the durable retry deadline instead.
+fn review_capacity_available(body: &Value, model: &str, reserve: i64) -> Option<bool> {
+    let mut session = None;
+    let mut weekly = None;
+    let mut unknown_exhausted_scope = false;
+    let model = model.to_ascii_lowercase();
+    for (key, target) in [("five_hour", &mut session), ("seven_day", &mut weekly)] {
+        *target = body.get(key).and_then(|v| v.get("utilization")).and_then(Value::as_f64).filter(|p| p.is_finite() && *p >= 0.0);
+    }
+    for family in ["opus", "sonnet", "haiku"] {
+        if model.contains(family) && body.get(format!("seven_day_{family}")).and_then(|v| v.get("utilization")).and_then(Value::as_f64).is_some_and(|p| p >= 100.0) {
+            return Some(false);
+        }
+    }
+    for limit in body.get("limits").and_then(Value::as_array).into_iter().flatten() {
+        let Some(pct) = limit.get("percent").and_then(Value::as_f64).filter(|p| p.is_finite() && *p >= 0.0) else { continue };
+        match limit.get("kind").and_then(Value::as_str).unwrap_or("") {
+            "session" | "worker" => session = Some(session.unwrap_or(0.0).max(pct)),
+            "weekly_all" => weekly = Some(weekly.unwrap_or(0.0).max(pct)),
+            kind if kind.starts_with("weekly") => {
+                let scope = limit.pointer("/scope/model");
+                if scope.is_none_or(Value::is_null) {
+                    weekly = Some(weekly.unwrap_or(0.0).max(pct));
+                } else if pct >= 100.0 {
+                    let label = ["id", "display_name"].iter().filter_map(|k| scope.and_then(|s| s.get(k)).and_then(Value::as_str)).collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+                    if ["opus", "sonnet", "haiku"].iter().any(|f| model.contains(f) && label.contains(f)) || label == model {
+                        return Some(false);
+                    }
+                    unknown_exhausted_scope |= !["opus", "sonnet", "haiku"].iter().any(|f| label.contains(f));
+                }
+            }
+            _ => {}
+        }
+    }
+    if session.is_some_and(|p| p >= (100 - reserve) as f64) || weekly.is_some_and(|p| p >= 100.0) { return Some(false); }
+    if unknown_exhausted_scope { return None; }
+    Some(session?.is_finite() && weekly?.is_finite())
+}
+
+async fn resume_capacity_waits(state: &AppState, body: Option<&Value>, observed_at: f64) -> usize {
+    type Wait = (String, String, String, f64, f64);
+    let waits: Vec<Wait> = state.store.read_async(|conn| {
+        let mut stmt = conn.prepare("SELECT card, 'review', COALESCE(review_capacity_model,''), COALESCE(review_retry_at,0), COALESCE(review_at,0) FROM card_contracts WHERE review_state='capacity_wait' UNION ALL SELECT card, 'prereview', COALESCE(capacity_model,''), COALESCE(retry_at,0), at FROM card_prereviews WHERE state='capacity_wait'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<Vec<Wait>>>()?;
+        Ok(rows)
+    }).await.unwrap_or_else(|error| {
+        tracing::warn!(%error, measured = false, n_considered = 0, verdict = "contract_review_capacity_unmeasured", "capacity holds could not be read; no release claimed");
+        Vec::new()
+    });
+    let now = crate::config::now_f64();
+    let mut resumed = 0;
+    for (card, phase, model, retry_at, held_at) in waits {
+        let capacity = body.and_then(|b| review_capacity_available(b, &model, crate::api::usage::background_reserve_pct()));
+        // A cached healthy reading from before the rejected CLI cannot release
+        // the new hold, even if its general cache TTL has not expired.
+        let capacity = if capacity == Some(true) && observed_at <= held_at { None } else { capacity };
+        if capacity == Some(false) || (capacity.is_none() && now < retry_at) { continue; }
+        let (c, p, m) = (card.clone(), phase.clone(), model.clone());
+        let result = state.store.write_async(move |conn| {
+            // Fence a concurrent owner edit or a new failure with this deadline.
+            let n = if p == "review" {
+                conn.execute("UPDATE card_contracts SET review_state='pending', review_retry_at=NULL, review_capacity_model=NULL WHERE card=?1 AND review_state='capacity_wait' AND review_retry_at=?2 AND review_capacity_model=?3", rusqlite::params![c,retry_at,m])?
+            } else {
+                conn.execute("DELETE FROM card_prereviews WHERE card=?1 AND state='capacity_wait' AND retry_at=?2 AND capacity_model=?3", rusqlite::params![c,retry_at,m])?
+            };
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        }).await;
+        if matches!(result, Ok(ref o) if o.applied) {
+            resumed += 1;
+            tracing::info!(card, phase, model, measured = capacity.is_some(), n_considered = 1, verdict = "contract_review_capacity_resumed", "provider capacity hold released; no quality round was spent");
+        }
+    }
+    resumed
+}
+
+/// Refund only a positively identified quota-only legacy failure. Preserve the
+/// card's current status, frozen check and original failure evidence.
+async fn refund_capacity_rounds(state: &AppState) -> bool {
+    let result = state.store.write_async(|conn| {
+        type Failed = (String, String, f64);
+        let failed: Vec<Failed> = conn.prepare("SELECT c.card,c.review_log,c.review_at FROM card_contracts c JOIN issues i ON i.id=c.card WHERE c.review_state='failed' AND c.review_rounds>0 AND c.review_at IS NOT NULL AND c.review_log IS NOT NULL AND COALESCE(c.review_capacity_refunded_at,-1)<>c.review_at AND i.status IN ('doing','done') AND COALESCE(i.archived,0)=0 AND COALESCE(i.deleted,0)=0")?.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<Vec<Failed>>>()?;
+        let mut n = 0;
+        for (card, log, at) in failed {
+            if log.matches("\n- ").count() != 1 || !log.contains("Independent review produced no trustworthy verdict: reviewer exited ") || !capacity_failure(&log) { continue; }
+            n += conn.execute("UPDATE card_contracts SET review_rounds=review_rounds-1, review_capacity_refunded_at=?2, review_log=review_log || '\nCapacity recovery: the quota-only attempt spent no quality review round; original failed evidence retained.' WHERE card=?1 AND review_state='failed' AND review_at=?2", rusqlite::params![card,at])?;
+            tracing::warn!(card, measured = true, n_considered = 1, verdict = "contract_review_capacity_refunded", "refunded a legacy quota-only review round; task status and frozen check preserved");
+        }
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+    }).await;
+    matches!(result, Ok(ref o) if o.applied)
+}
 
 /// The reviewer's model: the lane's `AMUX_CONTRACT_REVIEW_MODEL`, else a
 /// different family from the lane's own model.
@@ -1525,9 +1627,11 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
     // an unspent pending review burns tokens without improving the proof.
     if matches!(review_job(&tmp), ReviewJob::Finished) {
         if let Err(why) = &result {
-            tracing::warn!(card, round, measured = false, n_considered = 1, verdict = "contract_review_unmeasured",
-                why_unmeasured = %tail(why, 300), "completed review produced no trustworthy verdict; bounded failure recovery");
-            result = Ok((false, vec![format!("Independent review produced no trustworthy verdict: {why}")], format!("{model}/unmeasured")));
+            if !capacity_failure(why) {
+                tracing::warn!(card, round, measured = false, n_considered = 1, verdict = "contract_review_unmeasured",
+                    why_unmeasured = %tail(why, 300), "completed review produced no trustworthy verdict; bounded failure recovery");
+                result = Ok((false, vec![format!("Independent review produced no trustworthy verdict: {why}")], format!("{model}/unmeasured")));
+            }
         }
     }
     tracing::info!(card, sha, round, measured = true, n_considered = 1,
@@ -1583,15 +1687,19 @@ async fn review_one(state: &AppState, card: String) {
         Ok(r) => r,
         Err(why) => {
             // Unmeasured: back to pending for the next pass, no round spent.
+            let capacity = capacity_failure(&why);
+            let rstate = if capacity { "capacity_wait" } else { "pending" };
+            let retry_at = capacity.then_some(now + REVIEW_CAPACITY_RETRY_S);
+            let capacity_model = capacity.then(|| reviewer_model(&crate::config::amux_home(), &lane));
             let (c, w, generation) = (card.clone(), why.clone(), input_hash.clone());
             let _ = state.store.write_async(move |conn| {
                 if !review_generation_current(conn, &c, round, &generation)? { return Ok(crate::db::WriteOutcome { applied: false, events: vec![] }); }
-                conn.execute("UPDATE card_contracts SET review_state = 'pending', review_log = ?2, review_at = ?3 WHERE card = ?1",
-                    rusqlite::params![c, w, now])?;
+                conn.execute("UPDATE card_contracts SET review_state = ?4, review_log = ?2, review_at = ?3, review_retry_at = ?5, review_capacity_model = ?6 WHERE card = ?1",
+                    rusqlite::params![c, w, now, rstate, retry_at, capacity_model])?;
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             }).await;
-            tracing::warn!(card, lane, measured = false, n_considered = 1, verdict = "contract_review_unmeasured",
-                why_unmeasured = %tail(&why, 300), "the reviewer produced no verdict; it reruns next pass");
+            tracing::warn!(card, lane, measured = false, n_considered = 1, verdict = if capacity { "contract_review_capacity_wait" } else { "contract_review_unmeasured" },
+                retry_at, why_unmeasured = %tail(&why, 300), "review held without reopening the task or spending a quality round");
             return;
         }
     };
@@ -1866,24 +1974,28 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
                 + "\nRead card-source.md for the full unabridged description, including requirements outside the excerpt.\n";
             launch_review(&dir, &cli, &args, &prompt)?;
         }
-        let (text, code) = wait_review(&dir).await?;
+        let output = wait_review(&dir).await;
         retain_review_evidence(&home, &card, &format!("pre-{hash}"), &dir)?;
         let _ = git(&tree, &["worktree", "remove", "--force", &dir.to_string_lossy()]).await;
+        let (text, code) = output?;
         parse_prereview(&text).ok_or_else(|| format!("pre-run reviewer ({model}, exit {}) gave no verdict line: {}", code.trim(), tail(&text, 300)))
     };
     let result: Result<(bool, Vec<String>), String> = run.await;
-    if result.is_ok() && dir.exists() {
+    if !matches!(review_job(&dir), ReviewJob::Running(..)) && dir.exists() {
         let _ = std::fs::remove_dir_all(&dir);
     }
     let (st, note) = match &result {
         Ok((true, _)) => ("ready", format!("\nPre-run review ({model}, plan {hash}): the planned run covers the required measurements.")),
         Ok((false, f)) => ("gaps", format!("\nPre-run review ({model}, plan {hash}): before you run, these required measurements are missing from the plan:\n{}",
             f.iter().map(|x| format!("- {x}")).collect::<Vec<_>>().join("\n"))),
+        Err(why) if capacity_failure(why) => ("capacity_wait", String::new()),
         Err(_) => ("unmeasured", String::new()),
     };
+    let capacity_model = (st == "capacity_wait").then_some(model.clone());
     let (c, n, s2, now, generation) = (card.clone(), note.clone(), st.to_string(), crate::config::now_f64(), hash.clone());
     let _ = state.store.write_async(move |conn| {
-        let changed = conn.execute("UPDATE card_prereviews SET state = ?2, at = ?3 WHERE card = ?1 AND hash=?4 AND state='running'", rusqlite::params![c, s2, now, generation])?;
+        let retry_at = (s2 == "capacity_wait").then_some(now + REVIEW_CAPACITY_RETRY_S);
+        let changed = conn.execute("UPDATE card_prereviews SET state = ?2, at = ?3, retry_at=?5, capacity_model=?6 WHERE card = ?1 AND hash=?4 AND state='running'", rusqlite::params![c, s2, now, generation, retry_at, capacity_model])?;
         if changed == 0 { return Ok(crate::db::WriteOutcome { applied: false, events: vec![] }); }
         if !n.is_empty() {
             if let Some(mut r) = crate::db::board_store::get_issue(conn, &c)? {
@@ -1973,6 +2085,7 @@ pub async fn run_prereviews(state: &AppState) -> usize {
             if let Ok(mut l) = LIVE_REVIEW.lock() {
                 l.remove(&key);
             }
+            crate::runtime_jobs::registry::trigger(crate::runtime_jobs::registry::ids::CONTRACT_WATCH);
         });
     }
     started
@@ -1981,6 +2094,17 @@ pub async fn run_prereviews(state: &AppState) -> usize {
 /// One pass: claim up to REVIEWS_PER_PASS pending reviews and run them in the
 /// background. Returns (pending before the pass, claimed).
 pub async fn run_reviews(state: &AppState) -> (usize, usize) {
+    refund_capacity_rounds(state).await;
+    let waiting = state.store.read_async(|conn| Ok(conn.query_row("SELECT (SELECT COUNT(*) FROM card_contracts WHERE review_state='capacity_wait') + (SELECT COUNT(*) FROM card_prereviews WHERE state='capacity_wait')", [], |r| r.get::<_,i64>(0))?)).await.unwrap_or(0);
+    if waiting > 0 {
+        let probe = crate::provider::claude::probe_usage_raw().await;
+        let observed_at = match &probe {
+            crate::provider::claude::UsageProbe::Snapshot { observed_at, failure: None, .. } => *observed_at as f64,
+            crate::provider::claude::UsageProbe::Ok(_) => crate::config::now_f64(),
+            _ => 0.0,
+        };
+        resume_capacity_waits(state, probe.exact_body(), observed_at).await;
+    }
     let now = crate::config::now_f64();
     let live: Vec<String> = LIVE_REVIEW.lock().map(|l| l.iter().cloned().collect()).unwrap_or_default();
     let _ = state.store.write_async(move |conn| {
@@ -1998,7 +2122,6 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
     enqueue_uncontracted(state).await;
-    run_prereviews(state).await;
     // Proof cards first: they decide a project's finish (GS-12, 2026-10-07).
     let pending: Vec<String> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
@@ -2031,10 +2154,19 @@ pub async fn run_reviews(state: &AppState) -> (usize, usize) {
                 if let Ok(mut live) = LIVE_REVIEW.lock() {
                     live.remove(&card);
                 }
+                // Generic infrastructure errors remain pending for the normal
+                // periodic retry. Waking on those would create a tight loop.
+                let terminal = st.store.read_async(move |conn| Ok(conn.query_row("SELECT review_state FROM card_contracts WHERE card=?1", [&card], |r| r.get::<_,Option<String>>(0)).optional()?.flatten().is_some_and(|s| s != "pending" && s != "running"))).await.unwrap_or(false);
+                if terminal {
+                    crate::runtime_jobs::registry::trigger(crate::runtime_jobs::registry::ids::CONTRACT_WATCH);
+                }
             });
         }
     }
     tracing::info!(measured = true, n_considered = n_pending, claimed, "contract review pass");
+    // Advisory plan checks use only the slots left after completion reviews.
+    // Starting them first made completed proof wait behind unrelated plans.
+    run_prereviews(state).await;
     (n_pending, claimed)
 }
 
@@ -2048,7 +2180,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("1", &["contract_doing_refused", "contract_frozen", "contract_frozen_edit_refused", "contract_amended"]),
     ("2", &["contract_advance_refused", "contract_verify_started", "contract_verify_passed", "contract_verify_failed", "contract_force_refused", "contract_cannot_satisfy"]),
     ("2b", &["contract_deploy_passed", "contract_deploy_retry", "contract_deploy_failed", "contract_deploy_stale", "contract_deploy_unmeasured"]),
-    ("3", &["contract_prereview_ready", "contract_prereview_gaps", "contract_prereview_unmeasured", "contract_review_uncontracted_enqueued","contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_verified_refused"]),
+    ("3", &["contract_prereview_ready", "contract_prereview_gaps", "contract_prereview_unmeasured", "contract_review_uncontracted_enqueued","contract_review_superseded", "contract_review_transition_refused", "contract_review_resumed_result", "contract_review_still_running", "contract_review_recovered", "contract_review_started", "contract_review_passed", "contract_review_failed", "contract_review_escalated", "contract_review_unmeasured", "contract_review_capacity_wait", "contract_review_capacity_resumed", "contract_review_capacity_refunded", "contract_review_capacity_unmeasured", "contract_verified_refused"]),
     ("6", &["contract_budget_exhausted"]),
     ("7", &["contract_fresh_session", "contract_fresh_skipped"]),
     ("9", &["rule9_peer_approval_refused", "rule9_peer_delegation_refused"]),
@@ -2138,6 +2270,62 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_capacity_requires_fresh_relevant_windows_and_preserves_reserve() {
+        let open = json!({"limits":[{"kind":"session","percent":24},{"kind":"weekly_all","percent":31}]});
+        assert_eq!(review_capacity_available(&open,"claude-opus-5-5",30),Some(true));
+        for (kind,pct) in [("session",70),("weekly_all",100)] {
+            let body = json!({"limits":[{"kind":kind,"percent":pct}]});
+            assert_eq!(review_capacity_available(&body,"claude-opus-5-5",30),Some(false));
+        }
+        assert_eq!(review_capacity_available(&json!({}),"opus",30),None);
+        assert_eq!(review_capacity_available(&json!({"five_hour":{"utilization":-1},"seven_day":{"utilization":20}}),"opus",30),None);
+        let scoped = json!({"limits":[{"kind":"session","percent":24},{"kind":"weekly_all","percent":31},{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Opus"}}}]});
+        assert_eq!(review_capacity_available(&scoped,"claude-opus-5-5",30),Some(false));
+        assert_eq!(review_capacity_available(&scoped,"claude-sonnet-5-5",30),Some(true));
+        let mut unknown = scoped.clone(); unknown["limits"][2]["scope"]["model"]["display_name"] = json!("Unknown family");
+        assert_eq!(review_capacity_available(&unknown,"opus",30),None);
+        assert!(capacity_failure("reviewer exited 1: You've hit your weekly limit · resets Oct 11 at 10pm (America/New_York)"));
+        assert!(!capacity_failure("reviewer exited 1: test fixture assertion failed"));
+    }
+
+    #[tokio::test]
+    async fn review_capacity_waits_are_durable_bounded_and_refunds_are_idempotent() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("db")).unwrap());
+        let future = crate::config::now_f64() + REVIEW_CAPACITY_RETRY_S;
+        store.write(move |conn| {
+            for id in ["quota","quality","mixed"] {
+                conn.execute("INSERT INTO issues(id,title,type,status,session,created,updated) VALUES(?1,'measured work','ops','doing','lane',1,1)",[id])?;
+                let log = if id == "quota" { "\n- Independent review produced no trustworthy verdict: reviewer exited 1; partial output cannot grant a verdict: You've hit your weekly limit · resets Oct 11 at 10pm (America/New_York)" }
+                    else if id == "mixed" { "\n- criterion missing\n- Independent review produced no trustworthy verdict: reviewer exited 1; You've hit your weekly limit · resets Oct 11 at 10pm (America/New_York)" }
+                    else { "\n- missing measured workload" };
+                conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,sha,review_state,review_rounds,review_log,review_at) VALUES(?1,'criterion','false','hash',1,'frozen','pinned','failed',2,?2,123)",rusqlite::params![id,log])?;
+            }
+            conn.execute("INSERT INTO card_contracts(card,acceptance,command,hash,frozen_at,state,review_state,review_rounds,review_retry_at,review_capacity_model) VALUES('waiting','criterion','true','hash',1,'passed','capacity_wait',0,?1,'opus')",[future])?;
+            conn.execute("INSERT INTO card_prereviews(card,hash,state,at,retry_at,capacity_model) VALUES('plan','generation','capacity_wait',1,?1,'opus')",[future])?;
+            Ok(crate::db::WriteOutcome { applied:true, events:vec![] })
+        }).unwrap();
+        let state = AppState { store:store.clone(),started:std::time::Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        assert!(refund_capacity_rounds(&state).await);
+        assert!(!refund_capacity_rounds(&state).await);
+        for (id, rounds) in [("quota",1),("quality",2),("mixed",2)] {
+            let conn = store.read().unwrap();
+            assert_eq!(conn.query_row("SELECT review_rounds FROM card_contracts WHERE card=?1",[id],|r|r.get::<_,i64>(0)).unwrap(),rounds);
+            assert_eq!(crate::db::board_store::get_issue(&conn,id).unwrap().unwrap().status,"doing");
+            let k = load(&conn,id).unwrap().unwrap(); assert_eq!((k.state.as_str(),k.command.as_str(),k.sha.as_deref()),("frozen","false",Some("pinned")));
+        }
+        assert_eq!(resume_capacity_waits(&state,None,0.0).await,0,"an unknown reading cannot bypass backoff");
+        assert_eq!(resume_capacity_waits(&state,Some(&json!({"limits":[{"kind":"session","percent":24},{"kind":"weekly_all","percent":31}]})),0.0).await,0,"cached headroom from before the failure cannot release either phase");
+        assert_eq!(resume_capacity_waits(&state,Some(&json!({"limits":[{"kind":"weekly_all","percent":100}]})),crate::config::now_f64()).await,0);
+        assert_eq!(resume_capacity_waits(&state,Some(&json!({"limits":[{"kind":"session","percent":24},{"kind":"weekly_all","percent":31}]})),crate::config::now_f64()).await,2,"a positive reset releases both phases immediately");
+        assert_eq!(resume_capacity_waits(&state,None,0.0).await,0,"recovery is idempotent");
+        let conn = store.read().unwrap();
+        assert_eq!(conn.query_row("SELECT review_rounds FROM card_contracts WHERE card='waiting'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert!(conn.query_row("SELECT review_log FROM card_contracts WHERE card='quota'",[],|r|r.get::<_,String>(0)).unwrap().contains("You've hit your weekly limit"));
+    }
 
     #[tokio::test]
     async fn stale_check_recovery_retains_failure_command_criteria_and_commit() {
