@@ -20,7 +20,7 @@ function fixture() {
     _peekIdentityDiscard(){}, _peekHasSelection:()=>false, _peekPollBeacon:(action,name,extra)=>beacons.push({action,name,...extra}),
     _peekChatTarget:()=>null, _peekChatPaintSkips:0, _workerRenderer:()=>'terminal',   // terminal workers, Chat tab closed
     _PEEK_CACHE_KEY:name=>'peek_'+name, _peekVisibleCols:()=>120,   // helpers defined outside the extracted slice
-    _peekThin:false, _peekGeoHold:0, _peekLastFullMs:0, _peekLastFullAttemptMs:0, _peekEtag:null, _peekLiveEtag:null,
+    _peekThin:false, _peekModePainted:null, _peekGeoHold:0, _peekLastFullMs:0, _peekLastFullAttemptMs:0, _peekEtag:null, _peekLiveEtag:null,
     _peekHistoryRaw:'', _peekHistoryHTML:'', _lastPeekRaw:'', _lastLiveHTML:'', lastPeekHTML:'',
     _peekEarlier:{}, _peekEarlierHTML:()=>'', _trimPeekLiveOverlap:(_history,live)=>live,
     _peekLiveHtml:value=>value, _peekHtml:value=>value, hidePeekLoading(){}, _stopPeekPoll(){},

@@ -173,8 +173,8 @@ try{
   console.log('VERDICT '+phase+' '+results.at(-1).verdict+' '+JSON.stringify(checks));
   const cleanup=await route(name,'stop');
   const desktops=await api(base,'/api/computer/status'),nativeFleet=await api(base,'/api/browser/status');
-  const cleanupChecks={receipt_removed:!existsSync(receiptFile(name)),owned_desktop_removed:!(desktops.sandboxes||[]).some(b=>b.lane===name),owned_native_removed:!(nativeFleet.browsers||[]).some(b=>b.started_by===name)};
-  writeFileSync(join(out,name+'-cleanup.json'),JSON.stringify({cleanup,checks:cleanupChecks},null,2));
+  const cleanupChecks={receipt_removed:!existsSync(receiptFile(name)),owned_desktop_removed:!(desktops.sandboxes||[]).some(b=>b.lane===name),native_status_measured:typeof nativeFleet.running==='boolean'&&(nativeFleet.running===false||Array.isArray(nativeFleet.browsers)),owned_native_removed:nativeFleet.running===false||Array.isArray(nativeFleet.browsers)&&!nativeFleet.browsers.some(b=>b.started_by===name)};
+  writeFileSync(join(out,name+'-cleanup.json'),JSON.stringify({cleanup,native_status:nativeFleet,checks:cleanupChecks},null,2));
   assert(Object.values(cleanupChecks).every(Boolean),'owned browser cleanup failed');
   await api(base,`/api/sessions/${name}/stop`,'POST',{}).catch(()=>{});
   assert.equal(results.at(-1).verdict,'PASS','real worker phase '+phase+' failed; evidence retained');
