@@ -209,3 +209,9 @@ the preference. AMUX_NATIVE_ARCH=0 opts out and Intel-only executables retain th
 fallback. `e2e/chaos/native-launch.mjs` measures actual provider child architecture
 through private API/CLI starts and the opt-out. Linux reports this hardware probe
 unmeasured rather than claiming to have tested Rosetta.
+
+The architecture fixture uses system universal Python as its provider stand-in,
+so it inherits the launch preference like the native-capable real provider. The
+host's other Python launcher can force an Intel interpreter; that is a legitimate
+fallback rather than evidence that the preference wrapper failed. No actual
+Claude/model call is made by this fixture.
