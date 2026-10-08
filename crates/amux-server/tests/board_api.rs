@@ -8979,3 +8979,20 @@ async fn create_preserves_acceptance_contract_and_rejects_malformed_criteria_ato
     }
     assert_eq!(count(), before);
 }
+
+/// gs12-model, GM-54, 2026-10-08: a PATCH whose only key is not writable
+/// answers 422 with a top-level reason, and a contract field on a non-code
+/// card says why it does not apply.
+#[tokio::test]
+async fn an_all_ignored_patch_says_why_at_the_top_level() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({ "title": "look into it", "session": "lane-a", "type": "investigation" })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let (st, _, v) = send_with(&app, "PATCH", &format!("/api/board/{id}"),
+        Some(json!({ "verify_cmd": "pytest -q" })), &[("X-Amux-Session", "lane-a")]).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let err = v["error"].as_str().unwrap_or("");
+    assert!(err.contains("verify_cmd") && err.contains("nothing was written"), "{v}");
+    let hint = v["ignored_hints"].as_array().and_then(|a| a.iter().find(|h| h["sent"] == "verify_cmd")).cloned().unwrap_or_default();
+    assert!(hint["why"].as_str().unwrap_or("").contains("\"investigation\""), "{v}");
+}

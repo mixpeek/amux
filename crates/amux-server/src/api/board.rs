@@ -14808,9 +14808,17 @@ pub async fn patch_item(
                 // the card re-drained forever. Here the write is a complete
                 // no-op. Same root — the CLI flag and the API field have
                 // different names, and only one path stamps both.
+                let card_type = body.get("type").and_then(Value::as_str).unwrap_or("").to_string();
                 let hints: Vec<Value> = ignored
                     .iter()
                     .filter_map(|k| match k.as_str() {
+                        // gs12-model, GM-54, 2026-10-08: a verify_cmd PATCH on an
+                        // investigation card answered 422 with no visible reason.
+                        "verify_cmd" | "verify_kind" | "deploy_check" => Some(json!({
+                            "sent": k,
+                            "why": format!("{k} belongs to a frozen contract, which only code cards on a contract lane have; this card's type is {card_type:?}"),
+                            "how": "set the card's type to code first (PATCH {\"type\":\"code\"}) if it really ships code, or leave the field out",
+                        })),
                         "trigger" => Some(json!({
                             "sent": "trigger",
                             "meant": ["source_ref", "last_verified_at"],
@@ -14840,6 +14848,16 @@ pub async fn patch_item(
             // the other direction — plus it would break every caller that PATCHes
             // idempotently. Only "no key you sent can be written" is the caller's
             // mistake, and only that answers 422.
+            if all_ignored {
+                // A top-level reason, so the 422 explains itself without the
+                // caller digging the card body or the interaction record.
+                let names: Vec<String> = ignored.iter().map(|k| k.to_string()).collect();
+                body["error"] = json!(format!(
+                    "nothing was written: {} {} not writable on this card (see ignored_hints)",
+                    names.join(", "),
+                    if names.len() == 1 { "is" } else { "are" }
+                ));
+            }
             let code = if all_ignored {
                 StatusCode::UNPROCESSABLE_ENTITY
             } else {
