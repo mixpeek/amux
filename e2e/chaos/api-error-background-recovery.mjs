@@ -51,10 +51,16 @@ try{
  // Explicit private fixture clock transition while the controller is killed:
  // metadata cannot race a consumer write, and recovery must rediscover the hold.
  await amux.down();
+ // Enable only the A5/card-budget gate under test, after the private terminal
+ // has launched. This fixture does not materialize a project worktree.
+ fs.appendFileSync(path.join(amux.home,'sessions','quota-parent.env'),'\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_RULES_OFF=1,2,3,4,5,7,8,9,10\n');
  const quota=lanes.find(l=>l.name==='quota-parent');
  const qp=path.join(amux.userHome,'.claude','projects',quota.realDir.replace(/[^a-zA-Z0-9]/g,'-'),'11111111-1111-4111-8111-000000000004.jsonl');
  const record=JSON.parse(fs.readFileSync(qp,'utf8'));record.quotaLimits.resetsAt=Math.floor(Date.now()/1000)-120;fs.writeFileSync(qp,JSON.stringify(record)+'\n');
- const advancedMeta=JSON.parse(fs.readFileSync(quotaMetaPath,'utf8'));advancedMeta.rate_limited_until=record.quotaLimits.resetsAt;fs.writeFileSync(quotaMetaPath,JSON.stringify(advancedMeta));
+ const passedDate=new Date(record.quotaLimits.resetsAt*1000);const passedHour=passedDate.getHours();
+ fs.writeFileSync(path.join(quota.dir,'.native-quota-footer'),`You've hit your session limit · resets ${passedHour%12||12}:${String(passedDate.getMinutes()).padStart(2,'0')}${passedHour>=12?'pm':'am'} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`);
+ const advancedMeta=JSON.parse(fs.readFileSync(quotaMetaPath,'utf8'));advancedMeta.rate_limited_until=record.quotaLimits.resetsAt;advancedMeta.rate_limited_by='transcript';fs.writeFileSync(quotaMetaPath,JSON.stringify(advancedMeta));
+ check('passed reset retains a transcript-classified A5 capacity hold',advancedMeta.rate_limited_by==='transcript'&&fs.readFileSync(path.join(amux.home,'sessions','quota-parent.env'),'utf8').includes('AMUX_CONTRACT_DONE=1'));
  await amux.up();
  check('quota clock advancement is rediscovered after SIGKILL',(await amux.req('GET','/health')).body.pid!==before.pid);
  await waitFor('passed quota reset resumes stopped parent with surviving child',()=>received('quota-parent').length===1,30000);

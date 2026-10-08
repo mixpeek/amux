@@ -5202,3 +5202,36 @@ CARD: AF-968
 SYMPTOM: The full final-head Linux gate failed chat_delegate recovery with four total answers versus an expected three. The fixture used a two-second sleep to assume earlier delegates had delivered, although delivery has its own three-second grace and jobs can finish concurrently.
 COST: An unrelated answer crossing the snapshot can invalidate the crash-recovery gate without identifying a duplicate of the recovered job.
 FIX: Assert the durable delegate turn identity, wait for that identity and recover again to require exactly one retained answer. Keep the failed CI log and the original once-only transport assertions; do not change runtime delivery or relax the duplicate count.
+
+## A known expired transcript quota still blocked its own recovery gate
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: After the real 04:50 Eastern reset, gs12-extra-1's usage-reset producer repeatedly reached auto_resume_staging then was refused by A5: provider_limited tested only rate_limited_since and the source, ignoring the positively known expired rate_limited_until. Its claim was repeatedly released without a provider continuation while seventeen other lanes progressed.
+COST: A stale transcript stamp creates a circular wait: recovery cannot pass the gate until recovery clears that same stamp.
+FIX: A5 releases a known clock only after reset plus the existing sixty-second grace; unknown and future capacity remain held, and pane/card gates remain enforced. Log contract_dispatch_capacity_expired. Exercise transcript-classified capacity with the A5 gate explicitly enabled through real SIGKILL/terminal consumers, rather than only the auto-resume-source exemption.
+
+## The bottleneck detector crashed under the scheduler's non-login PATH
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: SCHED-550 exited one at 04:42 Eastern with FileNotFoundError lsof: the installed utility is in /usr/sbin, outside the shell PATH. The old host_measure reproduces this failure under that exact restricted PATH; its optional lane attribution aborted the entire constraint report.
+COST: The hourly observer fails instead of identifying stalled proof, deploy and host constraints.
+FIX: Preserve caller lookup precedence and resolve standard system utilities explicitly; bound each probe, retain raw measurements when attribution is unavailable, and log host_probe_partial with unknown fields rather than false zero or host_ok. Repair the live schedule PATH and replay with its no-send flag. Keep utility failure/timeout tests in CI.
+
+## The handoff fixture requested a sweep cadence production rejects
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The real deployed binary's handoff replay timed out before staging. The fixture requested AMUX_RATE_LIMIT_SWEEP_S=2, below the production ten-second floor, so it actually ran at sixty seconds; a fast boot could run its first sweep before resume was enabled, outside the fixture's twenty-second boundary wait.
+COST: A deployed-image replay failed before reaching its intended crash boundary; debug/CI boot timing had masked the unsupported fixture setting.
+FIX: Use the valid ten-second interval without relaxing production cadence or assertions. The same deployed image then passes all nine handoff checks; retain the failed pre-boundary replay separately.

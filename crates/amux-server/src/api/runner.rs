@@ -108,8 +108,19 @@ fn pane_alive(lane: &str) -> bool {
 
 fn provider_limited(lane: &str) -> bool {
     let meta = crate::api::session_verbs::load_meta(lane);
-    crate::api::session_verbs::meta_i64(&meta, "rate_limited_since") > 0
-        && meta.get("rate_limited_by").and_then(|v| v.as_str()) != Some("auto-resume")
+    let since = crate::api::session_verbs::meta_i64(&meta, "rate_limited_since");
+    let until = crate::api::session_verbs::meta_i64(&meta, "rate_limited_until");
+    let by = meta.get("rate_limited_by").and_then(|v| v.as_str()).unwrap_or("");
+    let held = provider_limit_active(since, until, by, crate::config::now_f64() as i64);
+    if since > 0 && by != "auto-resume" && !held {
+        tracing::info!(session = lane, reset_at = until, measured = true, n_considered = 1,
+            verdict = "contract_dispatch_capacity_expired", "the known provider reset and grace passed; ordinary pane and card gates still apply");
+    }
+    held
+}
+
+fn provider_limit_active(since: i64, until: i64, by: &str, now: i64) -> bool {
+    since > 0 && by != "auto-resume" && (until <= 0 || now < until.saturating_add(60))
 }
 
 /// Who decides a split: the lane's `AMUX_ORCHESTRATOR`, else the owner.
@@ -1501,6 +1512,36 @@ mod tests {
         assert!(ordinary.is_err_and(|why| why.contains("usage limit")), "an ordinary nudge retains the provider gate");
         let replaced = gate_after_account_change(&store, lane, "auto-resume:account:fixture", "continue").await;
         assert!(replaced.is_err_and(|why| why.contains("pane is gone")), "replacement releases old capacity only; it cannot bypass pane admission");
+    }
+
+    #[test]
+    fn known_provider_reset_releases_only_after_grace_unknown_and_future_stay_held() {
+        assert!(provider_limit_active(1, 1200, "transcript", 1000));
+        assert!(provider_limit_active(1, 1000, "transcript", 1059));
+        assert!(!provider_limit_active(1, 1000, "transcript", 1060));
+        assert!(!provider_limit_active(1, 1000, "weekly-banner", 2000));
+        assert!(provider_limit_active(1, 0, "transcript", 2000));
+        assert!(provider_limit_active(1, -1, "transcript", 2000));
+        assert!(provider_limit_active(1, i64::MAX, "weekly-banner", 2000));
+        assert!(!provider_limit_active(0, 1200, "transcript", 1000));
+        assert!(!provider_limit_active(1, 1200, "auto-resume", 1000));
+    }
+
+    #[tokio::test]
+    async fn expired_capacity_does_not_bypass_the_actual_pane_gate() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("expired.db")).unwrap());
+        let lane = "runner-expired-no-live-pane";
+        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        crate::api::session_verbs::update_meta(lane, &[
+            ("rate_limited_since", serde_json::json!(1)),
+            ("rate_limited_until", serde_json::json!((crate::config::now_f64() as i64)-120)),
+            ("rate_limited_by", serde_json::json!("transcript")),
+        ]);
+        let expired = gate(&store, lane, "auto-resume:reset:fixture", "continue").await;
+        assert!(expired.is_err_and(|why| why.contains("pane is gone")), "expired capacity releases only the old provider hold");
     }
 
     /// Through the shipped chokepoint: a contract lane with no live pane is

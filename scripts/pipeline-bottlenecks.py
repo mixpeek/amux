@@ -69,7 +69,7 @@ cards with no review state for over 6 h: no reviewer will ever pick them up)
 and proof_blocked_by_web (open proof cards inside a depends_on web on the hub
 larger than the A2 group cap, which no idle lane can take whole).
 """
-import argparse, glob, json, os, re, sqlite3, ssl, statistics, subprocess, sys, time, urllib.request
+import argparse, glob, json, os, re, shutil, sqlite3, ssl, statistics, subprocess, sys, time, urllib.request
 
 HOME = os.path.expanduser("~")
 LOCKS = os.path.join(HOME, ".amux", "locks")
@@ -116,12 +116,33 @@ def lane_of(cwd, conv):
     return cwd.replace(HOME, "~")[:60]
 
 
+def host_tool(name):
+    # Scheduled shells need not inherit login PATH (macOS utilities live in
+    # /usr/sbin). Preserve caller precedence, then search standard system dirs.
+    return shutil.which(name, path=os.pathsep.join([os.environ.get("PATH", ""), os.defpath, "/usr/sbin", "/sbin"]))
+
+
 def host_measure():
+    probe_errors = []
+    def probe(name, args, timeout):
+        try:
+            tool = host_tool(name)
+            if not tool:
+                raise FileNotFoundError(name)
+            result = subprocess.run([tool, *args], capture_output=True, text=True, timeout=timeout)
+            if result.returncode:
+                raise OSError(f"{name} exited {result.returncode}")
+            return result.stdout
+        except (OSError, subprocess.TimeoutExpired) as error:
+            item = {"tool": name, "reason": str(error)}
+            if item not in probe_errors:
+                probe_errors.append(item)
+            return ""
     ncpu = os.cpu_count() or 1
     load1 = os.getloadavg()[0]
     swap_pct = None
     try:
-        sw = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5).stdout
+        sw = probe("sysctl", ["-n", "vm.swapusage"], 5)
         tot = float(re.search(r"total = ([\d.]+)M", sw).group(1)); used = float(re.search(r"used = ([\d.]+)M", sw).group(1))
         swap_pct = round(100 * used / tot, 1) if tot else 0.0
     except Exception:
@@ -134,7 +155,7 @@ def host_measure():
         pass
     procs = []
     try:
-        out = subprocess.run(["ps", "-Ao", "pid=,%cpu=,rss=,comm="], capture_output=True, text=True, timeout=10).stdout
+        out = probe("ps", ["-Ao", "pid=,%cpu=,rss=,comm="], 10)
         for line in out.splitlines():
             parts = line.split(None, 3)
             if len(parts) == 4:
@@ -149,12 +170,12 @@ def host_measure():
     # while the orchestrator believed it ran one.
     def start(pid):
         try:
-            out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
+            out = probe("ps", ["-o", "lstart=", "-p", str(pid)], 5).strip()
             return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
         except Exception:
             return None
     managers = []
-    for line in subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True).stdout.splitlines():
+    for line in probe("ps", ["-Ao", "pid=,command="], 10).splitlines():
         pid, _, cmd = line.strip().partition(" ")
         m = re.search(r"_lima/([^/\s]+)/", cmd) if "hostagent" in cmd else None
         name = m.group(1) if m else ("docker-desktop" if "com.docker.virtualization" in cmd else None)
@@ -169,15 +190,17 @@ def host_measure():
     def attribute(rows):
         res = []
         for pid, cpu, mb, comm in rows:
-            cwd = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], capture_output=True, text=True).stdout
+            cwd = probe("lsof", ["-a", "-p", str(pid), "-d", "cwd", "-Fn"], 5)
             cwd = next((l[1:] for l in cwd.splitlines() if l.startswith("n")), "")
             lane = vm_owner(pid) if "Virtualization.VirtualMachine" in comm else (lane_of(cwd, conv) if cwd else "?")
             res.append({"pid": pid, "cpu": cpu, "mb": mb, "comm": comm, "lane": lane})
         return res
     top_cpu = attribute(sorted(procs, key=lambda r: -r[1])[:6])
     top_mem = attribute(sorted(procs, key=lambda r: -r[2])[:6])
+    if probe_errors:
+        print(json.dumps({"verdict": "host_probe_partial", "measured": False, "n_considered": len(probe_errors), "errors": probe_errors}), file=sys.stderr)
     return {"ncpu": ncpu, "load1": round(load1, 1), "load_per_core": round(load1 / ncpu, 2),
-            "swap_pct": swap_pct, "disk_pct": disk_pct, "top_cpu": top_cpu, "top_mem": top_mem}
+            "swap_pct": swap_pct, "disk_pct": disk_pct, "top_cpu": top_cpu, "top_mem": top_mem, "probe_errors": probe_errors}
 
 
 # THROUGHPUT (2026-10-05, Ethan: "figure out why these optimizations weren't
@@ -958,8 +981,8 @@ def main():
     if h["load_per_core"] >= a.load_per_core: hwhy.append(f"load {h['load1']} on {h['ncpu']} cores ({h['load_per_core']}/core >= {a.load_per_core})")
     if h["swap_pct"] is not None and h["swap_pct"] >= a.swap_pct: hwhy.append(f"swap {h['swap_pct']}% >= {a.swap_pct}")
     if h["disk_pct"] is not None and h["disk_pct"] >= a.disk_pct: hwhy.append(f"disk {h['disk_pct']}% >= {a.disk_pct}")
-    hrec = {"ts": int(now), "verdict": "host_bottleneck" if hwhy else "host_ok", "why": hwhy,
-            **h, "measured": True, "n_considered": len(h["top_cpu"]) + len(h["top_mem"])}
+    hrec = {"ts": int(now), "verdict": "host_bottleneck" if hwhy else ("host_probe_partial" if h["probe_errors"] else "host_ok"), "why": hwhy,
+            **h, "measured": not bool(h["probe_errors"]), "n_considered": len(h["top_cpu"]) + len(h["top_mem"])}
     with open(OUT, "a") as f:
         f.write(json.dumps(hrec) + "\n")
     print(json.dumps({k: hrec[k] for k in ("verdict", "why", "load1", "swap_pct", "disk_pct")}))
