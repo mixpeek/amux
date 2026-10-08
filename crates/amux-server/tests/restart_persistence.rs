@@ -302,6 +302,11 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
         .and_then(|mut f| { use std::io::Write; f.write_all(b"CC_TAGS=restart-fixture\n") }).unwrap();
     let (c, suite) = rig.post("/api/workers", json!({"name":"rr0150-suite"})).await;
     assert!((200..300).contains(&c), "registered suite identity: {suite}");
+    // This identity writes API fixtures, not executable worker work. Keep it
+    // paused so restart cannot claim the suite's board row and add a real lease
+    // to the two seeded lease controls.
+    let (c, paused) = rig.post("/api/workers/rr0150-suite/pause", json!({})).await;
+    assert!((200..300).contains(&c), "paused suite identity: {paused}");
 
     // ---------------- phase A: write one row per subsystem ----------------
     let (c, board) = rig
