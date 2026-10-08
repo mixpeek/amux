@@ -880,8 +880,9 @@ async fn verify(state: &AppState, card: &str, lane: &str, timeout: Duration) -> 
     let tree: PathBuf = lane_tree(lane)
         .ok_or((None, format!("lane {lane} has no git checkout to measure")))?;
     let sha = git(&tree, &["rev-parse", "HEAD"]).await.map_err(|e| (None, format!("could not read HEAD of {}: {e}", tree.display())))?;
-    // Every failure names what was measured, so a wrong checkout is visible.
-    let at = format!("(measured {} at {})", tree.display(), &sha[..12.min(sha.len())]);
+    // Every failure names what was measured and why, so a wrong checkout is visible.
+    let why = pick_tree(crate::api::session_verbs::worker_worktree(lane), live_checkout(lane), head_time).1;
+    let at = format!("(measured {} at {}: {why})", tree.display(), &sha[..12.min(sha.len())]);
     let tmp = crate::config::amux_home().join("tmp").join("contract").join(format!("{card}-{}", &sha[..12.min(sha.len())]));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
     fresh_checkout(&tree, &tmp, &sha).await.map_err(|e| (Some(sha.clone()), format!("{e}\n{at}")))?;
@@ -994,24 +995,39 @@ pub(crate) fn lane_tree(lane: &str) -> Option<PathBuf> {
     let configured = crate::api::session_verbs::worker_worktree(lane)
         .or_else(|| Some(PathBuf::from(crate::api::session_verbs::session_work_dir(lane))).filter(|p| p.join(".git").exists()));
     let live = live_checkout(lane);
-    let picked = pick_tree(configured.clone(), live);
-    if picked != configured {
-        tracing::info!(lane, configured = ?configured, live = ?picked, measured = true, n_considered = 1,
-            verdict = "contract_tree_live_nested", "the lane works in a checkout nested in its configured one; that is the one measured");
+    let (picked, why) = pick_tree(configured.clone(), live.clone(), head_time);
+    if live.is_some() && live != configured {
+        tracing::info!(lane, configured = ?configured, live = ?live, picked = ?picked, why, measured = true, n_considered = 2,
+            verdict = "contract_tree_chosen", "the lane's pane is in a different checkout than its configured one; chose by newest HEAD");
     }
     picked
 }
 
-/// THE CHECKOUT THE LANE IS WORKING IN (gs12-retrievers, GR-64, 2026-10-07):
-/// its session ran in a worktree nested inside its configured one, and the
-/// verifier read the OUTER checkout's stale HEAD, so tests already on main
-/// were "not found" (exit 4). The live pane's checkout wins when it is the
-/// configured one or nested inside it; anything else keeps the configured.
-pub(crate) fn pick_tree(configured: Option<PathBuf>, live: Option<PathBuf>) -> Option<PathBuf> {
+/// HEAD's committer time in `dir`, as unix seconds.
+fn head_time(dir: &Path) -> Option<i64> {
+    let out = std::process::Command::new("git").args(["-C"]).arg(dir).args(["log", "-1", "--format=%ct"]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// THE CHECKOUT THE LANE COMMITS FROM. Two lanes, opposite shapes, one day
+/// (2026-10-07/08): gs12-retrievers works in a worktree nested in its
+/// configured one, and measuring the configured, stale checkout made landed
+/// tests "not found" (GR-64); gs12-data's pane sits in a nested side worktree
+/// it never commits from (old HEAD, 53,683 staged deletions) while its
+/// configured checkout is at origin/main (GD-57). The pane's location alone
+/// is not the answer: between the configured checkout and a nested one, the
+/// newer HEAD commit is where the lane's work is. A tie, an unreadable HEAD
+/// or an unrelated pane keeps the configured checkout. Returns the reason.
+pub(crate) fn pick_tree(configured: Option<PathBuf>, live: Option<PathBuf>, head_time: impl Fn(&Path) -> Option<i64>) -> (Option<PathBuf>, &'static str) {
     match (configured, live) {
-        (Some(c), Some(l)) if l.starts_with(&c) => Some(l),
-        (None, Some(l)) => Some(l),
-        (c, _) => c,
+        (Some(c), Some(l)) if l != c && l.starts_with(&c) => match (head_time(&c), head_time(&l)) {
+            (Some(tc), Some(tl)) if tl > tc => (Some(l), "the nested checkout's HEAD is newer"),
+            (Some(_), Some(_)) => (Some(c), "the configured checkout's HEAD is as new or newer"),
+            _ => (Some(c), "a HEAD could not be read; kept the configured checkout"),
+        },
+        (Some(c), Some(_)) => (Some(c), "the pane is in the configured checkout or an unrelated one"),
+        (None, Some(l)) => (Some(l), "no configured checkout; the pane's checkout"),
+        (c, None) => (c, "no live pane checkout"),
     }
 }
 
@@ -2315,17 +2331,20 @@ mod tests {
 
     /// GE3-15 (gs12-extra-3, 2026-10-07): the reviewer offers cannot_satisfy
     /// for an ops-typed proof card too, so the exit works for every type.
-    /// GR-64: the lane's live checkout, nested in its configured worktree,
-    /// is the one measured; a live checkout elsewhere does not replace it.
+    /// GR-64 and GD-57: between the configured checkout and a nested one,
+    /// the newer HEAD is measured, whichever of the two the pane is in.
     #[test]
-    fn the_verifier_measures_the_checkout_the_lane_works_in() {
-        let outer = PathBuf::from("/m/.worktrees/gs12-retrievers");
-        let nested = PathBuf::from("/m/.worktrees/gs12-retrievers/.worktrees/gs12-retrievers");
-        assert_eq!(pick_tree(Some(outer.clone()), Some(nested.clone())), Some(nested), "nested wins");
-        assert_eq!(pick_tree(Some(outer.clone()), Some(outer.clone())), Some(outer.clone()));
-        assert_eq!(pick_tree(Some(outer.clone()), Some(PathBuf::from("/elsewhere/repo"))), Some(outer.clone()), "unrelated cwd does not");
-        assert_eq!(pick_tree(Some(outer.clone()), None), Some(outer));
-        assert_eq!(pick_tree(None, Some(PathBuf::from("/r"))), Some(PathBuf::from("/r")));
+    fn the_verifier_measures_the_checkout_with_the_newer_head() {
+        let outer = PathBuf::from("/m/.worktrees/lane");
+        let nested = PathBuf::from("/m/.worktrees/lane/.worktrees/lane");
+        fn times(nested: &Path, newer_nested: bool) -> impl Fn(&Path) -> Option<i64> + '_ {
+            move |p: &Path| Some(if (p == nested) == newer_nested { 200 } else { 100 })
+        }
+        assert_eq!(pick_tree(Some(outer.clone()), Some(nested.clone()), times(&nested, true)).0, Some(nested.clone()), "GR-64: the nested HEAD is newer");
+        assert_eq!(pick_tree(Some(outer.clone()), Some(nested.clone()), times(&nested, false)).0, Some(outer.clone()), "GD-57: the configured HEAD is newer");
+        assert_eq!(pick_tree(Some(outer.clone()), Some(PathBuf::from("/elsewhere/repo")), |_| Some(999)).0, Some(outer.clone()), "an unrelated pane never wins");
+        assert_eq!(pick_tree(Some(outer.clone()), Some(nested.clone()), |_| None).0, Some(outer.clone()), "unreadable HEAD keeps the configured");
+        assert_eq!(pick_tree(Some(outer.clone()), None, |_| None).0, Some(outer));
     }
 
     #[test]
