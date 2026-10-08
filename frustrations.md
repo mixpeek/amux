@@ -5235,3 +5235,14 @@ CARD: AF-968
 SYMPTOM: The real deployed binary's handoff replay timed out before staging. The fixture requested AMUX_RATE_LIMIT_SWEEP_S=2, below the production ten-second floor, so it actually ran at sixty seconds; a fast boot could run its first sweep before resume was enabled, outside the fixture's twenty-second boundary wait.
 COST: A deployed-image replay failed before reaching its intended crash boundary; debug/CI boot timing had masked the unsupported fixture setting.
 FIX: Use the valid ten-second interval without relaxing production cadence or assertions. The same deployed image then passes all nine handoff checks; retain the failed pre-boundary replay separately.
+
+## A group Reset browser fixture let ambient inventory replace its fake fleet
+AREA: verification
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: Final-head CI 37757387357 failed the iOS group Reset assertion: the first control was empty. The retained WebKit trace shows normal /api/sessions responses with [] replacing the two workers inserted only into browser memory. The adjacent needs-input fixture already isolates its inventory source, but this group case did not.
+COST: The whole browser verdict went red on ambient test-server state; merely retrying would preserve the race.
+FIX: Serve the same fake fleet on normal inventory reads, exclude ambient SSE replacements, and force a real refresh before both Reset assertions. Keep the original first-control, text and exactly-one assertions, the route-use guard, failed CI trace, and local forced-refresh negative replay. No dashboard behavior, assertion, retry count or timeout changes.
