@@ -8995,4 +8995,11 @@ async fn an_all_ignored_patch_says_why_at_the_top_level() {
     assert!(err.contains("verify_cmd") && err.contains("nothing was written"), "{v}");
     let hint = v["ignored_hints"].as_array().and_then(|a| a.iter().find(|h| h["sent"] == "verify_cmd")).cloned().unwrap_or_default();
     assert!(hint["why"].as_str().unwrap_or("").contains("\"investigation\""), "{v}");
+    // A code card on a lane with no contract names the lane, not the type.
+    let code = create(&app, json!({ "title": "ship it", "session": "lane-a", "type": "code" })).await;
+    let cid = code["id"].as_str().unwrap().to_string();
+    let (_, _, v) = send_with(&app, "PATCH", &format!("/api/board/{cid}"),
+        Some(json!({ "verify_cmd": "pytest -q" })), &[("X-Amux-Session", "lane-a")]).await;
+    let why = v["ignored_hints"][0]["why"].as_str().unwrap_or("").to_string();
+    assert!(why.contains("not a contract lane"), "{v}");
 }

@@ -14816,8 +14816,16 @@ pub async fn patch_item(
                         // investigation card answered 422 with no visible reason.
                         "verify_cmd" | "verify_kind" | "deploy_check" => Some(json!({
                             "sent": k,
-                            "why": format!("{k} belongs to a frozen contract, which only code cards on a contract lane have; this card's type is {card_type:?}"),
-                            "how": "set the card's type to code first (PATCH {\"type\":\"code\"}) if it really ships code, or leave the field out",
+                            "why": if card_type == "code" {
+                                format!("{k} belongs to a frozen contract, and this card's lane is not a contract lane (AMUX_CONTRACT_DONE is off for it)")
+                            } else {
+                                format!("{k} belongs to a frozen contract, which only code cards on a contract lane have; this card's type is {card_type:?}")
+                            },
+                            "how": if card_type == "code" {
+                                "leave the field out: without a contract there is nothing to verify against"
+                            } else {
+                                "set the card's type to code first (PATCH {\"type\":\"code\"}) if it really ships code, or leave the field out"
+                            },
                         })),
                         "trigger" => Some(json!({
                             "sent": "trigger",
