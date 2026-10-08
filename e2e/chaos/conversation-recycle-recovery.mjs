@@ -35,14 +35,25 @@ try{
  check('recovered launches do not resume old conversations',['recycle-live','recycle-dual'].every(n=>!launches(n)[1].argv.some(x=>x==='--resume'||x==='--continue')),lanes.slice(0,2).map(x=>launches(x.name)[1].argv));
  check('completed recycle clears its durable marker',['recycle-live','recycle-dual'].every(n=>!meta(n).recycle_in_progress_since));
  check('capped and expired controls never restart',['recycle-capped','recycle-expired'].every(n=>launches(n).length===1));
+ const heldTexts={'recycle-capped':'intent-after-cap-for-replacement','recycle-expired':'intent-after-expiry-for-replacement'};
+ for(const [name,text] of Object.entries(heldTexts)){
+  const r=await amux.req('POST','/api/sessions/'+name+'/send',{text,msg_id:name+'-held-intent-proof',record_history:true});
+  check('bounded recycle holds input and reports owner retry '+name,r.status<300&&r.body.submitted!==true&&String(r.body.message).includes('owner retry'),r.body);
+ }
+ await new Promise(r=>setTimeout(r,2000));
+ check('bounded controls never deliver into retiring conversations',Object.values(heldTexts).every(text=>delivered(text).length===0));
  check('workspace survives interrupted recycle',lanes.every(x=>fs.readFileSync(path.join(x.dir,'work-preserved.txt'),'utf8')==='unfinished work\n'));
  check('boot recovery emits its durable boundary',fs.readFileSync(amux.serverLog,'utf8').includes('interrupted_recycle_resumed'));
  await amux.down();await amux.up();await new Promise(r=>setTimeout(r,20000));
  check('second controller crash never repeats completed recycles',['recycle-live','recycle-dual'].every(n=>launches(n).length===2));
  check('accepted input is not duplicated across another crash',delivered('intent-for-replacement').length===1);
+ check('bounded replacement input remains held after another crash',Object.values(heldTexts).every(text=>delivered(text).length===0)&&fs.readFileSync(amux.serverLog,'utf8').includes('interrupted_recycle_held'));
  const renewed=await amux.req('PATCH','/api/sessions/recycle-capped/config',{new_conversation:true,restart:true});
  check('new explicit owner recycle is accepted after earlier cap',renewed.status===202,renewed.body);
  check('a new owner operation resets only its own retry counter',meta('recycle-capped').recycle_in_progress_since>0&&meta('recycle-capped').recycle_resume_attempts===0,meta('recycle-capped'));
+ await waitFor('owner retry finishes capped replacement',()=>launches('recycle-capped').length===2&&delivered(heldTexts['recycle-capped']).length===1,65000);
+ check('owner retry delivers held input exactly once to replacement',delivered(heldTexts['recycle-capped']).length===1&&delivered(heldTexts['recycle-capped'])[0].pid===launches('recycle-capped')[1].pid&&!meta('recycle-capped').recycle_in_progress_since,delivered(heldTexts['recycle-capped']));
+ check('unretried expired intent stays held',launches('recycle-expired').length===1&&delivered(heldTexts['recycle-expired']).length===0);
 }catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});console.error(fs.readFileSync(amux.serverLog,'utf8').slice(-6000));}
 finally{await amux.stop();}
 const receipt={measured:true,n_considered:checks.length,failed:checks.filter(x=>!x.ok).length,artifacts:amux.root,fixture_boundary:'actual owner recycle API and exit bytes, controller SIGKILL, real fifteen-second boot pass, actual provider consumer; explicit private dual-start/capped/expired metadata controls',checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);

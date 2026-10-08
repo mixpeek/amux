@@ -12069,6 +12069,16 @@ impl ConversationRestart {
             .contains(name)
             || meta_i64(&load_meta(name), RECYCLE_IN_PROGRESS_KEY) > 0
     }
+    fn description(name: &str) -> &'static str {
+        let meta = load_meta(name);
+        if meta_i64(&meta, RECYCLE_IN_PROGRESS_KEY) > 0
+            && !interrupted_recycle_due(&meta, now_i64())
+        {
+            "conversation recycle held; owner retry required"
+        } else {
+            "worker restarting"
+        }
+    }
 }
 impl Drop for ConversationRestart {
     fn drop(&mut self) {
@@ -14118,7 +14128,14 @@ pub(crate) async fn resume_interrupted_recycles(state: &AppState) -> usize {
             continue;
         }
         if !interrupted_recycle_due(&meta, now) {
-            update_meta(&name, &[(RECYCLE_IN_PROGRESS_KEY, Value::Null)]);
+            // A retry bound holds the operation; it does not cancel the
+            // owner's fresh-conversation intent or permit input to the old
+            // provider. A new explicit recycle resets its own retry count.
+            tracing::warn!(session = %name,
+                attempts = meta_i64(&meta, "recycle_resume_attempts"),
+                age_s = now.saturating_sub(meta_i64(&meta, RECYCLE_IN_PROGRESS_KEY)),
+                measured = true, n_considered = 1, verdict = "interrupted_recycle_held",
+                "automatic recycle recovery reached its bound; input remains durable until an owner retry");
             continue;
         }
         let attempts = meta_i64(&meta, "recycle_resume_attempts") + 1;
@@ -27539,7 +27556,7 @@ async fn send_post(state: &AppState, name: &str, headers: &HeaderMap, body: &Val
                     queue_id = Some(id);
                     (
                         true,
-                        "queued (worker restarting) — accepted into durable delivery".into(),
+                        format!("queued ({}) — accepted into durable delivery", ConversationRestart::description(name)),
                     )
                 }
                 Err(reason) => (false, block_reason_refused(reason, name)),

@@ -5257,3 +5257,14 @@ CARD: AF-968
 SYMPTOM: The actual owner recycle API persisted intent, then a private SIGKILL during its stop window lost the in-memory send boundary. The predecessor 6f52a0af confirmed a post-crash input as sent to the retiring provider before its fifteen-second boot pass replaced that provider. A simultaneous interrupted-start marker could also race the recycle's own replacement start.
 COST: Accepted input could reach the process about to be killed instead of the fresh conversation, and overlapping recovery operations could replace the provider twice.
 FIX: Derive the restart admission boundary from the persisted recycle marker, refuse actual queue drains until it clears, and reacquire the same send lock across boot stop/kill/start. The recycle owns overlapping start recovery; each new explicit owner recycle resets its own retry counter. Exercise the actual API, exit bytes, controller crash, replacement provider consumer, dual markers, capped/expired controls, unchanged workspace, and another crash; retain the predecessor's confirmed-to-retiring failure.
+
+## Reaching a recycle retry bound silently cancelled the replacement intent
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: A private cap-boundary consumer replay on 0c8ec00d showed boot clearing the recycle marker when attempts reached three. The API then confirmed intent-after-cap-for-replacement to the original provider (PID 41524), even though the requested replacement had never happened. Expired intents took the same cancellation path.
+COST: A protective retry cap reopened input into the wrong conversation and hid the unfinished owner operation.
+FIX: Keep the durable marker at either automatic recovery bound, emit interrupted_recycle_held once per boot, and report owner retry required on queued input. Preserve both controls across another controller crash. A new explicit owner recycle still resets only its own counter and delivers the retained capped input exactly once to its actual replacement; an unretried expired intent remains held.
