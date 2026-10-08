@@ -20,7 +20,7 @@ It ignores every argument amux passes (--model, --resume, ...), because the
 point is to exercise amux's paste, Enter and submission-verification path,
 not the model.
 """
-import hashlib, json, os, select, sys, time, termios, tty
+import hashlib, json, os, select, subprocess, sys, time, termios, tty
 
 LOG = os.environ.get("FAKE_CLAUDE_LOG")
 # Optional: every raw input byte, for diagnosing what the harness actually typed.
@@ -91,6 +91,11 @@ def main():
             rec["env_sha256"] = {k: (hashlib.sha256(os.environ[k].encode()).hexdigest()
                                      if k in os.environ else None) for k in keys}
         f.write(json.dumps(rec) + "\n")
+        if os.environ.get("FAKE_CLAUDE_SPAWN_BACKGROUND") == "1":
+            child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            f.write(json.dumps({"event":"background_child", "pid":child.pid,
+                                "parent_pid":os.getpid(), "cwd":os.getcwd(), "t":time.time()}) + "\n")
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     tty.setraw(fd)

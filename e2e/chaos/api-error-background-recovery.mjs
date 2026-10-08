@@ -3,13 +3,13 @@
 // background PID. The current failed turn is seeded; the real retry clock must elapse.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { startAmux, waitFor } from './harness.mjs';
 const checks=[];
 const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw new Error(name+': '+JSON.stringify(detail));};
-const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',AMUX_RATE_LIMIT_SWEEP_S:'10',AMUX_AUTO_RESUME:'1',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GEMINI_API_KEY:'',GOOGLE_API_KEY:'',FAKE_CLAUDE_EXTRA_FRAME:'API Error: Connection lost mid-response. The response above may be incomplete.\nChurned for 1m 30s · done · 1 shell still running',FAKE_CLAUDE_BACKGROUND_FOOTER:' · 1 shell · ← 5 agents · ↓ to manage'}});
-const background=spawn('sleep',['300'],{stdio:'ignore'});
-const alive=()=>{try{process.kill(background.pid,0);return true;}catch{return false;}};
+const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{RUST_LOG:'info',AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'0',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',AMUX_RATE_LIMIT_SWEEP_S:'10',AMUX_AUTO_RESUME:'1',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GEMINI_API_KEY:'',GOOGLE_API_KEY:'',FAKE_CLAUDE_SPAWN_BACKGROUND:'1',FAKE_CLAUDE_EXTRA_FRAME:'API Error: Connection lost mid-response. The response above may be incomplete.\nChurned for 1m 30s · done · 1 shell still running',FAKE_CLAUDE_BACKGROUND_FOOTER:' · 1 shell · ← 5 agents · ↓ to manage'}});
+let backgroundPid;
+const ownedChildren=()=>amux.fakeLog().filter(r=>r.event==='background_child').map(r=>r.pid);
+const alive=()=>{try{process.kill(backgroundPid,0);return true;}catch{return false;}};
 const lanes=[];
 const received=name=>{const pid=amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===lanes.find(l=>l.name===name)?.realDir)?.pid;return amux.fakeLog().filter(r=>r.pid===pid&&r.text==='continue');};
 try{
@@ -26,10 +26,14 @@ try{
   const mp=path.join(amux.home,'sessions',name+'.meta.json');const meta=fs.existsSync(mp)?JSON.parse(fs.readFileSync(mp,'utf8')):{};
   Object.assign(meta,{cc_conversation_id:cid,cc_cwd:dir});fs.writeFileSync(mp,JSON.stringify(meta));
  }
- check('background process is genuinely alive before retry',alive(),background.pid);
+ const launch=amux.fakeLog().find(r=>r.event==='launch'&&r.cwd===lanes[0].realDir);
+ const child=amux.fakeLog().find(r=>r.event==='background_child'&&r.parent_pid===launch.pid);
+ check('background is an actual provider CLI child',!!child,child);
+ backgroundPid=child.pid;
+ check('background process is genuinely alive before retry',alive(),backgroundPid);
  await waitFor('normal sweep resumes failed foreground with live background',()=>received('retry-parent').length===1,155000);
  check('one continue reaches actual parent terminal',received('retry-parent').length===1,received('retry-parent'));
- check('foreground retry preserves background PID',alive(),background.pid);
+ check('foreground retry preserves background PID',alive(),backgroundPid);
  check('authentication failure is never retried',received('auth-parent').length===0);
  check('isolation is never overridden',received('isolated-parent').length===0);
  check('recovery emits its named boundary signal',fs.readFileSync(amux.serverLog,'utf8').includes('steer_api_error_boundary'));
@@ -37,8 +41,8 @@ try{
  const after=(await amux.req('GET','/health')).body;check('SIGKILL restarts same binary',after.pid!==before.pid&&after.build===before.build,{before,after});
  await new Promise(r=>setTimeout(r,12500));
  check('durable retry key prevents a second continue after crash',received('retry-parent').length===1,received('retry-parent'));
- check('background PID survives server SIGKILL and resumed foreground',alive(),background.pid);
+ check('background PID survives server SIGKILL and resumed foreground',alive(),backgroundPid);
  check('controls remain untouched after crash',received('auth-parent').length===0&&received('isolated-parent').length===0);
 }catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});console.error(fs.readFileSync(amux.serverLog,'utf8').slice(-8000));}
-finally{background.kill('SIGKILL');await amux.stop();}
+finally{for(const pid of ownedChildren()){try{process.kill(pid,'SIGKILL');}catch{}}await amux.stop();}
 const receipt={measured:checks.length>0,n_considered:checks.length,failed:checks.filter(c=>!c.ok).length,artifacts:amux.root,fixture_boundary:'seeded current failed transcript; two-minute bound measured on real periodic clock and terminal',checks};fs.writeFileSync(path.join(amux.root,'recovery-receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt,null,2));process.exit(receipt.failed?1:0);
