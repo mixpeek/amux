@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2466,
+  "n_considered": 2476,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2894,6 +2894,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_scratchpadLoad": {
+      "kind": "command._scratchpadLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_scratchpadNewFolder": {
+      "kind": "command._scratchpadNewFolder",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_selectProvider": {
       "kind": "command._selectProvider",
       "feedback_required": true,
@@ -3004,6 +3016,24 @@
     },
     "_smSetScope": {
       "kind": "command._smSetScope",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spNav": {
+      "kind": "command._spNav",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spRender": {
+      "kind": "command._spRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_spSortBy": {
+      "kind": "command._spSortBy",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

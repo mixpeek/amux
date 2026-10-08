@@ -97,8 +97,8 @@ fn companion_meta_path(worker: &str) -> std::path::PathBuf {
 }
 
 /// A chat lane's settings. A companion's are derived from its worker: the
-/// worker's directory, Claude, and the model in the worker's
-/// `AMUX_CHAT_MODEL` scope setting (default sonnet, what AMUX-5350 created).
+/// worker's directory, provider, and model. `AMUX_CHAT_MODEL` overrides;
+/// otherwise the worker's own model (from CC_FLAGS `--model <x>`) is used.
 fn parse_env(name: &str) -> super::session_verbs::EnvFile {
     let Some(worker) = companion_parent(name) else {
         return super::session_verbs::parse_env(name);
@@ -111,12 +111,26 @@ fn parse_env(name: &str) -> super::session_verbs::EnvFile {
     }
     let model = super::session_verbs::scoped_setting_in(&home(), worker, "AMUX_CHAT_MODEL")
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "sonnet".into());
-    env.set("CC_PROVIDER", "claude");
+        .unwrap_or_else(|| {
+            let flags = parent.get_or("CC_FLAGS", "");
+            extract_model_from_flags(flags).unwrap_or_else(|| "sonnet".into())
+        });
+    let provider = parent.get_or("CC_PROVIDER", "claude").to_string();
+    env.set("CC_PROVIDER", &provider);
     env.set("CC_FLAGS", &format!("--model {}", model.trim()));
     env.set("CC_WORKER_TYPE", WorkerTypeId::CHAT);
     env.set("CC_COMPANION_OF", worker);
     env
+}
+
+fn extract_model_from_flags(flags: &str) -> Option<String> {
+    let mut iter = flags.split_whitespace();
+    while let Some(tok) = iter.next() {
+        if tok == "--model" {
+            return iter.next().map(|m| m.to_string());
+        }
+    }
+    None
 }
 
 /// A chat lane's meta: the worker meta, or a companion's own file.
