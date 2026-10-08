@@ -21118,11 +21118,38 @@ pub async fn steer_deliver_tick(state: &AppState) -> usize {
     // Reconcile superseded project packets before liveness/boundary checks:
     // an old unsent packet must not block retirement forever. All proof and
     // settlement share one writer transaction with the delivery claim gate.
-    if let Err(error) = state
+    // Do not enqueue an empty cleanup behind unrelated writes. This loop also
+    // owns provider recovery: awaiting a no-op writer can postpone that sweep
+    // indefinitely under contention. The writer still rechecks every proof;
+    // a packet inserted after this read remains guarded until the next tick.
+    let cleanup = state
         .store
-        .write_async(crate::project_execution::planner::settle_superseded_packets)
-        .await
-    {
+        .read_async(|conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM steering_queue WHERE guard='project-execution' AND delivering_since IS NULL)",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })
+        .await;
+    let result = match cleanup {
+        Ok(true) => state
+            .store
+            .write_async(crate::project_execution::planner::settle_superseded_packets)
+            .await
+            .map(|_| ()),
+        Ok(false) => {
+            tracing::debug!(
+                measured = true,
+                n_considered = 0,
+                verdict = "project_packet_cleanup_not_needed",
+                "steering tick bypassed empty project cleanup writer"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
         tracing::warn!(%error,measured=false,n_considered=0,verdict="project_packet_reconciliation_failed","could not reconcile superseded execution packets; unsafe queue retained; unrelated delivery continues");
         // Optional cleanup must not veto unrelated delivery. The normal per-row
         // project gate still refuses stale/unproven execution packets.
@@ -52215,6 +52242,76 @@ mod project_steering_tests {
                 .unwrap()
                 .is_empty());
         });
+    }
+
+    #[test]
+    fn empty_project_cleanup_does_not_wait_for_a_held_store_writer() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        for inflight in [false, true] {
+            let (_dir, db, _) = crate::project_execution::outputs::tests::fixture();
+            db.write(move |c| {
+                c.execute("DELETE FROM steering_queue", [])?;
+                if inflight {
+                    c.execute("INSERT INTO steering_queue(id,session,text,queued_at,guard,delivering_since) VALUES('already-claimed','private-worker','retained',1,'project-execution',1)", [])?;
+                }
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            let state = AppState {
+                store: std::sync::Arc::new(db),
+                started: std::time::Instant::now(),
+                build_hash: "test".into(),
+                auth_token: None,
+                reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            };
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let store = state.store.clone();
+            let writer = std::thread::spawn(move || {
+                store.write(move |c| {
+                    c.execute("INSERT INTO steering_history(id,session,text,delivered_at,outcome) VALUES('writer-witness','private-worker','fixture',1,'fixture')", [])?;
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                }).unwrap();
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let tick = runtime.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    steer_deliver_tick(&state),
+                )
+                .await
+            });
+            // Always release the real writer before asserting, including on the
+            // predecessor whose unconditional write makes this deadline fail.
+            release_tx.send(()).unwrap();
+            writer.join().unwrap();
+            assert_eq!(
+                tick.unwrap(),
+                0,
+                "empty/claimed-only queues must not delay the following recovery sweep"
+            );
+            let c = state.store.read().unwrap();
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM steering_queue", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                i64::from(inflight)
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM steering_history WHERE id='writer-witness'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
     }
 
     #[test]

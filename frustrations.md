@@ -5279,3 +5279,14 @@ CARD: AF-968
 SYMPTOM: CI job 113284044565 failed bounded_probe_deadline_survives_continuous_output_and_inherited_pipes: its 150ms deadline elapsed with stdout_bytes=0. A successful spawn was treated as proof that the producer had run, so this missed the productive-output boundary the test claims to exercise.
 COST: The complete Rust verdict went red while the real drain correctly timed out a producer that had not produced output.
 FIX: Separate spawning from the unchanged bounded consumer, wait for an actually readable producer pipe before measuring, and witness the direct parent's exit for the inherited-pipe case. Deliberately delay producer startup 300ms. Retain the original 150ms deadline, one-second completion bound, nonzero-byte assertion, measured flag and exact timeout phases; retain the failed CI log and an identical-consumer-body source proof.
+
+## Empty project cleanup blocked provider recovery behind unrelated writes
+AREA: lifecycle
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-968
+SYMPTOM: The deployed 303be399 process replay held a private SQLite writer and never reached auto_resume_staging within the original twenty-second handoff bound. Every steering tick awaited serialized superseded-packet cleanup even with no eligible project packets, blocking the following quota recovery sweep behind boot housekeeping writes.
+COST: Two failed deployed handoff replays, delayed recovery decisions, and needless serialized writer work on empty fleets.
+FIX: Read whether an unclaimed project packet exists before enqueueing cleanup. Keep the transactional supersession proof and normal delivery guards unchanged. Log the empty-cleanup verdict at debug level without adding recurring production noise. Exercise a genuinely held writer with empty and already-claimed queues, existing stale-packet safety tests, and the unchanged process SIGKILL/lost-acknowledgement handoff replay; preserve the deployed failure.
