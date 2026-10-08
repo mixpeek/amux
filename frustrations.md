@@ -5290,3 +5290,58 @@ CARD: AF-968
 SYMPTOM: The deployed 303be399 process replay held a private SQLite writer and never reached auto_resume_staging within the original twenty-second handoff bound. Every steering tick awaited serialized superseded-packet cleanup even with no eligible project packets, blocking the following quota recovery sweep behind boot housekeeping writes.
 COST: Two failed deployed handoff replays, delayed recovery decisions, and needless serialized writer work on empty fleets.
 FIX: Read whether an unclaimed project packet exists before enqueueing cleanup. Keep the transactional supersession proof and normal delivery guards unchanged. Log the empty-cleanup verdict at debug level without adding recurring production noise. Exercise a genuinely held writer with empty and already-claimed queues, existing stale-packet safety tests, and the unchanged process SIGKILL/lost-acknowledgement handoff replay; preserve the deployed failure.
+
+## PR #239's published head predates main's land-queue and contract fixes, so a merge resolution can quietly undo them
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5723
+SYMPTOM: The PR author's note says it integrated the reused land checkout and --verify-cmd from main, but head 1eee0343 contains none of 7638310a, aa8eb634, 9f2ff08e or 9d067df2 (git merge-base --is-ancestor, all four NOT in the PR). Its land_queue.rs still runs a fresh `git worktree add` per compose attempt (c-<pid>-<ulid>) and removes it after. On mixpeek that is a 39k-file checkout: 237 s under load against the 120 s git timeout (land 119 requeued twice, ~50 min held), fseventsd 3% -> 80% per land, and four git processes at 60-78% CPU each. Its double-force cleanup handles timeout residue, not the timeout. Separately, its contract.rs freezes a verify_cmd PATCHed onto a backlog/todo card, while main (aa8eb634) answers 409 contract_fields_need_doing; its test preparing_a_todo_contract_persists_the_command_without_claiming_work and main's a_verify_cmd_sent_before_doing_is_refused_with_the_one_request_path cannot both pass.
+COST: A textual conflict in compose() resolved toward the PR side reverts the fix for three Mac escalations (fseventsd 20261008-115224, cpu 20261008-105111, land timeouts) with a green build. The review it asked for could not cover push-receipt adoption or interrupted-checkout recovery, which are not on the published head.
+FIX: Rebase #239 on main before final CI. In compose(), keep main's candidate() (one reused checkout per repo, reset per land) and apply the PR's failure cleanup to that path; keep land_candidate_reused visible in the land log after merge. For contract prepare, keep one semantics: the PR's freeze-on-prepare is fine if aa8eb634's refusal and its test are removed in the same commit. Note that freezing at todo leaves the lane only its one verify_cmd amend for a typo found before work starts. My 9d067df2 re-queue selects review_state='failed' only, so the PR's 'escalated' owner gate (GD-75, MO-3951) is untouched.
+
+## A shell schedule's timeout kills only the outer bash, so the job tree runs on as an orphan
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-gates
+CARD: GG-104 (mixpeek side; the amux-frustrations card could not be created from this lane: POST /api/board with session=amux-frustrations returned 403 "workers may create board items only on their own board")
+SYMPTOM: runtime_jobs/scheduler.rs runs kind=shell under tokio timeout(SHELL_TIMEOUT_S) with kill_on_drop(true) and no process group. On timeout only the direct /bin/bash dies; its children reparent to pid 1. SCHED-552's 17:25Z run recorded "timed out after 600s" while bash pid 22204 (ppid 1) and its python child were still running 19 minutes later. The every-20m schedule would then start a second copy on the same worktree.
+COST: Three runs read as failed when they were still working, a 20-minute investigation, and a near-collision where the next fire would reset a git worktree under the live run that was about to commit and land from it.
+FIX: Spawn the shell job in its own process group (process_group(0)) and killpg it on timeout. Fixed when a shell schedule whose grandchild sleeps past SHELL_TIMEOUT_S leaves no surviving process after the timeout.
+
+## PR #239's worker group boundary refuses the Mac cleanup tick's escalations to the amux lane
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5724
+SYMPTOM: Reviewed head 0a7405e8. worker_group_refusal has no exception besides shared membership, self and owner input. The Mac cleanup tick is SCHED-465, a shell schedule whose session is `desktop` (CC_TAGS="system"), and it escalates with `amux send amux --file` (scripts/mac-cleanup-tick.sh:369). The amux lane is CC_TAGS=amux. The two sets are disjoint, so every escalation is refused worker_group_boundary. Today's fseventsd, cpu and disk escalations all arrived by this path.
+COST: After the merge, each constraint escalation logs "escalation to amux FAILED (n in a row)" and goes no further. The RCA loop (cause, fix, re-measure, .card file) stops with no lane to drive it, while the tick keeps applying only symptom fixes.
+FIX: Before merge, put desktop and amux in one shared group, or have the tick escalate through an owner-origin or system path the boundary allows. Then replay one escalation against the installed image and confirm it reaches the lane.
+
+## PR #239's land candidate() cannot recover an unregistered cand-<hash> directory
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5725
+SYMPTOM: Reviewed head 0a7405e8. When ~/.amux/tmp/land/cand-<hash> exists but is not a registered worktree (admin dir pruned, a half-created directory, a .git file pointing nowhere), `rev-parse --git-dir` fails and candidate() falls through to re-creation. The PR replaced main's `remove_dir_all` with cleanup_candidate(), which is `git worktree remove --force --force` and fails on an unregistered path. `worktree add` into the existing non-empty directory then fails with "already exists". sweep_old_candidates now also skips unregistered c-* directories, so a stale unregistered checkout leaks and is never logged.
+COST: One stray directory fails every land for that repository, one after another, each logging land_candidate_cleanup_failed, until someone removes it by hand. That is the manual-override shape the repo CLAUDE.md treats as an amux defect. On main the same state self-heals.
+FIX: In candidate() only, for the exact cand-<hash> path under ~/.amux/tmp/land, not a symlink and not registered, remove it with remove_dir_all after the worktree remove fails, and log a verdict. Give unregistered old c-* leftovers the same path, or at least one counted WARN. Test: create a plain non-empty cand-<hash> directory, call candidate(), expect land_candidate_created.
+
+## PR #239 freezes a whole contract from an acceptance_criteria-only PATCH on a backlog or todo card
+AREA: board
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5726
+SYMPTOM: Reviewed head 0a7405e8. The prepare branch in decide() fires on any of acceptance_criteria, verify_cmd, verify_kind or deploy_check, for backlog, todo and doing. freeze_from fills the command from the lane's CC_VERIFY default. So on a contract lane with a default verify command, an orchestrator setting or refining acceptance criteria on a backlog card freezes the contract right then. After that, acceptance is owner-only and the lane gets one verify_cmd amend. The PR's own test covers only {verify_cmd, reason}, and its comment says "an explicit server check" while the condition accepts acceptance alone.
+COST: Planning edits made before anyone claims the card become frozen contracts. The next refinement draws contract_frozen 409 and needs the owner. Decomposition writes acceptance_criteria in bulk, so this can hit many backlog cards at once.
+FIX: Make the prepare branch require an explicit verify_cmd / verify_kind / deploy_check, which matches the comment. Leave acceptance_criteria on backlog and todo as a plain column write. Add an acceptance-only case to preparing_a_todo_contract_persists_the_command_without_claiming_work.
