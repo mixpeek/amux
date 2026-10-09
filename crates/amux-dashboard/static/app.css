@@ -8028,3 +8028,14 @@ body.light .bd-answer-head { color: #bc4c00; }
 .sp-retain { padding:2px 6px; font-size:0.75rem; height:auto; }
 #scratchpad-view.sp-drop { outline:2px dashed var(--accent); outline-offset:-6px; }
 @media (max-width: 600px) { .sp-retain { min-height:44px; } }
+/* The split-view control reads as one on desktop (Ethan, 2026-10-09: "I still
+   dont see the Split View for chat, and others in place of just folder"); on a
+   phone the same button opens the file explorer, so it keeps the folder. */
+#peek-split-toggle { display:inline-flex; align-items:center; gap:4px; width:auto; padding-left:10px; padding-right:10px; }
+#peek-split-toggle .psp-btn-lbl { font-size:0.8rem; font-weight:600; }
+#peek-split-toggle .psp-btn-caret { font-size:0.65rem; opacity:0.7; }
+#peek-split-toggle .psp-ico-folder { display:none; }
+@media (max-width: 600px) {
+  #peek-split-toggle .psp-ico-split, #peek-split-toggle .psp-btn-lbl, #peek-split-toggle .psp-btn-caret { display:none; }
+  #peek-split-toggle .psp-ico-folder { display:inline; }
+}

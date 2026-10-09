@@ -2512,8 +2512,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="peek-nav-btn" onpointerdown="_peekMsgNavArm(event)" onclick="peekMsgPrev(event)" title="Previous message" aria-label="Previous message">&#x2191;</button>
         <button class="peek-nav-btn" onpointerdown="_peekMsgNavArm(event)" onclick="peekMsgNext(event)" title="Next message" aria-label="Next message">&#x2193;</button>
       </div>
-      <button class="btn peek-toolbar-btn" id="peek-split-toggle" onclick="togglePeekSplit(event)" title="Side panel: files, messages or chat" aria-label="Open side panel" aria-haspopup="menu">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <button class="btn peek-toolbar-btn" id="peek-split-toggle" onclick="togglePeekSplit(event)" title="Split view: files, messages or chat beside the terminal" aria-label="Split view" aria-haspopup="menu">
+        <svg class="psp-ico-split" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M13 4v16"/></svg>
+        <span class="psp-btn-lbl">Split</span><span class="psp-btn-caret" aria-hidden="true">&#9662;</span>
+        <svg class="psp-ico-folder" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </button>
       <button class="btn peek-toolbar-btn" id="peek-find-toggle" onclick="togglePeekFind()" title="Find in terminal" aria-label="Find in terminal" aria-expanded="false" aria-controls="peek-search-wrap">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
