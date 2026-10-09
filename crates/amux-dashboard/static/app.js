@@ -14004,7 +14004,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1278';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1279';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -29186,7 +29186,9 @@ function openCreate() {
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
   const _iso0 = document.getElementById('create-isolated');
-  if (_iso0) { _iso0.checked = false; _toggleIsolated(false); }
+  // Isolated by default (Ethan, 2026-10-09: "when creating a new worker make
+  // isolated checked by default"); untick it for a harness-driven worker.
+  if (_iso0) { _iso0.checked = true; _toggleIsolated(true); }
   const _ollamaBtn0 = document.getElementById('create-provider-ollama');
   if (_ollamaBtn0) _ollamaBtn0.classList.remove('selected');
   const _museBtn0 = document.getElementById('create-provider-muse');
