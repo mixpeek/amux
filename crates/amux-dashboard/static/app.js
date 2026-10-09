@@ -7487,7 +7487,8 @@ function render() {
           `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding')) ? `<div class="badges">
+      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || s.goal?.active) ? `<div class="badges">
+        ${s.goal?.active ? `<span class="badge goal" title="${esc('/goal active' + (s.goal.since ? ' since ' + new Date(s.goal.since * 1000).toLocaleString() : '') + ': ' + (s.goal.condition || ''))}">&#9678; goal</span>` : ''}
         ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
         ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
@@ -13999,7 +14000,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1274';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1275';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}

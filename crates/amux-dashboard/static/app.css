@@ -8020,3 +8020,5 @@ body.light .bd-answer-head { color: #bc4c00; }
 @media (max-width: 600px) {
   .chat-code-copy, .chat-copy-btn { min-height:44px; min-width:44px; }
 }
+/* A worker's active Claude Code /goal (AMUX-5746). */
+.badge.goal { color:var(--accent); border-color:var(--accent); }
