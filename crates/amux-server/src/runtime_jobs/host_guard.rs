@@ -331,7 +331,7 @@ pub fn parse_ps(text: &str) -> Vec<Proc> {
 /// Agent CLIs are the worker itself, not a tool it ran; never reniced.
 fn is_agent_cli(comm: &str) -> bool {
     let base = comm.rsplit('/').next().unwrap_or(comm);
-    matches!(base, "claude" | "codex" | "gemini" | "opencode" | "muse" | "tmux" | "amux-server-rs" | "amux-server")
+    matches!(base, "claude" | "codex" | "gemini" | "opencode" | "muse" | "grok" | "tmux" | "amux-server-rs" | "amux-server")
 }
 
 /// Worker tool processes that meet the runaway bar. `panes` maps a pane's
