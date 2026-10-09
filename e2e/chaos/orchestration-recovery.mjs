@@ -37,10 +37,25 @@ try {
   const schedule = await amux.req('POST', '/api/schedules', { title: 'Durable proof', session: 'lane-a', kind: 'shell', command: 'python3 {script}', script_path: scratch, schedule_expr: 'daily at 3am', enabled: 0 });
   check('schedule bound to durable script', schedule.status === 201 && schedule.body.command.includes('schedule-artifacts'), schedule.body);
   fs.unlinkSync(scratch);
+  const prepared = [];
+  for (const type of ['code', 'ops']) {
+    const card = await amux.req('POST', '/api/board', {title: 'Prepared '+type+' proof', type, status:'todo', session:'lane-a', acceptance_criteria:['committed proof passes']});
+    check('prepared proof card created '+type, card.status === 201, card.body);
+    const contract = await amux.req('PATCH', `/api/board/${card.body.id}`, {verify_cmd:'test -f README', reason:'prepare before claiming work'});
+    check('explicit verification command stored without claiming '+type,
+      contract.status === 200 && contract.body.contract?.frozen === true && contract.body.contract?.verify_cmd === 'test -f README', contract.body);
+    prepared.push([type,card.body.id]);
+  }
   await amux.down();
   await amux.up();
   const restarted = (await amux.req('GET', '/health')).body;
   check('different process, identical binary after abrupt restart', health.pid !== restarted.pid && health.build === restarted.build, { before: health.pid, after: restarted.pid });
+  for (const [type,id] of prepared) {
+    const card = (await amux.req('GET', `/api/board/${id}`)).body;
+    const contract = (await amux.req('GET', `/api/board/contract?card=${id}`)).body.frozen_contract;
+    check('prepared command survives crash with todo unchanged '+type,
+      card.status === 'todo' && contract?.frozen === true && contract?.verify_cmd === 'test -f README', {card_status:card.status,contract});
+  }
   for (const id of parents) {
     const p = (await amux.req('GET', `/api/board/${id}`)).body;
     check('dependency preserved across restart ' + id, p.session === 'hub' && p.depends_on.includes(root.body.id), p);

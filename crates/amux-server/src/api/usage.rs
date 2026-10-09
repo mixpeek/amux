@@ -1379,17 +1379,17 @@ struct AttributionQuery {
 const PROMPT_SOURCE_SRC: &str = "\
  src AS (SELECT lg.*, \
    (SELECT h.ts/1000 FROM cmd_history h \
-      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 ORDER BY h.ts DESC LIMIT 1) AS c_ts, \
+      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_ts, \
    (SELECT COALESCE(h.type,'') FROM cmd_history h \
-      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 ORDER BY h.ts DESC LIMIT 1) AS c_type, \
+      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_type, \
    (SELECT COALESCE(h.origin,'') FROM cmd_history h \
-      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 ORDER BY h.ts DESC LIMIT 1) AS c_origin, \
+      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_origin, \
    (SELECT s.delivered_at FROM steering_history s \
-      WHERE s.session = lg.session AND s.delivered_at <= lg.ts ORDER BY s.delivered_at DESC LIMIT 1) AS s_ts, \
+      WHERE s.session = lg.session AND s.delivered_at <= lg.ts AND (s.outcome LIKE 'sent%' OR s.outcome = 'delivered') ORDER BY s.delivered_at DESC LIMIT 1) AS s_ts, \
    (SELECT COALESCE(NULLIF(s.guard,''),'steering') FROM steering_history s \
-      WHERE s.session = lg.session AND s.delivered_at <= lg.ts ORDER BY s.delivered_at DESC LIMIT 1) AS s_guard, \
+      WHERE s.session = lg.session AND s.delivered_at <= lg.ts AND (s.outcome LIKE 'sent%' OR s.outcome = 'delivered') ORDER BY s.delivered_at DESC LIMIT 1) AS s_guard, \
    (SELECT COALESCE(s.sender,'') FROM steering_history s \
-      WHERE s.session = lg.session AND s.delivered_at <= lg.ts ORDER BY s.delivered_at DESC LIMIT 1) AS s_sender \
+      WHERE s.session = lg.session AND s.delivered_at <= lg.ts AND (s.outcome LIKE 'sent%' OR s.outcome = 'delivered') ORDER BY s.delivered_at DESC LIMIT 1) AS s_sender \
    FROM lg)";
 
 /// The source key. A steering guard becomes `steer:<family>`, the part before
@@ -1535,6 +1535,33 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn undelivered_or_refused_prompts_do_not_claim_later_token_usage() {
+        let dir=tempfile::tempdir().unwrap();
+        let store=crate::db::Store::open(&dir.path().join("attr.db")).unwrap();
+        let now=chrono::Utc::now().timestamp();
+        store.write(move |conn| {
+            conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('owner','user','lane',?1,'direct')",[(now-100)*1000])?;
+            conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('queued peer','session','lane',?1,'queued')",[(now-80)*1000])?;
+            conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('refused peer','session','lane',?1,'refused')",[(now-60)*1000])?;
+            conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) VALUES('denied','lane','refused',?1,?1,'refused:worker_group_boundary','board-progress','outside')",[now-50])?;
+            conn.execute("INSERT INTO token_ledger(ts,session,conversation,model,input,cache_read,cache_write,output,cost_usd,task) VALUES(?1,'lane','c','opus',1,0,0,1,1.0,'')",[now-40])?;
+            conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) VALUES('accepted','lane','actual callback',?1,?1,'sent (queued while generating)','task-callback:C','peer')",[now-30])?;
+            conn.execute("INSERT INTO token_ledger(ts,session,conversation,model,input,cache_read,cache_write,output,cost_usd,task) VALUES(?1,'lane','c','opus',1,0,0,1,2.0,'')",[now-20])?;
+            Ok(crate::db::WriteOutcome {applied:true,events:vec![]})
+        }).unwrap();
+        let app=axum::Router::new().nest("/api/usage",routes_with(probe_fn(UsageProbe::Ok(json!({})),Arc::new(AtomicUsize::new(0)))))
+            .with_state(AppState {store:Arc::new(store),started:Instant::now(),build_hash:"test".into(),auth_token:None,reconciled:Arc::new(std::sync::atomic::AtomicBool::new(true))});
+        let response=app.oneshot(Request::builder().uri("/api/usage/attribution?hours=1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),1<<20).await.unwrap();
+        let value:Value=serde_json::from_slice(&bytes).unwrap();
+        let sources:std::collections::HashMap<_,_>=value["by_source"].as_array().unwrap().iter().map(|r|(r["source"].as_str().unwrap(),r["cost_usd"].as_f64().unwrap())).collect();
+        assert_eq!(sources.get("user"),Some(&1.0),"{value}");
+        assert_eq!(sources.get("steer:task-callback"),Some(&2.0),"confirmed delivery control: {value}");
+        assert!(!sources.contains_key("session") && !sources.contains_key("steer:board-progress"),"no tokens attributed to undelivered input: {value}");
+    }
 
     /// The service manager's PATH may contain a stale but executable shim.
     /// Keep the probe on the same login-shell resolution path as a real worker.
@@ -2487,8 +2514,8 @@ mod usage_report_tests {
         sender: &str,
     ) {
         conn.execute(
-            "INSERT INTO steering_history (id, session, text, queued_at, delivered_at, guard, sender) \
-             VALUES (?1, ?2, 'nudge text', ?3, ?4, ?5, ?6)",
+            "INSERT INTO steering_history (id, session, text, queued_at, delivered_at, guard, sender, outcome) \
+             VALUES (?1, ?2, 'nudge text', ?3, ?4, ?5, ?6, 'sent')",
             rusqlite::params![id, session, ts_secs as f64, ts_secs as f64, guard, sender],
         )
         .unwrap();

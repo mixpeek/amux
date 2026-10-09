@@ -52,6 +52,28 @@ their existing boundaries. Isolation remains direct owner transport plus
 passive lifecycle observation and its documented owner-configured exceptions.
 A shared board does not authorize peer steering, spending or outbound actions.
 
+Worker-origin input requires a shared group at admission and again before
+pending delivery. Sender wildcards, receiver-open settings, historic replies,
+old approval grants and the legacy enforcement toggle cannot widen membership.
+Direct owner and self input remain permitted. Canonical group fan-out checks
+all recipients before persisting a parent or child. Board routing, review
+callbacks and steering preserve the original worker identity. A pending refusal
+retains its body and an audit record, releases the FIFO, and never claims delivery.
+The dashboard and both configuration routes report this enforced policy.
+Harness bug reports belong in `frustrations.md` and linked `amux-frustrations`
+cards with evidence; they must not become unsolicited prompts to another group.
+
+An owner can set `CC_RECEIVE_DENY=group-a,group-b` in a receiver's scoped
+environment to exclude worker input from those groups (`*` excludes all peers).
+This exclusion wins over sender wildcards, open receivers and reply exemptions.
+Owner and self input stay permitted. Pending, unattempted input receives a
+durable refusal without reaching the provider; its text and origin remain in
+steering history across controller recovery. Pending native message commands
+record a failed command before calling the provider, retain the message body,
+and allow subsequent owner input to progress. File harness bugs in the Amux
+repository's `frustrations.md` with a linked amux-frustrations card and evidence;
+do not reroute a refused report to another harness worker.
+
 ## Durable scheduler scripts
 
 Prefer a shell schedule for deterministic work. For a **self-contained** script,
@@ -232,3 +254,15 @@ real child. Another SIGKILL explicitly seeds loss of the producer's metadata
 acknowledgement; queue/history adoption must prevent duplicate input. The fixture
 clock and acknowledgement loss are declared; real process crashes and terminal
 receipts supply the consumer proof.
+
+The land queue persists its exact composed SHA before a push. After restart,
+only positive ancestry of that SHA on origin/main permits adoption without
+replaying the original worker commits. Pending push_candidate_sha is intent,
+not merged_sha or a terminal receipt. The process case moves main, has a real
+bare remote accept the rebased feature and SIGKILL the controller before its
+acknowledgement, then checks one commit and one terminal landing after recovery.
+One reusable candidate per repository preserves the deployed checkout optimization.
+A registered checkout interrupted before acknowledgement resets in place on restart;
+positive remote ancestry adopts a saved push before any reset or replay. Ordinary
+failed creation removes its own locked candidate. Stale cleanup is restricted to
+registered candidates in the same repository, preserving unrelated directories.
