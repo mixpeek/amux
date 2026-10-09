@@ -13,8 +13,8 @@
 //!    three in-boundary code fixes; gtm-engine spent a round trip asking "say
 //!    go" for a rewrite), and the ones that were not (a paid staging suite, a
 //!    $749 pass, a prod roll without a standby) never became `needsyou` cards,
-//!    so nothing surfaced them. So: an in-boundary ask is steered back ONCE with
-//!    "proceed, standing authority covers this"; a boundary ask becomes a
+//!    so nothing surfaced them. So: an in-boundary ask receives one automated
+//!    reminder to continue already authorized work; a boundary ask becomes a
 //!    deduplicated card carrying the question and what unblocks it: a
 //!    `needsyou` card when the owner's `AMUX_APPROVAL_TYPES` policy covers its
 //!    ask type, otherwise a `type=decision` card (see [`AskPath`]).
@@ -245,6 +245,8 @@ pub(crate) enum Boundary {
     /// standing-authority list, but "proceed" cannot be obeyed, so steering
     /// would only produce a second copy of the same ask.
     OwnerOnly,
+    /// Scope, priorities, fleet control or reversal of an owner action.
+    OwnerDecision,
 }
 
 impl Boundary {
@@ -252,7 +254,7 @@ impl Boundary {
         match self {
             Boundary::Money => "budget",
             Boundary::ExternalSend => "customer_outbound",
-            Boundary::ProdData | Boundary::ForeignPush => "decision",
+            Boundary::ProdData | Boundary::ForeignPush | Boundary::OwnerDecision => "decision",
             Boundary::OwnerOnly => "credential",
         }
     }
@@ -263,6 +265,7 @@ impl Boundary {
             Boundary::ProdData => "production data",
             Boundary::ForeignPush => "push over foreign commits",
             Boundary::OwnerOnly => "owner-only access",
+            Boundary::OwnerDecision => "owner decision",
         }
     }
     fn unblocks(self, owner: &str, lane: &str) -> String {
@@ -281,6 +284,9 @@ impl Boundary {
             ),
             Boundary::OwnerOnly => format!(
                 "{owner} completes the sign-in, grant or credential step named in the question and notes it on this card."
+            ),
+            Boundary::OwnerDecision => format!(
+                "This requires explicit owner approval from {owner}; {lane} preserves the existing scope, priorities and owner actions until then."
             ),
         }
     }
@@ -302,7 +308,7 @@ pub(crate) enum OwnerAsk {
 fn is_ask_sentence(s: &str) -> bool {
     let pats: [&regex::Regex; 14] = [
         rx!(r"\bsay go\b|\bsay the word\b"),
-        rx!(r"\b(awaiting|waiting (on|for)|need|needs|want) your (word|go|go-?ahead|call|decisions?|approvals?|sign-?off|ok|okay|green ?light|confirmation|answers?|reply|replies|input)\b"),
+        rx!(r"\b(awaiting|waiting (on|for)|need|want) your (word|go|go-?ahead|call|decisions?|approvals?|sign-?off|ok|okay|green ?light|confirmation|answers?|reply|replies|input)\b|^needs your (go|approval|ok|sign-?off)\b"),
         rx!(r"\bon your (word|go|signal|say-?so)\b"),
         rx!(r"\bunless you (want|would like|'d like|prefer|say|object)\b"),
         rx!(r"\bneeds? (one|a|1|two|2) (thing|things|decision|decisions|answer|call|input) from you\b|\bone thing from you\b"),
@@ -322,7 +328,12 @@ fn is_ask_sentence(s: &str) -> bool {
         // a URL or a browser profile has no "you" in it and is still an ask.
         sign_in_at_re(),
     ];
-    pats.iter().any(|p| p.is_match(s))
+    let ask = pats.iter().any(|p| p.is_match(s));
+    if !ask && rx!(r"\bneeds your (go|approval|ok|sign-?off)\b").is_match(s) {
+        tracing::info!(verdict = "owner_ask_reported_dependency", sentence = %clip(s, 160),
+            "turn-end: reported approval dependency is not a new request");
+    }
+    ask
 }
 
 /// An imperative sign-in, log-in or re-auth pointed at a URL or a browser
@@ -347,6 +358,12 @@ pub(crate) fn owner_said_hold(prompt: &str) -> bool {
 /// a false positive here files one card, a false negative steers a lane into
 /// spending money or mailing a customer.
 pub(crate) fn boundary_of(context: &str) -> Option<Boundary> {
+    let item = json!({"question": context});
+    if super::needs_input_auto::is_scope_decision(&item)
+        || super::needs_input_auto::is_owner_control_decision(&item)
+    {
+        return Some(Boundary::OwnerDecision);
+    }
     let c = context.to_lowercase();
     let has = |r: &regex::Regex| r.is_match(&c);
     if has(rx!(r"\bpush\w*\b")) && has(rx!(r"\bmain\b"))
@@ -879,8 +896,8 @@ async fn file_ask_card_via(
         Some(_) => format!(
             "because the ask touches the standing-authority boundary ({label}), so it was not steered"
         ),
-        None => "because a /goal was active; the worker was told to proceed on its \
-                 recommended option, so this card is the record of the choice"
+        None => "because a /goal was active; this records the question while an \
+                 automated reminder limits continuation to already authorized work"
             .to_string(),
     };
     let unblocks = match kind {
@@ -889,7 +906,7 @@ async fn file_ask_card_via(
         ),
         Some(k) => k.unblocks(&owner, lane),
         None => format!(
-            "{owner} confirms or overrides the choice on this card; {lane} has already proceeded on its recommended option."
+            "{owner} answers any new decision on this card; {lane} may continue only work already authorized within the existing scope and priorities."
         ),
     };
     let desc = format!(
@@ -1070,162 +1087,22 @@ pub(crate) fn same_ask(a: &str, b: &str) -> bool {
 }
 const ASK_MERGE_OVERLAP: f64 = 0.6;
 
-/// Kill switch for answering an isolated lane's in-boundary asks "proceed"
-/// under owner policy (default on).
-pub(crate) const AUTO_PROCEED_KEY: &str = "AMUX_ISOLATED_AUTO_PROCEED";
-/// The owner-policy guard: owner configuration, so it reaches isolated lanes.
-pub(crate) const OWNER_POLICY_GUARD: &str = "owner-policy:auto-proceed";
-
-fn day_bucket() -> i64 {
-    (crate::config::now_f64() as i64) / 86_400
-}
-
-fn policy_text(sentence: &str) -> String {
-    format!(
-        "[amux owner-policy] Your last turn ended by asking: \"{}\". Ethan's standing \
-         authority covers this, so proceed now; if you offered options, take your \
-         recommended one. Stop and file a needsyou card only for {BOUNDARY_TEXT}.",
-        clip(sentence, 240)
-    )
-}
-
-/// Deliver the owner-policy "proceed" to a lane.
-async fn policy_proceed(state: &AppState, name: &str, sentence: &str, id: &str) -> Result<(), String> {
-    sv::steer_enqueue_idempotent_report(state, name, &policy_text(sentence), OWNER_POLICY_GUARD, "", id)
-        .await
-        .map(|_| ())?;
-    sv::steer_deliver_for_session(state, name).await;
-    Ok(())
-}
-
-/// Clear in-boundary asks already parked on isolated lanes before auto-proceed
-/// existed: an idle lane never reaches another turn end, so nothing else would
-/// answer them. Only cards this recorder filed with no boundary (title
-/// "Owner ask (decision): ..."), still open, on an isolated lane that is idle.
-/// Each card is answered once, then closed with the answer as evidence.
-pub(crate) async fn auto_proceed_open_isolated_asks(state: &AppState, idle_isolated: &[String]) {
-    use crate::db::board_store as bs;
-    for lane in idle_isolated {
-        if !enabled(lane, AUTO_PROCEED_KEY) {
-            continue;
-        }
-        let ids: Vec<String> = {
-            let Ok(conn) = state.store.read() else { continue };
-            let Ok(mut st) = conn.prepare(
-                "SELECT i.id FROM issues i JOIN issue_tags t ON t.issue_id = i.id \
-                 WHERE i.session = ?1 AND t.tag = ?2 AND i.deleted IS NULL \
-                 AND i.status IN ('needsyou','backlog','todo') AND i.title LIKE 'Owner ask (decision):%'",
-            ) else { continue };
-            st.query_map(rusqlite::params![lane, ISOLATED_ASK_TAG], |r| r.get::<_, String>(0))
-                .map(|rows| rows.flatten().collect())
-                .unwrap_or_default()
-        };
-        for id in ids {
-            let row = {
-                let Ok(conn) = state.store.read() else { continue };
-                bs::get_issue(&conn, &id).ok().flatten()
-            };
-            let Some(row) = row else { continue };
-            let q = row.ask_question.clone().or(row.decision_question.clone()).unwrap_or(row.title.clone());
-            if !claim_once(state, lane, "turn_end.isolated_proceed_sweep", format!("iso-sweep:{id}"), json!({"card": id})).await {
-                continue;
-            }
-            match policy_proceed(state, lane, &q, &format!("iso-sweep-{id}")).await {
-                Ok(()) => {
-                    let id2 = id.clone();
-                    let _ = state.store.write_async(move |conn| {
-                        if let Some(mut r) = bs::get_issue(conn, &id2)? {
-                            r.desc.push_str("\n\n--- answered by owner policy ---\n\nSent proceed to the lane (AMUX_ISOLATED_AUTO_PROCEED).");
-                            r.evidence = Some("owner-policy auto-proceed delivered to the lane (in-boundary ask, isolated lane)".into());
-                            r.status = "done".into();
-                            bs::save_patched(conn, &mut r)?;
-                        }
-                        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-                    }).await;
-                    tracing::warn!(session = %lane, card = %id, verdict = "isolated_ask_swept_proceed",
-                        "owner policy answered a parked in-boundary ask and closed its card");
-                }
-                Err(e) => tracing::warn!(session = %lane, card = %id, verdict = "isolated_ask_sweep_refused", error = %e,
-                    "owner-policy proceed refused for a parked ask; card left open"),
-            }
-        }
-    }
-}
-
-/// Kill switch for recording an ISOLATED lane's owner asks as cards.
-pub(crate) const ISOLATED_ASK_KEY: &str = "AMUX_ISOLATED_ASK_CARDS";
-/// Tag on every card this path files, so a repeat updates the open card.
+/// Historical tag retained for existing owner-ask records.
 pub(crate) const ISOLATED_ASK_TAG: &str = "isolated-owner-ask";
-
-/// Items in a list: numbered or bulleted lines, and numbered table rows
-/// (gs-4 put its ten decisions in a `| # | Decision | My default |` table).
-fn enumerated_lines(text: &str) -> usize {
-    text.lines()
-        .filter(|l| {
-            rx!(r"^\s*(\d{1,2}[.)]|[-*\u{2022}])\s+\S").is_match(l)
-                || rx!(r"^\s*\|\s*#?\d{1,2}\s*\|").is_match(l)
-        })
-        .count()
-}
-
-/// A message that only points back at an earlier one ("in my earlier
-/// message", "from two messages ago", "still waiting"). gs-4 sent six of those
-/// in a row; attaching one of them would hand the owner another pointer.
-fn is_pointer_message(lower: &str) -> bool {
-    rx!(r"\b(previous|earlier|last|prior) message\b|\bmessages? ago\b|\bmessage above\b|\bstill (waiting|stopped|blocked)\b")
-        .is_match(lower)
-}
-
-/// The list an ask points back to. gs-4's turns end on "Still waiting for your
-/// answers: the six permission lines, the re-login, and the ten decisions",
-/// while the lines and the decisions themselves are in an EARLIER message. A
-/// card carrying only the pointer is useless to the owner, so when the final
-/// text enumerates fewer than three items, attach the newest earlier assistant
-/// message (main thread, last 60 messages) that enumerates at least three and
-/// talks about decisions, permissions, grants or answers.
-pub(crate) fn earlier_ask_list(records: &[Value], final_text: &str) -> Option<String> {
-    if enumerated_lines(final_text) >= 3 {
-        return None;
-    }
-    let final_norm = final_text.trim();
-    let mut seen = 0;
-    for r in records.iter().rev() {
-        if r["type"] != "assistant" || r["isSidechain"] == true {
-            continue;
-        }
-        let t = text_blocks(&r["message"]["content"]).join("\n\n");
-        let t = t.trim();
-        if t.is_empty() || t == final_norm || final_norm.contains(t) {
-            continue;
-        }
-        seen += 1;
-        if seen > 60 {
-            break;
-        }
-        let lower = t.to_lowercase();
-        if is_pointer_message(&lower) {
-            continue;
-        }
-        if enumerated_lines(t) >= 3
-            && rx!(r"\b(decisions?|permissions?|grants?|answers?|approve|approval|sign[- ]?in|re-?login|questions?|defaults?)\b").is_match(&lower)
-        {
-            return Some(t.to_string());
-        }
-    }
-    None
-}
 
 const BOUNDARY_TEXT: &str = "spending money, anything a customer or outside person \
 reads (email, DM, PR comment, post), deleting or migrating customer or production data, \
-and pushing to main over someone else's commits";
+pushing to main over someone else's commits, scope or priority changes, fleet control, \
+and reversing an owner stop or disabled automation";
 
 fn steer_text(sentence: &str) -> String {
     format!(
-        "[amux owner-ask] Your last turn ended by asking the owner: \"{}\". Standing \
-         authority covers this, so proceed without waiting; if you offered options, take \
-         your recommended one. The only boundary where you stop and ask is {BOUNDARY_TEXT}. \
-         If this really crosses one of those, put the question and what unblocks it on \
-         a card for the owner, then keep going on other work.",
+        "[amux owner-ask] Automated Amux reminder. Your last turn asked: \"{}\". \
+         This reminder does not grant owner approval or new instructions. Continue only \
+         work already authorized by the owner, within the existing scope and priorities. \
+         Preserve owner stops and disabled automation. If the choice requires a new \
+         owner decision or touches {BOUNDARY_TEXT}, file the question and what unblocks \
+         it on a card, then continue other authorized work.",
         clip(sentence, 240)
     )
 }
@@ -1243,6 +1120,11 @@ pub(crate) fn skips_turn_end_classifier(worker_type: &str) -> bool {
 }
 
 pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: String) {
+    if sv::session_is_isolated(&name) {
+        tracing::info!(session = %name, verdict = "turn_end_isolated_skipped", measured = true, n_considered = 1,
+            "turn-end: raw owner conversation is not classified, captured or steered");
+        return;
+    }
     if sv::provider_of(&sv::parse_env(&name)) != "claude" {
         return;
     }
@@ -1252,7 +1134,6 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
             "turn-end: conversational worker type; owner-ask and promise classifiers do not apply");
         return;
     }
-    let isolated = sv::session_is_isolated(&name);
     // The Stop hook fires as the final record is written; give the transcript
     // writer a moment so the classifier reads the turn that just ended.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -1268,7 +1149,7 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
         if let Some(end) = super::goal_loop::turn_ends(&records).pop() {
             if crate::config::now_f64() - end.ts < 30.0 {
                 let turn = TurnTail { uuid: end.id, text: end.text, ts: end.ts, prompt: String::new() };
-                super::goal_loop::on_turn_end(&state, &name, isolated, &records, &turn).await;
+                super::goal_loop::on_turn_end(&state, &name, false, &records, &turn).await;
             }
         }
         tracing::debug!(session = %name, verdict = "turn_end_no_final_text", "turn-end: turn did not end on text");
@@ -1278,7 +1159,7 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
     // an abnormal stop, not an idle: amux-cloud 2026-10-06 ~12:31 (`pkill -f`
     // matched its own shell) and amux the same day ended on "No response
     // requested." with a card in doing, and sat idle until the owner asked.
-    if !isolated && ended_after_sigkill(&records, &turn) {
+    if ended_after_sigkill(&records, &turn) {
         if let Some(card) = state.store.read().ok()
             .and_then(|c| crate::runtime_jobs::board_drive::exact_resume_card(&c, &name).ok().flatten())
         {
@@ -1305,14 +1186,21 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
     sv::update_meta(&name, &[("last_turn_cards", json!(named)), ("last_turn_ts", json!(turn.ts))]);
     // AMUX-5277: a lane goal-looping on the owner is not steered. Steering it
     // "proceed" only bought tubescience-parity another turn of the same ask.
-    if super::goal_loop::on_turn_end(&state, &name, isolated, &records, &turn).await {
+    if super::goal_loop::on_turn_end(&state, &name, false, &records, &turn).await {
         super::promise_nudge::forget_promise(&name);
         return;
     }
     let verdict = classify_owner_ask(&turn.text);
-    if isolated {
-        isolated_owner_ask(&state, &name, &records, &turn, verdict).await;
-        return;
+    let sentence = match &verdict {
+        OwnerAsk::InBoundary { sentence } | OwnerAsk::Boundary { sentence, .. } => Some(sentence),
+        OwnerAsk::None => None,
+    };
+    if let Some(sentence) = sentence {
+        if let Some(carded) = needsyou_card_named(&state, sentence) {
+            tracing::info!(session = %name, card = %carded, verdict = "owner_ask_already_carded", sentence = %clip(sentence, 160),
+                "turn-end: existing owner ask is not re-filed or auto-answered");
+            return;
+        }
     }
     match verdict {
         OwnerAsk::None => {
@@ -1331,16 +1219,6 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
             if owner_said_hold(&turn.prompt) {
                 tracing::info!(session = %name, verdict = "owner_ask_owner_said_hold", sentence = %clip(sentence, 160),
                     "turn-end: in-boundary owner ask not steered; this turn's prompt asked the lane to hold or only report");
-                return;
-            }
-            // The sentence names a card ALREADY waiting on the owner
-            // (needsyou): it is a status line, not a new ask, and the steer's
-            // own remedy ("put the question on a card") is already done.
-            // 2026-10-01: "AH-296, full scope versus Sunday, is still waiting
-            // for you." was steered to "proceed ... take your recommended one".
-            if let Some(carded) = needsyou_card_named(&state, sentence) {
-                tracing::info!(session = %name, card = %carded, verdict = "owner_ask_already_carded", sentence = %clip(sentence, 160),
-                    "turn-end: owner ask names a card already in needsyou; not steered");
                 return;
             }
             let qkey = question_key(sentence);
@@ -1392,81 +1270,6 @@ pub(crate) async fn on_turn_end(state: AppState, name: String, session_id: Strin
     }
 }
 
-/// An ISOLATED lane's turn ended on an owner ask. Nothing may steer it (only the
-/// owner's own messages reach it), so the ask becomes a card on the lane's own
-/// board with the full list it refers to. Measured 2026-09-26: gs-4 ended nine
-/// turns in a row on "Still waiting for your answers: the six permission lines,
-/// the re-login, and the ten decisions", the goal paused, and the only record
-/// of those ten decisions was its terminal.
-async fn isolated_owner_ask(state: &AppState, name: &str, records: &[Value], turn: &TurnTail, verdict: OwnerAsk) {
-    let (sentence, kind) = match verdict {
-        OwnerAsk::None => return,
-        OwnerAsk::InBoundary { sentence } => (sentence, None),
-        OwnerAsk::Boundary { sentence, kind } => (sentence, Some(kind)),
-    };
-    // AUTO-PROCEED (Ethan, 2026-09-27 13:20: "it needs to be optimized for
-    // auto pushing this is ridiculous"). Of 17 Needs-input items that hour, the
-    // in-boundary ones ("Want me to start on 1 and 2?", "Should I start on
-    // 3-5?", "say the word and i'll update") were all from ISOLATED lanes,
-    // parked as cards because amux may not steer them. The owner configured
-    // this answer, so it is delivered as owner policy; boundary asks (money,
-    // outbound, prod data, credentials) still become cards.
-    // A sentence naming a card already waiting on the owner is a status line,
-    // not a new ask (the steered path has had this guard since 2026-10-01;
-    // the isolated path did not: amux-helper, 2026-10-07, "AH-394 ... is still
-    // waiting on your yes" was answered "proceed" under owner policy).
-    if kind.is_none() {
-        if let Some(carded) = needsyou_card_named(state, &sentence) {
-            tracing::info!(session = %name, card = %carded, verdict = "isolated_ask_already_carded", sentence = %clip(&sentence, 160),
-                "turn-end: isolated lane's ask names a card already in needsyou; not auto-proceeded");
-            return;
-        }
-    }
-    if kind.is_none() && enabled(name, AUTO_PROCEED_KEY) && !owner_said_hold(&turn.prompt) {
-        let key = format!("isolated-proceed:{name}:{}:{}", question_key(&sentence), day_bucket());
-        if claim_once(state, name, "turn_end.isolated_proceed", key, json!({"sentence": sentence, "uuid": turn.uuid})).await {
-            match policy_proceed(state, name, &sentence, &format!("iso-proceed-{}", turn.uuid)).await {
-                Ok(()) => {
-                    tracing::warn!(session = %name, verdict = "isolated_ask_auto_proceeded", sentence = %clip(&sentence, 160),
-                        "turn-end: isolated lane's in-boundary ask answered proceed under owner policy");
-                    return;
-                }
-                Err(e) => tracing::warn!(session = %name, verdict = "isolated_ask_auto_proceed_refused", error = %e,
-                    "turn-end: owner-policy proceed refused; recording the ask as a card instead"),
-            }
-        } else {
-            return;
-        }
-    }
-    if !enabled(name, ISOLATED_ASK_KEY) {
-        tracing::info!(session = %name, verdict = "isolated_ask_disabled", sentence = %clip(&sentence, 160),
-            "turn-end: isolated lane's owner ask not recorded ({ISOLATED_ASK_KEY} is off)");
-        return;
-    }
-    if !claim_once(state, name, "turn_end.isolated_ask", format!("isolated-ask:{name}:{}", turn.uuid),
-        json!({"sentence": sentence, "uuid": turn.uuid})).await
-    {
-        return;
-    }
-    let question = as_question(&sentence, name);
-    let mut context = tail_paragraphs(&turn.text, 3);
-    let earlier = earlier_ask_list(records, &turn.text);
-    if let Some(list) = &earlier {
-        context.push_str("\n\nThe earlier message this ask refers to:\n\n");
-        context.push_str(list);
-    }
-    let ask_type = kind.map(Boundary::ask_type).unwrap_or("decision");
-    let path = AskPath::for_type(name, ask_type);
-    match file_ask_card_via(state, name, kind, &question, &context, "turn-end isolated-lane recorder", path, true).await {
-        Ok((id, created, path)) => tracing::warn!(session = %name, verdict = if created { "isolated_ask_card_filed" } else { "isolated_ask_card_updated" },
-            card = %id, path = path.label(), with_earlier_list = earlier.is_some(),
-            boundary = kind.map(Boundary::label).unwrap_or("none"),
-            "turn-end: isolated lane ended on an owner ask; recorded on its board (not steered)"),
-        Err(e) => tracing::warn!(session = %name, verdict = "isolated_ask_card_failed", error = %e,
-            "turn-end: isolated lane's owner ask could not be recorded"),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // AskUserQuestion under an active /goal (PreToolUse, scripts/hooks/ask-guard.py)
 // ---------------------------------------------------------------------------
@@ -1511,24 +1314,6 @@ pub(crate) async fn ask_user_question_post(
         Json(json!({"decision": "allow", "why": why})).into_response()
     };
     if sv::session_is_isolated(name) {
-        // Never denied (the owner answers isolated lanes directly), but
-        // recorded, so the question is on the board and not only in a picker
-        // nobody is looking at (gs-4's sat ~19 minutes on 2026-09-26).
-        if enabled(name, ISOLATED_ASK_KEY) {
-            let (question, options) = describe_questions(&body["tool_input"]);
-            if !question.trim().is_empty() {
-                let kind = boundary_of(&format!("{question} {options}"));
-                let q = as_question(&question, name);
-                let ctx = format!("AskUserQuestion on an isolated lane.\n\nOptions: {options}");
-                let path = AskPath::for_type(name, kind.map(Boundary::ask_type).unwrap_or("decision"));
-                match file_ask_card_via(state, name, kind, &q, &ctx, "AskUserQuestion isolated recorder", path, true).await {
-                    Ok((id, _, _)) => tracing::warn!(session = %name, verdict = "ask_intercept_isolated_recorded", card = %id,
-                        "ask intercept: isolated lane's AskUserQuestion recorded as a card and allowed through"),
-                    Err(e) => tracing::warn!(session = %name, verdict = "ask_intercept_isolated_card_failed", error = %e,
-                        "ask intercept: could not record isolated lane's question"),
-                }
-            }
-        }
         return allow("ask_intercept_isolated");
     }
     if !enabled(name, OWNER_ASK_KEY) {
@@ -1575,9 +1360,9 @@ pub(crate) async fn ask_user_question_post(
         ),
         None => format!(
             "amux: a /goal is active on this lane, so this question was filed as board card {card} \
-             instead of waiting on the owner. Standing authority covers it: proceed with your \
-             recommended option (the first one if you marked none) and keep driving the goal. \
-             The boundary where you must not proceed is {BOUNDARY_TEXT}."
+             instead of waiting on the owner. This is an automated reminder, not owner consent: \
+             continue only already authorized work within the existing scope and priorities. \
+             Preserve owner stops and disabled automation. Do not proceed across {BOUNDARY_TEXT}."
         ),
     };
     Json(json!({"decision": "deny", "reason": reason, "card": card})).into_response()
@@ -1602,12 +1387,12 @@ mod tests {
 
     #[test]
     fn an_ask_to_speak_in_the_owners_name_is_his() {
-        for q in [
-            "The proof-first instruction: should I tell the orchestrator, in your name, that every GS-12 lane's next card is a reopened proof card?",
-            "Only you can override how it prioritizes. Want me to send it?",
-            "Shall I send it on your behalf?",
+        for (q, expected) in [
+            ("The proof-first instruction: should I tell the orchestrator, in your name, that every GS-12 lane's next card is a reopened proof card?", Boundary::OwnerOnly),
+            ("Only you can override how it prioritizes. Want me to send it?", Boundary::OwnerDecision),
+            ("Shall I send it on your behalf?", Boundary::OwnerOnly),
         ] {
-            assert_eq!(boundary(q), Some(Boundary::OwnerOnly), "{q}");
+            assert_eq!(boundary(q), Some(expected), "{q}");
         }
     }
 
@@ -1689,6 +1474,70 @@ mod tests {
     fn a_plain_final_summary_is_not_an_ask() {
         let t = "Shipped the fix in abc1234. Tests: 212 passed. Card AMUX-99 moved to done with evidence.";
         assert_eq!(ask(t), OwnerAsk::None);
+    }
+
+    #[test]
+    fn reporting_a_future_approval_dependency_is_not_requesting_it() {
+        for text in [
+            "The flip waits on 4.8, 5.1 and 18.7, and dropping the copies needs your go.",
+            "MO-3731 owns the drop; dropping the production copies needs your go.",
+        ] {
+            assert_eq!(ask(text), OwnerAsk::None, "MO-4469: {text}");
+        }
+        assert_eq!(boundary("Should I drop the production copies now?"), Some(Boundary::ProdData));
+        assert_eq!(boundary("Needs your go to launch the Programmatic I/O sequence."), Some(Boundary::ExternalSend));
+    }
+
+    #[test]
+    fn owner_control_requests_are_never_answered_by_a_proceed_nudge() {
+        for text in [
+            "Should I cut the scope of GS-12?",
+            "Should I change the fleet's priorities?",
+            "Should I stop all workers?",
+            "Want me to re-enable SCHED-608, which you turned off?",
+        ] {
+            assert!(matches!(ask(text), OwnerAsk::Boundary { .. }), "{text}: {:?}", ask(text));
+        }
+        assert!(in_boundary("Want me to rerun the flaky fixture test?"));
+    }
+
+    #[test]
+    fn automated_reminders_do_not_assert_fresh_owner_consent() {
+        let text = steer_text("Want me to rerun the fixture?");
+        assert!(text.contains("Automated") && text.contains("does not grant"), "{text}");
+        assert!(!text.contains("authority covers this"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_isolated_ask_intercept_has_no_board_side_effect() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/raw-owner-ask.env"),
+            "CC_ISOLATED=1\nAMUX_ISOLATED_ASK_CARDS=1\n").unwrap();
+        let (_tmp, state) = hermetic_state();
+        let body = json!({"tool_input":{"questions":[{"question":"Should I stop all workers?","options":[]}]}});
+        let response = ask_user_question_post(&state, "raw-owner-ask", &HeaderMap::new(), &body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.store.read().unwrap().query_row("SELECT COUNT(*) FROM issues", [], |r| r.get::<_,i64>(0)).unwrap(), 0,
+            "a raw conversation must not become a board ask even with a stale recorder flag");
+    }
+
+    #[tokio::test]
+    async fn owner_policy_cannot_use_the_owner_transport_exception() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/raw-policy.env"), "CC_ISOLATED=1\n").unwrap();
+        let (_tmp, state) = hermetic_state();
+        for guard in ["owner-policy:auto-proceed", "needs-input:auto-approve", "owner-ask", "board-drive"] {
+            let result = sv::steer_enqueue_idempotent_report(&state, "raw-policy", "Proceed", guard, "", guard).await;
+            assert!(matches!(result, Err(e) if e.contains("isolated")), "{guard} must be refused before enqueue");
+        }
+        for guard in ["", "sched:SCHED-12", "goal:fixture"] {
+            assert!(sv::steer_enqueue_idempotent_report(&state, "raw-policy", "owner-configured fixture", guard, "", &format!("allowed-{guard}")).await.is_ok(),
+                "direct owner input, own schedules, and goal continuation must still queue: {guard}");
+        }
     }
 
     #[test]
@@ -1910,55 +1759,8 @@ mod tests {
         assert_eq!(ask("mvs-infra is still waiting for the shard roll to finish."), OwnerAsk::None);
     }
 
-    fn asst_text(uuid: &str, mid: &str, text: &str) -> Value {
-        json!({"type":"assistant","uuid":uuid,"message":{"id":mid,"content":[{"type":"text","text":text}]}})
-    }
-
-    #[test]
-    fn a_pointer_ask_carries_the_earlier_list_it_points_to() {
-        let list = "Ten decisions, each with my default:\n\n\
-            1. Delete ClickHouse after export (default: yes)\n\
-            2. Move web apps to Cloud Run (default: yes)\n\
-            3. Drop the load-test namespace (default: yes)\n\
-            4. Smaller node pools after grant #1 (default: yes)";
-        let recs = vec![
-            asst_text("a1", "m1", list),
-            asst_text("a2", "m2", "Checked the autoscaler; no scale-down because of disk pinning."),
-            asst_text("a3", "m3", GS4_FINAL),
-        ];
-        let got = earlier_ask_list(&recs, GS4_FINAL).expect("the list is found");
-        assert!(got.contains("1. Delete ClickHouse"));
-        // A final message that already enumerates its asks needs nothing more.
-        assert_eq!(earlier_ask_list(&recs, list), None);
-        // No enumerated earlier message: nothing attached rather than a guess.
-        let plain = vec![asst_text("b1", "n1", "Working on it."), asst_text("b2", "n2", GS4_FINAL)];
-        assert_eq!(earlier_ask_list(&plain, GS4_FINAL), None);
-    }
-
-    #[test]
-    fn the_list_behind_a_chain_of_pointers_is_the_one_attached() {
-        // The live shape, 2026-09-26 20:33-20:44Z: the decisions as a table,
-        // then messages that only point back at it.
-        let original = "Here is everything I need from you, in one pass.\n\n\
-            ## 2. Decisions (reply \"defaults\" to accept all)\n\n\
-            | # | Decision | My default |\n|---|---|---|\n\
-            | 1 | ClickHouse data: delete its disks | Export first, keep 7 days |\n\
-            | 2 | Stored data: delete untouched objects | Scratch buckets only |\n\
-            | 3 | Container images: prune old versions | Yes |\n\
-            | 10 | Alert email | Keep |";
-        let pointer = "Everything else remaining needs your answers from two messages ago:\n\
-            1. The six permission lines.\n2. The ten decisions.\n3. The re-login.";
-        let recs = vec![
-            asst_text("o", "m0", original),
-            asst_text("p", "m1", pointer),
-            asst_text("f", "m2", GS4_FINAL),
-        ];
-        let got = earlier_ask_list(&recs, GS4_FINAL).expect("found");
-        assert!(got.contains("| 1 | ClickHouse data"), "the table, not the pointer: {got}");
-    }
-
     #[tokio::test]
-    async fn an_isolated_lane_gets_one_card_that_is_updated_on_each_rephrasing() {
+    async fn legacy_isolated_ask_records_merge_and_distinct_peer_asks_stay_separate() {
         let (_tmp, state) = hermetic_state();
         let lane = "gs-4-gke-minimization";
         let (id, created, _) = file_ask_card_via(
@@ -1980,22 +1782,6 @@ mod tests {
         let (a, _, _) = file_ask_card_via(&state, "peer", None, "First ask?", "c", "test", AskPath::NeedsYou, false).await.unwrap();
         let (b, created_b, _) = file_ask_card_via(&state, "peer", None, "Second ask?", "c", "test", AskPath::NeedsYou, false).await.unwrap();
         assert!(created_b && a != b);
-    }
-
-    #[tokio::test]
-    async fn an_isolated_lane_naming_a_card_waiting_on_the_owner_is_not_auto_proceeded() {
-        let (_tmp, state) = hermetic_state();
-        state.store.write(|conn| {
-            conn.execute("INSERT INTO issues (id, title, status, created, updated) VALUES ('AH-394', 'AH-394', 'needsyou', 1, 1)", [])?;
-            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
-        }).unwrap();
-        let sentence = "AH-394, the proof-first instruction, is still waiting on your yes.";
-        let turn = TurnTail { uuid: "u1".into(), text: sentence.into(), ts: 1.0, prompt: String::new() };
-        isolated_owner_ask(&state, "iso-lane", &[], &turn, OwnerAsk::InBoundary { sentence: sentence.into() }).await;
-        // The proceed was never even claimed: the guard returns before it.
-        let key = format!("isolated-proceed:iso-lane:{}:{}", question_key(sentence), day_bucket());
-        assert!(claim_once(&state, "iso-lane", "turn_end.isolated_proceed", key, json!({})).await,
-            "no owner-policy proceed may be claimed for a sentence naming a needsyou card");
     }
 
     #[tokio::test]
@@ -2076,10 +1862,10 @@ mod tests {
     }
 
     #[test]
-    fn owner_policy_is_owner_configuration_and_reads_clean() {
-        assert!(sv::is_owner_configured_guard(OWNER_POLICY_GUARD));
+    fn automated_owner_ask_text_reads_clean() {
+        assert!(!sv::is_owner_configured_guard("owner-policy:auto-proceed"));
         assert!(!sv::is_owner_configured_guard("owner-ask"));
-        let t = policy_text("Want me to start on 1 and 2?");
+        let t = steer_text("Want me to start on 1 and 2?");
         assert!(t.contains("Want me to start on 1 and 2?") && !t.contains('\u{2014}'));
         // The live in-boundary specimens stay in-boundary, the boundary ones do not.
         assert!(matches!(classify_owner_ask("Done.\n\nWant me to start on 1 and 2?"), OwnerAsk::InBoundary { .. }));
