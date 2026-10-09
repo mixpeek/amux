@@ -14007,7 +14007,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1281';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1282';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27546,9 +27546,14 @@ async function _connAccountsLoad() {
       if (a.needs_reauth) {
         const fam = (a.reconnect || '').indexOf('/slack/') >= 0 ? 'slack' : 'google';
         h += '<button class="conn-gmail-btn" onclick="_connReconnect(\'' + escJs(fam) + '\',\'' + escJs(a.account) + '\')">Reconnect ↗</button>';
+      } else if ((a.missing || []).indexOf('google') >= 0) {
+        // Gmail-only grant: mail works, calendar/drive/docs were never granted.
+        h += '<span class="conn-gmail-badge" style="background:#8a6d3b" title="This account only granted Gmail. Calendar, Drive and Docs calls fail until it approves the full Google grant.">calendar: not granted</span>';
+        h += '<button class="conn-gmail-btn" onclick="_connReconnect(\'google\',\'' + escJs(a.account) + '\')">Grant calendar + drive ↗</button>';
       }
       h += '</div>';
     }
+    h += '<button class="conn-gmail-add" onclick="_gmailAddAccount()">+ Add Google account</button>';
     h += '<div class="conn-note">Reconnect opens one consent tab; approving repairs email + every Google connector + worker token mints for that account at once.</div></div>';
     host.innerHTML = h;
   } catch (e) { host.innerHTML = ''; }
@@ -27614,24 +27619,15 @@ async function _gmailAccountsLoad() {
 // Start (or repair) OAuth for one account: fetch the URL and open it. Google
 // redirects back to /api/gmail/callback which writes the token; then Refresh.
 async function _gmailReconnect(email) {
-  if (!email) return;
-  try {
-    const r = await fetch('/api/gmail/auth?account=' + encodeURIComponent(email));
-    const d = await r.json();
-    if (d && d.url) {
-      window.open(d.url, '_blank', 'noopener');
-      showToast('Approve access for ' + email + ' in the opened tab, then Refresh');
-      if (d.warning) showToast(d.warning);
-    } else if (d && d.error) {
-      showToast('Could not start reconnect: ' + d.error);
-    } else {
-      showToast('Could not start reconnect');
-    }
-  } catch (e) { showToast('Reconnect failed'); }
+  // Same full Google grant as the Accounts card: its callback also writes the
+  // Gmail token, so mail keeps working and calendar/drive/docs come with it.
+  if (email) _connReconnect('google', email);
 }
 async function _gmailAddAccount() {
-  const email = (prompt('Gmail address to connect:') || '').trim();
-  if (email) _gmailReconnect(email);
+  const email = (prompt('Google account to connect:') || '').trim();
+  // The full Google grant (mail + calendar + drive + docs). The gmail-only
+  // grant left calendar unauthorized on every account added this way.
+  if (email) _connReconnect('google', email);
 }
 async function _gmailRemove(email) {
   if (!(await showConfirm('Remove ' + email + '?\n\nThe local token file is deleted; you can reconnect any time.', 'Remove', true))) return;

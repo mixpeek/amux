@@ -1256,6 +1256,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_gmailAddAccount": {
+      "kind": "command._gmailAddAccount",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_gmailReconnect": {
+      "kind": "command._gmailReconnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_gmailRemove": {
       "kind": "command._gmailRemove",
       "feedback_required": true,

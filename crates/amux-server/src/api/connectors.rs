@@ -3050,12 +3050,33 @@ pub(crate) async fn accounts_rollup(
                 "measured": last_ok.is_some(),
             }));
         }
+        // A Gmail-only grant (the legacy /api/gmail/auth flow) reads healthy
+        // while calendar, drive and docs were never granted, so every
+        // calendar call for that account fails with nothing on this page to
+        // say why. Name the gap and the one grant that closes it.
+        let missing: Vec<&str> = if families.contains_key("gmail") && !families.contains_key("google") {
+            vec!["google"]
+        } else {
+            Vec::new()
+        };
+        let connect = (!missing.is_empty()).then(|| {
+            format!("POST /api/connectors/google/auth?account={account} → open authorize_url, approve once (adds calendar, drive, docs)")
+        });
+        if !missing.is_empty() {
+            tracing::warn!(
+                account = %account,
+                verdict = "connector_grant_partial",
+                "account has a Gmail grant but no Google grant: calendar, drive and docs are not authorized"
+            );
+        }
         accounts.push(json!({
             "account": account,
             "families": families,
             "canary": canaries.get(&account).cloned().map(Value::Object),
             "needs_reauth": reconnect.is_some(),
             "reconnect": reconnect,
+            "missing": missing,
+            "connect": connect,
         }));
     }
     // Persist the canary map with a timestamp: last-checked must survive the
@@ -4498,6 +4519,15 @@ mod tests {
         assert_eq!(healthy["families"]["google"], json!("ok"));
         assert_eq!(healthy["needs_reauth"], json!(false));
         assert_eq!(v["needs_reauth"].as_array().unwrap().len(), 1);
+        // A gmail-only grant never covered calendar/drive/docs: the row must
+        // say so and carry the one grant that closes it.
+        assert_eq!(broken["missing"], json!(["google"]), "{v}");
+        assert!(broken["connect"]
+            .as_str()
+            .unwrap()
+            .contains("/api/connectors/google/auth?account=broken@x.io"));
+        assert_eq!(healthy["missing"], json!([]), "{v}");
+        assert_eq!(healthy["connect"], Value::Null, "{v}");
     }
 
     #[tokio::test]
