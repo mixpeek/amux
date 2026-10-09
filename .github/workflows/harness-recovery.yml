@@ -15,7 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     # No user systemd scope is needed in this disposable container. The real
     # compiler and consumers run here; every server HOME and tmux socket is private.
-    container: rust:bookworm
+    # Same official image via the ECR Public mirror: Docker Hub's anonymous
+    # pull limit failed this job at container start on 2026-10-09 (main and
+    # every PR, "toomanyrequests"), before any recovery step ran.
+    container: public.ecr.aws/docker/library/rust:bookworm
     timeout-minutes: 30
     steps:
       - name: Install private harness runtime
