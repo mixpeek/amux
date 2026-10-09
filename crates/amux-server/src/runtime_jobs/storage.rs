@@ -1434,6 +1434,11 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     )
     .await;
     rep.memory_entries_removed = crate::api::session_verbs::sweep_transcript_evidence();
+    // Scratchpad expiry (Ethan, 2026-10-09: "everything should expire after 1
+    // week, configurable in the scratchpad tab").
+    let (sp_files, sp_bytes) = crate::api::scratchpad::sweep(home);
+    rep.files_removed += sp_files;
+    rep.bytes_freed += sp_bytes;
 
     // Directory-level pruning (evidence captures, etc.).
     let (mut dirs, mut dir_bytes) = (0usize, 0u64);

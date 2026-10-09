@@ -16471,7 +16471,7 @@ mod af701_archive_guard_tests {
             assert_eq!(route(&state, id, owner_headers(lane), json!({"status": "doing", "acceptance_criteria": ["every min-0 surface reads 0"]})).await,
                 StatusCode::OK, "{id} enters doing");
         }
-        assert_eq!(super::super::contract::run_prereviews(&state).await, 2, "only the two proof cards are pre-reviewed");
+        assert_eq!(super::super::contract::run_prereviews(&state).await, 3, "proof cards and the ordinary card with a frozen command are pre-reviewed");
         // 60 s, not 15: CI failed here with the desc still "fixture" (the
         // review had not written), the way the uncontracted-review test did
         // at 17 s where a local run takes ~1.5 s.
@@ -16482,8 +16482,12 @@ mod af701_archive_guard_tests {
             store.read().unwrap()
                 .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap()
         };
+        let pst = |id: &str| store.read().unwrap().query_row("SELECT state FROM card_prereviews WHERE card = ?1", [id], |r| r.get::<_, String>(0)).ok();
+        // All three results are asserted below. Waiting for only the proof
+        // and ops cards let the ordinary card still be running on CI.
         for _ in 0..1200 {
             if current(&store, &proof).desc.contains("missing from the plan") && current(&store, &ops).desc.contains("missing from the plan")
+                && [&proof, &ops, &plain].into_iter().all(|id| pst(id).as_deref() == Some("gaps"))
                 && queued_now() >= 1 {
                 break;
             }
@@ -16494,14 +16498,13 @@ mod af701_archive_guard_tests {
             .query_row("SELECT state, hash FROM card_prereviews WHERE card = ?1", [&proof], |r| Ok((r.get(0)?, r.get(1)?))).ok();
         assert!(row.desc.contains("no Ray Serve app is measured at 0 replicas"), "desc={:?} prereview={pre:?}", row.desc);
         assert_eq!(row.status, "doing", "a pre-run review never moves the card");
-        let pst = |id: &str| store.read().unwrap().query_row("SELECT state FROM card_prereviews WHERE card = ?1", [id], |r| r.get::<_, String>(0)).ok();
         assert_eq!(pst(&proof).as_deref(), Some("gaps"));
         assert_eq!(pst(&ops).as_deref(), Some("gaps"), "an ops proof card with no contract is pre-reviewed too");
         assert_eq!(current(&store, &ops).status, "doing");
         let ops_contract: i64 = store.read().unwrap()
             .query_row("SELECT COUNT(*) FROM card_contracts WHERE card = ?1", [&ops], |r| r.get(0)).unwrap();
         assert_eq!(ops_contract, 0, "a pre-review never creates a contract row, which would gate verified");
-        assert_eq!(pst(&plain), None, "a non-proof card gets none");
+        assert_eq!(pst(&plain).as_deref(), Some("gaps"), "an ordinary doing card with a frozen verify command is pre-reviewed too");
         let queued: i64 = store.read().unwrap()
             .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap();
         let queued_rows: Vec<(String,String)> = store.read().unwrap().prepare("SELECT id,session FROM steering_queue ORDER BY id").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();

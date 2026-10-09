@@ -5455,6 +5455,40 @@ CARD: GS-247
 SYMPTOM: Requesting done on GS-167 at 20:2xZ returned "server verification failed at 69c5016703bf...: could not check out ...: fatal: '/Users/ethan/.amux/tmp/contract/GS-167-69c5016703bf' is a missing but locked worktree; use 'add -f -f' to override, or 'unlock' and 'prune' or 'remove' to clear". The path is the verifier's own scratch checkout; the lane never created it. A few minutes later `git worktree list` no longer showed it, the directory was absent, and an identical done request started verification.
 COST: one false "GS-167 is not done" notice, a diagnosis round and a resubmission. The notice reads as the lane's failure, and a lane that took it at face value could have reopened finished work or moved the card to cannot_satisfy.
 FIX: before `git worktree add` for a contract checkout, run `git worktree prune` (or `remove -f -f` its own path) when the path is registered but missing, and report a checkout failure as a verifier infrastructure error, retried once, rather than as the card failing verification.
+- [ ] **2026-10-08 | amux board, contract verify** *(mixpeek-override)*: the server verifies a frozen contract "in a clean detached checkout of the lane's committed HEAD"; for a lane whose cwd is the shared checkout with no worktree that HEAD was a23f18cd677, 6,590 commits behind origin/main, so MO-3925's verify (retention.py check plus the two plane probes) failed on bytes nobody runs, and the card shows only {state: failed} with no rc or output. The same line from a `git archive origin/main` passes rc 0. Wanted: verify at origin/main (or the land sha the card's evidence names) when the lane has no worktree or its HEAD is behind origin by more than the land batch; write the verify's rc and output tail on the card. Workaround: the verify_cmd exports origin/main with git archive into a fixed path and runs there (one amendment per card). Card: MO-4472 on mixpeek-override's board (id in the commit body if it differs).
+
+## The staged-guard times out at 18 s while the board answers in 0.1 s, so commits go unguarded and the shell guard blocks
+AREA: git guards (staged-guard, git-shared-guard)
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-cicd
+CARD: GC-183
+SYMPTOM: Four commits in the mixpeek worktree .worktrees/gs12-cicd between 20:50Z and 21:25Z printed "amux staged-guard: NOT ENFORCED: could not reach the amux server at https://localhost:8824/api/git/staged-guard after 3 attempts over 18.2s (TimeoutError)". Board PATCHes from the same session in the same minutes returned 200. At 21:25Z, one failure-free minute later, GET /api/board/GC-183 took 0.08-0.11 s and POST /api/git/staged-guard answered in 0.004-0.009 s. At 21:23Z git-shared-guard.py blocked a whole Bash call (a `git checkout <sha> -- <paths>` plus `amux land --cancel` and five other segments) on the same TimeoutError. ~/.amux/staged-guard-unenforced.jsonl holds 1,611 records (all sessions).
+COST: four commits made with cross-session sweep protection off, and one compound command that did not run at all, including its land cancel. The lane rebuilt the step around the guard (cancel, cherry-pick --no-commit, one commit) and spent a land cycle.
+FIX: give the guard endpoints their own short path that does not wait behind whatever stalls them while the board stays fast, or a deadline under 2 s with a cached co-tenancy answer. Count NOT ENFORCED outcomes per hour as a health signal, since the jsonl already records each one.
+
+## A session-swap auto-pickup reopens a card the contract granted done 69 seconds earlier
+AREA: amux board, auto-pickup on session restart, contract done
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-extra-1
+CARD: GE1-33 (mixpeek, gs12-extra-1's board)
+SYMPTOM: GE1-33's done request (PATCH status done with evidence, gate_checked and left_undone, 202) was granted by harness:contract at 21:35:54Z (attempt 33, outcome done, "Server-verified (contract rule 2) at 815cfa20dd6"). The lane's Claude Code session was then recycled, and the restart prompt read "[amux auto-pickup] Claimed GE1-33, resume this still-owned task now". At 21:37:03Z attempt 34 started with gs12-extra-1 holding the lease, and the log reads "terminal summary retired on reopen to doing; prior Final outcome remains in history". Nothing the lane did moved it; the pickup chose the card while the done grant was landing, and its claim reopened it.
+COST: a verified-done card back in doing with the done line retired, found only by reading the attempts list, and a second done request that re-ran the frozen cargo verify (minutes of compile on a host at load 35 to 50). A lane that trusted the restart prompt would have redone finished work.
+FIX: a pickup must never claim a card whose status is terminal or whose contract state is verifying or granted; read the card's status inside the same transaction as the claim, and drop a restart's "resume" target that is already done.
+
+## amux browser resize reports a phone viewport while the page keeps its desktop width
+AREA: browser
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5744
+SYMPTOM: Testing the scratchpad at phone width, POST /api/browser/resize {"width":390,"height":844} and POST /api/browser/action {"action":"viewport","device":"iphone"} both answered ok with measured {"w":390,"h":844}. An immediate /api/browser/eval of innerWidth returned 756, the layout stayed desktop (no 600px media query applied), and the screenshot was 756 wide. Repeated three times across both routes.
+COST: The mobile half of a UI verification could not be done in the amux browser, so the phone-width check had to be reported as not done. The "measured" field reads as proof the viewport changed when the page never saw it.
+FIX: Make measured come from the page (window.innerWidth after the emulation call, on the same target eval uses), and apply the emulation to that target. Add a test that resizes, then evals innerWidth.
 
 ## Land waiters check installed behavior once a minute, delaying adoption and the CI lifecycle gate
 AREA: CI and land lifecycle
