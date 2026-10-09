@@ -5533,3 +5533,14 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: Six private regressions fail on main 964662d7: concurrent credential and pending-state writes lose entries; initial server.env is 0644; unreadable credential bytes and corrupt connector definitions are overwritten; pending_take returns a state even when its removal failed.
 COST: Six new regression tests fail; the 245-second baseline run proves that acknowledgement can follow data loss or failed state consumption.
 FIX: PR candidate serializes updates, commits private synced files atomically, retains corrupt stores, and refuses exchange when consumption cannot commit. No live storage changed; validation and review required before deployment.
+
+## Connector refresh can discard rotated grants or acknowledge an uncommitted rotation
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; no live board changes)
+SYMPTOM: Connector mint and Google/Gmail health refreshes reuse the old refresh token after a provider returns a new one. Concurrent workers exchange the same grant without a lease. Gmail caches successful HTTP refreshes before their best-effort write. Slack tokens with no expiry or refresh token are rejected despite being valid nonexpiring grants.
+COST: Five regression tests fail on storage-only source 0f75eacd (0 passed, 5 failed), confirmed by a second run. The first run cost 141 seconds. After the fixes, 120 focused tests pass, including actual SIGKILL before the Gmail mirror update. Provider calls use private mocks, never live accounts.
+FIX: PR candidate serializes refresh and grant replacement with an account lease, retains rotations and identity metadata, commits before success, and links Gmail compatibility copies by refresh-credential identity. Test SIGKILL after the canonical commit and before mirror update, then recover the committed grant and lease. Review required; no deployment.

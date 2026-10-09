@@ -44,6 +44,7 @@ use crate::integrations::email::{
     base64url_nopad, connected_accounts_in, html_escape, HttpTransport, ReqwestTransport,
     DEFAULT_TOKEN_URI,
 };
+use crate::integrations::oauth_store;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -819,12 +820,18 @@ fn pending_take(home: &std::path::Path, state: &str) -> Option<(String, String, 
     let take = || -> std::io::Result<Option<Value>> {
         let _lease = crate::integrations::secure_store::lock(&p)?;
         let mut d: Map<String, Value> = crate::integrations::secure_store::read_json(&p)?;
-        let Some(e) = d.remove(state) else { return Ok(None); };
+        let Some(e) = d.remove(state) else {
+            return Ok(None);
+        };
         crate::integrations::secure_store::write(&p, Value::Object(d).to_string().as_bytes())?;
         Ok(Some(e))
     };
     let e = match take() {
-        Ok(e) => e?, Err(error) => { tracing::warn!(%error, verdict = "connector_pending_consume_failed", "OAuth state not consumed; no exchange attempted"); return None; }
+        Ok(e) => e?,
+        Err(error) => {
+            tracing::warn!(%error, verdict = "connector_pending_consume_failed", "OAuth state not consumed; no exchange attempted");
+            return None;
+        }
     };
     if now_ts() - e.get("ts").and_then(Value::as_f64).unwrap_or(0.0) > PENDING_TTL_S {
         return None;
@@ -927,7 +934,9 @@ async fn mattermost_login(
 /// global (credential presence + token); per-scope enablement is the scope
 /// read.
 async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
-    if let Err(e) = load_custom_checked(&amux_home()) { return storage_error(e); }
+    if let Err(e) = load_custom_checked(&amux_home()) {
+        return storage_error(e);
+    }
     let file_env = parse_env_file(&amux_home().join("server.env"));
     let items: Vec<Value> = REGISTRY
         .iter()
@@ -1195,10 +1204,12 @@ async fn create_connector(Json(body): Json<Value>) -> Response {
             .into_response();
     }
     let _lease = match crate::integrations::secure_store::lock(&custom_store_path(&home)) {
-        Ok(lease) => lease, Err(e) => return storage_error(e),
+        Ok(lease) => lease,
+        Err(e) => return storage_error(e),
     };
     let mut list = match load_custom_checked(&home) {
-        Ok(list) => list, Err(e) => return storage_error(e),
+        Ok(list) => list,
+        Err(e) => return storage_error(e),
     };
     if list.iter().any(|c| c.id == id) {
         return (
@@ -1295,10 +1306,12 @@ async fn delete_connector(Path(id): Path<String>) -> Response {
             .into_response();
     }
     let _lease = match crate::integrations::secure_store::lock(&custom_store_path(&home)) {
-        Ok(lease) => lease, Err(e) => return storage_error(e),
+        Ok(lease) => lease,
+        Err(e) => return storage_error(e),
     };
     let mut list = match load_custom_checked(&home) {
-        Ok(list) => list, Err(e) => return storage_error(e),
+        Ok(list) => list,
+        Err(e) => return storage_error(e),
     };
     let before = list.len();
     let removed: Vec<String> = list
@@ -1384,8 +1397,13 @@ async fn set_credentials(Path(id): Path<String>, Json(body): Json<Value>) -> Res
         )
             .into_response();
     }
-    let updates: Vec<(&str, &str)> = written.iter().map(|k| (k.as_str(), obj[k].as_str().unwrap_or("").trim())).collect();
-    if let Err(e) = super::settings::set_server_env_keys(&home, &updates) { return storage_error(e); }
+    let updates: Vec<(&str, &str)> = written
+        .iter()
+        .map(|k| (k.as_str(), obj[k].as_str().unwrap_or("").trim()))
+        .collect();
+    if let Err(e) = super::settings::set_server_env_keys(&home, &updates) {
+        return storage_error(e);
+    }
     // Redacted audit — names of keys written, NEVER the values (two-fixes rule:
     // grep `connector_credentials` to see who set what, without leaking it).
     tracing::info!(
@@ -1460,6 +1478,13 @@ async fn begin_auth(
         .get("account")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    if !account.is_empty() && !oauth_store::valid_account(&account) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid connector account"})),
+        )
+            .into_response();
+    }
     let file_env = parse_env_file(&ctx.home.join("server.env"));
     match p.auth {
         Auth::ApiKey { .. } => Json(json!({
@@ -1500,6 +1525,13 @@ async fn begin_auth(
             } else {
                 account
             };
+            if !oauth_store::valid_account(&account) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid connector account"})),
+                )
+                    .into_response();
+            }
             match mattermost_login(&ctx.http, &base_url, &username, &password).await {
                 Ok((token, user_id)) => {
                     let store = json!({
@@ -1965,6 +1997,27 @@ async fn complete_exchange(
                 }
             })
     };
+    let path = match oauth_store::family_path(&ctx.home, &family, &account) {
+        Ok(path) => path,
+        Err(_) => {
+            return cb_page(
+                StatusCode::BAD_REQUEST,
+                "<h2>Invalid connector account</h2>".into(),
+            )
+        }
+    };
+    let _lease = match oauth_store::lock(&ctx.home, &family, &account).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            return cb_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "<h2>Grant storage unavailable</h2><pre>{}</pre>",
+                    html_escape(&error.to_string())
+                ),
+            )
+        }
+    };
     let granted_scopes = body
         .get("scope")
         .and_then(Value::as_str)
@@ -1984,7 +2037,7 @@ async fn complete_exchange(
         "scopes": granted_scopes,
         "expires_at": expires_at,
     });
-    if let Err(e) = write_store_file(&store_path(&ctx.home, &family, &account), &store) {
+    if let Err(e) = write_store_file(&path, &store) {
         return cb_page(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!(
@@ -2008,7 +2061,12 @@ async fn complete_exchange(
         });
         let dir = ctx.home.join("gmail-tokens");
         mirrored = std::fs::create_dir_all(&dir)
-            .and_then(|_| crate::integrations::secure_store::write(&dir.join(format!("{account}.json")), legacy.to_string().as_bytes()))
+            .and_then(|_| {
+                crate::integrations::secure_store::write(
+                    &dir.join(format!("{account}.json")),
+                    legacy.to_string().as_bytes(),
+                )
+            })
             .is_ok();
     }
     tracing::info!(
@@ -2056,14 +2114,24 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
     let status = result.get("status").and_then(Value::as_str).unwrap_or("");
     let detail = result.get("detail").and_then(Value::as_str).unwrap_or("");
     let mut all = last_tests(home);
-    all.insert(id.to_string(), json!({"ok": ok, "status": status, "detail": detail, "at": crate::config::now_f64()}));
+    all.insert(
+        id.to_string(),
+        json!({"ok": ok, "status": status, "detail": detail, "at": crate::config::now_f64()}),
+    );
     let tmp = last_tests_path(home).with_extension("json.tmp");
     if std::fs::write(&tmp, Value::Object(all).to_string()).is_ok() {
         let _ = std::fs::rename(&tmp, last_tests_path(home));
     }
     if !ok {
-        tracing::warn!(connector = id, status, detail, measured = true, n_considered = 1,
-            verdict = "connector_test_failed", "a connector's live test failed; the list now reports it");
+        tracing::warn!(
+            connector = id,
+            status,
+            detail,
+            measured = true,
+            n_considered = 1,
+            verdict = "connector_test_failed",
+            "a connector's live test failed; the list now reports it"
+        );
     }
 }
 
@@ -2071,12 +2139,21 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
 /// connector whose last real test failed reads "error" with that test's own
 /// words. A "needs_*" answer is not a failed test (nothing was tried).
 pub(crate) fn status_after_test(computed: &str, last: Option<&Value>) -> (String, Option<String>) {
-    let Some(t) = last else { return (computed.to_string(), None) };
+    let Some(t) = last else {
+        return (computed.to_string(), None);
+    };
     let ok = t.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let st = t.get("status").and_then(Value::as_str).unwrap_or("");
     if computed == "connected" && !ok && !st.starts_with("needs_credentials") {
-        let detail = t.get("detail").and_then(Value::as_str).unwrap_or("").to_string();
-        return ("error".to_string(), Some(format!("last live test failed: {detail}")));
+        let detail = t
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        return (
+            "error".to_string(),
+            Some(format!("last live test failed: {detail}")),
+        );
     }
     (computed.to_string(), None)
 }
@@ -2571,6 +2648,16 @@ async fn mint_connector_token(
         .get("account")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    if req_account
+        .as_deref()
+        .is_some_and(|account| !oauth_store::valid_account(account))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid connector account"})),
+        )
+            .into_response();
+    }
     let stored = store_accounts(&ctx.home, family);
     // Route the mint. An explicit `?account=` that has a stored USER grant wins
     // (the SA cannot impersonate outside its Workspace domain — a personal
@@ -2727,7 +2814,20 @@ async fn mint_from_user_grant(
     account: &str,
     scope: &str,
 ) -> Response {
-    let fam_path = store_path(&ctx.home, family, account);
+    let fam_path = match oauth_store::family_path(&ctx.home, family, account) {
+        Ok(path) => path,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok":false,"error":"invalid connector account"})),
+            )
+                .into_response()
+        }
+    };
+    let _lease = match oauth_store::lock(&ctx.home, family, account).await {
+        Ok(lease) => lease,
+        Err(error) => return storage_error(error),
+    };
     let legacy_path = ctx
         .home
         .join("gmail-tokens")
@@ -2759,25 +2859,19 @@ async fn mint_from_user_grant(
             .into_response();
     };
     let s = |k: &str| tf.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    // Fresh stored token (60s safety margin): serve it without a round trip.
-    // Legacy gmail files carry no expires_at, so they always refresh — which
-    // is also what keeps their stored `token` field usable for email.rs.
+    // Slack's ordinary bot grants do not expire when rotation is disabled.
+    // Unknown Google expiry still requires a refresh; it is not evidence of a
+    // nonexpiring token. Rotating Slack grants always carry an expiry.
     let expires_at = tf.get("expires_at").and_then(Value::as_f64);
-    if let Some(exp) = expires_at {
-        let left = exp - now_ts();
-        if left > 60.0 && !s("token").is_empty() {
-            return Json(json!({
-                "ok": true,
-                "access_token": s("token"),
-                "token_type": "Bearer",
-                "expires_in": left as u64,
-                "scope": tf.get("scopes").and_then(Value::as_str).unwrap_or(scope),
-                "subject": account,
-                "source": "user-grant (stored)",
-                "usage": "Authorization: Bearer <access_token>",
-            }))
-            .into_response();
-        }
+    let remaining = expires_at.map(|exp| exp - now_ts());
+    let nonexpiring = family == "slack" && expires_at.is_none() && s("refresh_token").is_empty();
+    if !s("token").is_empty() && (remaining.is_some_and(|left| left > 60.0) || nonexpiring) {
+        return Json(json!({
+            "ok":true,"access_token":s("token"),"token_type":"Bearer",
+            "expires_in":remaining.map(|left| left as u64),
+            "scope":tf.get("scopes").and_then(Value::as_str).unwrap_or(scope),
+            "subject":account,"source":"user-grant (stored)","usage":"Authorization: Bearer <access_token>",
+        })).into_response();
     }
     let refresh = s("refresh_token");
     if refresh.is_empty() {
@@ -2817,23 +2911,13 @@ async fn mint_from_user_grant(
                     .into_response();
             }
             let expires_in = body.get("expires_in").and_then(Value::as_f64).unwrap_or(3599.0);
-            // Persist so the NEXT mint (any worker) skips the round trip; the
-            // legacy gmail shape keeps its exact five fields.
-            let updated = if legacy {
-                json!({
-                    "token": access,
-                    "refresh_token": refresh,
-                    "token_uri": token_uri,
-                    "client_id": s("client_id"),
-                    "client_secret": s("client_secret"),
-                })
-            } else {
-                let mut m = tf.as_object().cloned().unwrap_or_default();
-                m.insert("token".into(), json!(access));
-                m.insert("expires_at".into(), json!(now_ts() + expires_in));
-                Value::Object(m)
+            let updated = match oauth_store::refreshed(&tf, &body, !legacy) {
+                Ok(updated) => updated,
+                Err(error) => return (StatusCode::BAD_GATEWAY, Json(json!({"ok":false,"error":error.to_string()}))).into_response(),
             };
-            let _ = write_store_file(&path, &updated);
+            if let Err(error) = oauth_store::persist_refresh(&ctx.home, family, account, &path, &tf, updated) {
+                return storage_error(error);
+            }
             tracing::info!(
                 "connector_token: {} minted from user grant for {} (family {family}) expires_in={}",
                 p.id,
@@ -2977,7 +3061,7 @@ pub(crate) async fn accounts_rollup(
             {
                 "ok".to_string()
             } else {
-                probe_google_refresh(http, &path, &tf).await
+                probe_google_refresh(http, home, &a, &path, &tf).await
             };
             rows.entry(a.clone())
                 .or_default()
@@ -3035,11 +3119,12 @@ pub(crate) async fn accounts_rollup(
         // while calendar, drive and docs were never granted, so every
         // calendar call for that account fails with nothing on this page to
         // say why. Name the gap and the one grant that closes it.
-        let missing: Vec<&str> = if families.contains_key("gmail") && !families.contains_key("google") {
-            vec!["google"]
-        } else {
-            Vec::new()
-        };
+        let missing: Vec<&str> =
+            if families.contains_key("gmail") && !families.contains_key("google") {
+                vec!["google"]
+            } else {
+                Vec::new()
+            };
         let connect = (!missing.is_empty()).then(|| {
             format!("POST /api/connectors/google/auth?account={account} → open authorize_url, approve once (adds calendar, drive, docs)")
         });
@@ -3117,9 +3202,30 @@ fn grant_last_ok_age_days(path: &std::path::Path) -> Option<f64> {
 
 async fn probe_google_refresh(
     http: &Arc<dyn HttpTransport>,
+    home: &std::path::Path,
+    account: &str,
     path: &std::path::Path,
-    tf: &Value,
+    _snapshot: &Value,
 ) -> String {
+    let _lease = match oauth_store::lock(home, "google", account).await {
+        Ok(lease) => lease,
+        Err(_) => return "storage_error".into(),
+    };
+    let tf: Value = match crate::integrations::secure_store::read_json::<Value>(path) {
+        Ok(tf) if tf.is_object() => tf,
+        _ => return "storage_error".into(),
+    };
+    if tf
+        .get("expires_at")
+        .and_then(Value::as_f64)
+        .is_some_and(|exp| exp - now_ts() > 60.0)
+        && tf
+            .get("token")
+            .and_then(Value::as_str)
+            .is_some_and(|token| !token.is_empty())
+    {
+        return "ok".into();
+    }
     let s = |k: &str| tf.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let refresh = s("refresh_token");
     if refresh.is_empty() {
@@ -3148,14 +3254,13 @@ async fn probe_google_refresh(
             if access.is_empty() {
                 return "not_connected".into();
             }
-            let expires_in = body
-                .get("expires_in")
-                .and_then(Value::as_f64)
-                .unwrap_or(3599.0);
-            let mut m = tf.as_object().cloned().unwrap_or_default();
-            m.insert("token".into(), json!(access));
-            m.insert("expires_at".into(), json!(now_ts() + expires_in));
-            let _ = write_store_file(path, &Value::Object(m));
+            let updated = match oauth_store::refreshed(&tf, &body, true) {
+                Ok(updated) => updated,
+                Err(_) => return "not_connected".into(),
+            };
+            if oauth_store::persist_refresh(home, "google", account, path, &tf, updated).is_err() {
+                return "storage_error".into();
+            }
             "ok".into()
         }
         Ok((_, body)) if body.to_string().contains("invalid_grant") => {
@@ -3543,11 +3648,29 @@ mod tests {
         let (st, detail) = status_after_test("connected", Some(&failed));
         assert_eq!(st, "error");
         assert!(detail.unwrap().contains("unauthorized_client"));
-        assert_eq!(status_after_test("connected", Some(&json!({"ok": true, "status": "connected"}))).0, "connected");
+        assert_eq!(
+            status_after_test(
+                "connected",
+                Some(&json!({"ok": true, "status": "connected"}))
+            )
+            .0,
+            "connected"
+        );
         assert_eq!(status_after_test("connected", None).0, "connected");
-        assert_eq!(status_after_test("connected", Some(&json!({"ok": false, "status": "needs_credentials"}))).0, "connected",
-            "a test that could not run is not a failed test");
-        assert_eq!(status_after_test("needs_auth", Some(&failed)).0, "needs_auth", "a worse computed status stands");
+        assert_eq!(
+            status_after_test(
+                "connected",
+                Some(&json!({"ok": false, "status": "needs_credentials"}))
+            )
+            .0,
+            "connected",
+            "a test that could not run is not a failed test"
+        );
+        assert_eq!(
+            status_after_test("needs_auth", Some(&failed)).0,
+            "needs_auth",
+            "a worse computed status stands"
+        );
         let home = tempfile::tempdir().unwrap();
         record_test(home.path(), "google-gmail", &failed);
         assert_eq!(last_tests(home.path())["google-gmail"]["ok"], false);
@@ -3633,11 +3756,10 @@ mod tests {
     /// has said anything about this connector for this lane.
     #[test]
     fn entitlement_fails_closed_when_disabled_or_unset() {
-        let effective: Map<String, Value> =
-            json!({"gmail": {"account": "ethan@mixpeek.com"}})
-                .as_object()
-                .unwrap()
-                .clone();
+        let effective: Map<String, Value> = json!({"gmail": {"account": "ethan@mixpeek.com"}})
+            .as_object()
+            .unwrap()
+            .clone();
         let denial = connector_entitlement_decision(&effective, "w1", "gmail", None)
             .expect_err("no `enabled: true` must deny");
         assert_eq!(denial["blocked"], "connector_scope");
@@ -3660,14 +3782,15 @@ mod tests {
             "no explicit request: the scoped account is handed back as the default"
         );
         assert_eq!(
-            connector_entitlement_decision(
-                &effective, "w1", "gmail", Some("ethan@mixpeek.com")
-            ),
+            connector_entitlement_decision(&effective, "w1", "gmail", Some("ethan@mixpeek.com")),
             Ok(Some("ethan@mixpeek.com".to_string())),
             "matching request: allowed"
         );
         let denial = connector_entitlement_decision(
-            &effective, "w1", "gmail", Some("someone-else@mixpeek.com"),
+            &effective,
+            "w1",
+            "gmail",
+            Some("someone-else@mixpeek.com"),
         )
         .expect_err("a DIFFERENT explicit account must be denied");
         assert_eq!(denial["blocked"], "connector_scope");
@@ -3680,8 +3803,10 @@ mod tests {
     /// there is nothing to pin against, so this must not falsely deny.
     #[test]
     fn entitlement_with_no_pinned_account_allows_any_requested_account() {
-        let effective: Map<String, Value> =
-            json!({"slack": {"enabled": true}}).as_object().unwrap().clone();
+        let effective: Map<String, Value> = json!({"slack": {"enabled": true}})
+            .as_object()
+            .unwrap()
+            .clone();
         assert_eq!(
             connector_entitlement_decision(&effective, "w1", "slack", Some("T999")),
             Ok(None)
@@ -4832,7 +4957,10 @@ mod connector_storage_regressions {
         std::fs::create_dir_all(home.path().join("connectors")).unwrap();
         let path = custom_store_path(home.path());
         std::fs::write(&path, "{broken registry").unwrap();
-        let response = create_connector(Json(json!({"id":"fixture", "label":"Fixture", "key_env":"FIXTURE_KEY"}))).await;
+        let response = create_connector(Json(
+            json!({"id":"fixture", "label":"Fixture", "key_env":"FIXTURE_KEY"}),
+        ))
+        .await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken registry");
     }
@@ -4843,11 +4971,27 @@ mod connector_storage_regressions {
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
         std::thread::scope(|scope| {
             for i in 0..16 {
-                let home = home.path(); let barrier = barrier.clone();
-                scope.spawn(move || { barrier.wait(); pending_save(home, &format!("state-{i}"), "google", "fixture@example.com", Some("verifier")).unwrap(); });
+                let home = home.path();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    pending_save(
+                        home,
+                        &format!("state-{i}"),
+                        "google",
+                        "fixture@example.com",
+                        Some("verifier"),
+                    )
+                    .unwrap();
+                });
             }
         });
-        for i in 0..16 { assert!(pending_take(home.path(), &format!("state-{i}")).is_some(), "lost pending state {i}"); }
+        for i in 0..16 {
+            assert!(
+                pending_take(home.path(), &format!("state-{i}")).is_some(),
+                "lost pending state {i}"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -4855,14 +4999,230 @@ mod connector_storage_regressions {
     fn connector_storage_pending_take_refuses_an_uncommitted_consumption() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
-        pending_save(home.path(), "state", "google", "fixture@example.com", Some("verifier")).unwrap();
-        let path = pending_path(home.path()); let dir = path.parent().unwrap();
+        pending_save(
+            home.path(),
+            "state",
+            "google",
+            "fixture@example.com",
+            Some("verifier"),
+        )
+        .unwrap();
+        let path = pending_path(home.path());
+        let dir = path.parent().unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
         let taken = pending_take(home.path(), "state");
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(taken.is_none(), "must not exchange a state whose removal failed");
-        assert!(pending_take(home.path(), "state").is_some(), "failed consume must remain recoverable");
+        assert!(
+            taken.is_none(),
+            "must not exchange a state whose removal failed"
+        );
+        assert!(
+            pending_take(home.path(), "state").is_some(),
+            "failed consume must remain recoverable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod connector_maintenance_regressions {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RefreshHttp {
+        calls: AtomicUsize,
+        hold_first: bool,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    impl RefreshHttp {
+        fn new(hold_first: bool) -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                hold_first,
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+            })
+        }
+    }
+    #[async_trait::async_trait]
+    impl HttpTransport for RefreshHttp {
+        async fn get(&self, _: &str, _: Option<&str>) -> Result<(u16, Value), String> {
+            Ok((200, json!({"emailAddress":"fixture@example.com"})))
+        }
+        async fn post_json(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &Value,
+        ) -> Result<(u16, Value), String> {
+            Err("unexpected JSON call".into())
+        }
+        async fn post_form(
+            &self,
+            _: &str,
+            form: &[(String, String)],
+        ) -> Result<(u16, Value), String> {
+            assert_eq!(
+                form.iter().find(|(k, _)| k == "refresh_token").unwrap().1,
+                "old-refresh"
+            );
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 && self.hold_first {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            Ok((
+                200,
+                json!({"access_token":"new-access", "refresh_token":"rotated-refresh", "expires_in":3600}),
+            ))
+        }
+    }
+    fn seed(home: &std::path::Path) -> PathBuf {
+        let path = store_path(home, "google", "fixture@example.com");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json!({"token":"old-access", "refresh_token":"old-refresh", "expires_at":0, "token_uri":"https://fixture.invalid/token", "client_id":"fixture-client", "client_secret":"fixture-secret", "scopes":"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify", "identity_unverified":true}).to_string()).unwrap();
+        path
+    }
+    fn ctx(home: &std::path::Path, http: Arc<RefreshHttp>) -> ConnectorsCtx {
+        ConnectorsCtx {
+            home: home.into(),
+            http,
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_slack_nonexpiring_token_is_usable() {
+        let home = tempfile::tempdir().unwrap();
+        let path = store_path(home.path(), "slack", "Fixture Workspace");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            json!({"token":"fixture-slack-token", "expires_at":null}).to_string(),
+        )
+        .unwrap();
+        let http = RefreshHttp::new(false);
+        let response = mint_from_user_grant(
+            &ctx(home.path(), http.clone()),
+            provider("slack").unwrap(),
+            "slack",
+            "Fixture Workspace",
+            "",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(http.calls.load(Ordering::SeqCst), 0);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["access_token"], "fixture-slack-token");
+        assert_eq!(value["expires_in"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_mint_persists_rotated_refresh_and_metadata() {
+        let home = tempfile::tempdir().unwrap();
+        let path = seed(home.path());
+        let http = RefreshHttp::new(false);
+        let response = mint_from_user_grant(
+            &ctx(home.path(), http),
+            provider("google-drive").unwrap(),
+            "google",
+            "fixture@example.com",
+            "drive",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored["refresh_token"], "rotated-refresh");
+        assert_eq!(stored["identity_unverified"], true);
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_health_refresh_persists_rotation() {
+        let home = tempfile::tempdir().unwrap();
+        let path = seed(home.path());
+        let http: Arc<dyn HttpTransport> = RefreshHttp::new(false);
+        let tf = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            probe_google_refresh(&http, home.path(), "fixture@example.com", &path, &tf).await,
+            "ok"
+        );
+        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored["refresh_token"], "rotated-refresh");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connector_maintenance_failed_persistence_is_not_success() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let path = seed(home.path());
+        let http = RefreshHttp::new(false);
+        drop(crate::integrations::secure_store::lock(&path).unwrap());
+        let dir = path.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let response = mint_from_user_grant(
+            &ctx(home.path(), http.clone()),
+            provider("google-drive").unwrap(),
+            "google",
+            "fixture@example.com",
+            "drive",
+        )
+        .await;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            1,
+            "the failure must be the commit after a successful refresh"
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored["refresh_token"], "old-refresh");
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_two_workers_do_not_reuse_a_rotating_grant() {
+        let home = tempfile::tempdir().unwrap();
+        let path = seed(home.path());
+        let http = RefreshHttp::new(true);
+        let first_ctx = ctx(home.path(), http.clone());
+        let first = tokio::spawn(async move {
+            mint_from_user_grant(
+                &first_ctx,
+                provider("google-drive").unwrap(),
+                "google",
+                "fixture@example.com",
+                "drive",
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), http.entered.notified())
+            .await
+            .expect("first worker must reach refresh");
+        let second_ctx = ctx(home.path(), http.clone());
+        let second = tokio::spawn(async move {
+            mint_from_user_grant(
+                &second_ctx,
+                provider("google-drive").unwrap(),
+                "google",
+                "fixture@example.com",
+                "drive",
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        http.release.notify_one();
+        assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(second.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            1,
+            "the second worker must re-read the committed fresh grant"
+        );
+        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored["refresh_token"], "rotated-refresh");
     }
 }

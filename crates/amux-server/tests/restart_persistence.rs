@@ -62,6 +62,8 @@ struct Rig {
     child: Option<Child>,
     client: reqwest::Client,
     log: PathBuf,
+    /// Local OAuth fixtures own the wire; suppress external health probes.
+    no_external_probes: bool,
     /// Keeps the temp dir alive for the rig's lifetime.
     _tmp: tempfile::TempDir,
 }
@@ -98,6 +100,7 @@ impl Rig {
             child: None,
             client,
             log,
+            no_external_probes: false,
             _tmp: tmp,
         }
     }
@@ -117,6 +120,7 @@ impl Rig {
             .env("AMUX_DB", &self.db)
             .env("TMUX_TMPDIR", self._tmp.path())
             .env("AMUX_NO_SELF_ADOPT", "1")
+            .envs(self.no_external_probes.then_some(("AMUX_AUTOFIX_SECS", "0")))
             .env("AMUX_RS_PORT", self.port.to_string())
             // Auth off: this is a loopback-only temp server.
             .env("AMUX_AUTH_TOKEN", "none")
@@ -946,4 +950,113 @@ async fn acknowledged_connector_state_survives_sigkill_without_lost_concurrent_u
         }
     }
     assert!(!list.to_string().contains("fixture-only"), "inventory never returns a credential");
+}
+
+/// Real TLS broker -> local OAuth fixture -> durable rotation -> SIGKILL ->
+/// TLS broker. The fixture is an actual HTTP server, never a live provider.
+#[cfg(unix)]
+#[tokio::test]
+async fn committed_oauth_rotation_is_served_after_sigkill() {
+    use axum::{extract::Form, http::StatusCode, Json};
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fixture_calls = calls.clone();
+    let endpoint = axum::Router::new().route("/token", axum::routing::post(move |Form(form): Form<std::collections::HashMap<String,String>>| {
+        let calls = fixture_calls.clone();
+        async move {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            if n != 0 || form.get("refresh_token").map(String::as_str) != Some("old-refresh") || form.get("grant_type").map(String::as_str) != Some("refresh_token") {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant"})));
+            }
+            (StatusCode::OK, Json(json!({"access_token":"committed-access","refresh_token":"rotated-refresh","expires_in":3600})))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}/token", listener.local_addr().unwrap());
+    let provider = tokio::spawn(async move {
+        axum::serve(listener, endpoint).await.unwrap();
+    });
+    let mut rig = Rig::new();
+    rig.no_external_probes = true;
+    let account = "fixture@example.com";
+    let canonical = rig
+        .home
+        .join("connectors/google")
+        .join(format!("{account}.json"));
+    let mirror = rig
+        .home
+        .join("gmail-tokens")
+        .join(format!("{account}.json"));
+    std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+    let old = json!({"token":"old-access","refresh_token":"old-refresh","client_id":"fixture-client","client_secret":"fixture-secret","token_uri":uri,"scopes":"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify","expires_at":0});
+    std::fs::write(&canonical, old.to_string()).unwrap();
+    std::fs::write(&mirror, old.to_string()).unwrap();
+    rig.spawn();
+    rig.wait_healthy().await;
+    // Make the compatibility write fail after the canonical commit. Both the
+    // old copy and its fingerprint survive; readers must use the new grant.
+    std::fs::set_permissions(
+        mirror.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
+    let response = rig
+        .client
+        .post(rig.url("/api/connectors/google-drive/token?account=fixture%40example.com"))
+        .send()
+        .await;
+    std::fs::set_permissions(
+        mirror.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let response = response.unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["access_token"], "committed-access");
+    assert_eq!(body["source"], "user-grant (refreshed)");
+    let committed: Value = serde_json::from_slice(&std::fs::read(&canonical).unwrap()).unwrap();
+    assert_eq!(committed["refresh_token"], "rotated-refresh");
+    assert_eq!(
+        committed["gmail_mirror_refresh_sha256"],
+        hex::encode(Sha256::digest(b"old-refresh"))
+    );
+    let stale: Value = serde_json::from_slice(&std::fs::read(&mirror).unwrap()).unwrap();
+    assert_eq!(
+        stale["refresh_token"], "old-refresh",
+        "the failed mirror write must actually be exercised"
+    );
+    rig.restart().await;
+    let response = rig
+        .client
+        .post(rig.url("/api/connectors/google-drive/token?account=fixture%40example.com"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["access_token"], "committed-access");
+    assert_eq!(body["source"], "user-grant (stored)");
+    let retained: Value = serde_json::from_slice(&std::fs::read(&canonical).unwrap()).unwrap();
+    assert_eq!(retained["refresh_token"], "rotated-refresh");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "restart must adopt the committed refresh without replaying it"
+    );
+    assert!(
+        std::fs::read_to_string(&rig.log)
+            .unwrap()
+            .contains("connector_gmail_mirror_deferred"),
+        "the recoverable copy failure must self-announce"
+    );
+    rig.kill();
+    provider.abort();
+    let _ = provider.await;
 }

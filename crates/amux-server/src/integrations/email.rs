@@ -29,11 +29,14 @@
 //! All HTTP goes through the [`HttpTransport`] trait so tests mock the wire
 //! and never touch the network.
 
+use super::oauth_store;
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub const GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 pub const DEFAULT_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
@@ -908,18 +911,11 @@ struct TokenFile {
 pub struct GmailClient {
     http: Arc<dyn HttpTransport>,
     home: PathBuf,
-    /// account -> live access token (in-memory; the file may hold a stale
-    /// one, which the 401-retry path replaces).
-    token_cache: Mutex<HashMap<String, String>>,
 }
 
 impl GmailClient {
     pub fn new(http: Arc<dyn HttpTransport>, home: PathBuf) -> Self {
-        Self {
-            http,
-            home,
-            token_cache: Mutex::new(HashMap::new()),
-        }
+        Self { http, home }
     }
 
     pub fn new_default() -> Self {
@@ -935,9 +931,7 @@ impl GmailClient {
     }
 
     fn token_path(&self, account: &str) -> PathBuf {
-        self.home
-            .join("gmail-tokens")
-            .join(format!("{account}.json"))
+        oauth_store::gmail_path(&self.home, account)
     }
 
     /// Load the token file, merging client id/secret from
@@ -990,105 +984,58 @@ impl GmailClient {
     ///
     /// The temp file is created IN THE DESTINATION'S DIRECTORY on purpose: a
     /// rename across filesystems fails, and /tmp is routinely a different one.
+    #[cfg(test)]
     fn write_token_file_atomically(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
         crate::integrations::secure_store::write(path, contents.as_bytes())
     }
 
-    /// Current access token; `force_refresh` bypasses cache + stored token
-    /// (the 401-retry path). Persists the refreshed token in Python's exact
-    /// file shape so both servers keep working off one file.
-    async fn access_token(&self, account: &str, force_refresh: bool) -> Result<String, String> {
-        if !force_refresh {
-            if let Some(t) = self.token_cache.lock().expect("token cache").get(account) {
-                return Ok(t.clone());
-            }
-        }
+    /// Read the committed grant under the shared account lease. A 401 names
+    /// the rejected token, so a peer's freshly committed replacement is reused
+    /// instead of rotating the same credential again. No volatile cache can
+    /// hide a failed persistence or an explicit account disconnect.
+    async fn access_token(&self, account: &str, rejected: Option<&str>) -> Result<String, String> {
+        let _lease = oauth_store::lock(&self.home, "google", account)
+            .await
+            .map_err(|e| e.to_string())?;
+        let path = self.token_path(account);
+        let mut document: Value =
+            crate::integrations::secure_store::read_json(&path).map_err(|e| e.to_string())?;
         let tf = self
             .load_token_file(account)
             .ok_or_else(|| "not_connected".to_string())?;
-        if !force_refresh {
-            if let Some(t) = &tf.token {
-                self.token_cache
-                    .lock()
-                    .expect("token cache")
-                    .insert(account.into(), t.clone());
-                return Ok(t.clone());
+        let fresh = document
+            .get("expires_at")
+            .and_then(Value::as_f64)
+            .is_none_or(|exp| exp - crate::config::now_f64() > 60.0);
+        if let Some(token) = &tf.token {
+            if fresh && rejected != Some(token.as_str()) {
+                return Ok(token.clone());
             }
         }
         let refresh = tf
             .refresh_token
-            .clone()
             .ok_or_else(|| "not_connected (no refresh_token stored)".to_string())?;
         let form = vec![
-            ("grant_type".to_string(), "refresh_token".to_string()),
-            ("refresh_token".to_string(), refresh.clone()),
-            ("client_id".to_string(), tf.client_id.clone()),
-            ("client_secret".to_string(), tf.client_secret.clone()),
+            ("grant_type".into(), "refresh_token".into()),
+            ("refresh_token".into(), refresh),
+            ("client_id".into(), tf.client_id.clone()),
+            ("client_secret".into(), tf.client_secret.clone()),
         ];
         let (status, body) = self.http.post_form(&tf.token_uri, &form).await?;
         if status >= 400 {
-            // invalid_grant (revoked/expired) must stay visible in the error
-            // text — it is the discriminator between "re-auth needed" and
-            // "not connected" (the 2026-08-07 wrong-probe incident).
             return Err(format!("token refresh failed ({status}): {body}"));
         }
-        let access = body
-            .get("access_token")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("token refresh response missing access_token: {body}"))?
-            .to_string();
-        self.token_cache
-            .lock()
-            .expect("token cache")
-            .insert(account.into(), access.clone());
-        // AF-117. GOOGLE MAY ROTATE THE REFRESH TOKEN, and this used to persist
-        // the one it had just SENT rather than the one it got back. When the
-        // token endpoint returns a `refresh_token`, the one you presented is
-        // invalidated — so writing the old one back means the NEXT refresh
-        // presents a dead credential and fails `invalid_grant`. The account goes
-        // `needs_reauth`, every /api/email/* call for it 502s, and the only
-        // remedy is a human in a browser.
-        //
-        // That is not hypothetical: it is exactly the failure recorded on
-        // hello@amux.io — `token refresh failed (400): {"error":"invalid_grant"}`
-        // on both /api/email/inbox and /api/email/reply. Rotation is silent, so
-        // the account works right up until the access token expires, then dies
-        // permanently, which is why it reads as "the token just went bad".
-        //
-        // Absence means KEEP THE OLD ONE: Google omits `refresh_token` from most
-        // refresh responses, and treating absent as empty would delete a working
-        // credential on every single refresh.
-        let rotated = body
-            .get("refresh_token")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty());
-        if let Some(new_rt) = rotated {
-            if new_rt != refresh {
-                tracing::warn!(
-                    account = %account,
-                    "[gmail] refresh token ROTATED by the token endpoint — persisting the new \
-                     one; keeping the old would fail the next refresh with invalid_grant (AF-117)"
-                );
-            }
-        }
-        let persisted = json!({
-            "token": access,
-            "refresh_token": rotated.unwrap_or(refresh.as_str()),
-            "token_uri": tf.token_uri,
-            "client_id": tf.client_id,
-            "client_secret": tf.client_secret,
-        });
-        // ATOMIC, not a truncating write. This file is the ONLY copy of the
-        // refresh token and both servers read it. A plain `fs::write` opens with
-        // O_TRUNC, so a crash or a builder restart mid-write leaves a truncated
-        // or empty file — and on this box the auto-builder restarts the server
-        // on every landed commit. A torn token file is unrecoverable without a
-        // human in a browser, which is the same cost as the bug above.
-        //
-        // Still best-effort: a failed write must not fail the send, since the
-        // access token in hand is good for the call being made.
-        let _ =
-            Self::write_token_file_atomically(&self.token_path(account), &persisted.to_string());
+        // Legacy client config may supply these fields; preserve all other
+        // metadata, including the identity-verification warning.
+        document["client_id"] = json!(tf.client_id);
+        document["client_secret"] = json!(tf.client_secret);
+        document["token_uri"] = json!(tf.token_uri);
+        let updated =
+            oauth_store::refreshed(&document, &body, document.get("expires_at").is_some())
+                .map_err(|e| e.to_string())?;
+        let access = updated["token"].as_str().unwrap().to_string();
+        oauth_store::persist_refresh(&self.home, "google", account, &path, &document, updated)
+            .map_err(|e| e.to_string())?;
         Ok(access)
     }
 
@@ -1101,7 +1048,7 @@ impl GmailClient {
         url: &str,
         body: Option<&Value>,
     ) -> Result<Value, String> {
-        let mut token = self.access_token(account, false).await?;
+        let mut token = self.access_token(account, None).await?;
         let mut refreshed = false;
         let mut last: Option<(u16, Value)> = None;
         for attempt in 0..4u32 {
@@ -1112,7 +1059,7 @@ impl GmailClient {
             };
             if status == 401 && !refreshed {
                 refreshed = true;
-                token = self.access_token(account, true).await?;
+                token = self.access_token(account, Some(&token)).await?;
                 continue;
             }
             // AMUX-3495: quota pushback retries instead of failing. The 8-wide
@@ -1227,7 +1174,7 @@ impl GmailClient {
         headers: &[&str],
     ) -> Vec<Option<Value>> {
         let mut out: Vec<Option<Value>> = vec![None; mids.len()];
-        let Ok(mut token) = self.access_token(account, false).await else {
+        let Ok(mut token) = self.access_token(account, None).await else {
             return out;
         };
         let ct = format!("multipart/mixed; boundary={GMAIL_BATCH_BOUNDARY}");
@@ -1247,7 +1194,7 @@ impl GmailClient {
                 .post_raw(GMAIL_BATCH_URL, Some(&token), &ct, body.clone())
                 .await;
             if matches!(&resp, Ok((401, _))) {
-                if let Ok(t2) = self.access_token(account, true).await {
+                if let Ok(t2) = self.access_token(account, Some(&token)).await {
                     token = t2;
                     resp = self
                         .http
@@ -1464,12 +1411,24 @@ impl GmailClient {
     /// attachmentId behind a second endpoint, and the server log showed no
     /// worker ever fetching one: an agent sees an image only as a file it can
     /// read. Cached by message id; a part over 25 MB is listed, not saved.
-    async fn save_attachments(&self, account: &str, gmail_id: &str, list: Vec<Value>) -> Vec<Value> {
+    async fn save_attachments(
+        &self,
+        account: &str,
+        gmail_id: &str,
+        list: Vec<Value>,
+    ) -> Vec<Value> {
         const MAX_BYTES: i64 = 25 * 1024 * 1024;
-        let dir = self.home.join("email-attachments").join(sanitize_filename(gmail_id));
+        let dir = self
+            .home
+            .join("email-attachments")
+            .join(sanitize_filename(gmail_id));
         let mut out = Vec::with_capacity(list.len());
         for (i, mut att) in list.into_iter().enumerate() {
-            let inline_data = att.get("_data").and_then(Value::as_str).unwrap_or("").to_string();
+            let inline_data = att
+                .get("_data")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if let Some(o) = att.as_object_mut() {
                 o.remove("_data");
             }
@@ -1479,11 +1438,19 @@ impl GmailClient {
                 out.push(att);
                 continue;
             }
-            let name = sanitize_filename(att.get("filename").and_then(Value::as_str).unwrap_or("attachment"));
+            let name = sanitize_filename(
+                att.get("filename")
+                    .and_then(Value::as_str)
+                    .unwrap_or("attachment"),
+            );
             // Index-prefixed: an inline logo repeated nine times shares a filename.
             let path = dir.join(format!("{i:02}-{name}"));
             if !path.exists() {
-                let attachment_id = att.get("attachment_id").and_then(Value::as_str).unwrap_or("").to_string();
+                let attachment_id = att
+                    .get("attachment_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let bytes = if !attachment_id.is_empty() {
                     self.get_attachment(account, gmail_id, &attachment_id).await
                 } else if !inline_data.is_empty() {
@@ -2799,6 +2766,108 @@ mod tests {
     /// message now puts each attachment on disk with a `path` a worker can open,
     /// including small parts Gmail embeds with no attachmentId.
     #[tokio::test]
+    async fn linked_gmail_reader_uses_the_committed_family_grant() {
+        use crate::integrations::oauth_store;
+        let home = temp_home_with_token("acct@example.com", true);
+        let old: Value = serde_json::from_slice(
+            &std::fs::read(home.path().join("gmail-tokens/acct@example.com.json")).unwrap(),
+        )
+        .unwrap();
+        let mut grant = old.clone();
+        grant["scopes"] = json!("https://www.googleapis.com/auth/gmail.modify");
+        grant["identity_unverified"] = json!(true);
+        grant["expires_at"] = json!(crate::config::now_f64() + 3600.0);
+        let path = oauth_store::family_path(home.path(), "google", "acct@example.com").unwrap();
+        let new = oauth_store::refreshed(&grant, &json!({"access_token":"committed-family-access","refresh_token":"rotated-family-refresh"}), true).unwrap();
+        oauth_store::persist_refresh(
+            home.path(),
+            "google",
+            "acct@example.com",
+            &path,
+            &grant,
+            new,
+        )
+        .unwrap();
+        let http = MockHttp::new(vec![]);
+        let client = GmailClient::new(http.clone(), home.path().into());
+        assert_eq!(
+            client.access_token("acct@example.com", None).await.unwrap(),
+            "committed-family-access"
+        );
+        let mirror: Value = serde_json::from_slice(
+            &std::fs::read(home.path().join("gmail-tokens/acct@example.com.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mirror["identity_unverified"], true,
+            "identity warning must remain visible in the compatibility view"
+        );
+        assert!(http.calls.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_gmail_rotation_is_not_cached_or_reported_as_success() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = temp_home_with_token("acct@example.com", false);
+        let path = home.path().join("gmail-tokens/acct@example.com.json");
+        let mut original: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        original["identity_unverified"] = json!(true);
+        original["identity_unverified_why"] = json!("fixture identity probe failure");
+        std::fs::write(&path, original.to_string()).unwrap();
+        // Precreate the account lock, making publication the failing step.
+        drop(
+            crate::integrations::oauth_store::lock(home.path(), "google", "acct@example.com")
+                .await
+                .unwrap(),
+        );
+        let http = MockHttp::new(vec![
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({"access_token":"fresh-one","refresh_token":"rotated-one"}),
+            ),
+            (
+                "FORM",
+                "oauth2.googleapis.com/token",
+                200,
+                json!({"access_token":"fresh-two","refresh_token":"rotated-two"}),
+            ),
+        ]);
+        let client = GmailClient::new(http.clone(), home.path().into());
+        std::fs::set_permissions(
+            path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+        let failed = client.access_token("acct@example.com", None).await;
+        std::fs::set_permissions(
+            path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(
+            failed.is_err(),
+            "successful HTTP refresh is not a committed grant"
+        );
+        let retained: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(retained, original);
+        assert_eq!(
+            client.access_token("acct@example.com", None).await.unwrap(),
+            "fresh-two",
+            "failed refresh must not enter a volatile cache"
+        );
+        assert_eq!(http.calls.lock().unwrap().len(), 2);
+        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored["refresh_token"], "rotated-two");
+        assert_eq!(stored["identity_unverified"], true);
+        assert_eq!(
+            stored["identity_unverified_why"],
+            "fixture identity probe failure"
+        );
+    }
+    #[tokio::test]
     async fn reading_a_message_saves_its_attachments_where_a_worker_can_open_them() {
         let home = tempfile::tempdir().unwrap();
         let client = GmailClient::new(MockHttp::new(vec![]), home.path().to_path_buf());
@@ -2806,12 +2875,17 @@ mod tests {
             "attachment_id": "", "inline": false, "_data": "aGVsbG8"});
         let huge = json!({"filename": "video.mov", "mime_type": "video/quicktime",
             "size": 30 * 1024 * 1024, "attachment_id": "att-9", "inline": false, "_data": ""});
-        let out = client.save_attachments("me@x.example", "18c0ffee", vec![embedded, huge]).await;
+        let out = client
+            .save_attachments("me@x.example", "18c0ffee", vec![embedded, huge])
+            .await;
         let png = &out[0];
         let path = std::path::PathBuf::from(png["path"].as_str().expect("image saved with a path"));
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
         assert!(path.starts_with(home.path().join("email-attachments")));
-        assert!(png.get("_data").is_none(), "raw data must not reach the response");
+        assert!(
+            png.get("_data").is_none(),
+            "raw data must not reach the response"
+        );
         assert!(out[1].get("path").is_none());
         assert!(out[1]["path_error"].as_str().unwrap().contains("25 MB"));
     }
@@ -2823,7 +2897,11 @@ mod tests {
         // The Nissan Outlook spacer: an 823-byte inline JPEG.
         assert_eq!(attachment_kind("image/jpeg", 823, true), "signature");
         assert_eq!(attachment_kind("application/pdf", 900, true), "content");
-        assert_eq!(attachment_kind("image/png", 900, false), "content", "a real file is content");
+        assert_eq!(
+            attachment_kind("image/png", 900, false),
+            "content",
+            "a real file is content"
+        );
     }
 
     #[test]
@@ -3016,9 +3094,15 @@ mod tests {
             ("from", ME),
             ("to", ME),
         ]);
-        assert!(derive_reply_plan(&h, "<m@x>", ME, &connected(), false, false).is_err(), "without the opt-in it stays refused");
+        assert!(
+            derive_reply_plan(&h, "<m@x>", ME, &connected(), false, false).is_err(),
+            "without the opt-in it stays refused"
+        );
         let plan = derive_reply_plan(&h, "<m@x>", ME, &connected(), false, true).unwrap();
-        assert_eq!(plan.to, ME, "the opt-in the refusal names must be able to succeed");
+        assert_eq!(
+            plan.to, ME,
+            "the opt-in the refusal names must be able to succeed"
+        );
         assert_eq!(plan.subject, "Re: s");
     }
 
