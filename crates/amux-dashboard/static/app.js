@@ -19958,11 +19958,12 @@ function _atAgentsChip(s) {
 }
 
 // Populate dropdown with @session matches; returns true if @ mode active.
-// Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
+// Lists ACTIVE workers only (Ethan, 2026-10-09: "when I @ it should only list
+// active workers"): running and not archived. A query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
   const at = _atQuery(inp);
   if (at === null) return false;
-  let ranked = (sessions || []).map(s => {
+  let ranked = (sessions || []).filter(s => s.running && !s.archived).map(s => {
     const f = _fuzzyScore(at.q, s.name);
     return f ? { s, score: f.score, hits: f.hits } : null;
   }).filter(Boolean);
