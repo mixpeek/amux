@@ -5160,6 +5160,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
                 env.get("CC_BACKEND").map(String::as_str),
             ),
         }));
+        // The worker's Claude Code /goal, measured or why not (the same
+        // goal_status record the goal keeper reads). Set after the literal:
+        // the json! above is at the macro recursion limit.
+        if let Some(row) = out.last_mut() {
+            row["goal"] = if configured_provider == "claude" { crate::runtime_jobs::goal_keeper::goal_payload(&name) } else { serde_json::Value::Null };
+        }
         // The worker page's Chat tab (AMUX-5350): off unless switched on; the
         // companion chat worker names the worker it talks about. Set here, not
         // in the literal above, which is at json!'s recursion limit.
@@ -5325,6 +5331,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
             "archived": archived,
             "lifecycle": lifecycle,
             "provider": provider,
+            "goal": if provider == "claude" { crate::runtime_jobs::goal_keeper::goal_payload(&name) } else { serde_json::Value::Null },
             "worker_type": worker_type,
             "renderer": worker_type.descriptor().renderer,
             "model": model.unwrap_or_default(),
