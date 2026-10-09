@@ -991,20 +991,7 @@ impl GmailClient {
     /// The temp file is created IN THE DESTINATION'S DIRECTORY on purpose: a
     /// rename across filesystems fails, and /tmp is routinely a different one.
     fn write_token_file_atomically(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        std::fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!(
-            ".{}.tmp",
-            path.file_name().and_then(|s| s.to_str()).unwrap_or("token")
-        ));
-        std::fs::write(&tmp, contents)?;
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                Err(e)
-            }
-        }
+        crate::integrations::secure_store::write(path, contents.as_bytes())
     }
 
     /// Current access token; `force_refresh` bypasses cache + stored token

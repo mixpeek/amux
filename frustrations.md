@@ -5522,3 +5522,14 @@ CARD: AGH-8
 SYMPTOM: PR #241's iOS Safari shard failed worker-pause.spec.ts after tapping an enabled Resume item: no POST /api/workers/pause-probe/resume followed. The trace showed the item detached twice during click retries. _renderPeekWorkerActions compared live menu.innerHTML to the pristine template, but the feedback layer adds data-action and related attributes after insertion, so each updatePeekStatus replaced the still-open menu even when its actions were unchanged.
 COST: a real mobile tap could vanish, and an unrelated PR lost a 17-minute E2E shard plus review time.
 FIX: Cache the last generated template per menu element and update only when the action definition changes; retain a regression assertion that repeated status refreshes preserve the enabled Resume node. Emit one worker-action-menu decorated_menu_preserved client-debug verdict when the formerly destructive comparison would have replaced a live open menu.
+
+## Connector storage can erase concurrent changes and reuse unconsumed OAuth state
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: Six private regressions fail on main 964662d7: concurrent credential and pending-state writes lose entries; initial server.env is 0644; unreadable credential bytes and corrupt connector definitions are overwritten; pending_take returns a state even when its removal failed.
+COST: Six new regression tests fail; the 245-second baseline run proves that acknowledgement can follow data loss or failed state consumption.
+FIX: PR candidate serializes updates, commits private synced files atomically, retains corrupt stores, and refuses exchange when consumption cannot commit. No live storage changed; validation and review required before deployment.
