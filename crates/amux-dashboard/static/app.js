@@ -3747,6 +3747,9 @@ async function _runSyncBanner(quiet = false) {
     if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
       try { loadExplore(_explorePath); } catch (error) {}
     }
+    if (activeView === 'scratchpad' && typeof _scratchpadLoad === 'function') {
+      try { _scratchpadLoad(); } catch (error) {}
+    }
   }
   if (!offlineQueue.length && !drafts.length && !_uploadSyncPending) _writeError = '';
 
@@ -14020,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1281';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1282';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -26805,27 +26808,28 @@ async function _spCaptureSave(text) {
 // Any file (pasted, picked or dropped) is stored as-is in the scratchpad
 // folder (Ethan, 2026-10-09: "scratchpad should support sending files too").
 // A pasted image with no real name gets a timestamp name.
-async function _spSaveFile(file) {
-  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+//
+// Bytes go through the same durable, chunked upload the worker terminal and
+// Files tab use (_uploadOrQueue -> IndexedDB -> /api/upload chunks with
+// retry and resume). A single multipart POST to /api/fs/upload lost a 30 MB
+// file from a phone with no error and no retry (Ethan, 2026-10-09).
+function _spNamed(file) {
   const generic = !file.name || /^image\.(png|jpe?g|gif|webp)$/i.test(file.name);
-  const ext = (file.type.split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
-  const name = generic ? _spUniqueName(_spStamp(), '.' + ext) : file.name;
-  const fd = new FormData();
-  fd.append('dir', dir);
-  fd.append('file', file, name);
-  try {
-    const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(120000) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !(d.saved || []).length) throw new Error(d.error || ('HTTP ' + r.status));
-    showToast('Saved ' + name);
-  } catch (e) { showToast('Could not save ' + name + ': ' + e.message); }
+  if (!generic) return file;
+  const ext = ((file.type || '').split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+  return new File([file], _spUniqueName(_spStamp(), '.' + ext), {type: file.type});
 }
 async function _spUploadFiles(list) {
-  const files = [...(list || [])];
-  for (const f of files) await _spSaveFile(f);
-  if (files.length) _scratchpadLoad();
+  const files = [...(list || [])].map(_spNamed);
+  if (!files.length) return;
+  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+  const { queued, failed } = await _uploadOrQueue(files, dir, 'file');
+  const what = files.length === 1 ? files[0].name : files.length + ' files';
+  if (queued) showToast((online ? 'Uploading ' : 'Saved offline, uploads when reconnected: ') + what);
+  if (failed && !queued) showToast('Could not save ' + what);
 }
-const _spSaveImage = async (file) => { await _spSaveFile(file); _scratchpadLoad(); };
+async function _spSaveFile(file) { await _spUploadFiles([file]); }
+const _spSaveImage = (file) => _spSaveFile(file);
 async function _spLoadRetain() {
   try {
     const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
@@ -27558,9 +27562,14 @@ async function _connAccountsLoad() {
       if (a.needs_reauth) {
         const fam = (a.reconnect || '').indexOf('/slack/') >= 0 ? 'slack' : 'google';
         h += '<button class="conn-gmail-btn" onclick="_connReconnect(\'' + escJs(fam) + '\',\'' + escJs(a.account) + '\')">Reconnect ↗</button>';
+      } else if ((a.missing || []).indexOf('google') >= 0) {
+        // Gmail-only grant: mail works, calendar/drive/docs were never granted.
+        h += '<span class="conn-gmail-badge" style="background:#8a6d3b" title="This account only granted Gmail. Calendar, Drive and Docs calls fail until it approves the full Google grant.">calendar: not granted</span>';
+        h += '<button class="conn-gmail-btn" onclick="_connReconnect(\'google\',\'' + escJs(a.account) + '\')">Grant calendar + drive ↗</button>';
       }
       h += '</div>';
     }
+    h += '<button class="conn-gmail-add" onclick="_gmailAddAccount()">+ Add Google account</button>';
     h += '<div class="conn-note">Reconnect opens one consent tab; approving repairs email + every Google connector + worker token mints for that account at once.</div></div>';
     host.innerHTML = h;
   } catch (e) { host.innerHTML = ''; }
@@ -27626,24 +27635,15 @@ async function _gmailAccountsLoad() {
 // Start (or repair) OAuth for one account: fetch the URL and open it. Google
 // redirects back to /api/gmail/callback which writes the token; then Refresh.
 async function _gmailReconnect(email) {
-  if (!email) return;
-  try {
-    const r = await fetch('/api/gmail/auth?account=' + encodeURIComponent(email));
-    const d = await r.json();
-    if (d && d.url) {
-      window.open(d.url, '_blank', 'noopener');
-      showToast('Approve access for ' + email + ' in the opened tab, then Refresh');
-      if (d.warning) showToast(d.warning);
-    } else if (d && d.error) {
-      showToast('Could not start reconnect: ' + d.error);
-    } else {
-      showToast('Could not start reconnect');
-    }
-  } catch (e) { showToast('Reconnect failed'); }
+  // Same full Google grant as the Accounts card: its callback also writes the
+  // Gmail token, so mail keeps working and calendar/drive/docs come with it.
+  if (email) _connReconnect('google', email);
 }
 async function _gmailAddAccount() {
-  const email = (prompt('Gmail address to connect:') || '').trim();
-  if (email) _gmailReconnect(email);
+  const email = (prompt('Google account to connect:') || '').trim();
+  // The full Google grant (mail + calendar + drive + docs). The gmail-only
+  // grant left calendar unauthorized on every account added this way.
+  if (email) _connReconnect('google', email);
 }
 async function _gmailRemove(email) {
   if (!(await showConfirm('Remove ' + email + '?\n\nThe local token file is deleted; you can reconnect any time.', 'Remove', true))) return;
