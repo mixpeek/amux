@@ -27101,6 +27101,11 @@ pub(crate) async fn probe_refusal(
     ))
 }
 
+/// Is `origin` the Chat tab of `target` (`<target>@chat`)?
+pub(crate) fn chat_tab_of(origin: &str, target: &str) -> bool {
+    super::chat_worker::companion_parent(origin) == Some(target)
+}
+
 async fn isolated_peer_refusal(
     state: &AppState,
     name: &str,
@@ -27112,6 +27117,16 @@ async fn isolated_peer_refusal(
         || origin == name
         || !session_is_isolated(name)
     {
+        return None;
+    }
+    // A worker's own Chat tab speaks for the owner (Ethan, 2026-10-08:
+    // "shouldn't chat with a worker have privileges to interact with the
+    // worker if needed?"). Its turns are started only by the owner, and the tab
+    // is part of the worker, not a peer (chat_worker.rs), so its send to its
+    // own worker is owner input relayed through that worker's tab.
+    if chat_tab_of(&origin, name) {
+        tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
+            verdict = "isolated_send_from_own_chat_tab", "an isolated worker took a send from its own Chat tab (owner input)");
         return None;
     }
     let reason = format!(
@@ -49177,6 +49192,15 @@ mod pipe_reconcile_tests {
 #[cfg(test)]
 mod delivery_mode_tests {
     use super::*;
+
+    /// Only a worker's OWN Chat tab may reach it past isolation.
+    #[test]
+    fn only_the_workers_own_chat_tab_passes_isolation() {
+        assert!(chat_tab_of("mxp-gs12@chat", "mxp-gs12"));
+        assert!(!chat_tab_of("other@chat", "mxp-gs12"), "another worker's chat is a peer");
+        assert!(!chat_tab_of("mxp-gs12", "mxp-gs12@chat"));
+        assert!(!chat_tab_of("amux", "mxp-gs12"));
+    }
 
     /// AMUX-5759 live test 5: an unknown id restarted the worker onto it.
     #[test]
