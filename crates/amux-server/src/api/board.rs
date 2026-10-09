@@ -16482,8 +16482,12 @@ mod af701_archive_guard_tests {
             store.read().unwrap()
                 .query_row("SELECT COUNT(*) FROM steering_queue WHERE session = 'lane-pre' AND text LIKE '%pre-run review%'", [], |r| r.get(0)).unwrap()
         };
+        let pst = |id: &str| store.read().unwrap().query_row("SELECT state FROM card_prereviews WHERE card = ?1", [id], |r| r.get::<_, String>(0)).ok();
+        // All three results are asserted below. Waiting for only the proof
+        // and ops cards let the ordinary card still be running on CI.
         for _ in 0..1200 {
             if current(&store, &proof).desc.contains("missing from the plan") && current(&store, &ops).desc.contains("missing from the plan")
+                && [&proof, &ops, &plain].into_iter().all(|id| pst(id).as_deref() == Some("gaps"))
                 && queued_now() >= 1 {
                 break;
             }
@@ -16494,7 +16498,6 @@ mod af701_archive_guard_tests {
             .query_row("SELECT state, hash FROM card_prereviews WHERE card = ?1", [&proof], |r| Ok((r.get(0)?, r.get(1)?))).ok();
         assert!(row.desc.contains("no Ray Serve app is measured at 0 replicas"), "desc={:?} prereview={pre:?}", row.desc);
         assert_eq!(row.status, "doing", "a pre-run review never moves the card");
-        let pst = |id: &str| store.read().unwrap().query_row("SELECT state FROM card_prereviews WHERE card = ?1", [id], |r| r.get::<_, String>(0)).ok();
         assert_eq!(pst(&proof).as_deref(), Some("gaps"));
         assert_eq!(pst(&ops).as_deref(), Some("gaps"), "an ops proof card with no contract is pre-reviewed too");
         assert_eq!(current(&store, &ops).status, "doing");

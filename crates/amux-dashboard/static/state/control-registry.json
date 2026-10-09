@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2498,
+  "n_considered": 2499,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -1252,6 +1252,18 @@
     },
     "_getChips": {
       "kind": "command._getChips",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_gmailAddAccount": {
+      "kind": "command._gmailAddAccount",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_gmailReconnect": {
+      "kind": "command._gmailReconnect",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
