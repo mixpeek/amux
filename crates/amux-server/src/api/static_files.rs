@@ -807,6 +807,23 @@ mod tests {
         );
     }
 
+    /// The shipped path for the outside report: a remote peer whose Host is
+    /// its own IP literal (which the real resolver maps to itself) must get a
+    /// tokenless shell. TEST-NET-3 is assigned to no interface anywhere.
+    #[test]
+    fn a_remote_peer_naming_itself_in_host_is_not_bootstrapped_with_the_owner_bearer() {
+        let peer: std::net::IpAddr = "203.0.113.5".parse().unwrap();
+        let uri: Uri = "/".parse().unwrap();
+        for host in ["203.0.113.5", "203.0.113.5:8824"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, host.parse().unwrap());
+            assert!(
+                !owner_bootstrap_allowed(&state(Some("tok123")), &headers, &uri, Some(peer)),
+                "Host {host} from that same remote peer must not unlock the owner bearer"
+            );
+        }
+    }
+
     /// AF-639, client half. An empty `_AMUX_AUTH_TOKEN` has two causes with
     /// opposite consequences, and the SPA cannot tell them apart from the
     /// empty string.
