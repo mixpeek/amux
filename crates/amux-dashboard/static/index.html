@@ -2670,7 +2670,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <button type="button" class="psp-opt" data-psp="chat" onclick="_peekSplitShow('chat')">Chat</button>
       <button type="button" class="btn psp-close" onclick="togglePeekSplit()" title="Close side panel" aria-label="Close side panel">&#x2715;</button>
     </div>
-    <iframe id="psp-frame" class="psp-frame" title="Side panel" style="display:none"></iframe>
+    <iframe id="psp-frame" class="psp-frame" title="Side panel" allow="clipboard-write; clipboard-read" style="display:none"></iframe>
     <div class="peek-split-files-header">
       <div id="psf-breadcrumb" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></div>
       <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="togglePeekSplit()">&#x2715;</button>

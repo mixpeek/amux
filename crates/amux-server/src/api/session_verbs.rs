@@ -4935,7 +4935,13 @@ fn render_session_transcript_inner(name: &str, max_chars: usize) -> String {
         return String::new();
     };
     let max_read = std::cmp::max(max_chars * 5, 5_000_000) as u64;
-    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, false)
+    // COLLAPSED, LIKE THE TERMINAL (Ethan, 2026-10-08: "the copy is more
+    // verbose in amux peek", "our peek output is still convoluted"). Claude
+    // Code draws a tool run as one "Ran N shell commands" line and never shows
+    // reasoning; for an alternate-screen pane this re-render is the peek's
+    // history, so it draws the same. A normal-screen pane skips it entirely
+    // (tmux scrollback, history_source "tmux-scrollback").
+    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, true)
 }
 
 /// Emit one line for a run of consecutive tool calls, the way Claude Code's own
@@ -5077,16 +5083,27 @@ mod peek_history_is_verbatim {
     }
 
     #[test]
-    fn peeks_own_entry_point_does_not_collapse_tool_runs() {
+    fn peeks_own_entry_point_draws_like_the_terminal() {
+        // Superseded 2026-09-24's full-detail choice: side by side with the
+        // pane, the full detail read as a different, more verbose terminal.
         let src = include_str!("session_verbs.rs");
-        // The public entry delegates to `_at` (table width) and then `_inner`,
-        // which is where the records are rendered.
         let i = src.find("fn render_session_transcript_inner(").expect("entry point");
-        let body = &src[i..i + 400];
-        assert!(
-            body.contains("max_chars, false)"),
-            "peek's history must not collapse tool runs, which also dropped every tool_result:\n{body}"
-        );
+        let body = &src[i..i + 1200];
+        assert!(body.contains("max_chars, true)"), "peek history must collapse like the terminal:\n{body}");
+        let dense = super::render_transcript_records(vec![
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "text", "text": "Checking the logs."}]}}),
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": "a.txt"}]}}),
+        ], usize::MAX, true);
+        let plain = crate::backend::adapter::strip_ansi(&dense);
+        assert!(plain.contains("Checking the logs."), "{plain}");
+        assert!(plain.contains("Ran 1 shell command"), "{plain}");
+        assert!(!plain.contains("private reasoning"), "the terminal hides reasoning: {plain}");
+        assert!(!plain.contains("a.txt"), "the terminal hides tool output in a run: {plain}");
     }
 }
 
@@ -5289,6 +5306,10 @@ fn render_transcript_records(
                 // 12 recent transcripts, dropped by the `_ => {}` arm that used
                 // to be here. Classified and dimmed so it reads as reasoning,
                 // never as something the assistant said.
+                // The terminal never shows reasoning; the peek's dense mode
+                // matches it (Ethan, 2026-10-08: "our peek output is still
+                // convoluted"). Detail views keep it.
+                "thinking" if collapse_tools => {}
                 "thinking" => {
                     let th = b["thinking"].as_str().unwrap_or("").trim();
                     if !th.is_empty() {

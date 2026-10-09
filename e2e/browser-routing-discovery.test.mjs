@@ -36,3 +36,8 @@ test('late discovery preserves unsaved fallback edits and explicit default selec
  await p.selectOption('#bw-profile','work');const {pending}=await hold();await p.locator('#bw-cua-enabled').uncheck();release();await pending;assert(!(await p.locator('#bw-cua-enabled').isChecked()));
  const next=await hold();await p.selectOption('#bw-profile','');release();await next.pending;assert.equal(await p.inputValue('#bw-profile'),'');
 }));
+
+test('reopening route settings retains an existing explicit profile',()=>fixture(async({p})=>{
+ await p.selectOption('#bw-profile','work');await p.evaluate(()=>_bwLoadRouting());
+ assert.equal(await p.inputValue('#bw-profile'),'work');assert.equal(await p.inputValue('#bw-cdp-profile'),'Profile Work');
+}));

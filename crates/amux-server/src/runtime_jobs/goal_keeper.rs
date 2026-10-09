@@ -90,6 +90,64 @@ pub fn latest_goal(records: &[Value]) -> Option<Goal> {
     })
 }
 
+/// A worker's Claude Code `/goal` for the session payload (amux-helper ask,
+/// 2026-10-08: GET /api/sessions/mxp-gs12 carried no goal while the worker
+/// showed "/goal active (10m)", and the absence was read as "no goal").
+///
+/// INCREMENTAL, because the session list is polled ~6000 times an hour: per
+/// transcript it keeps the bytes already read and the last goal seen, and on
+/// a later call scans only what was appended for `goal_status` lines. A new
+/// or truncated file is read once from its tail. Always answers `measured`;
+/// a transcript that cannot be read says why instead of leaving the field out.
+pub fn goal_payload(name: &str) -> Value {
+    use std::io::{Read, Seek, SeekFrom};
+    type Cache = std::collections::HashMap<std::path::PathBuf, (u64, Option<Goal>)>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    let Some(path) = crate::api::session_verbs::session_jsonl_path(name) else {
+        return serde_json::json!({"measured": false, "why_unmeasured": "no transcript for this worker", "active": false});
+    };
+    let len = match std::fs::metadata(&path) {
+        Ok(m) => m.len(),
+        Err(e) => return serde_json::json!({"measured": false, "why_unmeasured": format!("transcript unreadable: {e}"), "active": false}),
+    };
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let (mut offset, mut goal) = cache.get(&path).cloned().unwrap_or((u64::MAX, None));
+    if offset == u64::MAX || len < offset {
+        goal = latest_goal(&crate::api::session_verbs::iter_jsonl_tail(&path, 6_000_000));
+        offset = len;
+    } else if len > offset {
+        let mut buf = Vec::new();
+        if let Ok(mut f) = std::fs::File::open(&path) {
+            if f.seek(SeekFrom::Start(offset)).is_ok() {
+                let _ = f.take(len - offset).read_to_end(&mut buf);
+            }
+        }
+        // Only whole lines; a half-written last record is read next time.
+        let whole = buf.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        for line in buf[..whole].split(|&b| b == b'\n') {
+            if line.windows(11).any(|w| w == b"goal_status") {
+                if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                    if let Some(g) = latest_goal(std::slice::from_ref(&v)) {
+                        goal = Some(g);
+                    }
+                }
+            }
+        }
+        offset += whole as u64;
+    }
+    cache.insert(path, (offset, goal.clone()));
+    match goal {
+        Some(g) => serde_json::json!({
+            "measured": true,
+            "active": !g.met && !g.condition.trim().is_empty(),
+            "met": g.met,
+            "condition": g.condition,
+            "since": g.ts,
+        }),
+        None => serde_json::json!({"measured": true, "active": false}),
+    }
+}
+
 /// Tool calls the agent made after `since` (progress is an event, not text).
 pub fn tool_uses_since(records: &[Value], since: f64) -> usize {
     records
@@ -302,6 +360,16 @@ pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+    /// A worker whose transcript cannot be found says so: an absent field was
+    /// read as "no goal" (amux-helper, mxp-gs12, 2026-10-08).
+    #[test]
+    fn goal_payload_without_a_transcript_is_unmeasured_not_absent() {
+        let v = super::goal_payload("no-such-worker-for-goal-test");
+        assert_eq!(v["measured"], false, "{v}");
+        assert!(v["why_unmeasured"].as_str().unwrap_or("").len() > 3, "{v}");
+        assert_eq!(v["active"], false);
+    }
+
     use super::*;
     use serde_json::json;
 
