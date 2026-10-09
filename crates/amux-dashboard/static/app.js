@@ -27825,7 +27825,7 @@ function _connDrawerRender() {
     if (scopes.length) {
       h += '<div class="cx-sec">This connector uses</div>';
       for (const sc of scopes) h += '<div class="cx-scope"><code>' + esc(sc) + '</code></div>';
-    } else {
+    } else if (!c.group) {
       h += '<p class="cx-p">' + (c.auth === 'apikey' ? 'Key-based: the key\'s own permissions in ' + esc(c.label) + ' decide what workers can do.' : 'No OAuth scopes declared.') + '</p>';
     }
   }
