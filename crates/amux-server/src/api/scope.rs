@@ -593,35 +593,73 @@ async fn write_connectors(
     name: &str,
     value: &Value,
 ) -> Result<(), (u16, String)> {
+    use rusqlite::OptionalExtension;
     let obj = value.get("connectors").unwrap_or(value);
+    let merge = if value.get("connectors").is_some() {
+        match value.get("merge") {
+            None => false,
+            Some(Value::Bool(v)) => *v,
+            _ => return Err((400, "merge must be a boolean".into())),
+        }
+    } else {
+        false
+    };
     if !obj.is_object() && !obj.is_null() {
         return Err((400, "connectors must be a JSON object".into()));
     }
+    if merge
+        && (!obj.is_object()
+            || obj
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|v| !v.is_object() && !v.is_null()))
+    {
+        return Err((
+            400,
+            "connector patches must be objects or null (remove connector)".into(),
+        ));
+    }
     let key = connectors_pref_key(level, name);
-    let empty = obj.is_null() || obj.as_object().map(|m| m.is_empty()).unwrap_or(true);
-    let payload = if empty { None } else { Some(obj.to_string()) };
-    state
-        .store
-        .write_async(move |conn| {
-            match &payload {
-                None => {
-                    conn.execute("DELETE FROM prefs WHERE key=?1", rusqlite::params![key])?;
-                }
-                Some(v) => {
-                    conn.execute(
-                        "INSERT INTO prefs (key, value) VALUES (?1, ?2) \
-                         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                        rusqlite::params![key, v],
-                    )?;
-                }
+    let obj = obj.clone();
+    state.store.write_async(move |conn| {
+        let saved = if merge {
+            // Runs inside Store's IMMEDIATE transaction: concurrent UI/worker
+            // patches never race a client-side read/replace of the whole map.
+            let raw: Option<String> = conn.query_row("SELECT value FROM prefs WHERE key=?1",[&key],|r|r.get(0)).optional()?;
+            let mut current: Map<String,Value> = match raw {
+                Some(raw) => serde_json::from_str(&raw).map_err(|e|rusqlite::Error::FromSqlConversionFailure(0,rusqlite::types::Type::Text,Box::new(e)))?,
+                None => Map::new(),
+            };
+            for (id,patch) in obj.as_object().unwrap() {
+                if patch.is_null() { current.remove(id);continue; }
+                let mut cfg = match current.get(id) {
+                    Some(Value::Object(cfg)) => cfg.clone(),
+                    None => Map::new(),
+                    _ => return Err(rusqlite::Error::InvalidParameterName("stored connector configuration is not an object".into())),
+                };
+                cfg.extend(patch.as_object().unwrap().clone());
+                current.insert(id.clone(),Value::Object(cfg));
             }
-            Ok(crate::db::WriteOutcome {
-                applied: true,
-                events: vec![],
-            })
-        })
-        .await
-        .map_err(|e| (500, format!("connectors write failed: {e}")))?;
+            Value::Object(current)
+        } else { obj };
+        if saved.is_null() || saved.as_object().is_some_and(|v|v.is_empty()) {
+            conn.execute("DELETE FROM prefs WHERE key=?1",[&key])?;
+        } else {
+            conn.execute("INSERT INTO prefs (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",rusqlite::params![key,saved.to_string()])?;
+        }
+        Ok(crate::db::WriteOutcome { applied:true,events:vec![] })
+    }).await.map_err(|e| {
+        tracing::warn!(%e,level,name,merge,verdict="connector_scope_commit_failed", "connector scope update refused without replacing unreadable state");
+        (500,format!("connectors write failed: {e}"))
+    })?;
+    tracing::info!(
+        level,
+        name,
+        merge,
+        verdict = "connector_scope_committed",
+        "connector scope committed atomically"
+    );
     Ok(())
 }
 

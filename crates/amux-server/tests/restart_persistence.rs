@@ -1124,3 +1124,354 @@ async fn committed_oauth_rotation_is_served_after_sigkill() {
     provider.abort();
     let _ = provider.await;
 }
+
+/// Complete public callback and real HTTP provider, two accounts, scope-selected
+/// worker mint, rotation, SIGKILL, disconnect and a late callback. No live grants.
+#[tokio::test]
+async fn declared_oauth_connector_lifecycle_survives_sigkill() {
+    use axum::{
+        extract::{Form, State},
+        Json,
+    };
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
+    #[derive(Default)]
+    struct ProviderState {
+        challenge: String,
+        redirect: String,
+        account: String,
+        exchanges: usize,
+        refreshes: usize,
+        revoked: bool,
+    }
+    let shared = Arc::new(Mutex::new(ProviderState::default()));
+    async fn token(
+        State(state): State<Arc<Mutex<ProviderState>>>,
+        Form(form): Form<std::collections::HashMap<String, String>>,
+    ) -> (axum::http::StatusCode, Json<Value>) {
+        let mut s = state.lock().unwrap();
+        assert_eq!(
+            form.get("client_id").map(String::as_str),
+            Some("fixture-client")
+        );
+        assert_eq!(
+            form.get("client_secret").map(String::as_str),
+            Some("fixture-secret")
+        );
+        if form["grant_type"] == "authorization_code" {
+            let challenge = amux_server::integrations::email::base64url_nopad(&Sha256::digest(
+                form["code_verifier"].as_bytes(),
+            ));
+            assert_eq!(challenge, s.challenge, "provider must verify PKCE");
+            assert_eq!(
+                form["redirect_uri"], s.redirect,
+                "provider must verify the exact redirect"
+            );
+            s.exchanges += 1;
+        } else {
+            assert!(form["refresh_token"].starts_with("refresh-"));
+            s.refreshes += 1;
+        }
+        (
+            axum::http::StatusCode::OK,
+            Json(
+                json!({"access_token":format!("access-{}",s.account),"refresh_token":format!("refresh-{}-{}",s.account,s.refreshes),"expires_in":3600,"scope":"invoices.read"}),
+            ),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    async fn data(
+        State(state): State<Arc<Mutex<ProviderState>>>,
+        headers: axum::http::HeaderMap,
+    ) -> (axum::http::StatusCode, Json<Value>) {
+        let bearer = headers.get("authorization").unwrap().to_str().unwrap();
+        assert!(
+            matches!(bearer, "Bearer access-alice" | "Bearer access-beth"),
+            "canary must use the stored account bearer, never client ID"
+        );
+        let revoked = state.lock().unwrap().revoked && bearer == "Bearer access-beth";
+        (
+            if revoked {
+                axum::http::StatusCode::UNAUTHORIZED
+            } else {
+                axum::http::StatusCode::OK
+            },
+            Json(json!({"ok":!revoked})),
+        )
+    }
+    let app = axum::Router::new()
+        .route("/token", axum::routing::post(token))
+        .route("/data", axum::routing::get(data))
+        .with_state(shared.clone());
+    let provider = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut rig = Rig::new();
+    rig.spawn();
+    rig.wait_healthy().await;
+    let declaration = json!({"id":"fixture-oauth","label":"Fixture OAuth","kind":"oauth2","client_id_env":"FIXTURE_CLIENT_ID","client_secret_env":"FIXTURE_CLIENT_SECRET","authorize_url":format!("{origin}/authorize"),"token_url":format!("{origin}/token"),"test_url":format!("{origin}/data"),"scopes":"invoices.read"});
+    assert_eq!(
+        rig.post("/api/connectors", declaration.clone()).await.0,
+        200
+    );
+    assert_eq!(
+        rig.post(
+            "/api/connectors/fixture-oauth/credentials",
+            json!({"FIXTURE_CLIENT_ID":"fixture-client","FIXTURE_CLIENT_SECRET":"fixture-secret"})
+        )
+        .await
+        .0,
+        200
+    );
+    for account in ["alice", "beth"] {
+        let (status, auth) = rig
+            .post(
+                &format!("/api/connectors/fixture-oauth/auth?account={account}"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(status, 200, "{auth}");
+        let url = reqwest::Url::parse(auth["authorize_url"].as_str().unwrap()).unwrap();
+        let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        {
+            let mut s = shared.lock().unwrap();
+            s.challenge = q["code_challenge"].clone();
+            s.redirect = q["redirect_uri"].clone();
+            s.account = account.into();
+        }
+        let callback = format!(
+            "/api/connectors/fixture-oauth/callback?state={}&code=fixture-code",
+            q["state"]
+        );
+        let response = rig.client.get(rig.url(&callback)).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+        let replay = rig.client.get(rig.url(&callback)).send().await.unwrap();
+        assert_eq!(replay.status(), 400);
+    }
+    assert_eq!(
+        shared.lock().unwrap().exchanges,
+        2,
+        "callback replay never reaches provider"
+    );
+    let (status, test) = rig
+        .post("/api/connectors/fixture-oauth/test", json!({}))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(test["ok"], true);
+    assert_eq!(test["measured"], true);
+    assert_eq!(test["accounts"].as_array().unwrap().len(), 2);
+    let (status, accounts) = rig.get("/api/connectors/accounts").await;
+    assert_eq!(status, 200);
+    assert_eq!(accounts["accounts"].as_array().unwrap().len(), 2);
+    assert_eq!(accounts["accounts"][0]["families"]["fixture-oauth"], "ok");
+
+    // Scope values are written through the production API, not a guessed file.
+    let response=rig.send(reqwest::Method::PUT,"/api/scope",json!({"level":"worker","name":"rr0150-suite","capability":"connectors","value":{"fixture-oauth":{"enabled":true,"account":"beth"}}})).await;
+    assert_eq!(response.0, 200, "{}", response.1);
+    let (status, minted) = rig
+        .post("/api/connectors/fixture-oauth/token", json!({}))
+        .await;
+    assert_eq!(status, 200, "{minted}");
+    assert_eq!(minted["subject"], "beth");
+    assert_eq!(minted["access_token"], "access-beth");
+    assert_eq!(
+        rig.post(
+            "/api/connectors/fixture-oauth/token?account=alice",
+            json!({})
+        )
+        .await
+        .0,
+        403
+    );
+    let path = rig.home.join("connectors/fixture-oauth/beth.json");
+    let mut grant: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    grant["expires_at"] = json!(0);
+    std::fs::write(&path, grant.to_string()).unwrap();
+    let (status, rotated) = rig
+        .post("/api/connectors/fixture-oauth/token", json!({}))
+        .await;
+    assert_eq!(status, 200, "{rotated}");
+    let grant: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(grant["refresh_token"], "refresh-beth-1");
+    rig.restart().await;
+    let (status, recovered) = rig
+        .post("/api/connectors/fixture-oauth/token", json!({}))
+        .await;
+    assert_eq!(status, 200, "{recovered}");
+    assert_eq!(recovered["subject"], "beth");
+    assert_eq!(shared.lock().unwrap().refreshes, 1);
+    shared.lock().unwrap().revoked = true;
+    rig.restart().await;
+    let (_, accounts) = rig.get("/api/connectors/accounts").await;
+    let beth = accounts["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["account"] == "beth")
+        .unwrap();
+    assert_eq!(beth["needs_reauth"], true);
+    assert_eq!(beth["families"]["fixture-oauth"], "needs_reauth");
+    assert!(beth["reconnect"]
+        .as_str()
+        .unwrap()
+        .contains("/fixture-oauth/auth?account=beth"));
+    let alice = accounts["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["account"] == "alice")
+        .unwrap();
+    assert_eq!(alice["needs_reauth"], false);
+    shared.lock().unwrap().revoked = false;
+    let (status, auth) = rig
+        .post("/api/connectors/fixture-oauth/auth?account=beth", json!({}))
+        .await;
+    assert_eq!(status, 200);
+    let q: std::collections::HashMap<_, _> =
+        reqwest::Url::parse(auth["authorize_url"].as_str().unwrap())
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+    let late = format!(
+        "/api/connectors/fixture-oauth/callback?state={}&code=fixture-code",
+        q["state"]
+    );
+    let disconnected = rig
+        .send(
+            reqwest::Method::DELETE,
+            "/api/connectors/fixture-oauth/accounts/beth",
+            json!({}),
+        )
+        .await;
+    assert_eq!(disconnected.0, 200, "{}", disconnected.1);
+    assert_eq!(
+        rig.post("/api/connectors/fixture-oauth/token", json!({}))
+            .await
+            .0,
+        404
+    );
+    rig.restart().await;
+    let late = rig.client.get(rig.url(&late)).send().await.unwrap();
+    assert_eq!(
+        late.status(),
+        400,
+        "outstanding consent must not reconnect a disconnected account"
+    );
+    assert_eq!(
+        rig.post("/api/connectors/fixture-oauth/token", json!({}))
+            .await
+            .0,
+        404
+    );
+    let (status, inventory) = rig.get("/api/connectors").await;
+    assert_eq!(status, 200);
+    let row = inventory["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "fixture-oauth")
+        .unwrap();
+    assert_eq!(row["accounts"], json!(["alice"]));
+    // Forgetting and re-declaring cannot silently resurrect a saved grant.
+    assert_eq!(
+        rig.send(
+            reqwest::Method::DELETE,
+            "/api/connectors/fixture-oauth",
+            json!({})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(rig.post("/api/connectors", declaration).await.0, 200);
+    let (_, inventory) = rig.get("/api/connectors").await;
+    let row = inventory["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "fixture-oauth")
+        .unwrap();
+    assert_eq!(row["accounts"], json!([]));
+    assert_eq!(row["status"], "needs_auth");
+    assert_eq!(shared.lock().unwrap().exchanges, 2);
+    rig.kill();
+    provider.abort();
+    let _ = provider.await;
+}
+
+#[tokio::test]
+async fn connector_scope_patches_survive_concurrency_and_sigkill() {
+    let mut rig = Rig::new();
+    rig.spawn();
+    rig.wait_healthy().await;
+    let scoped = "rr0150-suite";
+    let value = json!({"slack":{"enabled":true,"account":"beth","mcp":"fixture-mcp"},"fixture-oauth":{"enabled":true,"account":"beth"}});
+    assert_eq!(
+        rig.send(
+            reqwest::Method::PUT,
+            "/api/scope",
+            json!({"level":"worker","name":scoped,"capability":"connectors","value":value})
+        )
+        .await
+        .0,
+        200
+    );
+    let writes=(0..24).map(|i| {
+        let client=rig.client.clone();let url=rig.url("/api/scope");
+        async move {
+            let response=client.put(url).json(&json!({"level":"worker","name":scoped,"capability":"connectors","value":{"connectors":{format!("fixture-{i}"):{"enabled":true}},"merge":true}})).send().await.unwrap();
+            assert_eq!(response.status(),200);
+        }
+    });
+    futures::future::join_all(writes).await;
+    assert_eq!(rig.send(reqwest::Method::PUT,"/api/scope",json!({"level":"worker","name":scoped,"capability":"connectors","value":{"connectors":{"slack":{"enabled":false}},"merge":true}})).await.0,200);
+    rig.restart().await;
+    let (_, scope) = rig
+        .get(&format!("/api/scope?level=worker&name={scoped}"))
+        .await;
+    let cfg = &scope["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "connectors")
+        .unwrap()["value"]["connectors"];
+    assert_eq!(
+        cfg.as_object().unwrap().len(),
+        26,
+        "concurrent patches preserve every connector"
+    );
+    assert_eq!(
+        cfg["slack"],
+        json!({"enabled":false,"account":"beth","mcp":"fixture-mcp"})
+    );
+    assert_eq!(cfg["fixture-oauth"]["account"], "beth");
+    let bad = json!({"level":"worker","name":scoped,"capability":"connectors","value":{"connectors":{"slack":{"enabled":true}},"merge":"yes"}});
+    assert_eq!(
+        rig.send(reqwest::Method::PUT, "/api/scope", bad).await.0,
+        400
+    );
+    // Storage corruption is retained; a partial toggle must not erase it.
+    rig.seed(
+        "UPDATE prefs SET value=?1 WHERE key=?2",
+        &[&"{malformed", &format!("connectors:worker:{scoped}")],
+    );
+    let patch = json!({"level":"worker","name":scoped,"capability":"connectors","value":{"connectors":{"slack":{"enabled":true}},"merge":true}});
+    assert_eq!(
+        rig.send(reqwest::Method::PUT, "/api/scope", patch).await.0,
+        500
+    );
+    rig.restart().await;
+    let raw: String = rusqlite::Connection::open(&rig.db)
+        .unwrap()
+        .query_row(
+            "SELECT value FROM prefs WHERE key=?1",
+            [format!("connectors:worker:{scoped}")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, "{malformed");
+    assert!(std::fs::read_to_string(&rig.log)
+        .unwrap()
+        .contains("connector_scope_commit_failed"));
+    rig.kill();
+}
