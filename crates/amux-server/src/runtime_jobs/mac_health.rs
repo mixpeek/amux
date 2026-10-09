@@ -26,9 +26,9 @@
 //!    and logs when it is exceeded so the operator knows before the OOM.
 //!
 //! 5. **True process-table zombies** (`state=Z`). The child is already dead, so
-//!    signalling it cannot clean anything. The sweep calls non-blocking
-//!    `waitpid` only for an aged child owned by this amux-server process;
-//!    zombies owned by another application are reported and left alone.
+//!    signalling it cannot clean anything. Parent PID does not establish who
+//!    owns its exit status: a fleet probe or Tokio Child may still be waiting.
+//!    The sweep reports zombies; only the spawning caller reaps its child.
 //!
 //! 6. **SIP-protected indexing daemons pegged hot** (`fseventsd`, `ecosystemd`,
 //!    `ecosystemanalyti`, `mds*`). the earlier resident-memory ranking had already
@@ -56,7 +56,7 @@
 //! - Kill processes the raylet is still using (raylet running = ray is live).
 //! - Kill rustc processes whose parent is NOT pid 1 (they may still be running).
 //! - Take any action on processes it cannot identify by full command line.
-//! - Reap a zombie whose parent is not this exact server process.
+//! - Reap a zombie: its spawning caller owns the exit status, even in this server.
 //!
 //! SAFE: every termination is SIGTERM, not SIGKILL, and every target class has
 //! a predicate that cannot be satisfied by a legitimate process doing real work.
@@ -301,19 +301,26 @@ fn zombie_log_sample(zombies: &[HealthProcess]) -> String {
         .join(", ")
 }
 
-fn reap_owned_zombie(pid: u32) -> Result<bool, String> {
-    let mut status: libc::c_int = 0;
-    // SAFETY: waitpid is restricted to one PID observed as an aged zombie
-    // whose parent is this process. WNOHANG guarantees the health tick cannot
-    // block if another waiter wins the race.
-    let rc = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
-    if rc == pid as libc::pid_t {
-        Ok(true)
-    } else if rc == 0 {
-        Ok(false)
-    } else {
-        Err(std::io::Error::last_os_error().to_string())
+// `etime` measures process lifetime, not time spent as a zombie. Even an
+// aged child may have just exited with a caller still waiting. A global waitpid
+// steals that status (CI: pool recovery probes failed with ECHILD), so this
+// observer must never reap any child, including one with our own parent PID.
+fn report_zombie_children(rows: &[HealthProcess], grace_s: u64, server_pid: u32) -> (usize, usize) {
+    let (owned, zombies) = owned_zombie_children(rows, grace_s, server_pid);
+    if !zombies.is_empty() {
+        tracing::warn!(
+            job = JOB,
+            measured = true,
+            n_considered = zombies.len(),
+            owned_by_this_server = owned.len(),
+            foreign_parent = zombies.len().saturating_sub(owned.len()),
+            sample = %zombie_log_sample(&zombies),
+            sample_limit = ZOMBIE_LOG_SAMPLE,
+            verdict = "zombie_waiter_status_preserved",
+            "mac-health: zombies are report-only; the spawning caller owns each exit status"
+        );
     }
+    (zombies.len(), owned.len())
 }
 
 /// Minimum age (seconds) before an orphaned Playwright Chrome is eligible for
@@ -868,7 +875,7 @@ fn one_pass() {
     // --- Orphaned rustc + true zombie sweep ---
     let mut rustc_reaped = 0usize;
     let mut zombies_seen = 0usize;
-    let mut zombies_reaped = 0usize;
+    let mut zombies_owned_reported = 0usize;
     match health_process_snapshot() {
         Some(rows) if !rows.is_empty() => {
             let rustc = orphaned_debug_rustc(&rows, rustc_grace);
@@ -885,40 +892,8 @@ fn one_pass() {
             }
             rustc_reaped = rustc.len();
 
-            let (owned, zombies) = owned_zombie_children(&rows, zombie_grace, std::process::id());
-            zombies_seen = zombies.len();
-            if !zombies.is_empty() {
-                let foreign = zombies.len().saturating_sub(owned.len());
-                let sample = zombie_log_sample(&zombies);
-                tracing::warn!(
-                    job = JOB,
-                    count = zombies.len(),
-                    owned_by_this_server = owned.len(),
-                    foreign_parent = foreign,
-                    sample = %sample,
-                    sample_limit = ZOMBIE_LOG_SAMPLE,
-                    "mac-health: true zombies detected; foreign children are report-only"
-                );
-            }
-            for pid in owned {
-                match reap_owned_zombie(pid) {
-                    Ok(true) => {
-                        zombies_reaped += 1;
-                        tracing::info!(job = JOB, pid, "mac-health: reaped owned zombie child");
-                    }
-                    Ok(false) => tracing::info!(
-                        job = JOB,
-                        pid,
-                        "mac-health: zombie disappeared before reap (another waiter won)"
-                    ),
-                    Err(error) => tracing::warn!(
-                        job = JOB,
-                        pid,
-                        %error,
-                        "mac-health: waitpid failed; zombie was NOT reported as reaped"
-                    ),
-                }
-            }
+            (zombies_seen, zombies_owned_reported) =
+                report_zombie_children(&rows, zombie_grace, std::process::id());
         }
         _ => tracing::warn!(
             job = JOB,
@@ -1078,7 +1053,8 @@ fn one_pass() {
         playwright_chromes_reaped = pw_orphans.len(),
         rustc_reaped,
         zombies_seen,
-        zombies_reaped,
+        zombies_reaped = 0usize,
+        zombies_owned_reported,
         indexing_daemons_hot = hot_daemons.len(),
         spotlight_newly_excluded = spotlight_newly_excluded.len(),
         // -1 is never a count: not an Apple Silicon build, or ps failed.
@@ -1292,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn zombie_cleanup_only_selects_children_owned_by_this_server() {
+    fn zombie_report_classifies_parent_relationship_without_cleanup() {
         let rows = health_process_rows(
             " 200 1 S 20:00 /opt/amux/bin/amux-server\n\
              201 200 Z 05:00 [helper] <defunct>\n\
@@ -1306,6 +1282,48 @@ mod tests {
         assert_eq!(
             zombies.iter().map(|p| p.pid).collect::<Vec<_>>(),
             vec![201, 301, 401]
+        );
+    }
+
+    #[test]
+    fn zombie_report_preserves_real_child_exit_status_for_its_waiter() {
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = OwnedChild(
+            std::process::Command::new("sh")
+                .args(["-c", "exit 37"])
+                .spawn()
+                .expect("spawn real child"),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let rows = loop {
+            let rows = health_process_snapshot()
+                .expect("measure real process state")
+                .into_iter()
+                .filter(|p| p.pid == child.0.id())
+                .collect::<Vec<_>>();
+            if rows.iter().any(|p| p.state.starts_with('Z')) {
+                break rows;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child did not reach observable zombie state"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(report_zombie_children(&rows, 0, std::process::id()), (1, 1));
+        assert_eq!(
+            child
+                .0
+                .wait()
+                .expect("health observer must not steal wait status")
+                .code(),
+            Some(37)
         );
     }
 
