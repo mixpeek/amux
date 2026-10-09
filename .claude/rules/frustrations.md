@@ -175,6 +175,9 @@ above supersedes that exception for this drain.
 
 Logging is not the fix. If the friction is cheap to fix and it is yours to fix, fix
 it and set `STATUS: fixed` with the sha. If it belongs to another session's
-subsystem, file the card and route it to them. The file exists so the pattern across
+subsystem, append the report here first and link an amux-frustrations card.
+The durable file and card are the bug-report route. Do not send unsolicited
+reports to `amux`, `amux-helper`, or another worker; a worker message requires
+explicit owner authorization. The file exists so the pattern across
 entries becomes visible — three entries with `AREA: attribution` is an argument that
 one thing needs rebuilding, which no single entry makes on its own.

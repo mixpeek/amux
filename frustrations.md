@@ -5291,6 +5291,105 @@ SYMPTOM: The deployed 303be399 process replay held a private SQLite writer and n
 COST: Two failed deployed handoff replays, delayed recovery decisions, and needless serialized writer work on empty fleets.
 FIX: Read whether an unclaimed project packet exists before enqueueing cleanup. Keep the transactional supersession proof and normal delivery guards unchanged. Log the empty-cleanup verdict at debug level without adding recurring production noise. Exercise a genuinely held writer with empty and already-claimed queues, existing stale-packet safety tests, and the unchanged process SIGKILL/lost-acknowledgement handoff replay; preserve the deployed failure.
 
+## Authenticated workers lost edit reports because the Python hook omitted their credential
+AREA: attribution
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-969
+SYMPTOM: After the owner's quota reset, gs12-extra-1 and gs12-extra-2 made real edits but POST /api/git/observed-edits returned worker_identity_refused with token=none. The Python post-hook supplied X-Amux-Session but omitted its inherited AMUX_WORKER_TOKEN. Its installed copy was dated September 9 and no normal builder path refreshed it.
+COST: Legitimate edit attribution was discarded, creating avoidable downstream ownership-gate friction while GS12 resumed.
+FIX: Send only the launching worker's inherited credential and log numeric HTTP refusal status without secrets. Refresh existing regular hook files atomically from the exact authorized builder commit on hook-only deployments. Verify real authenticated middleware, actual stored reports, missing/wrong credentials, no duplicate report timestamps, persistent credentials and reports across controller SIGKILL, and actual builder authority/source refusal. Preserve a predecessor-hook negative replay.
+
+## One long shell schedule stopped later schedule discovery for ten minutes
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-970
+SYMPTOM: After the host restarted at 13:47 UTC, the live scheduler retained ticks=1 with last_tick_age_s=785 while cron shell jobs executed serially. SCHED-507 stayed running behind the batch and its prior result was timed out after 600s. Output drains waited for descendant-held pipes before waiting for the actual shell's exit.
+COST: Independent due schedules waited behind unrelated shell jobs; detached launches occupied the whole scheduler until the timeout.
+FIX: Dispatch with separate bounded shell/provider slots, keep a schedule active until its consumer finishes, and retain transactional claims and actual completion receipts. Reap and log consumer failures. After actual shell exit, bound descendant-pipe draining at one second and label incomplete capture. Exercise independent completion and a later natural tick during a real long shell, retained interrupted claims and adopted completed receipts across SIGKILL; preserve a deployed predecessor failure.
+
+## Automated worker messages escaped shared groups through legacy open defaults and queues
+AREA: notices
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-971
+SYMPTOM: The owner observed gs12-extra-3 sending a verifier correction to amux. Retained history contains twenty GS12-origin reports to that worker and older reports still queued. Open defaults, recent replies and one-shot grants allowed worker messages beyond their groups. The group bug-report rule also named amux-helper, causing fallback reports after its isolation refused them.
+COST: Unsolicited reports interrupted harness work and consumed provider context; recovery could deliver older out-of-group input after the policy changed.
+FIX: Consolidate worker messaging authority into the shared-group check. Apply it to new sends, canonical fanout, routed requests, notifications, queue admission and actual consumers; recheck membership after restart. Refuse obsolete widening and worker-origin membership edits; preserve owner input and multi-group hubs. Retain refused text and origin durably. Exercise real authenticated providers, legacy wildcard/reply/grant/off controls, retired senders, owner and shared-group receipts, and two SIGKILL restarts; preserve the deployed predecessor's confirmed outside-group delivery. File harness bugs in frustrations.md and linked amux-frustrations cards.
+
+## Token source attribution credited queued or refused input that never reached the provider
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-972
+SYMPTOM: The GS12 audit found that the canonical prompt-source SQL included undelivered queued and refused cmd_history entries and refused steering_history as candidates for the latest prompt. A durable refusal has a history timestamp but never generated a provider turn.
+COST: Per-trigger token and cost reports could blame a blocked send rather than the input actually consumed; that undermines optimization decisions.
+FIX: Filter the existing shared attribution SQL to actual sent/delivered history and eligible command delivery. Preserve the raw ledger and unknown coverage. Test the actual usage API against queued/refused/uncertain records and a successful callback control; keep legacy delivered history eligible. Do not claim measured token savings from a corrected attribution label.
+
+## A verification command prepared on a todo card was silently discarded
+AREA: board contracts
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override; investigated by Codex gs12-live-flow
+CARD: MO-4464
+SYMPTOM: GE1-4 PATCH {verify_cmd, reason} in todo returned 200/applied:false. The contract path only consumed these fields when entering or already in doing, and verify_cmd is not a board column.
+COST: Worker and coordinator repeated a legitimate write and needed to combine it with a state transition to make it stick.
+FIX: Prepare a complete frozen contract through the existing freeze path on backlog/todo without changing task status. Missing criteria still produce an actionable refusal; done still requires doing and server verification. Return a failed persistence status when the contract write fails. Exercise preparation, read-back, unchanged todo and refused premature completion through the real route.
+
+## An owner configuration decision was sent back through the credential ladder
+AREA: needsyou
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override; investigated by Codex gs12-live-flow
+CARD: MO-4465
+SYMPTOM: MO-4462 asked the owner for a group-scope reviewer setting. Generic owner-action wording selected the same send-back path as credentials, telling a worker to perform an owner-only scope write.
+COST: The wrong instructions obscured the actual owner action and caused a setting to be changed and reverted on a stale premise.
+FIX: Limit credential-ladder send-backs to the existing structured credential/access ask types. Other owner actions remain with their owner. Preserve budget, production, outbound and owner-voice boundaries; test a group key decision and a genuine sign-in control.
+
+## Failed land startup leaked a locked initializing candidate checkout
+AREA: lifecycle
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override; investigated by Codex gs12-live-flow
+CARD: MO-4463
+SYMPTOM: Three server-owned candidates under ~/.amux/tmp/land remain registered as locked initializing. compose returned from a failed git worktree add before reaching its cleanup closure; ordinary single-force removal also refused initializing locks. Land 119 ultimately merged and 121 was refused by the environment census, so neither terminal row proves a presently hung startup or justifies cancelling a push.
+COST: Failed retries leaked checkouts and registration state, making recovery increasingly expensive and obscuring useful execution versus startup delay.
+FIX: Preserve main's one reused candidate per repository, avoiding repeated full checkouts. Double-force cleanup only the actual failed server candidate, and restrict stale cleanup to this repository's registered candidates. Keep lock release and durable requeue in the existing batch path. Test real failed creation after a locked checkout, no main change, no orphan/held lock, SIGKILL during registered checkout and automatic reuse, then accepted-push and terminal recovery with no duplicate commit. Named signals: land_candidate_start_failed, land_candidate_removed, land_candidate_cleanup_failed. SIGKILL itself cannot run cleanup; ordinary failed-startup intent resumes; accepted-push recovery is tracked separately in the controller crash report below. Historical leaked candidates remain retained evidence until safe cleanup is proven.
+
+## An escalated independent review accepted worker done moves without starting another review
+AREA: board contracts
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow (01a1182c-04ea-7c93-814d-82ec1aad1e41)
+CARD: AF-973
+SYMPTOM: GD-75 is done, but its review remains escalated after three failures and its owner question persists. The lane and coordinator initially read done as a fourth review resubmission; no fourth review had started. Worker status changes did not answer the required owner decision.
+COST: A false waiting-for-review state stalled proof progress and invited repeated prompts or an accidental review-budget bypass.
+FIX: Refuse worker todo/doing/done/verified writes in the shared board writer while the review is escalated, retaining findings, status, question and quality-round count. Name contract_review_owner_direction_required in the API and logs. Exercise actual escalation and the authenticated process API across controller crashes. Ask the owner separately about reopening for correction; no criteria, review limit or product acceptance changed.
+
+## Controller crash after accepted rebased push replayed the land and duplicated its commit
+AREA: lifecycle
+SEVERITY: breaks
+STATUS: open
+DATE: 2026-10-08
+SESSION: Codex gs12-live-flow
+CARD: AF-974
+SYMPTOM: A real bare remote accepted a rebased feature and killed the controller before push acknowledgement. Restart replayed the original SHA and created another feature commit; the retained queue row had no composed SHA to reconcile.
+COST: A crash could duplicate a completed external landing and leave the original intent running.
+FIX: Persist the exact composed SHA in the existing land row before remote push. Adopt only positive remote ancestry after restart before resetting the reused candidate, and keep pending push_candidate_sha distinct from successful merged_sha. Preserve unknown outcomes; one repository-owned candidate is retained for the next normal land, rather than repeating the expensive checkout. Actual accepted-push SIGKILL and no-duplicate receipt/commit tests are required. Named signals: land_push_intent_saved, land_push_receipt_adopted.
+
 ## PR #239's published head predates main's land-queue and contract fixes, so a merge resolution can quietly undo them
 AREA: land
 SEVERITY: blocks

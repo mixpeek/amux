@@ -402,27 +402,22 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
         )
             .into_response();
     }
+    if valid_id(&id) && std::fs::read_to_string(grants_dir(&home).join(format!("{id}.json")))
+        .ok().and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .is_some_and(|d| d["kind"] == "cross_group_send") {
+        tracing::warn!(grant = %id, verdict = "worker_group_boundary", measured = true,
+            n_considered = 1, "legacy cross-group grant cannot widen worker membership");
+        return (StatusCode::FORBIDDEN, Json(json!({"ok":false,"code":"worker_group_boundary",
+            "error":"Worker messages stay within a shared group. Use direct owner input for an outside-group instruction."}))).into_response();
+    }
     match consume(&home, &id) {
         Consume::Ready(doc) => {
             let kind = doc.get("kind").and_then(Value::as_str).unwrap_or_default();
             let p = doc.get("payload").cloned().unwrap_or_else(|| json!({}));
             match kind {
                 "cross_group_send" => {
-                    let origin = p.get("origin").and_then(Value::as_str).unwrap_or_default();
-                    let target = p.get("target").and_then(Value::as_str).unwrap_or_default();
-                    write_allowance(&home, origin, target, &id);
-                    Json(json!({
-                        "ok": true,
-                        "granted": kind,
-                        "origin": origin,
-                        "target": target,
-                        "single_use": true,
-                        "note": format!(
-                            "{origin} may now send to {target} ONCE. It takes effect on their \
-                             next attempt; nothing is sent by this approval itself."
-                        ),
-                    }))
-                    .into_response()
+                    (StatusCode::FORBIDDEN, Json(json!({"ok":false,"code":"worker_group_boundary",
+                        "error":"Worker messages stay within a shared group."}))).into_response()
                 }
                 // A card charge above its vault rule (vault.rs). One yes opens
                 // exactly one charge: this worker, this card, this amount, this
@@ -512,6 +507,18 @@ mod tests {
             json!({"origin": "ts-gke", "target": "autodesk", "preview": "hello"}),
         )
         .expect("minted")
+    }
+
+    #[tokio::test]
+    async fn an_old_cross_group_approval_cannot_mint_a_new_delivery_allowance() {
+        let h=home();
+        let _guard=crate::api::settings::test_env::set_home(h.path());
+        let id=mint(h.path());
+        let response=approve(HeaderMap::new(),AxPath(id.clone())).await;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        assert!(take_allowance(h.path(),"ts-gke","autodesk").is_none());
+        assert!(grants_dir(h.path()).join(format!("{id}.json")).exists(),"preserve pending refusal evidence");
+        assert!(!grants_dir(h.path()).join(format!("{id}.approved.json")).exists(),"no false approval audit");
     }
 
     /// Moving the scan off the runtime must not change the ANSWER (AMUX-4756).

@@ -5142,10 +5142,10 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // `_own` says whether the WORKER's own file sets it, so the UI can
             // tell "this worker" from "inherited" and can refuse to offer a
             // local switch-off for something it did not set locally.
-            "spans_groups": !cross_group.value.is_empty(),
-            "spans_groups_value": cross_group.value,
-            "spans_groups_source": cross_group.source,
-            "spans_groups_reason": cross_group.reason,
+            "spans_groups": false,
+            "spans_groups_value": "",
+            "spans_groups_source": "shared-group-only",
+            "spans_groups_reason": "Worker messages must stay within a shared group. Owner input remains permitted.",
             "spans_groups_explicit_deny": cross_group.explicit_deny,
             "spans_groups_own": cross_group.worker_defined,
             "steering_queue": [],
