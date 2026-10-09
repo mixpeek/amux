@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1287';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1288';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27822,7 +27822,7 @@ function _connDrawerRender() {
     if (scopes.length) {
       h += '<div class="cx-sec">This connector uses</div>';
       for (const sc of scopes) h += '<div class="cx-scope"><code>' + esc(sc) + '</code></div>';
-    } else {
+    } else if (!c.group) {
       h += '<p class="cx-p">' + (c.auth === 'apikey' ? 'Key-based: the key\'s own permissions in ' + esc(c.label) + ' decide what workers can do.' : 'No OAuth scopes declared.') + '</p>';
     }
   }
