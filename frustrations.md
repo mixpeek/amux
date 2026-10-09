@@ -5511,3 +5511,14 @@ CARD: AGH-8
 SYMPTOM: The `checks` workflow's chained land precheck spent 167 s in one run. An unchanged-source `scripts/test-land-demote-sticks.sh` took 77.27 s locally, including a 60 s self-upgrade poll in a real land waiter. Its old 100 s test deadline hid the delay. A 30 s deadline failed on the unchanged CLI with `no re-exec within 30s`.
 COST: New land behavior can sit unapplied for a minute in queued processes, and the CI job spends most of that time waiting for the lifecycle test.
 FIX: Poll the installed behavior version every 10 s while waiting, emit `verdict=land_self_upgrade_reexec check_interval_s=10` on re-exec, and enforce a 30 s re-exec deadline in the lifecycle test. The same test passed in 27.50 s afterward. The whole chained land precheck passed locally in 239.50 s; that total is not comparable with the hosted runner's 167 s because it ran on different hardware.
+
+## Feedback decoration rebuilt an open worker menu on every status refresh
+AREA: dashboard worker actions and mobile E2E
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-08
+SESSION: amux-gs12-helper
+CARD: AGH-8
+SYMPTOM: PR #241's iOS Safari shard failed worker-pause.spec.ts after tapping an enabled Resume item: no POST /api/workers/pause-probe/resume followed. The trace showed the item detached twice during click retries. _renderPeekWorkerActions compared live menu.innerHTML to the pristine template, but the feedback layer adds data-action and related attributes after insertion, so each updatePeekStatus replaced the still-open menu even when its actions were unchanged.
+COST: a real mobile tap could vanish, and an unrelated PR lost a 17-minute E2E shard plus review time.
+FIX: Cache the last generated template per menu element and update only when the action definition changes; retain a regression assertion that repeated status refreshes preserve the enabled Resume node. Emit one worker-action-menu decorated_menu_preserved client-debug verdict when the formerly destructive comparison would have replaced a live open menu.

@@ -7132,6 +7132,8 @@ function _renderWorkerActionMenu(s, surface) {
   }).join('');
 }
 
+const _peekActionTemplates = new WeakMap();
+let _peekDecoratedMenuLogged = false;
 function _renderPeekWorkerActions(s) {
   const menu = document.getElementById('peek-more-dropdown');
   if (!menu) return;
@@ -7144,7 +7146,21 @@ function _renderPeekWorkerActions(s) {
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
     + '<span class="mi">&#x25B4;</span>Focus mode</div>'
     + _peekChatMenuItem(s);
-  if (menu.innerHTML !== html) menu.innerHTML = html;
+  const previous = _peekActionTemplates.get(menu);
+  if (previous === html && menu.firstChild) {
+    // Feedback decorates controls after insertion. Comparing live innerHTML
+    // against the undecorated template used to replace an open menu on every
+    // status refresh, detaching an iOS tap before its click handler ran.
+    if (!_peekDecoratedMenuLogged && menu.classList.contains('open') && menu.innerHTML !== html) {
+      _peekDecoratedMenuLogged = true;
+      _origFetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({kind:'worker-action-menu',verdict:'decorated_menu_preserved',
+          measured:true,n_considered:menu.querySelectorAll('[role="menuitem"]').length,ver:APP_VER})}).catch(() => {});
+    }
+    return;
+  }
+  menu.innerHTML = html;
+  _peekActionTemplates.set(menu, html);
 }
 
 // Both menu Browse actions and the displayed directory path land here. One
