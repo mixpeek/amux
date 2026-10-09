@@ -31742,6 +31742,38 @@ fn spawn_switch_confirm_watcher(name: &str) {
 /// choreography here would rediscover all of them.
 async fn deliver_hot_config(state: &AppState, name: &str, cmd: &str, ack: &str) -> HotOutcome {
     let before = tmux_capture(name, 40).await;
+    // HOLD A MID-TURN SWITCH UNTIL THE TURN ENDS (AMUX-5759, live test
+    // 2026-10-08). Sent while generating, `/model haiku` went through the
+    // steering queue, which Claude Code consumes MID-turn: the rest of the
+    // running turn was answered by the new model, which misread the moment
+    // ("There's no pending request in this message"). The API said "applies
+    // at the next turn boundary"; now it does.
+    if detect_claude_status(&before) == "active" {
+        let (st, n, c, a) = (state.clone(), name.to_string(), cmd.to_string(), ack.to_string());
+        tokio::spawn(async move {
+            for _ in 0..900 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                if detect_claude_status(&tmux_capture(&n, 40).await) != "active" {
+                    tracing::info!(session = %n, cmd = %c, measured = true, n_considered = 1,
+                        verdict = "hot_config_held_to_turn_end", "a mid-turn config switch was delivered at the turn boundary");
+                    let before = tmux_capture(&n, 40).await;
+                    let _ = deliver_hot_config_now(&st, &n, &c, &a, before).await;
+                    return;
+                }
+            }
+            tracing::warn!(session = %n, cmd = %c, measured = true, n_considered = 1,
+                verdict = "hot_config_turn_never_ended", "the turn did not end in 30 min; delivering the switch anyway");
+            let _ = send_text(&st, &n, &c, true, SendOrigin::Automation).await;
+            spawn_switch_confirm_watcher(&n);
+        });
+        return HotOutcome::Queued;
+    }
+    deliver_hot_config_now(state, name, cmd, ack, before).await
+}
+
+/// Deliver one config slash command to a pane that is not mid-turn and wait
+/// for its acknowledgement (answering the confirmation dialog).
+async fn deliver_hot_config_now(state: &AppState, name: &str, cmd: &str, ack: &str, before: String) -> HotOutcome {
     let (sent, msg) = send_text(state, name, cmd, true, SendOrigin::Automation).await;
     tracing::info!(session = name, cmd, sent, result = %msg, "hot config: delivered");
     if !sent {
@@ -31921,7 +31953,8 @@ async fn apply_live_config_change(
                     // and saves again then. Watch for it, then restore.
                     let name = name.to_string();
                     tokio::spawn(async move {
-                        for _ in 0..240 {
+                        // Covers the 30-minute turn-end hold in deliver_hot_config.
+                        for _ in 0..400 {
                             tokio::time::sleep(Duration::from_secs(5)).await;
                             if claude_global_defaults(&home) != prev {
                                 restore_claude_global_defaults(&home, &prev, &name);
