@@ -728,7 +728,13 @@ impl Runtime {
         let cutoff = cutoff_at.to_rfc3339();
         let cutoff_epoch = cutoff_at.timestamp();
         let completed: u32 = conn.query_row(
-            r#"SELECT COUNT(*) FROM _amux_state_events WHERE at > ?1
+            // INDEXED BY the time index (AMUX-5727): the planner chose
+            // idx_amux_state_events_entity and read EVERY task event, scattered
+            // through a 14 GB file, every 3 s, to count the last hour's few.
+            // Measured read-only: 185-231 ms warm via entity_type, 4.3 ms via at,
+            // and seconds cold under disk contention, overlapping the 10-40 s
+            // board and session GETs. The window is small; the time index wins.
+            r#"SELECT COUNT(*) FROM _amux_state_events INDEXED BY idx_amux_state_events_at WHERE at > ?1
              AND entity_type = 'task' AND mutation LIKE '%"to":"verified"%'"#,
             params![cutoff],
             |r| r.get(0),
