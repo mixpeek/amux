@@ -1017,9 +1017,9 @@ pub(crate) fn persisted_last_exit(home: &Path) -> Option<serde_json::Value> {
 /// One file holding every browser, rather than one file per profile: profile
 /// names are user input and would have to be sanitised into filenames, and a
 /// traversal bug in a path built from a profile name is a worse failure than
-/// anything this file is protecting. Rewritten whole on every change, always
-/// under the RUNNING lock, so two concurrent starts cannot interleave a
-/// read-modify-write.
+/// anything this file is protecting. Rewritten atomically under a dedicated
+/// file-update lock, independently of the live registry lock, so concurrent
+/// starts, exits and startup guards cannot interleave a read-modify-write.
 ///
 /// READS TOLERATE THE LEGACY SHAPE. Before this change the file was a single
 /// bare object; a server that upgrades mid-flight must still adopt the browser
@@ -1045,13 +1045,21 @@ fn read_running_file(home: &Path) -> std::collections::HashMap<String, serde_jso
         .unwrap_or_default()
 }
 
+static RUNNING_FILE_UPDATES: Mutex<()> = Mutex::new(());
+
 fn write_running_file(home: &Path, map: &std::collections::HashMap<String, serde_json::Value>) {
     let obj: serde_json::Map<String, serde_json::Value> =
         map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let _ = std::fs::write(
-        running_state_path(home),
-        serde_json::Value::Object(obj).to_string(),
-    );
+    let path = running_state_path(home);
+    let temp = home.join(format!("browser-running-{}.tmp", ulid::Ulid::new()));
+    if let Err(error) = std::fs::write(&temp, serde_json::Value::Object(obj).to_string())
+        .and_then(|_| std::fs::rename(&temp, &path))
+    {
+        let _ = std::fs::remove_file(&temp);
+        tracing::warn!(%error, measured=true, n_considered=1,
+            verdict="browser_running_state_write_failed",
+            "browser restart records could not be atomically published");
+    }
 }
 
 /// How long a just-spawned Chrome is protected from reconciliation (AMUX-4961).
@@ -1095,6 +1103,7 @@ fn persist_running(
     started_by: &str,
     cdp_ready: bool,
 ) {
+    let _guard = RUNNING_FILE_UPDATES.lock().expect("browser running-file lock poisoned");
     let mut map = read_running_file(home);
     map.insert(
         profile.to_string(),
@@ -1116,6 +1125,7 @@ fn persist_running(
 /// on a single browser's death is how the remaining ones become unadoptable
 /// orphans after a restart.
 fn clear_running_for(home: &Path, profile: &str) {
+    let _guard = RUNNING_FILE_UPDATES.lock().expect("browser running-file lock poisoned");
     let mut map = read_running_file(home);
     map.remove(profile);
     if map.is_empty() {
@@ -1123,11 +1133,6 @@ fn clear_running_for(home: &Path, profile: &str) {
     } else {
         write_running_file(home, &map);
     }
-}
-
-#[allow(dead_code)]
-fn clear_running(home: &Path) {
-    let _ = std::fs::remove_file(running_state_path(home));
 }
 
 /// Re-adopt a browser this server did not spawn, if one is still there.
@@ -1388,7 +1393,7 @@ async fn reconcile_orphan_before_launch(home: &Path, target_dir: &Path) {
                      unreachable — a launch on this dir would delegate to it and exit 0 (AMUX-3207)"
                 );
                 let _ = run_kill(pid, "-KILL", "orphan reconciliation").await;
-                clear_running(home);
+                clear_running_for(home, v.get("profile").and_then(Value::as_str).unwrap_or("default"));
             }
         }
     }
@@ -1792,6 +1797,37 @@ fn chrome_launch_args(
 /// that failed to start." That property is worth keeping, and `start` has three
 /// error exits between spawn and the final persist — a fourth added later would
 /// not know to clear. Drop does not forget.
+// A failed or cancelled launch must release the exact child it spawned. The
+// published child deliberately survives registry drops for server re-adoption.
+struct PendingChrome(Option<tokio::process::Child>);
+impl PendingChrome {
+    fn publish(mut self) -> tokio::process::Child {
+        self.0.take().expect("pending Chrome child")
+    }
+}
+impl std::ops::Deref for PendingChrome {
+    type Target = tokio::process::Child;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("pending Chrome child")
+    }
+}
+impl std::ops::DerefMut for PendingChrome {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("pending Chrome child")
+    }
+}
+impl Drop for PendingChrome {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let pid = child.id();
+            let outcome = child.start_kill();
+            tracing::warn!(?pid, measured=true, n_considered=1, error=?outcome.err(),
+                verdict="browser_unpublished_launch_released",
+                "failed or cancelled startup released its own Chrome child");
+        }
+    }
+}
+
 struct StartingRecord<'a> {
     home: &'a Path,
     profile: &'a str,
@@ -2007,9 +2043,9 @@ pub async fn start(
             cmd.stderr(std::process::Stdio::null());
         }
     }
-    let mut child = cmd
+    let mut child = PendingChrome(Some(cmd
         .spawn()
-        .map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?;
+        .map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?));
     let pid = child.id();
 
     // REGISTER BEFORE THE CDP WAIT (AMUX-4961). Until this, a Chrome was live
@@ -2309,7 +2345,7 @@ pub async fn start(
             // refuse the next anonymous caller instead of treating them as the
             // same session (amux-cloud's validation catch on AMUX-3063).
             started_by: started_by.to_string(),
-            child: Some(child),
+            child: Some(child.publish()),
         },
     );
     // Survive a server restart (AC-325). Written AFTER the handle is live so a
@@ -2496,7 +2532,11 @@ pub async fn stop_profile_as_reason(
             }
         }
     }
-    clear_running(home);
+    clear_running_for(home, &running.profile);
+    tracing::info!(profile=%running.profile, measured=true, n_considered=1,
+        remaining_profiles=read_running_file(home).len(),
+        verdict="browser_profile_restart_record_retired",
+        "retired only the stopped profile's restart record");
 
     let clean_exit = locks_present(&running.user_data_dir).is_empty();
     let locks_cleaned = if !clean_exit && is_amux_owned(home, &running.user_data_dir) {
@@ -7572,5 +7612,65 @@ mod query_js_tests {
             assert!(js.contains("\"Scheduler\""), "{sel}: {js}");
             assert!(js.contains("innerText"), "{sel}: {js}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pending_chrome_tests {
+    use super::PendingChrome;
+    #[tokio::test]
+    async fn cancelled_start_releases_its_exact_child() {
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id().unwrap();
+        let peer = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut peer = peer;
+        drop(PendingChrome(Some(child)));
+        for _ in 0..100 {
+            if !super::pid_alive(pid) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!super::pid_alive(pid), "unpublished child survived cancellation");
+        assert!(peer.try_wait().unwrap().is_none(), "peer child was touched");
+        peer.kill().await.unwrap();
+    }
+    #[tokio::test]
+    async fn published_child_survives_for_server_readoption() {
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut published = PendingChrome(Some(child)).publish();
+        assert!(published.try_wait().unwrap().is_none());
+        published.kill().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod running_file_ownership_tests {
+    use super::*;
+    #[test]
+    fn parallel_profile_updates_preserve_peer_restart_records() {
+        let home = tempfile::tempdir().unwrap();
+        let path = std::sync::Arc::new(home.path().to_path_buf());
+        persist_running(&path, "keep", &path.join("keep"), 9000, 9001, 1, "peer", true);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(17));
+        let mut threads = Vec::new();
+        for i in 0..16 {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let profile = format!("worker-{i}");
+                persist_running(&path, &profile, &path.join(&profile), 9100+i, 9101+u32::from(i), 1, &profile, true);
+                barrier.wait();
+                barrier.wait();
+                clear_running_for(&path, &profile);
+            }));
+        }
+        barrier.wait();
+        let before = read_running_file(&path);
+        barrier.wait();
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(before.len(), 17, "a parallel start lost a profile's restart record");
+        let after = read_running_file(&path);
+        assert_eq!(after.len(), 1, "single-profile retirements changed their peer population");
+        assert_eq!(after["keep"]["pid"], 9001);
+        assert_eq!(after["keep"]["started_by"], "peer");
     }
 }

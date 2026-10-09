@@ -1619,7 +1619,11 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
     let tmp = review_dir(card, &sha, &review_input_hash(c, row, round));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
     let model = reviewer_model(&home, lane);
-    match review_job(&tmp) {
+    let job = review_job(&tmp);
+    tracing::info!(card, lane, dir = %tmp.display(), round, job = ?job,
+        measured = true, n_considered = 1, verdict = "contract_review_lookup",
+        "review recovery is bound to this exact input generation");
+    match job {
         ReviewJob::Finished => {
             tracing::info!(card, lane, measured = true, n_considered = 1, verdict = "contract_review_resumed_result",
                 "a reviewer finished while the server was down; its result is read, not rerun");
@@ -2028,6 +2032,8 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
             write_review_source(&dir, &row.desc)?;
             let prompt = prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or(""))
                 + "\nRead card-source.md for the full unabridged description, including requirements outside the excerpt.\n";
+            tracing::info!(card, lane, dir = %dir.display(), measured = true, n_considered = 1,
+                verdict = "contract_prereview_started", "a separate advisory plan review is starting");
             launch_review(&dir, &cli, &args, &prompt)?;
         }
         let output = wait_review(&dir).await;

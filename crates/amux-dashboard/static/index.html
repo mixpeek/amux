@@ -1780,7 +1780,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <option value="">Amux → CDP → CUA</option>
     </select>
     <button id="bw-ios-stop" class="bw-btn" style="display:none;" onclick="_bwStopIos()">Stop Safari</button>
-    <select id="bw-profile" class="bw-in" style="min-width:120px;max-width:100%;" title="Profile identity and purpose — select before Go">
+    <select id="bw-profile" class="bw-in" style="min-width:120px;max-width:100%;" onchange="_bwRoutingProfileChanged()" title="Profile identity and purpose — select before Go">
       <option value="">Auto profile</option>
     </select>
     <button class="bw-btn" onclick="_bwBack()" title="Back">&larr;</button>
@@ -1796,12 +1796,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <details id="bw-routing" style="margin:0 8px 8px;padding:8px;border:1px solid var(--border);border-radius:6px;" data-bw-chrome>
     <summary>Browser route settings</summary>
     <div class="bw-row" style="margin-top:8px;">
-      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
-      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
-      <label><input id="bw-cua-enabled" type="checkbox"> Use CUA if both browser routes fail</label>
+      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" onchange="_bwRoutingEdited()" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
+      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" onchange="_bwRoutingEdited()" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
+      <label><input id="bw-cua-enabled" onchange="_bwRoutingEdited()" type="checkbox"> Use CUA if both browser routes fail</label>
       <button class="bw-btn" onclick="_bwSaveRouting()">Save route</button>
+      <button class="bw-btn" onclick="_bwAdvanceRouting()" title="When the browser works but cannot complete the goal, advance to the next configured route without repeating an action">Try next route</button>
     </div>
-    <p style="font-size:0.75rem;color:var(--dim);">Select a saved profile above, then Go. CDP keeps an isolated copy of the Chrome profile selected here. CUA transfers saved cookies; site access is verified when opened.</p>
+    <p style="font-size:0.75rem;color:var(--dim);">Fallback choices are saved per Amux profile. CDP keeps an isolated copy of its matching Chrome account. If the goal remains blocked, try the next route, then observe again. CUA transfers saved cookies; verify live access when opened.</p>
     <div id="bw-routing-status" role="status" style="font-size:0.75rem;"></div>
   </details>
   <!-- Status / logged-in indicator -->

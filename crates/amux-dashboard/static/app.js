@@ -14000,7 +14000,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1275';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1276';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -48891,12 +48891,37 @@ async function _bwLoadProfiles() {
   } catch(e) { _bwStatus('Profile discovery failed: ' + e.message); }
 }
 
+let _bwRouteConfig = {};
+let _bwRouteLoadGeneration = 0;
+let _bwProfileChoiceGeneration = 0;
+function _bwRoutingEdited() { ++_bwRouteLoadGeneration; }
+function _bwRoutingDiscoveryDiscarded(reason) {
+  const payload = {kind:'browser-routing-discovery-discarded', reason, ver:APP_VER, measured:true, n_considered:1};
+  console.warn('[amux] browser routing discovery discarded', reason);
+  fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(() => {});
+}
+function _bwRoutingProfileChanged(fromDiscovery = false) {
+  if (!fromDiscovery) ++_bwProfileChoiceGeneration;
+  const profile = document.getElementById('bw-profile').value;
+  const route = _bwRouteConfig.profile_routes?.[profile] || (_bwRouteConfig.native_profile === profile ? _bwRouteConfig : {});
+  document.getElementById('bw-cdp-profile').value = route.chrome_profile || '';
+  document.getElementById('bw-cua-profile').value = route.cua_profile || '';
+  document.getElementById('bw-cua-enabled').checked = !!route.allow_cua;
+  document.getElementById('bw-routing-status').textContent = route.chrome_profile ? 'Fallback for ' + profile + ': ' + route.chrome_profile : 'No fallback saved for this profile. Choose its matching Chrome account and save.';
+}
 async function _bwLoadRouting() {
+  const generation = ++_bwRouteLoadGeneration;
+  const choiceGeneration = _bwProfileChoiceGeneration;
   try {
     const response = await fetch('/api/browser/routing/config');
     const d = await response.json();
     if (!response.ok) throw new Error(d.error || 'Could not load route');
+    if (generation !== _bwRouteLoadGeneration) {
+      _bwRoutingDiscoveryDiscarded('superseded_by_newer_load_or_edit');
+      return;
+    }
     const c = d.config || {};
+    _bwRouteConfig = c;
     const cd = document.getElementById('bw-cdp-profile');
     cd.replaceChildren(new Option('Select Chrome profile', ''));
     for (const p of d.chrome_profiles || []) { const o = new Option([p.label || p.name, p.identity, '(' + p.name + ')'].filter(Boolean).join(' · '), p.name); o.disabled = !p.on_disk; cd.add(o); }
@@ -48906,17 +48931,32 @@ async function _bwLoadRouting() {
     document.getElementById('bw-profile').querySelectorAll('option[value]').forEach(o => { if (o.value) cu.add(new Option(o.textContent, o.value)); });
     cu.value = c.cua_profile || '';
     document.getElementById('bw-cua-enabled').checked = !!c.allow_cua;
-    if (c.native_profile) document.getElementById('bw-profile').value = c.native_profile;
-    document.getElementById('bw-routing-status').textContent = c.chrome_profile ? 'Fallback configured: ' + c.chrome_profile : 'Select a Chrome profile to enable the CDP fallback.';
+    const profile = document.getElementById('bw-profile');
+    // A saved default is an initial choice, never authority to replace the
+    // profile the owner selected while discovery was in flight.
+    if (choiceGeneration !== _bwProfileChoiceGeneration) _bwRoutingDiscoveryDiscarded('owner_selected_profile_during_load');
+    else if (!profile.value && c.native_profile) profile.value = c.native_profile;
+    _bwRoutingProfileChanged(true);
   } catch (e) { document.getElementById('bw-routing-status').textContent = 'Route discovery failed: ' + e.message; }
 }
 async function _bwSaveRouting() {
+  ++_bwRouteLoadGeneration; // An older GET must not replace this owner write.
+  document.getElementById('bw-routing-status').textContent = 'Saving route…';
   try {
     const c = { native_profile: document.getElementById('bw-profile').value, chrome_profile: document.getElementById('bw-cdp-profile').value, cua_profile: document.getElementById('bw-cua-profile').value, allow_cua: document.getElementById('bw-cua-enabled').checked };
     const response = await fetch('/api/browser/routing/config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
     const d = await response.json(); if (!response.ok) throw new Error(d.error || 'Save failed');
+    _bwRouteConfig = d.config;
     document.getElementById('bw-routing-status').textContent = 'Saved: Amux → ' + (c.chrome_profile ? 'CDP ' + c.chrome_profile : 'CDP unconfigured') + (c.allow_cua ? ' → CUA' : '');
   } catch(e) { document.getElementById('bw-routing-status').textContent = 'Save failed: ' + e.message; }
+}
+async function _bwAdvanceRouting() {
+  try {
+    await _bwFetch('/api/browser/advance', {method:'POST',body:JSON.stringify({reason:'The selected browser could not complete the current goal'})});
+    _bwViewport = null;
+    await _bwScreenshot(0, true);
+    _bwStatus('Using the next route. Observe this page before acting.');
+  } catch(e) { _bwStatus('Could not advance: ' + e.message); }
 }
 
 function _bwBackend() {

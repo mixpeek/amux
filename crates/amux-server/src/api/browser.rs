@@ -2254,6 +2254,20 @@ async fn stop(
         );
     };
 
+    // Route cleanup is conditional ownership, unlike an explicit operator stop.
+    // A reaped browser may have been replaced by another lane during a cold build.
+    if let Some(expected) = body.get("expected_started_by").and_then(Value::as_str) {
+        if owner_of_target != expected || want_profile.is_some_and(|p| p != profile) {
+            tracing::warn!(stopped_by=%actor, expected_started_by=%expected,
+                actual_started_by=%owner_of_target, profile=%profile,
+                verdict="browser_stop_ownership_changed", measured=true, n_considered=1,
+                "browser: conditional route cleanup preserved a replaced browser");
+            return err(StatusCode::CONFLICT, json!({"ok":false,"stopped":false,
+                "code":"browser_stop_ownership_changed",
+                "error":"the requested browser no longer belongs to this route"}));
+        }
+    }
+
     // Cross-session stop stays PERMITTED (a wedged browser must be cleanable
     // by whoever notices) but LOUD: the log and the response both name owner
     // and actor, so an anonymous stop can no longer read as a mystery death
