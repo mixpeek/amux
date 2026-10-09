@@ -58,9 +58,13 @@ test('create modal offers Grok and a Grok worker is stored without a Claude mode
   expect(created.status(), await created.text()).toBe(201);
   const body = await created.json();
   expect(body.provider).toBe('grok');
-  expect(body.flags).toContain('grok-4.6');
-  expect(body.flags).not.toContain('sonnet');
-  expect(body.flags).not.toContain('opus');
+  // An unspecified model leaves flags EMPTY and never falls back to the Claude
+  // default (same rule as muse, worker_model_env). grok's default (grok-4.6)
+  // is applied at LAUNCH by default_model_for_provider; the unit test
+  // grok_create_to_launch_carries_the_model pins that it reaches the argv.
+  expect(body.flags || '').not.toContain('sonnet');
+  expect(body.flags || '').not.toContain('opus');
+  expect(body.flags || '').not.toContain('haiku');
 
   const listed = await request.get('/api/sessions', { headers: auth });
   const row = (await listed.json()).find((s: { name: string }) => s.name === name);

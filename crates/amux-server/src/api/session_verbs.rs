@@ -6312,6 +6312,21 @@ mod grok_launch_tests {
     }
 
     #[test]
+    fn grok_create_to_launch_carries_the_model() {
+        use crate::api::sessions_legacy::worker_model_env;
+        let id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        // No model chosen at create: flags stay empty, launch adds grok's default.
+        let (flags, _, _) = worker_model_env("grok", "", "", "opus");
+        let cmd = grok_launch_command("", &flags, "", &super::default_model_for_provider("grok"), id);
+        assert_eq!(cmd, format!("grok --session-id {id} --model grok-4.6"));
+        // A chosen model rides in flags and wins over the default.
+        let (flags, _, resolved) = worker_model_env("grok", "grok-4.5", "", "opus");
+        assert_eq!(resolved, "grok-4.5");
+        let cmd = grok_launch_command("", &flags, "", &super::default_model_for_provider("grok"), id);
+        assert_eq!(cmd, format!("grok --session-id {id} --model grok-4.5"));
+    }
+
+    #[test]
     fn grok_resume_uses_resume_not_session_id() {
         let cmd = grok_launch_command(
             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
