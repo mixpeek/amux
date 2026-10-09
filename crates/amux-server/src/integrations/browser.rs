@@ -1792,6 +1792,37 @@ fn chrome_launch_args(
 /// that failed to start." That property is worth keeping, and `start` has three
 /// error exits between spawn and the final persist — a fourth added later would
 /// not know to clear. Drop does not forget.
+// A failed or cancelled launch must release the exact child it spawned. The
+// published child deliberately survives registry drops for server re-adoption.
+struct PendingChrome(Option<tokio::process::Child>);
+impl PendingChrome {
+    fn publish(mut self) -> tokio::process::Child {
+        self.0.take().expect("pending Chrome child")
+    }
+}
+impl std::ops::Deref for PendingChrome {
+    type Target = tokio::process::Child;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("pending Chrome child")
+    }
+}
+impl std::ops::DerefMut for PendingChrome {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("pending Chrome child")
+    }
+}
+impl Drop for PendingChrome {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let pid = child.id();
+            let outcome = child.start_kill();
+            tracing::warn!(?pid, measured=true, n_considered=1, error=?outcome.err(),
+                verdict="browser_unpublished_launch_released",
+                "failed or cancelled startup released its own Chrome child");
+        }
+    }
+}
+
 struct StartingRecord<'a> {
     home: &'a Path,
     profile: &'a str,
@@ -2007,9 +2038,9 @@ pub async fn start(
             cmd.stderr(std::process::Stdio::null());
         }
     }
-    let mut child = cmd
+    let mut child = PendingChrome(Some(cmd
         .spawn()
-        .map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?;
+        .map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?));
     let pid = child.id();
 
     // REGISTER BEFORE THE CDP WAIT (AMUX-4961). Until this, a Chrome was live
@@ -2309,7 +2340,7 @@ pub async fn start(
             // refuse the next anonymous caller instead of treating them as the
             // same session (amux-cloud's validation catch on AMUX-3063).
             started_by: started_by.to_string(),
-            child: Some(child),
+            child: Some(child.publish()),
         },
     );
     // Survive a server restart (AC-325). Written AFTER the handle is live so a
@@ -7572,5 +7603,32 @@ mod query_js_tests {
             assert!(js.contains("\"Scheduler\""), "{sel}: {js}");
             assert!(js.contains("innerText"), "{sel}: {js}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pending_chrome_tests {
+    use super::PendingChrome;
+    #[tokio::test]
+    async fn cancelled_start_releases_its_exact_child() {
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id().unwrap();
+        let peer = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut peer = peer;
+        drop(PendingChrome(Some(child)));
+        for _ in 0..100 {
+            if !super::pid_alive(pid) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!super::pid_alive(pid), "unpublished child survived cancellation");
+        assert!(peer.try_wait().unwrap().is_none(), "peer child was touched");
+        peer.kill().await.unwrap();
+    }
+    #[tokio::test]
+    async fn published_child_survives_for_server_readoption() {
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut published = PendingChrome(Some(child)).publish();
+        assert!(published.try_wait().unwrap().is_none());
+        published.kill().await.unwrap();
     }
 }

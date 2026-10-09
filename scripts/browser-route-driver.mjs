@@ -125,7 +125,13 @@ async function directVerb(ctx,state,verb,b) {
     }
     if(verb==='stop') {
       const version=await api(`http://127.0.0.1:${state.cdp_port}`,'/json/version');
-      await cdp(version.webSocketDebuggerUrl,async browser=>{await browser('Target.closeTarget',{targetId:state.target});const tabs=await browser('Target.getTargets');if(!tabs.targetInfos.some(t=>t.type==='page'))await browser('Browser.close').catch(()=>{});});return {ok:true,stopped:true};
+      await cdp(version.webSocketDebuggerUrl,async browser=>{
+        await browser('Target.closeTarget',{targetId:state.target});
+        const deadline=Date.now()+3000;let tabs;
+        do {tabs=await browser('Target.getTargets');if(!tabs.targetInfos.some(t=>t.targetId===state.target))break;await pause(50);}while(Date.now()<deadline);
+        if(tabs.targetInfos.some(t=>t.targetId===state.target))throw new RouteError('owned CDP target closure was not confirmed; receipt retained',502);
+        if(!tabs.targetInfos.some(t=>t.type==='page'))await browser('Browser.close').catch(()=>{});
+      });return {ok:true,stopped:true};
     }
     if(verb==='keepalive')return {ok:true};
     if(verb==='status')return {running:true,profile:state.profile,backend:state.backend};

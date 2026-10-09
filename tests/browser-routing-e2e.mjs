@@ -63,11 +63,12 @@ try {
   const secondStopped=await request('stop',{},second);
   const receiptFor=lane=>join(home,'browser-routing','sessions',createHash('sha256').update(lane).digest('hex').slice(0,24)+'.json');
   prove('fresh CDP start does not inherit prior native ownership and stop removes its receipt',tab2.route.native_started===false&&!secondStopped.error&&!existsSync(receiptFor(second.session)));
-  const crashed={...cdCtx,session:'routing-e2e-crashed-cleanup'};await request('start',{url:siteUrl+'/protected',profile},crashed);
+  const crashed={...cdCtx,session:'routing-e2e-crashed-cleanup'};const crashedRoute=await request('start',{url:siteUrl+'/protected',profile},crashed);
   const oldTarget=cd.route.target;
   const replaced=await request('start',{url:siteUrl+'/protected',profile},cdCtx);
   const replacementTabs=await api(`http://127.0.0.1:${replaced.route.cdp_port}`,'/json/list');
-  prove('replacement closes only the previous owned CDP tab',!replacementTabs.some(t=>t.id===oldTarget)&&replacementTabs.some(t=>t.id===replaced.route.target)&&replacementTabs.length===2&&replaced.cleanup_events.some(e=>e.verdict==='owned_route_replaced'));
+  writeFileSync(join(evidence,'replacement.json'),JSON.stringify({old:cd.route,peer:crashedRoute.route,replaced,tabs:replacementTabs},null,2));
+  prove('replacement closes only the previous owned CDP tab',!replacementTabs.some(t=>t.id===oldTarget)&&replacementTabs.some(t=>t.id===replaced.route.target)&&replacementTabs.some(t=>t.id===crashedRoute.route.target)&&replaced.cleanup_events.some(e=>e.verdict==='owned_route_replaced'));
   // Kill only the fixture's isolated Chrome, then reopen from durable storage.
   const crashBrowser=await chromium.connectOverCDP(`http://127.0.0.1:${cd.route.cdp_port}`);
   const crashSession=await crashBrowser.newBrowserCDPSession();
