@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1286';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1287';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27495,6 +27495,7 @@ const _CONN_LEG = { 'google-gmail': 'gmail', 'google-calendar': 'calendar', 'goo
 // file, so it asks Google's favicon service for its docs domain and falls back
 // to a monogram if that fails.
 const _CONN_FAVICON = {
+  'google': '/connectors/google.png',
   'google-gmail': '/connectors/google-gmail.png', 'google-calendar': '/connectors/google-calendar.png',
   'google-drive': '/connectors/google-drive.png', 'google-admin': '/connectors/google-admin.png',
   'slack': '/connectors/slack.png', 'telegram': '/connectors/telegram.svg',
@@ -27531,37 +27532,72 @@ function _connAgo(ts) {
   return Math.round(s / 86400) + 'd ago';
 }
 
-function _connIsGoogle(c) { return String(c.id || '').indexOf('google-') === 0; }
+function _connIsGoogle(c) { return !!c.group || String(c.id || '').indexOf('google-') === 0; }
 
-// Accounts relevant to a connector, each with its state for THAT service.
+// One account's state for ONE Google service, or null when the account has no
+// Google grant at all.
+function _cxGoogleSvcState(c, a) {
+  const fam = a.families || {};
+  const can = a.canary || {};
+  const leg = _CONN_LEG[c.id];
+  if (!leg || (!fam.google && !fam.gmail)) return null;
+  if (a.needs_reauth) return ['Expired', 'bad', 'reconnect'];
+  if (!fam.google && leg !== 'gmail') return ['Not granted', 'warn', 'grant'];
+  const l = can[leg] || {};
+  return l.status === 'ok' ? ['Active', 'ok', '']
+    : l.status === 'not_granted' ? ['Not granted', 'warn', 'grant']
+    : l.status === 'api_error' ? ['Error', 'bad', 'reconnect']
+    : l.status === 'unreachable' ? ['Unreachable', 'warn', '']
+    : ['Active', 'ok', ''];
+}
+
+// Accounts relevant to a connector, each with its state for that connector.
+// For the Google group, `svcs` carries the per-service states and `st` rolls
+// them up: Expired beats everything, then all-active, then Partial.
 function _connAccountsFor(c) {
   const out = [];
   for (const a of ((_connAccts && _connAccts.accounts) || [])) {
     const fam = a.families || {};
     const can = a.canary || {};
-    let st = null;
-    if (_connIsGoogle(c)) {
-      const leg = _CONN_LEG[c.id];
-      if (!leg || (!fam.google && !fam.gmail)) continue;
-      if (a.needs_reauth) st = ['Expired', 'bad', 'reconnect'];
-      else if (!fam.google && leg !== 'gmail') st = ['Not granted', 'warn', 'grant'];
-      else {
-        const l = can[leg] || {};
-        st = l.status === 'ok' ? ['Active', 'ok', '']
-          : l.status === 'not_granted' ? ['Not granted', 'warn', 'grant']
-          : l.status === 'api_error' ? ['Error', 'bad', 'reconnect']
-          : l.status === 'unreachable' ? ['Unreachable', 'warn', '']
-          : ['Active', 'ok', ''];
-      }
-      out.push({ a, st, checked: (can[leg] || can.gmail || {}).checked_at, family: 'google' });
+    if (c.group) {
+      const svcs = c.services.filter(sv => _CONN_LEG[sv.id]).map(sv => ({ sv, st: _cxGoogleSvcState(sv, a) })).filter(x => x.st);
+      if (!svcs.length) continue;
+      const ok = svcs.filter(x => x.st[1] === 'ok').length;
+      const st = a.needs_reauth ? ['Expired', 'bad', 'reconnect']
+        : ok === svcs.length ? ['Active', 'ok', '']
+        : ok ? ['Partial', 'warn', 'grant'] : ['Error', 'bad', 'reconnect'];
+      out.push({ a, st, svcs, checked: (can.gmail || {}).checked_at, family: 'google' });
+    } else if (_connIsGoogle(c)) {
+      const st = _cxGoogleSvcState(c, a);
+      if (st) out.push({ a, st, checked: (can[_CONN_LEG[c.id]] || can.gmail || {}).checked_at, family: 'google' });
     } else if (fam[c.id]) {
       const l = can[c.id] || {};
-      st = a.needs_reauth || fam[c.id] === 'needs_reauth' ? ['Expired', 'bad', 'reconnect']
+      const st = a.needs_reauth || fam[c.id] === 'needs_reauth' ? ['Expired', 'bad', 'reconnect']
         : l.status && l.status !== 'ok' ? [l.status, 'bad', ''] : ['Active', 'ok', ''];
       out.push({ a, st, checked: l.checked_at, family: c.id });
     }
   }
   return out;
+}
+
+// The four google-* registry rows share one OAuth client and one grant per
+// account, so the tab shows them as ONE Google connector whose per-service
+// permissions live inside it (Ethan, 2026-10-09).
+let _cxGroup = null;
+function _cxGroupGoogle(list) {
+  const services = list.filter(c => String(c.id || '').indexOf('google-') === 0);
+  if (!services.length) { _cxGroup = null; return list; }
+  const tests = services.map(sv => sv.last_test).filter(Boolean);
+  _cxGroup = {
+    id: 'google', label: 'Google', category: services.map(sv => sv.label.replace(/^Google /, '')).join(', '),
+    auth: 'oauth2', group: true, services,
+    env_keys: services[0].env_keys, oauth: services[0].oauth, cred_source: services[0].cred_source,
+    docs: services[0].docs, token_endpoint: services[0].token_endpoint,
+    setup_note: 'One approval per account covers Gmail, Calendar, Drive and Docs. Every worker mints its token from that grant.',
+    status: services.some(sv => sv.status === 'connected') ? 'connected' : services[0].status,
+    last_test: tests.length && tests.every(t => t.ok) ? tests[0] : (tests.find(t => !t.ok) || null),
+  };
+  return [_cxGroup].concat(list.filter(c => services.indexOf(c) < 0));
 }
 
 // Card-level state: accounts first, then the connector's own last live test.
@@ -27582,7 +27618,9 @@ function _connAcctRow(c, r, wide) {
   const a = r.a;
   const action = r.st[2] === 'reconnect' ? '<button class="btn cx-mini" onclick="event.stopPropagation();_connReconnect(\'' + escJs(r.family === 'google' ? 'google' : r.family) + '\',\'' + escJs(a.account) + '\')">Reconnect</button>'
     : r.st[2] === 'grant' ? '<button class="btn cx-mini" onclick="event.stopPropagation();_connReconnect(\'google\',\'' + escJs(a.account) + '\')">Grant</button>' : '';
-  const sub = wide && r.checked ? '<span class="cx-acct-sub">Checked ' + esc(_connAgo(r.checked)) + '</span>' : '';
+  const chips = r.svcs ? '<span class="cx-svcs">' + r.svcs.map(x => '<span class="cx-svc cx-' + x.st[1] + '" title="' + esc(x.sv.label + ': ' + x.st[0]) + '">'
+    + (x.st[1] === 'ok' ? '✓ ' : x.st[1] === 'warn' ? '– ' : '✗ ') + esc(x.sv.label.replace(/^Google /, '')) + '</span>').join('') + '</span>' : '';
+  const sub = chips + (wide && r.checked ? '<span class="cx-acct-sub">Checked ' + esc(_connAgo(r.checked)) + '</span>' : '');
   // A stable hue per account, so the same address reads as the same person on every card.
   let hue = 0;
   for (const ch of String(a.account)) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
@@ -27600,7 +27638,7 @@ function _connMatches(c) {
 function _connectorsRender(d) {
   const host = document.getElementById('connectors-list');
   if (!host) return;
-  const list = (d && d.connectors) || [];
+  const list = _cxGroupGoogle((d && d.connectors) || []);
   if (!list.length) { host.innerHTML = '<div class="conn-empty">No connectors registered.</div>'; return; }
   const states = list.map(c => ({ c, s: _cxState(c) }));
   const nConn = states.filter(x => x.s.kind === 'connected').length;
@@ -27649,7 +27687,10 @@ async function _connAccountsLoad() {
   if (_connectorsData) _connectorsRender(_connectorsData);
 }
 
-function _connById(id) { return (((_connectorsData || {}).connectors) || []).find(c => c.id === id); }
+function _connById(id) {
+  if (id === 'google' && _cxGroup) return _cxGroup;
+  return (((_connectorsData || {}).connectors) || []).find(c => c.id === id);
+}
 
 // Connect: a Google connector with its client set starts the one grant that
 // covers every Google service; anything else needs keys first, so it opens
@@ -27716,16 +27757,28 @@ function _connDrawerRender() {
   h += '<div class="cx-dbody">';
   if (_connOpenTab === 'overview') {
     if (c.setup_note) h += '<p class="cx-p">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">Docs ↗</a>' : '') + '</p>';
-    for (const cap of (_CONN_CAPS[c.id] || [])) h += '<div class="cx-cap"><span class="cx-cap-dot">●</span><span><b>' + esc(cap[0]) + '</b><br><span class="cx-dim">' + esc(cap[1]) + '</span></span></div>';
-    if (c.last_test) {
+    const caps = c.group ? [].concat(...c.services.map(sv => _CONN_CAPS[sv.id] || [])) : (_CONN_CAPS[c.id] || []);
+    for (const cap of caps) h += '<div class="cx-cap"><span class="cx-cap-dot">●</span><span><b>' + esc(cap[0]) + '</b><br><span class="cx-dim">' + esc(cap[1]) + '</span></span></div>';
+    if (c.group) {
+      // Each service keeps its own live test: the service-account path can
+      // fail for one (Calendar) while another (Drive) works.
+      h += '<div class="cx-sec">Services</div>';
+      for (const sv of c.services) {
+        const t = sv.last_test || {};
+        h += '<div class="cx-svcrow">' + _connIcon(sv) + '<span class="cx-title"><span class="cx-name">' + esc(sv.label) + '</span>'
+          + '<span class="cx-dim cx-small" id="conn-test-' + esc(sv.id) + '">' + (t.at ? (t.ok ? '✓ ' : '✗ ') + esc(_niClip(t.detail || t.status || '', 140)) + ' (' + esc(_connAgo(t.at)) + ')' : 'Not tested yet') + '</span></span>'
+          + '<button class="btn cx-mini" onclick="_connectorTest(\'' + escJs(sv.id) + '\', this)">Test</button></div>';
+      }
+      h += '<div class="cx-dim cx-small">These tests cover the service-account path. Accounts work through their own grant; see Connections.</div>';
+    } else if (c.last_test) {
       h += '<div class="cx-sec">Last live test</div><div class="cx-test ' + (c.last_test.ok ? 'ok' : 'bad') + '">' + (c.last_test.ok ? '✓ ' : '✗ ') + esc(c.last_test.detail || c.last_test.status || '') + ' <span class="cx-dim">(' + esc(_connAgo(c.last_test.at)) + ')</span></div>';
       if (!c.last_test.ok && s.rows.some(r => r.st[1] === 'ok')) h += '<div class="cx-dim cx-small">Accounts below still work through their own grant; this test covers the service-account path only.</div>';
     }
     h += '<div class="cx-sec">Quick actions</div><div class="cx-actions">'
-      + '<button class="btn" onclick="_connectorTest(\'' + escJs(c.id) + '\', this)">Test connection</button>'
+      + (c.group ? '' : '<button class="btn" onclick="_connectorTest(\'' + escJs(c.id) + '\', this)">Test connection</button>')
       + '<button class="btn" onclick="_connectorsTabLoad()">Refresh health</button>'
       + (c.auth === 'oauth2' ? '<button class="btn primary" onclick="_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add account</button>' : '')
-      + '</div><div class="conn-test-result cx-small" id="conn-test-' + esc(c.id) + '"></div>';
+      + '</div>' + (c.group ? '' : '<div class="conn-test-result cx-small" id="conn-test-' + esc(c.id) + '"></div>');
   } else if (_connOpenTab === 'connections') {
     h += '<div class="cx-row-head"><span class="cx-sec" style="margin:0">Your connections (' + s.rows.length + ')</span>'
       + (c.auth === 'oauth2' ? '<button class="btn" onclick="_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add connection</button>' : '') + '</div>';
@@ -27738,21 +27791,33 @@ function _connDrawerRender() {
       h += '<label class="conn-field"><span class="conn-klabel">' + esc(k.name) + (k.set ? ' <em>(set: ' + esc(k.masked || '••••') + ')</em>' : '') + '</span>'
         + '<input type="password" class="conn-input" data-env="' + esc(k.name) + '" placeholder="' + (k.set ? 'replace…' : 'paste value…') + '" autocomplete="off"></label>';
     }
-    h += '<button class="btn primary" onclick="_connectorSave(\'' + escJs(c.id) + '\', this)">Save keys</button></div>';
+    const saveId = c.group ? c.services[0].id : c.id;   // the group shares one client, stored once
+    h += '<button class="btn primary" onclick="_connectorSave(\'' + escJs(saveId) + '\', this)">Save keys</button></div>';
     h += '<div class="cx-dim cx-small">Written to <code>~/.amux/server.env</code> and never shown again' + (c.cred_source ? '. Current source: ' + esc(c.cred_source) : '') + '.</div></div>';
     if (c.auth === 'oauth2' && c.oauth) {
       h += '<div class="cx-sec">Redirect URI</div><div class="cx-code"><code>' + esc(c.oauth.redirect_uri) + '</code>'
         + '<button class="btn cx-mini" onclick="_copyTextWithToast(\'' + escJs(c.oauth.redirect_uri) + '\',\'Redirect URI copied\')">Copy</button></div>';
     }
     if (c.token_endpoint) h += '<div class="cx-sec">Worker token endpoint</div><div class="cx-code"><code>' + esc(c.token_endpoint) + '</code></div>';
-    h += '<div class="cx-sec">Enabled for</div><div class="cx-actions">'
-      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'global\',true)">All workers</button>'
-      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'group\',true)">A group…</button>'
-      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'worker\',true)">A worker…</button>'
-      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'global\',false)">Disable for all</button></div>';
+    const scopeRow = (id) => '<div class="cx-actions">'
+      + '<button class="btn cx-mini" onclick="_connectorScope(\'' + escJs(id) + '\',\'global\',true)">All workers</button>'
+      + '<button class="btn cx-mini" onclick="_connectorScope(\'' + escJs(id) + '\',\'group\',true)">A group…</button>'
+      + '<button class="btn cx-mini" onclick="_connectorScope(\'' + escJs(id) + '\',\'worker\',true)">A worker…</button>'
+      + '<button class="btn cx-mini" onclick="_connectorScope(\'' + escJs(id) + '\',\'global\',false)">Disable for all</button></div>';
+    h += '<div class="cx-sec">Enabled for</div>';
+    if (c.group) for (const sv of c.services) h += '<div class="cx-scopehead">' + esc(sv.label) + '</div>' + scopeRow(sv.id);
+    else h += scopeRow(c.id);
     if (c.custom) h += '<div class="cx-danger"><div><b>Forget connector</b><br><span class="cx-dim">Removes this declared connector. Keys in server.env stay.</span></div><button class="btn danger" onclick="_connDelete(\'' + escJs(c.id) + '\')">Forget</button></div>';
   } else {
-    const scopes = c.oauth ? _connScopesHuman(c.oauth.scopes) : [];
+    const scopes = c.group ? [] : c.oauth ? _connScopesHuman(c.oauth.scopes) : [];
+    if (c.group) {
+      for (const sv of c.services) {
+        const granted = s.rows.filter(r => (r.svcs || []).some(x => x.sv.id === sv.id && x.st[1] === 'ok')).map(r => r.a.account);
+        h += '<div class="cx-perm">' + _connIcon(sv) + '<span class="cx-title"><span class="cx-name">' + esc(sv.label) + '</span>'
+          + _connScopesHuman(sv.oauth && sv.oauth.scopes).map(x => '<code class="cx-small">' + esc(x) + '</code>').join(' ')
+          + '<span class="cx-dim cx-small">' + (_CONN_LEG[sv.id] ? (granted.length ? 'Granted: ' + esc(granted.join(', ')) : 'No account has granted this yet') : 'Service account only (no per-account grant)') + '</span></span></div>';
+      }
+    }
     if (_connIsGoogle(c)) h += '<p class="cx-p">Connecting an account asks Google for one grant covering every Google connector: calendar, documents, drive, gmail.modify, gmail.send, gmail.settings.basic and userinfo.email. Workers can act on it without asking again.</p>';
     if (scopes.length) {
       h += '<div class="cx-sec">This connector uses</div>';
