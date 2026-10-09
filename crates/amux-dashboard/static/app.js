@@ -8942,6 +8942,9 @@ function _maybeAutoOpenEmbedPeek() {
   if (!sessions || !sessions.some(s => s.name === window._peekEmbed)) return;
   _peekEmbedOpened = true;
   openPeek(window._peekEmbed);
+  // ?peekTab=<tab>: the peek side panel opens the embed on Messages or Chat.
+  const embedTab = new URLSearchParams(location.search).get('peekTab');
+  if (embedTab) setTimeout(() => { try { setPeekTab(embedTab); } catch (e) {} }, 0);
   const ov = document.getElementById('peek-overlay');
   if (ov) ov.classList.remove('peek-focus');  // tiles always show the full tab strip
   // fit the terminal once content lands, then keep it fitted
@@ -13996,7 +13999,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1272';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1274';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14616,6 +14619,29 @@ function _chatLinkify(html) {
   return _linkifyPaths(html);
 }
 
+// COPY LIKE OPENAI'S CHAT (Ethan, 2026-10-08): a finished reply copies its raw
+// text from the meta line, and every code block in it has its own Copy.
+function _chatCodeCopy(html) {
+  return html.replace(/<pre(\s[^>]*)?>/g, (m0) => '<div class="chat-code"><button type="button" class="chat-code-copy" onclick="_chatCopy(this)" title="Copy code" aria-label="Copy code">Copy</button>' + m0)
+    .replace(/<\/pre>/g, '</pre></div>');
+}
+async function _chatCopy(btn) {
+  const text = btn.dataset.copy != null ? decodeURIComponent(btn.dataset.copy)
+    : (btn.parentElement.querySelector('pre')?.innerText || '');
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch (e2) {}
+    ta.remove();
+  }
+  const was = btn.textContent;
+  btn.textContent = ok ? 'Copied' : 'Copy failed';
+  setTimeout(() => { btn.textContent = was; }, 1500);
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -14712,7 +14738,8 @@ function _chatMessageHtml(m) {
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
-  return _chatBubble('assistant', head + _chatLinkify(renderMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')),
+  const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>' : '';
+  return _chatBubble('assistant', head + _chatCodeCopy(_chatLinkify(renderMarkdown(m.text || ''))), esc(bits.filter(Boolean).join(' · ')) + copy,
     m.interrupted ? 'is-interrupted' : '');
 }
 
@@ -15359,21 +15386,72 @@ function _savePeekState() {
   }
 }
 
-function togglePeekSplit() {
+// SIDE PANEL CHOICE (Ethan, 2026-10-08: "on non-mobile this button is actually
+// a split view and i get to choose which split view to do: file directory,
+// messages, chat"). Closed: the button offers the three; open: it closes.
+// Messages and Chat are a real peek of the same worker in an iframe
+// (?peekEmbed=<name>&peekTab=<tab>, the Workspace tile path), so each works
+// exactly as its tab does with no shared state with the terminal beside it.
+let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
+function _peekSplitMenuClose() { document.getElementById('psp-menu')?.remove(); }
+function _peekSplitMenu(btn) {
+  _peekSplitMenuClose();
+  const m = document.createElement('div');
+  m.id = 'psp-menu'; m.className = 'psp-menu'; m.setAttribute('role', 'menu');
+  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat']]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
+    b.onclick = () => { _peekSplitMenuClose(); _peekSplitOpen(v); };
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = btn.getBoundingClientRect();
+  m.style.top = (r.bottom + 6) + 'px';
+  m.style.left = Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  m.querySelector('button')?.focus();
+  setTimeout(() => document.addEventListener('click', function off(e) {
+    if (!m.contains(e.target)) { _peekSplitMenuClose(); document.removeEventListener('click', off, true); }
+  }, true), 0);
+}
+function _peekSplitOpen(view) {
+  const wrap = document.getElementById('peek-split-wrap');
+  if (!wrap.classList.contains('split-active')) togglePeekSplit(null, true);
+  _peekSplitShow(view);
+}
+function _peekSplitShow(view) {
+  _peekSplitView = view;
+  try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
+  const panel = document.getElementById('peek-split-files');
+  const frame = document.getElementById('psp-frame');
+  document.querySelectorAll('.psp-opt').forEach(b => b.classList.toggle('active', b.dataset.psp === view));
+  const embed = view !== 'files';
+  panel?.classList.toggle('psp-embed', embed);
+  if (!frame) return;
+  frame.style.display = embed ? '' : 'none';
+  if (embed && peekSession) {
+    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view);
+    if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
+  }
+}
+function togglePeekSplit(ev, force) {
   if (window.innerWidth <= 600) {
     openExplore(peekSessionDir, peekSession);
     return;
   }
   const wrap = document.getElementById('peek-split-wrap');
   const btn = document.getElementById('peek-split-toggle');
-  const active = wrap.classList.toggle('split-active');
+  if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
+  const active = force ? (wrap.classList.add('split-active'), true) : wrap.classList.toggle('split-active');
   if (btn) btn.classList.toggle('active', active);
   if (active) {
     _peekSplitPath = peekSessionDir || '/';
     _psfLoad(_peekSplitPath);
     _initSplitResize();
     _restoreSplitWidths();
+    if (!force) _peekSplitShow(_peekSplitView);
   } else {
+    const frame = document.getElementById('psp-frame');
+    if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; }
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
     if (tp) tp.style.flex = '';

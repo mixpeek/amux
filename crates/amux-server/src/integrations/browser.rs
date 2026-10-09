@@ -1017,10 +1017,9 @@ pub(crate) fn persisted_last_exit(home: &Path) -> Option<serde_json::Value> {
 /// One file holding every browser, rather than one file per profile: profile
 /// names are user input and would have to be sanitised into filenames, and a
 /// traversal bug in a path built from a profile name is a worse failure than
-/// anything this file is protecting. Rewritten whole on every change, always
-/// under the RUNNING lock, so two concurrent starts cannot interleave a
-/// read-modify-write. The dedicated file-update lock also covers exits and
-/// startup guards, which do not hold the live registry lock.
+/// anything this file is protecting. Rewritten atomically under a dedicated
+/// file-update lock, independently of the live registry lock, so concurrent
+/// starts, exits and startup guards cannot interleave a read-modify-write.
 ///
 /// READS TOLERATE THE LEGACY SHAPE. Before this change the file was a single
 /// bare object; a server that upgrades mid-flight must still adopt the browser

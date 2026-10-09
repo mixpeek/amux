@@ -27116,6 +27116,11 @@ pub(crate) async fn probe_refusal(
     ))
 }
 
+/// Is `origin` the Chat tab of `target` (`<target>@chat`)?
+pub(crate) fn chat_tab_of(origin: &str, target: &str) -> bool {
+    super::chat_worker::companion_parent(origin) == Some(target)
+}
+
 async fn isolated_peer_refusal(
     state: &AppState,
     name: &str,
@@ -27127,6 +27132,16 @@ async fn isolated_peer_refusal(
         || origin == name
         || !session_is_isolated(name)
     {
+        return None;
+    }
+    // A worker's own Chat tab speaks for the owner (Ethan, 2026-10-08:
+    // "shouldn't chat with a worker have privileges to interact with the
+    // worker if needed?"). Its turns are started only by the owner, and the tab
+    // is part of the worker, not a peer (chat_worker.rs), so its send to its
+    // own worker is owner input relayed through that worker's tab.
+    if chat_tab_of(&origin, name) {
+        tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
+            verdict = "isolated_send_from_own_chat_tab", "an isolated worker took a send from its own Chat tab (owner input)");
         return None;
     }
     let reason = format!(
@@ -31468,6 +31483,91 @@ async fn rename_session(state: &AppState, name: &str, raw_new: &str) -> Response
 // on precisely the sessions it exists for — the ones with a conversation worth
 // keeping.
 
+/// Is `id` a model a Claude worker can run: an alias, or a Claude id in the
+/// live catalog (static catalog when the live one has not loaded), with or
+/// without the `[1m]` long-context suffix.
+pub(crate) fn claude_model_known(id: &str) -> bool {
+    let base = id.trim().trim_end_matches("[1m]");
+    if matches!(base, "opus" | "sonnet" | "haiku" | "fable" | "opusplan" | "default") {
+        return true;
+    }
+    let live: Vec<String> = crate::provider::live_catalog::current()
+        .map(|snap| snap.entries.iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .filter(|v| v.get("provider").and_then(Value::as_str) == Some("claude"))
+            .filter_map(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect())
+        .unwrap_or_default();
+    if !live.is_empty() {
+        return live.iter().any(|m| m == base);
+    }
+    crate::provider::model_catalog::catalog().into_iter().any(|m| m.provider == "claude" && m.id == base)
+}
+
+/// The global defaults a `/model` or `/effort` argument rewrites.
+const CLAUDE_DEFAULT_KEYS: [&str; 2] = ["model", "effortLevel"];
+
+/// The current values of [`CLAUDE_DEFAULT_KEYS`] in `<claude_home>/settings.json`
+/// (`None` for an absent key or an unreadable file).
+pub(crate) fn claude_global_defaults(claude_home: &std::path::Path) -> Vec<Option<Value>> {
+    let v: Value = std::fs::read_to_string(claude_home.join("settings.json"))
+        .ok()
+        .and_then(|r| serde_json::from_str(&r).ok())
+        .unwrap_or(Value::Null);
+    CLAUDE_DEFAULT_KEYS.iter().map(|k| v.get(*k).cloned()).collect()
+}
+
+/// Put [`CLAUDE_DEFAULT_KEYS`] back to `prev`, touching nothing else in the
+/// file (it is shared with hooks and with Ethan's own edits). A string value
+/// already present is replaced IN PLACE, so the file keeps its key order and
+/// formatting; only adding or removing a key rewrites the whole object.
+pub(crate) fn restore_claude_global_defaults(claude_home: &std::path::Path, prev: &[Option<Value>], session: &str) {
+    let path = claude_home.join("settings.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&raw) else { return };
+    let mut text = raw.clone();
+    let mut rewrite = obj.clone();
+    let mut changed = Vec::new();
+    let mut needs_full = false;
+    for (k, want) in CLAUDE_DEFAULT_KEYS.iter().zip(prev) {
+        if obj.get(*k) == want.as_ref() {
+            continue;
+        }
+        changed.push(*k);
+        match (obj.get(*k), want) {
+            (Some(Value::String(_)), Some(Value::String(w))) => {
+                let re = regex::Regex::new(&format!(r#"("{}"\s*:\s*)"(?:[^"\\]|\\.)*""#, regex::escape(k))).expect("static pattern");
+                let lit = serde_json::to_string(w).unwrap_or_default();
+                text = re.replacen(&text, 1, |c: &regex::Captures| format!("{}{}", &c[1], lit)).into_owned();
+            }
+            _ => needs_full = true,
+        }
+        match want {
+            Some(v) => { rewrite.insert(k.to_string(), v.clone()); }
+            None => { rewrite.remove(*k); }
+        }
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let body = if needs_full {
+        serde_json::to_string_pretty(&Value::Object(rewrite)).unwrap_or_default() + "\n"
+    } else {
+        text
+    };
+    // Never write something that is not the intended JSON.
+    let Ok(check) = serde_json::from_str::<Value>(&body) else { return };
+    if CLAUDE_DEFAULT_KEYS.iter().zip(prev).any(|(k, w)| check.get(*k) != w.as_ref()) {
+        return;
+    }
+    let tmp = path.with_extension("json.amux-tmp");
+    if std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+        tracing::info!(session, keys = ?changed, measured = true, n_considered = changed.len(),
+            verdict = "claude_global_default_restored",
+            "a worker's live model/effort switch rewrote the global claude default; restored it");
+    }
+}
+
 /// What Claude Code prints when a slash config command lands.
 const CC_MODEL_ACK: &str = "Set model to ";
 const CC_EFFORT_ACK: &str = "Set effort level to ";
@@ -31696,6 +31796,38 @@ fn spawn_switch_confirm_watcher(name: &str) {
 /// choreography here would rediscover all of them.
 async fn deliver_hot_config(state: &AppState, name: &str, cmd: &str, ack: &str) -> HotOutcome {
     let before = tmux_capture(name, 40).await;
+    // HOLD A MID-TURN SWITCH UNTIL THE TURN ENDS (AMUX-5759, live test
+    // 2026-10-08). Sent while generating, `/model haiku` went through the
+    // steering queue, which Claude Code consumes MID-turn: the rest of the
+    // running turn was answered by the new model, which misread the moment
+    // ("There's no pending request in this message"). The API said "applies
+    // at the next turn boundary"; now it does.
+    if detect_claude_status(&before) == "active" {
+        let (st, n, c, a) = (state.clone(), name.to_string(), cmd.to_string(), ack.to_string());
+        tokio::spawn(async move {
+            for _ in 0..900 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                if detect_claude_status(&tmux_capture(&n, 40).await) != "active" {
+                    tracing::info!(session = %n, cmd = %c, measured = true, n_considered = 1,
+                        verdict = "hot_config_held_to_turn_end", "a mid-turn config switch was delivered at the turn boundary");
+                    let before = tmux_capture(&n, 40).await;
+                    let _ = deliver_hot_config_now(&st, &n, &c, &a, before).await;
+                    return;
+                }
+            }
+            tracing::warn!(session = %n, cmd = %c, measured = true, n_considered = 1,
+                verdict = "hot_config_turn_never_ended", "the turn did not end in 30 min; delivering the switch anyway");
+            let _ = send_text(&st, &n, &c, true, SendOrigin::Automation).await;
+            spawn_switch_confirm_watcher(&n);
+        });
+        return HotOutcome::Queued;
+    }
+    deliver_hot_config_now(state, name, cmd, ack, before).await
+}
+
+/// Deliver one config slash command to a pane that is not mid-turn and wait
+/// for its acknowledgement (answering the confirmation dialog).
+async fn deliver_hot_config_now(state: &AppState, name: &str, cmd: &str, ack: &str, before: String) -> HotOutcome {
     let (sent, msg) = send_text(state, name, cmd, true, SendOrigin::Automation).await;
     tracing::info!(session = name, cmd, sent, result = %msg, "hot config: delivered");
     if !sent {
@@ -31810,6 +31942,9 @@ async fn restart_with_structured_resume(
 /// What a config change did, in the shape the API reports it.
 struct SwapReport {
     mode: SwapMode,
+    /// The agent itself refused the value ("Model 'x' not found"): nothing was
+    /// changed, and the caller must put the env file back (AMUX-5759).
+    rejected: bool,
     /// Is the RUNNING agent on the new config now? False for a change parked
     /// on the steering queue, for a failed restart, and for `EnvOnly` (there
     /// is no agent; the next start picks it up).
@@ -31846,8 +31981,15 @@ async fn apply_live_config_change(
             applied: false,
             note: "",
             hot_error: None,
+            rejected: false,
         },
         SwapMode::Hot => {
+            // `/model x` and `/effort x` also save x as the GLOBAL default in
+            // ~/.claude/settings.json ("saved as your default for new
+            // sessions"), so a worker's switch changed the model of every
+            // claude Ethan starts by hand (2026-10-08: a test switch rewrote
+            // claude-opus-5-5 to sonnet). Snapshot the defaults, put them back.
+            let defaults = (provider == "claude").then(|| claude_global_defaults(&claude_home()));
             let mut outcomes = Vec::with_capacity(cmds.len());
             for (cmd, ack) in cmds {
                 let o = deliver_hot_config(state, name, cmd, ack).await;
@@ -31861,12 +32003,47 @@ async fn apply_live_config_change(
                 }
             }
             let fold = fold_hot_outcomes(&outcomes);
+            if let Some(prev) = defaults {
+                let home = claude_home();
+                restore_claude_global_defaults(&home, &prev, name);
+                if !matches!(fold, HotFold::AllApplied) {
+                    // Queued mid-turn: the command runs at the next boundary
+                    // and saves again then. Watch for it, then restore.
+                    let name = name.to_string();
+                    tokio::spawn(async move {
+                        // Covers the 30-minute turn-end hold in deliver_hot_config.
+                        for _ in 0..400 {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if claude_global_defaults(&home) != prev {
+                                restore_claude_global_defaults(&home, &prev, &name);
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
             match mode_after_delivery(&fold) {
                 SwapMode::Restart => {
                     let why = match fold {
                         HotFold::Failed(w) => w,
                         _ => String::new(),
                     };
+                    // AMUX-5759 live test: a bad model id was REFUSED by the
+                    // agent, and amux restarted the worker ON that id anyway,
+                    // breaking it. A refusal is an answer, not a missing ack:
+                    // keep the running session and say so.
+                    if why.contains(CC_SLASH_REJECT) {
+                        tracing::warn!(session = name, reason, why = %why, measured = true, n_considered = 1,
+                            verdict = "hot_config_rejected_kept_running",
+                            "the agent refused the new value; nothing changed and no restart");
+                        return SwapReport {
+                            mode: SwapMode::Hot,
+                            rejected: true,
+                            applied: false,
+                            note: " (refused by the agent; nothing changed, no restart)",
+                            hot_error: Some(why),
+                        };
+                    }
                     let restarted =
                         restart_with_structured_resume(state, name, provider, reason).await;
                     SwapReport {
@@ -31878,6 +32055,7 @@ async fn apply_live_config_change(
                             " (live switch failed AND the restart failed — the session may still be on the old model)"
                         },
                         hot_error: Some(why),
+                        rejected: false,
                     }
                 }
                 _ => SwapReport {
@@ -31889,6 +32067,7 @@ async fn apply_live_config_change(
                         " (session is mid-turn — queued, applies at the next turn boundary; no restart)"
                     },
                     hot_error: None,
+                rejected: false,
                 },
             }
         }
@@ -31914,6 +32093,7 @@ async fn apply_live_config_change(
                     " (restart failed)"
                 },
                 hot_error: None,
+                rejected: false,
             }
         }
     }
@@ -32245,6 +32425,24 @@ async fn config_patch_with_liveness(
             Ok(v) => v,
             Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
         };
+        // An id nobody knows must not reach the worker (AMUX-5759 live test 5):
+        // a failed hot switch falls back to a RESTART on the new value, so an
+        // unknown id became a worker that cannot call its API. Checked against
+        // the model catalog before anything is written; `force` admits an id
+        // newer than the catalog.
+        if provider_of(&cfg) == "claude" && !model_val.is_empty()
+            && !claude_model_known(&model_val)
+            && body.get("force").and_then(Value::as_bool) != Some(true)
+        {
+            tracing::warn!(session = %name, model = %model_val, measured = true, n_considered = 1,
+                verdict = "model_switch_unknown_id_refused", "a model id absent from the catalog was refused before any change");
+            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "ok": false, "applied": false, "model": model_val,
+                "error": format!("'{model_val}' is not a known Claude model (GET /api/models); nothing changed. Send \"force\": true to use an id newer than the catalog."),
+            }));
+        }
+        // The env as it was, so an agent's refusal can put it back.
+        let cfg_before_model = cfg.clone();
         let flags_no_model = match strip_model_from_flags(cfg.get_or("CC_FLAGS", "")) {
             Ok(v) => v,
             Err(e) => {
@@ -32327,6 +32525,21 @@ async fn config_patch_with_liveness(
             "model swap",
         )
         .await;
+        if rep.rejected {
+            // Nothing changed in the running agent; the durable half must not
+            // claim otherwise, or the next start comes up on a model that does
+            // not exist.
+            if let Err((status, error)) = write_swap_config(state, name, &cfg_before_model, was_running, "model swap reverted") {
+                return jresp(status, json!({"error": error}));
+            }
+            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "ok": false,
+                "applied": false,
+                "mode": rep.mode.tag(),
+                "model": model_val,
+                "error": format!("the agent refused model '{model_val}': {}; nothing changed, the worker keeps its current model", rep.hot_error.clone().unwrap_or_default()),
+            }));
+        }
         if rep.applied {
             let confirmed = if model_val.is_empty() {
                 default_model_for_provider(&current_provider)
@@ -49011,6 +49224,49 @@ mod pipe_reconcile_tests {
 #[cfg(test)]
 mod delivery_mode_tests {
     use super::*;
+
+    /// Only a worker's OWN Chat tab may reach it past isolation.
+    #[test]
+    fn only_the_workers_own_chat_tab_passes_isolation() {
+        assert!(chat_tab_of("mxp-gs12@chat", "mxp-gs12"));
+        assert!(!chat_tab_of("other@chat", "mxp-gs12"), "another worker's chat is a peer");
+        assert!(!chat_tab_of("mxp-gs12", "mxp-gs12@chat"));
+        assert!(!chat_tab_of("amux", "mxp-gs12"));
+    }
+
+    /// AMUX-5759 live test 5: an unknown id restarted the worker onto it.
+    #[test]
+    fn only_known_claude_models_pass_the_switch_check() {
+        // The SPA picker's own values must all pass (spa_picker_values_pass_through_verbatim).
+        for ok in ["sonnet", "opus", "haiku", "claude-opus-5-5", "claude-opus-5[1m]", "claude-haiku-4-5-20251001", "claude-sonnet-4-6[1m]"] {
+            assert!(claude_model_known(ok), "{ok}");
+        }
+        for bad in ["definitely-not-a-model", "claude-opus-9-9", "gpt-5.5", ""] {
+            assert!(!claude_model_known(bad), "{bad}");
+        }
+    }
+
+    /// 2026-10-08: a worker's `/model sonnet` rewrote the global default in
+    /// ~/.claude/settings.json from claude-opus-5-5 to sonnet. The restore puts
+    /// it back in place, keeps every other byte, and handles an absent key.
+    #[test]
+    fn a_live_switch_leaves_the_global_claude_default_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        let original = "{\n  \"zeta\": 1,\n  \"model\": \"claude-opus-5-5\",\n  \"hooks\": {\"a\": [1, 2]},\n  \"effortLevel\": \"high\"\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let prev = claude_global_defaults(d.path());
+        std::fs::write(&path, original.replace("claude-opus-5-5", "sonnet").replace("\"high\"", "\"low\"")).unwrap();
+        restore_claude_global_defaults(d.path(), &prev, "t");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "restored in place, every other byte kept");
+        // A default that did not exist before the switch is removed again.
+        std::fs::write(&path, "{\"zeta\": 1}").unwrap();
+        let prev = claude_global_defaults(d.path());
+        std::fs::write(&path, "{\"zeta\": 1, \"model\": \"sonnet\"}").unwrap();
+        restore_claude_global_defaults(d.path(), &prev, "t");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(v.get("model").is_none() && v["zeta"] == 1);
+    }
 
     /// mxp-gs12, 2026-10-08: a long `/goal ...` was pasted whole and Claude
     /// Code wrapped it, so /goal never ran. The command token is typed.
