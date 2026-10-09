@@ -4331,6 +4331,16 @@ pub(crate) fn worker_model_env(
     (cc_flags, cc_model, resolved_model)
 }
 
+/// The six Board-tab automation toggles, off, for every newly created worker.
+pub(crate) const NEW_WORKER_AUTOMATION_OFF: [(&str, &str); 6] = [
+    ("AMUX_DISPATCH_BACKLOG_WHEN_IDLE", "0"),
+    ("CC_AUTO_PICKUP", "0"),
+    ("CC_AUTO_CONTINUE", "0"),
+    ("CC_STANDING_ORDERS", "0"),
+    ("AMUX_COMMAND_LIFECYCLE", "0"),
+    ("AMUX_BOARD_FORCE_ADHERENCE", "0"),
+];
+
 pub async fn create_session_legacy(
     State(_state): State<AppState>,
     headers: HeaderMap,
@@ -4510,8 +4520,14 @@ pub async fn create_session_legacy(
     if !cc_flags.is_empty() {
         pairs.push(("CC_FLAGS", cc_flags.clone()));
     }
-    if yolo {
-        pairs.push(("CC_AUTO_CONTINUE", "1".to_string()));
+    // NEW WORKERS START WITH THE BOARD AUTOMATION OFF (Ethan, 2026-10-08:
+    // "for all new workers make sure all of these are disabled by default").
+    // Explicit worker-scope zeros, so a group or global default cannot switch
+    // them on for a worker that never asked; each toggle can be turned on, or
+    // its override removed, from the worker's Board tab. This replaces the old
+    // "yolo turns on auto-continue" coupling.
+    for (k, v) in NEW_WORKER_AUTOMATION_OFF {
+        pairs.push((k, v.to_string()));
     }
     // ISOLATED AT CREATE TIME (Ethan, 2026-08-27). `CC_ISOLATED` was settable
     // only by hand-editing the env file after the fact, so the one decision

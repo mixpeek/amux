@@ -810,6 +810,13 @@ cmd_register() {
     echo "CC_NAME=\"$name\""
     echo "CC_DIR=\"$resolved_dir\""
     echo "CC_FLAGS=\"${CC_FLAGS_STR}\""
+    # A brand-new worker starts with the Board-tab automation off (Ethan,
+    # 2026-10-08); a re-register keeps whatever the worker already had.
+    if [[ -z "$preserved" ]]; then
+      for kv in AMUX_DISPATCH_BACKLOG_WHEN_IDLE=0 CC_AUTO_PICKUP=0 CC_AUTO_CONTINUE=0 CC_STANDING_ORDERS=0 AMUX_COMMAND_LIFECYCLE=0 AMUX_BOARD_FORCE_ADHERENCE=0; do
+        echo "${kv%%=*}=\"${kv#*=}\""
+      done
+    fi
     [[ -n "$wt" ]] && echo "CC_WORKTREE=\"1\""
     [[ -n "$wt_profile" ]] && echo "CC_WORKTREE_PROFILE=\"$wt_profile\""
     [[ -n "$preserved" ]] && printf '%s\n' "$preserved"
