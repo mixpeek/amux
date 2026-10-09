@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2485,
+  "n_considered": 2489,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2266,6 +2266,18 @@
     },
     "_peekShowSelPopover": {
       "kind": "command._peekShowSelPopover",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitMenu": {
+      "kind": "command._peekSplitMenu",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekSplitOpen": {
+      "kind": "command._peekSplitOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

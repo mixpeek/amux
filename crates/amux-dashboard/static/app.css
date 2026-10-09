@@ -7992,3 +7992,17 @@ body.light .bd-answer-head { color: #bc4c00; }
   }
   #scratchpad-view .fe-cell-size { display:none; }
 }
+
+/* Peek side panel (Ethan, 2026-10-08): on desktop the split shows files,
+   messages or chat beside the terminal. */
+.psp-switch { display:flex; gap:4px; align-items:center; padding:6px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.psp-opt { background:none; border:1px solid var(--border); color:var(--dim); border-radius:6px; padding:3px 10px; font-size:0.75rem; cursor:pointer; }
+.psp-opt.active { color:var(--text); border-color:var(--accent); background:var(--surface); }
+.psp-close { margin-left:auto; font-size:0.7rem; padding:2px 8px; }
+.psp-frame { flex:1; min-height:0; width:100%; border:0; background:var(--bg); }
+.peek-split-files.psp-embed .peek-split-files-header,
+.peek-split-files.psp-embed .psf-col-headers,
+.peek-split-files.psp-embed .peek-split-files-body { display:none !important; }
+.psp-menu { position:fixed; z-index:9999; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:4px; box-shadow:0 6px 24px rgba(0,0,0,0.35); display:flex; flex-direction:column; min-width:150px; }
+.psp-menu button { background:none; border:0; color:var(--text); text-align:left; padding:8px 10px; border-radius:6px; font-size:0.85rem; cursor:pointer; }
+.psp-menu button:hover, .psp-menu button:focus { background:var(--surface); outline:none; }

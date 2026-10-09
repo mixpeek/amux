@@ -2500,7 +2500,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="peek-nav-btn" onpointerdown="_peekMsgNavArm(event)" onclick="peekMsgPrev(event)" title="Previous message" aria-label="Previous message">&#x2191;</button>
         <button class="peek-nav-btn" onpointerdown="_peekMsgNavArm(event)" onclick="peekMsgNext(event)" title="Next message" aria-label="Next message">&#x2193;</button>
       </div>
-      <button class="btn peek-toolbar-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="File browser" aria-label="Toggle file browser">
+      <button class="btn peek-toolbar-btn" id="peek-split-toggle" onclick="togglePeekSplit(event)" title="Side panel: files, messages or chat" aria-label="Open side panel" aria-haspopup="menu">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </button>
       <button class="btn peek-toolbar-btn" id="peek-find-toggle" onclick="togglePeekFind()" title="Find in terminal" aria-label="Find in terminal" aria-expanded="false" aria-controls="peek-search-wrap">
@@ -2663,6 +2663,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="peek-split-handle" class="peek-split-handle"></div>
   <!-- Split files panel -->
   <div id="peek-split-files" class="peek-split-files">
+    <div class="psp-switch" role="tablist" aria-label="Side panel">
+      <button type="button" class="psp-opt" data-psp="files" onclick="_peekSplitShow('files')">Files</button>
+      <button type="button" class="psp-opt" data-psp="messages" onclick="_peekSplitShow('messages')">Messages</button>
+      <button type="button" class="psp-opt" data-psp="chat" onclick="_peekSplitShow('chat')">Chat</button>
+      <button type="button" class="btn psp-close" onclick="togglePeekSplit()" title="Close side panel" aria-label="Close side panel">&#x2715;</button>
+    </div>
+    <iframe id="psp-frame" class="psp-frame" title="Side panel" style="display:none"></iframe>
     <div class="peek-split-files-header">
       <div id="psf-breadcrumb" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></div>
       <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="togglePeekSplit()">&#x2715;</button>
