@@ -5533,3 +5533,14 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: Six private regressions fail on main 964662d7: concurrent credential and pending-state writes lose entries; initial server.env is 0644; unreadable credential bytes and corrupt connector definitions are overwritten; pending_take returns a state even when its removal failed.
 COST: Six new regression tests fail; the 245-second baseline run proves that acknowledgement can follow data loss or failed state consumption.
 FIX: PR candidate serializes updates, commits private synced files atomically, retains corrupt stores, and refuses exchange when consumption cannot commit. No live storage changed; validation and review required before deployment.
+
+## The shared cargo target dir links another checkout's amux-core, so the pre-commit hook reports false compile errors
+AREA: build
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: amux-app
+CARD: AA-28
+SYMPTOM: Landing PR #227 from a fresh detached worktree, the pre-commit hook failed four times with a compile error saying a new amux-core enum variant did not exist, though the worktree's source defined it. scripts/safe-cargo.sh builds into the shared ~/.amux/rust-build-target. Cargo fingerprints workspace path dependencies by their path relative to the workspace root, so every checkout on the box shares one amux-core artifact; a peer checkout built it at 18:10 and cargo judged it fresh against that peer's sources. Exporting CARGO_TARGET_DIR=<worktree>/target for the commit made it pass.
+COST: four failed commits and a diagnosis round on one PR. The same mechanism can also PASS the hook on code that does not compile, because the check ran against a peer's amux-core rather than this tree's, and nothing in the output says whose artifact was linked.
+FIX: have the pre-commit hook (and safe-cargo.sh when run from a worktree other than the main checkout) use a per-worktree target dir, or key the shared dir by checkout path, and print the target dir in the hook's result line.
