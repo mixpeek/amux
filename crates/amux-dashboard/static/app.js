@@ -654,7 +654,7 @@ let _logMatches = {};       // name -> matched snippet string
 let _logSearchTimer = null;
 let _logSearchAbort = null;
 // Filters modal facets (session list). Multi-select within a facet.
-let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
+let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2' | 'ollama' | 'grok' | 'muse'
 let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle' | 'stopped'
 // Stable status key for filtering: card WORKING = 'active' internally.
 function _sessStatusKey(s) {
@@ -6699,6 +6699,7 @@ function providerLabel(provider) {
   if (provider === 'ollama') return 'Ollama';
   if (provider === 'muse') return 'Muse Code';
   if (provider === 'iterm2') return 'iTerm2';
+  if (provider === 'grok') return 'Grok';
   return 'Claude';
 }
 
@@ -6709,13 +6710,14 @@ function sessionProvider(s) {
   // muse lane would have shown a Claude badge, a Claude model and Claude's yolo
   // flag while running `muse`. Anything added to SESSION_PROVIDERS server-side
   // belongs here too.
-  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'iterm2') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'grok' || p === 'iterm2') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
   if (provider === 'codex') return 'gpt-6-luna';
   if (provider === 'gemini') return 'auto';
   if (provider === 'ollama') return 'qwen3.8:27b';
+  if (provider === 'grok') return 'grok-4.6';
   if (provider === 'muse') return 'muse-spark-1.3-contributor';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
@@ -9719,6 +9721,7 @@ function editField(session, field, current, provider) {
       {v:'claude',l:'Claude Code'},
       {v:'codex',l:'Codex'},
       {v:'gemini',l:'Gemini'},
+      {v:'grok',l:'Grok'},
       {v:'ollama',l:'Ollama (local)'},
       {v:'muse',l:'Muse Code'}
     ];
@@ -14020,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1290';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1291';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14988,7 +14991,7 @@ function _selectWorkerType(id) {
   const t = _workerTypeInfo(id);
   _renderCreateTypeRow();
   const allowed = p => !t.providers || !t.providers.length || t.providers.includes(p);
-  ['claude', 'codex', 'gemini', 'ollama', 'muse'].forEach(p => {
+  ['claude', 'codex', 'gemini', 'ollama', 'grok', 'muse'].forEach(p => {
     const b = document.getElementById('create-provider-' + p);
     if (b) { b.disabled = !allowed(p); b.style.opacity = allowed(p) ? '' : '0.4'; }
   });
@@ -23835,7 +23838,7 @@ function closeFiltersModal() {
   if (m) m.classList.remove('active');
   renderActiveFilters();
 }
-const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
+const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2', ollama: 'Ollama', grok: 'Grok' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
 const _STATUS_LABELS = { starting: 'Starting', error: 'Error', working: 'Working', blocked: 'Blocked', waiting: 'Waiting', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped', unknown: 'Unknown' };
@@ -29410,6 +29413,8 @@ function _selectProvider(p) {
   document.getElementById('create-provider-claude').classList.toggle('selected', p === 'claude');
   document.getElementById('create-provider-codex').classList.toggle('selected', p === 'codex');
   document.getElementById('create-provider-gemini').classList.toggle('selected', p === 'gemini');
+  const _grokBtn = document.getElementById('create-provider-grok');
+  if (_grokBtn) _grokBtn.classList.toggle('selected', p === 'grok');
   const _ollamaBtn = document.getElementById('create-provider-ollama');
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   const _museBtn = document.getElementById('create-provider-muse');
@@ -29453,6 +29458,8 @@ function openCreate() {
   document.getElementById('create-provider-claude').classList.add('selected');
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
+  const _grokBtn0 = document.getElementById('create-provider-grok');
+  if (_grokBtn0) _grokBtn0.classList.remove('selected');
   const _iso0 = document.getElementById('create-isolated');
   // Isolated by default (Ethan, 2026-10-09: "when creating a new worker make
   // isolated checked by default"); untick it for a harness-driven worker.
