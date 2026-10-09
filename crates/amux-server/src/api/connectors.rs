@@ -2243,9 +2243,12 @@ async fn test_connection_inner(
                     Ok(tok) => tok,
                     Err(e) => {
                         tracing::warn!("connector_test: {} SA delegation failed: {}", id, e);
+                        // "error", not "needs_auth": the connector IS configured
+                        // (an SA exists) and its configured path failed, which a
+                        // caller must not read as "not set up yet".
                         return Json(json!({
                             "ok": false,
-                            "status": "needs_auth",
+                            "status": "error",
                             "detail": format!("service-account delegation failed: {e}. If this is 'unauthorized_client', a Workspace super-admin must authorize this connector's scope for the SA in Admin console -> Security -> API controls -> Domain-wide delegation."),
                         }))
                         .into_response();
