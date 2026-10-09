@@ -7,7 +7,7 @@
 # ethan@mixpeek.com to itself); nothing leaves the company.
 #
 #   scripts/test-connectors-live.sh [--account ethan@mixpeek.com] [--no-send]
-set -u
+set -euo pipefail
 ACCOUNT=ethan@mixpeek.com
 SEND=1
 while [ $# -gt 0 ]; do
