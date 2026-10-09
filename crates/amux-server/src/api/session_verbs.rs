@@ -31888,6 +31888,9 @@ async fn restart_with_structured_resume(
 /// What a config change did, in the shape the API reports it.
 struct SwapReport {
     mode: SwapMode,
+    /// The agent itself refused the value ("Model 'x' not found"): nothing was
+    /// changed, and the caller must put the env file back (AMUX-5759).
+    rejected: bool,
     /// Is the RUNNING agent on the new config now? False for a change parked
     /// on the steering queue, for a failed restart, and for `EnvOnly` (there
     /// is no agent; the next start picks it up).
@@ -31924,6 +31927,7 @@ async fn apply_live_config_change(
             applied: false,
             note: "",
             hot_error: None,
+            rejected: false,
         },
         SwapMode::Hot => {
             // `/model x` and `/effort x` also save x as the GLOBAL default in
@@ -31970,6 +31974,22 @@ async fn apply_live_config_change(
                         HotFold::Failed(w) => w,
                         _ => String::new(),
                     };
+                    // AMUX-5759 live test: a bad model id was REFUSED by the
+                    // agent, and amux restarted the worker ON that id anyway,
+                    // breaking it. A refusal is an answer, not a missing ack:
+                    // keep the running session and say so.
+                    if why.contains(CC_SLASH_REJECT) {
+                        tracing::warn!(session = name, reason, why = %why, measured = true, n_considered = 1,
+                            verdict = "hot_config_rejected_kept_running",
+                            "the agent refused the new value; nothing changed and no restart");
+                        return SwapReport {
+                            mode: SwapMode::Hot,
+                            rejected: true,
+                            applied: false,
+                            note: " (refused by the agent; nothing changed, no restart)",
+                            hot_error: Some(why),
+                        };
+                    }
                     let restarted =
                         restart_with_structured_resume(state, name, provider, reason).await;
                     SwapReport {
@@ -31981,6 +32001,7 @@ async fn apply_live_config_change(
                             " (live switch failed AND the restart failed — the session may still be on the old model)"
                         },
                         hot_error: Some(why),
+                        rejected: false,
                     }
                 }
                 _ => SwapReport {
@@ -31992,6 +32013,7 @@ async fn apply_live_config_change(
                         " (session is mid-turn — queued, applies at the next turn boundary; no restart)"
                     },
                     hot_error: None,
+                rejected: false,
                 },
             }
         }
@@ -32017,6 +32039,7 @@ async fn apply_live_config_change(
                     " (restart failed)"
                 },
                 hot_error: None,
+                rejected: false,
             }
         }
     }
@@ -32348,6 +32371,8 @@ async fn config_patch_with_liveness(
             Ok(v) => v,
             Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
         };
+        // The env as it was, so an agent's refusal can put it back.
+        let cfg_before_model = cfg.clone();
         let flags_no_model = match strip_model_from_flags(cfg.get_or("CC_FLAGS", "")) {
             Ok(v) => v,
             Err(e) => {
@@ -32430,6 +32455,21 @@ async fn config_patch_with_liveness(
             "model swap",
         )
         .await;
+        if rep.rejected {
+            // Nothing changed in the running agent; the durable half must not
+            // claim otherwise, or the next start comes up on a model that does
+            // not exist.
+            if let Err((status, error)) = write_swap_config(state, name, &cfg_before_model, was_running, "model swap reverted") {
+                return jresp(status, json!({"error": error}));
+            }
+            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "ok": false,
+                "applied": false,
+                "mode": rep.mode.tag(),
+                "model": model_val,
+                "error": format!("the agent refused model '{model_val}': {}; nothing changed, the worker keeps its current model", rep.hot_error.clone().unwrap_or_default()),
+            }));
+        }
         if rep.applied {
             let confirmed = if model_val.is_empty() {
                 default_model_for_provider(&current_provider)
