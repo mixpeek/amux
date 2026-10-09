@@ -656,21 +656,57 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// for lanes' checkouts, and Mixpeek's cost time on 39k files.
 async fn fresh_checkout(tree: &Path, tmp: &Path, sha: &str) -> Result<(), String> {
     let t = tmp.to_string_lossy().into_owned();
+    let root = crate::config::amux_home().join("tmp").join("contract");
+    let infrastructure = |e: String| format!("verifier checkout infrastructure error at {t}: {e}");
+    if !tmp.is_absolute() || !tmp.starts_with(&root) || tmp == root
+        || tmp.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+    {
+        return Err(infrastructure("not an owned contract scratch path; retained".into()));
+    }
+    let canonical_root = root.canonicalize().map_err(|e| infrastructure(e.to_string()))?;
+    let canonical_tmp = tmp.canonicalize().or_else(|_| {
+        let parent = tmp.parent().ok_or_else(|| std::io::Error::other("scratch path has no parent"))?;
+        Ok::<_, std::io::Error>(parent.canonicalize()?.join(tmp.file_name().unwrap_or_default()))
+    }).map_err(|e| infrastructure(e.to_string()))?;
+    if !canonical_tmp.starts_with(&canonical_root) || canonical_tmp == canonical_root {
+        return Err(infrastructure("scratch path resolves outside the contract directory; retained".into()));
+    }
     // A detached reviewer still running here, or a result nobody has read yet,
     // is not a leftover (rule 3 restart safety).
     if !matches!(review_job(tmp), ReviewJob::None) {
         return Err(format!("{t} holds a reviewer run that is still live or unread"));
     }
-    let _ = git(tree, &["worktree", "remove", "--force", &t]).await;
-    let _ = git(tree, &["worktree", "prune"]).await;
-    if tmp.exists() && tmp.starts_with(crate::config::amux_home().join("tmp").join("contract")) {
-        let _ = std::fs::remove_dir_all(tmp);
+    let registrations = git(tree, &["worktree", "list", "--porcelain", "-z"]).await.map_err(infrastructure)?;
+    let registered = registrations.split('\0').filter_map(|s| s.strip_prefix("worktree "))
+        .any(|p| Path::new(p) == canonical_tmp);
+    let removal = git(tree, &["worktree", "remove", "--force", &t]).await;
+    if registered && tmp.exists() {
+        if let Err(e) = &removal {
+            return Err(infrastructure(format!("registered checkout could not be removed; retained: {e}")));
+        }
+    }
+    if tmp.exists() {
+        std::fs::remove_dir_all(tmp).map_err(|e| infrastructure(e.to_string()))?;
         tracing::info!(path = %t, measured = true, n_considered = 1, verdict = "contract_checkout_leftover_cleared",
             "cleared a checkout directory a killed check or review left behind");
     }
-    git(tree, &["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", &t, sha]).await
-        .map(|_| ())
-        .map_err(|e| format!("could not check out {sha}: {e}"))
+    let add = ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", &t, sha];
+    match git(tree, &add).await {
+        Ok(_) => Ok(()),
+        Err(first) if registered && removal.is_err() && !tmp.exists() => {
+            // GS-247: prune never removes a locked registration. Only this
+            // positively identified, missing scratch checkout may be unlocked;
+            // never prune the repository or override a present locked checkout.
+            git(tree, &["worktree", "remove", "--force", "--force", &t]).await
+                .map_err(|e| infrastructure(format!("could not check out {sha}: {first}; targeted repair failed: {e}")))?;
+            tracing::warn!(path = %t, sha, measured = true, n_considered = 1,
+                verdict = "contract_checkout_registration_recovered", error = %first,
+                "removed the verifier's missing registration; retrying checkout once");
+            git(tree, &add).await.map(|_| ())
+                .map_err(|e| infrastructure(format!("could not check out {sha} after one repair: {e}; first failure: {first}")))
+        }
+        Err(e) => Err(infrastructure(format!("could not check out {sha}: {e}"))),
+    }
 }
 
 fn tail(s: &str, n: usize) -> String {
@@ -1619,7 +1655,11 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
     let tmp = review_dir(card, &sha, &review_input_hash(c, row, round));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
     let model = reviewer_model(&home, lane);
-    match review_job(&tmp) {
+    let job = review_job(&tmp);
+    tracing::info!(card, lane, dir = %tmp.display(), round, job = ?job,
+        measured = true, n_considered = 1, verdict = "contract_review_lookup",
+        "review recovery is bound to this exact input generation");
+    match job {
         ReviewJob::Finished => {
             tracing::info!(card, lane, measured = true, n_considered = 1, verdict = "contract_review_resumed_result",
                 "a reviewer finished while the server was down; its result is read, not rerun");
@@ -2028,6 +2068,8 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
             write_review_source(&dir, &row.desc)?;
             let prompt = prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or(""))
                 + "\nRead card-source.md for the full unabridged description, including requirements outside the excerpt.\n";
+            tracing::info!(card, lane, dir = %dir.display(), measured = true, n_considered = 1,
+                verdict = "contract_prereview_started", "a separate advisory plan review is starting");
             launch_review(&dir, &cli, &args, &prompt)?;
         }
         let output = wait_review(&dir).await;
@@ -2853,6 +2895,54 @@ mod tests {
         std::fs::write(outside.join("keep"), "x").unwrap();
         assert!(fresh_checkout(&repo, &outside, &sha).await.is_err(), "a directory outside tmp/contract is never cleared");
         assert!(outside.join("keep").exists());
+    }
+
+    #[tokio::test]
+    async fn a_checkout_recovers_its_missing_locked_registration_without_pruning_peers() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            git(&repo, args).await.unwrap();
+        }
+        git(&repo, &["config", "gc.worktreePruneExpire", "now"]).await.unwrap();
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let owned = home.path().join("tmp/contract/GS-167-69c5016703bf");
+        let peer = home.path().join("peer-checkout");
+        for path in [&owned, &peer] {
+            git(&repo, &["worktree", "add", "--detach", &path.to_string_lossy(), &sha]).await.unwrap();
+        }
+        git(&repo, &["worktree", "lock", "--reason", "verifier interrupted", &owned.to_string_lossy()]).await.unwrap();
+        std::fs::remove_dir_all(&owned).unwrap();
+        std::fs::remove_dir_all(&peer).unwrap();
+        fresh_checkout(&repo, &owned, &sha).await.expect("GS-247: the verifier must recover its own missing locked checkout");
+        assert_eq!(git(&owned, &["rev-parse", "HEAD"]).await.unwrap(), sha);
+        assert!(git(&repo, &["worktree", "list", "--porcelain"]).await.unwrap().contains("peer-checkout"),
+            "repair must not globally prune another checkout's registration");
+    }
+
+    #[tokio::test]
+    async fn a_checkout_preserves_a_locked_present_checkout_and_foreign_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            git(&repo, args).await.unwrap();
+        }
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let owned = home.path().join("tmp/contract/live-review");
+        let foreign = home.path().join("foreign");
+        for path in [&owned, &foreign] {
+            git(&repo, &["worktree", "add", "--detach", &path.to_string_lossy(), &sha]).await.unwrap();
+        }
+        git(&repo, &["worktree", "lock", "--reason", "still running", &owned.to_string_lossy()]).await.unwrap();
+        std::fs::write(owned.join("keep"), "unread review evidence").unwrap();
+        assert!(fresh_checkout(&repo, &owned, &sha).await.is_err());
+        assert_eq!(std::fs::read_to_string(owned.join("keep")).unwrap(), "unread review evidence");
+        assert!(fresh_checkout(&repo, &foreign, &sha).await.is_err(), "registered foreign checkouts are never removed");
+        assert_eq!(git(&foreign, &["rev-parse", "HEAD"]).await.unwrap(), sha);
     }
 
     #[test]

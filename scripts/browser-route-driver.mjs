@@ -13,7 +13,7 @@ const key = s => createHash('sha256').update(s).digest('hex').slice(0, 24);
 const component = s => typeof s === 'string' && s.length > 0 && s !== '.' && s !== '..' && !/[\/\\\x00]/.test(s);
 class RouteError extends Error { constructor(message, status = 502) { super(message); this.status = status; } }
 const terminal = e => [400, 401, 403, 404, 409, 422].includes(e.status);
-export function api(base, path, method = 'GET', body, session = '', token = '') {
+export function api(base, path, method = 'GET', body, session = '', token = '', timeoutMs = 180000) {
   const u = new URL(path, base);
   if (!['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) throw new RouteError('browser route requires a loopback Amux endpoint', 400);
   return new Promise((resolveResult, reject) => {
@@ -30,7 +30,7 @@ export function api(base, path, method = 'GET', body, session = '', token = '') 
         else resolveResult(v);
       } catch(e) { reject(e); } });
     });
-    req.setTimeout(180000, () => req.destroy(new Error('browser request timed out')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('browser request timed out')));
     req.on('error', reject); if (data) req.write(data); req.end();
   });
 }
@@ -106,7 +106,7 @@ async function directStartLocked(ctx, url, previous) {
 async function target(state) {
   const tabs=await api(`http://127.0.0.1:${state.cdp_port}`,'/json/list');
   const page=tabs.find(t=>t.id===state.target&&t.type==='page');
-  if(!page)throw new RouteError('this worker\'s CDP tab is gone; reopen the route',502);
+  if(!page)throw Object.assign(new RouteError('this worker\'s CDP tab is gone; reopen the route',502),{code:'cdp_target_gone'});
   return page;
 }
 async function directVerb(ctx,state,verb,b) {
@@ -125,7 +125,13 @@ async function directVerb(ctx,state,verb,b) {
     }
     if(verb==='stop') {
       const version=await api(`http://127.0.0.1:${state.cdp_port}`,'/json/version');
-      await cdp(version.webSocketDebuggerUrl,async browser=>{await browser('Target.closeTarget',{targetId:state.target});const tabs=await browser('Target.getTargets');if(!tabs.targetInfos.some(t=>t.type==='page'))await browser('Browser.close').catch(()=>{});});return {ok:true,stopped:true};
+      await cdp(version.webSocketDebuggerUrl,async browser=>{
+        await browser('Target.closeTarget',{targetId:state.target});
+        const deadline=Date.now()+3000;let tabs;
+        do {tabs=await browser('Target.getTargets');if(!tabs.targetInfos.some(t=>t.targetId===state.target))break;await pause(50);}while(Date.now()<deadline);
+        if(tabs.targetInfos.some(t=>t.targetId===state.target))throw new RouteError('owned CDP target closure was not confirmed; receipt retained',502);
+        if(!tabs.targetInfos.some(t=>t.type==='page'))await browser('Browser.close').catch(()=>{});
+      });return {ok:true,stopped:true};
     }
     if(verb==='keepalive')return {ok:true};
     if(verb==='status')return {running:true,profile:state.profile,backend:state.backend};
@@ -186,8 +192,8 @@ async function launch(ctx,b,attempts=[],from=0) {
       let state,result;
       if(backend==='amux') {result=await native(ctx,'start',{...b,profile});state={backend,profile:result.profile,url:b.url};}
       else if(backend==='cdp') {state=await directStart(ctx,b.url,attempts);result={ok:true,profile:state.profile,cdp_port:state.cdp_port,launch_url:b.url};}
-      else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
-      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';atomic(ctx.receipt,state);
+      else {if(ctx.cua_access?.allowed===false)throw new RouteError(ctx.cua_access.reason||'selected CUA profile is outside this worker\'s scope',403);if(ctx.identity&&ctx.cua_identity&&ctx.identity.toLowerCase()!==ctx.cua_identity.toLowerCase())throw new RouteError('CUA fallback identity differs from the selected profile; choose its matching saved profile',403);await api(ctx.base,'/api/computer/start','POST',{session:ctx.session},ctx.session,ctx.token,1980000);result=await api(ctx.base,'/api/computer/open','POST',{url:b.url,profile:ctx.config.cua_profile||profile,session:ctx.session},ctx.session,ctx.token);state={backend,profile:ctx.config.cua_profile||profile,url:b.url};}
+      attempts.push({backend,verdict:'ready',elapsed_ms:Date.now()-begun});state.attempts=attempts;state.selected_profile=b.selected_profile||profile;state.identity=ctx.identity||'';state.native_started=backend==='amux'||!!ctx.native_started;state.previous_routes=ctx.previous_routes||[];atomic(ctx.receipt,state);
       return {...result,ok:true,route:state,profile:state.profile};
     } catch(e) {
       attempts.push({backend,verdict:'failed',status:e.status||502,error:e.message,elapsed_ms:Date.now()-begun});
@@ -197,18 +203,77 @@ async function launch(ctx,b,attempts=[],from=0) {
   }
   throw Object.assign(new RouteError('all configured browser routes failed',503),{attempts});
 }
+async function stopOwnedNative(ctx,state) {
+  try {return await native(ctx,'stop',{profile:state.selected_profile||state.profile,expected_started_by:ctx.session});}
+  catch(e){
+    if(!(e.status===409&&['browser_stop_target_unresolved','browser_stop_ownership_changed'].includes(e.payload?.code)))throw e;
+    return {ok:true,stopped:false,note:'Original native browser was already released or its ownership changed; preserved the replacement.'};
+  }
+}
+async function stopOwnedCdp(ctx,state) {
+  try {return await directVerb(ctx,state,'stop',{});}
+  catch(e) {
+    // A reset pooled HTTP socket is inconclusive. Re-observe once without
+    // replaying Target.closeTarget; only definite absence permits retirement.
+    if(e.code==='ECONNRESET') {try {await target(state);}catch(observed){e=observed;}}
+    // A refused local port or a confirmed absent target is already released.
+    // Timeouts, protocol errors and authorization failures remain errors.
+    if(!['ECONNREFUSED','cdp_target_gone'].includes(e.code))throw e;
+    ctx.cleanup_events.push({backend:'cdp',profile:state.profile,target:state.target,verdict:'owned_cdp_already_closed'});
+    return {ok:true,stopped:false,cleanup_verdict:'owned_cdp_already_closed',measured:true,n_considered:1};
+  }
+}
 export async function route(ctx,verb,b={}) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
+  ctx.cleanup_events=[];
   ctx.receipt=join(ctx.home,'browser-routing','sessions',key(ctx.session)+'.json');
-  if(verb==='start')return launch(ctx,b);
   const state=read(ctx.receipt,null);
+  if(verb==='start') {
+    // Validate before closing a usable route. Replacement never abandons its
+    // old receipt, tabs or desktop; an unknown cleanup failure retains them.
+    if(!b.url||!/^https?:|^about:/.test(b.url))throw new RouteError('start requires an HTTP(S) or about: URL',400);
+    const selectedIdentity=ctx.identity;
+    if(state) {
+      await route(ctx,'stop',{});
+      ctx.cleanup_events.push({backend:state.backend,profile:state.profile,target:state.target,verdict:'owned_route_replaced'});
+    }
+    ctx.identity=selectedIdentity;ctx.native_started=false;ctx.previous_routes=[];
+    const result=await launch(ctx,b);
+    return {...result,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
+  }
   if(!state) {if(verb==='status')return {running:false};throw new RouteError('select a profile and start the browser route first',409);}
   ctx.identity=state.identity||ctx.identity;
+  ctx.native_started=!!state.native_started;
+  ctx.previous_routes=[...(state.previous_routes||[])];
+  if(verb==='advance') {
+    const reason=typeof b.reason==='string'?b.reason.trim():'';
+    if(!reason)throw new RouteError('advance requires a reason describing the unmet goal',400);
+    if(state.backend==='cua')throw new RouteError('CUA is the final configured route; report the unmet goal instead of switching accounts',409);
+    ctx.previous_routes.push({...state,previous_routes:undefined});
+    return launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'goal_unmet',reason:reason.slice(0,500)}],state.backend==='amux'?1:2);
+  }
+  if(verb==='stop'&&state.backend!=='amux'&&state.native_started) {
+    // Only release the original browser when this worker started it. A busy
+    // fallback owned by somebody else has native_started=false.
+    await stopOwnedNative(ctx,state);
+    state.native_started=false;atomic(ctx.receipt,state);
+  }
+  if(verb==='stop') {
+    // Handoffs retain the worker's old tabs for inspection until explicit stop.
+    // Keep each completed cleanup durable so a retry does not repeat it.
+    for(const prior of [...(state.previous_routes||[])]) {
+      if(prior.backend==='cdp') {
+        await stopOwnedCdp(ctx,prior);
+      }
+      state.previous_routes=state.previous_routes.filter(p=>p!==prior);atomic(ctx.receipt,state);
+    }
+  }
   try {
-    const result=state.backend==='amux'?await native(ctx,verb,b):state.backend==='cdp'?await directVerb(ctx,state,verb,b):await cua(ctx,state,verb,b);
-    if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state};
+    const result=state.backend==='amux'?(verb==='stop'?await stopOwnedNative(ctx,state):await native(ctx,verb,b)):state.backend==='cdp'?(verb==='stop'?await stopOwnedCdp(ctx,state):await directVerb(ctx,state,verb,b)):await cua(ctx,state,verb,b);
+    if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
   } catch(e) {
     if(terminal(e)||state.backend==='cua'||verb==='stop')throw e;
+    ctx.previous_routes.push({...state,previous_routes:undefined});
     const next=await launch(ctx,{url:state.url,profile:state.selected_profile||state.profile,selected_profile:state.selected_profile||state.profile},[...state.attempts,{backend:state.backend,verdict:'failed',error:e.message}],state.backend==='amux'?1:2);
     // An uncertain mutation must never be repeated in a second identity/context.
     if(verb==='action')throw Object.assign(new RouteError('browser route changed; action was not replayed. Observe state/screenshot before retrying.',409),{route:next.route});
@@ -216,7 +281,7 @@ export async function route(ctx,verb,b={}) {
   }
 }
 export async function run(input) {
-  try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route};}
+  try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route,...(input.context.cleanup_events?.length?{cleanup_events:input.context.cleanup_events}:{})};}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
   let text='';for await(const chunk of process.stdin)text+=chunk;

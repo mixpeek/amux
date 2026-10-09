@@ -3721,6 +3721,9 @@
     max-height: var(--tc-max-h, 60vh); overflow-y: auto; overscroll-behavior: contain;
   }
   #peek-tab-customizer-menu { position: fixed; z-index: 300; }
+  .tab-cust-search-wrap {
+    padding: 6px 10px 4px; position: sticky; top: 0; background: var(--card); z-index: 1;
+  }
   .tab-customizer-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 14px;
     font-size: 0.82rem; cursor: pointer; color: var(--fg); user-select: none;
@@ -7963,4 +7966,76 @@ body.light .bd-answer-head { color: #bc4c00; }
 @media (max-width: 600px) {
   .file-overlay-body.file-xlsx-editor { border-radius: 0; border-left: 0; border-right: 0; }
   #file-save-btn { min-height: 44px; }
+}
+
+/* Scratchpad: its own toolbar class (.fe-tb-actions is hidden at every width,
+   which hid New Note / New Folder / Refresh), and the paste-to-save box. */
+.sp-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.sp-capture-row { display:flex; gap:8px; padding:8px 12px; align-items:stretch; }
+.sp-capture { flex:1; min-height:44px; resize:vertical; font-family:inherit; font-size:0.85rem; }
+.sp-capture-save { min-width:64px; min-height:44px; }
+.sp-copy-btn { min-width:32px; }
+@media (max-width: 600px) {
+  .sp-actions .fe-tb-btn { min-height:44px; min-width:44px; }
+  .sp-actions .fe-tb-btn span { display:none; }
+  .sp-copy-btn { min-width:44px; min-height:44px; }
+}
+/* Scratchpad rows carry two actions (copy, menu); the shared 30px column
+   overflowed every row by 10px and pushed both off-screen. */
+#scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
+  grid-template-columns: minmax(0,1fr) 60px 92px 72px;
+}
+#scratchpad-view .fe-cell-actions { display:flex; gap:4px; justify-content:flex-end; align-items:center; }
+@media (max-width: 600px) {
+  #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
+    grid-template-columns: minmax(0,1fr) 92px 96px;
+  }
+  #scratchpad-view .fe-cell-size { display:none; }
+}
+
+/* Peek side panel (Ethan, 2026-10-08): on desktop the split shows files,
+   messages or chat beside the terminal. */
+.psp-switch { display:flex; gap:4px; align-items:center; padding:6px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.psp-opt { background:none; border:1px solid var(--border); color:var(--dim); border-radius:6px; padding:3px 10px; font-size:0.75rem; cursor:pointer; }
+.psp-opt.active { color:var(--text); border-color:var(--accent); background:var(--surface); }
+.psp-close { margin-left:auto; font-size:0.7rem; padding:2px 8px; }
+.psp-frame { flex:1; min-height:0; width:100%; border:0; background:var(--bg); }
+.peek-split-files.psp-embed .peek-split-files-header,
+.peek-split-files.psp-embed .psf-col-headers,
+.peek-split-files.psp-embed .peek-split-files-body { display:none !important; }
+.psp-menu { position:fixed; z-index:9999; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:4px; box-shadow:0 6px 24px rgba(0,0,0,0.35); display:flex; flex-direction:column; min-width:150px; }
+.psp-menu button { background:none; border:0; color:var(--text); text-align:left; padding:8px 10px; border-radius:6px; font-size:0.85rem; cursor:pointer; }
+.psp-menu button:hover, .psp-menu button:focus { background:var(--surface); outline:none; }
+
+/* Chat copy buttons (Ethan, 2026-10-08) and room below a code block for its
+   scrollbar, which sat on the next paragraph's first line. */
+.chat-code { position:relative; margin:6px 0 12px; }
+.chat-code pre { margin:0; padding-bottom:12px; }
+.chat-code-copy { position:absolute; top:4px; right:4px; z-index:1; font-size:0.7rem; padding:2px 8px; border-radius:5px;
+  border:1px solid var(--border); background:var(--card); color:var(--dim); cursor:pointer; opacity:0.85; }
+.chat-code-copy:hover, .chat-code-copy:focus { opacity:1; color:var(--text); }
+.chat-copy-btn { margin-left:6px; font-size:0.72rem; padding:1px 8px; border-radius:5px; border:1px solid var(--border);
+  background:none; color:var(--dim); cursor:pointer; }
+.chat-copy-btn:hover, .chat-copy-btn:focus { color:var(--text); }
+@media (max-width: 600px) {
+  .chat-code-copy, .chat-copy-btn { min-height:44px; min-width:44px; }
+}
+/* A worker's active Claude Code /goal (AMUX-5746). */
+.badge.goal { color:var(--accent); border-color:var(--accent); }
+
+/* Scratchpad files and expiry (Ethan, 2026-10-09). */
+.sp-retain-wrap { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--dim); }
+.sp-retain { padding:2px 6px; font-size:0.75rem; height:auto; }
+#scratchpad-view.sp-drop { outline:2px dashed var(--accent); outline-offset:-6px; }
+@media (max-width: 600px) { .sp-retain { min-height:44px; } }
+/* The split-view control reads as one on desktop (Ethan, 2026-10-09: "I still
+   dont see the Split View for chat, and others in place of just folder"); on a
+   phone the same button opens the file explorer, so it keeps the folder. */
+#peek-split-toggle { display:inline-flex; align-items:center; gap:4px; width:auto; padding-left:10px; padding-right:10px; }
+#peek-split-toggle .psp-btn-lbl { font-size:0.8rem; font-weight:600; }
+#peek-split-toggle .psp-btn-caret { font-size:0.65rem; opacity:0.7; }
+#peek-split-toggle .psp-ico-folder { display:none; }
+@media (max-width: 600px) {
+  #peek-split-toggle .psp-ico-split, #peek-split-toggle .psp-btn-lbl, #peek-split-toggle .psp-btn-caret { display:none; }
+  #peek-split-toggle .psp-ico-folder { display:inline; }
 }

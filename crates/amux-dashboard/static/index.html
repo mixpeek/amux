@@ -661,6 +661,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <button id="tab-calendar" onclick="switchView('calendar')"><span class="tab-ico">🗓</span><span class="tab-lbl">Calendar</span></button>
   <button id="tab-scheduler" onclick="switchView('scheduler')"><span class="tab-ico">⏱</span><span class="tab-lbl">Scheduler</span></button>
   <button id="tab-files" onclick="switchView('files')"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
+  <button id="tab-scratchpad" onclick="switchView('scratchpad')"><span class="tab-ico">📝</span><span class="tab-lbl">Scratchpad</span></button>
   <button id="tab-record" onclick="switchView('record')"><span class="tab-ico">🎙</span><span class="tab-lbl">Record</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
   <button id="tab-proxies" onclick="switchView('proxies')"><span class="tab-ico">⇄</span><span class="tab-lbl">Proxies</span></button>
@@ -820,6 +821,50 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </summary>
     <div id="scheduler-audit"></div>
   </details>
+</div>
+
+<!-- Scratchpad view: paste-to-save notes in ~/Vault/Scratchpad/ -->
+<div id="scratchpad-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
+  <div class="fe-toolbar">
+    <div class="fe-breadcrumb" style="font-weight:600;font-size:0.85rem;">Scratchpad</div>
+    <div class="sp-actions">
+      <label class="sp-retain-wrap" title="Items older than this are deleted automatically">Keep
+        <select id="sp-retain" class="input sp-retain" onchange="_spSetRetain(this.value)" aria-label="Keep scratchpad items for">
+          <option value="1">1 day</option><option value="3">3 days</option><option value="7">7 days</option>
+          <option value="14">14 days</option><option value="30">30 days</option><option value="0">forever</option>
+        </select>
+      </label>
+      <button class="fe-tb-btn" onclick="document.getElementById('sp-file-input').click()" title="Upload files">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 9V2M3.5 5l3-3 3 3M2 11h9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Upload</span>
+      </button>
+      <input type="file" id="sp-file-input" multiple style="display:none" onchange="_spUploadFiles(this.files); this.value=''">
+      <button class="fe-tb-btn" onclick="_scratchpadNewNote()" title="Create a new note">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M7 1v4h4M6.5 7v4M4.5 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>New Note</span>
+      </button>
+      <button class="fe-tb-btn" onclick="_scratchpadNewFolder()" title="Create a subfolder">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3a1 1 0 011-1h2.6l1.2 1.5h4.2a1 1 0 011 1V10a1 1 0 01-1 1h-8a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/><path d="M6.5 5.8v3.4M4.8 7.5h3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span>New Folder</span>
+      </button>
+      <button class="fe-tb-btn" onclick="_scratchpadLoad()" title="Refresh">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11 6.5A4.5 4.5 0 1 1 8 2.3M11 2v4H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        <span>Refresh</span>
+      </button>
+    </div>
+  </div>
+  <div class="sp-capture-row">
+    <textarea id="sp-capture" class="input sp-capture" rows="2" placeholder="Paste here and it is saved. Type, then Ctrl/⌘+Enter to save." aria-label="Paste or type a note"></textarea>
+    <button class="btn sp-capture-save" onclick="_spCaptureSaveTyped()" title="Save what is typed (Ctrl/⌘+Enter)">Save</button>
+  </div>
+  <div class="fe-col-headers" id="sp-col-headers" style="display:none;">
+    <div class="fe-cell-name fe-col-hdr" onclick="_spSortBy('name')">Name <span id="sp-sort-name"></span></div>
+    <div class="fe-cell-size fe-col-hdr" onclick="_spSortBy('size')">Size <span id="sp-sort-size"></span></div>
+    <div class="fe-cell-date fe-col-hdr" onclick="_spSortBy('modified')">Modified <span id="sp-sort-modified"></span></div>
+    <div class="fe-cell-actions"></div>
+  </div>
+  <div id="sp-breadcrumb" class="fe-breadcrumb" style="padding:0 12px;font-size:0.78rem;display:none;"></div>
+  <div id="scratchpad-body" class="fe-body" style="flex:1;overflow-y:auto;min-height:0;"></div>
 </div>
 
 <!-- Record view (AMUX-4625): tap to record on this device; each second is
@@ -1746,7 +1791,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
       <option value="">Amux → CDP → CUA</option>
     </select>
     <button id="bw-ios-stop" class="bw-btn" style="display:none;" onclick="_bwStopIos()">Stop Safari</button>
-    <select id="bw-profile" class="bw-in" style="min-width:120px;max-width:100%;" title="Profile identity and purpose — select before Go">
+    <select id="bw-profile" class="bw-in" style="min-width:120px;max-width:100%;" onchange="_bwRoutingProfileChanged()" title="Profile identity and purpose — select before Go">
       <option value="">Auto profile</option>
     </select>
     <button class="bw-btn" onclick="_bwBack()" title="Back">&larr;</button>
@@ -1762,12 +1807,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <details id="bw-routing" style="margin:0 8px 8px;padding:8px;border:1px solid var(--border);border-radius:6px;" data-bw-chrome>
     <summary>Browser route settings</summary>
     <div class="bw-row" style="margin-top:8px;">
-      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
-      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
-      <label><input id="bw-cua-enabled" type="checkbox"> Use CUA if both browser routes fail</label>
+      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" onchange="_bwRoutingEdited()" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
+      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" onchange="_bwRoutingEdited()" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
+      <label><input id="bw-cua-enabled" onchange="_bwRoutingEdited()" type="checkbox"> Use CUA if both browser routes fail</label>
       <button class="bw-btn" onclick="_bwSaveRouting()">Save route</button>
+      <button class="bw-btn" onclick="_bwAdvanceRouting()" title="When the browser works but cannot complete the goal, advance to the next configured route without repeating an action">Try next route</button>
     </div>
-    <p style="font-size:0.75rem;color:var(--dim);">Select a saved profile above, then Go. CDP keeps an isolated copy of the Chrome profile selected here. CUA transfers saved cookies; site access is verified when opened.</p>
+    <p style="font-size:0.75rem;color:var(--dim);">Fallback choices are saved per Amux profile. CDP keeps an isolated copy of its matching Chrome account. If the goal remains blocked, try the next route, then observe again. CUA transfers saved cookies; verify live access when opened.</p>
     <div id="bw-routing-status" role="status" style="font-size:0.75rem;"></div>
   </details>
   <!-- Status / logged-in indicator -->
@@ -2355,7 +2401,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div class="field-group">
       <label class="field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="create-isolated" onchange="_toggleIsolated(this.checked)" style="width:auto;margin:0;">
+        <input type="checkbox" id="create-isolated" checked onchange="_toggleIsolated(this.checked)" style="width:auto;margin:0;">
         Isolated <span class="field-optional">(no amux harness &mdash; runs alone)</span>
       </label>
       <div id="create-isolated-info" style="display:none;margin-top:6px;font-size:0.78rem;color:var(--dim);background:rgba(240,136,62,0.08);border-radius:6px;padding:8px 10px;line-height:1.5;">
@@ -2466,8 +2512,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
         <button class="peek-nav-btn" onpointerdown="_peekMsgNavArm(event)" onclick="peekMsgPrev(event)" title="Previous message" aria-label="Previous message">&#x2191;</button>
         <button class="peek-nav-btn" onpointerdown="_peekMsgNavArm(event)" onclick="peekMsgNext(event)" title="Next message" aria-label="Next message">&#x2193;</button>
       </div>
-      <button class="btn peek-toolbar-btn" id="peek-split-toggle" onclick="togglePeekSplit()" title="File browser" aria-label="Toggle file browser">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <button class="btn peek-toolbar-btn" id="peek-split-toggle" onclick="togglePeekSplit(event)" title="Split view: files, messages or chat beside the terminal" aria-label="Split view" aria-haspopup="menu">
+        <svg class="psp-ico-split" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M13 4v16"/></svg>
+        <span class="psp-btn-lbl">Split</span><span class="psp-btn-caret" aria-hidden="true">&#9662;</span>
+        <svg class="psp-ico-folder" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </button>
       <button class="btn peek-toolbar-btn" id="peek-find-toggle" onclick="togglePeekFind()" title="Find in terminal" aria-label="Find in terminal" aria-expanded="false" aria-controls="peek-search-wrap">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
@@ -2629,6 +2677,13 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <div id="peek-split-handle" class="peek-split-handle"></div>
   <!-- Split files panel -->
   <div id="peek-split-files" class="peek-split-files">
+    <div class="psp-switch" role="tablist" aria-label="Side panel">
+      <button type="button" class="psp-opt" data-psp="files" onclick="_peekSplitShow('files')">Files</button>
+      <button type="button" class="psp-opt" data-psp="messages" onclick="_peekSplitShow('messages')">Messages</button>
+      <button type="button" class="psp-opt" data-psp="chat" onclick="_peekSplitShow('chat')">Chat</button>
+      <button type="button" class="btn psp-close" onclick="togglePeekSplit()" title="Close side panel" aria-label="Close side panel">&#x2715;</button>
+    </div>
+    <iframe id="psp-frame" class="psp-frame" title="Side panel" allow="clipboard-write; clipboard-read" style="display:none"></iframe>
     <div class="peek-split-files-header">
       <div id="psf-breadcrumb" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;"></div>
       <button class="btn" style="font-size:0.7rem;padding:2px 8px;" onclick="togglePeekSplit()">&#x2715;</button>

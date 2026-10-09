@@ -810,6 +810,13 @@ cmd_register() {
     echo "CC_NAME=\"$name\""
     echo "CC_DIR=\"$resolved_dir\""
     echo "CC_FLAGS=\"${CC_FLAGS_STR}\""
+    # A brand-new worker starts with the Board-tab automation off (Ethan,
+    # 2026-10-08); a re-register keeps whatever the worker already had.
+    if [[ -z "$preserved" ]]; then
+      for kv in AMUX_DISPATCH_BACKLOG_WHEN_IDLE=0 CC_AUTO_PICKUP=0 CC_AUTO_CONTINUE=0 CC_STANDING_ORDERS=0 AMUX_COMMAND_LIFECYCLE=0 AMUX_BOARD_FORCE_ADHERENCE=0; do
+        echo "${kv%%=*}=\"${kv#*=}\""
+      done
+    fi
     [[ -n "$wt" ]] && echo "CC_WORKTREE=\"1\""
     [[ -n "$wt_profile" ]] && echo "CC_WORKTREE_PROFILE=\"$wt_profile\""
     [[ -n "$preserved" ]] && printf '%s\n' "$preserved"
@@ -5494,7 +5501,7 @@ cmd_browser() {
       resp=$(_curl -sk -m 60 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" \
         "$AMUX_API/api/browser/profile-for?$q" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
-      RESP="$resp" python3 - <<'PYEOF'
+      TARGET="$target" RESP="$resp" python3 - <<'PYEOF'
 import json, os, sys
 try:
     d = json.loads(os.environ["RESP"])
@@ -5517,13 +5524,42 @@ if d.get("alternatives"):
     # only REGISTERED for the site, which is not the same claim.
     what = "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)"
     print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
-print(f'  start it: amux browser route start {{"url":"https://{d["site"]}","profile":"{d["profile"]}"}}', file=sys.stderr)
+import shlex
+target = os.environ["TARGET"]
+url = target if "://" in target else "https://" + target
+print("  start it: amux browser route start " + shlex.quote(json.dumps({"url":url,"profile":d["profile"]})), file=sys.stderr)
 sys.exit(0 if d.get("signed_in") else 3)
 PYEOF
       return $?
       ;;
     route)
       local verb="${1:-state}"; shift || true
+      if [[ "$verb" == "config" ]]; then
+        _curl -sk -m 20 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" "$AMUX_API/api/browser/routing/config"
+        return $?
+      fi
+      if [[ "$verb" == "help" || "$verb" == "--help" ]]; then
+        cat <<'ROUTE_HELP'
+Select the task's account AND organization with amux browser profiles.
+amux browser route config
+amux browser route start '{"profile":"chosen-profile","url":"https://target"}'
+amux browser route state
+amux browser route shot
+amux browser route action '{"action":"click","selector":"#observed-control"}'
+amux browser route action '{"action":"type","text":"exact text"}'
+Click the observed input before typing. Read back values before submitting.
+Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
+Verify the intended page effect after each action; ok means dispatch only.
+If the session cannot accomplish the goal:
+amux browser route advance '{"reason":"describe the unmet goal"}'
+Cold CUA provisioning can take up to 30 minutes. Use amux browser route status
+while a background request runs. pending means wait for that task; do not queue
+another state/action request. Never kill processes; route stop cleans your lane.
+Observe again after advancing. Never replay an uncertain submission.
+CUA is the final route. If it fails, report the unmet goal honestly.
+ROUTE_HELP
+        return 0
+      fi
       [[ "$verb" == "shot" ]] && verb="screenshot"
       local session="${AMUX_SESSION:-${AMUX_WORKER:-browser-owner}}"
       local body="${1:-}"
@@ -5535,7 +5571,7 @@ print(json.dumps({"verb":os.environ["VERB"],"session":os.environ["SESSION"],"bod
 PYROUTE
       ) || die "route body must be JSON"
       local result
-      result=$(_curl -sk -m 250 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
+      result=$(_curl -sk -m 2760 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
       RESULT="$result" python3 - <<'PYRESULT'
 import os, json, sys
 v=json.loads(os.environ["RESULT"])
@@ -6077,6 +6113,8 @@ ${BOLD}Browser:${RESET}
                                  Optional: --identity EMAIL --role ROLE; verify live access
   amux browser route start JSON  Amux → selected Chrome CDP → CUA
   amux browser route state|shot  Observe; route action JSON; route stop when done
+  amux browser route config     Read profile-specific Chrome/CUA choices and identities
+  amux browser route advance JSON  Goal blocked? Next configured route; reason required
   amux browser profiles [--all]  Relevant profiles; --all includes QA/recovery;
                                  '+' marks access allowed for this worker
   amux browser identify [prof]   Make the amux Chrome window say it IS the amux

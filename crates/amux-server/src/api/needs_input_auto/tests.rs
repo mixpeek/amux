@@ -492,6 +492,69 @@ fn a_scope_or_deadline_decision_is_never_auto_approved() {
 }
 
 #[test]
+fn an_explicit_auto_approval_exclusion_wins_over_category_and_send_back() {
+    let policy = Policy { send_back: true, ..Policy::default() };
+    for field in ["question", "unblocks", "context"] {
+        for exclusion in [
+            "An automatic needs-input approval does not cover these (production data and a customer-facing API).",
+            "This decision is not covered by automatic approval.",
+            "Do not auto-approve this decision.",
+            "This decision requires explicit human approval.",
+        ] {
+            let mut it = item("card", "other", "decision", "Choose the cache layout? I recommend A.");
+            it[field] = json!(exclusion);
+            assert_eq!(decide(&policy, &it), Decision::Never("explicit_approval_required"), "{field}: {exclusion}");
+        }
+    }
+    assert_eq!(decide(&policy, &item("card", "other", "decision",
+        "Choose the cache layout? No human approval is required.")), Decision::Approve);
+}
+
+#[test]
+fn moving_or_retiring_production_data_is_not_a_judgment_ask() {
+    for question in [
+        "Move production usage and invoices onto the rollups?",
+        "Retire the production usage and invoice ledgers?",
+    ] {
+        assert_eq!(decide(&Policy::default(), &item("card", "other", "decision", question)),
+            Decision::SkipCategory("prod_data".into()), "{question}");
+    }
+    assert_eq!(decide(&Policy::default(), &item("card", "other", "decision",
+        "Move local fixture usage onto rollups?")), Decision::Approve);
+}
+
+#[tokio::test]
+async fn explicit_exclusions_survive_the_real_queue_and_approval_job() {
+    let st = state();
+    let dir = tempfile::tempdir().unwrap();
+    let now = now_f64();
+    let mock = Arc::new(Mock::default());
+    assert!(tick_with(&mock, &st, dir.path(), now).await.ran);
+    seed(&st, "GS-199", "lane-a", "decision",
+        "Move production usage and invoices onto the rollups, retire two ledgers, and add two fields to the usage breakdown API?", now);
+    seed(&st, "LOCAL-EXCLUDED", "lane-a", "decision", "Choose the local cache layout?", now);
+    seed(&st, "LOCAL-ALLOWED", "lane-a", "decision", "Choose the cache key? I recommend A.", now);
+    st.store.write(|conn| {
+        conn.execute("UPDATE issues SET ask_unblocks=?1 WHERE id IN ('GS-199','LOCAL-EXCLUDED')",
+            ["An automatic needs-input approval does not cover these (production data and a customer-facing API)."])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).unwrap();
+
+    let rep = tick_with(&mock, &st, dir.path(), now + 1.0).await;
+    assert_eq!(rep.approved, ["LOCAL-ALLOWED"]);
+    for id in ["GS-199", "LOCAL-EXCLUDED"] {
+        assert_eq!(card(&st, id).status, "needsyou", "{id} must retain its ask");
+        assert_eq!(outcomes(&st)[id], "never");
+        assert!(load_ledger(&st.store.read().unwrap()).unwrap().iter()
+            .any(|e| e.card == id && e.detail.contains("explicit approval")), "{id}: auditable hold reason");
+    }
+    assert_eq!(mock.sends.lock().unwrap().len(), 1, "only the authorized local control is sent");
+    assert!(mock.emails.lock().unwrap().is_empty());
+    assert!(tick_with(&mock, &st, dir.path(), now + 2.0).await.approved.is_empty());
+    assert_eq!(mock.sends.lock().unwrap().len(), 1, "a repeated job does not act again");
+}
+
+#[test]
 fn an_ask_that_names_nothing_or_a_host_service_is_never_auto_approved() {
     let bare = item("needsyou", "other", "credential", "Shall I remove it?");
     assert_eq!(never_reason(&bare), Some("no_artifact_named"), "AH-391");

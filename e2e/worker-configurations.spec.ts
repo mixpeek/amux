@@ -115,14 +115,14 @@ test('worker Configurations edits the full board lifecycle and every scoped capa
       await expect(panel.getByRole('button', { name: /^Edit .+ at this level$/ })).toHaveCount(0);
     }
 
-    // Default path: every board toggle is OFF except decompose (0d2a0757),
-    // with no redundant per-worker key.
+    // New workers explicitly own OFF values for all six automation toggles
+    // (de344082), even when the fleet would enable them.
     await expect.poll(async () => {
       const rows = await getSessionsResilient(request, auth);
       const worker = (await rows.json()).find((s: any) => s.name === name);
       return [worker?.auto_drain_backlog, worker?.auto_drain_backlog_own,
         worker?.auto_pickup, worker?.auto_pickup_own];
-    }, settled).toEqual([false, false, false, false]);
+    }, settled).toEqual([false, true, false, true]);
 
     // Explicit opt-in path, from the Board tab (7f9c835f): turn backlog drain
     // on without changing To Do pickup or the master switch, then off again.

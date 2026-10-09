@@ -97,8 +97,12 @@ fn companion_meta_path(worker: &str) -> std::path::PathBuf {
 }
 
 /// A chat lane's settings. A companion's are derived from its worker: the
-/// worker's directory, Claude, and the model in the worker's
-/// `AMUX_CHAT_MODEL` scope setting (default sonnet, what AMUX-5350 created).
+/// worker's directory, provider, and model, so the Chat tab answers on the
+/// same model the worker runs (Ethan, 2026-10-08). Order: the worker's
+/// `AMUX_CHAT_MODEL` scope setting, then the worker's own `--model` in
+/// CC_FLAGS (either form, via model_flag), then its CC_MODEL. With none, the
+/// chat passes no --model, so it gets the same CLI default the worker gets;
+/// it used to fall back to sonnet, which differed from a worker on the default.
 fn parse_env(name: &str) -> super::session_verbs::EnvFile {
     let Some(worker) = companion_parent(name) else {
         return super::session_verbs::parse_env(name);
@@ -111,13 +115,16 @@ fn parse_env(name: &str) -> super::session_verbs::EnvFile {
     }
     let model = super::session_verbs::scoped_setting_in(&home(), worker, "AMUX_CHAT_MODEL")
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "sonnet".into());
-    env.set("CC_PROVIDER", "claude");
-    env.set("CC_FLAGS", &format!("--model {}", model.trim()));
+        .or_else(|| model_flag(parent.get_or("CC_FLAGS", "")))
+        .or_else(|| Some(parent.get_or("CC_MODEL", "").trim().to_string()).filter(|m| !m.is_empty()));
+    let provider = parent.get_or("CC_PROVIDER", "claude").to_string();
+    env.set("CC_PROVIDER", &provider);
+    env.set("CC_FLAGS", &model.as_deref().map(|m| format!("--model {}", m.trim())).unwrap_or_default());
     env.set("CC_WORKER_TYPE", WorkerTypeId::CHAT);
     env.set("CC_COMPANION_OF", worker);
     env
 }
+
 
 /// A chat lane's meta: the worker meta, or a companion's own file.
 pub(crate) fn load_meta(name: &str) -> serde_json::Map<String, Value> {
@@ -2153,6 +2160,30 @@ mod tests {
         assert_eq!(companion_parent("mixpeek-override"), None);
         assert_eq!(companion_parent("@chat"), None);
         assert_eq!(companion_parent("../x@chat"), None);
+    }
+
+    /// Ethan, 2026-10-08: "make sure a chat in a worker uses the same model
+    /// that the worker has".
+    #[test]
+    fn a_chat_tab_runs_its_workers_model() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let w = |name: &str, body: &str| std::fs::write(home.path().join(format!("sessions/{name}.env")), body).unwrap();
+        w("spaced", "CC_FLAGS=\"--dangerously-skip-permissions --model claude-opus-5-5\"\n");
+        w("equals", "CC_FLAGS=\"--model=claude-fable-5\"\n");
+        w("codex", "CC_PROVIDER=codex\nCC_FLAGS=\"--model gpt-6-astra\"\n");
+        w("ccmodel", "CC_MODEL=claude-sonnet-5-5\n");
+        w("default", "CC_FLAGS=\"--dangerously-skip-permissions\"\n");
+        let flags = |name: &str| parse_env(&companion_key(name)).get_or("CC_FLAGS", "").to_string();
+        assert_eq!(flags("spaced"), "--model claude-opus-5-5");
+        assert_eq!(flags("equals"), "--model claude-fable-5");
+        assert_eq!(flags("codex"), "--model gpt-6-astra");
+        assert_eq!(parse_env(&companion_key("codex")).get_or("CC_PROVIDER", ""), "codex");
+        assert_eq!(flags("ccmodel"), "--model claude-sonnet-5-5");
+        assert_eq!(flags("default"), "", "a worker on the CLI default gets a chat on the same default, not sonnet");
+        std::fs::write(home.path().join("amux.env"), "AMUX_CHAT_MODEL=haiku\n").unwrap();
+        assert_eq!(flags("spaced"), "--model haiku", "the explicit chat setting still wins");
     }
 
     #[test]

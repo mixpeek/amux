@@ -7503,7 +7503,8 @@ function render() {
           `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding')) ? `<div class="badges">
+      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || s.goal?.active) ? `<div class="badges">
+        ${s.goal?.active ? `<span class="badge goal" title="${esc('/goal active' + (s.goal.since ? ' since ' + new Date(s.goal.since * 1000).toLocaleString() : '') + ': ' + (s.goal.condition || ''))}">&#9678; goal</span>` : ''}
         ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
         ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
@@ -8477,9 +8478,12 @@ function _capTabCustomizerHeight(menu) {
 function _renderTabCustomizerMenu() {
   const menu = document.getElementById('tab-customizer-menu');
   if (!menu) return;
-  // Render in tabOrder order
   const orderedTabs = tabOrder.map(id => ALL_TABS.find(t => t.id === id)).filter(Boolean);
-  let html = orderedTabs.map(t => {
+  let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
+    + '<input type="text" id="tab-cust-search" class="input" placeholder="Filter tabs…" '
+    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterTabCustomizer(this.value)">'
+    + '</div>';
+  html += orderedTabs.map(t => {
     const checked = !hiddenTabs.has(t.id);
     const req = t.required ? ' required' : '';
     const disabled = t.required ? ' disabled' : '';
@@ -8489,7 +8493,6 @@ function _renderTabCustomizerMenu() {
       ${t.label}
     </label>`;
   }).join('');
-  // Presets section
   html += '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">';
   html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
   html += '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>';
@@ -8498,6 +8501,7 @@ function _renderTabCustomizerMenu() {
   html += '<div id="preset-list" style="font-size:0.82rem;"></div>';
   html += '</div>';
   menu.innerHTML = html;
+  requestAnimationFrame(() => { const s = document.getElementById('tab-cust-search'); if (s) s.focus(); });
   // Load presets
   fetch('/api/layout-presets').then(r=>r.json()).then(presets => {
     const list = document.getElementById('preset-list');
@@ -8527,6 +8531,28 @@ function _renderTabCustomizerMenu() {
       }
     });
   }
+}
+
+function _filterTabCustomizer(q) {
+  const menu = document.getElementById('tab-customizer-menu');
+  if (!menu) return;
+  const lc = (q || '').trim().toLowerCase();
+  menu.querySelectorAll('.tab-customizer-item[data-tab-id]').forEach(el => {
+    const label = (el.textContent || '').toLowerCase();
+    el.style.display = !lc || label.includes(lc) ? '' : 'none';
+  });
+  const preset = menu.querySelector('.tab-preset-section');
+  if (preset) preset.style.display = lc ? 'none' : '';
+}
+
+function _filterPeekTabCustomizer(q) {
+  const menu = document.getElementById('peek-tab-customizer-menu');
+  if (!menu) return;
+  const lc = (q || '').trim().toLowerCase();
+  menu.querySelectorAll('.tab-customizer-item').forEach(el => {
+    const label = (el.textContent || '').toLowerCase();
+    el.style.display = !lc || label.includes(lc) ? '' : 'none';
+  });
 }
 
 // ── Peek (session) tab customizer (AMUX-2185) ──────────────────────────────
@@ -8826,7 +8852,11 @@ function _renderPeekTabCustomizer() {
   const menu = document.getElementById('peek-tab-customizer-menu');
   if (!menu) return;
   const ordered = peekTabOrder.map(id => PEEK_TABS.find(t => t.id === id)).filter(Boolean);
-  let html = '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
+  let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
+    + '<input type="text" id="peek-tab-cust-search" class="input" placeholder="Filter tabs\u2026" '
+    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterPeekTabCustomizer(this.value)">'
+    + '</div>';
+  html += '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
     + '<span style="padding:0 4px 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
   html += ordered.map(t => {
     const req = PEEK_REQUIRED_TABS.has(t.id);
@@ -8836,6 +8866,7 @@ function _renderPeekTabCustomizer() {
       + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
   menu.innerHTML = html;
+  requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
   if (window.Sortable) {
     if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
     _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
@@ -8928,6 +8959,9 @@ function _maybeAutoOpenEmbedPeek() {
   if (!sessions || !sessions.some(s => s.name === window._peekEmbed)) return;
   _peekEmbedOpened = true;
   openPeek(window._peekEmbed);
+  // ?peekTab=<tab>: the peek side panel opens the embed on Messages or Chat.
+  const embedTab = new URLSearchParams(location.search).get('peekTab');
+  if (embedTab) setTimeout(() => { try { setPeekTab(embedTab); } catch (e) {} }, 0);
   const ov = document.getElementById('peek-overlay');
   if (ov) ov.classList.remove('peek-focus');  // tiles always show the full tab strip
   // fit the terminal once content lands, then keep it fitted
@@ -8944,6 +8978,10 @@ function _embedFitZoom() {
   if (!window._peekEmbed) return;
   const body = document.getElementById('peek-body');
   if (!body || !body.offsetParent) return;
+  // The peek side panel (?peekTab=messages|chat) shows a panel, not a scaled
+  // terminal tile: the chat renders into this same body and came out at
+  // tile zoom, unreadably small (Ethan, 2026-10-09, side-panel check).
+  if (new URLSearchParams(location.search).get('peekTab')) { body.style.zoom = '1'; return; }
   // widest source line (textContent keeps source newlines, unaffected by wrap)
   let cols = 0;
   for (const l of (body.textContent || '').split('\n')) if (l.length > cols) cols = l.length;
@@ -13982,7 +14020,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1264';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1281';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14284,6 +14322,7 @@ function _paintCachedPeek(cached) {
   // won the race often enough to replace a chat with its terminal snapshot.
   if (peekSession && _workerRenderer(peekSession) !== 'terminal') return false;
   _peekHistoryRaw = cached.history || '';
+  _peekModePainted = null;
   _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
   _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
@@ -14601,6 +14640,29 @@ function _chatLinkify(html) {
   return _linkifyPaths(html);
 }
 
+// COPY LIKE OPENAI'S CHAT (Ethan, 2026-10-08): a finished reply copies its raw
+// text from the meta line, and every code block in it has its own Copy.
+function _chatCodeCopy(html) {
+  return html.replace(/<pre(\s[^>]*)?>/g, (m0) => '<div class="chat-code"><button type="button" class="chat-code-copy" onclick="_chatCopy(this)" title="Copy code" aria-label="Copy code">Copy</button>' + m0)
+    .replace(/<\/pre>/g, '</pre></div>');
+}
+async function _chatCopy(btn) {
+  const text = btn.dataset.copy != null ? decodeURIComponent(btn.dataset.copy)
+    : (btn.parentElement.querySelector('pre')?.innerText || '');
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch (e2) {}
+    ta.remove();
+  }
+  const was = btn.textContent;
+  btn.textContent = ok ? 'Copied' : 'Copy failed';
+  setTimeout(() => { btn.textContent = was; }, 1500);
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -14697,7 +14759,8 @@ function _chatMessageHtml(m) {
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
-  return _chatBubble('assistant', head + _chatLinkify(renderMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')),
+  const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>' : '';
+  return _chatBubble('assistant', head + _chatCodeCopy(_chatLinkify(renderMarkdown(m.text || ''))), esc(bits.filter(Boolean).join(' · ')) + copy,
     m.interrupted ? 'is-interrupted' : '');
 }
 
@@ -15021,7 +15084,7 @@ function openPeek(name, opts) {
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
-  _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
+  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
   // CRITICAL: also drop the previous session's rendered live frame — the region
   // painter renders _lastLiveHTML directly, so a stale value briefly showed the
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
@@ -15344,21 +15407,72 @@ function _savePeekState() {
   }
 }
 
-function togglePeekSplit() {
+// SIDE PANEL CHOICE (Ethan, 2026-10-08: "on non-mobile this button is actually
+// a split view and i get to choose which split view to do: file directory,
+// messages, chat"). Closed: the button offers the three; open: it closes.
+// Messages and Chat are a real peek of the same worker in an iframe
+// (?peekEmbed=<name>&peekTab=<tab>, the Workspace tile path), so each works
+// exactly as its tab does with no shared state with the terminal beside it.
+let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
+function _peekSplitMenuClose() { document.getElementById('psp-menu')?.remove(); }
+function _peekSplitMenu(btn) {
+  _peekSplitMenuClose();
+  const m = document.createElement('div');
+  m.id = 'psp-menu'; m.className = 'psp-menu'; m.setAttribute('role', 'menu');
+  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat']]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
+    b.onclick = () => { _peekSplitMenuClose(); _peekSplitOpen(v); };
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = btn.getBoundingClientRect();
+  m.style.top = (r.bottom + 6) + 'px';
+  m.style.left = Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  m.querySelector('button')?.focus();
+  setTimeout(() => document.addEventListener('click', function off(e) {
+    if (!m.contains(e.target)) { _peekSplitMenuClose(); document.removeEventListener('click', off, true); }
+  }, true), 0);
+}
+function _peekSplitOpen(view) {
+  const wrap = document.getElementById('peek-split-wrap');
+  if (!wrap.classList.contains('split-active')) togglePeekSplit(null, true);
+  _peekSplitShow(view);
+}
+function _peekSplitShow(view) {
+  _peekSplitView = view;
+  try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
+  const panel = document.getElementById('peek-split-files');
+  const frame = document.getElementById('psp-frame');
+  document.querySelectorAll('.psp-opt').forEach(b => b.classList.toggle('active', b.dataset.psp === view));
+  const embed = view !== 'files';
+  panel?.classList.toggle('psp-embed', embed);
+  if (!frame) return;
+  frame.style.display = embed ? '' : 'none';
+  if (embed && peekSession) {
+    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view);
+    if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
+  }
+}
+function togglePeekSplit(ev, force) {
   if (window.innerWidth <= 600) {
     openExplore(peekSessionDir, peekSession);
     return;
   }
   const wrap = document.getElementById('peek-split-wrap');
   const btn = document.getElementById('peek-split-toggle');
-  const active = wrap.classList.toggle('split-active');
+  if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
+  const active = force ? (wrap.classList.add('split-active'), true) : wrap.classList.toggle('split-active');
   if (btn) btn.classList.toggle('active', active);
   if (active) {
     _peekSplitPath = peekSessionDir || '/';
     _psfLoad(_peekSplitPath);
     _initSplitResize();
     _restoreSplitWidths();
+    if (!force) _peekSplitShow(_peekSplitView);
   } else {
+    const frame = document.getElementById('psp-frame');
+    if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; }
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
     if (tp) tp.style.flex = '';
@@ -16481,7 +16595,19 @@ function _linkifyPaths(safeHtml) {
 // ONE peek render pipeline. The four call sites each spelled the chain out, so
 // adding a stage meant finding all of them — which is how the path linkifier
 // would have been half-wired.
+// THIN PASS-THROUGH (Ethan, 2026-10-08). When the server serves the peek from
+// tmux's own scrollback (history_source "tmux-scrollback": a Claude pane on the
+// normal screen), the terminal already drew everything, so the peek only turns
+// colour codes into HTML, makes links clickable and draws full-width rules as a
+// line (a 216-column rule would otherwise wrap into broken rows); there are no prompt labels, no tool
+// collapsing, no rule rewriting, no composer split, no overlap trim.
+let _peekThin = false;
+// The mode the current paint was made in (null = unknown, e.g. painted from
+// the IndexedDB cache by older code). A mode change repaints even when the raw
+// text is unchanged; otherwise a cached transcript-mode paint survives.
+let _peekModePainted = null;
 function _peekHtml(raw) {
+  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
 
@@ -16605,6 +16731,7 @@ function _draftEchoesSteering(input) {
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
 function _peekLiveHtml(raw) {
+  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
@@ -16704,7 +16831,7 @@ function _peekPromptNormalized(text) {
   // peer envelopes and board notes read Unclassified because the wrapper, not
   // the "[amux-origin:" marker, was what the text started with).
   return String(text || '').replace(glyph, '')
-    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content>\s*$/i, '')
+    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content\b[^>]*>\s*$/i, '')
     .replace(/^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*/i, '').replace(/\s+/g, ' ').trim();
 }
 // CLASSIFICATION MUST NOT WAIT ON THE MESSAGES TAB'S FULL PAGE.
@@ -16807,6 +16934,25 @@ function _classifyPromptKind(promptText) {
   // be told.
   return 'unknown';
 }
+// Claude Code records a long paste wrapped in <pasted_content id="...">
+// ... </pasted_content id="..."> (the closing tag carries the id too). The
+// wrapper is transport, not what the person typed, so the peek drops both tags
+// and lifts the first pasted line up beside the prompt glyph (Ethan,
+// 2026-10-08: "this saying pasted content doesnt seem right"). Works on the
+// escaped, possibly span-coloured terminal HTML of one prompt block.
+const _PEEK_PASTE_TAG = /&lt;\/?pasted_content\b(?:(?!&gt;).)*&gt;/g;
+function _peekUnwrapPaste(blockLines) {
+  if (!blockLines.some(line => line.includes('pasted_content'))) return blockLines;
+  const visible = line => line.replace(/<[^>]*>/g, '').replace(/&nbsp;| /g, ' ');
+  const out = blockLines.map(line => line.replace(_PEEK_PASTE_TAG, ''));
+  // A line that held only a tag is gone; the opening line keeps its glyph.
+  const kept = out.filter((line, n) => n === 0 || visible(line).trim() || !visible(blockLines[n]).includes('pasted_content'));
+  if (kept.length > 1 && /^[ \t]*[❯›>]?[ \t]*$/.test(visible(kept[0]))) {
+    const lifted = kept[1].replace(/^((?:<[^>]+>)*)(?:[ \t ]|&nbsp;)+/, '$1');
+    kept.splice(0, 2, kept[0].replace(/(?:[ \t ]|&nbsp;)*((?:<\/[^>]+>)*)$/, ' $1') + lifted);
+  }
+  return kept;
+}
 function highlightPrompts(html) {
   const gemini = _peekGeminiPrompts();
   const promptStart = gemini ? /^[ \t]{0,2}[❯›>](?:[ \t]+|$)/ : /^[ \t]{0,2}[❯›](?:[ \t]+|$)/;
@@ -16852,7 +16998,7 @@ function highlightPrompts(html) {
     // Close each block before opening its successor. Nested prompt wrappers
     // made scrollIntoView target a whole conversation instead of one message.
     out.push('<span class="peek-prompt peek-prompt-' + kind + '" data-msg-kind="' + kind
-      + '" data-msg-label="' + esc(label) + '">' + lines.slice(i, end).join('\n') + '</span>');
+      + '" data-msg-label="' + esc(label) + '">' + _peekUnwrapPaste(lines.slice(i, end)).join('\n') + '</span>');
     i = end;
   }
   return out.join('\n');
@@ -17196,7 +17342,9 @@ let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
 function _peekEarlierHTML() {
-  if (_peekEarlier.hidden) return '';
+  // Thin mode: tmux's scrollback is already the whole history; the bar would
+  // page in the transcript re-render this mode exists to drop.
+  if (_peekEarlier.hidden || _peekThin) return '';
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
@@ -17488,11 +17636,13 @@ async function _refreshPeekFrame(liveOnly, request) {
     const rawOutput = (data.live != null) ? data.live : (data.output || '(no output)');
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
     if (typeof rawOutput !== 'string' || (histRaw !== null && typeof histRaw !== 'string')) throw new Error('Malformed terminal frame');
+    if (histRaw !== null) _peekThin = data.history_source === 'tmux-scrollback';
+    const modeChanged = _peekModePainted !== _peekThin;
     const overlapBase = histRaw !== null ? histRaw : _peekHistoryRaw;
     // A delayed history response may add history, but must not rewind a
     // newer live frame. Trim against the history actually displayed here;
     // live requests skip the server's expensive transcript read entirely.
-    const output = _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
+    const output = _peekThin ? (staleLive ? _lastPeekRaw : rawOutput) : _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
     const acceptFrame = () => {
       if (!_peekFrameSequence) {
         _peekPollBeacon('first-frame', name, { elapsed_ms: Math.round(performance.now() - _peekFirstFrameAt),
@@ -17509,7 +17659,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // poll tick. This also applies with an active search: the highlights are already in
     // the DOM, so re-running applyPeekSearch would needlessly scroll the view back to
     // the current match every tick (the "force-scroll back to result" bug on idle sessions).
-    if (output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
+    if (!modeChanged && output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       acceptFrame();
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
@@ -17518,7 +17668,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // failed conversion must remain retryable just like a failed body read.
     const newHTML = _peekLiveHtml(output);
     let histChanged = false;
-    if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
+    if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
       _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
       _peekHistoryRaw = histRaw;
@@ -17543,6 +17693,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // so scrollback exists in peek the way it does in a real terminal.
     _lastLiveHTML = newHTML;
     lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+    _peekModePainted = _peekThin;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // Chat tab owns #peek-body: keep the terminal data fresh, touch no DOM
     // and no scroll position (the chat was being replaced by terminal output).
@@ -19827,11 +19978,12 @@ function _atAgentsChip(s) {
 }
 
 // Populate dropdown with @session matches; returns true if @ mode active.
-// Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
+// Lists ACTIVE workers only (Ethan, 2026-10-09: "when I @ it should only list
+// active workers"): running and not archived. A query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
   const at = _atQuery(inp);
   if (at === null) return false;
-  let ranked = (sessions || []).map(s => {
+  let ranked = (sessions || []).filter(s => s.running && !s.archived).map(s => {
     const f = _fuzzyScore(at.q, s.name);
     return f ? { s, score: f.score, hits: f.hits } : null;
   }).filter(Boolean);
@@ -25514,7 +25666,8 @@ async function _fileSave() {
       if (_fileData._isNew) {
         _fileData._isNew = false;
         document.getElementById('file-title').textContent = _fileData.path.split('/').pop();
-        loadFiles(_filesPath); // refresh file list
+        loadFiles(_filesPath);
+        if (activeView === 'scratchpad') _scratchpadLoad();
       }
       btn.textContent = 'Saved!';
       setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
@@ -26497,6 +26650,280 @@ function _filesNewFile() {
   wrap.style.display = 'flex';
   document.getElementById('file-overlay').classList.add('active');
   setTimeout(() => ta.focus(), 100);
+}
+
+// ═══════ SCRATCHPAD ═══════
+// Ethan, 2026-10-08: the scratchpad's default home is the Vault, beside his
+// other notes. Created on first open.
+const _SP_ROOT = '~/Vault/Scratchpad';
+let _spPath = _SP_ROOT;
+let _spLastData = null;
+let _spLoadGen = 0;
+let _spSort = { col: 'modified', dir: -1 };
+
+function _spSortEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    const { col, dir } = _spSort;
+    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
+    return dir * ((a.modified || 0) - (b.modified || 0));
+  });
+}
+function _spSortBy(col) {
+  if (_spSort.col === col) _spSort.dir *= -1;
+  else { _spSort.col = col; _spSort.dir = col === 'name' ? 1 : -1; }
+  _spUpdateSortHeaders();
+  if (_spLastData) _spRender(_spLastData.path, _spLastData.data);
+}
+function _spUpdateSortHeaders() {
+  ['name','size','modified'].forEach(c => {
+    const el = document.getElementById('sp-sort-' + c);
+    if (el) el.textContent = _spSort.col === c ? (_spSort.dir > 0 ? '▲' : '▼') : '';
+  });
+}
+
+async function _scratchpadLoad() {
+  _spWireCapture();
+  const gen = ++_spLoadGen;
+  const body = document.getElementById('scratchpad-body');
+  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  const bc = document.getElementById('sp-breadcrumb');
+  if (_spPath !== _SP_ROOT) {
+    const rel = _spPath.slice(_SP_ROOT.length + 1);
+    let html = '<span class="fe-crumb" onclick="_spNav(\'' + _SP_ROOT + '\')">Scratchpad</span>';
+    let cum = _SP_ROOT;
+    for (const part of rel.split('/').filter(Boolean)) {
+      cum += '/' + part;
+      html += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="_spNav(\'' + cum.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
+    }
+    bc.innerHTML = html;
+    bc.style.display = '';
+  } else {
+    bc.style.display = 'none';
+  }
+  try {
+    let r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    if (r.status === 400 && _spPath === _SP_ROOT) {
+      await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: _spPath }) });
+      r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    }
+    const data = await r.json();
+    if (gen !== _spLoadGen) return;
+    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    _spLastData = { path: _spPath, data };
+    _spRender(_spPath, data);
+  } catch(e) {
+    if (gen !== _spLoadGen) return;
+    body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load scratchpad.</div>';
+  }
+}
+
+function _spRender(path, data) {
+  const body = document.getElementById('scratchpad-body');
+  body.innerHTML = '';
+  const hdrs = document.getElementById('sp-col-headers');
+  if (hdrs) hdrs.style.display = 'grid';
+  _spUpdateSortHeaders();
+  const entries = _spSortEntries(data.entries || []);
+  if (path !== _SP_ROOT && data.parent) {
+    const back = document.createElement('div');
+    back.className = 'fe-back-row';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
+    back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
+    body.appendChild(back);
+  }
+  if (!entries.length) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
+    msg.textContent = 'Nothing here yet. Paste or drop text and files anywhere on this tab and they are saved.';
+    body.appendChild(msg);
+    return;
+  }
+  for (const entry of entries) {
+    const ep = (path.replace(/\/$/, '') + '/' + entry.name);
+    const row = document.createElement('div');
+    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+    row.dataset.path = ep;
+    const icon = _fileTypeIcon(entry.name, entry.type);
+    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
+    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+    const epEsc = ep.replace(/'/g, "\\'");
+    row.innerHTML =
+      '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
+      '<div class="fe-cell-size">' + sizeStr + '</div>' +
+      '<div class="fe-cell-date">' + dateStr + '</div>' +
+      '<div class="fe-cell-actions">' + (entry.type === 'dir' ? '' : '<button class="fe-menu-btn sp-copy-btn" title="Copy to clipboard" onclick="event.stopPropagation();_spCopy(\'' + epEsc + '\')">⧉</button>') +
+      '<button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
+    if (entry.type === 'dir') {
+      row.onclick = () => _spNav(ep);
+    } else {
+      row.onclick = () => openFilePreview(ep);
+    }
+    body.appendChild(row);
+  }
+}
+
+function _spNav(path) {
+  _spPath = path;
+  _scratchpadLoad();
+}
+
+// A dumping ground, not a document editor (Ethan, 2026-10-08: "an extremely
+// quick and reliable/durable way to paste ... a makeshift clipboard dumping
+// ground ... with a file store"). A paste saves at once under a timestamp
+// name; nothing asks for a name first. PUT /api/file goes through apiCall, so
+// an offline paste is queued and replayed rather than lost.
+function _spStamp() {
+  const d = new Date(), z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '-' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
+}
+function _spUniqueName(base, ext) {
+  const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
+  let name = base + ext, n = 2;
+  while (taken.has(name)) name = base + '-' + (n++) + ext;
+  return name;
+}
+async function _spCaptureSave(text) {
+  if (!text || !text.trim()) return false;
+  const name = _spUniqueName(_spStamp(), '.md');
+  const path = _spPath.replace(/\/$/, '') + '/' + name;
+  const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
+  if (_spLastData && _spLastData.path === _spPath) {
+    _spLastData.data.entries = [entry, ...(_spLastData.data.entries || [])];
+    _spRender(_spPath, _spLastData.data);
+  }
+  const r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content: text }) });
+  if (!r) { showToast(online ? 'Could not save ' + name : 'Saved offline: ' + name + ' syncs when you reconnect'); return !online; }
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast('Could not save ' + name + (d.error ? ': ' + d.error : '')); _scratchpadLoad(); return false; }
+  showToast('Saved ' + name);
+  return true;
+}
+// Any file (pasted, picked or dropped) is stored as-is in the scratchpad
+// folder (Ethan, 2026-10-09: "scratchpad should support sending files too").
+// A pasted image with no real name gets a timestamp name.
+async function _spSaveFile(file) {
+  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+  const generic = !file.name || /^image\.(png|jpe?g|gif|webp)$/i.test(file.name);
+  const ext = (file.type.split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+  const name = generic ? _spUniqueName(_spStamp(), '.' + ext) : file.name;
+  const fd = new FormData();
+  fd.append('dir', dir);
+  fd.append('file', file, name);
+  try {
+    const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(120000) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !(d.saved || []).length) throw new Error(d.error || ('HTTP ' + r.status));
+    showToast('Saved ' + name);
+  } catch (e) { showToast('Could not save ' + name + ': ' + e.message); }
+}
+async function _spUploadFiles(list) {
+  const files = [...(list || [])];
+  for (const f of files) await _spSaveFile(f);
+  if (files.length) _scratchpadLoad();
+}
+const _spSaveImage = async (file) => { await _spSaveFile(file); _scratchpadLoad(); };
+async function _spLoadRetain() {
+  try {
+    const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
+    const sel = document.getElementById('sp-retain');
+    if (sel && d.retain_days != null) sel.value = String(d.retain_days);
+  } catch (e) {}
+}
+async function _spSetRetain(v) {
+  const days = parseInt(v, 10);
+  const r = await apiCall(API + '/api/scratchpad/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retain_days: days }) });
+  showToast(r && r.ok ? (days ? 'Scratchpad items now expire after ' + days + ' day' + (days === 1 ? '' : 's') : 'Scratchpad items are kept forever') : 'Could not save the setting');
+}
+// One paste path for the box and for the whole tab: images are stored as
+// files, text as a note. A paste into a box that already holds typing joins
+// the typing instead (the person is composing).
+function _spHandlePaste(e, box) {
+  const items = [...(e.clipboardData?.items || [])];
+  const images = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+  const text = e.clipboardData?.getData('text/plain') || '';
+  if (box && box.value.trim()) return;
+  if (!images.length && !text.trim()) return;
+  e.preventDefault();
+  images.forEach(_spSaveImage);
+  if (text.trim()) _spCaptureSave(text);
+}
+async function _spCaptureSaveTyped() {
+  const box = document.getElementById('sp-capture');
+  if (!box || !box.value.trim()) return;
+  const text = box.value;
+  box.value = '';
+  if (!(await _spCaptureSave(text))) box.value = text;
+}
+async function _spCopy(path) {
+  try {
+    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(path), { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    if (typeof d.content !== 'string') throw new Error(d.error || 'not a text file');
+    await navigator.clipboard.writeText(d.content);
+    showToast('Copied ' + path.split('/').pop());
+  } catch (e) { showToast('Could not copy: ' + e.message); }
+}
+function _spWireCapture() {
+  const box = document.getElementById('sp-capture');
+  if (!box || box._spWired) return;
+  box._spWired = true;
+  box.addEventListener('paste', e => _spHandlePaste(e, box));
+  const view = document.getElementById('scratchpad-view');
+  if (view) {
+    view.addEventListener('dragover', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); view.classList.add('sp-drop'); } });
+    view.addEventListener('dragleave', e => { if (e.target === view) view.classList.remove('sp-drop'); });
+    view.addEventListener('drop', e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); view.classList.remove('sp-drop'); _spUploadFiles(e.dataTransfer.files); } });
+  }
+  _spLoadRetain();
+  box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _spCaptureSaveTyped(); } });
+  document.addEventListener('paste', e => {
+    if (activeView !== 'scratchpad' || e.target === box) return;
+    const t = e.target;
+    if (t && (t.closest?.('input, textarea, [contenteditable="true"], #file-overlay'))) return;
+    _spHandlePaste(e, null);
+  });
+}
+
+async function _scratchpadNewNote() {
+  const fname = _spUniqueName(_spStamp(), '.md');
+  const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
+  _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
+  _fileViewMode = 'edit';
+  document.getElementById('file-title').textContent = fname + ' (new)';
+  document.getElementById('file-body').className = 'file-overlay-body';
+  document.getElementById('file-body').style.display = 'none';
+  document.getElementById('file-view-tabs').style.display = '';
+  document.getElementById('file-tab-preview').classList.remove('active');
+  document.getElementById('file-tab-raw').classList.remove('active');
+  const editTab = document.getElementById('file-tab-edit');
+  if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
+  document.getElementById('file-save-btn').style.display = '';
+  document.getElementById('file-download-btn').style.display = 'none';
+  const ta = document.getElementById('file-edit-ta');
+  const wrap = document.getElementById('file-edit-wrap');
+  ta.value = '';
+  wrap.style.display = 'flex';
+  document.getElementById('file-overlay').classList.add('active');
+  setTimeout(() => ta.focus(), 100);
+}
+
+async function _scratchpadNewFolder() {
+  const name = prompt('Folder name:');
+  if (!name || !name.trim()) return;
+  const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
+  try {
+    await fetch(API + '/api/fs/mkdir', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: dirPath })
+    });
+    _scratchpadLoad();
+  } catch(e) {
+    showToast('Could not create folder');
+  }
 }
 
 // ═══════ MDAI: computed markdown DAG nodes (.mdai) ═══════
@@ -28775,7 +29202,9 @@ function openCreate() {
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
   const _iso0 = document.getElementById('create-isolated');
-  if (_iso0) { _iso0.checked = false; _toggleIsolated(false); }
+  // Isolated by default (Ethan, 2026-10-09: "when creating a new worker make
+  // isolated checked by default"); untick it for a harness-driven worker.
+  if (_iso0) { _iso0.checked = true; _toggleIsolated(true); }
   const _ollamaBtn0 = document.getElementById('create-provider-ollama');
   if (_ollamaBtn0) _ollamaBtn0.classList.remove('selected');
   const _museBtn0 = document.getElementById('create-provider-muse');
@@ -31261,7 +31690,7 @@ function switchView(view) {
   const _svViews = [
     ['projects', 'projects', ''], ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
-    ['files', 'files', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
+    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
@@ -31299,6 +31728,7 @@ function switchView(view) {
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
   if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
+  if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
@@ -48512,12 +48942,37 @@ async function _bwLoadProfiles() {
   } catch(e) { _bwStatus('Profile discovery failed: ' + e.message); }
 }
 
+let _bwRouteConfig = {};
+let _bwRouteLoadGeneration = 0;
+let _bwProfileChoiceGeneration = 0;
+function _bwRoutingEdited() { ++_bwRouteLoadGeneration; }
+function _bwRoutingDiscoveryDiscarded(reason) {
+  const payload = {kind:'browser-routing-discovery-discarded', reason, ver:APP_VER, measured:true, n_considered:1};
+  console.warn('[amux] browser routing discovery discarded', reason);
+  fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(() => {});
+}
+function _bwRoutingProfileChanged(fromDiscovery = false) {
+  if (!fromDiscovery) ++_bwProfileChoiceGeneration;
+  const profile = document.getElementById('bw-profile').value;
+  const route = _bwRouteConfig.profile_routes?.[profile] || (_bwRouteConfig.native_profile === profile ? _bwRouteConfig : {});
+  document.getElementById('bw-cdp-profile').value = route.chrome_profile || '';
+  document.getElementById('bw-cua-profile').value = route.cua_profile || '';
+  document.getElementById('bw-cua-enabled').checked = !!route.allow_cua;
+  document.getElementById('bw-routing-status').textContent = route.chrome_profile ? 'Fallback for ' + profile + ': ' + route.chrome_profile : 'No fallback saved for this profile. Choose its matching Chrome account and save.';
+}
 async function _bwLoadRouting() {
+  const generation = ++_bwRouteLoadGeneration;
+  const choiceGeneration = _bwProfileChoiceGeneration;
   try {
     const response = await fetch('/api/browser/routing/config');
     const d = await response.json();
     if (!response.ok) throw new Error(d.error || 'Could not load route');
+    if (generation !== _bwRouteLoadGeneration) {
+      _bwRoutingDiscoveryDiscarded('superseded_by_newer_load_or_edit');
+      return;
+    }
     const c = d.config || {};
+    _bwRouteConfig = c;
     const cd = document.getElementById('bw-cdp-profile');
     cd.replaceChildren(new Option('Select Chrome profile', ''));
     for (const p of d.chrome_profiles || []) { const o = new Option([p.label || p.name, p.identity, '(' + p.name + ')'].filter(Boolean).join(' · '), p.name); o.disabled = !p.on_disk; cd.add(o); }
@@ -48527,17 +48982,32 @@ async function _bwLoadRouting() {
     document.getElementById('bw-profile').querySelectorAll('option[value]').forEach(o => { if (o.value) cu.add(new Option(o.textContent, o.value)); });
     cu.value = c.cua_profile || '';
     document.getElementById('bw-cua-enabled').checked = !!c.allow_cua;
-    if (c.native_profile) document.getElementById('bw-profile').value = c.native_profile;
-    document.getElementById('bw-routing-status').textContent = c.chrome_profile ? 'Fallback configured: ' + c.chrome_profile : 'Select a Chrome profile to enable the CDP fallback.';
+    const profile = document.getElementById('bw-profile');
+    // A saved default is an initial choice, never authority to replace the
+    // profile the owner selected while discovery was in flight.
+    if (choiceGeneration !== _bwProfileChoiceGeneration) _bwRoutingDiscoveryDiscarded('owner_selected_profile_during_load');
+    else if (!profile.value && c.native_profile) profile.value = c.native_profile;
+    _bwRoutingProfileChanged(true);
   } catch (e) { document.getElementById('bw-routing-status').textContent = 'Route discovery failed: ' + e.message; }
 }
 async function _bwSaveRouting() {
+  ++_bwRouteLoadGeneration; // An older GET must not replace this owner write.
+  document.getElementById('bw-routing-status').textContent = 'Saving route…';
   try {
     const c = { native_profile: document.getElementById('bw-profile').value, chrome_profile: document.getElementById('bw-cdp-profile').value, cua_profile: document.getElementById('bw-cua-profile').value, allow_cua: document.getElementById('bw-cua-enabled').checked };
     const response = await fetch('/api/browser/routing/config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
     const d = await response.json(); if (!response.ok) throw new Error(d.error || 'Save failed');
+    _bwRouteConfig = d.config;
     document.getElementById('bw-routing-status').textContent = 'Saved: Amux → ' + (c.chrome_profile ? 'CDP ' + c.chrome_profile : 'CDP unconfigured') + (c.allow_cua ? ' → CUA' : '');
   } catch(e) { document.getElementById('bw-routing-status').textContent = 'Save failed: ' + e.message; }
+}
+async function _bwAdvanceRouting() {
+  try {
+    await _bwFetch('/api/browser/advance', {method:'POST',body:JSON.stringify({reason:'The selected browser could not complete the current goal'})});
+    _bwViewport = null;
+    await _bwScreenshot(0, true);
+    _bwStatus('Using the next route. Observe this page before acting.');
+  } catch(e) { _bwStatus('Could not advance: ' + e.message); }
 }
 
 function _bwBackend() {

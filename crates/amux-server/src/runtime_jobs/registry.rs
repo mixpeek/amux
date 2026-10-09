@@ -605,7 +605,7 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::MAC_HEALTH,
         name: "Mac process health",
-        purpose: "Safely reaps aged orphaned Ray, Playwright Chrome, debug rustc, and server-owned zombie children; warns on foreign zombies and excessive claude processes. Runs every 30 minutes.",
+        purpose: "Safely reaps aged orphaned Ray, Playwright Chrome and debug rustc; reports zombies without stealing child exit statuses, and warns on excessive claude processes. Runs every 30 minutes.",
         env: &[
             EnvControl {
                 var: "AMUX_MAC_HEALTH_TICK_S",
@@ -634,7 +634,7 @@ pub const CATALOG: &[Doc] = &[
             },
             EnvControl {
                 var: "AMUX_MAC_HEALTH_ZOMBIE_GRACE_S",
-                effect: "minimum age (seconds) before an owned zombie child is reaped (default 60)",
+                effect: "minimum process lifetime (seconds) before a zombie is reported; only its spawning caller reaps it (default 60)",
                 off: None,
             },
         ],
