@@ -14020,7 +14020,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1289';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1290';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39495,24 +39495,37 @@ async function deleteBoardStatus(id) {
 // ═══════ CALENDAR (FullCalendar) ═══════
 let _fcInstance = null;
 
-// The calendar has three layers, each independently toggleable:
-//   • events — real calendar events (the ONLY layer that syncs to Google Calendar)
+// The calendar has four layers, each independently toggleable:
+//   • events — amux's own calendar events (the layer that exports OUT via /api/calendar.ics)
 //   • tasks  — schedules (in-app only)
 //   • issues — board items with a due date (in-app only)
-// Only events reach the iCal feed; tasks/issues never leave amux.
+//   • gcal   — events read live from connected Google accounts (crates/amux-server/src/api/gcal.rs),
+//              read-only here; created via POST /api/gcal/events, not this modal.
+// Only "events" reaches the iCal feed; tasks/issues/gcal never leave amux from here.
 let calEvents = [];
+let gcalEvents = [];
 let _calShowEvents = localStorage.getItem('amux_cal_show_events') !== '0';   // default on
 let _calShowSched  = localStorage.getItem('amux_cal_show_sched')  !== '0';   // default on
 let _calShowIssues = localStorage.getItem('amux_cal_show_issues') === '1';   // default off (noisy)
+let _calShowGcal   = localStorage.getItem('amux_cal_show_gcal')   !== '0';   // default on
 
+// "Events"/"Google" read as the same thing filtered two ways — they are two
+// unrelated data sources (amux's own /api/cal-events vs Google-synced
+// /api/gcal/events). Labeled "Local" vs "Google" so toggling one with the
+// other's data on screen doesn't look like a no-op (it wasn't a no-op — it
+// was correctly hiding a currently-empty layer next to a populated one).
 const _CAL_LAYERS = {
-  events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Events',          btn: 'eventsToggle' },
+  events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Local',           btn: 'eventsToggle' },
   sched:  { get: () => _calShowSched,  ls: 'amux_cal_show_sched',  label: 'Tasks',           btn: 'schedToggle'  },
   issues: { get: () => _calShowIssues, ls: 'amux_cal_show_issues', label: 'Issues',          btn: 'issuesToggle' },
+  gcal:   { get: () => _calShowGcal,   ls: 'amux_cal_show_gcal',   label: 'Google',          btn: 'gcalToggle'   },
 };
 
 function _fcLayerLabel(key) {
-  return (_CAL_LAYERS[key].get() ? '☑' : '☐') + ' ' + _CAL_LAYERS[key].label;
+  // Plain text — the ☑/☐ glyphs used to prefix this rendered as tofu/misaligned
+  // boxes in several fonts. On/off state is carried by aria-pressed (set right
+  // below) and the CSS in app.css that dims the "off" state, not by a character.
+  return _CAL_LAYERS[key].label;
 }
 
 function _fcToggleLayer(key) {
@@ -39520,6 +39533,7 @@ function _fcToggleLayer(key) {
   if (key === 'events') _calShowEvents = on;
   else if (key === 'sched') _calShowSched = on;
   else if (key === 'issues') _calShowIssues = on;
+  else if (key === 'gcal') _calShowGcal = on;
   localStorage.setItem(_CAL_LAYERS[key].ls, on ? '1' : '0');
   document.querySelectorAll('.fc-' + _CAL_LAYERS[key].btn + '-button').forEach(b => {
     b.textContent = _fcLayerLabel(key);
@@ -39533,6 +39547,15 @@ async function fetchCalEvents() {
     const r = await fetch(API + '/api/cal-events');
     calEvents = await r.json();
     if (!Array.isArray(calEvents)) calEvents = [];
+  } catch (e) { /* keep last */ }
+  if (_fcInstance && activeView === 'calendar') _fcInstance.refetchEvents();
+}
+
+async function fetchGcalEvents() {
+  try {
+    const r = await fetch(API + '/api/gcal/events');
+    const d = await r.json();
+    gcalEvents = Array.isArray(d.events) ? d.events : [];
   } catch (e) { /* keep last */ }
   if (_fcInstance && activeView === 'calendar') _fcInstance.refetchEvents();
 }
@@ -39585,6 +39608,28 @@ function _fcGetEvents() {
       });
     });
   }
+  if (_calShowGcal) {
+    (gcalEvents || []).forEach(e => {
+      if (String(e.status || '').toLowerCase() === 'cancelled') return;
+      out.push({
+        id: 'gcal-' + e.id,
+        title: (e.meeting_url ? '📹 ' : '📅 ') + e.title,
+        start: e.start_time,
+        end: e.end_time || undefined,
+        allDay: !!e.all_day,
+        backgroundColor: 'rgba(66,133,244,0.16)',
+        borderColor: '#4285f4',
+        textColor: '#8ab4f8',
+        extendedProps: {
+          _type: 'gcal', gcalId: e.id, accountId: e.account_id,
+          desc: e.description || '', location: e.location || '',
+          meetingUrl: e.meeting_url || '', htmlLink: e.html_link || '',
+          organizer: e.organizer || '',
+          attendees: (() => { try { return JSON.parse(e.attendees || '[]'); } catch (_) { return []; } })(),
+        },
+      });
+    });
+  }
   return out;
 }
 
@@ -39610,11 +39655,11 @@ function _fcInit() {
     } : {
       left: 'prev,today,next addEvent',
       center: 'title',
-      right: 'eventsToggle,schedToggle,issuesToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
+      right: 'eventsToggle,schedToggle,issuesToggle,gcalToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
     // Mobile's header row is already full — give the layer toggles their own footer bar.
     // Subscribe stays hidden on mobile (pre-existing `display:none`), so it's not here.
-    footerToolbar: isMobile ? { left: 'prev,next today', right: 'eventsToggle,schedToggle,issuesToggle' } : false,
+    footerToolbar: isMobile ? { left: 'prev,next today', right: 'eventsToggle,schedToggle,issuesToggle,gcalToggle' } : false,
     buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
       addEvent: {
@@ -39628,6 +39673,7 @@ function _fcInit() {
       eventsToggle: { text: _fcLayerLabel('events'), click: () => _fcToggleLayer('events') },
       schedToggle:  { text: _fcLayerLabel('sched'),  click: () => _fcToggleLayer('sched')  },
       issuesToggle: { text: _fcLayerLabel('issues'), click: () => _fcToggleLayer('issues') },
+      gcalToggle:   { text: _fcLayerLabel('gcal'),   click: () => _fcToggleLayer('gcal')   },
     },
     events: function(info, successCallback) { successCallback(_fcGetEvents()); },
     height: isMobile ? (window.visualViewport ? window.visualViewport.height : window.innerHeight) - el.getBoundingClientRect().top : window.innerHeight - el.getBoundingClientRect().top,
@@ -39649,6 +39695,7 @@ function _fcInit() {
       if (props._type === 'event') openEventModal(props.evId);
       else if (props._type === 'schedule') openSchedModal(props.schedId);
       else if (props._type === 'issue') { switchView('board'); }
+      else if (props._type === 'gcal') openGcalEventModal(info.event);
     },
     // Clicking/selecting an empty slot creates an EVENT (the primary calendar citizen).
     dateClick: function(info) { openEventModal(null, info.dateStr); },
@@ -39690,6 +39737,7 @@ function renderCalendar() {
     _fcInit();
   }
   fetchCalEvents();   // refresh the events layer whenever the calendar is shown
+  fetchGcalEvents();  // refresh the Google Calendar layer too
 }
 
 // ── Calendar event modal (create / edit / delete a real calendar event) ──────
@@ -39757,6 +39805,70 @@ function _evToggleAllDay() {
 }
 function closeEventModal() {
   const m = document.getElementById('event-modal');
+  if (m) m.remove();
+}
+
+// Read-only detail view for a Google Calendar event (write goes through
+// POST/PUT /api/gcal/events, not this modal). Previously eventClick just
+// showed a toast with title/location/time — no way to see the meeting
+// link, attendees/RSVP status, or organizer, even though the backend now
+// carries all of it (api/gcal.rs, GoogleCalendarEvent in gcal_sync.rs).
+function openGcalEventModal(fcEvent) {
+  const p = fcEvent.extendedProps || {};
+  const title = String(fcEvent.title || '').replace(/^(📹|📅)\s*/, '');
+  const when = fcEvent.allDay
+    ? (fcEvent.start ? fcEvent.start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ' (all day)' : '')
+    : [fcEvent.start, fcEvent.end].filter(Boolean).map(d => d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })).join(' – ');
+
+  const RSVP_META = {
+    accepted:    ['accepted', '#1f8f4e'],
+    declined:    ['declined', '#c0392b'],
+    tentative:   ['maybe', '#8a6d3b'],
+    needsAction: ['no reply', '#666'],
+  };
+  const attendeesHtml = (p.attendees || []).length
+    ? '<div class="conn-gmail-h" style="margin-top:4px">Attendees</div>' + p.attendees.map(a => {
+        const meta = RSVP_META[a.responseStatus] || [a.responseStatus || 'unknown', '#666'];
+        const who = a.displayName || a.email || '?';
+        return '<div class="conn-gmail-row">'
+          + '<span class="conn-gmail-addr">' + esc(who) + (a.organizer ? ' <em style="opacity:0.6">(organizer)</em>' : '') + '</span>'
+          + '<span class="conn-gmail-badge" style="background:' + meta[1] + '">' + esc(meta[0]) + '</span>'
+          + '</div>';
+      }).join('')
+    : '';
+
+  closeGcalEventModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'gcal-event-modal';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 style="margin:0">${esc(title)}</h3>
+        <button class="modal-close" onclick="closeGcalEventModal()">×</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;font-size:0.85rem">
+        <div style="color:var(--dim)">${esc(when)}</div>
+        ${p.location ? '<div>📍 ' + esc(p.location) + '</div>' : ''}
+        ${p.organizer ? '<div style="color:var(--dim)">Organized by ' + esc(p.organizer) + '</div>' : ''}
+        ${p.desc ? '<div id="gcal-desc" style="white-space:pre-wrap">' + _sanitizeHtml(p.desc) + '</div>' : ''}
+        ${attendeesHtml}
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+        ${p.meetingUrl ? '<a class="btn primary" href="' + esc(p.meetingUrl) + '" target="_blank" rel="noopener">📹 Join call</a>' : ''}
+        ${p.htmlLink ? '<a class="btn" href="' + esc(p.htmlLink) + '" target="_blank" rel="noopener">Open in Google Calendar ↗</a>' : ''}
+        <button class="btn" onclick="closeGcalEventModal()">Close</button>
+      </div>
+    </div>`;
+  overlay.onclick = closeGcalEventModal;
+  document.body.appendChild(overlay);
+  // Google's description HTML rarely sets target itself — force new-tab so a
+  // link inside it doesn't navigate the dashboard away.
+  const descEl = document.getElementById('gcal-desc');
+  if (descEl) descEl.querySelectorAll('a').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
+}
+function closeGcalEventModal() {
+  const m = document.getElementById('gcal-event-modal');
   if (m) m.remove();
 }
 function _evCompose(dateId, timeId, allDay) {
