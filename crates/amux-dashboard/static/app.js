@@ -13999,7 +13999,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1274';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1275';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -48891,7 +48891,16 @@ async function _bwLoadProfiles() {
 }
 
 let _bwRouteConfig = {};
-function _bwRoutingProfileChanged() {
+let _bwRouteLoadGeneration = 0;
+let _bwProfileChoiceGeneration = 0;
+function _bwRoutingEdited() { ++_bwRouteLoadGeneration; }
+function _bwRoutingDiscoveryDiscarded(reason) {
+  const payload = {kind:'browser-routing-discovery-discarded', reason, ver:APP_VER, measured:true, n_considered:1};
+  console.warn('[amux] browser routing discovery discarded', reason);
+  fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(() => {});
+}
+function _bwRoutingProfileChanged(fromDiscovery = false) {
+  if (!fromDiscovery) ++_bwProfileChoiceGeneration;
   const profile = document.getElementById('bw-profile').value;
   const route = _bwRouteConfig.profile_routes?.[profile] || (_bwRouteConfig.native_profile === profile ? _bwRouteConfig : {});
   document.getElementById('bw-cdp-profile').value = route.chrome_profile || '';
@@ -48900,10 +48909,16 @@ function _bwRoutingProfileChanged() {
   document.getElementById('bw-routing-status').textContent = route.chrome_profile ? 'Fallback for ' + profile + ': ' + route.chrome_profile : 'No fallback saved for this profile. Choose its matching Chrome account and save.';
 }
 async function _bwLoadRouting() {
+  const generation = ++_bwRouteLoadGeneration;
+  const choiceGeneration = _bwProfileChoiceGeneration;
   try {
     const response = await fetch('/api/browser/routing/config');
     const d = await response.json();
     if (!response.ok) throw new Error(d.error || 'Could not load route');
+    if (generation !== _bwRouteLoadGeneration) {
+      _bwRoutingDiscoveryDiscarded('superseded_by_newer_load_or_edit');
+      return;
+    }
     const c = d.config || {};
     _bwRouteConfig = c;
     const cd = document.getElementById('bw-cdp-profile');
@@ -48915,11 +48930,17 @@ async function _bwLoadRouting() {
     document.getElementById('bw-profile').querySelectorAll('option[value]').forEach(o => { if (o.value) cu.add(new Option(o.textContent, o.value)); });
     cu.value = c.cua_profile || '';
     document.getElementById('bw-cua-enabled').checked = !!c.allow_cua;
-    if (c.native_profile) document.getElementById('bw-profile').value = c.native_profile;
-    _bwRoutingProfileChanged();
+    const profile = document.getElementById('bw-profile');
+    // A saved default is an initial choice, never authority to replace the
+    // profile the owner selected while discovery was in flight.
+    if (choiceGeneration !== _bwProfileChoiceGeneration) _bwRoutingDiscoveryDiscarded('owner_selected_profile_during_load');
+    else if (!profile.value && c.native_profile) profile.value = c.native_profile;
+    _bwRoutingProfileChanged(true);
   } catch (e) { document.getElementById('bw-routing-status').textContent = 'Route discovery failed: ' + e.message; }
 }
 async function _bwSaveRouting() {
+  ++_bwRouteLoadGeneration; // An older GET must not replace this owner write.
+  document.getElementById('bw-routing-status').textContent = 'Saving route…';
   try {
     const c = { native_profile: document.getElementById('bw-profile').value, chrome_profile: document.getElementById('bw-cdp-profile').value, cua_profile: document.getElementById('bw-cua-profile').value, allow_cua: document.getElementById('bw-cua-enabled').checked };
     const response = await fetch('/api/browser/routing/config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});

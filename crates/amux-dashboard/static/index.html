@@ -1796,9 +1796,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   <details id="bw-routing" style="margin:0 8px 8px;padding:8px;border:1px solid var(--border);border-radius:6px;" data-bw-chrome>
     <summary>Browser route settings</summary>
     <div class="bw-row" style="margin-top:8px;">
-      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
-      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
-      <label><input id="bw-cua-enabled" type="checkbox"> Use CUA if both browser routes fail</label>
+      <label style="max-width:100%;">CDP Chrome profile <select id="bw-cdp-profile" onchange="_bwRoutingEdited()" class="bw-in" style="max-width:100%;" aria-label="CDP fallback Chrome profile"></select></label>
+      <label style="max-width:100%;">CUA saved profile <select id="bw-cua-profile" onchange="_bwRoutingEdited()" class="bw-in" style="max-width:100%;" aria-label="CUA fallback saved profile"></select></label>
+      <label><input id="bw-cua-enabled" onchange="_bwRoutingEdited()" type="checkbox"> Use CUA if both browser routes fail</label>
       <button class="bw-btn" onclick="_bwSaveRouting()">Save route</button>
       <button class="bw-btn" onclick="_bwAdvanceRouting()" title="When the browser works but cannot complete the goal, advance to the next configured route without repeating an action">Try next route</button>
     </div>

@@ -42,9 +42,32 @@ try{
  prove('selecting the work profile restores its saved fallback',await p.inputValue('#bw-cdp-profile')===chromeProfile&&await p.inputValue('#bw-cua-profile')==='routing-work'&&await p.locator('#bw-cua-enabled').isChecked());
  const retained=await api(base,'/api/browser/routing/config');prove('owner choices survive saving a second profile',retained.config.profile_routes['routing-work'].chrome_profile===chromeProfile&&retained.config.profile_routes['routing-personal'].chrome_profile==='');
 
+ // Hold a real saved-default response behind explicit selection and a newer
+ // owner write. This reproduced a Personal start and missing CDP on the old UI.
+ let releaseDiscovery, discoveryRead;
+ const discoveryHeld=new Promise(r=>releaseDiscovery=r);
+ const discoveryReady=new Promise(r=>discoveryRead=r);
+ const holdDiscovery=async route=>{
+  if(route.request().method()!=='GET')return route.continue();
+  const response=await route.fetch();discoveryRead();await discoveryHeld;await route.fulfill({response});
+ };
+ await p.route('**/api/browser/routing/config',holdDiscovery);
+ const lateDiscovery=p.evaluate(()=>window._bwLoadRouting());await discoveryReady;
+ await p.selectOption('#bw-profile','routing-personal');await p.selectOption('#bw-profile','routing-work');
+ releaseDiscovery();await lateDiscovery;await p.unroute('**/api/browser/routing/config',holdDiscovery);
+ prove('late discovery preserves explicit Work selection and its matching fallback',await p.inputValue('#bw-profile')==='routing-work'&&await p.inputValue('#bw-cdp-profile')===chromeProfile&&await p.locator('#bw-cua-enabled').isChecked());
+ let releaseOld, oldRead;const oldHeld=new Promise(r=>releaseOld=r);const oldReady=new Promise(r=>oldRead=r);
+ const holdOld=async route=>{if(route.request().method()!=='GET')return route.continue();const response=await route.fetch();oldRead();await oldHeld;await route.fulfill({response});};
+ await p.route('**/api/browser/routing/config',holdOld);
+ const oldDiscovery=p.evaluate(()=>window._bwLoadRouting());await oldReady;
+ await p.evaluate(()=>window._bwSaveRouting());releaseOld();await oldDiscovery;await p.unroute('**/api/browser/routing/config',holdOld);
+ prove('late discovery cannot replace a newer owner route save',await p.evaluate(()=>_bwRouteConfig.native_profile==='routing-work')&&await p.inputValue('#bw-profile')==='routing-work');
+
  await p.fill('#bw-url',`http://127.0.0.1:${fixture.address().port}`);await p.evaluate(()=>window._bwGo());
  await p.waitForFunction(()=>document.querySelector('#bw-img')?.naturalWidth>0,{},{timeout:45000});prove('Browser tab displays a real browser frame',await p.locator('#bw-img').evaluate(e=>e.naturalWidth>0));
  const sessionBefore=await p.evaluate(()=>_bwSession);
+ const native=await api(base,'/api/browser/routing/request','POST',{verb:'status',session:sessionBefore,body:{}},sessionBefore);
+ prove('Browser tab starts the explicitly selected Work profile',native.route.backend==='amux'&&native.route.selected_profile==='routing-work');
  await p.locator('#bw-routing').getByRole('button',{name:'Try next route',exact:true}).click();
  await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.includes('Active: cdp'));
  const advanced=await api(base,'/api/browser/routing/request','POST',{verb:'status',session:sessionBefore,body:{}},sessionBefore);

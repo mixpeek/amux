@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2493,
+  "n_considered": 2495,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -440,6 +440,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_bwLoadRouting": {
+      "kind": "command._bwLoadRouting",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bwLoadTargets": {
       "kind": "command._bwLoadTargets",
       "feedback_required": true,
@@ -460,6 +466,12 @@
     },
     "_bwRefreshInspect": {
       "kind": "command._bwRefreshInspect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_bwRoutingDiscoveryDiscarded": {
+      "kind": "command._bwRoutingDiscoveryDiscarded",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
