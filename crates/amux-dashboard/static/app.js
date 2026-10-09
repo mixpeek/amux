@@ -3747,6 +3747,9 @@ async function _runSyncBanner(quiet = false) {
     if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
       try { loadExplore(_explorePath); } catch (error) {}
     }
+    if (activeView === 'scratchpad' && typeof _scratchpadLoad === 'function') {
+      try { _scratchpadLoad(); } catch (error) {}
+    }
   }
   if (!offlineQueue.length && !drafts.length && !_uploadSyncPending) _writeError = '';
 
@@ -14004,7 +14007,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1280';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1281';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -26789,27 +26792,28 @@ async function _spCaptureSave(text) {
 // Any file (pasted, picked or dropped) is stored as-is in the scratchpad
 // folder (Ethan, 2026-10-09: "scratchpad should support sending files too").
 // A pasted image with no real name gets a timestamp name.
-async function _spSaveFile(file) {
-  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+//
+// Bytes go through the same durable, chunked upload the worker terminal and
+// Files tab use (_uploadOrQueue -> IndexedDB -> /api/upload chunks with
+// retry and resume). A single multipart POST to /api/fs/upload lost a 30 MB
+// file from a phone with no error and no retry (Ethan, 2026-10-09).
+function _spNamed(file) {
   const generic = !file.name || /^image\.(png|jpe?g|gif|webp)$/i.test(file.name);
-  const ext = (file.type.split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
-  const name = generic ? _spUniqueName(_spStamp(), '.' + ext) : file.name;
-  const fd = new FormData();
-  fd.append('dir', dir);
-  fd.append('file', file, name);
-  try {
-    const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(120000) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !(d.saved || []).length) throw new Error(d.error || ('HTTP ' + r.status));
-    showToast('Saved ' + name);
-  } catch (e) { showToast('Could not save ' + name + ': ' + e.message); }
+  if (!generic) return file;
+  const ext = ((file.type || '').split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+  return new File([file], _spUniqueName(_spStamp(), '.' + ext), {type: file.type});
 }
 async function _spUploadFiles(list) {
-  const files = [...(list || [])];
-  for (const f of files) await _spSaveFile(f);
-  if (files.length) _scratchpadLoad();
+  const files = [...(list || [])].map(_spNamed);
+  if (!files.length) return;
+  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+  const { queued, failed } = await _uploadOrQueue(files, dir, 'file');
+  const what = files.length === 1 ? files[0].name : files.length + ' files';
+  if (queued) showToast((online ? 'Uploading ' : 'Saved offline, uploads when reconnected: ') + what);
+  if (failed && !queued) showToast('Could not save ' + what);
 }
-const _spSaveImage = async (file) => { await _spSaveFile(file); _scratchpadLoad(); };
+async function _spSaveFile(file) { await _spUploadFiles([file]); }
+const _spSaveImage = (file) => _spSaveFile(file);
 async function _spLoadRetain() {
   try {
     const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
