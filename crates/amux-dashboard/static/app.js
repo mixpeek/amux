@@ -8962,6 +8962,10 @@ function _embedFitZoom() {
   if (!window._peekEmbed) return;
   const body = document.getElementById('peek-body');
   if (!body || !body.offsetParent) return;
+  // The peek side panel (?peekTab=messages|chat) shows a panel, not a scaled
+  // terminal tile: the chat renders into this same body and came out at
+  // tile zoom, unreadably small (Ethan, 2026-10-09, side-panel check).
+  if (new URLSearchParams(location.search).get('peekTab')) { body.style.zoom = '1'; return; }
   // widest source line (textContent keeps source newlines, unaffected by wrap)
   let cols = 0;
   for (const l of (body.textContent || '').split('\n')) if (l.length > cols) cols = l.length;
@@ -14000,7 +14004,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1277';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1278';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
