@@ -320,6 +320,22 @@ fn ask_text(item: &Value) -> String {
         .join(" ")
 }
 
+/// An ask's explicit reservation outranks the default judgment policy. Include
+/// its unblock and context, where GS-199 put the reservation; do not infer a
+/// credential step from the recorder's generic unblock boilerplate.
+fn requires_explicit_approval(item: &Value) -> bool {
+    let text = format!("{} {}", ask_text(item), item["context"].as_str().unwrap_or(""))
+        .to_ascii_lowercase();
+    static EXCLUSION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"\b(?:auto(?:matic|mated)?[- ](?:needs[- ]input[- ])?approv(?:al|e) (?:does not|doesn't|cannot|can't|must not) (?:cover|approve)",
+            r"|not covered by auto(?:matic|mated)?[- ](?:needs[- ]input[- ])?approv(?:al|e)",
+            r"|(?:do not|don't|must not) auto[- ]approve|(?:requires|needs|must receive) explicit (?:human|owner) approval)\b"
+        )).expect("constant approval exclusion regex")
+    });
+    EXCLUSION.is_match(&text)
+}
+
 /// Why an ask can never be auto-approved, if it cannot. `None` = the policy
 /// decides. Measured 2026-09-27 (Ethan: "auto is on but its not continuing
 /// each"): the sweep approved 0 of 74, skipping most as credential_or_access on
@@ -565,7 +581,7 @@ fn effective_category(item: &Value) -> String {
     }
     let t = ask_text(item).to_ascii_lowercase();
     let hit = |re: &str| regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false);
-    let action = r"\b(disabl|delet|drop|purg|remov|migrat|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat)\w*";
+    let action = r"\b(disabl|delet|drop|purg|remov|migrat|mov|retir|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat)\w*";
     let target = r"\b(production|prod\b|prod plane|customer|tenant|tubescience|primis|live (data|plane|cluster)|your own org)";
     if hit(action) && hit(target) {
         tracing::info!(target: "amux::needs_input_auto", verdict = "scored_as_prod_data",
@@ -587,6 +603,9 @@ pub fn is_scope_decision(item: &Value) -> bool {
 pub fn decide(policy: &Policy, item: &Value) -> Decision {
     if !policy.enabled {
         return Decision::Off;
+    }
+    if requires_explicit_approval(item) {
+        return Decision::Never("explicit_approval_required");
     }
     let boundary = effective_category(item);
     if matches!(boundary.as_str(), "money" | "prod_data" | "outbound") {
@@ -1122,6 +1141,7 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                     "public_surface" => "a new endpoint or public surface: yours by the repo rule",
                     "sent_back_once" => "sent back once already; the worker re-asked, so it is yours",
                     "scope_decision" => "a scope or deadline decision stays with you (contract rule 11)",
+                    "explicit_approval_required" => "this ask requires explicit approval; automatic approval does not cover it",
                     _ => "credential or access: only you can do it",
                 };
                 skips.push(entry_for(item, &dk, "never", label_why.into(), now));
@@ -1280,7 +1300,7 @@ fn view(home: &Path, worker: &str, ledger: &[Entry], waiting: &[Value], now: f64
                      "money_cap_usd": defaults.money_cap_usd, "prod_data": defaults.prod_data, "outbound": defaults.outbound},
         "kill_switch": {"var": KILL_SWITCH, "server_env_off": server_kill(home)},
         "precedence": "worker > group > global (amux.env) > default; AMUX_NEEDS_INPUT_AUTO=0 in server.env stops it everywhere",
-        "never": "credential and access asks (keys, sign-ins, grants) are never approved automatically; with send_back on they go back to the worker once, with the access ladder",
+        "never": "asks explicitly requiring human or owner approval stay with the owner; credential and access asks (keys, sign-ins, grants) are never approved automatically; with send_back on they go back to the worker once, with the access ladder",
         "waiting_now": waiting.len(),
         "already_waiting_unapproved": already_waiting,
         "recent": recent,
