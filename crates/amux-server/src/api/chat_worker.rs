@@ -101,8 +101,9 @@ fn companion_meta_path(worker: &str) -> std::path::PathBuf {
 /// same model the worker runs (Ethan, 2026-10-08). Order: the worker's
 /// `AMUX_CHAT_MODEL` scope setting, then the worker's own `--model` in
 /// CC_FLAGS (either form, via model_flag), then its CC_MODEL. With none, the
-/// chat passes no --model, so it gets the same CLI default the worker gets;
-/// it used to fall back to sonnet, which differed from a worker on the default.
+/// Claude passes no --model to keep its CLI default. Codex's turn_args uses
+/// the same provider default as terminal launch; inheriting global config here
+/// can select a desktop-only model that a ChatGPT CLI account cannot use.
 fn parse_env(name: &str) -> super::session_verbs::EnvFile {
     let Some(worker) = companion_parent(name) else {
         return super::session_verbs::parse_env(name);
@@ -721,7 +722,7 @@ impl TurnOutcome {
 fn model_flag(flags: &str) -> Option<String> {
     let toks: Vec<&str> = flags.split_whitespace().collect();
     toks.iter().enumerate().find_map(|(i, t)| {
-        if *t == "--model" {
+        if *t == "--model" || *t == "-m" {
             toks.get(i + 1).map(|m| m.trim_matches(['"', '\'']).to_string())
         } else {
             t.strip_prefix("--model=").map(str::to_string)
@@ -734,9 +735,7 @@ fn turn_args(provider: &str, flags: &str, cc_model: &str, conv: &str, fresh: boo
     let model = model_flag(flags).or_else(|| Some(cc_model.to_string()).filter(|m| !m.is_empty()));
     if provider == "codex" {
         let mut a: Vec<String> = vec!["exec".into(), "--json".into(), "--skip-git-repo-check".into()];
-        if let Some(m) = model {
-            a.extend(["--model".into(), m]);
-        }
+        a.extend(["--model".into(), model.unwrap_or_else(|| super::session_verbs::default_model_for_provider("codex"))]);
         if flags.contains("--dangerously-bypass-approvals-and-sandbox") || flags.contains("--yolo") {
             a.push("--dangerously-bypass-approvals-and-sandbox".into());
         }
@@ -1086,6 +1085,15 @@ pub(crate) async fn companion_prompt(state: &AppState, worker: &str, fresh: bool
     };
     let last = super::session_verbs::last_assistant_message(worker, 1500);
     out.push_str(&format!("[context: {worker}, {}]\n", chrono::Local::now().format("%Y-%m-%d %H:%M")));
+    out.push_str(&format!("- worker directory: {dir}\n"));
+    let isolated = super::session_verbs::env_flag_on(wenv.get("CC_ISOLATED"));
+    tracing::info!(worker, isolated, fresh, measured = true, n_considered = 1,
+        verdict = "chat_companion_context", "Chat context includes the worker directory and isolation state");
+    out.push_str(if isolated {
+        "- isolated terminal: yes; direct owner-to-CLI transport. Chat is a separate conversation; do not inject harness instructions or automate the terminal.\n"
+    } else {
+        "- isolated terminal: no\n"
+    });
     out.push_str(&format!(
         "- process: {}\n",
         if paused { "paused by the owner" } else if running { "running" } else { "not running" }
@@ -1251,6 +1259,13 @@ fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s } else { s.chars().take(n).collect::<String>() + "…" }
 }
 
+/// Codex also needs the companion introduction on a new/rebuilt conversation.
+fn codex_conversation(thread: String, force_fresh: bool) -> (String, bool) {
+    let thread = if force_fresh { String::new() } else { thread };
+    let fresh = thread.is_empty();
+    (thread, fresh)
+}
+
 /// Spawn one provider turn and stream its output.
 async fn execute(
     state: &AppState,
@@ -1269,7 +1284,7 @@ async fn execute(
     let _ = std::fs::create_dir_all(&work_dir);
     let (conv, fresh) = if provider == "codex" {
         let t = meta_str(&meta, "chat_codex_thread");
-        (if force_fresh { String::new() } else { t }, false)
+        codex_conversation(t, force_fresh)
     } else {
         // The adapter's own key is authoritative. `cc_conversation_id` is only
         // a mirror for the transcript readers, and terminal-lane conversation
@@ -1305,6 +1320,11 @@ async fn execute(
             name,
             &[("chat_conversation_id", json!(conv)), ("cc_conversation_id", json!(conv))],
         );
+    }
+    if provider == "codex" && model_flag(&flags).is_none() && cc_model.trim().is_empty() {
+        tracing::info!(session = %name, provider, model = %super::session_verbs::default_model_for_provider(provider),
+            measured = true, n_considered = 1, verdict = "chat_model_terminal_default",
+            "Codex chat uses the terminal provider default instead of global desktop configuration");
     }
     let mut args = turn_args(provider, &flags, &cc_model, &conv, fresh);
     // Binding rules, composed at every turn (AH-233). A Chat tab is part of its
@@ -2173,12 +2193,14 @@ mod tests {
         w("spaced", "CC_FLAGS=\"--dangerously-skip-permissions --model claude-opus-5-5\"\n");
         w("equals", "CC_FLAGS=\"--model=claude-fable-5\"\n");
         w("codex", "CC_PROVIDER=codex\nCC_FLAGS=\"--model gpt-6-astra\"\n");
+        w("short", "CC_PROVIDER=codex\nCC_FLAGS=\"-m gpt-owner-choice\"\n");
         w("ccmodel", "CC_MODEL=claude-sonnet-5-5\n");
         w("default", "CC_FLAGS=\"--dangerously-skip-permissions\"\n");
         let flags = |name: &str| parse_env(&companion_key(name)).get_or("CC_FLAGS", "").to_string();
         assert_eq!(flags("spaced"), "--model claude-opus-5-5");
         assert_eq!(flags("equals"), "--model claude-fable-5");
         assert_eq!(flags("codex"), "--model gpt-6-astra");
+        assert_eq!(flags("short"), "--model gpt-owner-choice");
         assert_eq!(parse_env(&companion_key("codex")).get_or("CC_PROVIDER", ""), "codex");
         assert_eq!(flags("ccmodel"), "--model claude-sonnet-5-5");
         assert_eq!(flags("default"), "", "a worker on the CLI default gets a chat on the same default, not sonnet");
@@ -2194,6 +2216,58 @@ mod tests {
         )
         .unwrap();
         assert!(re.is_match(&id), "{id}");
+    }
+
+    #[test]
+    fn codex_first_and_rebuilt_turns_get_the_companion_introduction() {
+        assert_eq!(codex_conversation(String::new(), false), (String::new(), true));
+        assert_eq!(codex_conversation("thread-existing".into(), false), ("thread-existing".into(), false));
+        assert_eq!(codex_conversation("thread-existing".into(), true), (String::new(), true));
+    }
+
+    #[tokio::test]
+    async fn codex_companion_context_identifies_the_worker_and_its_isolation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(tmp.path());
+        let dir = tmp.path().join("fixture");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+        let env = tmp.path().join("sessions/companion-context-probe.env");
+        std::fs::write(&env, format!("CC_DIR=\"{}\"\nCC_PROVIDER=codex\nCC_ISOLATED=1\n", dir.display())).unwrap();
+        let state = AppState {
+            store: Arc::new(crate::db::Store::open(&tmp.path().join("test.db")).unwrap()),
+            started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: Arc::new(AtomicBool::new(true)),
+        };
+        let (_, fresh) = codex_conversation(String::new(), false);
+        let first = companion_prompt(&state, "companion-context-probe", fresh, "owner question").await;
+        assert!(first.starts_with("You are the chat companion for the amux worker `companion-context-probe`"));
+        assert!(first.contains(&format!("- worker directory: {}", dir.display())));
+        assert!(first.contains("- isolated terminal: yes; direct owner-to-CLI transport."));
+        assert!(first.ends_with("[owner]\nowner question"));
+        let (_, fresh) = codex_conversation("thread-existing".into(), false);
+        let resumed = companion_prompt(&state, "companion-context-probe", fresh, "follow-up").await;
+        assert!(!resumed.starts_with("You are the chat companion"));
+        assert!(resumed.contains("- isolated terminal: yes;"), "live scope is refreshed even on resume");
+        std::fs::write(&env, format!("CC_DIR=\"{}\"\nCC_PROVIDER=codex\n", dir.display())).unwrap();
+        let ordinary = companion_prompt(&state, "companion-context-probe", false, "follow-up").await;
+        assert!(ordinary.contains("- isolated terminal: no\n"));
+    }
+
+    #[test]
+    fn codex_chat_uses_the_terminal_default_and_preserves_explicit_models() {
+        for conv in ["", "thread-existing"] {
+            let args = turn_args("codex", "", "", conv, conv.is_empty());
+            assert!(args.windows(2).any(|w| w == ["--model", "gpt-5.5"]),
+                "a ChatGPT account must not inherit a desktop-only global model: {args:?}");
+            for flags in ["--model gpt-owner-choice", "--model=gpt-owner-choice", "-m gpt-owner-choice"] {
+                let explicit = turn_args("codex", flags, "", conv, conv.is_empty());
+                assert!(explicit.windows(2).any(|w| w == ["--model", "gpt-owner-choice"]),
+                    "the owner's choice wins over the provider default: {explicit:?}");
+            }
+            let cc_model = turn_args("codex", "", "gpt-env-choice", conv, conv.is_empty());
+            assert!(cc_model.windows(2).any(|w| w == ["--model", "gpt-env-choice"]));
+        }
     }
 
     #[test]

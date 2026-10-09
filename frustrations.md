@@ -5665,3 +5665,14 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: The real OAuth rotation/SIGKILL test passes locally but fails in the root-run bookworm recovery CI container: chmod 0500 does not deny root a compatibility mirror write, so the asserted stale mirror never exists.
 COST: The connector maintenance PR recovery check is red despite its local fault test passing, and the CI fixture does not exercise the intended post-commit copy failure.
 FIX: Run only the permission-fault fixture server as uid/gid 65534 when its Linux controller is root, copy the executable into its owned temporary tree, and assert the actual child uid. Retain the failed-write, committed-token, one-refresh and real SIGKILL assertions; print the fixture identity. No live account or production permissions are changed.
+
+## Codex worker Chat inherits an unusable global model and omits initial worker context
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: A new isolated Codex terminal worker completes its synthetic task with the terminal default, but its first two real Chat UI turns inherit gpt-6.1-sol from global desktop configuration and fail with a ChatGPT account model-not-supported error. Codex also sets fresh=false for its first Chat turn, so the companion introduction never reaches it; the refreshed context omits directory and isolation, and a later reply confuses synthetic fixture isolation with terminal isolation.
+COST: Two real provider turns fail, and the owner cannot trust that Chat describes the worker's actual scope. The native terminal rollout remained unchanged throughout the failed and configured-model Chat tests.
+FIX: PR candidate shares the terminal default with Codex headless turns, preserves explicit models including -m, introduces new/rebuilt Codex conversations, and supplies directory/isolation each turn with chat_model_terminal_default and chat_companion_context log signals. Private real-provider UI and SIGKILL/restart validation required; no merge or deployment authorized.
