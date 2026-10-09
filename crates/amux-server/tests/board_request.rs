@@ -37,25 +37,25 @@ fn fleet_home() -> &'static std::path::Path {
         let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).expect("sessions dir");
-        std::fs::write(sessions.join("lane-a.env"), "CC_DIR=/tmp\n").expect("lane-a");
-        std::fs::write(sessions.join("lane-b.env"), "CC_DIR=/tmp\n").expect("lane-b");
+        std::fs::write(sessions.join("lane-a.env"), "CC_DIR=/tmp\nCC_TAGS=request-fixture\n").expect("lane-a");
+        std::fs::write(sessions.join("lane-b.env"), "CC_DIR=/tmp\nCC_TAGS=request-fixture\n").expect("lane-b");
         std::fs::write(
             sessions.join("lane-paused.env"),
-            "CC_DIR=/tmp\nCC_PAUSED=1\n",
+            "CC_DIR=/tmp\nCC_TAGS=request-fixture\nCC_PAUSED=1\n",
         )
         .expect("paused");
         std::fs::write(
             sessions.join("lane-archived.env"),
-            "CC_DIR=/tmp\nCC_ARCHIVED=1\n",
+            "CC_DIR=/tmp\nCC_TAGS=request-fixture\nCC_ARCHIVED=1\n",
         )
         .expect("archived");
         std::fs::write(
             sessions.join("lane-iso.env"),
-            "CC_DIR=/tmp\nCC_ISOLATED=1\n",
+            "CC_DIR=/tmp\nCC_TAGS=request-fixture\nCC_ISOLATED=1\n",
         )
         .expect("isolated");
-        // An explicit EMPTY allow-list is the visible deny (AMUX-4015/4018), and
-        // it is the axis the first cut of request_to dropped entirely.
+        // The negative control remains in disjoint groups, even with obsolete
+        // allow-list settings. Positive request/reviewer controls share membership.
         std::fs::write(
             sessions.join("lane-muted.env"),
             "CC_DIR=/tmp\nCC_GROUPS=alpha\nCC_SEND_ALLOW=\n",
