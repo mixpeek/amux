@@ -5489,3 +5489,25 @@ CARD: AMUX-5744
 SYMPTOM: Testing the scratchpad at phone width, POST /api/browser/resize {"width":390,"height":844} and POST /api/browser/action {"action":"viewport","device":"iphone"} both answered ok with measured {"w":390,"h":844}. An immediate /api/browser/eval of innerWidth returned 756, the layout stayed desktop (no 600px media query applied), and the screenshot was 756 wide. Repeated three times across both routes.
 COST: The mobile half of a UI verification could not be done in the amux browser, so the phone-width check had to be reported as not done. The "measured" field reads as proof the viewport changed when the page never saw it.
 FIX: Make measured come from the page (window.innerWidth after the emulation call, on the same target eval uses), and apply the emulation to that target. Add a test that resizes, then evals innerWidth.
+
+## Needs-input auto-approval answered two either/or owner policy questions with a bare "Proceed"
+AREA: needs-input
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: amux-app
+CARD: AA-29
+SYMPTOM: AA-29 asked "merge PR #247 as is, or keep isolated auto-proceed?" and AA-30 asked whether worker messaging should become strictly same-group (PR #239). Both were ask_type=decision about fleet policy. Within minutes each got "Approved ... Proceed. (Approved automatically under the owner's needs-input policy.)" and moved from needsyou to backlog. This happened right after #244 merged, which was meant to keep explicit-approval asks with the owner.
+COST: The reply picks neither option, so it cannot be obeyed truthfully. A lane that read it as consent would have merged a reversal of an explicit owner request (#247) and a fleet-wide messaging policy change (#239). Re-parking both cards and diagnosing took one round trip.
+FIX: Treat an ask whose question offers alternatives ("X, or Y?") as never auto-approvable, since "Proceed" selects nothing. Classify policy and default changes to fleet behavior as owner-control decisions, and log verdict=either_or_not_approvable when one is skipped.
+
+## Connector storage can erase concurrent changes and reuse unconsumed OAuth state
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: Six private regressions fail on main 964662d7: concurrent credential and pending-state writes lose entries; initial server.env is 0644; unreadable credential bytes and corrupt connector definitions are overwritten; pending_take returns a state even when its removal failed.
+COST: Six new regression tests fail; the 245-second baseline run proves that acknowledgement can follow data loss or failed state consumption.
+FIX: PR candidate serializes updates, commits private synced files atomically, retains corrupt stores, and refuses exchange when consumption cannot commit. No live storage changed; validation and review required before deployment.

@@ -21,9 +21,8 @@
 //!   at launch instead, so a PATCH has live effect without a process restart
 //!   or a process-wide `set_var` race. Already-running workers still need an
 //!   explicit restart before they can inherit a changed credential.
-//! - `defaults.env` writes are atomic with mode 0600 (Python's
-//!   `_atomic_write_secure`); `server.env` writes are plain rewrites
-//!   (Python's are too).
+//! - Both env files use private, synced atomic commits. `server.env`
+//!   read/modify/write updates serialize across threads and processes.
 //! - Flag surgery (`--model X` / `--model=X`) uses a POSIX shlex
 //!   split/quote port so quoted multi-word values survive, and malformed
 //!   flags fail loudly with Python's exact 400 message instead of wiping
@@ -136,42 +135,44 @@ pub(crate) fn set_server_env_key(home: &Path, key: &str, val: &str) -> std::io::
             ),
         ));
     }
-    let file = home.join("server.env");
-    let mut lines: Vec<String> = std::fs::read_to_string(&file)
-        .map(|s| s.lines().map(String::from).collect())
-        .unwrap_or_default();
-    let mut found = false;
-    for line in lines.iter_mut() {
-        if line.starts_with(&format!("{key}=")) || line.starts_with(&format!("{key} =")) {
-            *line = format!("{key}={val}");
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        lines.push(format!("{key}={val}"));
-    }
-    std::fs::create_dir_all(home)?;
-    std::fs::write(&file, lines.join("\n") + "\n")
+    set_server_env_keys(home, &[(key, val)])
 }
 
-/// Python's `_atomic_write_secure`: temp file in the same dir, chmod 0600,
-/// rename over the target — no TOCTOU window, no partially-written file.
-fn atomic_write_secure(path: &Path, content: &str) -> std::io::Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(
-        ".{}.tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("env"),
-        std::process::id()
-    ));
-    std::fs::write(&tmp, content)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+/// Commit one credential form together, preserving unrelated keys. Read errors
+/// are not an empty configuration; refusing the update retains the only copy.
+pub(crate) fn set_server_env_keys(home: &Path, updates: &[(&str, &str)]) -> std::io::Result<()> {
+    use crate::integrations::secure_store;
+    for (key, val) in updates {
+        if key.is_empty() || key.contains(['=', '\n', '\r', '\0']) || val.contains(['\n', '\r', '\0']) || is_ephemeral_path(home, val) {
+            tracing::warn!(key, verdict = "connector_credentials_invalid", "credential update refused before modifying storage");
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid credential entry or ephemeral path"));
+        }
     }
-    std::fs::rename(&tmp, path)
+    let file = home.join("server.env");
+    let _lease = secure_store::lock(&file)?;
+    let existing = match std::fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::warn!(%e, verdict = "connector_credentials_unreadable", "credential store retained; update refused");
+            return Err(e);
+        }
+    };
+    let mut lines: Vec<String> = existing.lines().map(String::from).collect();
+    for (key, val) in updates {
+        let mut found = false;
+        for line in &mut lines {
+            if line.split_once('=').is_some_and(|(k, _)| k.trim() == *key) {
+                *line = format!("{key}={val}"); found = true;
+            }
+        }
+        if !found { lines.push(format!("{key}={val}")); }
+    }
+    secure_store::write(&file, (lines.join("\n") + "\n").as_bytes())
+}
+
+fn atomic_write_secure(path: &Path, content: &str) -> std::io::Result<()> {
+    crate::integrations::secure_store::write(path, content.as_bytes())
 }
 
 /// JSON truthiness with Python `bool()` semantics — the guard PATCHes run
@@ -1442,5 +1443,58 @@ mod tests {
             after.contains("gcp/dpa-sa.json"),
             "stable path persists: {after}"
         );
+    }
+}
+
+#[cfg(test)]
+mod connector_storage_regressions {
+    use super::*;
+
+    #[test]
+    fn connector_storage_preserves_unreadable_credentials_instead_of_resetting() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("server.env");
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert!(set_server_env_key(home.path(), "GRANOLA_API_KEY", "fixture").is_err());
+        assert_eq!(std::fs::read(path).unwrap(), [0xff, 0xfe]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connector_storage_credentials_are_private_from_first_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        set_server_env_key(home.path(), "GRANOLA_API_KEY", "fixture").unwrap();
+        assert_eq!(std::fs::metadata(home.path().join("server.env")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn connector_storage_concurrent_credential_updates_preserve_every_key() {
+        let home = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let home = home.path(); let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    set_server_env_key(home, &format!("CONNECTOR_{i}_KEY"), "fixture").unwrap();
+                });
+            }
+        });
+        let values = crate::config::parse_env_file(&home.path().join("server.env"));
+        for i in 0..16 { assert_eq!(values.get(&format!("CONNECTOR_{i}_KEY")).map(String::as_str), Some("fixture")); }
+    }
+}
+
+#[cfg(test)]
+mod connector_batch_storage_regressions {
+    use super::*;
+    #[test]
+    fn invalid_later_entry_does_not_partially_replace_a_credential_form() {
+        let home = tempfile::tempdir().unwrap();
+        set_server_env_key(home.path(), "FIRST_KEY", "original").unwrap();
+        assert!(set_server_env_keys(home.path(), &[("FIRST_KEY", "replacement"), ("SECOND_KEY", "bad\nINJECTED_KEY=value")]).is_err());
+        let values = crate::config::parse_env_file(&home.path().join("server.env"));
+        assert_eq!(values["FIRST_KEY"], "original"); assert!(!values.contains_key("SECOND_KEY")); assert!(!values.contains_key("INJECTED_KEY"));
     }
 }
