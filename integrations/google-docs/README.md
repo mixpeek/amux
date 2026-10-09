@@ -1,5 +1,7 @@
 # Google Docs / Google Drive Integration
 
+> **Deprecated (2026-10-09).** `@modelcontextprotocol/server-gdrive` was archived by the MCP project in 2025 and gets no security fixes, and this setup hands it a Drive refresh token. Use the built-in Google connector instead: Connectors → Google → Add account. One approval covers Drive, Docs, Gmail and Calendar, and workers mint short-lived tokens from it. The steps below are kept for reference only.
+
 Gives amux sessions read/write access to Google Docs, Sheets, and Drive via MCP.
 
 ## What sessions can do

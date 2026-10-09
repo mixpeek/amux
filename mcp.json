@@ -1,13 +1,5 @@
 {
   "mcpServers": {
-    "claude-in-chrome": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@anthropic-ai/claude-code-mcp-server-chrome"
-      ]
-    },
     "mixpeek": {
       "type": "http",
       "url": "https://mcp.mixpeek.com/mcp",
@@ -34,16 +26,6 @@
       "url": "https://mcp.mixpeek.com/admin/mcp",
       "headers": {
         "Authorization": "Bearer ${MIXPEEK_API_KEY}"
-      }
-    },
-    "gdocs": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-gdrive"],
-      "env": {
-        "GDRIVE_CLIENT_ID": "${GDRIVE_CLIENT_ID}",
-        "GDRIVE_CLIENT_SECRET": "${GDRIVE_CLIENT_SECRET}",
-        "GDRIVE_REFRESH_TOKEN": "${GDRIVE_REFRESH_TOKEN}"
       }
     }
   }
