@@ -810,6 +810,13 @@ cmd_register() {
     echo "CC_NAME=\"$name\""
     echo "CC_DIR=\"$resolved_dir\""
     echo "CC_FLAGS=\"${CC_FLAGS_STR}\""
+    # A brand-new worker starts with the Board-tab automation off (Ethan,
+    # 2026-10-08); a re-register keeps whatever the worker already had.
+    if [[ -z "$preserved" ]]; then
+      for kv in AMUX_DISPATCH_BACKLOG_WHEN_IDLE=0 CC_AUTO_PICKUP=0 CC_AUTO_CONTINUE=0 CC_STANDING_ORDERS=0 AMUX_COMMAND_LIFECYCLE=0 AMUX_BOARD_FORCE_ADHERENCE=0; do
+        echo "${kv%%=*}=\"${kv#*=}\""
+      done
+    fi
     [[ -n "$wt" ]] && echo "CC_WORKTREE=\"1\""
     [[ -n "$wt_profile" ]] && echo "CC_WORKTREE_PROFILE=\"$wt_profile\""
     [[ -n "$preserved" ]] && printf '%s\n' "$preserved"
@@ -5479,13 +5486,22 @@ cmd_browser() {
       # signed in there (2026-10-07). Prints the name alone on stdout's first
       # line so `P=$(amux browser for URL | head -1)` works in a script.
       local target="${1:-}"
-      [[ -n "$target" ]] || die "usage: amux browser for <url-or-domain>"
-      local q; q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$target")
+      [[ -n "$target" ]] || die "usage: amux browser for <url-or-domain> [--identity EMAIL] [--role ROLE]"
+      shift
+      local identity="" role=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --identity) identity="${2:?--identity needs an account}"; shift 2 ;;
+          --role) role="${2:?--role needs a role}"; shift 2 ;;
+          *) die "unknown browser for option: $1" ;;
+        esac
+      done
+      local q; q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlencode({k:v for k,v in zip(["url","identity","role"],sys.argv[1:]) if v}))' "$target" "$identity" "$role")
       local resp
-      resp=$(_curl -sk -m 60 -H "X-Amux-Session: ${AMUX_SESSION:-}" \
-        "$AMUX_API/api/browser/profile-for?url=$q" 2>/dev/null) || resp=""
+      resp=$(_curl -sk -m 60 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" \
+        "$AMUX_API/api/browser/profile-for?$q" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
-      RESP="$resp" python3 - <<'PYEOF'
+      TARGET="$target" RESP="$resp" python3 - <<'PYEOF'
 import json, os, sys
 try:
     d = json.loads(os.environ["RESP"])
@@ -5494,7 +5510,11 @@ except Exception:
 if d.get("error"):
     print("amux browser for:", d["error"], file=sys.stderr); sys.exit(1)
 print(d["profile"])
-state = "signed in" if d.get("signed_in") else "NOT signed in"
+card = d.get("selection") or {}
+print("  identity: " + (card.get("identity") or "unknown") + "; role: " + (card.get("role") or "ordinary"), file=sys.stderr)
+print("  use for: " + (card.get("use_for") or "purpose not recorded"), file=sys.stderr)
+print("  avoid: " + (card.get("avoid") or "verify identity before acting"), file=sys.stderr)
+state = "login-cookie evidence (verify live access)" if d.get("signed_in") else "no login-cookie evidence"
 lg = d.get("login") or {}
 exp = f", login expires in {lg['days_left']} day(s)" if lg.get("days_left") is not None else ""
 print(f"  {d['site']}: {state}{exp}", file=sys.stderr)
@@ -5502,12 +5522,62 @@ print(f"  why: {d.get('why','')}", file=sys.stderr)
 if d.get("alternatives"):
     # Live-login alternatives when the pick is signed in; otherwise these are
     # only REGISTERED for the site, which is not the same claim.
-    what = "also signed in" if d.get("signed_in") else "also registered (not signed in)"
+    what = "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)"
     print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
-print(f'  start it: POST /api/browser/start {{"profile":"{d["profile"]}"}}', file=sys.stderr)
+import shlex
+target = os.environ["TARGET"]
+url = target if "://" in target else "https://" + target
+print("  start it: amux browser route start " + shlex.quote(json.dumps({"url":url,"profile":d["profile"]})), file=sys.stderr)
 sys.exit(0 if d.get("signed_in") else 3)
 PYEOF
       return $?
+      ;;
+    route)
+      local verb="${1:-state}"; shift || true
+      if [[ "$verb" == "config" ]]; then
+        _curl -sk -m 20 -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" "$AMUX_API/api/browser/routing/config"
+        return $?
+      fi
+      if [[ "$verb" == "help" || "$verb" == "--help" ]]; then
+        cat <<'ROUTE_HELP'
+Select the task's account AND organization with amux browser profiles.
+amux browser route config
+amux browser route start '{"profile":"chosen-profile","url":"https://target"}'
+amux browser route state
+amux browser route shot
+amux browser route action '{"action":"click","selector":"#observed-control"}'
+amux browser route action '{"action":"type","text":"exact text"}'
+Click the observed input before typing. Read back values before submitting.
+Native refs and CDP indices require a fresh state; CUA uses screenshot x,y.
+Verify the intended page effect after each action; ok means dispatch only.
+If the session cannot accomplish the goal:
+amux browser route advance '{"reason":"describe the unmet goal"}'
+Cold CUA provisioning can take up to 30 minutes. Use amux browser route status
+while a background request runs. pending means wait for that task; do not queue
+another state/action request. Never kill processes; route stop cleans your lane.
+Observe again after advancing. Never replay an uncertain submission.
+CUA is the final route. If it fails, report the unmet goal honestly.
+ROUTE_HELP
+        return 0
+      fi
+      [[ "$verb" == "shot" ]] && verb="screenshot"
+      local session="${AMUX_SESSION:-${AMUX_WORKER:-browser-owner}}"
+      local body="${1:-}"
+      [[ -n "$body" ]] || body='{}'
+      local payload
+      payload=$(VERB="$verb" SESSION="$session" BODY="$body" python3 - <<'PYROUTE'
+import json, os
+print(json.dumps({"verb":os.environ["VERB"],"session":os.environ["SESSION"],"body":json.loads(os.environ["BODY"])}))
+PYROUTE
+      ) || die "route body must be JSON"
+      local result
+      result=$(_curl -sk -m 2760 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $session" -d "$payload" "$AMUX_API/api/browser/routing/request") || die "browser route server unreachable"
+      RESULT="$result" python3 - <<'PYRESULT'
+import os, json, sys
+v=json.loads(os.environ["RESULT"])
+print(json.dumps(v))
+sys.exit(1 if v.get("error") else 0)
+PYRESULT
       ;;
     identify|id|which)
       local profile="${1:-}"
@@ -5515,7 +5585,7 @@ PYEOF
       [[ -n "$profile" ]] && body=$(printf '{"profile":"%s"}' "$profile")
       local resp
       resp=$(_curl -sk -m 30 -X POST -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$body" \
+        -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}" -d "$body" \
         "$AMUX_API/api/browser/identify" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
       RESP="$resp" python3 - <<'PYEOF'
@@ -5551,7 +5621,7 @@ PYEOF
       resp=$(_curl -sk -m 30 -H "X-Amux-Session: ${me}" \
         "$AMUX_API/api/browser/profiles" 2>/dev/null) || resp=""
       [[ -z "$resp" ]] && die "amux server unreachable at ${AMUX_API}"
-      RESP="$resp" ME="$me" python3 - <<'PYEOF'
+      RESP="$resp" ME="$me" ALL="${1:-}" python3 - <<'PYEOF'
 import json, os, sys
 try:
     d = json.loads(os.environ["RESP"])
@@ -5562,7 +5632,10 @@ if d.get("error"):
 me = os.environ.get("ME") or ""
 rows = d.get("profiles", [])
 n_ok = 0
+print("Choose by task identity and purpose, then scope and live site access. Cookie evidence is not a confirmed login.")
 for p in rows:
+    if p.get("role") in ("test", "deprecated") and os.environ.get("ALL") != "--all":
+        continue
     a = p.get("access") or {}
     ok = a.get("allowed_for_you", True)
     n_ok += 1 if ok else 0
@@ -5572,18 +5645,21 @@ for p in rows:
     who = "all workers" if a.get("all_workers", True) else (
         f"{a.get('workers_allowed', '?')}/{a.get('workers_total', '?')} workers")
     print(f" {mark} {p['name']:<28} {who:<16} {sites}")
+    print(f"     identity: {p.get('identity') or 'unknown'}; role: {p.get('role') or 'ordinary'}")
+    card = p.get("selection") or {}
+    if card.get("avoid"): print("     avoid: " + card["avoid"])
     if desc:
         print(f"     {desc}")
     if not ok and a.get("you"):
         r = a["you"].get("rule") or {}
         print(f"     not for you: {r.get('key')}={r.get('value')} at {r.get('scope')}")
 whom = me or "the owner (no worker identity)"
-print(f"{len(rows)} profile(s); {n_ok} allowed for {whom}. '+' = you may use it, 'x' = out of your scope.")
+print(f"{len(rows)} profile(s) discovered (use --all for QA and deprecated); {n_ok} shown and allowed for {whom}. '+' = you may use it, 'x' = out of your scope.")
 PYEOF
       ;;
     ""|help|-h|--help)
       cat <<'EOF'
-amux browser profiles             — list every saved profile; '+' marks the ones you may use
+amux browser profiles [--all]     — relevant profiles first; --all includes QA/recovery; '+' marks the ones you may use
 amux browser identify [profile]   — make the amux Chrome window say it is the amux window
 amux browser create <name> [url]  : create a saved profile (logins persist on disk)
 amux browser start <profile> [url] [--headed] : launch a profile (headless by default)
@@ -5604,7 +5680,7 @@ EOF
       # Thin wrappers over /api/browser/*: the server owns the logic, and every
       # call carries X-Amux-Session so a stop is attributed (an unattributed
       # stop of another lane's browser is refused).
-      local me="${AMUX_SESSION:-}" method="POST" path body='{}'
+      local me="${AMUX_SESSION:-${AMUX_WORKER:-}}" method="POST" path body='{}'
       case "$sub" in
         create|new)
           [[ -n "${1:-}" ]] || die "usage: amux browser create <name> [url]"
@@ -5684,7 +5760,7 @@ EOF
 
 _computer_call() { # <METHOD> <path> [json-body] [max-seconds]
   local method="$1" path="$2" body="${3:-}" max="${4:-120}"
-  local args=(-sk -m "$max" -X "$method" -H "X-Amux-Session: ${AMUX_SESSION:-}")
+  local args=(-sk -m "$max" -X "$method" -H "X-Amux-Session: ${AMUX_SESSION:-${AMUX_WORKER:-}}")
   [[ -n "$body" ]] && args+=(-H 'Content-Type: application/json' -d "$body")
   _curl "${args[@]}" "$AMUX_API/api/computer/$path" 2>/dev/null
 }
@@ -6033,11 +6109,14 @@ ${BOLD}Computer use (rung 3, after amux browser and CDP):${RESET}
   amux help computer             Verbs, ladder, and which profile has which site's cookies
 
 ${BOLD}Browser:${RESET}
-  amux browser for <url>         The ONE profile to use for a site, for this worker:
-                                 prints its name, whether it is signed in there and
-                                 why (exit 3 when it is not signed in)
-  amux browser profiles          List every saved profile; '+' marks the ones this
-                                 worker may use (scoped allow/deny, worker > group > global)
+  amux browser for <url>         Recommend with identity, purpose and cookie evidence
+                                 Optional: --identity EMAIL --role ROLE; verify live access
+  amux browser route start JSON  Amux → selected Chrome CDP → CUA
+  amux browser route state|shot  Observe; route action JSON; route stop when done
+  amux browser route config     Read profile-specific Chrome/CUA choices and identities
+  amux browser route advance JSON  Goal blocked? Next configured route; reason required
+  amux browser profiles [--all]  Relevant profiles; --all includes QA/recovery;
+                                 '+' marks access allowed for this worker
   amux browser identify [prof]   Make the amux Chrome window say it IS the amux
                                  window: a blue bar naming the profile, and the
                                  window raised when you name one. ${DIM}Run it before${RESET}
@@ -7812,7 +7891,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-10-02.54"
+LAND_BEHAVIOR_VERSION="2026-10-08.55"
 
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] | --cancel | --status
@@ -8344,13 +8423,16 @@ p.communicate(msg.encode())
     # mode in the batch). A WAITER whose installed CLI now carries a different
     # LAND_BEHAVIOR_VERSION re-execs the new code in place: same pid, so the
     # same ticket name, place and flags, and a foreground land keeps its
-    # output. Checked every 30 s, never by a holder. AMUX_LAND_SELF_UPGRADE=0
+    # output. Checked every 10 s, never by a holder. The old 60 s interval
+    # delayed every waiter after an install and cost a minute in the CI crash
+    # lifecycle; a version read each 10 s is cheap and bounds adoption time.
+    # AMUX_LAND_SELF_UPGRADE=0
     # opts out.
-    if [ "${AMUX_LAND_SELF_UPGRADE:-1}" = 1 ] && [ $(( $(date +%s) - ${_vchk:-0} )) -ge 60 ]; then
+    if [ "${AMUX_LAND_SELF_UPGRADE:-1}" = 1 ] && [ $(( $(date +%s) - ${_vchk:-0} )) -ge 10 ]; then
       _vchk=$(date +%s)
       _newv="$(grep -m1 '^LAND_BEHAVIOR_VERSION=' "$0" 2>/dev/null | cut -d'"' -f2 || true)"
       if [ -n "$_newv" ] && [ "$_newv" != "$LAND_BEHAVIOR_VERSION" ] && [ -e "${q:?}/${tname:?}" ]; then
-        _land_log "land code $_newv is installed (this waiter runs $LAND_BEHAVIOR_VERSION); re-executing at its place"
+        _land_log "land code $_newv is installed (this waiter runs $LAND_BEHAVIOR_VERSION); re-executing at its place verdict=land_self_upgrade_reexec check_interval_s=10"
         trap - EXIT INT TERM
         # Made batchable after starting with --no-batch: carry that across the
         # exec, which replays the original arguments.

@@ -53,7 +53,7 @@ fn defaults_approve_judgment_only() {
     );
     assert_eq!(
         p.summary("all workers"),
-        "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties or scope. Key, sign-in and grant asks go back to the worker to do itself."
+        "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties, scope, priorities or reversals of owner actions. Key, sign-in and grant asks go back to the worker to do itself."
     );
 
     // Even a policy struct with them switched on cannot approve these.
@@ -296,7 +296,7 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     let v = view(&home, "", &led, &[], now + 120.0);
     // Two approvals (one to a paused lane), one send-back, one refusal.
     assert_eq!(v["recent_count"], 4);
-    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties or scope. Key, sign-in and grant asks go back to the worker to do itself.");
+    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties, scope, priorities or reversals of owner actions. Key, sign-in and grant asks go back to the worker to do itself.");
 
     // The owner's explicit sweep, with outbound switched on globally: the
     // baseline item and the held email are re-evaluated; the credential ask,
@@ -500,6 +500,69 @@ fn a_scope_or_deadline_decision_is_never_auto_approved() {
 }
 
 #[test]
+fn an_explicit_auto_approval_exclusion_wins_over_category_and_send_back() {
+    let policy = Policy { send_back: true, ..Policy::default() };
+    for field in ["question", "unblocks", "context"] {
+        for exclusion in [
+            "An automatic needs-input approval does not cover these (production data and a customer-facing API).",
+            "This decision is not covered by automatic approval.",
+            "Do not auto-approve this decision.",
+            "This decision requires explicit human approval.",
+        ] {
+            let mut it = item("card", "other", "decision", "Choose the cache layout? I recommend A.");
+            it[field] = json!(exclusion);
+            assert_eq!(decide(&policy, &it), Decision::Never("explicit_approval_required"), "{field}: {exclusion}");
+        }
+    }
+    assert_eq!(decide(&policy, &item("card", "other", "decision",
+        "Choose the cache layout? No human approval is required.")), Decision::Approve);
+}
+
+#[test]
+fn moving_or_retiring_production_data_is_not_a_judgment_ask() {
+    for question in [
+        "Move production usage and invoices onto the rollups?",
+        "Retire the production usage and invoice ledgers?",
+    ] {
+        assert_eq!(decide(&Policy::default(), &item("card", "other", "decision", question)),
+            Decision::SkipCategory("prod_data".into()), "{question}");
+    }
+    assert_eq!(decide(&Policy::default(), &item("card", "other", "decision",
+        "Move local fixture usage onto rollups?")), Decision::Approve);
+}
+
+#[tokio::test]
+async fn explicit_exclusions_survive_the_real_queue_and_approval_job() {
+    let st = state();
+    let dir = tempfile::tempdir().unwrap();
+    let now = now_f64();
+    let mock = Arc::new(Mock::default());
+    assert!(tick_with(&mock, &st, dir.path(), now).await.ran);
+    seed(&st, "GS-199", "lane-a", "decision",
+        "Move production usage and invoices onto the rollups, retire two ledgers, and add two fields to the usage breakdown API?", now);
+    seed(&st, "LOCAL-EXCLUDED", "lane-a", "decision", "Choose the local cache layout?", now);
+    seed(&st, "LOCAL-ALLOWED", "lane-a", "decision", "Choose the cache key? I recommend A.", now);
+    st.store.write(|conn| {
+        conn.execute("UPDATE issues SET ask_unblocks=?1 WHERE id IN ('GS-199','LOCAL-EXCLUDED')",
+            ["An automatic needs-input approval does not cover these (production data and a customer-facing API)."])?;
+        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    }).unwrap();
+
+    let rep = tick_with(&mock, &st, dir.path(), now + 1.0).await;
+    assert_eq!(rep.approved, ["LOCAL-ALLOWED"]);
+    for id in ["GS-199", "LOCAL-EXCLUDED"] {
+        assert_eq!(card(&st, id).status, "needsyou", "{id} must retain its ask");
+        assert_eq!(outcomes(&st)[id], "never");
+        assert!(load_ledger(&st.store.read().unwrap()).unwrap().iter()
+            .any(|e| e.card == id && e.detail.contains("explicit approval")), "{id}: auditable hold reason");
+    }
+    assert_eq!(mock.sends.lock().unwrap().len(), 1, "only the authorized local control is sent");
+    assert!(mock.emails.lock().unwrap().is_empty());
+    assert!(tick_with(&mock, &st, dir.path(), now + 2.0).await.approved.is_empty());
+    assert_eq!(mock.sends.lock().unwrap().len(), 1, "a repeated job does not act again");
+}
+
+#[test]
 fn an_ask_that_names_nothing_or_a_host_service_is_never_auto_approved() {
     let bare = item("needsyou", "other", "credential", "Shall I remove it?");
     assert_eq!(never_reason(&bare), Some("no_artifact_named"), "AH-391");
@@ -527,4 +590,17 @@ fn an_ask_to_speak_in_the_owners_name_is_never_auto_approved_or_sent_back() {
     assert!(matches!(decide(&policy, &it), Decision::Never("owner_voice")));
     let plain = item("needsyou", "other", "decision", "Should gs12-planes take GP-201 before GP-199 this afternoon?");
     assert_ne!(never_reason(&plain), Some("owner_voice"));
+}
+
+#[test]
+fn owner_control_decisions_are_held_without_credential_send_back() {
+    let policy = Policy { send_back: true, ..Policy::default() };
+    for q in [
+        "Should I change the fleet's priorities?",
+        "Should I stop all workers?",
+        "Want me to re-enable SCHED-608, which you turned off?",
+    ] {
+        assert_eq!(decide(&policy, &item("card", "other", "decision", q)), Decision::Never("owner_control_decision"), "{q}");
+    }
+    assert_eq!(decide(&policy, &item("card", "other", "decision", "Should I rerun the flaky fixture test?")), Decision::Approve);
 }

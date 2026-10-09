@@ -225,7 +225,7 @@ impl Policy {
         if parts.is_empty() {
             return format!("Auto-approve is ON for {who}, but every category is off, so nothing is approved.");
         }
-        parts.push("never money, production data, outside parties or scope".to_string());
+        parts.push("never money, production data, outside parties, scope, priorities or reversals of owner actions".to_string());
         let list = match parts.len() {
             1 => parts[0].clone(),
             n => format!("{} and {}", parts[..n - 1].join(", "), parts[n - 1]),
@@ -318,6 +318,22 @@ fn ask_text(item: &Value) -> String {
         .filter_map(|k| item[*k].as_str())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// An ask's explicit reservation outranks the default judgment policy. Include
+/// its unblock and context, where GS-199 put the reservation; do not infer a
+/// credential step from the recorder's generic unblock boilerplate.
+fn requires_explicit_approval(item: &Value) -> bool {
+    let text = format!("{} {}", ask_text(item), item["context"].as_str().unwrap_or(""))
+        .to_ascii_lowercase();
+    static EXCLUSION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"\b(?:auto(?:matic|mated)?[- ](?:needs[- ]input[- ])?approv(?:al|e) (?:does not|doesn't|cannot|can't|must not) (?:cover|approve)",
+            r"|not covered by auto(?:matic|mated)?[- ](?:needs[- ]input[- ])?approv(?:al|e)",
+            r"|(?:do not|don't|must not) auto[- ]approve|(?:requires|needs|must receive) explicit (?:human|owner) approval)\b"
+        )).expect("constant approval exclusion regex")
+    });
+    EXCLUSION.is_match(&text)
 }
 
 /// Why an ask can never be auto-approved, if it cannot. `None` = the policy
@@ -565,7 +581,7 @@ fn effective_category(item: &Value) -> String {
     }
     let t = ask_text(item).to_ascii_lowercase();
     let hit = |re: &str| regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false);
-    let action = r"\b(disabl|delet|drop|purg|remov|migrat|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat)\w*";
+    let action = r"\b(disabl|delet|drop|purg|remov|migrat|mov|retir|backfill|overwrit|restor|promot|roll ?out|rollout|scal|replica|deploy|cut ?over|rotat)\w*";
     let target = r"\b(production|prod\b|prod plane|customer|tenant|tubescience|primis|live (data|plane|cluster)|your own org)";
     if hit(action) && hit(target) {
         tracing::info!(target: "amux::needs_input_auto", verdict = "scored_as_prod_data",
@@ -580,13 +596,32 @@ fn effective_category(item: &Value) -> String {
 /// auto-approval that named no list deferred seven GS-12 plan items).
 pub fn is_scope_decision(item: &Value) -> bool {
     let t = ask_text(item).to_ascii_lowercase();
-    let re = r"\b(defer\w*|descope\w*|de-scope\w*|out of (the )?scope|scope (cut|change|reduction)|cut list|done[- ]by|deadline|postpone\w*|(drop|remove) (it |them |these |those )?from (the )?(plan|scope|done))\b";
+    let re = r"\b(defer\w*|descope\w*|de-scope\w*|out of (the )?scope|scope (cut|change|reduction)|(?:cut|change|reduce|expand|narrow) (?:the |project |goal )?scope|cut list|done[- ]by|deadline|postpone\w*|(drop|remove) (it |them |these |those )?from (the )?(plan|scope|done))\b";
     regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false)
+}
+
+/// Fleet control and changes to owner-set priorities or disabled automation
+/// require a new owner decision, not an implementation-choice auto-approval.
+pub(crate) fn is_owner_control_decision(item: &Value) -> bool {
+    let t = ask_text(item).to_ascii_lowercase();
+    static CONTROL: std::sync::LazyLock<[regex::Regex; 6]> = std::sync::LazyLock::new(|| [
+        r"\b(stop|pause|halt|archive|shut ?down)\b",
+        r"\b(fleet|all (the )?(workers|lanes)|every (worker|lane))\b",
+        r"\b(change|shift|reorder|override|reprioriti[sz]e)\b",
+        r"\bpriorit\w*\b",
+        r"\b(re[- ]?enable|enable|turn (it |them )?back on|resume|restart|undo|override|overrule)\b",
+        r"\b(disabled|turned off|owner[- ]stop|you (stopped|paused|held)|owner'?s (stop|hold|instruction))\b",
+    ].map(|s| regex::Regex::new(s).expect("constant owner control pattern")));
+    let hit = |i: usize| CONTROL[i].is_match(&t);
+    (hit(0) && hit(1)) || (hit(2) && hit(3)) || (hit(4) && hit(5))
 }
 
 pub fn decide(policy: &Policy, item: &Value) -> Decision {
     if !policy.enabled {
         return Decision::Off;
+    }
+    if requires_explicit_approval(item) {
+        return Decision::Never("explicit_approval_required");
     }
     let boundary = effective_category(item);
     if matches!(boundary.as_str(), "money" | "prod_data" | "outbound") {
@@ -594,6 +629,9 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
     }
     if is_scope_decision(item) {
         return Decision::Never("scope_decision");
+    }
+    if is_owner_control_decision(item) {
+        return Decision::Never("owner_control_decision");
     }
     if let Some(why) = never_reason(item) {
         // A worker can complete a credential step down the access ladder; it
@@ -841,7 +879,7 @@ impl Actions for RealActions {
             state,
             worker,
             text,
-            crate::api::turn_end::OWNER_POLICY_GUARD,
+            "needs-input:auto-approve",
             "",
             msg_id,
         )
@@ -1124,8 +1162,10 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                 let label_why = match why {
                     "owner_must_act" => "only you can do this (it asks you to act)",
                     "public_surface" => "a new endpoint or public surface: yours by the repo rule",
+                    "owner_control_decision" => "fleet control, priorities and reversals of owner actions require an owner decision",
                     "sent_back_once" => "sent back once already; the worker re-asked, so it is yours",
                     "scope_decision" => "a scope or deadline decision stays with you (contract rule 11)",
+                    "explicit_approval_required" => "this ask requires explicit approval; automatic approval does not cover it",
                     _ => "credential or access: only you can do it",
                 };
                 skips.push(entry_for(item, &dk, "never", label_why.into(), now));
@@ -1284,7 +1324,7 @@ fn view(home: &Path, worker: &str, ledger: &[Entry], waiting: &[Value], now: f64
                      "money_cap_usd": defaults.money_cap_usd, "prod_data": defaults.prod_data, "outbound": defaults.outbound},
         "kill_switch": {"var": KILL_SWITCH, "server_env_off": server_kill(home)},
         "precedence": "worker > group > global (amux.env) > default; AMUX_NEEDS_INPUT_AUTO=0 in server.env stops it everywhere",
-        "never": "credential and access asks (keys, sign-ins, grants) are never approved automatically; with send_back on they go back to the worker once, with the access ladder",
+        "never": "asks explicitly requiring human or owner approval stay with the owner; credential and access asks (keys, sign-ins, grants) are never approved automatically; with send_back on they go back to the worker once, with the access ladder",
         "waiting_now": waiting.len(),
         "already_waiting_unapproved": already_waiting,
         "recent": recent,

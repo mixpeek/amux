@@ -5400,3 +5400,224 @@ CARD: AMUX-5723
 SYMPTOM: The PR author's note says it integrated the reused land checkout and --verify-cmd from main, but head 1eee0343 contains none of 7638310a, aa8eb634, 9f2ff08e or 9d067df2 (git merge-base --is-ancestor, all four NOT in the PR). Its land_queue.rs still runs a fresh `git worktree add` per compose attempt (c-<pid>-<ulid>) and removes it after. On mixpeek that is a 39k-file checkout: 237 s under load against the 120 s git timeout (land 119 requeued twice, ~50 min held), fseventsd 3% -> 80% per land, and four git processes at 60-78% CPU each. Its double-force cleanup handles timeout residue, not the timeout. Separately, its contract.rs freezes a verify_cmd PATCHed onto a backlog/todo card, while main (aa8eb634) answers 409 contract_fields_need_doing; its test preparing_a_todo_contract_persists_the_command_without_claiming_work and main's a_verify_cmd_sent_before_doing_is_refused_with_the_one_request_path cannot both pass.
 COST: A textual conflict in compose() resolved toward the PR side reverts the fix for three Mac escalations (fseventsd 20261008-115224, cpu 20261008-105111, land timeouts) with a green build. The review it asked for could not cover push-receipt adoption or interrupted-checkout recovery, which are not on the published head.
 FIX: Rebase #239 on main before final CI. In compose(), keep main's candidate() (one reused checkout per repo, reset per land) and apply the PR's failure cleanup to that path; keep land_candidate_reused visible in the land log after merge. For contract prepare, keep one semantics: the PR's freeze-on-prepare is fine if aa8eb634's refusal and its test are removed in the same commit. Note that freezing at todo leaves the lane only its one verify_cmd amend for a typo found before work starts. My 9d067df2 re-queue selects review_state='failed' only, so the PR's 'escalated' owner gate (GD-75, MO-3951) is untouched.
+
+## A shell schedule's timeout kills only the outer bash, so the job tree runs on as an orphan
+AREA: scheduler
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-gates
+CARD: GG-104 (mixpeek side; the amux-frustrations card could not be created from this lane: POST /api/board with session=amux-frustrations returned 403 "workers may create board items only on their own board")
+SYMPTOM: runtime_jobs/scheduler.rs runs kind=shell under tokio timeout(SHELL_TIMEOUT_S) with kill_on_drop(true) and no process group. On timeout only the direct /bin/bash dies; its children reparent to pid 1. SCHED-552's 17:25Z run recorded "timed out after 600s" while bash pid 22204 (ppid 1) and its python child were still running 19 minutes later. The every-20m schedule would then start a second copy on the same worktree.
+COST: Three runs read as failed when they were still working, a 20-minute investigation, and a near-collision where the next fire would reset a git worktree under the live run that was about to commit and land from it.
+FIX: Spawn the shell job in its own process group (process_group(0)) and killpg it on timeout. Fixed when a shell schedule whose grandchild sleeps past SHELL_TIMEOUT_S leaves no surviving process after the timeout.
+
+## PR #239's worker group boundary refuses the Mac cleanup tick's escalations to the amux lane
+AREA: messaging
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5724
+SYMPTOM: Reviewed head 0a7405e8. worker_group_refusal has no exception besides shared membership, self and owner input. The Mac cleanup tick is SCHED-465, a shell schedule whose session is `desktop` (CC_TAGS="system"), and it escalates with `amux send amux --file` (scripts/mac-cleanup-tick.sh:369). The amux lane is CC_TAGS=amux. The two sets are disjoint, so every escalation is refused worker_group_boundary. Today's fseventsd, cpu and disk escalations all arrived by this path.
+COST: After the merge, each constraint escalation logs "escalation to amux FAILED (n in a row)" and goes no further. The RCA loop (cause, fix, re-measure, .card file) stops with no lane to drive it, while the tick keeps applying only symptom fixes.
+FIX: Before merge, put desktop and amux in one shared group, or have the tick escalate through an owner-origin or system path the boundary allows. Then replay one escalation against the installed image and confirm it reaches the lane.
+
+## PR #239's land candidate() cannot recover an unregistered cand-<hash> directory
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5725
+SYMPTOM: Reviewed head 0a7405e8. When ~/.amux/tmp/land/cand-<hash> exists but is not a registered worktree (admin dir pruned, a half-created directory, a .git file pointing nowhere), `rev-parse --git-dir` fails and candidate() falls through to re-creation. The PR replaced main's `remove_dir_all` with cleanup_candidate(), which is `git worktree remove --force --force` and fails on an unregistered path. `worktree add` into the existing non-empty directory then fails with "already exists". sweep_old_candidates now also skips unregistered c-* directories, so a stale unregistered checkout leaks and is never logged.
+COST: One stray directory fails every land for that repository, one after another, each logging land_candidate_cleanup_failed, until someone removes it by hand. That is the manual-override shape the repo CLAUDE.md treats as an amux defect. On main the same state self-heals.
+FIX: In candidate() only, for the exact cand-<hash> path under ~/.amux/tmp/land, not a symlink and not registered, remove it with remove_dir_all after the worktree remove fails, and log a verdict. Give unregistered old c-* leftovers the same path, or at least one counted WARN. Test: create a plain non-empty cand-<hash> directory, call candidate(), expect land_candidate_created.
+
+## PR #239 freezes a whole contract from an acceptance_criteria-only PATCH on a backlog or todo card
+AREA: board
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5726
+SYMPTOM: Reviewed head 0a7405e8. The prepare branch in decide() fires on any of acceptance_criteria, verify_cmd, verify_kind or deploy_check, for backlog, todo and doing. freeze_from fills the command from the lane's CC_VERIFY default. So on a contract lane with a default verify command, an orchestrator setting or refining acceptance criteria on a backlog card freezes the contract right then. After that, acceptance is owner-only and the lane gets one verify_cmd amend. The PR's own test covers only {verify_cmd, reason}, and its comment says "an explicit server check" while the condition accepts acceptance alone.
+COST: Planning edits made before anyone claims the card become frozen contracts. The next refinement draws contract_frozen 409 and needs the owner. Decomposition writes acceptance_criteria in bulk, so this can hit many backlog cards at once.
+FIX: Make the prepare branch require an explicit verify_cmd / verify_kind / deploy_check, which matches the comment. Leave acceptance_criteria on backlog and todo as a plain column write. Add an acceptance-only case to preparing_a_todo_contract_persists_the_command_without_claiming_work.
+
+## the needs-input policy auto-approved an ask that excludes itself from auto-approval and that the orchestrator had just kept for the owner
+AREA: needsyou
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-spend
+CARD: GS-246
+SYMPTOM: GS-199's ask (move production usage and invoices onto the rollups, retire two ledgers, add two fields to the usage breakdown API) was approved at about 16:55Z with "Approved automatically under the owner's needs-input policy. Proceed.", and the card moved needsyou to todo. The ask's own ask_unblocks said "An automatic needs-input approval does not cover these (production data and a customer-facing API)", and mixpeek-override had relayed Ethan's rule 9 instruction minutes earlier naming GS-199 as a card that keeps its ask. Both are stop-list items in ~/.claude/CLAUDE.md.
+COST: the lane had to recognise the approval as invalid, write it down and put the card back by hand. A lane that took "Proceed" literally would have started a production billing migration on an approval nobody gave.
+FIX: never auto-approve a needsyou whose text names production data, a customer-facing API, money or an outside reader; at minimum honour an ask that says automatic approval does not cover it.
+
+## amux land sits in state running for 15 to 50 minutes on a worktree start timeout, holds the queue, and the holder cannot cancel it
+AREA: land
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4463
+SYMPTOM: Land 119 (about 50 min, morning) and land 121 (gs12-extra-2, over 15 min at 14:4xZ) both sat in state running on "git worktree timed out after 120s or failed to start" while holding the mixpeek land queue, then ended refused. DELETE /api/land answers 409 while a land runs, so the holder could not clear its own stuck entry; the amux lane was stopped and amux-helper refuses worker sends, so no one could. Logs under ~/.amux/logs/land/.
+COST: two queue stalls of 15 to 50 minutes with gs12 lanes waiting behind them on a day with 37 landings in 3 hours.
+FIX: a runner timeout that releases the lock when the worktree step fails to start, and a --cancel that works on a running land whose worktree never started.
+
+## a verify_cmd write on a todo contract card answers 200 with applied:false and no hint, and the lane reads it as a refusal
+AREA: board contracts
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4464
+SYMPTOM: GE1-4 (gs12-extra-1) in todo: PATCH {"verify_cmd": "...", "reason": "..."} returned 200 {"applied": false}. The lane asked the orchestrator to set it; the orchestrator's own write was dropped the same way. The command only lands inside the doing move body ({"status": "doing", "verify_cmd": "...", "reason": "..."}), which nothing in the response says.
+COST: one lane blocked on a contract it could not freeze, plus two orchestrator turns; every curl recipe in CLAUDE.md reads a 200 as success.
+FIX: answer 409 with the recipe (put verify_cmd in the doing move body) instead of a silent 200 with applied:false.
+
+## the needs-input policy bounced a group-scope configuration ask to the worker as a key or sign-in ask
+AREA: needsyou
+SEVERITY: annoys
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4465
+SYMPTOM: MO-4462, a decision card asking the owner for a group-scope setting (the contract review model for gs12-platform), came back with the key/sign-in/grant ladder text ("Mint keys in the UI you reach... Rotate by replacement"). The category match is by keyword, not by the ask type. The only worker route to a group layer is a header-less PUT /api/scope that the server treats as the dashboard, which is the write the scope policy refuses to sessions on purpose.
+COST: a configuration change made and reverted on a false premise, and an owner ask answered by a rule written for credentials.
+FIX: classify the bounce by ask_type and the target (a scope level) rather than by words; a group-scope ask stays with the owner or gets AMUX_SCOPE_WRITE_AGENTS for the orchestrator explicitly.
+
+## a done request on an escalated contract card skips the server check, so no round-4 review is ever queued
+AREA: board contracts
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4466
+SYMPTOM: GD-75 (gs12-deputy, the GS12 proof 12 run card) was escalated after three failed reviews, reopened with direction by the orchestrator (status todo with authorized_by, the option the ask offered), then requested done from doing twice by its lane (14:34Z to 14:46Z and 16:05:59Z to 16:06:31Z on 2026-10-08). Both landed as done, but card_contracts still reads state frozen (frozen_at 2026-10-07 01:40Z), review_state escalated (05:40Z), review_rounds 3, and the evidence has no Server-verified line. run_reviews claims only review_state pending, so the card can never be reviewed again; MO-3951 shows the same shape after its reopen.
+COST: the owner's first-priority proof run card sits at done with no path to verified; two lane resubmits and three orchestrator reads to find out that nothing was queued.
+FIX: when a card at review_state escalated re-enters doing and requests done, run the contract check and set review_state pending (round 4 runs; a pass grants verified, a fail escalates again), or refuse the done with a 409 that names the owner-only path.
+
+## a frozen contract can only be amended by the owner, so cards sit on wording the orchestrator has already ruled on
+AREA: board contracts
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4468
+SYMPTOM: PATCH acceptance_criteria with a reason from the gs12 orchestrator answers 409 contract_frozen ("the owner can change a frozen contract") on GE2-17 and GS-200, and the owning lanes get the same answer. GS-200's done-gap close then failed review round 2 on exactly the frozen criterion it named, so the lane parks rather than spend round 3. Eight gs12 cards sit this way (GS-200, GE2-17, GG-83, GG-31, GOD-2, GP-235, GC-58, GC-155) on wording the orchestrator ruled on, while the owner asked (18:30Z) that lanes resolve inside his standing authority without him.
+COST: eight cards parked on one-line wording changes, each a separate owner read, and review rounds spent on criteria everyone agrees are superseded.
+FIX: let the orchestrator (AMUX_ORCHESTRATOR at the group layer) amend a frozen criterion with a required reason and an audit line in the contract log, or add a group switch for it; keep the owner-only rule for lanes amending their own contracts.
+
+## Slow board GETs wait inside SQLite, and the orchestrator's window_stats rescans every task event every 3 s
+AREA: performance
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5727
+SYMPTOM: Hour to 18:44Z: 114 GET /api/sessions over 5 s (max 41.3 s) and 53 GET /api/board (max 29.9 s), while p50 stays at 26 ms and 2.7 ms. Every multi-second board_list_slow line has queued_ms=0 and conn_ms=0, with the time in sql_ms (up to 13.1 s) and sometimes sessions_ms (3.5 s). The wait is not the read pool and not the writer. It is not the WAL either: the file is 1.18 GB, but the -shm header showed mxFrame going 751 -> 4314 in 20 s from a reset, so only a few MB is ever live. Some outliers fall 10-160 s after the two self-adoptions (18:14, 18:21Z). The rest overlap orchestrator-runtime stalls whose worst section is window_stats: 3-70 s per tick, 25 of them over 4 s between 18:33 and 18:47Z. window_stats' first query (completed tasks, `mutation LIKE '%"to":"verified"%'`) is planned on idx_amux_state_events_entity, so every 3 s it reads all 64,336 task events, scattered through a 14.4 GB database, to count 11 rows from the last hour. Read-only timing: 185-231 ms warm on the planner's choice, 4.3 ms warm with INDEXED BY idx_amux_state_events_at. Cold, under this host's disk contention (load 24-29 on 28 cores), it is the seconds-long stall AMUX-5027 recorded as unexplained.
+COST: The dashboard and every lane's board and session reads stall for 10-40 s several times an hour. The orchestrator's circuit-breaker input arrives up to 70 s late.
+FIX: In window_stats, have the completed query use the time index (INDEXED BY idx_amux_state_events_at, or an (entity_type, at) index through a migration) and keep the tick_section_slow signal. Re-measure board_list_slow sql_ms and window_stats worst_ms over an hour against this baseline.
+
+## /api/sessions has no phase breakdown, so its slow calls cannot be attributed
+AREA: observability
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5727
+SYMPTOM: GET /api/board logs board_list_slow with queued/conn/sql/sessions/rows phases. GET /api/sessions, 5,996 calls an hour with p95 2.96 s and max 41.3 s, logs nothing beside its latency except sessions_build_raced / _race_retried (8 and 7 in two hours). There is no way to tell tmux enumeration, git inventory, store reads and the race retry apart from the logs.
+COST: An owner-requested diagnosis could name the board's dominant wait but only infer the sessions route's, from its overlap with the board stalls. That is the instrument gap ethos rule 4 describes.
+FIX: Add a sessions_list_slow line, over a budget, with per-phase ms (tmux, git, store, build retries) and measured/n_considered, mirroring board_list_slow.
+
+## the turn-end classifier turns a worker's status sentence into an owner ask, and a blanket approval then lands on a production drop that was never ready
+AREA: board intake
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-08
+SESSION: mixpeek-override
+CARD: MO-4469
+SYMPTOM: Three status sentences from gs12-extra-1 were filed as needsyou owner asks: GE1-46, GE1-48 and GE1-50 ("the flip waits on 4.8, 5.1 and 18.7, and dropping the copies needs your go"). When the owner wrote "approve all 19 left with me" at about 20:15Z, GE1-50, a copy of MO-3731's production drop whose prerequisites are still in backlog, carried an approval line. The lane ran nothing and folded it into MO-3731.
+COST: an owner approval attached to a production data deletion that no one had asked for yet; the orchestrator and the lane spent a turn each unwinding it, and the owner's batch approval now has to be re-read card by card.
+FIX: file an owner ask only from a sentence with a question and an unblock; never from a status line that names another card as the ask's owner; and show the source sentence on the card so a batch approval can be checked against it.
+
+## Contract verification refuses on its own stale locked worktree under ~/.amux/tmp/contract
+AREA: board contract verification
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-spend
+CARD: GS-247
+SYMPTOM: Requesting done on GS-167 at 20:2xZ returned "server verification failed at 69c5016703bf...: could not check out ...: fatal: '/Users/ethan/.amux/tmp/contract/GS-167-69c5016703bf' is a missing but locked worktree; use 'add -f -f' to override, or 'unlock' and 'prune' or 'remove' to clear". The path is the verifier's own scratch checkout; the lane never created it. A few minutes later `git worktree list` no longer showed it, the directory was absent, and an identical done request started verification.
+COST: one false "GS-167 is not done" notice, a diagnosis round and a resubmission. The notice reads as the lane's failure, and a lane that took it at face value could have reopened finished work or moved the card to cannot_satisfy.
+FIX: before `git worktree add` for a contract checkout, run `git worktree prune` (or `remove -f -f` its own path) when the path is registered but missing, and report a checkout failure as a verifier infrastructure error, retried once, rather than as the card failing verification.
+- [ ] **2026-10-08 | amux board, contract verify** *(mixpeek-override)*: the server verifies a frozen contract "in a clean detached checkout of the lane's committed HEAD"; for a lane whose cwd is the shared checkout with no worktree that HEAD was a23f18cd677, 6,590 commits behind origin/main, so MO-3925's verify (retention.py check plus the two plane probes) failed on bytes nobody runs, and the card shows only {state: failed} with no rc or output. The same line from a `git archive origin/main` passes rc 0. Wanted: verify at origin/main (or the land sha the card's evidence names) when the lane has no worktree or its HEAD is behind origin by more than the land batch; write the verify's rc and output tail on the card. Workaround: the verify_cmd exports origin/main with git archive into a fixed path and runs there (one amendment per card). Card: MO-4472 on mixpeek-override's board (id in the commit body if it differs).
+
+## The staged-guard times out at 18 s while the board answers in 0.1 s, so commits go unguarded and the shell guard blocks
+AREA: git guards (staged-guard, git-shared-guard)
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-cicd
+CARD: GC-183
+SYMPTOM: Four commits in the mixpeek worktree .worktrees/gs12-cicd between 20:50Z and 21:25Z printed "amux staged-guard: NOT ENFORCED: could not reach the amux server at https://localhost:8824/api/git/staged-guard after 3 attempts over 18.2s (TimeoutError)". Board PATCHes from the same session in the same minutes returned 200. At 21:25Z, one failure-free minute later, GET /api/board/GC-183 took 0.08-0.11 s and POST /api/git/staged-guard answered in 0.004-0.009 s. At 21:23Z git-shared-guard.py blocked a whole Bash call (a `git checkout <sha> -- <paths>` plus `amux land --cancel` and five other segments) on the same TimeoutError. ~/.amux/staged-guard-unenforced.jsonl holds 1,611 records (all sessions).
+COST: four commits made with cross-session sweep protection off, and one compound command that did not run at all, including its land cancel. The lane rebuilt the step around the guard (cancel, cherry-pick --no-commit, one commit) and spent a land cycle.
+FIX: give the guard endpoints their own short path that does not wait behind whatever stalls them while the board stays fast, or a deadline under 2 s with a cached co-tenancy answer. Count NOT ENFORCED outcomes per hour as a health signal, since the jsonl already records each one.
+
+## A session-swap auto-pickup reopens a card the contract granted done 69 seconds earlier
+AREA: amux board, auto-pickup on session restart, contract done
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-08
+SESSION: gs12-extra-1
+CARD: GE1-33 (mixpeek, gs12-extra-1's board)
+SYMPTOM: GE1-33's done request (PATCH status done with evidence, gate_checked and left_undone, 202) was granted by harness:contract at 21:35:54Z (attempt 33, outcome done, "Server-verified (contract rule 2) at 815cfa20dd6"). The lane's Claude Code session was then recycled, and the restart prompt read "[amux auto-pickup] Claimed GE1-33, resume this still-owned task now". At 21:37:03Z attempt 34 started with gs12-extra-1 holding the lease, and the log reads "terminal summary retired on reopen to doing; prior Final outcome remains in history". Nothing the lane did moved it; the pickup chose the card while the done grant was landing, and its claim reopened it.
+COST: a verified-done card back in doing with the done line retired, found only by reading the attempts list, and a second done request that re-ran the frozen cargo verify (minutes of compile on a host at load 35 to 50). A lane that trusted the restart prompt would have redone finished work.
+FIX: a pickup must never claim a card whose status is terminal or whose contract state is verifying or granted; read the card's status inside the same transaction as the claim, and drop a restart's "resume" target that is already done.
+
+## amux browser resize reports a phone viewport while the page keeps its desktop width
+AREA: browser
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-08
+SESSION: amux
+CARD: AMUX-5744
+SYMPTOM: Testing the scratchpad at phone width, POST /api/browser/resize {"width":390,"height":844} and POST /api/browser/action {"action":"viewport","device":"iphone"} both answered ok with measured {"w":390,"h":844}. An immediate /api/browser/eval of innerWidth returned 756, the layout stayed desktop (no 600px media query applied), and the screenshot was 756 wide. Repeated three times across both routes.
+COST: The mobile half of a UI verification could not be done in the amux browser, so the phone-width check had to be reported as not done. The "measured" field reads as proof the viewport changed when the page never saw it.
+FIX: Make measured come from the page (window.innerWidth after the emulation call, on the same target eval uses), and apply the emulation to that target. Add a test that resizes, then evals innerWidth.
+
+## Needs-input auto-approval answered two either/or owner policy questions with a bare "Proceed"
+AREA: needs-input
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: amux-app
+CARD: AA-29
+SYMPTOM: AA-29 asked "merge PR #247 as is, or keep isolated auto-proceed?" and AA-30 asked whether worker messaging should become strictly same-group (PR #239). Both were ask_type=decision about fleet policy. Within minutes each got "Approved ... Proceed. (Approved automatically under the owner's needs-input policy.)" and moved from needsyou to backlog. This happened right after #244 merged, which was meant to keep explicit-approval asks with the owner.
+COST: The reply picks neither option, so it cannot be obeyed truthfully. A lane that read it as consent would have merged a reversal of an explicit owner request (#247) and a fleet-wide messaging policy change (#239). Re-parking both cards and diagnosing took one round trip.
+FIX: Treat an ask whose question offers alternatives ("X, or Y?") as never auto-approvable, since "Proceed" selects nothing. Classify policy and default changes to fleet behavior as owner-control decisions, and log verdict=either_or_not_approvable when one is skipped.
+
+## Land waiters check installed behavior once a minute, delaying adoption and the CI lifecycle gate
+AREA: CI and land lifecycle
+SEVERITY: degrades
+STATUS: fixed
+DATE: 2026-10-08
+SESSION: amux
+CARD: AGH-8
+SYMPTOM: The `checks` workflow's chained land precheck spent 167 s in one run. An unchanged-source `scripts/test-land-demote-sticks.sh` took 77.27 s locally, including a 60 s self-upgrade poll in a real land waiter. Its old 100 s test deadline hid the delay. A 30 s deadline failed on the unchanged CLI with `no re-exec within 30s`.
+COST: New land behavior can sit unapplied for a minute in queued processes, and the CI job spends most of that time waiting for the lifecycle test.
+FIX: Poll the installed behavior version every 10 s while waiting, emit `verdict=land_self_upgrade_reexec check_interval_s=10` on re-exec, and enforce a 30 s re-exec deadline in the lifecycle test. The same test passed in 27.50 s afterward. The whole chained land precheck passed locally in 239.50 s; that total is not comparable with the hosted runner's 167 s because it ran on different hardware.
+
+## Feedback decoration rebuilt an open worker menu on every status refresh
+AREA: dashboard worker actions and mobile E2E
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-08
+SESSION: amux-gs12-helper
+CARD: AGH-8
+SYMPTOM: PR #241's iOS Safari shard failed worker-pause.spec.ts after tapping an enabled Resume item: no POST /api/workers/pause-probe/resume followed. The trace showed the item detached twice during click retries. _renderPeekWorkerActions compared live menu.innerHTML to the pristine template, but the feedback layer adds data-action and related attributes after insertion, so each updatePeekStatus replaced the still-open menu even when its actions were unchanged.
+COST: a real mobile tap could vanish, and an unrelated PR lost a 17-minute E2E shard plus review time.
+FIX: Cache the last generated template per menu element and update only when the action definition changes; retain a regression assertion that repeated status refreshes preserve the enabled Resume node. Emit one worker-action-menu decorated_menu_preserved client-debug verdict when the formerly destructive comparison would have replaced a live open menu.

@@ -2,8 +2,16 @@ import { test, expect } from './fixtures';
 // Both server states, so the panel is asserted to DISCRIMINATE, not merely render.
 for (const [label, running] of [['not-running', false], ['wedged', true]] as [string, boolean][]) {
   test(`browser live-view failure panel: ${label}`, async ({ page }) => {
-    await page.route('**/api/browser/status', r =>
-      r.fulfill({ contentType: 'application/json', body: JSON.stringify({ running }) }));
+    let statusCalls = 0;
+    await page.route('**/api/browser/routing/request', async route => {
+      const request = route.request();
+      const payload = request.postDataJSON();
+      if (payload.verb !== 'status') return route.continue();
+      expect(request.method()).toBe('POST');
+      expect(typeof payload.session).toBe('string');
+      statusCalls++;
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ running }) });
+    });
     await page.goto('/');
     await page.waitForFunction(() => typeof (window as any)._bwViewportFail === 'function', { timeout: 20000 });
     await page.evaluate(() => (window as any).switchView('browser'));
@@ -20,6 +28,7 @@ for (const [label, running] of [['not-running', false], ['wedged', true]] as [st
                primaryOnclick: primary?.getAttribute('onclick') || '' };
     });
     console.log(`[${label}] ` + JSON.stringify(r));
+    expect(statusCalls, 'failure panel must observe the routed browser status').toBeGreaterThan(0);
     if (running === false) {
       expect(r.heading).toMatch(/No browser is running/);
       expect(r.primaryOnclick, 'primary action must START, not screenshot').toContain('_bwGo');

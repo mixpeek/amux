@@ -448,6 +448,7 @@ fn freeze_from(card: &Card, body: &Value, existing: Option<&Contract>, defaults:
                 json!({
                     "acceptance_criteria": "a list of testable statements, in this PATCH or already on the card",
                     "verify_cmd": format!("a command run from the repo root of the lane's committed HEAD, in this PATCH, or the lane's {DEFAULT_VERIFY} setting"),
+                    "cli": format!("amux board doing {} --verify-cmd '<command>'", card.id),
                 })))
         }
     }
@@ -639,21 +640,57 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// for lanes' checkouts, and Mixpeek's cost time on 39k files.
 async fn fresh_checkout(tree: &Path, tmp: &Path, sha: &str) -> Result<(), String> {
     let t = tmp.to_string_lossy().into_owned();
+    let root = crate::config::amux_home().join("tmp").join("contract");
+    let infrastructure = |e: String| format!("verifier checkout infrastructure error at {t}: {e}");
+    if !tmp.is_absolute() || !tmp.starts_with(&root) || tmp == root
+        || tmp.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+    {
+        return Err(infrastructure("not an owned contract scratch path; retained".into()));
+    }
+    let canonical_root = root.canonicalize().map_err(|e| infrastructure(e.to_string()))?;
+    let canonical_tmp = tmp.canonicalize().or_else(|_| {
+        let parent = tmp.parent().ok_or_else(|| std::io::Error::other("scratch path has no parent"))?;
+        Ok::<_, std::io::Error>(parent.canonicalize()?.join(tmp.file_name().unwrap_or_default()))
+    }).map_err(|e| infrastructure(e.to_string()))?;
+    if !canonical_tmp.starts_with(&canonical_root) || canonical_tmp == canonical_root {
+        return Err(infrastructure("scratch path resolves outside the contract directory; retained".into()));
+    }
     // A detached reviewer still running here, or a result nobody has read yet,
     // is not a leftover (rule 3 restart safety).
     if !matches!(review_job(tmp), ReviewJob::None) {
         return Err(format!("{t} holds a reviewer run that is still live or unread"));
     }
-    let _ = git(tree, &["worktree", "remove", "--force", &t]).await;
-    let _ = git(tree, &["worktree", "prune"]).await;
-    if tmp.exists() && tmp.starts_with(crate::config::amux_home().join("tmp").join("contract")) {
-        let _ = std::fs::remove_dir_all(tmp);
+    let registrations = git(tree, &["worktree", "list", "--porcelain", "-z"]).await.map_err(infrastructure)?;
+    let registered = registrations.split('\0').filter_map(|s| s.strip_prefix("worktree "))
+        .any(|p| Path::new(p) == canonical_tmp);
+    let removal = git(tree, &["worktree", "remove", "--force", &t]).await;
+    if registered && tmp.exists() {
+        if let Err(e) = &removal {
+            return Err(infrastructure(format!("registered checkout could not be removed; retained: {e}")));
+        }
+    }
+    if tmp.exists() {
+        std::fs::remove_dir_all(tmp).map_err(|e| infrastructure(e.to_string()))?;
         tracing::info!(path = %t, measured = true, n_considered = 1, verdict = "contract_checkout_leftover_cleared",
             "cleared a checkout directory a killed check or review left behind");
     }
-    git(tree, &["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", &t, sha]).await
-        .map(|_| ())
-        .map_err(|e| format!("could not check out {sha}: {e}"))
+    let add = ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", &t, sha];
+    match git(tree, &add).await {
+        Ok(_) => Ok(()),
+        Err(first) if registered && removal.is_err() && !tmp.exists() => {
+            // GS-247: prune never removes a locked registration. Only this
+            // positively identified, missing scratch checkout may be unlocked;
+            // never prune the repository or override a present locked checkout.
+            git(tree, &["worktree", "remove", "--force", "--force", &t]).await
+                .map_err(|e| infrastructure(format!("could not check out {sha}: {first}; targeted repair failed: {e}")))?;
+            tracing::warn!(path = %t, sha, measured = true, n_considered = 1,
+                verdict = "contract_checkout_registration_recovered", error = %first,
+                "removed the verifier's missing registration; retrying checkout once");
+            git(tree, &add).await.map(|_| ())
+                .map_err(|e| infrastructure(format!("could not check out {sha} after one repair: {e}; first failure: {first}")))
+        }
+        Err(e) => Err(infrastructure(format!("could not check out {sha}: {e}"))),
+    }
 }
 
 fn tail(s: &str, n: usize) -> String {
@@ -1602,7 +1639,11 @@ async fn review(card: &str, lane: &str, title: &str, c: &Contract, evidence: &st
     let tmp = review_dir(card, &sha, &review_input_hash(c, row, round));
     let _ = std::fs::create_dir_all(tmp.parent().unwrap_or(&tmp));
     let model = reviewer_model(&home, lane);
-    match review_job(&tmp) {
+    let job = review_job(&tmp);
+    tracing::info!(card, lane, dir = %tmp.display(), round, job = ?job,
+        measured = true, n_considered = 1, verdict = "contract_review_lookup",
+        "review recovery is bound to this exact input generation");
+    match job {
         ReviewJob::Finished => {
             tracing::info!(card, lane, measured = true, n_considered = 1, verdict = "contract_review_resumed_result",
                 "a reviewer finished while the server was down; its result is read, not rerun");
@@ -1887,6 +1928,14 @@ pub async fn enqueue_uncontracted(state: &AppState) -> usize {
 // reads the card, its measurement requirements and the frozen plan once per
 // contract hash, lists the measurements the planned run would not produce,
 // and sends them to the lane before it runs. It never blocks the card.
+//
+// Widened 2026-10-08 (Ethan: overcome GS-12's bottlenecks within a week): 16
+// of the 28 cards the reviewer failed that day failed because the frozen
+// verify command checked only some criteria (7) or a criterion had no evidence
+// (9). So any card that froze a contract on entering doing is pre-reviewed
+// too, and the prompt also lists every criterion the frozen command does not
+// check. A non-proof pre-review leaves one review slot free so real reviews
+// never queue behind it (prereview_candidate, prereview_fits).
 
 /// The pre-run verdict: Some((ready, findings)) from the last JSON line whose
 /// verdict is "ready" or "gaps". Anything else is unmeasured.
@@ -1909,6 +1958,25 @@ fn measured_prereview(out: &str, code: &str, model: &str) -> Result<(bool, Vec<S
         if let Some(verdict) = parse_prereview(out) { return Ok(verdict); }
     }
     Err(format!("pre-run reviewer ({model}, exit {}) gave no trustworthy verdict: {}", code.trim(), tail(out, 300)))
+}
+
+/// Whether a card gets a pre-run review, and whether it is a proof card.
+/// Proof and requirement cards are pre-reviewed in todo or doing; any other
+/// card only in doing with a frozen verify command, since that freeze is the
+/// plan the reviewer will later judge it by.
+pub(crate) fn prereview_candidate(title: &str, status: &str, has_frozen_cmd: bool) -> Option<bool> {
+    let proof = title.starts_with("GS12 proof") || title.starts_with("GS12 requirement");
+    match (proof, status) {
+        (true, "doing" | "todo") => Some(true),
+        (false, "doing") if has_frozen_cmd => Some(false),
+        _ => None,
+    }
+}
+
+/// A proof pre-review may take the last free review slot; any other leaves
+/// one free for done-card reviews.
+pub(crate) fn prereview_fits(proof: bool, busy: usize, cap: usize) -> bool {
+    if proof { busy < cap } else { busy + 1 < cap }
 }
 
 /// The plan a pre-run review judges: the card's acceptance (its title when it
@@ -1939,7 +2007,10 @@ Card description (latest part, including any owner measurement requirements):
 Read the planned check and the scripts it runs. List every measurement the acceptance criteria or the description \
 require (per surface, per extractor, per template, wake time, idle timeout, billing after stop, and so on) that this \
 planned run would NOT produce as a recorded number, and every earlier finding it would not address. Be concrete: name \
-the surface or extractor and what is missing.
+the surface or extractor and what is missing. \
+Then check criterion coverage: for each acceptance criterion, say whether the planned check verifies it. Name every \
+criterion the frozen verify command does not check (a command whose exit 0 proves only some criteria is a finding), and \
+every criterion whose evidence the plan would not leave on the card (a run id, a recorded number, a commit on origin/main).
 
 Finish with exactly one line of JSON and nothing after it:
 {{\"verdict\": \"ready\" or \"gaps\", \"findings\": [\"one sentence per missing measurement\"]}}",
@@ -1981,6 +2052,8 @@ async fn prereview_one(state: &AppState, card: String, hash: String) {
             write_review_source(&dir, &row.desc)?;
             let prompt = prereview_prompt(&card, &row.title, &k, &row.desc, prior.as_deref().unwrap_or(""))
                 + "\nRead card-source.md for the full unabridged description, including requirements outside the excerpt.\n";
+            tracing::info!(card, lane, dir = %dir.display(), measured = true, n_considered = 1,
+                verdict = "contract_prereview_started", "a separate advisory plan review is starting");
             launch_review(&dir, &cli, &args, &prompt)?;
         }
         let output = wait_review(&dir).await;
@@ -2049,29 +2122,32 @@ pub async fn run_prereviews(state: &AppState) -> usize {
         }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
-    type Cand = (String, String, String, Option<String>, Option<String>, Option<String>, Option<String>);
+    type Cand = (String, String, String, String, Option<String>, Option<String>, Option<String>, Option<String>);
     let rows: Vec<Cand> = state.store.read_async(|conn| {
         let mut st = conn.prepare(
-            "SELECT i.id, COALESCE(i.session, ''), i.title, i.acceptance_criteria, \
+            "SELECT i.id, COALESCE(i.session, ''), i.title, i.status, i.acceptance_criteria, \
                     CASE WHEN c.command IS NOT NULL AND c.command <> ?1 THEN c.command END, p.hash, p.state \
              FROM issues i LEFT JOIN card_contracts c ON c.card = i.id LEFT JOIN card_prereviews p ON p.card = i.id \
-             WHERE (i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%') AND i.status IN ('doing', 'todo') \
+             WHERE (((i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%') AND i.status IN ('doing', 'todo')) \
+                    OR (i.status = 'doing' AND c.command IS NOT NULL AND c.command <> ?1)) \
              AND COALESCE(i.archived, 0) = 0 AND COALESCE(i.deleted, 0) = 0 \
-             ORDER BY CASE i.status WHEN 'doing' THEN 0 ELSE 1 END, i.id")?;
-        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
+             ORDER BY CASE WHEN i.title LIKE 'GS12 proof%' OR i.title LIKE 'GS12 requirement%' THEN 0 ELSE 1 END, \
+                      CASE i.status WHEN 'doing' THEN 0 ELSE 1 END, i.id")?;
+        let v = st.query_map([UNCONTRACTED_CMD], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
             .collect::<rusqlite::Result<Vec<Cand>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
     let home = crate::config::amux_home();
     let mut started = 0;
-    for (card, lane, title, acceptance, frozen, done_hash, done_state) in rows {
+    for (card, lane, title, status, acceptance, frozen, done_hash, done_state) in rows {
+        let Some(proof) = prereview_candidate(&title, &status, frozen.is_some()) else { continue };
         let (_, _, hash) = prereview_plan(&title, acceptance.as_deref(), frozen.as_deref());
         if done_hash.as_deref() == Some(hash.as_str()) || done_state.as_deref() == Some("running") {
             continue;
         }
         let busy = LIVE_REVIEW.lock().map(|l| l.len()).unwrap_or(0);
-        if busy >= current_cap(Work::Review) {
-            break;
+        if !prereview_fits(proof, busy, current_cap(Work::Review)) {
+            if proof { break } else { continue }
         }
         if !enabled_for(&home, &lane) {
             continue;
@@ -2308,6 +2384,21 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_plan_card_with_a_frozen_command_in_doing_is_pre_reviewed_behind_proof_cards() {
+        assert_eq!(super::prereview_candidate("GS12 proof 17: chain", "todo", false), Some(true));
+        assert_eq!(super::prereview_candidate("GS12 requirement 6: x", "doing", true), Some(true));
+        assert_eq!(super::prereview_candidate("GS12 2.16 fix", "doing", true), Some(false));
+        assert_eq!(super::prereview_candidate("GS12 2.16 fix", "doing", false), None);
+        assert_eq!(super::prereview_candidate("GS12 2.16 fix", "todo", true), None);
+        assert_eq!(super::prereview_candidate("GS12 proof 17: chain", "backlog", false), None);
+        // A plan card leaves one slot for done-card reviews; a proof may take the last.
+        assert!(super::prereview_fits(true, 2, 3));
+        assert!(!super::prereview_fits(false, 2, 3));
+        assert!(super::prereview_fits(false, 1, 3));
+        assert!(!super::prereview_fits(true, 3, 3));
+    }
     use super::*;
 
     #[test]
@@ -2512,6 +2603,16 @@ mod tests {
             Action::PassThenFreeze(_) => "freeze".into(),
             Action::Amend(..) => "amend".into(),
         }
+    }
+
+    /// GM-184: the refusal named the field but not the flag that supplies it.
+    #[tokio::test]
+    async fn the_contract_required_refusal_names_the_verify_cmd_flag() {
+        let Action::Respond(r) = decide(&card("todo", "code", Some("it works")), &json!({"status": "doing"}), false, None, &dflt(None)) else {
+            panic!("a code card with no command must be refused");
+        };
+        let v: Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap()).unwrap();
+        assert!(v.to_string().contains("amux board doing T-1 --verify-cmd"), "{v}");
     }
 
     #[test]
@@ -2783,6 +2884,54 @@ mod tests {
         std::fs::write(outside.join("keep"), "x").unwrap();
         assert!(fresh_checkout(&repo, &outside, &sha).await.is_err(), "a directory outside tmp/contract is never cleared");
         assert!(outside.join("keep").exists());
+    }
+
+    #[tokio::test]
+    async fn a_checkout_recovers_its_missing_locked_registration_without_pruning_peers() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            git(&repo, args).await.unwrap();
+        }
+        git(&repo, &["config", "gc.worktreePruneExpire", "now"]).await.unwrap();
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let owned = home.path().join("tmp/contract/GS-167-69c5016703bf");
+        let peer = home.path().join("peer-checkout");
+        for path in [&owned, &peer] {
+            git(&repo, &["worktree", "add", "--detach", &path.to_string_lossy(), &sha]).await.unwrap();
+        }
+        git(&repo, &["worktree", "lock", "--reason", "verifier interrupted", &owned.to_string_lossy()]).await.unwrap();
+        std::fs::remove_dir_all(&owned).unwrap();
+        std::fs::remove_dir_all(&peer).unwrap();
+        fresh_checkout(&repo, &owned, &sha).await.expect("GS-247: the verifier must recover its own missing locked checkout");
+        assert_eq!(git(&owned, &["rev-parse", "HEAD"]).await.unwrap(), sha);
+        assert!(git(&repo, &["worktree", "list", "--porcelain"]).await.unwrap().contains("peer-checkout"),
+            "repair must not globally prune another checkout's registration");
+    }
+
+    #[tokio::test]
+    async fn a_checkout_preserves_a_locked_present_checkout_and_foreign_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let repo = home.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q"][..], &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"][..]] {
+            git(&repo, args).await.unwrap();
+        }
+        let sha = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let owned = home.path().join("tmp/contract/live-review");
+        let foreign = home.path().join("foreign");
+        for path in [&owned, &foreign] {
+            git(&repo, &["worktree", "add", "--detach", &path.to_string_lossy(), &sha]).await.unwrap();
+        }
+        git(&repo, &["worktree", "lock", "--reason", "still running", &owned.to_string_lossy()]).await.unwrap();
+        std::fs::write(owned.join("keep"), "unread review evidence").unwrap();
+        assert!(fresh_checkout(&repo, &owned, &sha).await.is_err());
+        assert_eq!(std::fs::read_to_string(owned.join("keep")).unwrap(), "unread review evidence");
+        assert!(fresh_checkout(&repo, &foreign, &sha).await.is_err(), "registered foreign checkouts are never removed");
+        assert_eq!(git(&foreign, &["rev-parse", "HEAD"]).await.unwrap(), sha);
     }
 
     #[test]

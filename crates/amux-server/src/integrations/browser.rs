@@ -33,6 +33,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 /// Chrome removes these on clean exit; their presence after exit means the
 /// profile was never flushed (Python `_CHROME_SINGLETONS`).
@@ -42,6 +43,11 @@ pub use crate::config::amux_home;
 
 /// The user's real Chrome user-data-dir (Python `_chrome_user_data_dir`).
 pub fn chrome_user_data_dir() -> PathBuf {
+    // Allows an owner-selected Chrome installation/profile root and isolated
+    // acceptance fixtures without borrowing the human browser's directories.
+    if let Some(root) = std::env::var_os("AMUX_BROWSER_CHROME_USER_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(root);
+    }
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"));
@@ -215,7 +221,7 @@ pub fn import_chrome_profile(
     }
     if !name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
     {
         anyhow::bail!("Chrome profile name must be [A-Za-z0-9._-]+");
     }
@@ -1011,9 +1017,9 @@ pub(crate) fn persisted_last_exit(home: &Path) -> Option<serde_json::Value> {
 /// One file holding every browser, rather than one file per profile: profile
 /// names are user input and would have to be sanitised into filenames, and a
 /// traversal bug in a path built from a profile name is a worse failure than
-/// anything this file is protecting. Rewritten whole on every change, always
-/// under the RUNNING lock, so two concurrent starts cannot interleave a
-/// read-modify-write.
+/// anything this file is protecting. Rewritten atomically under a dedicated
+/// file-update lock, independently of the live registry lock, so concurrent
+/// starts, exits and startup guards cannot interleave a read-modify-write.
 ///
 /// READS TOLERATE THE LEGACY SHAPE. Before this change the file was a single
 /// bare object; a server that upgrades mid-flight must still adopt the browser
@@ -1039,13 +1045,21 @@ fn read_running_file(home: &Path) -> std::collections::HashMap<String, serde_jso
         .unwrap_or_default()
 }
 
+static RUNNING_FILE_UPDATES: Mutex<()> = Mutex::new(());
+
 fn write_running_file(home: &Path, map: &std::collections::HashMap<String, serde_json::Value>) {
     let obj: serde_json::Map<String, serde_json::Value> =
         map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let _ = std::fs::write(
-        running_state_path(home),
-        serde_json::Value::Object(obj).to_string(),
-    );
+    let path = running_state_path(home);
+    let temp = home.join(format!("browser-running-{}.tmp", ulid::Ulid::new()));
+    if let Err(error) = std::fs::write(&temp, serde_json::Value::Object(obj).to_string())
+        .and_then(|_| std::fs::rename(&temp, &path))
+    {
+        let _ = std::fs::remove_file(&temp);
+        tracing::warn!(%error, measured=true, n_considered=1,
+            verdict="browser_running_state_write_failed",
+            "browser restart records could not be atomically published");
+    }
 }
 
 /// How long a just-spawned Chrome is protected from reconciliation (AMUX-4961).
@@ -1089,6 +1103,7 @@ fn persist_running(
     started_by: &str,
     cdp_ready: bool,
 ) {
+    let _guard = RUNNING_FILE_UPDATES.lock().expect("browser running-file lock poisoned");
     let mut map = read_running_file(home);
     map.insert(
         profile.to_string(),
@@ -1110,6 +1125,7 @@ fn persist_running(
 /// on a single browser's death is how the remaining ones become unadoptable
 /// orphans after a restart.
 fn clear_running_for(home: &Path, profile: &str) {
+    let _guard = RUNNING_FILE_UPDATES.lock().expect("browser running-file lock poisoned");
     let mut map = read_running_file(home);
     map.remove(profile);
     if map.is_empty() {
@@ -1117,11 +1133,6 @@ fn clear_running_for(home: &Path, profile: &str) {
     } else {
         write_running_file(home, &map);
     }
-}
-
-#[allow(dead_code)]
-fn clear_running(home: &Path) {
-    let _ = std::fs::remove_file(running_state_path(home));
 }
 
 /// Re-adopt a browser this server did not spawn, if one is still there.
@@ -1382,7 +1393,7 @@ async fn reconcile_orphan_before_launch(home: &Path, target_dir: &Path) {
                      unreachable — a launch on this dir would delegate to it and exit 0 (AMUX-3207)"
                 );
                 let _ = run_kill(pid, "-KILL", "orphan reconciliation").await;
-                clear_running(home);
+                clear_running_for(home, v.get("profile").and_then(Value::as_str).unwrap_or("default"));
             }
         }
     }
@@ -1786,6 +1797,37 @@ fn chrome_launch_args(
 /// that failed to start." That property is worth keeping, and `start` has three
 /// error exits between spawn and the final persist — a fourth added later would
 /// not know to clear. Drop does not forget.
+// A failed or cancelled launch must release the exact child it spawned. The
+// published child deliberately survives registry drops for server re-adoption.
+struct PendingChrome(Option<tokio::process::Child>);
+impl PendingChrome {
+    fn publish(mut self) -> tokio::process::Child {
+        self.0.take().expect("pending Chrome child")
+    }
+}
+impl std::ops::Deref for PendingChrome {
+    type Target = tokio::process::Child;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("pending Chrome child")
+    }
+}
+impl std::ops::DerefMut for PendingChrome {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("pending Chrome child")
+    }
+}
+impl Drop for PendingChrome {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let pid = child.id();
+            let outcome = child.start_kill();
+            tracing::warn!(?pid, measured=true, n_considered=1, error=?outcome.err(),
+                verdict="browser_unpublished_launch_released",
+                "failed or cancelled startup released its own Chrome child");
+        }
+    }
+}
+
 struct StartingRecord<'a> {
     home: &'a Path,
     profile: &'a str,
@@ -2001,9 +2043,9 @@ pub async fn start(
             cmd.stderr(std::process::Stdio::null());
         }
     }
-    let mut child = cmd
+    let mut child = PendingChrome(Some(cmd
         .spawn()
-        .map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?;
+        .map_err(|e| anyhow::anyhow!("spawn {}: {e}", binary.display()))?));
     let pid = child.id();
 
     // REGISTER BEFORE THE CDP WAIT (AMUX-4961). Until this, a Chrome was live
@@ -2160,6 +2202,26 @@ pub async fn start(
         }
     }
 
+    // Imported cookies.json must reach Chrome BEFORE the first authenticated
+    // navigation. Consume once; subsequent logouts must not resurrect old tokens.
+    if target.user_data_dir.join("cookies.json").is_file() {
+        match apply_imported_cookies(&target.user_data_dir, port).await {
+            Ok(count) => tracing::info!(profile, count, verdict="browser_import_applied", "imported cookies applied and read back from Chrome"),
+            Err(e) => {
+                tracing::warn!(profile, error=%e, verdict="browser_import_failed", "imported cookies could not be installed");
+                let _ = child.kill().await;
+                return Err(e);
+            }
+        }
+        // The initial tab may have loaded before cookies were installed.
+        if !url.is_empty() {
+            if let Some(ws) = cdp_list(port).await?.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()) {
+                let mut c=CdpClient::connect(ws).await?;
+                navigate_and_settle(&mut c,url).await?;
+            }
+        }
+    }
+
     // AC-336: CLAIM THE TAB WE JUST OPENED, FOR THE LANE THAT ASKED FOR IT.
     //
     // `resolve_page` treats a page tab as available unless it appears in
@@ -2283,7 +2345,7 @@ pub async fn start(
             // refuse the next anonymous caller instead of treating them as the
             // same session (amux-cloud's validation catch on AMUX-3063).
             started_by: started_by.to_string(),
-            child: Some(child),
+            child: Some(child.publish()),
         },
     );
     // Survive a server restart (AC-325). Written AFTER the handle is live so a
@@ -2434,7 +2496,18 @@ pub async fn stop_profile_as_reason(
     let signalable = checked_process_id(running.pid).is_some();
     // std/tokio only offer SIGKILL; /bin/kill sends the TERM Chrome needs to
     // flush Cookies and Local Storage. `run_kill` validates before spawning.
-    let _ = run_kill(running.pid, "-TERM", "browser stop").await;
+    // Browser.close runs Chrome's normal shutdown path, which commits cookies
+    // installed through CDP. TERM alone can exit before that store is flushed.
+    if let Ok(tabs)=cdp_list(running.cdp_port).await {
+        if let Some(ws)=tabs.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()) {
+            if let Ok(mut c)=CdpClient::connect(ws).await {
+                let _=c.call("Browser.close",serde_json::json!({}),Duration::from_secs(3)).await;
+            }
+        }
+    }
+    let close_deadline=std::time::Instant::now()+Duration::from_secs(8);
+    while pid_alive(running.pid)&&std::time::Instant::now()<close_deadline {tokio::time::sleep(Duration::from_millis(100)).await;}
+    if pid_alive(running.pid){let _ = run_kill(running.pid, "-TERM", "browser stop").await;}
     match running.child.as_mut() {
         Some(ch) => {
             let graceful = tokio::time::timeout(std::time::Duration::from_secs(8), ch.wait()).await;
@@ -2459,7 +2532,11 @@ pub async fn stop_profile_as_reason(
             }
         }
     }
-    clear_running(home);
+    clear_running_for(home, &running.profile);
+    tracing::info!(profile=%running.profile, measured=true, n_considered=1,
+        remaining_profiles=read_running_file(home).len(),
+        verdict="browser_profile_restart_record_retired",
+        "retired only the stopped profile's restart record");
 
     let clean_exit = locks_present(&running.user_data_dir).is_empty();
     let locks_cleaned = if !clean_exit && is_amux_owned(home, &running.user_data_dir) {
@@ -2478,6 +2555,39 @@ pub async fn stop_profile_as_reason(
 
 /// CDP over plain HTTP: the tab list. (Command traffic — screenshot, eval,
 /// input — is the WebSocket client below, [`CdpClient`].)
+/// Apply a pending import once and verify each cookie's value in the running
+/// browser. Verification never logs values. The retained receipt has counts only.
+async fn apply_imported_cookies(dir: &Path, port: u16) -> anyhow::Result<usize> {
+    let file=dir.join("cookies.json");
+    let mut cookies:Vec<Value>=serde_json::from_slice(&std::fs::read(&file)?)?;
+    // Retain imported session cookies across normal Chrome shutdown, using the
+    // same bounded policy as login sync; the site can still revoke the session.
+    for cookie in &mut cookies {
+        if cookie.get("expires").and_then(Value::as_f64).is_none_or(|e|e<=0.0) {
+            cookie["expires"]=serde_json::json!(chrono::Utc::now().timestamp()+crate::integrations::browser_login_sync::SESSION_TTL_DAYS*86400);
+            cookie["session"]=serde_json::json!(false);
+        }
+    }
+    let tabs=cdp_list(port).await?;
+    let ws=tabs.as_array().and_then(|a|a.iter().find(|t|t["type"]=="page")).and_then(|t|t["webSocketDebuggerUrl"].as_str()).ok_or_else(||anyhow::anyhow!("no tab available to install imported cookies"))?;
+    let mut c=CdpClient::connect(ws).await?;
+    let cookies=crate::integrations::computer::cookie_params(&cookies);
+    c.call("Storage.setCookies",serde_json::json!({"cookies":cookies}),Duration::from_secs(20)).await?;
+    let seen=c.call("Storage.getCookies",serde_json::json!({}),Duration::from_secs(20)).await?;
+    let rows=seen["cookies"].as_array().ok_or_else(||anyhow::anyhow!("cookie readback missing"))?;
+    let now=chrono::Utc::now().timestamp() as f64;
+    for expected in &cookies {
+        if expected["expires"].as_f64().is_some_and(|e|e>0.0&&e<=now) {continue;}
+        anyhow::ensure!(rows.iter().any(|r|r["name"]==expected["name"]&&r["domain"]==expected["domain"]&&r["path"]==expected["path"]&&r["value"]==expected["value"]),"imported cookie readback mismatch (values withheld)");
+    }
+    let count=cookies.len();
+    std::fs::write(dir.join("import-receipt.json"),serde_json::to_vec(&serde_json::json!({"applied":true,"cookies":count,"verified_at":chrono::Utc::now().timestamp()}))?)?;
+    std::fs::remove_file(file)?;
+    // state.json is a second plaintext copy of the same imported secrets.
+    let _=std::fs::remove_file(dir.join("state.json"));
+    Ok(count)
+}
+
 pub async fn cdp_list(port: u16) -> anyhow::Result<serde_json::Value> {
     let r = reqwest::Client::new()
         .get(format!("http://127.0.0.1:{port}/json/list"))
@@ -7502,5 +7612,65 @@ mod query_js_tests {
             assert!(js.contains("\"Scheduler\""), "{sel}: {js}");
             assert!(js.contains("innerText"), "{sel}: {js}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pending_chrome_tests {
+    use super::PendingChrome;
+    #[tokio::test]
+    async fn cancelled_start_releases_its_exact_child() {
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id().unwrap();
+        let peer = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut peer = peer;
+        drop(PendingChrome(Some(child)));
+        for _ in 0..100 {
+            if !super::pid_alive(pid) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!super::pid_alive(pid), "unpublished child survived cancellation");
+        assert!(peer.try_wait().unwrap().is_none(), "peer child was touched");
+        peer.kill().await.unwrap();
+    }
+    #[tokio::test]
+    async fn published_child_survives_for_server_readoption() {
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut published = PendingChrome(Some(child)).publish();
+        assert!(published.try_wait().unwrap().is_none());
+        published.kill().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod running_file_ownership_tests {
+    use super::*;
+    #[test]
+    fn parallel_profile_updates_preserve_peer_restart_records() {
+        let home = tempfile::tempdir().unwrap();
+        let path = std::sync::Arc::new(home.path().to_path_buf());
+        persist_running(&path, "keep", &path.join("keep"), 9000, 9001, 1, "peer", true);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(17));
+        let mut threads = Vec::new();
+        for i in 0..16 {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let profile = format!("worker-{i}");
+                persist_running(&path, &profile, &path.join(&profile), 9100+i, 9101+u32::from(i), 1, &profile, true);
+                barrier.wait();
+                barrier.wait();
+                clear_running_for(&path, &profile);
+            }));
+        }
+        barrier.wait();
+        let before = read_running_file(&path);
+        barrier.wait();
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(before.len(), 17, "a parallel start lost a profile's restart record");
+        let after = read_running_file(&path);
+        assert_eq!(after.len(), 1, "single-profile retirements changed their peer population");
+        assert_eq!(after["keep"]["pid"], 9001);
+        assert_eq!(after["keep"]["started_by"], "peer");
     }
 }

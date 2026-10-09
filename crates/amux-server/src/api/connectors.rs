@@ -1018,6 +1018,8 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
             } else {
                 Value::Null
             };
+            let last_test = last_tests(&amux_home()).get(p.id).cloned();
+            let (status, test_detail) = status_after_test(status, last_test.as_ref());
             json!({
                 "id": p.id,
                 "label": p.label,
@@ -1026,6 +1028,7 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
                 "oauth": oauth,
                 "env_keys": key_status,
                 "status": status,
+                "last_test": last_test,
                 "cred_source": cred_source,
                 // usable = a SESSION can obtain a working credential from amux
                 // right now (POST token_endpoint). Distinct from "connected",
@@ -1038,7 +1041,7 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
                 "detail": if sa_key_gone {
                     json!("Service-account key file is configured but missing on disk — re-paste the key or fix GOOGLE_SA_KEY_FILE in server.env")
                 } else {
-                    Value::Null
+                    test_detail.map(Value::String).unwrap_or(Value::Null)
                 },
                 "setup_note": p.setup_note,
                 "docs": p.docs,
@@ -2051,7 +2054,70 @@ async fn complete_exchange(
 /// (broker) lands, since there is no stored access token to present yet. The
 /// bearer value is NEVER logged — only the provider id, HTTP status and latency
 /// (grep `connector_test`).
+/// The last live test per connector, so the list can stop saying "connected"
+/// for a connector whose own test fails (connector e2e, 2026-10-08: Gmail,
+/// Calendar and Admin listed connected+usable while their test answered
+/// unauthorized_client on the service-account delegation).
+fn last_tests_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("connector-tests.json")
+}
+
+pub(crate) fn last_tests(home: &std::path::Path) -> serde_json::Map<String, Value> {
+    std::fs::read_to_string(last_tests_path(home))
+        .ok()
+        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
+    let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let status = result.get("status").and_then(Value::as_str).unwrap_or("");
+    let detail = result.get("detail").and_then(Value::as_str).unwrap_or("");
+    let mut all = last_tests(home);
+    all.insert(id.to_string(), json!({"ok": ok, "status": status, "detail": detail, "at": crate::config::now_f64()}));
+    let tmp = last_tests_path(home).with_extension("json.tmp");
+    if std::fs::write(&tmp, Value::Object(all).to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, last_tests_path(home));
+    }
+    if !ok {
+        tracing::warn!(connector = id, status, detail, measured = true, n_considered = 1,
+            verdict = "connector_test_failed", "a connector's live test failed; the list now reports it");
+    }
+}
+
+/// What the list should say given the computed status and the last test: a
+/// connector whose last real test failed reads "error" with that test's own
+/// words. A "needs_*" answer is not a failed test (nothing was tried).
+pub(crate) fn status_after_test(computed: &str, last: Option<&Value>) -> (String, Option<String>) {
+    let Some(t) = last else { return (computed.to_string(), None) };
+    let ok = t.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let st = t.get("status").and_then(Value::as_str).unwrap_or("");
+    if computed == "connected" && !ok && !st.starts_with("needs_credentials") {
+        let detail = t.get("detail").and_then(Value::as_str).unwrap_or("").to_string();
+        return ("error".to_string(), Some(format!("last live test failed: {detail}")));
+    }
+    (computed.to_string(), None)
+}
+
 async fn test_connection(
+    Extension(ctx): Extension<Arc<ConnectorsCtx>>,
+    Path(id): Path<String>,
+) -> Response {
+    let resp = test_connection_inner(Extension(ctx), Path(id.clone())).await;
+    let (parts, body) = resp.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+        return (parts.status, "test response unreadable").into_response();
+    };
+    if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+        if v.get("ok").is_some() {
+            record_test(&amux_home(), &id, &v);
+        }
+    }
+    Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+async fn test_connection_inner(
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
 ) -> Response {
@@ -2177,19 +2243,31 @@ async fn test_connection(
                     Ok(tok) => tok,
                     Err(e) => {
                         tracing::warn!("connector_test: {} SA delegation failed: {}", id, e);
+                        // "error", not "needs_auth": the connector IS configured
+                        // (an SA exists) and its configured path failed, which a
+                        // caller must not read as "not set up yet".
                         return Json(json!({
                             "ok": false,
-                            "status": "needs_auth",
+                            "status": "error",
                             "detail": format!("service-account delegation failed: {e}. If this is 'unauthorized_client', a Workspace super-admin must authorize this connector's scope for the SA in Admin console -> Security -> API controls -> Domain-wide delegation."),
                         }))
                         .into_response();
                     }
                 }
-            } else {
+            } else if p.category == "Google" {
                 return Json(json!({
                     "ok": false,
                     "status": "needs_auth",
                     "detail": "Connect first — configure a service account (GOOGLE_SA_KEY_FILE) or wait for the OAuth token exchange (AMUX-3192).",
+                }))
+                .into_response();
+            } else {
+                // A non-Google OAuth connector (Slack) used to be told to set a
+                // Google service-account key (connector e2e, 2026-10-08).
+                return Json(json!({
+                    "ok": false,
+                    "status": "needs_auth",
+                    "detail": format!("not connected yet — set its client id and secret, then complete the grant with POST /api/connectors/{}/auth", p.id),
                 }))
                 .into_response();
             }
@@ -2972,12 +3050,33 @@ pub(crate) async fn accounts_rollup(
                 "measured": last_ok.is_some(),
             }));
         }
+        // A Gmail-only grant (the legacy /api/gmail/auth flow) reads healthy
+        // while calendar, drive and docs were never granted, so every
+        // calendar call for that account fails with nothing on this page to
+        // say why. Name the gap and the one grant that closes it.
+        let missing: Vec<&str> = if families.contains_key("gmail") && !families.contains_key("google") {
+            vec!["google"]
+        } else {
+            Vec::new()
+        };
+        let connect = (!missing.is_empty()).then(|| {
+            format!("POST /api/connectors/google/auth?account={account} → open authorize_url, approve once (adds calendar, drive, docs)")
+        });
+        if !missing.is_empty() {
+            tracing::warn!(
+                account = %account,
+                verdict = "connector_grant_partial",
+                "account has a Gmail grant but no Google grant: calendar, drive and docs are not authorized"
+            );
+        }
         accounts.push(json!({
             "account": account,
             "families": families,
             "canary": canaries.get(&account).cloned().map(Value::Object),
             "needs_reauth": reconnect.is_some(),
             "reconnect": reconnect,
+            "missing": missing,
+            "connect": connect,
         }));
     }
     // Persist the canary map with a timestamp: last-checked must survive the
@@ -3454,6 +3553,25 @@ mod declared_connector_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Connector e2e, 2026-10-08: Gmail listed "connected" while its own test
+    /// failed. A failed real test turns the status into "error" with its words;
+    /// a passing test, or a "needs_*" answer that tried nothing, does not.
+    #[test]
+    fn a_failed_live_test_overrides_connected() {
+        let failed = json!({"ok": false, "status": "needs_auth", "detail": "unauthorized_client"});
+        let (st, detail) = status_after_test("connected", Some(&failed));
+        assert_eq!(st, "error");
+        assert!(detail.unwrap().contains("unauthorized_client"));
+        assert_eq!(status_after_test("connected", Some(&json!({"ok": true, "status": "connected"}))).0, "connected");
+        assert_eq!(status_after_test("connected", None).0, "connected");
+        assert_eq!(status_after_test("connected", Some(&json!({"ok": false, "status": "needs_credentials"}))).0, "connected",
+            "a test that could not run is not a failed test");
+        assert_eq!(status_after_test("needs_auth", Some(&failed)).0, "needs_auth", "a worse computed status stands");
+        let home = tempfile::tempdir().unwrap();
+        record_test(home.path(), "google-gmail", &failed);
+        assert_eq!(last_tests(home.path())["google-gmail"]["ok"], false);
+    }
+
     /// AMUX-3738: a delegation REFUSAL is 403 + needs_auth, a real fault stays
     /// 502.
     ///
@@ -4401,6 +4519,15 @@ mod tests {
         assert_eq!(healthy["families"]["google"], json!("ok"));
         assert_eq!(healthy["needs_reauth"], json!(false));
         assert_eq!(v["needs_reauth"].as_array().unwrap().len(), 1);
+        // A gmail-only grant never covered calendar/drive/docs: the row must
+        // say so and carry the one grant that closes it.
+        assert_eq!(broken["missing"], json!(["google"]), "{v}");
+        assert!(broken["connect"]
+            .as_str()
+            .unwrap()
+            .contains("/api/connectors/google/auth?account=broken@x.io"));
+        assert_eq!(healthy["missing"], json!([]), "{v}");
+        assert_eq!(healthy["connect"], Value::Null, "{v}");
     }
 
     #[tokio::test]

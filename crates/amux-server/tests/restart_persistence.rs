@@ -123,7 +123,7 @@ impl Rig {
             // Bootstrap would try to give a created worker a real terminal.
             // Nothing here starts a worker; push it out of the way anyway.
             .env("AMUX_RS_BOOTSTRAP_SECS", "3600")
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", "warn,amux_server::api::contract=info")
             .stdout(out)
             .stderr(err)
             .spawn()
@@ -723,7 +723,8 @@ async fn interrupted_harness_work_recovers_without_duplicate_effects_or_false_pa
 
 async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     let mut rig = Rig::new();
-    // A cached review must be adopted; this sentinel catches a paid rerun.
+    // A cached completion review must be adopted. Advisory plan reviews after
+    // reopening are a distinct lifecycle step; count them separately.
     let repo = rig.home.join("fixture-repo");
     std::fs::create_dir_all(&repo).unwrap();
     for args in [vec!["init", "-q"], vec!["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], vec!["update-ref", "refs/remotes/origin/main", "HEAD"]] {
@@ -735,10 +736,12 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     std::fs::create_dir_all(rig.home.join("sessions")).unwrap();
     let forbidden = rig.home.join("must-not-rerun-review");
     let cli = rig.home.join("review-cli.sh");
-    let cli_script = if live {
+    let advisory = rig.home.join("advisory-plan-review");
+    let advisory_script = format!("#!/bin/sh\ncase \"$PWD\" in *'/RR-RECOVERY-pre-'*) echo advisory >> '{}'; echo '{{\"verdict\":\"gaps\",\"findings\":[\"missing required measurement\"]}}'; exit 0;; esac\n", advisory.display());
+    let completion_script = if live {
         format!("#!/bin/sh\necho launch >> '{}'\nsleep 20\necho '{{\"verdict\":\"fail\",\"findings\":[\"missing required measurement\"]}}'\nexit 0\n", forbidden.display())
     } else { format!("#!/bin/sh\necho launch >> '{}'\nexit 1\n", forbidden.display()) };
-    std::fs::write(&cli, cli_script).unwrap();
+    std::fs::write(&cli, advisory_script + &completion_script.replace("#!/bin/sh\n", "")).unwrap();
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap(); }
     std::fs::write(rig.home.join(format!("sessions/{lane}.env")), format!("CC_DIR={}\nCC_NAME={lane}\nCC_ISOLATED=1\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_REVIEW_CLI={}\n", repo.display(), cli.display())).unwrap();
     rig.spawn();
@@ -748,6 +751,10 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     let (status, schedule) = rig.post("/api/schedules", json!({"title":"Interrupted shell", "kind":"shell", "command":"exit 0", "schedule_expr":"daily at 3am", "enabled":0})).await;
     assert_eq!(status, 201, "{schedule}");
     let sid = schedule["id"].as_str().unwrap();
+    // These internal execution states and detached-review artifacts form one
+    // crash specimen. Seed them while down; a live contract clock could consume
+    // the artificial running intent before its cached outcome is on disk.
+    rig.kill();
     rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','manual:fixture','shell','execution interrupted')", &[&sid]);
     rig.seed("INSERT INTO schedule_runs(schedule_id,ran_at,status,source,delivery,note) VALUES(?1,1,'running','cron-rs',NULL,'delivery interrupted')", &[&sid]);
     rig.seed("INSERT INTO steering_queue(id,session,text,queued_at,delivering_since) VALUES('rr-claimed',?1,'uncertain delivery',1,1)", &[&lane]);
@@ -818,7 +825,14 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     assert_eq!(rig.count("SELECT COUNT(*) FROM steering_history WHERE id='rr-claimed' AND outcome LIKE 'interrupted%'"), 1, "uncertain delivery remains explicit");
     assert_eq!(rig.count("SELECT COUNT(*) FROM card_contracts WHERE card='RR-RECOVERY' AND review_state='failed'"), 1);
     assert_eq!(rig.count("SELECT COUNT(*) FROM issues WHERE id='RR-RECOVERY' AND status='verified'"), 0);
-    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live), "review must be adopted, never duplicated");
+    let conn = rusqlite::Connection::open(&rig.db).unwrap();
+    let recovered = amux_server::api::contract::load(&conn, card).unwrap().unwrap();
+    let recovered_row = amux_server::db::board_store::get_issue(&conn, card).unwrap().unwrap();
+    let recovered_input = amux_server::api::contract::review_input_hash(&recovered, &recovered_row, 1);
+    assert_eq!(std::fs::read_to_string(&forbidden).unwrap_or_default().lines().count(), usize::from(live),
+        "review must be adopted, never duplicated (live={live}, exit={exit}, seeded_input={input}, recovered_input={recovered_input}, cached_path={}); server log: {}",
+        review.display(), std::fs::read_to_string(&rig.log).unwrap_or_default());
+    drop(conn);
     assert_eq!(rig.count("SELECT review_rounds FROM card_contracts WHERE card='RR-RECOVERY'"), 1, "a completed failed/unmeasured attempt spends one bounded round");
     if exit != "0" {
         let conn = rusqlite::Connection::open(&rig.db).unwrap();
@@ -827,7 +841,17 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     }
     assert!(std::fs::read_to_string(rig.home.join("native-status.py")).unwrap().contains("X-Amux-Worker-Token"));
     let archives = rig.home.join("review-evidence").join(card);
-    let artifact = std::fs::read_dir(&archives).unwrap().next().unwrap().unwrap().path();
+    // Reopening also creates an advisory `pre-...` archive. Directory order
+    // cannot identify the completion review whose immutable inputs we seeded.
+    let generation = format!("{sha}-1-");
+    let candidates: Vec<_> = std::fs::read_dir(&archives).unwrap()
+        .map(|entry| entry.unwrap().path()).collect();
+    let matching: Vec<_> = candidates.iter().filter(|path| {
+        path.file_name().unwrap().to_string_lossy().starts_with(&generation)
+    }).collect();
+    eprintln!("review_archive_selection: measured=true n_considered={} generation={generation} matching={} candidates={candidates:?}", candidates.len(), matching.len());
+    assert_eq!(matching.len(), 1, "exactly one retained completion review for {generation}; all archives: {candidates:?}");
+    let artifact = matching[0];
     assert!(std::fs::read_to_string(artifact.join(".amux-review.out")).unwrap().contains("missing required measurement"));
     assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.exit")).unwrap().trim(), exit);
     assert_eq!(std::fs::read_to_string(artifact.join("card-source.md")).unwrap(), "original full measurement requirements");

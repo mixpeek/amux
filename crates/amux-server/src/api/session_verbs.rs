@@ -4840,7 +4840,22 @@ fn tool_result_text(content: &Value) -> String {
 /// be read aloud). Reuses the same `session_jsonl_path` + `iter_jsonl_tail` the
 /// transcript renderer uses, so it cannot disagree with it about where the
 /// transcript is or how it is parsed (D1: a real interface, not a scrape).
+fn last_codex_assistant_text(events: Vec<crate::opencode::events::TranscriptEvent>, max_chars: usize) -> String {
+    events.into_iter().rev().find_map(|event| match event {
+        crate::opencode::events::TranscriptEvent::Assistant { text } => Some(text),
+        _ => None,
+    }).unwrap_or_default().chars().take(max_chars).collect()
+}
+
 pub(crate) fn last_assistant_message(name: &str, max_chars: usize) -> String {
+    if matches!(provider_of(&parse_env(name)).as_str(), "codex" | "ollama") {
+        let text = last_codex_assistant_text(codex_transcript_events(name, 400).unwrap_or_default(), max_chars);
+        if text.is_empty() {
+            tracing::debug!(session = name, measured = true, n_considered = 1,
+                verdict = "codex_last_message_empty", "no assistant text in the resolved Codex rollout");
+        }
+        return text;
+    }
     let Some(path) = session_jsonl_path(name) else {
         return String::new();
     };
@@ -4920,7 +4935,13 @@ fn render_session_transcript_inner(name: &str, max_chars: usize) -> String {
         return String::new();
     };
     let max_read = std::cmp::max(max_chars * 5, 5_000_000) as u64;
-    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, false)
+    // COLLAPSED, LIKE THE TERMINAL (Ethan, 2026-10-08: "the copy is more
+    // verbose in amux peek", "our peek output is still convoluted"). Claude
+    // Code draws a tool run as one "Ran N shell commands" line and never shows
+    // reasoning; for an alternate-screen pane this re-render is the peek's
+    // history, so it draws the same. A normal-screen pane skips it entirely
+    // (tmux scrollback, history_source "tmux-scrollback").
+    render_transcript_records(iter_jsonl_tail(&path, max_read), max_chars, true)
 }
 
 /// Emit one line for a run of consecutive tool calls, the way Claude Code's own
@@ -4984,6 +5005,14 @@ fn strip_harness_envelopes(text: &str) -> String {
     let out = sysrem.replace_all(text, "");
     let out = tasknote.replace_all(&out, "");
     let out = caveat.replace_all(&out, "");
+    // A message delivered as a paste (amux pastes whenever the worker is
+    // mid-turn) is recorded by Claude Code wrapped in <pasted_content id="..">
+    // ... </pasted_content id="..">. The wrapper is transport, not what was
+    // sent, so the tags go and the text stays (Ethan, 2026-10-09: "we still
+    // have this pasted content thing"; 3f8b8961 fixed only the dashboard's
+    // live highlighter, not this transcript render).
+    let paste_tag = cached_re!(r"</?pasted_content\b[^>]*>");
+    let out = paste_tag.replace_all(&out, "");
     out.trim().to_string()
 }
 
@@ -5004,6 +5033,17 @@ mod peek_history_is_verbatim {
         crate::backend::adapter::strip_ansi(&super::render_transcript_records(
             records, usize::MAX, false,
         ))
+    }
+
+    #[test]
+    fn a_pasted_message_shows_its_text_without_the_paste_wrapper() {
+        let out = render(vec![json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "<pasted_content id=\"ed64\">\nlooks like `@mxp-gs12` stopped?\n</pasted_content id=\"ed64\">"}]}})]);
+        assert!(out.contains("looks like `@mxp-gs12` stopped?"), "{out}");
+        assert!(!out.contains("pasted_content"), "the wrapper must not render:\n{out}");
+        let queued = render(vec![json!({"type": "attachment", "attachment": {"type": "queued_command",
+            "prompt": "<pasted_content id=\"9\">ship it</pasted_content>"}})]);
+        assert!(queued.contains("ship it") && !queued.contains("pasted_content"), "{queued}");
     }
 
     #[test]
@@ -5062,16 +5102,27 @@ mod peek_history_is_verbatim {
     }
 
     #[test]
-    fn peeks_own_entry_point_does_not_collapse_tool_runs() {
+    fn peeks_own_entry_point_draws_like_the_terminal() {
+        // Superseded 2026-09-24's full-detail choice: side by side with the
+        // pane, the full detail read as a different, more verbose terminal.
         let src = include_str!("session_verbs.rs");
-        // The public entry delegates to `_at` (table width) and then `_inner`,
-        // which is where the records are rendered.
         let i = src.find("fn render_session_transcript_inner(").expect("entry point");
-        let body = &src[i..i + 400];
-        assert!(
-            body.contains("max_chars, false)"),
-            "peek's history must not collapse tool runs, which also dropped every tool_result:\n{body}"
-        );
+        let body = &src[i..i + 1200];
+        assert!(body.contains("max_chars, true)"), "peek history must collapse like the terminal:\n{body}");
+        let dense = super::render_transcript_records(vec![
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "text", "text": "Checking the logs."}]}}),
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": "a.txt"}]}}),
+        ], usize::MAX, true);
+        let plain = crate::backend::adapter::strip_ansi(&dense);
+        assert!(plain.contains("Checking the logs."), "{plain}");
+        assert!(plain.contains("Ran 1 shell command"), "{plain}");
+        assert!(!plain.contains("private reasoning"), "the terminal hides reasoning: {plain}");
+        assert!(!plain.contains("a.txt"), "the terminal hides tool output in a run: {plain}");
     }
 }
 
@@ -5149,6 +5200,7 @@ fn render_transcript_records(
                         if txt.contains("<system-reminder>")
                             || txt.contains("<task-notification>")
                             || txt.contains("<local-command-caveat>")
+                            || txt.contains("<pasted_content")
                         {
                             // The SAME function the attachment branch calls, so
                             // the two paths cannot drift apart again.
@@ -5274,6 +5326,10 @@ fn render_transcript_records(
                 // 12 recent transcripts, dropped by the `_ => {}` arm that used
                 // to be here. Classified and dimmed so it reads as reasoning,
                 // never as something the assistant said.
+                // The terminal never shows reasoning; the peek's dense mode
+                // matches it (Ethan, 2026-10-08: "our peek output is still
+                // convoluted"). Detail views keep it.
+                "thinking" if collapse_tools => {}
                 "thinking" => {
                     let th = b["thinking"].as_str().unwrap_or("").trim();
                     if !th.is_empty() {
@@ -11625,6 +11681,22 @@ fn boot_delivery_held(
 /// pane to reach, which is precisely the shape that ships untested — and this
 /// one shipped wrong (AMUX-2909: short text typed into a generating lane, the
 /// mode measured as lossy 1/1).
+/// Split a message that starts with a slash command into the command token
+/// with its following space (typed) and the rest (pasted). `None` for anything
+/// else, including a lone command with no argument and a path like `/Users/x`.
+pub(crate) fn slash_command_split(text: &str) -> Option<(&str, &str)> {
+    let t = text.trim_start();
+    let body = t.strip_prefix('/')?;
+    let end = body.find(char::is_whitespace)?;
+    let cmd = &body[..end];
+    if cmd.is_empty() || !cmd.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')) {
+        return None;
+    }
+    let split = 1 + end + body[end..].chars().next().map(char::len_utf8).unwrap_or(0);
+    let (prefix, rest) = t.split_at(split);
+    (!rest.trim().is_empty()).then_some((prefix, rest))
+}
+
 pub(crate) fn must_paste(generating: bool, chars: usize, picker_shaped: bool) -> bool {
     // `generating` first because it is the one that was missing: mid-turn, paste
     // is the only mode measured as non-lossy, regardless of size or shape.
@@ -11813,11 +11885,7 @@ pub(crate) fn is_schedule_guard(guard: &str) -> bool {
 /// have been continued automatically on the harness level. especially since
 /// its a /goal"). Both reach isolated workers, as owner input.
 pub(crate) fn is_owner_configured_guard(guard: &str) -> bool {
-    // `owner-policy:` is standing authority the owner configured (Ethan,
-    // 2026-09-27 13:20: "it needs to be optimized for auto pushing"): an
-    // in-boundary ask from an isolated lane is answered "proceed" on his behalf
-    // instead of parking as a card only he can clear. Same class as a schedule.
-    is_schedule_guard(guard) || guard.starts_with("goal:") || guard.starts_with("owner-policy:")
+    is_schedule_guard(guard) || guard.starts_with("goal:")
 }
 
 pub(crate) async fn deliver_automated(
@@ -12015,8 +12083,8 @@ impl SendMode {
             ..Self::plain(origin)
         }
     }
-    /// A drain off the steering queue. Already gated at enqueue, so the origin
-    /// here is whatever was allowed to queue.
+    /// A drain off the steering queue. The claimed-row delivery boundary
+    /// restores its persisted origin before checking the current isolation.
     fn drained(allow_mid_turn: bool, hook_confirmed_idle: bool) -> Self {
         Self {
             defer_if_busy: false,
@@ -12380,11 +12448,6 @@ async fn send_text_inner_bound(
             "the unfinished conversation recycle retains input for its replacement");
         return (false, "worker is still starting (conversation recycle pending)".into());
     }
-    // Every text amux types reaches this line, including sends that write no
-    // Messages row (a raw curl without record_history). Noting it here is what
-    // lets the UserPromptSubmit hook tell an amux delivery from a prompt a
-    // person typed into the pane (F8(c)).
-    super::pane_prompts::note_delivery(name, text);
     let SendMode {
         defer_if_busy,
         from_steering,
@@ -12406,6 +12469,9 @@ async fn send_text_inner_bound(
     if let Some(refusal) = isolation_refusal(name, origin) {
         return (false, refusal.into());
     }
+    // Only an admitted input may mark an Amux delivery. A refused automated
+    // nudge must not stamp the raw owner's next prompt as harness input.
+    super::pane_prompts::note_delivery(name, text);
     // AMUX-4574: same rule at the layer that types, before the herdr branch
     // returns past every other check.
     if (origin == SendOrigin::Automation || from_steering) && lane_is_paused(name) {
@@ -13177,6 +13243,28 @@ async fn send_text_inner_bound(
     if staged.len() != text.len() {
         tracing::info!(session = %name, verdict = "trailing_mention_closed",
             "message ends in an @-mention; staged a trailing space so Enter submits");
+    }
+    // A SLASH COMMAND MUST STAY THE FIRST TOKEN (Ethan, 2026-10-08, mxp-gs12):
+    // a 1,396-char `/goal ...` went in as one paste, Claude Code recorded it as
+    // `<pasted_content id="bf0b">/goal ...</pasted_content>`, and /goal never
+    // ran. A paste is collapsed and wrapped whether bracketed or not (measured
+    // on Claude Code 2.1.295), so the command token is TYPED and only the rest
+    // is pasted: the composer reads `/goal [Pasted text #1]`, and Claude Code
+    // records <command-name>/goal</command-name> with the full text as args.
+    let (typed_prefix, staged) = match slash_command_split(&staged) {
+        Some((prefix, rest)) if use_paste => {
+            tracing::info!(session = %name, command = %prefix.trim(), chars = staged.chars().count(),
+                measured = true, n_considered = 1, verdict = "slash_command_prefix_typed",
+                "a long message starting with a slash command: typed the command, pasted the rest");
+            (Some(prefix.to_string()), rest.to_string())
+        }
+        _ => (None, staged.to_string()),
+    };
+    if let Some(prefix) = typed_prefix.as_deref() {
+        if !send_literal(name, prefix).await {
+            return (false, "send-keys failed".into());
+        }
+        sleep_ms(60).await;
     }
     if use_paste {
         // Named tmux buffer + paste-buffer -p (py:25630). Also the picker-safe
@@ -18589,6 +18677,18 @@ async fn peek_response_at(
     };
     let is_alt = tmux_alt_screen(name).await;
     let has_codex_history = matches!(provider.as_str(), "codex" | "ollama");
+    // THIN PASS-THROUGH (Ethan, 2026-10-08: "how we display shit should be
+    // extremely thin pass through"). A Claude pane on the NORMAL screen
+    // (CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1) keeps its real scrollback in
+    // tmux, so the peek shows exactly what the terminal drew: history is the
+    // scrollback above the screen, live is the screen. No transcript
+    // re-render, no overlap trim. The alternate-screen path below stays for
+    // panes still on it (tmux keeps no scrollback there).
+    if provider == "claude" && !is_alt && session_backend(name) != "herdr" {
+        if let Some(resp) = tmux_scrollback_peek(name).await {
+            return resp;
+        }
+    }
     // Saved Claude history must survive normal-screen mode after resume.
     if is_alt || has_codex_history || provider == "claude" {
         let mut history_measurement = None;
@@ -18718,6 +18818,35 @@ async fn peek_response_at(
         output
     };
     json!({"name": name, "output": collapse_blank_runs(&fallback)})
+}
+
+/// The peek for a normal-screen pane, straight from tmux: `history` is the
+/// scrollback above the visible screen (`-E -1` ends at the last scrollback
+/// line, so nothing is shown twice) and `live` is the screen. `None` when
+/// tmux cannot be read, so the caller falls back rather than showing nothing.
+async fn tmux_scrollback_peek(name: &str) -> Option<Value> {
+    let ptq = pt(name);
+    let hist = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-e", "-S", "-20000", "-E", "-1"], CAPTURE_TIMEOUT).await?;
+    let screen = run_cmd("tmux", &["capture-pane", "-t", &ptq, "-p", "-e"], CAPTURE_TIMEOUT).await?;
+    if !hist.status.success() || !screen.status.success() {
+        return None;
+    }
+    let history = String::from_utf8_lossy(&hist.stdout).trim_end().to_string();
+    let live = String::from_utf8_lossy(&screen.stdout).trim_end().to_string();
+    let hl = history.lines().count();
+    let ol = live.lines().count();
+    tracing::debug!(session = name, history_lines = hl, measured = true, n_considered = hl + ol,
+        verdict = "peek_tmux_scrollback", "peek served from tmux scrollback (normal screen)");
+    Some(json!({
+        "name": name,
+        "history": history,
+        "live": if live.is_empty() { "(no output)".to_string() } else { live.clone() },
+        "output": live,
+        "output_lines": ol,
+        "history_lines": hl,
+        "history_source": "tmux-scrollback",
+        "output_is_viewport_only": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -22300,13 +22429,54 @@ async fn send_claimed_steering(
         );
         return None;
     }
+    let (id_s, session_s) = (id.to_string(), session.to_string());
+    let source = state.store.read_async(move |conn| {
+        Ok(conn.query_row(
+            "SELECT COALESCE(guard,''), COALESCE(sender,'') FROM steering_queue WHERE id=?1 AND session=?2",
+            rusqlite::params![id_s, session_s], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )?)
+    }).await;
+    let (guard, sender) = match source {
+        Ok(source) => source,
+        Err(e) => {
+            unclaim_steering_row(&state.store, id).await;
+            tracing::warn!(session, delivery_id = id, measured = false, n_considered = 0,
+                verdict = "steering_source_unmeasured", error = %e,
+                "queued input retained because its authority could not be measured");
+            return Some((false, "could not measure queued input authority; retained".into()));
+        }
+    };
+    if guard.starts_with("owner-policy:") {
+        let (id_s, safe_text) = (id.to_string(), redact_secrets(text));
+        let retired = state.store.write_async(move |conn| {
+            let n = conn.execute(
+                "INSERT OR REPLACE INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) \
+                 SELECT id,session,?2,queued_at,?3,'void:retired-owner-policy',guard,sender FROM steering_queue WHERE id=?1",
+                rusqlite::params![id_s, safe_text, now_f64()],
+            )?;
+            conn.execute("DELETE FROM steering_queue WHERE id=?1", [&id_s])?;
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        }).await;
+        if let Err(e) = retired {
+            unclaim_steering_row(&state.store, id).await;
+            tracing::warn!(session, delivery_id = id, verdict = "steering_legacy_policy_retained", error = %e,
+                "retired policy could not be recorded; it will not be delivered");
+            return Some((false, "retired owner-policy automation is not delivered".into()));
+        }
+        tracing::info!(session, delivery_id = id, measured = true, n_considered = 1,
+            verdict = "steering_legacy_owner_policy_voided", "obsolete owner-policy input retained in history, never typed");
+        return None;
+    }
     // A boot prompt waits for a turn boundary while its lane is still
     // starting, so it never lands in a startup picker. After that it is a
     // queued message like any other: 2026-10-06 three gs12-mvs boot prompts
     // were released mid-turn by the background ceiling every pass for up to
     // 64 minutes, and each release was turned back into a boundary send the
     // generating lane refused.
-    let mode = boot_delivery_mode(id, mode, lane_still_booting(&load_meta(session), now_i64()));
+    let mut mode = boot_delivery_mode(id, mode, lane_still_booting(&load_meta(session), now_i64()));
+    if !guard.is_empty() && !(guard == "project-steering" && sender.is_empty()) && !is_owner_configured_guard(&guard) {
+        mode.origin = SendOrigin::Automation;
+    }
     let mut queue_id = None;
     let result = send_text_inner_bound(state, session, text, mode, Some(id), &mut queue_id).await;
     if !result.0 {
@@ -26897,6 +27067,11 @@ pub(crate) async fn probe_refusal(
     ))
 }
 
+/// Is `origin` the Chat tab of `target` (`<target>@chat`)?
+pub(crate) fn chat_tab_of(origin: &str, target: &str) -> bool {
+    super::chat_worker::companion_parent(origin) == Some(target)
+}
+
 async fn isolated_peer_refusal(
     state: &AppState,
     name: &str,
@@ -26908,6 +27083,16 @@ async fn isolated_peer_refusal(
         || origin == name
         || !session_is_isolated(name)
     {
+        return None;
+    }
+    // A worker's own Chat tab speaks for the owner (Ethan, 2026-10-08:
+    // "shouldn't chat with a worker have privileges to interact with the
+    // worker if needed?"). Its turns are started only by the owner, and the tab
+    // is part of the worker, not a peer (chat_worker.rs), so its send to its
+    // own worker is owner input relayed through that worker's tab.
+    if chat_tab_of(&origin, name) {
+        tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
+            verdict = "isolated_send_from_own_chat_tab", "an isolated worker took a send from its own Chat tab (owner input)");
         return None;
     }
     let reason = format!(
@@ -28868,6 +29053,9 @@ pub(crate) fn worker_rules_args(name: &str, provider: &str, isolated: bool) -> V
         (false, true) => rules,
         (true, false) => lane,
         (false, false) => format!("{rules}\n\n{lane}"),
+    };
+    let block = if isolated { block } else {
+        format!("{block}\n\n# Browser profile selection and recovery\n\n{}", crate::orchestrator::context::BROWSER_SELECTION_GUIDE)
     };
     let file = worker_rules_file(name);
     if block.is_empty() {
@@ -31184,6 +31372,91 @@ async fn rename_session(state: &AppState, name: &str, raw_new: &str) -> Response
 // on precisely the sessions it exists for — the ones with a conversation worth
 // keeping.
 
+/// Is `id` a model a Claude worker can run: an alias, or a Claude id in the
+/// live catalog (static catalog when the live one has not loaded), with or
+/// without the `[1m]` long-context suffix.
+pub(crate) fn claude_model_known(id: &str) -> bool {
+    let base = id.trim().trim_end_matches("[1m]");
+    if matches!(base, "opus" | "sonnet" | "haiku" | "fable" | "opusplan" | "default") {
+        return true;
+    }
+    let live: Vec<String> = crate::provider::live_catalog::current()
+        .map(|snap| snap.entries.iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .filter(|v| v.get("provider").and_then(Value::as_str) == Some("claude"))
+            .filter_map(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect())
+        .unwrap_or_default();
+    if !live.is_empty() {
+        return live.iter().any(|m| m == base);
+    }
+    crate::provider::model_catalog::catalog().into_iter().any(|m| m.provider == "claude" && m.id == base)
+}
+
+/// The global defaults a `/model` or `/effort` argument rewrites.
+const CLAUDE_DEFAULT_KEYS: [&str; 2] = ["model", "effortLevel"];
+
+/// The current values of [`CLAUDE_DEFAULT_KEYS`] in `<claude_home>/settings.json`
+/// (`None` for an absent key or an unreadable file).
+pub(crate) fn claude_global_defaults(claude_home: &std::path::Path) -> Vec<Option<Value>> {
+    let v: Value = std::fs::read_to_string(claude_home.join("settings.json"))
+        .ok()
+        .and_then(|r| serde_json::from_str(&r).ok())
+        .unwrap_or(Value::Null);
+    CLAUDE_DEFAULT_KEYS.iter().map(|k| v.get(*k).cloned()).collect()
+}
+
+/// Put [`CLAUDE_DEFAULT_KEYS`] back to `prev`, touching nothing else in the
+/// file (it is shared with hooks and with Ethan's own edits). A string value
+/// already present is replaced IN PLACE, so the file keeps its key order and
+/// formatting; only adding or removing a key rewrites the whole object.
+pub(crate) fn restore_claude_global_defaults(claude_home: &std::path::Path, prev: &[Option<Value>], session: &str) {
+    let path = claude_home.join("settings.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&raw) else { return };
+    let mut text = raw.clone();
+    let mut rewrite = obj.clone();
+    let mut changed = Vec::new();
+    let mut needs_full = false;
+    for (k, want) in CLAUDE_DEFAULT_KEYS.iter().zip(prev) {
+        if obj.get(*k) == want.as_ref() {
+            continue;
+        }
+        changed.push(*k);
+        match (obj.get(*k), want) {
+            (Some(Value::String(_)), Some(Value::String(w))) => {
+                let re = regex::Regex::new(&format!(r#"("{}"\s*:\s*)"(?:[^"\\]|\\.)*""#, regex::escape(k))).expect("static pattern");
+                let lit = serde_json::to_string(w).unwrap_or_default();
+                text = re.replacen(&text, 1, |c: &regex::Captures| format!("{}{}", &c[1], lit)).into_owned();
+            }
+            _ => needs_full = true,
+        }
+        match want {
+            Some(v) => { rewrite.insert(k.to_string(), v.clone()); }
+            None => { rewrite.remove(*k); }
+        }
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let body = if needs_full {
+        serde_json::to_string_pretty(&Value::Object(rewrite)).unwrap_or_default() + "\n"
+    } else {
+        text
+    };
+    // Never write something that is not the intended JSON.
+    let Ok(check) = serde_json::from_str::<Value>(&body) else { return };
+    if CLAUDE_DEFAULT_KEYS.iter().zip(prev).any(|(k, w)| check.get(*k) != w.as_ref()) {
+        return;
+    }
+    let tmp = path.with_extension("json.amux-tmp");
+    if std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+        tracing::info!(session, keys = ?changed, measured = true, n_considered = changed.len(),
+            verdict = "claude_global_default_restored",
+            "a worker's live model/effort switch rewrote the global claude default; restored it");
+    }
+}
+
 /// What Claude Code prints when a slash config command lands.
 const CC_MODEL_ACK: &str = "Set model to ";
 const CC_EFFORT_ACK: &str = "Set effort level to ";
@@ -31412,6 +31685,38 @@ fn spawn_switch_confirm_watcher(name: &str) {
 /// choreography here would rediscover all of them.
 async fn deliver_hot_config(state: &AppState, name: &str, cmd: &str, ack: &str) -> HotOutcome {
     let before = tmux_capture(name, 40).await;
+    // HOLD A MID-TURN SWITCH UNTIL THE TURN ENDS (AMUX-5759, live test
+    // 2026-10-08). Sent while generating, `/model haiku` went through the
+    // steering queue, which Claude Code consumes MID-turn: the rest of the
+    // running turn was answered by the new model, which misread the moment
+    // ("There's no pending request in this message"). The API said "applies
+    // at the next turn boundary"; now it does.
+    if detect_claude_status(&before) == "active" {
+        let (st, n, c, a) = (state.clone(), name.to_string(), cmd.to_string(), ack.to_string());
+        tokio::spawn(async move {
+            for _ in 0..900 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                if detect_claude_status(&tmux_capture(&n, 40).await) != "active" {
+                    tracing::info!(session = %n, cmd = %c, measured = true, n_considered = 1,
+                        verdict = "hot_config_held_to_turn_end", "a mid-turn config switch was delivered at the turn boundary");
+                    let before = tmux_capture(&n, 40).await;
+                    let _ = deliver_hot_config_now(&st, &n, &c, &a, before).await;
+                    return;
+                }
+            }
+            tracing::warn!(session = %n, cmd = %c, measured = true, n_considered = 1,
+                verdict = "hot_config_turn_never_ended", "the turn did not end in 30 min; delivering the switch anyway");
+            let _ = send_text(&st, &n, &c, true, SendOrigin::Automation).await;
+            spawn_switch_confirm_watcher(&n);
+        });
+        return HotOutcome::Queued;
+    }
+    deliver_hot_config_now(state, name, cmd, ack, before).await
+}
+
+/// Deliver one config slash command to a pane that is not mid-turn and wait
+/// for its acknowledgement (answering the confirmation dialog).
+async fn deliver_hot_config_now(state: &AppState, name: &str, cmd: &str, ack: &str, before: String) -> HotOutcome {
     let (sent, msg) = send_text(state, name, cmd, true, SendOrigin::Automation).await;
     tracing::info!(session = name, cmd, sent, result = %msg, "hot config: delivered");
     if !sent {
@@ -31526,6 +31831,9 @@ async fn restart_with_structured_resume(
 /// What a config change did, in the shape the API reports it.
 struct SwapReport {
     mode: SwapMode,
+    /// The agent itself refused the value ("Model 'x' not found"): nothing was
+    /// changed, and the caller must put the env file back (AMUX-5759).
+    rejected: bool,
     /// Is the RUNNING agent on the new config now? False for a change parked
     /// on the steering queue, for a failed restart, and for `EnvOnly` (there
     /// is no agent; the next start picks it up).
@@ -31562,8 +31870,15 @@ async fn apply_live_config_change(
             applied: false,
             note: "",
             hot_error: None,
+            rejected: false,
         },
         SwapMode::Hot => {
+            // `/model x` and `/effort x` also save x as the GLOBAL default in
+            // ~/.claude/settings.json ("saved as your default for new
+            // sessions"), so a worker's switch changed the model of every
+            // claude Ethan starts by hand (2026-10-08: a test switch rewrote
+            // claude-opus-5-5 to sonnet). Snapshot the defaults, put them back.
+            let defaults = (provider == "claude").then(|| claude_global_defaults(&claude_home()));
             let mut outcomes = Vec::with_capacity(cmds.len());
             for (cmd, ack) in cmds {
                 let o = deliver_hot_config(state, name, cmd, ack).await;
@@ -31577,12 +31892,47 @@ async fn apply_live_config_change(
                 }
             }
             let fold = fold_hot_outcomes(&outcomes);
+            if let Some(prev) = defaults {
+                let home = claude_home();
+                restore_claude_global_defaults(&home, &prev, name);
+                if !matches!(fold, HotFold::AllApplied) {
+                    // Queued mid-turn: the command runs at the next boundary
+                    // and saves again then. Watch for it, then restore.
+                    let name = name.to_string();
+                    tokio::spawn(async move {
+                        // Covers the 30-minute turn-end hold in deliver_hot_config.
+                        for _ in 0..400 {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if claude_global_defaults(&home) != prev {
+                                restore_claude_global_defaults(&home, &prev, &name);
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
             match mode_after_delivery(&fold) {
                 SwapMode::Restart => {
                     let why = match fold {
                         HotFold::Failed(w) => w,
                         _ => String::new(),
                     };
+                    // AMUX-5759 live test: a bad model id was REFUSED by the
+                    // agent, and amux restarted the worker ON that id anyway,
+                    // breaking it. A refusal is an answer, not a missing ack:
+                    // keep the running session and say so.
+                    if why.contains(CC_SLASH_REJECT) {
+                        tracing::warn!(session = name, reason, why = %why, measured = true, n_considered = 1,
+                            verdict = "hot_config_rejected_kept_running",
+                            "the agent refused the new value; nothing changed and no restart");
+                        return SwapReport {
+                            mode: SwapMode::Hot,
+                            rejected: true,
+                            applied: false,
+                            note: " (refused by the agent; nothing changed, no restart)",
+                            hot_error: Some(why),
+                        };
+                    }
                     let restarted =
                         restart_with_structured_resume(state, name, provider, reason).await;
                     SwapReport {
@@ -31594,6 +31944,7 @@ async fn apply_live_config_change(
                             " (live switch failed AND the restart failed — the session may still be on the old model)"
                         },
                         hot_error: Some(why),
+                        rejected: false,
                     }
                 }
                 _ => SwapReport {
@@ -31605,6 +31956,7 @@ async fn apply_live_config_change(
                         " (session is mid-turn — queued, applies at the next turn boundary; no restart)"
                     },
                     hot_error: None,
+                rejected: false,
                 },
             }
         }
@@ -31630,6 +31982,7 @@ async fn apply_live_config_change(
                     " (restart failed)"
                 },
                 hot_error: None,
+                rejected: false,
             }
         }
     }
@@ -31969,6 +32322,24 @@ async fn config_patch_with_liveness(
             Ok(v) => v,
             Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
         };
+        // An id nobody knows must not reach the worker (AMUX-5759 live test 5):
+        // a failed hot switch falls back to a RESTART on the new value, so an
+        // unknown id became a worker that cannot call its API. Checked against
+        // the model catalog before anything is written; `force` admits an id
+        // newer than the catalog.
+        if provider_of(&cfg) == "claude" && !model_val.is_empty()
+            && !claude_model_known(&model_val)
+            && body.get("force").and_then(Value::as_bool) != Some(true)
+        {
+            tracing::warn!(session = %name, model = %model_val, measured = true, n_considered = 1,
+                verdict = "model_switch_unknown_id_refused", "a model id absent from the catalog was refused before any change");
+            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "ok": false, "applied": false, "model": model_val,
+                "error": format!("'{model_val}' is not a known Claude model (GET /api/models); nothing changed. Send \"force\": true to use an id newer than the catalog."),
+            }));
+        }
+        // The env as it was, so an agent's refusal can put it back.
+        let cfg_before_model = cfg.clone();
         let flags_no_model = match strip_model_from_flags(cfg.get_or("CC_FLAGS", "")) {
             Ok(v) => v,
             Err(e) => {
@@ -32051,6 +32422,21 @@ async fn config_patch_with_liveness(
             "model swap",
         )
         .await;
+        if rep.rejected {
+            // Nothing changed in the running agent; the durable half must not
+            // claim otherwise, or the next start comes up on a model that does
+            // not exist.
+            if let Err((status, error)) = write_swap_config(state, name, &cfg_before_model, was_running, "model swap reverted") {
+                return jresp(status, json!({"error": error}));
+            }
+            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "ok": false,
+                "applied": false,
+                "mode": rep.mode.tag(),
+                "model": model_val,
+                "error": format!("the agent refused model '{model_val}': {}; nothing changed, the worker keeps its current model", rep.hot_error.clone().unwrap_or_default()),
+            }));
+        }
         if rep.applied {
             let confirmed = if model_val.is_empty() {
                 default_model_for_provider(&current_provider)
@@ -33000,6 +33386,20 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_latest_message_reads_real_rollout_text_and_skips_later_tools() {
+        let records = vec![
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Unable after CUA. é"}],"phase":"final_answer"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"t"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"duplicate mirror"}}),
+        ];
+        let events = crate::opencode::events::codex_rollout_transcript(&records);
+        assert_eq!(super::last_codex_assistant_text(events.clone(), 100), "Unable after CUA. é");
+        assert_eq!(super::last_codex_assistant_text(events, 6), "Unable");
+        assert!(super::last_codex_assistant_text(vec![], 100).is_empty());
+    }
+
     #[test]
     fn native_claude_interrupt_requires_latest_explicit_provider_boundary() {
         let interrupted = serde_json::json!({"type":"user","timestamp":"2026-09-24T01:54:18.202Z",
@@ -35481,6 +35881,82 @@ mod tests {
             && !is_owner_configured_guard("project-steering"));
         assert!(!body.contains("send_text(state, name, text, false, SendOrigin::Automation)"),
             "the direct send must use the computed origin");
+    }
+
+    #[tokio::test]
+    async fn queued_automation_retains_its_origin_and_retires_legacy_owner_policy() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let worker = "raw-queued-authority";
+        std::fs::write(env_path(worker), "CC_ISOLATED=1\nCC_PAUSED=1\n").unwrap();
+        // Pause is a second guard: a mutation must never launch a provider.
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("fixture.db")).unwrap());
+        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(),
+            auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        for guard in ["owner-policy:auto-proceed", "owner-ask", "needs-input:auto-approve", "", "sched:SCHED-12", "goal:fixture", "project-steering"] {
+            let id = format!("legacy-{guard}");
+            let (id_s, guard_s) = (id.clone(), guard.to_string());
+            store.write(move |conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute("INSERT INTO steering_queue(id,session,text,guard,sender,queued_at) VALUES(?1,?2,'Proceed',?3,'',1)",
+                    rusqlite::params![id_s, worker, guard_s])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            let result = send_claimed_steering(&state, &id, worker, "Proceed", SendMode::drained(false, true)).await;
+            if guard.starts_with("owner-policy:") {
+                assert!(result.is_none());
+                let conn = store.read().unwrap();
+                assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1", [&id], |r| r.get::<_,i64>(0)).unwrap(), 0);
+                assert_eq!(conn.query_row("SELECT outcome FROM steering_history WHERE id=?1", [&id], |r| r.get::<_,String>(0)).unwrap(), "void:retired-owner-policy");
+            } else if guard == "project-steering" {
+                assert!(result.is_none(), "an unbound project note stays held before delivery");
+                assert_eq!(store.read().unwrap().query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1 AND delivering_since IS NULL", [&id], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            } else {
+                let (sent, reason) = result.unwrap_or_else(|| panic!("{guard}: refusal leaves the queued row available"));
+                assert!(!sent);
+                if matches!(guard, "owner-ask" | "needs-input:auto-approve") {
+                    assert!(reason.starts_with(ISOLATED_REFUSAL_PREFIX), "{guard}: {reason}");
+                } else {
+                    assert!(reason.starts_with("target is paused"), "owner input and exceptions reach the pause guard: {guard}: {reason}");
+                }
+                assert_eq!(store.read().unwrap().query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1 AND delivering_since IS NULL", [&id], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_authority_storage_failures_retain_input_without_delivery() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let worker = "raw-storage-authority";
+        for name in [worker, "paused-other"] {
+            std::fs::write(env_path(name), "CC_ISOLATED=1\nCC_PAUSED=1\n").unwrap();
+        }
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("fixture.db")).unwrap());
+        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(),
+            auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        store.write(move |conn| {
+            ensure_fleet_tables(conn)?;
+            for (id, guard) in [("fault-missing", ""), ("fault-retire", "owner-policy:auto-proceed")] {
+                conn.execute("INSERT INTO steering_queue(id,session,text,guard,sender,queued_at) VALUES(?1,?2,'Proceed',?3,'',1)",
+                    rusqlite::params![id, worker, guard])?;
+            }
+            conn.execute_batch("CREATE TRIGGER fixture_retirement_failure BEFORE INSERT ON steering_history WHEN NEW.id='fault-retire' BEGIN SELECT RAISE(ABORT,'fixture retirement storage failure'); END;")?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        for (id, target, prefix) in [("fault-missing", "paused-other", "could not measure queued input authority"),
+            ("fault-retire", worker, "retired owner-policy automation is not delivered")] {
+            let (sent, reason) = send_claimed_steering(&state, id, target, "Proceed", SendMode::drained(false, true)).await.unwrap();
+            assert!(!sent);
+            assert!(reason.starts_with(prefix), "{id}: {reason}");
+            assert_eq!(send_failure_status(&reason).0, StatusCode::INTERNAL_SERVER_ERROR,
+                "a failed storage measurement or retirement transaction is an infrastructure fault");
+            let conn = store.read().unwrap();
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1 AND delivering_since IS NULL", [id], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_history WHERE id=?1", [id], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        }
     }
 
     #[test]
@@ -48521,6 +48997,64 @@ mod pipe_reconcile_tests {
 mod delivery_mode_tests {
     use super::*;
 
+    /// Only a worker's OWN Chat tab may reach it past isolation.
+    #[test]
+    fn only_the_workers_own_chat_tab_passes_isolation() {
+        assert!(chat_tab_of("mxp-gs12@chat", "mxp-gs12"));
+        assert!(!chat_tab_of("other@chat", "mxp-gs12"), "another worker's chat is a peer");
+        assert!(!chat_tab_of("mxp-gs12", "mxp-gs12@chat"));
+        assert!(!chat_tab_of("amux", "mxp-gs12"));
+    }
+
+    /// AMUX-5759 live test 5: an unknown id restarted the worker onto it.
+    #[test]
+    fn only_known_claude_models_pass_the_switch_check() {
+        // The SPA picker's own values must all pass (spa_picker_values_pass_through_verbatim).
+        for ok in ["sonnet", "opus", "haiku", "claude-opus-5-5", "claude-opus-5[1m]", "claude-haiku-4-5-20251001", "claude-sonnet-4-6[1m]"] {
+            assert!(claude_model_known(ok), "{ok}");
+        }
+        for bad in ["definitely-not-a-model", "claude-opus-9-9", "gpt-5.5", ""] {
+            assert!(!claude_model_known(bad), "{bad}");
+        }
+    }
+
+    /// 2026-10-08: a worker's `/model sonnet` rewrote the global default in
+    /// ~/.claude/settings.json from claude-opus-5-5 to sonnet. The restore puts
+    /// it back in place, keeps every other byte, and handles an absent key.
+    #[test]
+    fn a_live_switch_leaves_the_global_claude_default_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        let original = "{\n  \"zeta\": 1,\n  \"model\": \"claude-opus-5-5\",\n  \"hooks\": {\"a\": [1, 2]},\n  \"effortLevel\": \"high\"\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let prev = claude_global_defaults(d.path());
+        std::fs::write(&path, original.replace("claude-opus-5-5", "sonnet").replace("\"high\"", "\"low\"")).unwrap();
+        restore_claude_global_defaults(d.path(), &prev, "t");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "restored in place, every other byte kept");
+        // A default that did not exist before the switch is removed again.
+        std::fs::write(&path, "{\"zeta\": 1}").unwrap();
+        let prev = claude_global_defaults(d.path());
+        std::fs::write(&path, "{\"zeta\": 1, \"model\": \"sonnet\"}").unwrap();
+        restore_claude_global_defaults(d.path(), &prev, "t");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(v.get("model").is_none() && v["zeta"] == 1);
+    }
+
+    /// mxp-gs12, 2026-10-08: a long `/goal ...` was pasted whole and Claude
+    /// Code wrapped it, so /goal never ran. The command token is typed.
+    #[test]
+    fn a_slash_command_keeps_its_token_out_of_the_paste() {
+        assert_eq!(slash_command_split("/goal Execute the plan"), Some(("/goal ", "Execute the plan")));
+        assert_eq!(slash_command_split("  /model claude-opus-5-5"), Some(("/model ", "claude-opus-5-5")));
+        assert_eq!(slash_command_split("/plugin:run do it"), Some(("/plugin:run ", "do it")));
+        assert_eq!(slash_command_split("/goal\nmulti\nline"), Some(("/goal\n", "multi\nline")));
+        assert_eq!(slash_command_split("/compact"), None, "no argument: nothing to paste");
+        assert_eq!(slash_command_split("/goal   "), None);
+        assert_eq!(slash_command_split("/Users/ethan/x.png look"), None, "a path is not a command");
+        assert_eq!(slash_command_split("fix /goal later"), None);
+        assert_eq!(slash_command_split("<pasted_content> /goal x"), None);
+    }
+
     /// AMUX-2909, pinned. Ethan's report: a message typed into a lane that was
     /// visibly working. This FAILS against the pre-fix predicate
     /// (`chars > 400 || picker_shaped`), which is the whole point — a short
@@ -49227,6 +49761,10 @@ mod refusal_status_tests {
             "tmux not found or timed out",
             "Claude failed to start",
             "could not write session env",
+            // The queue cannot be measured or its retirement transaction failed.
+            // These retain input and report real storage faults, not policy refusals.
+            "could not measure queued input authority; retained",
+            "retired owner-policy automation is not delivered",
             // A stop that cannot establish process exit is an operational
             // failure, not a successful or safely refused stop receipt.
             "worker is still running; herdr hard-kill is unavailable",
@@ -50204,7 +50742,8 @@ mod commit_shape_tests {
         std::fs::create_dir_all(h.join("memory")).unwrap();
         let _g = crate::api::settings::test_env::set_home(h);
         std::fs::write(h.join("sessions/lanemem.env"), "CC_TAGS=\"\"\n").unwrap();
-        assert!(super::worker_rules_args("lanemem", "claude", false).is_empty(), "no rules and no memory: no file");
+        let defaults = super::worker_rules_args("lanemem", "claude", false);
+        assert!(std::fs::read_to_string(&defaults[1]).unwrap().contains("amux browser route advance"), "ordinary workers receive browser recovery guidance without custom memory");
         std::fs::write(super::mem_file("lanemem"), "LANEONLY note").unwrap();
         let args = super::worker_rules_args("lanemem", "claude", false);
         assert_eq!(args.first().map(String::as_str), Some("--append-system-prompt-file"), "{args:?}");
@@ -50317,12 +50856,13 @@ mod commit_shape_tests {
         assert!(super::worker_rules_args("ruled", "claude", true).is_empty(), "isolated gets nothing");
         assert!(super::worker_rules_args("ruled", "gemini", false).is_empty());
 
-        // Removing the rules removes the launch argument and the stale file.
+        // Removing binding rules leaves only the default browser capability.
         for f in ["_rules.md", "tags/alpha.rules.md", "ruled.rules.md"] {
             std::fs::remove_file(h.join("memory").join(f)).unwrap();
         }
-        assert!(super::worker_rules_args("ruled", "claude", false).is_empty());
-        assert!(!super::worker_rules_file("ruled").exists());
+        let defaults = read(&super::worker_rules_args("ruled", "claude", false));
+        assert!(!defaults.contains("GLOBALRULE") && !defaults.contains("GROUPRULE") && !defaults.contains("WORKERRULE"));
+        assert!(defaults.contains("amux browser route advance"));
     }
 }
 

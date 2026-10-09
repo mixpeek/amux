@@ -79,6 +79,7 @@ mod ios;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .nest("/ios", ios::routes())
+        .nest("/routing", super::browser_routing::routes())
         .route("/start", post(start))
         .route("/status", get(status))
         .route("/stop", post(stop))
@@ -2253,6 +2254,20 @@ async fn stop(
         );
     };
 
+    // Route cleanup is conditional ownership, unlike an explicit operator stop.
+    // A reaped browser may have been replaced by another lane during a cold build.
+    if let Some(expected) = body.get("expected_started_by").and_then(Value::as_str) {
+        if owner_of_target != expected || want_profile.is_some_and(|p| p != profile) {
+            tracing::warn!(stopped_by=%actor, expected_started_by=%expected,
+                actual_started_by=%owner_of_target, profile=%profile,
+                verdict="browser_stop_ownership_changed", measured=true, n_considered=1,
+                "browser: conditional route cleanup preserved a replaced browser");
+            return err(StatusCode::CONFLICT, json!({"ok":false,"stopped":false,
+                "code":"browser_stop_ownership_changed",
+                "error":"the requested browser no longer belongs to this route"}));
+        }
+    }
+
     // Cross-session stop stays PERMITTED (a wedged browser must be cleanable
     // by whoever notices) but LOUD: the log and the response both name owner
     // and actor, so an anonymous stop can no longer read as a mystery death
@@ -2408,6 +2423,10 @@ struct ProfileForQuery {
     site: String,
     #[serde(default)]
     worker: Option<String>,
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 /// GET /profile-for?url=... — the ONE profile a worker should use for a site,
@@ -2430,12 +2449,17 @@ async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Re
     let worker = q.worker.clone().filter(|w| !w.trim().is_empty()).or_else(|| explicit_session(None, &headers)).unwrap_or_default();
     let home = chrome::amux_home();
     let w2 = worker.clone();
+    let identity=q.identity.clone();
+    let role=q.role.clone();
+    if role.as_ref().is_some_and(|r|!bl::ROLES.contains(&r.as_str())) {return err(StatusCode::BAD_REQUEST,json!({"error":"unknown profile role"}));}
     let out = tokio::task::spawn_blocking(move || {
         let list = chrome::list_profiles(&home, false);
         let chrome_dir = chrome::chrome_user_data_dir();
         let cands: Vec<bl::Candidate> = list
             .iter()
             .filter(|p| p.on_disk)
+            .filter(|p| identity.as_ref().is_none_or(|id|p.identity.eq_ignore_ascii_case(id)))
+            .filter(|p| role.as_ref().map_or(!matches!(p.role.as_str(),"test"|"deprecated"),|r|&p.role==r))
             .map(|p| bl::Candidate {
                 name: p.name.clone(),
                 role: p.role.clone(),
@@ -2446,16 +2470,24 @@ async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Re
             })
             .collect();
         let (default_profile, _) = default_browser_profile(&w2);
-        (bl::resolve_for_site(&site, &cands, &default_profile), site, cands.len())
+        let allowed:Vec<_>=cands.iter().filter(|c|c.allowed).collect();
+        let default_profile=allowed.iter().find(|c|c.name==default_profile).or_else(||allowed.first()).map(|c|c.name.as_str()).unwrap_or("");
+        let choice=bl::resolve_for_site(&site, &cands, default_profile);
+        let cards:Vec<Value>=list.iter().filter(|p|cands.iter().any(|c|c.name==p.name)).map(profile_selection_card).collect();
+        (choice, site, cands.len(), cards)
     })
     .await;
     match out {
-        Ok((choice, site, n)) => {
+        Ok((choice, site, n, cards)) => {
+            if choice.profile.is_empty(){return err(StatusCode::NOT_FOUND,json!({"error":"no allowed profile matches the requested identity and role","measured":true,"n_considered":n,"choices":cards}));}
             tracing::info!(target: "amux::browser", site = %site, worker = %worker, profile = %choice.profile,
                 signed_in = choice.signed_in, measured = true, n_considered = n,
                 verdict = "browser_profile_resolved", "browser profile chosen for a site");
             let mut v = serde_json::to_value(&choice).unwrap_or(Value::Null);
             if let Some(o) = v.as_object_mut() {
+                o.insert("selection".into(),cards.iter().find(|c|c["name"]==choice.profile).cloned().unwrap_or(Value::Null));
+                o.insert("choices".into(),json!(cards));
+                o.insert("verified_live".into(),json!(false));
                 o.insert("site".into(), json!(site));
                 o.insert("worker".into(), json!(worker));
                 o.insert("measured".into(), json!(true));
@@ -2542,6 +2574,11 @@ async fn profile_meta(headers: HeaderMap, Json(b): Json<ProfileMetaBody>) -> Res
     tracing::info!(target: "amux::browser", profile = %name, by = %by, role = v["role"].as_str().unwrap_or(""),
         measured = true, n_considered = 1, verdict = "browser_profile_meta_set", "browser profile metadata set");
     Json(json!({ "ok": true, "name": name, "entry": v })).into_response()
+}
+
+pub(crate) fn profile_selection_card(p:&chrome::BrowserProfile)->Value {
+    let avoid=match p.role.as_str(){"test"=>"Synthetic QA only; never choose for real work", "deprecated"=>"Recovery or migration only; prefer a current identity", "personal"=>"Personal work only; do not substitute for the work identity", "restricted"=>"Use only for this task's explicitly authorized restricted accounts", "customer"=>"Only for this customer's work; never substitute for another customer",_=>"Confirm the account identity and site access before acting"};
+    json!({"name":p.name,"identity":p.identity,"role":p.role,"use_for":p.label,"registered_sites":p.domains,"avoid":avoid,"on_disk":p.on_disk,"scope":"Use access.allowed_for_you; a descriptive label does not grant access"})
 }
 
 #[derive(Deserialize, Default)]
@@ -2641,6 +2678,8 @@ async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Respons
                 o.insert("cookies".into(), json!(cookies));
                 o.insert("cookies_measured".into(), json!(cookies.is_some()));
                 o.insert("cookies_expired".into(), json!(jar.as_ref().map(|j| j.cookies_expired)));
+                o.insert("selection".into(),profile_selection_card(p));
+                o.insert("authentication".into(),json!({"evidence":"unexpired_cookie_names","verified_live":false,"note":"Cookie names and expiry cannot prove that the site accepts the session."}));
                 o.insert("signed_in_to".into(), json!(jar.as_ref().map(|j| j.signed_in_to()).unwrap_or_default()));
                 o.insert("logins".into(), json!(jar.as_ref().map(|j| j.logins.clone()).unwrap_or_default()));
                 o.insert("cookie_hosts".into(), json!(hosts));
@@ -2655,7 +2694,7 @@ async fn profiles(headers: HeaderMap, Query(q): Query<ProfilesQuery>) -> Respons
                         (None, _) => "could not read this profile's cookie jar".to_string(),
                         (Some(n), Some(top)) => match jar.as_ref().map(|j| j.logins.len()) {
                             Some(0) => format!("{n} cookie(s), no live login (mainly {top})"),
-                            Some(l) => format!("signed in to {l} site(s): {}", jar.as_ref().map(|j| j.signed_in_to().into_iter().take(6).collect::<Vec<_>>().join(", ")).unwrap_or_default()),
+                            Some(l) => format!("login-cookie candidates for {l} site(s): {}", jar.as_ref().map(|j| j.signed_in_to().into_iter().take(6).collect::<Vec<_>>().join(", ")).unwrap_or_default()),
                             None => format!("{n} cookie(s) across {} site(s); mainly {top}", hosts.len()),
                         },
                         (Some(n), None) => format!("{n} cookie(s), no host could be read"),

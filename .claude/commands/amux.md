@@ -394,72 +394,31 @@ permanently and cannot legitimately succeed on retry where it just failed.
 
 ## Browser Automation
 
-**Live backend** — same verbs, executed in YOUR real Chrome (real logins, real IP). Opens a NEW tab (never touches existing tabs); first use needs one "Allow debugging?" click. Use when acting-as-you matters (SSO dashboards, bot-walled sites); the default profile backend is for parallel/unattended work.
+Start with `amux browser profiles` (or `--all` for synthetic QA and deprecated
+profiles). Every row explains identity, role, purpose, scope and cookie evidence.
+Choose the account matching the task, not merely the profile with the most cookies.
+Work, personal, customer and restricted identities are not interchangeable. QA
+personas are for testing; deprecated profiles are for recovery.
+
+`amux browser for https://example.com` recommends a profile and explains why.
+For a required account, query `/api/browser/profile-for?url=...&identity=...&role=...`
+with `X-Amux-Session: $AMUX_SESSION`. The response includes `selection` and `choices`
+so the worker can make the final choice. Unexpired cookies do not prove live auth;
+verify the account on the opened page before acting.
 
 ```bash
-curl -sk -X POST -H 'Content-Type: application/json' -d '{"backend":"live","url":"https://example.com"}' $AMUX_URL/api/browser/start
-# navigate/screenshot/state/action/stop then work identically; live click takes {"selector":"..."} or x,y.
+amux browser route start '{"profile":"<chosen-name>","url":"https://example.com"}'
+amux browser route state
+amux browser route shot  # inspect the PNG
+amux browser route action '{"action":"click","selector":"<observed-selector>"}'
+amux browser route stop
 ```
 
-Shared Playwright instance with saved auth profiles.
-
-```bash
-# Start browser
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"profile":"default","url":"https://example.com"}' \
-  $AMUX_URL/api/browser/start
-
-# Navigate
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com"}' $AMUX_URL/api/browser/navigate
-
-# Screenshot (returns JSON with path — use Read tool to view)
-curl -sk $AMUX_URL/api/browser/screenshot
-
-# Observe: elements with ref, role, name, frame, rect and state, plus an observation_id
-curl -sk -H "X-Amux-Session: $AMUX_SESSION" $AMUX_URL/api/browser/state
-
-# Grounded click (preferred): act on a ref from that observation and say what should happen.
-# 409 stale_document/stale_observation -> observe again. 409 disabled/obscured -> fix the page
-# (force:true clicks the point anyway). 422 -> dispatched, but `expect` did not hold.
-# Every click reports `observed_effect` (navigated, url_changed, dom_mutations, none_observed).
-curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $AMUX_SESSION" \
-  -d '{"action":"click","ref":"e12","observation_id":"<from /state>","expect":{"url_contains":"/done","timeout_ms":5000}}' \
-  $AMUX_URL/api/browser/action
-# expect keys: url_contains, url_changed, text, text_gone, selector, value, timeout_ms
-# Fill a field by ref; the reply says whether the field holds the text afterwards
-curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $AMUX_SESSION" \
-  -d '{"action":"input","ref":"e5","observation_id":"<from /state>","text":"hello"}' $AMUX_URL/api/browser/action
-
-# Fallbacks: selector, index, or coordinates (for cross-origin frames and canvas)
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"click","x":640,"y":400}' $AMUX_URL/api/browser/action
-
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"type","text":"hello"}' $AMUX_URL/api/browser/action
-
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"key","key":"Enter"}' $AMUX_URL/api/browser/action
-
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"eval","script":"document.title"}' $AMUX_URL/api/browser/action
-
-# AI agent — autonomous browser task
-curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"task":"Find the latest invoice","profile":"default"}' \
-  $AMUX_URL/api/browser/agent
-
-# List auth profiles (every worker sees all; `access.allowed_for_you` says
-# which you may open). Or: amux browser profiles
-curl -sk -H "X-Amux-Session: $AMUX_SESSION" $AMUX_URL/api/browser/profiles
-# Use is scoped by AMUX_BROWSER_PROFILES_ALLOW / _DENY (worker > group > global,
-# globs like persona-*). A refused start is 403 code profile_not_in_scope and
-# lists allowed_profiles. Resolution for a level:
-curl -sk "$AMUX_URL/api/browser/profile-access?level=worker&name=$AMUX_SESSION"
-
-# Stop browser
-curl -sk -X POST $AMUX_URL/api/browser/stop
-```
+The shared route uses Amux, then direct CDP with the Chrome identity preselected
+in Browser → Browser route settings, then CUA if enabled. Replies identify the
+actual backend/profile and attempted routes. A failed mutation is never replayed
+on a fallback: observe again before retrying. Scope refusals stay refusals. An occupied native profile uses the configured isolated CDP copy; its current worker keeps its browser and tabs. CUA currently transfers cookies; localStorage and IndexedDB stay in
+full Chrome snapshots. A worker owns its tab, never an arbitrary existing tab.
 
 ---
 

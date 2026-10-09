@@ -9,6 +9,7 @@ pub mod aliases;
 pub mod auth;
 pub mod board;
 pub mod contract;
+pub mod scratchpad;
 pub mod prompt_block;
 pub mod land_queue;
 pub mod worker_identity;
@@ -23,6 +24,7 @@ pub mod branding;
 pub mod brex;
 pub mod browser;
 pub mod browser_import;
+pub mod browser_routing;
 pub mod browser_scope;
 pub mod calendar;
 pub mod channels;
@@ -182,6 +184,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::get(workers::ollama_models),
         )
         .route("/api/models", axum::routing::get(workers::model_catalog))
+        .route("/api/scratchpad/config", axum::routing::get(scratchpad::get_config).put(scratchpad::put_config))
         .nest("/api/memories", memories::routes())
         .nest("/api/traces", traces::routes())
         .nest("/api/messages", messages::routes())

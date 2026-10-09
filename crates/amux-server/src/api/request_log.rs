@@ -2255,6 +2255,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     // -- browser
     RouteEntry {
+        path: "/api/browser/routing/config",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/browser/routing/request",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/browser/start",
         methods: &["POST"],
     },
@@ -3058,6 +3066,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/models",
         methods: &["GET"],
+    },
+    // Scratchpad expiry setting (Ethan, 2026-10-09).
+    RouteEntry {
+        path: "/api/scratchpad/config",
+        methods: &["GET", "PUT"],
     },
     // Mounted-but-untabled, all found by curling the census's "missing" list
     // against the live server (AMUX-2871). Each was reported as unrouted while

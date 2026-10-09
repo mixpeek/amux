@@ -3744,6 +3744,9 @@ async function _runSyncBanner(quiet = false) {
     if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
       try { loadExplore(_explorePath); } catch (error) {}
     }
+    if (typeof activeView !== 'undefined' && activeView === 'scratchpad' && typeof _scratchpadLoad === 'function') {
+      try { _scratchpadLoad(); } catch (error) {}
+    }
   }
   if (!offlineQueue.length && !drafts.length && !_uploadSyncPending) _writeError = '';
 
@@ -7126,6 +7129,8 @@ function _renderWorkerActionMenu(s, surface) {
   }).join('');
 }
 
+const _peekActionTemplates = new WeakMap();
+let _peekDecoratedMenuLogged = false;
 function _renderPeekWorkerActions(s) {
   const menu = document.getElementById('peek-more-dropdown');
   if (!menu) return;
@@ -7138,7 +7143,21 @@ function _renderPeekWorkerActions(s) {
     + 'onclick="event.stopPropagation();_closePeekMore();togglePeekFocus()">'
     + '<span class="mi">&#x25B4;</span>Focus mode</div>'
     + _peekChatMenuItem(s);
-  if (menu.innerHTML !== html) menu.innerHTML = html;
+  const previous = _peekActionTemplates.get(menu);
+  if (previous === html && menu.firstChild) {
+    // Feedback decorates controls after insertion. Comparing live innerHTML
+    // against the undecorated template used to replace an open menu on every
+    // status refresh, detaching an iOS tap before its click handler ran.
+    if (!_peekDecoratedMenuLogged && menu.classList.contains('open') && menu.innerHTML !== html) {
+      _peekDecoratedMenuLogged = true;
+      _origFetch(API + '/api/client-debug', {method:'POST', headers:_authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({kind:'worker-action-menu',verdict:'decorated_menu_preserved',
+          measured:true,n_considered:menu.querySelectorAll('[role="menuitem"]').length,ver:APP_VER})}).catch(() => {});
+    }
+    return;
+  }
+  menu.innerHTML = html;
+  _peekActionTemplates.set(menu, html);
 }
 
 // Both menu Browse actions and the displayed directory path land here. One
@@ -7484,7 +7503,8 @@ function render() {
           `<div class="card-log-hit" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}',hitIdx:${hi}})"><span class="log-hit-loc">${esc(s.name)}:${h.line}</span> <span class="log-hit-text">${esc(h.text.slice(0, 80))}</span></div>`
         ).join('') + (hits.length > 2 ? `<div class="card-log-hit" style="color:var(--dim);font-style:italic;" onclick="event.stopPropagation();openPeek('${s.name}',{query:'${sq}'})">+${hits.length - 2} more matches</div>` : '');
       })() : ''}
-      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding')) ? `<div class="badges">
+      ${(isYolo || (provider && provider !== 'claude') || effort || s.backend === 'herdr' || model || (s.tags||[]).length || s.worktree_active || s.ephemeral || (s.worker_type && s.worker_type !== 'coding') || s.goal?.active) ? `<div class="badges">
+        ${s.goal?.active ? `<span class="badge goal" title="${esc('/goal active' + (s.goal.since ? ' since ' + new Date(s.goal.since * 1000).toLocaleString() : '') + ': ' + (s.goal.condition || ''))}">&#9678; goal</span>` : ''}
         ${s.worker_type && s.worker_type !== 'coding' ? `<span class="badge worker-type ${esc(s.worker_type)}" title="${esc(_workerTypeInfo(s.worker_type).label)} worker: ${esc(_workerTypeInfo(s.worker_type).description || '')}">${esc(_workerTypeInfo(s.worker_type).label.toLowerCase())}</span>` : ''}
         ${s.backend === 'herdr' ? `<span class="badge herdr" title="Hosted on herdr">herdr</span>` : ''}
         ${provider && provider !== 'claude' ? `<span class="badge provider ${provider}" onclick="event.stopPropagation();editField('${s.name}','provider','${escJs(provider)}')" title="Change provider">${pLabel}</span>` : ''}
@@ -8458,9 +8478,12 @@ function _capTabCustomizerHeight(menu) {
 function _renderTabCustomizerMenu() {
   const menu = document.getElementById('tab-customizer-menu');
   if (!menu) return;
-  // Render in tabOrder order
   const orderedTabs = tabOrder.map(id => ALL_TABS.find(t => t.id === id)).filter(Boolean);
-  let html = orderedTabs.map(t => {
+  let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
+    + '<input type="text" id="tab-cust-search" class="input" placeholder="Filter tabs…" '
+    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterTabCustomizer(this.value)">'
+    + '</div>';
+  html += orderedTabs.map(t => {
     const checked = !hiddenTabs.has(t.id);
     const req = t.required ? ' required' : '';
     const disabled = t.required ? ' disabled' : '';
@@ -8470,7 +8493,6 @@ function _renderTabCustomizerMenu() {
       ${t.label}
     </label>`;
   }).join('');
-  // Presets section
   html += '<div class="tab-preset-section" onclick="event.stopPropagation()" style="border-top:1px solid var(--border);margin-top:6px;padding:6px 14px 4px;">';
   html += '<div style="display:flex;align-items:center;justify-content:space-between;">';
   html += '<span style="font-size:0.75rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;">Presets</span>';
@@ -8479,6 +8501,7 @@ function _renderTabCustomizerMenu() {
   html += '<div id="preset-list" style="font-size:0.82rem;"></div>';
   html += '</div>';
   menu.innerHTML = html;
+  requestAnimationFrame(() => { const s = document.getElementById('tab-cust-search'); if (s) s.focus(); });
   // Load presets
   fetch('/api/layout-presets').then(r=>r.json()).then(presets => {
     const list = document.getElementById('preset-list');
@@ -8508,6 +8531,28 @@ function _renderTabCustomizerMenu() {
       }
     });
   }
+}
+
+function _filterTabCustomizer(q) {
+  const menu = document.getElementById('tab-customizer-menu');
+  if (!menu) return;
+  const lc = (q || '').trim().toLowerCase();
+  menu.querySelectorAll('.tab-customizer-item[data-tab-id]').forEach(el => {
+    const label = (el.textContent || '').toLowerCase();
+    el.style.display = !lc || label.includes(lc) ? '' : 'none';
+  });
+  const preset = menu.querySelector('.tab-preset-section');
+  if (preset) preset.style.display = lc ? 'none' : '';
+}
+
+function _filterPeekTabCustomizer(q) {
+  const menu = document.getElementById('peek-tab-customizer-menu');
+  if (!menu) return;
+  const lc = (q || '').trim().toLowerCase();
+  menu.querySelectorAll('.tab-customizer-item').forEach(el => {
+    const label = (el.textContent || '').toLowerCase();
+    el.style.display = !lc || label.includes(lc) ? '' : 'none';
+  });
 }
 
 // ── Peek (session) tab customizer (AMUX-2185) ──────────────────────────────
@@ -8807,7 +8852,11 @@ function _renderPeekTabCustomizer() {
   const menu = document.getElementById('peek-tab-customizer-menu');
   if (!menu) return;
   const ordered = peekTabOrder.map(id => PEEK_TABS.find(t => t.id === id)).filter(Boolean);
-  let html = '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
+  let html = '<div class="tab-cust-search-wrap" onclick="event.stopPropagation()">'
+    + '<input type="text" id="peek-tab-cust-search" class="input" placeholder="Filter tabs\u2026" '
+    + 'style="width:100%;font-size:0.82rem;padding:5px 8px;margin:0;" oninput="_filterPeekTabCustomizer(this.value)">'
+    + '</div>';
+  html += '<div class="tab-customizer-item required" onclick="event.stopPropagation()" style="opacity:0.7;">'
     + '<span style="padding:0 4px 0 0;color:var(--dim);">\uD83D\uDCCC</span><input type="checkbox" checked disabled> Terminal (pinned)</div>';
   html += ordered.map(t => {
     const req = PEEK_REQUIRED_TABS.has(t.id);
@@ -8817,6 +8866,7 @@ function _renderPeekTabCustomizer() {
       + '<input type="checkbox" ' + (checked ? 'checked' : '') + (req ? ' disabled' : '') + ' onchange="togglePeekTabVisibility(\'' + t.id + '\',this.checked)"> ' + t.label + '</label>';
   }).join('');
   menu.innerHTML = html;
+  requestAnimationFrame(() => { const s = document.getElementById('peek-tab-cust-search'); if (s) s.focus(); });
   if (window.Sortable) {
     if (_peekTabMenuSortable) { try { _peekTabMenuSortable.destroy(); } catch(e) {} }
     _peekTabMenuSortable = Sortable.create(menu, { handle: '.tab-drag-handle', draggable: '.tab-customizer-item[data-ptab-id]', animation: 100,
@@ -8909,6 +8959,9 @@ function _maybeAutoOpenEmbedPeek() {
   if (!sessions || !sessions.some(s => s.name === window._peekEmbed)) return;
   _peekEmbedOpened = true;
   openPeek(window._peekEmbed);
+  // ?peekTab=<tab>: the peek side panel opens the embed on Messages or Chat.
+  const embedTab = new URLSearchParams(location.search).get('peekTab');
+  if (embedTab) setTimeout(() => { try { setPeekTab(embedTab); } catch (e) {} }, 0);
   const ov = document.getElementById('peek-overlay');
   if (ov) ov.classList.remove('peek-focus');  // tiles always show the full tab strip
   // fit the terminal once content lands, then keep it fitted
@@ -8925,6 +8978,10 @@ function _embedFitZoom() {
   if (!window._peekEmbed) return;
   const body = document.getElementById('peek-body');
   if (!body || !body.offsetParent) return;
+  // The peek side panel (?peekTab=messages|chat) shows a panel, not a scaled
+  // terminal tile: the chat renders into this same body and came out at
+  // tile zoom, unreadably small (Ethan, 2026-10-09, side-panel check).
+  if (new URLSearchParams(location.search).get('peekTab')) { body.style.zoom = '1'; return; }
   // widest source line (textContent keeps source newlines, unaffected by wrap)
   let cols = 0;
   for (const l of (body.textContent || '').split('\n')) if (l.length > cols) cols = l.length;
@@ -13963,7 +14020,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1263';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1286';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14265,6 +14322,7 @@ function _paintCachedPeek(cached) {
   // won the race often enough to replace a chat with its terminal snapshot.
   if (peekSession && _workerRenderer(peekSession) !== 'terminal') return false;
   _peekHistoryRaw = cached.history || '';
+  _peekModePainted = null;
   _peekHistoryHTML = cached.histHTML || (cached.history ? _peekHtml(cached.history) : '');
   _lastLiveHTML = cached.output ? _peekLiveHtml(cached.output) : '';
   lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
@@ -14582,6 +14640,29 @@ function _chatLinkify(html) {
   return _linkifyPaths(html);
 }
 
+// COPY LIKE OPENAI'S CHAT (Ethan, 2026-10-08): a finished reply copies its raw
+// text from the meta line, and every code block in it has its own Copy.
+function _chatCodeCopy(html) {
+  return html.replace(/<pre(\s[^>]*)?>/g, (m0) => '<div class="chat-code"><button type="button" class="chat-code-copy" onclick="_chatCopy(this)" title="Copy code" aria-label="Copy code">Copy</button>' + m0)
+    .replace(/<\/pre>/g, '</pre></div>');
+}
+async function _chatCopy(btn) {
+  const text = btn.dataset.copy != null ? decodeURIComponent(btn.dataset.copy)
+    : (btn.parentElement.querySelector('pre')?.innerText || '');
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch (e2) {}
+    ta.remove();
+  }
+  const was = btn.textContent;
+  btn.textContent = ok ? 'Copied' : 'Copy failed';
+  setTimeout(() => { btn.textContent = was; }, 1500);
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -14678,7 +14759,8 @@ function _chatMessageHtml(m) {
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
-  return _chatBubble('assistant', head + _chatLinkify(renderMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')),
+  const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>' : '';
+  return _chatBubble('assistant', head + _chatCodeCopy(_chatLinkify(renderMarkdown(m.text || ''))), esc(bits.filter(Boolean).join(' · ')) + copy,
     m.interrupted ? 'is-interrupted' : '');
 }
 
@@ -15002,7 +15084,7 @@ function openPeek(name, opts) {
   _lastPeekRaw = '';
   _peekEtag = null; _peekLiveEtag = null;   // new session → drop the old session's ETags
   _peekLastFullMs = 0; _peekPrevStatus = '';   // force a fresh history cycle for this session
-  _peekHistoryRaw = ''; _peekHistoryHTML = '';   // and its transcript history
+  _peekHistoryRaw = ''; _peekHistoryHTML = ''; _peekThin = false; _peekModePainted = null;   // and its transcript history
   // CRITICAL: also drop the previous session's rendered live frame — the region
   // painter renders _lastLiveHTML directly, so a stale value briefly showed the
   // PREVIOUS session's terminal when opening a different one (2026-07-16).
@@ -15325,21 +15407,72 @@ function _savePeekState() {
   }
 }
 
-function togglePeekSplit() {
+// SIDE PANEL CHOICE (Ethan, 2026-10-08: "on non-mobile this button is actually
+// a split view and i get to choose which split view to do: file directory,
+// messages, chat"). Closed: the button offers the three; open: it closes.
+// Messages and Chat are a real peek of the same worker in an iframe
+// (?peekEmbed=<name>&peekTab=<tab>, the Workspace tile path), so each works
+// exactly as its tab does with no shared state with the terminal beside it.
+let _peekSplitView = localStorage.getItem('amux_peek_split_view') || 'files';
+function _peekSplitMenuClose() { document.getElementById('psp-menu')?.remove(); }
+function _peekSplitMenu(btn) {
+  _peekSplitMenuClose();
+  const m = document.createElement('div');
+  m.id = 'psp-menu'; m.className = 'psp-menu'; m.setAttribute('role', 'menu');
+  for (const [v, label] of [['files', 'Files'], ['messages', 'Messages'], ['chat', 'Chat']]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
+    b.onclick = () => { _peekSplitMenuClose(); _peekSplitOpen(v); };
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = btn.getBoundingClientRect();
+  m.style.top = (r.bottom + 6) + 'px';
+  m.style.left = Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  m.querySelector('button')?.focus();
+  setTimeout(() => document.addEventListener('click', function off(e) {
+    if (!m.contains(e.target)) { _peekSplitMenuClose(); document.removeEventListener('click', off, true); }
+  }, true), 0);
+}
+function _peekSplitOpen(view) {
+  const wrap = document.getElementById('peek-split-wrap');
+  if (!wrap.classList.contains('split-active')) togglePeekSplit(null, true);
+  _peekSplitShow(view);
+}
+function _peekSplitShow(view) {
+  _peekSplitView = view;
+  try { localStorage.setItem('amux_peek_split_view', view); } catch (e) {}
+  const panel = document.getElementById('peek-split-files');
+  const frame = document.getElementById('psp-frame');
+  document.querySelectorAll('.psp-opt').forEach(b => b.classList.toggle('active', b.dataset.psp === view));
+  const embed = view !== 'files';
+  panel?.classList.toggle('psp-embed', embed);
+  if (!frame) return;
+  frame.style.display = embed ? '' : 'none';
+  if (embed && peekSession) {
+    const src = '/?peekEmbed=' + encodeURIComponent(peekSession) + '&peekTab=' + encodeURIComponent(view);
+    if (frame.dataset.src !== src) { frame.dataset.src = src; frame.src = src; }
+  }
+}
+function togglePeekSplit(ev, force) {
   if (window.innerWidth <= 600) {
     openExplore(peekSessionDir, peekSession);
     return;
   }
   const wrap = document.getElementById('peek-split-wrap');
   const btn = document.getElementById('peek-split-toggle');
-  const active = wrap.classList.toggle('split-active');
+  if (ev && btn && !wrap.classList.contains('split-active')) { _peekSplitMenu(btn); return; }
+  const active = force ? (wrap.classList.add('split-active'), true) : wrap.classList.toggle('split-active');
   if (btn) btn.classList.toggle('active', active);
   if (active) {
     _peekSplitPath = peekSessionDir || '/';
     _psfLoad(_peekSplitPath);
     _initSplitResize();
     _restoreSplitWidths();
+    if (!force) _peekSplitShow(_peekSplitView);
   } else {
+    const frame = document.getElementById('psp-frame');
+    if (frame) { frame.removeAttribute('src'); frame.dataset.src = ''; }
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
     if (tp) tp.style.flex = '';
@@ -16462,7 +16595,19 @@ function _linkifyPaths(safeHtml) {
 // ONE peek render pipeline. The four call sites each spelled the chain out, so
 // adding a stage meant finding all of them — which is how the path linkifier
 // would have been half-wired.
+// THIN PASS-THROUGH (Ethan, 2026-10-08). When the server serves the peek from
+// tmux's own scrollback (history_source "tmux-scrollback": a Claude pane on the
+// normal screen), the terminal already drew everything, so the peek only turns
+// colour codes into HTML, makes links clickable and draws full-width rules as a
+// line (a 216-column rule would otherwise wrap into broken rows); there are no prompt labels, no tool
+// collapsing, no rule rewriting, no composer split, no overlap trim.
+let _peekThin = false;
+// The mode the current paint was made in (null = unknown, e.g. painted from
+// the IndexedDB cache by older code). A mode change repaints even when the raw
+// text is unchanged; otherwise a cached transcript-mode paint survives.
+let _peekModePainted = null;
 function _peekHtml(raw) {
+  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
 
@@ -16586,6 +16731,7 @@ function _draftEchoesSteering(input) {
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
 function _peekLiveHtml(raw) {
+  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
@@ -16685,7 +16831,7 @@ function _peekPromptNormalized(text) {
   // peer envelopes and board notes read Unclassified because the wrapper, not
   // the "[amux-origin:" marker, was what the text started with).
   return String(text || '').replace(glyph, '')
-    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content>\s*$/i, '')
+    .replace(/^\s*<pasted_content\b[^>]*>\s*/i, '').replace(/\s*<\/pasted_content\b[^>]*>\s*$/i, '')
     .replace(/^\[\d{1,2}:\d{2}(?:\s*[AP]M)?\]\s*/i, '').replace(/\s+/g, ' ').trim();
 }
 // CLASSIFICATION MUST NOT WAIT ON THE MESSAGES TAB'S FULL PAGE.
@@ -16788,6 +16934,25 @@ function _classifyPromptKind(promptText) {
   // be told.
   return 'unknown';
 }
+// Claude Code records a long paste wrapped in <pasted_content id="...">
+// ... </pasted_content id="..."> (the closing tag carries the id too). The
+// wrapper is transport, not what the person typed, so the peek drops both tags
+// and lifts the first pasted line up beside the prompt glyph (Ethan,
+// 2026-10-08: "this saying pasted content doesnt seem right"). Works on the
+// escaped, possibly span-coloured terminal HTML of one prompt block.
+const _PEEK_PASTE_TAG = /&lt;\/?pasted_content\b(?:(?!&gt;).)*&gt;/g;
+function _peekUnwrapPaste(blockLines) {
+  if (!blockLines.some(line => line.includes('pasted_content'))) return blockLines;
+  const visible = line => line.replace(/<[^>]*>/g, '').replace(/&nbsp;| /g, ' ');
+  const out = blockLines.map(line => line.replace(_PEEK_PASTE_TAG, ''));
+  // A line that held only a tag is gone; the opening line keeps its glyph.
+  const kept = out.filter((line, n) => n === 0 || visible(line).trim() || !visible(blockLines[n]).includes('pasted_content'));
+  if (kept.length > 1 && /^[ \t]*[❯›>]?[ \t]*$/.test(visible(kept[0]))) {
+    const lifted = kept[1].replace(/^((?:<[^>]+>)*)(?:[ \t ]|&nbsp;)+/, '$1');
+    kept.splice(0, 2, kept[0].replace(/(?:[ \t ]|&nbsp;)*((?:<\/[^>]+>)*)$/, ' $1') + lifted);
+  }
+  return kept;
+}
 function highlightPrompts(html) {
   const gemini = _peekGeminiPrompts();
   const promptStart = gemini ? /^[ \t]{0,2}[❯›>](?:[ \t]+|$)/ : /^[ \t]{0,2}[❯›](?:[ \t]+|$)/;
@@ -16833,7 +16998,7 @@ function highlightPrompts(html) {
     // Close each block before opening its successor. Nested prompt wrappers
     // made scrollIntoView target a whole conversation instead of one message.
     out.push('<span class="peek-prompt peek-prompt-' + kind + '" data-msg-kind="' + kind
-      + '" data-msg-label="' + esc(label) + '">' + lines.slice(i, end).join('\n') + '</span>');
+      + '" data-msg-label="' + esc(label) + '">' + _peekUnwrapPaste(lines.slice(i, end)).join('\n') + '</span>');
     i = end;
   }
   return out.join('\n');
@@ -17177,7 +17342,9 @@ let _lastLiveHTML = '';
 let _peekEarlier = { chunks: [], loadedKb: 0, done: false, hidden: false, loading: false };
 const _PEEK_LOG_CHUNK_KB = 192;
 function _peekEarlierHTML() {
-  if (_peekEarlier.hidden) return '';
+  // Thin mode: tmux's scrollback is already the whole history; the bar would
+  // page in the transcript re-render this mode exists to drop.
+  if (_peekEarlier.hidden || _peekThin) return '';
   // The bar persists until the actual beginning of the log — every tap pages
   // one chunk further back, so the whole session is always scrollable.
   const bar = _peekEarlier.done
@@ -17469,11 +17636,13 @@ async function _refreshPeekFrame(liveOnly, request) {
     const rawOutput = (data.live != null) ? data.live : (data.output || '(no output)');
     const histRaw = (data.history != null) ? data.history : null;   // null ⇒ live-only poll
     if (typeof rawOutput !== 'string' || (histRaw !== null && typeof histRaw !== 'string')) throw new Error('Malformed terminal frame');
+    if (histRaw !== null) _peekThin = data.history_source === 'tmux-scrollback';
+    const modeChanged = _peekModePainted !== _peekThin;
     const overlapBase = histRaw !== null ? histRaw : _peekHistoryRaw;
     // A delayed history response may add history, but must not rewind a
     // newer live frame. Trim against the history actually displayed here;
     // live requests skip the server's expensive transcript read entirely.
-    const output = _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
+    const output = _peekThin ? (staleLive ? _lastPeekRaw : rawOutput) : _trimPeekLiveOverlap(overlapBase, staleLive ? _lastPeekRaw : rawOutput);
     const acceptFrame = () => {
       if (!_peekFrameSequence) {
         _peekPollBeacon('first-frame', name, { elapsed_ms: Math.round(performance.now() - _peekFirstFrameAt),
@@ -17490,7 +17659,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // poll tick. This also applies with an active search: the highlights are already in
     // the DOM, so re-running applyPeekSearch would needlessly scroll the view back to
     // the current match every tick (the "force-scroll back to result" bug on idle sessions).
-    if (output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
+    if (!modeChanged && output === _lastPeekRaw && (histRaw === null || histRaw === _peekHistoryRaw) && lastPeekHTML) {
       acceptFrame();
       if (performance.now() > _peekGeoHold) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · v' + APP_VER;
       return;
@@ -17499,7 +17668,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // failed conversion must remain retryable just like a failed body read.
     const newHTML = _peekLiveHtml(output);
     let histChanged = false;
-    if (histRaw !== null && histRaw !== _peekHistoryRaw) {   // full fetch → (re)render history once
+    if (histRaw !== null && (histRaw !== _peekHistoryRaw || modeChanged)) {   // full fetch → (re)render history once
       const historyTail = _peekEarlier.conversation ? _peekAfterConversation(_peekEarlier.tailRaw, histRaw) : histRaw;
       _peekHistoryHTML = historyTail ? _peekHtml(historyTail) : '';
       _peekHistoryRaw = histRaw;
@@ -17524,6 +17693,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     // so scrollback exists in peek the way it does in a real terminal.
     _lastLiveHTML = newHTML;
     lastPeekHTML = _peekEarlierHTML() + _peekHistoryHTML + _lastLiveHTML;
+    _peekModePainted = _peekThin;
     const hasSearch = peekSearchQuery.trim().length > 0;
     // Chat tab owns #peek-body: keep the terminal data fresh, touch no DOM
     // and no scroll position (the chat was being replaced by terminal output).
@@ -19808,11 +19978,12 @@ function _atAgentsChip(s) {
 }
 
 // Populate dropdown with @session matches; returns true if @ mode active.
-// Empty @ lists ALL sessions (running first); a query fuzzy-matches + ranks.
+// Lists ACTIVE workers only (Ethan, 2026-10-09: "when I @ it should only list
+// active workers"): running and not archived. A query fuzzy-matches + ranks.
 function _atRender(inp, el, pickCall) {
   const at = _atQuery(inp);
   if (at === null) return false;
-  let ranked = (sessions || []).map(s => {
+  let ranked = (sessions || []).filter(s => s.running && !s.archived).map(s => {
     const f = _fuzzyScore(at.q, s.name);
     return f ? { s, score: f.score, hits: f.hits } : null;
   }).filter(Boolean);
@@ -25495,7 +25666,8 @@ async function _fileSave() {
       if (_fileData._isNew) {
         _fileData._isNew = false;
         document.getElementById('file-title').textContent = _fileData.path.split('/').pop();
-        loadFiles(_filesPath); // refresh file list
+        loadFiles(_filesPath);
+        if (activeView === 'scratchpad') _scratchpadLoad();
       }
       btn.textContent = 'Saved!';
       setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('saving'); }, 1500);
@@ -26480,6 +26652,281 @@ function _filesNewFile() {
   setTimeout(() => ta.focus(), 100);
 }
 
+// ═══════ SCRATCHPAD ═══════
+// Ethan, 2026-10-08: the scratchpad's default home is the Vault, beside his
+// other notes. Created on first open.
+const _SP_ROOT = '~/Vault/Scratchpad';
+let _spPath = _SP_ROOT;
+let _spLastData = null;
+let _spLoadGen = 0;
+let _spSort = { col: 'modified', dir: -1 };
+
+function _spSortEntries(entries) {
+  return [...entries].sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    const { col, dir } = _spSort;
+    if (col === 'name') return dir * a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    if (col === 'size') return dir * ((a.size || 0) - (b.size || 0));
+    return dir * ((a.modified || 0) - (b.modified || 0));
+  });
+}
+function _spSortBy(col) {
+  if (_spSort.col === col) _spSort.dir *= -1;
+  else { _spSort.col = col; _spSort.dir = col === 'name' ? 1 : -1; }
+  _spUpdateSortHeaders();
+  if (_spLastData) _spRender(_spLastData.path, _spLastData.data);
+}
+function _spUpdateSortHeaders() {
+  ['name','size','modified'].forEach(c => {
+    const el = document.getElementById('sp-sort-' + c);
+    if (el) el.textContent = _spSort.col === c ? (_spSort.dir > 0 ? '▲' : '▼') : '';
+  });
+}
+
+async function _scratchpadLoad() {
+  _spWireCapture();
+  const gen = ++_spLoadGen;
+  const body = document.getElementById('scratchpad-body');
+  body.innerHTML = '<div style="padding:16px;color:var(--dim)">Loading...</div>';
+  const bc = document.getElementById('sp-breadcrumb');
+  if (_spPath !== _SP_ROOT) {
+    const rel = _spPath.slice(_SP_ROOT.length + 1);
+    let html = '<span class="fe-crumb" onclick="_spNav(\'' + _SP_ROOT + '\')">Scratchpad</span>';
+    let cum = _SP_ROOT;
+    for (const part of rel.split('/').filter(Boolean)) {
+      cum += '/' + part;
+      html += '<span class="fe-crumb-sep">›</span><span class="fe-crumb" onclick="_spNav(\'' + cum.replace(/'/g, "\\'") + '\')">' + esc(part) + '</span>';
+    }
+    bc.innerHTML = html;
+    bc.style.display = '';
+  } else {
+    bc.style.display = 'none';
+  }
+  try {
+    let r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    if (r.status === 400 && _spPath === _SP_ROOT) {
+      await fetch(API + '/api/fs/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: _spPath }) });
+      r = await fetch(API + '/api/ls?path=' + encodeURIComponent(_spPath) + '&hidden=0', { signal: AbortSignal.timeout(8000) });
+    }
+    const data = await r.json();
+    if (gen !== _spLoadGen) return;
+    if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
+    _spLastData = { path: _spPath, data };
+    _spRender(_spPath, data);
+  } catch(e) {
+    if (gen !== _spLoadGen) return;
+    body.innerHTML = '<div style="padding:16px;color:var(--dim)">Could not load scratchpad.</div>';
+  }
+}
+
+function _spRender(path, data) {
+  const body = document.getElementById('scratchpad-body');
+  body.innerHTML = '';
+  const hdrs = document.getElementById('sp-col-headers');
+  if (hdrs) hdrs.style.display = 'grid';
+  _spUpdateSortHeaders();
+  const entries = _spSortEntries(data.entries || []);
+  if (path !== _SP_ROOT && data.parent) {
+    const back = document.createElement('div');
+    back.className = 'fe-back-row';
+    back.innerHTML = '<div class="fe-cell-name"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 11 5 7l4-4" stroke="var(--dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span style="color:var(--dim);font-size:0.83rem;">.. (up)</span></div><div></div><div></div><div></div>';
+    back.onclick = () => { const p = path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); _spNav(i > 0 ? p.slice(0, i) : _SP_ROOT); };
+    body.appendChild(back);
+  }
+  if (!entries.length) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
+    msg.textContent = 'Nothing here yet. Paste or drop text and files anywhere on this tab and they are saved.';
+    body.appendChild(msg);
+    return;
+  }
+  for (const entry of entries) {
+    const ep = (path.replace(/\/$/, '') + '/' + entry.name);
+    const row = document.createElement('div');
+    row.className = 'fe-row' + (entry.type === 'dir' ? ' fe-dir' : '');
+    row.dataset.path = ep;
+    const icon = _fileTypeIcon(entry.name, entry.type);
+    const slash = entry.type === 'dir' ? '<span style="color:var(--dim)">/</span>' : '';
+    const sizeStr = entry.type === 'dir' ? '' : _fmtSize(entry.size);
+    const dateStr = entry.modified ? timeAgo(entry.modified) : '';
+    const epEsc = ep.replace(/'/g, "\\'");
+    row.innerHTML =
+      '<div class="fe-cell-name">' + icon + '<span>' + esc(entry.name) + slash + '</span></div>' +
+      '<div class="fe-cell-size">' + sizeStr + '</div>' +
+      '<div class="fe-cell-date">' + dateStr + '</div>' +
+      '<div class="fe-cell-actions">' + (entry.type === 'dir' ? '' : '<button class="fe-menu-btn sp-copy-btn" title="Copy to clipboard" onclick="event.stopPropagation();_spCopy(\'' + epEsc + '\')">⧉</button>') +
+      '<button class="fe-menu-btn" title="Options" onclick="event.stopPropagation();_showFilesMenu(\'' + epEsc + '\',this,\'' + entry.type + '\')">⋯</button></div>';
+    if (entry.type === 'dir') {
+      row.onclick = () => _spNav(ep);
+    } else {
+      row.onclick = () => openFilePreview(ep);
+    }
+    body.appendChild(row);
+  }
+}
+
+function _spNav(path) {
+  _spPath = path;
+  _scratchpadLoad();
+}
+
+// A dumping ground, not a document editor (Ethan, 2026-10-08: "an extremely
+// quick and reliable/durable way to paste ... a makeshift clipboard dumping
+// ground ... with a file store"). A paste saves at once under a timestamp
+// name; nothing asks for a name first. PUT /api/file goes through apiCall, so
+// an offline paste is queued and replayed rather than lost.
+function _spStamp() {
+  const d = new Date(), z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '-' + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds());
+}
+function _spUniqueName(base, ext) {
+  const taken = new Set(((_spLastData && _spLastData.path === _spPath && _spLastData.data.entries) || []).map(e => e.name));
+  let name = base + ext, n = 2;
+  while (taken.has(name)) name = base + '-' + (n++) + ext;
+  return name;
+}
+async function _spCaptureSave(text) {
+  if (!text || !text.trim()) return false;
+  const name = _spUniqueName(_spStamp(), '.md');
+  const path = _spPath.replace(/\/$/, '') + '/' + name;
+  const entry = { name, type: 'file', size: new Blob([text]).size, modified: Date.now() / 1000 };
+  if (_spLastData && _spLastData.path === _spPath) {
+    _spLastData.data.entries = [entry, ...(_spLastData.data.entries || [])];
+    _spRender(_spPath, _spLastData.data);
+  }
+  const r = await apiCall(API + '/api/file', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content: text }) });
+  if (!r) { showToast(online ? 'Could not save ' + name : 'Saved offline: ' + name + ' syncs when you reconnect'); return !online; }
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast('Could not save ' + name + (d.error ? ': ' + d.error : '')); _scratchpadLoad(); return false; }
+  showToast('Saved ' + name);
+  return true;
+}
+// Any file (pasted, picked or dropped) is stored as-is in the scratchpad
+// folder (Ethan, 2026-10-09: "scratchpad should support sending files too").
+// A pasted image with no real name gets a timestamp name.
+//
+// Bytes go through the same durable, chunked upload the worker terminal and
+// Files tab use (_uploadOrQueue -> IndexedDB -> /api/upload chunks with
+// retry and resume). A single multipart POST to /api/fs/upload lost a 30 MB
+// file from a phone with no error and no retry (Ethan, 2026-10-09).
+function _spNamed(file) {
+  const generic = !file.name || /^image\.(png|jpe?g|gif|webp)$/i.test(file.name);
+  if (!generic) return file;
+  const ext = ((file.type || '').split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+  return new File([file], _spUniqueName(_spStamp(), '.' + ext), {type: file.type});
+}
+async function _spUploadFiles(list) {
+  const files = [...(list || [])].map(_spNamed);
+  if (!files.length) return;
+  const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
+  const { queued, failed } = await _uploadOrQueue(files, dir, 'file');
+  const what = files.length === 1 ? files[0].name : files.length + ' files';
+  if (queued) showToast((online ? 'Uploading ' : 'Saved offline, uploads when reconnected: ') + what);
+  if (failed && !queued) showToast('Could not save ' + what);
+}
+async function _spSaveFile(file) { await _spUploadFiles([file]); }
+const _spSaveImage = (file) => _spSaveFile(file);
+async function _spLoadRetain() {
+  try {
+    const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
+    const sel = document.getElementById('sp-retain');
+    if (sel && d.retain_days != null) sel.value = String(d.retain_days);
+  } catch (e) {}
+}
+async function _spSetRetain(v) {
+  const days = parseInt(v, 10);
+  const r = await apiCall(API + '/api/scratchpad/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retain_days: days }) });
+  showToast(r && r.ok ? (days ? 'Scratchpad items now expire after ' + days + ' day' + (days === 1 ? '' : 's') : 'Scratchpad items are kept forever') : 'Could not save the setting');
+}
+// One paste path for the box and for the whole tab: images are stored as
+// files, text as a note. A paste into a box that already holds typing joins
+// the typing instead (the person is composing).
+function _spHandlePaste(e, box) {
+  const items = [...(e.clipboardData?.items || [])];
+  const images = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+  const text = e.clipboardData?.getData('text/plain') || '';
+  if (box && box.value.trim()) return;
+  if (!images.length && !text.trim()) return;
+  e.preventDefault();
+  images.forEach(_spSaveImage);
+  if (text.trim()) _spCaptureSave(text);
+}
+async function _spCaptureSaveTyped() {
+  const box = document.getElementById('sp-capture');
+  if (!box || !box.value.trim()) return;
+  const text = box.value;
+  box.value = '';
+  if (!(await _spCaptureSave(text))) box.value = text;
+}
+async function _spCopy(path) {
+  try {
+    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(path), { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    if (typeof d.content !== 'string') throw new Error(d.error || 'not a text file');
+    await navigator.clipboard.writeText(d.content);
+    showToast('Copied ' + path.split('/').pop());
+  } catch (e) { showToast('Could not copy: ' + e.message); }
+}
+function _spWireCapture() {
+  const box = document.getElementById('sp-capture');
+  if (!box || box._spWired) return;
+  box._spWired = true;
+  box.addEventListener('paste', e => _spHandlePaste(e, box));
+  const view = document.getElementById('scratchpad-view');
+  if (view) {
+    view.addEventListener('dragover', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); view.classList.add('sp-drop'); } });
+    view.addEventListener('dragleave', e => { if (e.target === view) view.classList.remove('sp-drop'); });
+    view.addEventListener('drop', e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); view.classList.remove('sp-drop'); _spUploadFiles(e.dataTransfer.files); } });
+  }
+  _spLoadRetain();
+  box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _spCaptureSaveTyped(); } });
+  document.addEventListener('paste', e => {
+    if (activeView !== 'scratchpad' || e.target === box) return;
+    const t = e.target;
+    if (t && (t.closest?.('input, textarea, [contenteditable="true"], #file-overlay'))) return;
+    _spHandlePaste(e, null);
+  });
+}
+
+async function _scratchpadNewNote() {
+  const fname = _spUniqueName(_spStamp(), '.md');
+  const fpath = _spPath.replace(/\/$/, '') + '/' + fname;
+  _fileData = { path: fpath, content: '', is_markdown: /\.md$/i.test(fname), _isNew: true };
+  _fileViewMode = 'edit';
+  document.getElementById('file-title').textContent = fname + ' (new)';
+  document.getElementById('file-body').className = 'file-overlay-body';
+  document.getElementById('file-body').style.display = 'none';
+  document.getElementById('file-view-tabs').style.display = '';
+  document.getElementById('file-tab-preview').classList.remove('active');
+  document.getElementById('file-tab-raw').classList.remove('active');
+  const editTab = document.getElementById('file-tab-edit');
+  if (editTab) { editTab.style.display = ''; editTab.classList.add('active'); }
+  document.getElementById('file-save-btn').style.display = '';
+  document.getElementById('file-download-btn').style.display = 'none';
+  const ta = document.getElementById('file-edit-ta');
+  const wrap = document.getElementById('file-edit-wrap');
+  ta.value = '';
+  wrap.style.display = 'flex';
+  document.getElementById('file-overlay').classList.add('active');
+  setTimeout(() => ta.focus(), 100);
+}
+
+async function _scratchpadNewFolder() {
+  const name = prompt('Folder name:');
+  if (!name || !name.trim()) return;
+  const dirPath = _spPath.replace(/\/$/, '') + '/' + name.trim();
+  try {
+    await fetch(API + '/api/fs/mkdir', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: dirPath })
+    });
+    _scratchpadLoad();
+  } catch(e) {
+    showToast('Could not create folder');
+  }
+}
+
 // ═══════ MDAI: computed markdown DAG nodes (.mdai) ═══════
 // A .mdai file is a computed markdown node: YAML frontmatter `sources` is a list
 // of {path, prompt} edges, the body is the synthesis instruction, and opening it
@@ -27008,6 +27455,7 @@ async function _connectorsTabLoad() {
     const d = await r.json();
     _connectorsData = d;
     _connectorsRender(d);
+    _connAccountsLoad();
   } catch (e) {
     host.innerHTML = '<div class="conn-empty">Failed to load connectors: ' + esc(String(e)) + '</div>';
   }
@@ -27023,101 +27471,284 @@ function _connBadge(status) {
   return '<span class="conn-badge" style="background:' + pair[1] + '">' + esc(pair[0]) + '</span>';
 }
 
+// ── Connectors tab (redesign 2026-10-09) ──
+// One card per connector. A connected card lists its accounts with a live
+// per-service state; an available one offers Connect. Clicking a card opens a
+// drawer: Overview / Connections / Configuration / Permissions. Account health
+// comes from /api/connectors/accounts (real refresh + canary calls), which
+// outranks the connector-level service-account test: Gmail can work for an
+// account through its OAuth grant while the SA delegation test fails.
+let _connAccts = null;          // /api/connectors/accounts payload
+let _connFilter = 'all';        // all | connected | available
+let _connQuery = '';
+let _connOpenId = '';           // drawer connector id
+let _connOpenTab = 'overview';
+
+// google-admin is absent on purpose: the per-account grant carries no admin
+// scope, so Admin only ever works through the service account.
+const _CONN_LEG = { 'google-gmail': 'gmail', 'google-calendar': 'calendar', 'google-drive': 'drive' };
+const _CONN_ICON = {
+  'google-gmail': ['M', '#ea4335'], 'google-calendar': ['31', '#1a73e8'], 'google-drive': ['D', '#0f9d58'],
+  'google-admin': ['A', '#5f6368'], 'slack': ['#', '#611f69'], 'telegram': ['T', '#229ed9'],
+  'mattermost': ['M', '#1e325c'], 'granola': ['G', '#3d7a3d'],
+};
+const _CONN_CAPS = {
+  'google-gmail': [['Read and search mail', 'Inbox, sent and threads for every connected account'], ['Send and reply', 'Threaded replies with the account signature']],
+  'google-calendar': [['Read and create events', 'Every calendar the account can see'], ['Schedule for workers', 'Workers mint a short-lived token per call']],
+  'google-drive': [['Find and read files', 'Drive and shared drives'], ['Create and edit', 'Docs and files on the account\'s behalf']],
+  'google-admin': [['Directory lookups', 'Users and groups in the Workspace']],
+  'slack': [['Read channels', 'Channel list and history'], ['Post messages', 'As the installed app']],
+  'telegram': [['Bot messages', 'Send and receive through your bot']],
+  'mattermost': [['Read and post', 'Channels the login can see']],
+  'granola': [['Meeting notes', 'Transcripts and notes from Granola']],
+};
+
+function _connIcon(c) {
+  const p = _CONN_ICON[c.id] || [String(c.label || c.id || '?').charAt(0).toUpperCase(), 'var(--accent)'];
+  return '<span class="cx-icon" style="background:' + p[1] + '" aria-hidden="true">' + esc(p[0]) + '</span>';
+}
+
+function _connAgo(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+function _connIsGoogle(c) { return String(c.id || '').indexOf('google-') === 0; }
+
+// Accounts relevant to a connector, each with its state for THAT service.
+function _connAccountsFor(c) {
+  const out = [];
+  for (const a of ((_connAccts && _connAccts.accounts) || [])) {
+    const fam = a.families || {};
+    const can = a.canary || {};
+    let st = null;
+    if (_connIsGoogle(c)) {
+      const leg = _CONN_LEG[c.id];
+      if (!leg || (!fam.google && !fam.gmail)) continue;
+      if (a.needs_reauth) st = ['Expired', 'bad', 'reconnect'];
+      else if (!fam.google && leg !== 'gmail') st = ['Not granted', 'warn', 'grant'];
+      else {
+        const l = can[leg] || {};
+        st = l.status === 'ok' ? ['Active', 'ok', '']
+          : l.status === 'not_granted' ? ['Not granted', 'warn', 'grant']
+          : l.status === 'api_error' ? ['Error', 'bad', 'reconnect']
+          : l.status === 'unreachable' ? ['Unreachable', 'warn', '']
+          : ['Active', 'ok', ''];
+      }
+      out.push({ a, st, checked: (can[leg] || can.gmail || {}).checked_at, family: 'google' });
+    } else if (fam[c.id]) {
+      const l = can[c.id] || {};
+      st = a.needs_reauth || fam[c.id] === 'needs_reauth' ? ['Expired', 'bad', 'reconnect']
+        : l.status && l.status !== 'ok' ? [l.status, 'bad', ''] : ['Active', 'ok', ''];
+      out.push({ a, st, checked: l.checked_at, family: c.id });
+    }
+  }
+  return out;
+}
+
+// Card-level state: accounts first, then the connector's own last live test.
+function _cxState(c) {
+  const rows = _connAccountsFor(c);
+  const active = rows.filter(r => r.st[1] === 'ok').length;
+  if (active) return { kind: 'connected', label: rows.length > active ? 'Needs attention' : 'Connected', cls: rows.length > active ? 'warn' : 'ok', rows };
+  if (c.status === 'connected') return { kind: 'connected', label: 'Connected', cls: 'ok', rows };
+  if (rows.length || c.status === 'error') return { kind: 'connected', label: 'Needs attention', cls: 'bad', rows };
+  return { kind: 'available', label: c.status === 'needs_credentials' ? 'Needs credentials' : 'Not connected', cls: 'idle', rows };
+}
+
+function _connPill(label, cls) {
+  return '<span class="cx-pill cx-' + cls + '">' + esc(label) + '</span>';
+}
+
+function _connAcctRow(c, r, wide) {
+  const a = r.a;
+  const action = r.st[2] === 'reconnect' ? '<button class="btn cx-mini" onclick="event.stopPropagation();_connReconnect(\'' + escJs(r.family === 'google' ? 'google' : r.family) + '\',\'' + escJs(a.account) + '\')">Reconnect</button>'
+    : r.st[2] === 'grant' ? '<button class="btn cx-mini" onclick="event.stopPropagation();_connReconnect(\'google\',\'' + escJs(a.account) + '\')">Grant</button>' : '';
+  const sub = wide && r.checked ? '<span class="cx-acct-sub">Checked ' + esc(_connAgo(r.checked)) + '</span>' : '';
+  // A stable hue per account, so the same address reads as the same person on every card.
+  let hue = 0;
+  for (const ch of String(a.account)) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
+  return '<div class="cx-acct"><span class="cx-avatar" style="color:hsl(' + hue + ',70%,62%);background:hsla(' + hue + ',70%,55%,0.16)">' + esc(String(a.account).charAt(0).toUpperCase()) + '</span>'
+    + '<span class="cx-acct-main"><span class="cx-acct-name">' + esc(a.account).replace('@', '<wbr>@') + '</span>' + sub + '</span>'
+    + _connPill(r.st[0], r.st[1]) + action + '</div>';
+}
+
+function _connMatches(c) {
+  if (!_connQuery) return true;
+  const q = _connQuery.toLowerCase();
+  return (c.label + ' ' + c.category + ' ' + c.id).toLowerCase().indexOf(q) >= 0;
+}
+
 function _connectorsRender(d) {
   const host = document.getElementById('connectors-list');
   if (!host) return;
   const list = (d && d.connectors) || [];
   if (!list.length) { host.innerHTML = '<div class="conn-empty">No connectors registered.</div>'; return; }
-  let html = '';
-  html += '<div class="conn-origin">This server: <code>' + esc(d.origin || '') + '</code>. Pasted keys are written to <code>~/.amux/server.env</code> and never shown again.</div>';
-  for (const c of list) {
-    html += '<div class="conn-card" data-id="' + esc(c.id) + '">';
-    html += '<div class="conn-head"><span class="conn-title">' + esc(c.label) + '</span>';
-    html += '<span class="conn-cat">' + esc(c.category) + '</span>' + _connBadge(c.status) + '</div>';
-    if (c.setup_note) html += '<div class="conn-note">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">docs ↗</a>' : '') + '</div>';
-    // credential fields
-    html += '<div class="conn-creds">';
-    for (const k of (c.env_keys || [])) {
-      html += '<label class="conn-field"><span class="conn-klabel">' + esc(k.name) + (k.set ? ' <em>(set: ' + esc(k.masked || '••••') + ')</em>' : '') + '</span>';
-      html += '<input type="password" class="conn-input" data-env="' + esc(k.name) + '" placeholder="' + (k.set ? 'replace…' : 'paste value…') + '" autocomplete="off"></label>';
-    }
-    html += '<button class="conn-save" onclick="_connectorSave(\'' + esc(c.id) + '\', this)">Save keys</button>';
-    html += '</div>';
-    // oauth
-    if (c.auth === 'oauth2' && c.oauth) {
-      html += '<div class="conn-oauth"><div class="conn-redir">Redirect URI to register: <code>' + esc(c.oauth.redirect_uri) + '</code> <button class="conn-copy" onclick="_copyTextWithToast(\'' + esc(c.oauth.redirect_uri) + '\',\'Redirect URI copied\')">copy</button></div>';
-      html += '<button class="conn-connect" onclick="_connectorAuth(\'' + esc(c.id) + '\')">Connect ' + esc(c.label) + ' ↗</button></div>';
-    }
-    // Gmail: connected accounts with token health + one-click Reconnect/Add, so a
-    // dead token (invalid_grant) is VISIBLE and FIXABLE here instead of needing
-    // the raw /api/gmail/auth?account= URL (Ethan via amux-cloud, AMUX-3389).
-    if (c.id === 'google-gmail') {
-      html += '<div class="conn-gmail" id="conn-gmail-accounts"><div class="conn-gmail-loading">Loading Gmail accounts…</div></div>';
-    }
-    // test connection — verify it actually WORKS, not just that a key is present
-    html += '<div class="conn-test"><button class="conn-test-btn" onclick="_connectorTest(\'' + esc(c.id) + '\', this)">Test connection</button> <span class="conn-test-result" id="conn-test-' + esc(c.id) + '"></span>';
-    // Delete is offered ONLY on declared rows. A builtin comes from the const
-    // registry and removing one is a code change, so the server refuses it —
-    // showing the button anyway would be an affordance that always fails.
-    if (c.custom) html += ' <button class="conn-test-btn" onclick="_connDelete(\'' + esc(c.id) + '\')">Forget</button>';
-    html += '</div>';
-    // scope control (global / group / worker) — drives /api/scope
-    html += '<div class="conn-scope"><span class="conn-slabel">Enable for:</span> '
-      + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'global\',true)">Global</button>'
-      + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'group\',true)">Group…</button>'
-      + '<button class="conn-scope-btn" onclick="_connectorScope(\'' + esc(c.id) + '\',\'worker\',true)">Worker…</button>'
-      + '<button class="conn-scope-btn conn-scope-off" onclick="_connectorScope(\'' + esc(c.id) + '\',\'global\',false)">Disable global</button>'
-      + '</div>';
-    html += '</div>';
+  const states = list.map(c => ({ c, s: _cxState(c) }));
+  const nConn = states.filter(x => x.s.kind === 'connected').length;
+  const pills = document.getElementById('cx-filters');
+  if (pills) {
+    const pill = (k, label) => '<button class="cx-filter' + (_connFilter === k ? ' on' : '') + '" onclick="_connSetFilter(\'' + k + '\')">' + label + '</button>';
+    pills.innerHTML = pill('all', 'All') + pill('connected', 'Connected (' + nConn + ')') + pill('available', 'Available (' + (list.length - nConn) + ')');
   }
-  host.innerHTML = html;
-  if (list.some(c => c.id === 'google-gmail')) _gmailAccountsLoad();
-  _connAccountsLoad();
+  const shown = states.filter(x => (_connFilter === 'all' || x.s.kind === _connFilter) && _connMatches(x.c));
+  // Connected first, then alphabetical, matching how you scan for "mine".
+  shown.sort((x, y) => (x.s.kind === y.s.kind ? x.c.label.localeCompare(y.c.label) : x.s.kind === 'connected' ? -1 : 1));
+  if (!shown.length) { host.innerHTML = '<div class="conn-empty">Nothing matches.</div>'; return; }
+  let h = '<div class="cx-grid">';
+  for (const { c, s } of shown) {
+    h += '<div class="cx-card' + (_connOpenId === c.id ? ' sel' : '') + '" role="button" tabindex="0" onclick="_connOpen(\'' + escJs(c.id) + '\')" onkeydown="if(event.key===\'Enter\')_connOpen(\'' + escJs(c.id) + '\')">';
+    h += '<div class="cx-head">' + _connIcon(c) + '<span class="cx-title"><span class="cx-name">' + esc(c.label) + '</span><span class="cx-cat">' + esc(c.category) + '</span></span>';
+    if (s.kind === 'connected') {
+      h += s.rows.length ? '<span class="cx-count">' + s.rows.length + (s.rows.length === 1 ? ' connection' : ' connections') + '</span>' : _connPill(s.label, s.cls);
+    } else {
+      h += '<button class="btn cx-connect" onclick="event.stopPropagation();_connConnect(\'' + escJs(c.id) + '\')">Connect</button>';
+    }
+    h += '</div>';
+    if (s.kind === 'connected' && s.rows.length) {
+      for (const r of s.rows) h += _connAcctRow(c, r, false);
+      if (c.auth === 'oauth2') h += '<button class="cx-add" onclick="event.stopPropagation();_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add account</button>';
+    } else {
+      const failed = c.last_test && !c.last_test.ok;
+      const blurb = s.kind === 'connected' && failed ? 'Last live test failed ' + _connAgo(c.last_test.at) + '. Open for details.' : c.setup_note;
+      if (blurb) h += '<div class="cx-blurb">' + esc(blurb) + '</div>';
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+  host.innerHTML = h;
+  if (_connOpenId) _connDrawerRender();
 }
 
-// ── Consolidated accounts panel (AMUX-3418): one row per ACCOUNT across all ──
-// families, live health, and ONE Reconnect that starts the family-wide grant
-// (a Google approval covers gmail + calendar + drive/docs and every worker
-// mints from it — authorize once per account).
+function _connSetFilter(k) { _connFilter = k; _connectorsRender(_connectorsData); }
+function _connSearch(v) { _connQuery = String(v || '').trim(); _connectorsRender(_connectorsData); }
+
 async function _connAccountsLoad() {
-  const host = document.getElementById('connectors-accounts');
-  if (!host) return;
   try {
     const r = await fetch('/api/connectors/accounts');
-    const d = await r.json();
-    const accts = d.accounts || [];
-    if (!accts.length) { host.innerHTML = ''; return; }
-    let h = '<div class="conn-card"><div class="conn-head"><span class="conn-title">Accounts</span>'
-      + '<span class="conn-cat">one approval per account, shared by every worker</span></div>';
-    for (const a of accts) {
-      h += '<div class="conn-gmail-row"><span class="conn-gmail-addr">' + esc(a.account) + '</span>';
-      const fams = a.families || {};
-      for (const f of Object.keys(fams)) {
-        const st = fams[f];
-        const color = st === 'ok' ? '#1f8f4e' : st === 'needs_reauth' ? '#c0392b' : '#8a6d3b';
-        h += '<span class="conn-gmail-badge" style="background:' + color + '">' + esc(f) + ': ' + esc(st) + '</span>';
-      }
-      // Canary legs (AMUX-3430): one real API call per granted service every
-      // ~5min. A dot per service — green serves, red answered a failure,
-      // amber unreachable, gray not granted — with last-checked in the title.
-      const can = a.canary || {};
-      for (const svc of Object.keys(can)) {
-        const leg = can[svc] || {};
-        if (leg.status === 'not_granted') continue;
-        const c = leg.status === 'ok' ? '#1f8f4e' : leg.status === 'unreachable' ? '#8a6d3b' : '#c0392b';
-        const age = leg.checked_at ? Math.max(0, Math.round(Date.now() / 1000 - leg.checked_at)) + 's ago' : 'never';
-        const tip = svc + ' canary: ' + (leg.status || '?') + (leg.http ? ' (HTTP ' + leg.http + ')' : '') + ', checked ' + age;
-        h += '<span title="' + esc(tip) + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-left:4px;vertical-align:middle"></span>';
-      }
-      if (a.needs_reauth) {
-        const fam = (a.reconnect || '').indexOf('/slack/') >= 0 ? 'slack' : 'google';
-        h += '<button class="conn-gmail-btn" onclick="_connReconnect(\'' + escJs(fam) + '\',\'' + escJs(a.account) + '\')">Reconnect ↗</button>';
-      }
-      h += '</div>';
+    _connAccts = await r.json();
+  } catch (e) { _connAccts = null; }
+  if (_connectorsData) _connectorsRender(_connectorsData);
+}
+
+function _connById(id) { return (((_connectorsData || {}).connectors) || []).find(c => c.id === id); }
+
+// Connect: a Google connector with its client set starts the one grant that
+// covers every Google service; anything else needs keys first, so it opens
+// Configuration where they are pasted.
+function _connConnect(id) {
+  const c = _connById(id);
+  if (!c) return;
+  const keysSet = (c.env_keys || []).every(k => k.set);
+  if (c.auth === 'oauth2' && keysSet) { _connAddAccount(id); return; }
+  _connOpen(id, 'config');
+}
+
+async function _connAddAccount(id) {
+  const c = _connById(id);
+  if (!c) return;
+  if (_connIsGoogle(c)) {
+    const email = String((await showPrompt('Google account to connect (one approval covers Gmail, Calendar, Drive and Docs):', 'you@example.com')) || '').trim();
+    if (email) _connReconnect('google', email);
+    return;
+  }
+  _connectorAuth(id);
+}
+
+function _connOpen(id, tab) {
+  _connOpenId = id;
+  _connOpenTab = tab || 'overview';
+  _connDrawerRender();
+  _connectorsRender(_connectorsData);
+}
+
+function _connClose() {
+  _connOpenId = '';
+  const el = document.getElementById('cx-drawer');
+  if (el) el.remove();
+  _connectorsRender(_connectorsData);
+}
+
+function _connTab(t) { _connOpenTab = t; _connDrawerRender(); }
+
+function _connScopesHuman(scopes) {
+  return String(scopes || '').split(/[\s,]+/).filter(Boolean).map(s => s.replace('https://www.googleapis.com/auth/', ''));
+}
+
+function _connDrawerRender() {
+  const c = _connById(_connOpenId);
+  if (!c) { _connClose(); return; }
+  const s = _cxState(c);
+  let el = document.getElementById('cx-drawer');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'cx-drawer';
+    el.className = 'cx-drawer-wrap';
+    el.onclick = (e) => { if (e.target === el) _connClose(); };
+    el.onkeydown = (e) => { if (e.key === 'Escape') _connClose(); };
+    el.tabIndex = -1;
+    document.body.appendChild(el);
+    el.focus();
+  }
+  const tab = (k, label) => '<button class="cx-tab' + (_connOpenTab === k ? ' on' : '') + '" onclick="_connTab(\'' + k + '\')">' + label + '</button>';
+  let h = '<div class="cx-drawer" role="dialog" aria-label="' + esc(c.label) + '">';
+  h += '<div class="cx-dhead">' + _connIcon(c) + '<span class="cx-title"><span class="cx-name">' + esc(c.label) + '</span><span class="cx-cat">' + esc(c.category) + '</span></span>'
+    + _connPill(s.label, s.cls) + '<button class="cx-x" aria-label="Close" onclick="_connClose()"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>';
+  h += '<div class="cx-tabs">' + tab('overview', 'Overview') + tab('connections', 'Connections (' + s.rows.length + ')') + tab('config', 'Configuration') + tab('perms', 'Permissions') + '</div>';
+  h += '<div class="cx-dbody">';
+  if (_connOpenTab === 'overview') {
+    if (c.setup_note) h += '<p class="cx-p">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">Docs ↗</a>' : '') + '</p>';
+    for (const cap of (_CONN_CAPS[c.id] || [])) h += '<div class="cx-cap"><span class="cx-cap-dot">●</span><span><b>' + esc(cap[0]) + '</b><br><span class="cx-dim">' + esc(cap[1]) + '</span></span></div>';
+    if (c.last_test) {
+      h += '<div class="cx-sec">Last live test</div><div class="cx-test ' + (c.last_test.ok ? 'ok' : 'bad') + '">' + (c.last_test.ok ? '✓ ' : '✗ ') + esc(c.last_test.detail || c.last_test.status || '') + ' <span class="cx-dim">(' + esc(_connAgo(c.last_test.at)) + ')</span></div>';
+      if (!c.last_test.ok && s.rows.some(r => r.st[1] === 'ok')) h += '<div class="cx-dim cx-small">Accounts below still work through their own grant; this test covers the service-account path only.</div>';
     }
-    h += '<div class="conn-note">Reconnect opens one consent tab; approving repairs email + every Google connector + worker token mints for that account at once.</div></div>';
-    host.innerHTML = h;
-  } catch (e) { host.innerHTML = ''; }
+    h += '<div class="cx-sec">Quick actions</div><div class="cx-actions">'
+      + '<button class="btn" onclick="_connectorTest(\'' + escJs(c.id) + '\', this)">Test connection</button>'
+      + '<button class="btn" onclick="_connectorsTabLoad()">Refresh health</button>'
+      + (c.auth === 'oauth2' ? '<button class="btn primary" onclick="_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add account</button>' : '')
+      + '</div><div class="conn-test-result cx-small" id="conn-test-' + esc(c.id) + '"></div>';
+  } else if (_connOpenTab === 'connections') {
+    h += '<div class="cx-row-head"><span class="cx-sec" style="margin:0">Your connections (' + s.rows.length + ')</span>'
+      + (c.auth === 'oauth2' ? '<button class="btn" onclick="_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add connection</button>' : '') + '</div>';
+    if (!s.rows.length) h += '<div class="cx-dim cx-small">No accounts yet.' + (c.auth === 'oauth2' ? ' Add one to grant access.' : ' This connector authenticates with its key, set under Configuration.') + '</div>';
+    for (const r of s.rows) h += _connAcctRow(c, r, true);
+    if (_connIsGoogle(c) && s.rows.length) h += '<div class="cx-dim cx-small" style="margin-top:8px">One Google approval per account covers Gmail, Calendar, Drive and Docs, and every worker mints its token from it.</div>';
+  } else if (_connOpenTab === 'config') {
+    h += '<div class="conn-card cx-cfg" data-id="' + esc(c.id) + '"><div class="conn-creds">';
+    for (const k of (c.env_keys || [])) {
+      h += '<label class="conn-field"><span class="conn-klabel">' + esc(k.name) + (k.set ? ' <em>(set: ' + esc(k.masked || '••••') + ')</em>' : '') + '</span>'
+        + '<input type="password" class="conn-input" data-env="' + esc(k.name) + '" placeholder="' + (k.set ? 'replace…' : 'paste value…') + '" autocomplete="off"></label>';
+    }
+    h += '<button class="btn primary" onclick="_connectorSave(\'' + escJs(c.id) + '\', this)">Save keys</button></div>';
+    h += '<div class="cx-dim cx-small">Written to <code>~/.amux/server.env</code> and never shown again' + (c.cred_source ? '. Current source: ' + esc(c.cred_source) : '') + '.</div></div>';
+    if (c.auth === 'oauth2' && c.oauth) {
+      h += '<div class="cx-sec">Redirect URI</div><div class="cx-code"><code>' + esc(c.oauth.redirect_uri) + '</code>'
+        + '<button class="btn cx-mini" onclick="_copyTextWithToast(\'' + escJs(c.oauth.redirect_uri) + '\',\'Redirect URI copied\')">Copy</button></div>';
+    }
+    if (c.token_endpoint) h += '<div class="cx-sec">Worker token endpoint</div><div class="cx-code"><code>' + esc(c.token_endpoint) + '</code></div>';
+    h += '<div class="cx-sec">Enabled for</div><div class="cx-actions">'
+      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'global\',true)">All workers</button>'
+      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'group\',true)">A group…</button>'
+      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'worker\',true)">A worker…</button>'
+      + '<button class="btn" onclick="_connectorScope(\'' + escJs(c.id) + '\',\'global\',false)">Disable for all</button></div>';
+    if (c.custom) h += '<div class="cx-danger"><div><b>Forget connector</b><br><span class="cx-dim">Removes this declared connector. Keys in server.env stay.</span></div><button class="btn danger" onclick="_connDelete(\'' + escJs(c.id) + '\')">Forget</button></div>';
+  } else {
+    const scopes = c.oauth ? _connScopesHuman(c.oauth.scopes) : [];
+    if (_connIsGoogle(c)) h += '<p class="cx-p">Connecting an account asks Google for one grant covering every Google connector: calendar, documents, drive, gmail.modify, gmail.send, gmail.settings.basic and userinfo.email. Workers can act on it without asking again.</p>';
+    if (scopes.length) {
+      h += '<div class="cx-sec">This connector uses</div>';
+      for (const sc of scopes) h += '<div class="cx-scope"><code>' + esc(sc) + '</code></div>';
+    } else {
+      h += '<p class="cx-p">' + (c.auth === 'apikey' ? 'Key-based: the key\'s own permissions in ' + esc(c.label) + ' decide what workers can do.' : 'No OAuth scopes declared.') + '</p>';
+    }
+  }
+  h += '</div></div>';
+  el.innerHTML = h;
 }
 
 async function _connReconnect(family, account) {
@@ -27180,24 +27811,15 @@ async function _gmailAccountsLoad() {
 // Start (or repair) OAuth for one account: fetch the URL and open it. Google
 // redirects back to /api/gmail/callback which writes the token; then Refresh.
 async function _gmailReconnect(email) {
-  if (!email) return;
-  try {
-    const r = await fetch('/api/gmail/auth?account=' + encodeURIComponent(email));
-    const d = await r.json();
-    if (d && d.url) {
-      window.open(d.url, '_blank', 'noopener');
-      showToast('Approve access for ' + email + ' in the opened tab, then Refresh');
-      if (d.warning) showToast(d.warning);
-    } else if (d && d.error) {
-      showToast('Could not start reconnect: ' + d.error);
-    } else {
-      showToast('Could not start reconnect');
-    }
-  } catch (e) { showToast('Reconnect failed'); }
+  // Same full Google grant as the Accounts card: its callback also writes the
+  // Gmail token, so mail keeps working and calendar/drive/docs come with it.
+  if (email) _connReconnect('google', email);
 }
 async function _gmailAddAccount() {
-  const email = (prompt('Gmail address to connect:') || '').trim();
-  if (email) _gmailReconnect(email);
+  const email = (prompt('Google account to connect:') || '').trim();
+  // The full Google grant (mail + calendar + drive + docs). The gmail-only
+  // grant left calendar unauthorized on every account added this way.
+  if (email) _connReconnect('google', email);
 }
 async function _gmailRemove(email) {
   if (!(await showConfirm('Remove ' + email + '?\n\nThe local token file is deleted; you can reconnect any time.', 'Remove', true))) return;
@@ -28756,7 +29378,9 @@ function openCreate() {
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
   const _iso0 = document.getElementById('create-isolated');
-  if (_iso0) { _iso0.checked = false; _toggleIsolated(false); }
+  // Isolated by default (Ethan, 2026-10-09: "when creating a new worker make
+  // isolated checked by default"); untick it for a harness-driven worker.
+  if (_iso0) { _iso0.checked = true; _toggleIsolated(true); }
   const _ollamaBtn0 = document.getElementById('create-provider-ollama');
   if (_ollamaBtn0) _ollamaBtn0.classList.remove('selected');
   const _museBtn0 = document.getElementById('create-provider-muse');
@@ -31242,7 +31866,7 @@ function switchView(view) {
   const _svViews = [
     ['projects', 'projects', ''], ['session', 'sessions', ''], ['board', 'board', ''], ['groups', 'groups', ''],
     ['calendar', 'calendar', 'flex'], ['scheduler', 'scheduler', ''],
-    ['files', 'files', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
+    ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'], ['proxies', 'proxies', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', ''],
@@ -31280,10 +31904,12 @@ function switchView(view) {
   if (view === 'sessions') { fetchSessions(); _dbgLog('Workers refreshed on navigation'); }
   if (view === 'messages') _messagesLoad(true, '');
   if (view === 'files') { loadFiles(_filesPath); _filesRenderBookmarks(); }
+  if (view === 'scratchpad') _scratchpadLoad();
   if (view === 'record') _recorderInit();
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
+  else if (typeof _connOpenId !== 'undefined' && _connOpenId) _connClose();
   if (view === 'proxies') { loadProxies(); _startProxiesTimer(); } else { _stopProxiesTimer(); }
   if (view !== 'files') {
     try { if (location.hash.startsWith('#path=')) history.replaceState({}, '', location.pathname); } catch(e) {}
@@ -37915,6 +38541,17 @@ async function openBoardDetail(id) {
 // needs-input triage: message to the asking worker (deduped), marked note on the
 // card, card out of needsyou, read back.
 let _bdAnswerCtx = null;   // {card, worker}
+// The X on the answer box: close it without answering. Nothing is sent and the
+// card stays in needsyou; a re-render while this card is open keeps it closed.
+let _bdAnswerDismissed = '';
+function _bdAnswerCancel() {
+  _bdAnswerDismissed = boardDetailId || '';
+  _bdAnswerCtx = null;
+  const box = document.getElementById('bd-answer');
+  if (box) box.hidden = true;
+  const ta = document.getElementById('bd-answer-text');
+  if (ta) ta.value = '';
+}
 function _bdAnswerItem(card) {
   const ctx = _bdAnswerCtx || {};
   const found = (typeof _niItems === 'function' ? _niItems(true) : []).find(i => i.card === card);
@@ -37930,7 +38567,8 @@ function _bdShowAnswer(item, force) {
   const box = document.getElementById('bd-answer');
   if (!box || !item) return;
   if (_bdAnswerCtx && _bdAnswerCtx.card !== item.id) _bdAnswerCtx = null;
-  const show = force || item.status === 'needsyou' || !!_bdAnswerCtx;
+  if (force) _bdAnswerDismissed = '';
+  const show = _bdAnswerDismissed !== item.id && (force || item.status === 'needsyou' || !!_bdAnswerCtx);
   box.hidden = !show;
   if (!show) return;
   if (!_bdAnswerCtx) _bdAnswerCtx = { card: item.id, worker: item.session || '' };
@@ -38165,6 +38803,7 @@ function closeBoardDetail() {
   document.getElementById('board-detail-overlay').classList.remove('active');
   _boardDetailOpenGeneration++;
   boardDetailId = null;
+  _bdAnswerDismissed = '';
   _bdActiveDirty = false;
   // Refresh peek issues panel if open
   if (_peekTab === 'issues') renderPeekIssues();
@@ -48372,6 +49011,7 @@ async function _bwInit() {
   _bwSessionLabelSync();
   await _bwLoadProfiles();
   await _bwLoadTargets();
+  await _bwLoadRouting();
 }
 
 // Show WHICH session's browser is on screen. The view defaults to 'amux' and
@@ -48399,7 +49039,7 @@ async function _bwLoadProfiles() {
     if (!sel) return;
     const cur = sel.value;
     // Rebuild: Auto (empty) + registered profiles + real Chrome profiles
-    sel.innerHTML = '<option value="">Auto profile</option>';
+    sel.innerHTML = '<option value="">Configured default profile</option>';
     // SAVED PROFILES FIRST (AMUX-3670, Ethan: "i have saved profiles in amux
     // browser… i want it to be simple").
     //
@@ -48416,8 +49056,10 @@ async function _bwLoadProfiles() {
     // real work (it is the user's data, not ours to judge). They move below a
     // separator and keep their names.
     const all = d.profiles || [];
-    const saved = all.filter(p => p.registered);
+    const saved = all.filter(p => p.registered && !['test','deprecated'].includes(p.role));
     const scratch = all.filter(p => !p.registered);
+    const tests = all.filter(p => p.role === 'test');
+    const deprecated = all.filter(p => p.role === 'deprecated');
     const opt = (p, icon) => {
       const o = document.createElement('option');
       o.value = p.name;
@@ -48426,6 +49068,7 @@ async function _bwLoadProfiles() {
       // show; the directory name stays alongside because it is what the API and
       // AMUX_PROFILE take.
       const lbl = (p.label || '').trim();
+      const shortLabel = lbl.length > 68 ? lbl.slice(0, 65) + '…' : lbl;
       // A REGISTERED PROFILE WHOSE DIRECTORY IS GONE still carries its saved
       // domains, so without this it renders as a normal signed-in profile and
       // picking it silently starts an empty one (AMUX-5020). `on_disk` is the
@@ -48437,16 +49080,18 @@ async function _bwLoadProfiles() {
       const acc = p.access || null;
       const limited = acc && acc.all_workers === false;
       o.textContent = (missing ? '⚠' : icon) + ' '
-                    + (lbl ? lbl + ' (' + p.name + ')' : p.name)
+                    + (shortLabel ? shortLabel + ' (' + p.name + ')' : p.name)
                     + (missing ? ' — no profile directory, starts logged out'
                                : (doms ? ' — ' + doms : ''))
+                    + (p.identity ? ' · ' + p.identity : '')
+                    + (p.role ? ' [' + p.role + ']' : '')
                     + (limited ? ' · ' + acc.workers_allowed + '/' + acc.workers_total + ' workers' : '');
       if (missing) {
         o.title = 'Saved for ' + (doms || 'no recorded domains')
                 + ', but the directory is gone. Starting it creates an empty '
                 + 'profile and you will not be signed in.';
       } else if (doms) {
-        o.title = doms;
+        o.title = [lbl, doms, p.cookies_measured === false ? 'Login cookies could not be measured' : (p.signed_in_to || []).length + ' sites have unexpired login cookies; verify live access'].filter(Boolean).join('\n');
       }
       if (acc) {
         o.title = (o.title ? o.title + '\n' : '') + (limited
@@ -48465,6 +49110,11 @@ async function _bwLoadProfiles() {
       sel.appendChild(sep);
     }
     scratch.forEach(p => sel.appendChild(opt(p, '🔓')));
+    for (const [label, rows] of [['QA / synthetic accounts', tests], ['Deprecated / retained for recovery', deprecated]]) {
+      if (!rows.length) continue;
+      const group = document.createElement('optgroup'); group.label = label;
+      rows.forEach(p => group.appendChild(opt(p, '◇'))); sel.appendChild(group);
+    }
     const isolatedNames = new Set(all.map(p => p.name));
     (d.chrome_profiles || []).filter(p => !isolatedNames.has(p)).forEach(p => {
       const o = document.createElement('option');
@@ -48479,7 +49129,75 @@ async function _bwLoadProfiles() {
     // there rather than offered and always failing.
     const bs = document.getElementById('bw-backend');
     if (bs) bs.style.display = '';
-  } catch(e) {}
+  } catch(e) { _bwStatus('Profile discovery failed: ' + e.message); }
+}
+
+let _bwRouteConfig = {};
+let _bwRouteLoadGeneration = 0;
+let _bwProfileChoiceGeneration = 0;
+function _bwRoutingEdited() { ++_bwRouteLoadGeneration; }
+function _bwRoutingDiscoveryDiscarded(reason) {
+  const payload = {kind:'browser-routing-discovery-discarded', reason, ver:APP_VER, measured:true, n_considered:1};
+  console.warn('[amux] browser routing discovery discarded', reason);
+  fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(() => {});
+}
+function _bwRoutingProfileChanged(fromDiscovery = false) {
+  if (!fromDiscovery) ++_bwProfileChoiceGeneration;
+  const profile = document.getElementById('bw-profile').value;
+  const route = _bwRouteConfig.profile_routes?.[profile] || (_bwRouteConfig.native_profile === profile ? _bwRouteConfig : {});
+  document.getElementById('bw-cdp-profile').value = route.chrome_profile || '';
+  document.getElementById('bw-cua-profile').value = route.cua_profile || '';
+  document.getElementById('bw-cua-enabled').checked = !!route.allow_cua;
+  document.getElementById('bw-routing-status').textContent = route.chrome_profile ? 'Fallback for ' + profile + ': ' + route.chrome_profile : 'No fallback saved for this profile. Choose its matching Chrome account and save.';
+}
+async function _bwLoadRouting() {
+  const generation = ++_bwRouteLoadGeneration;
+  const choiceGeneration = _bwProfileChoiceGeneration;
+  try {
+    const response = await fetch('/api/browser/routing/config');
+    const d = await response.json();
+    if (!response.ok) throw new Error(d.error || 'Could not load route');
+    if (generation !== _bwRouteLoadGeneration) {
+      _bwRoutingDiscoveryDiscarded('superseded_by_newer_load_or_edit');
+      return;
+    }
+    const c = d.config || {};
+    _bwRouteConfig = c;
+    const cd = document.getElementById('bw-cdp-profile');
+    cd.replaceChildren(new Option('Select Chrome profile', ''));
+    for (const p of d.chrome_profiles || []) { const o = new Option([p.label || p.name, p.identity, '(' + p.name + ')'].filter(Boolean).join(' · '), p.name); o.disabled = !p.on_disk; cd.add(o); }
+    cd.value = c.chrome_profile || '';
+    const cu = document.getElementById('bw-cua-profile');
+    cu.replaceChildren(new Option('Same saved profile as above', ''));
+    document.getElementById('bw-profile').querySelectorAll('option[value]').forEach(o => { if (o.value) cu.add(new Option(o.textContent, o.value)); });
+    cu.value = c.cua_profile || '';
+    document.getElementById('bw-cua-enabled').checked = !!c.allow_cua;
+    const profile = document.getElementById('bw-profile');
+    // A saved default is an initial choice, never authority to replace the
+    // profile the owner selected while discovery was in flight.
+    if (choiceGeneration !== _bwProfileChoiceGeneration) _bwRoutingDiscoveryDiscarded('owner_selected_profile_during_load');
+    else if (!profile.value && c.native_profile) profile.value = c.native_profile;
+    _bwRoutingProfileChanged(true);
+  } catch (e) { document.getElementById('bw-routing-status').textContent = 'Route discovery failed: ' + e.message; }
+}
+async function _bwSaveRouting() {
+  ++_bwRouteLoadGeneration; // An older GET must not replace this owner write.
+  document.getElementById('bw-routing-status').textContent = 'Saving route…';
+  try {
+    const c = { native_profile: document.getElementById('bw-profile').value, chrome_profile: document.getElementById('bw-cdp-profile').value, cua_profile: document.getElementById('bw-cua-profile').value, allow_cua: document.getElementById('bw-cua-enabled').checked };
+    const response = await fetch('/api/browser/routing/config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
+    const d = await response.json(); if (!response.ok) throw new Error(d.error || 'Save failed');
+    _bwRouteConfig = d.config;
+    document.getElementById('bw-routing-status').textContent = 'Saved: Amux → ' + (c.chrome_profile ? 'CDP ' + c.chrome_profile : 'CDP unconfigured') + (c.allow_cua ? ' → CUA' : '');
+  } catch(e) { document.getElementById('bw-routing-status').textContent = 'Save failed: ' + e.message; }
+}
+async function _bwAdvanceRouting() {
+  try {
+    await _bwFetch('/api/browser/advance', {method:'POST',body:JSON.stringify({reason:'The selected browser could not complete the current goal'})});
+    _bwViewport = null;
+    await _bwScreenshot(0, true);
+    _bwStatus('Using the next route. Observe this page before acting.');
+  } catch(e) { _bwStatus('Could not advance: ' + e.message); }
 }
 
 function _bwBackend() {
@@ -48492,13 +49210,20 @@ function _bwBackend() {
 let _bwTargetGeneration = 0;
 async function _bwFetch(path, options) {
   const generation = _bwTargetGeneration;
+  let response;
   if (_bwBackend().startsWith('ios:')) {
     path = path.replace('/api/browser/', '/api/browser/ios/');
     options = { ...options, headers: { ...(options && options.headers), 'X-Amux-Simulator': _bwBackend().slice(4) } };
+    response = await fetch(path, options);
+  } else {
+    const parsed = new URL(path, location.origin);
+    const verb = parsed.pathname.replace('/api/browser/', '');
+    const body = options?.body ? JSON.parse(options.body) : Object.fromEntries(parsed.searchParams);
+    response = await fetch('/api/browser/routing/request', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({verb,body,session:_bwSession})});
   }
-  const response = await fetch(path, options);
   const data = await response.json();
   if (generation !== _bwTargetGeneration) throw new Error('Browser target changed; retry on the selected target');
+  if (data.route) document.getElementById('bw-routing-status').textContent = 'Active: ' + data.route.backend + ' · ' + data.route.profile + ' · ' + (data.route.attempts || []).map(a => a.backend + ': ' + a.verdict).join(' → ');
   if (!response.ok || data.error) throw new Error(data.error || ('HTTP ' + response.status));
   return { ok: true, json: async () => data };
 }
@@ -48564,7 +49289,7 @@ function _bwShowProfile(profile, auto) {
   if (!el) return;
   if (!profile) { el.style.display = 'none'; return; }
   el.style.display = '';
-  el.textContent = (auto ? '🔒 auto: ' : '🔓 ') + profile;
+  el.textContent = (auto ? 'Auto profile: ' : 'Profile: ') + profile;
   el.style.background = 'var(--surface)';
   el.style.border = '1px solid var(--border)';
   el.style.color = 'var(--fg)';
@@ -48581,7 +49306,6 @@ async function _bwGo() {
     const body = { url, session: _bwSession };
     const backend = _bwBackend();
     if (backend.startsWith('ios:')) body.udid = backend.slice(4);
-    else if (backend) body.backend = backend;
     else if (profile) body.profile = profile;   // empty = auto-select by URL
     const r = await _bwFetch('/api/browser/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
@@ -48649,6 +49373,7 @@ async function _bwScreenshot(retries, silent) {
     const r = await _bwFetch('/api/browser/screenshot?session=' + _bwSession + '&t=' + Date.now());
     const d = await r.json();
     if (d.path) {
+      if (d.width && d.height) _bwViewport = {w:d.width,h:d.height};
       if (d.viewport) _bwViewport = d.viewport;
       const img = document.getElementById('bw-img');
       img.onerror = () => _bwViewportFail('the screenshot could not be loaded');

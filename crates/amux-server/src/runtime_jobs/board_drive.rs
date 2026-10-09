@@ -3873,6 +3873,20 @@ pub(crate) fn resume_delivery_id(session: &str, card: Option<&str>, generation: 
     )
 }
 
+/// Was `session` last stopped explicitly (`amux stop` / POST .../stop records
+/// session.stopped with source api-stop) and not started since?
+pub(crate) fn owner_stopped(conn: &Connection, session: &str) -> bool {
+    let stop: Option<f64> = conn
+        .query_row("SELECT MAX(ts) FROM session_events WHERE session=?1 AND type='session.stopped' AND source='api-stop'",
+            [session], |r| r.get(0))
+        .unwrap_or(None);
+    let start: Option<f64> = conn
+        .query_row("SELECT MAX(ts) FROM session_events WHERE session=?1 AND type='session.started'",
+            [session], |r| r.get(0))
+        .unwrap_or(None);
+    matches!((stop, start), (Some(st), None) if st > 0.0) || matches!((stop, start), (Some(st), Some(sa)) if st > sa)
+}
+
 fn select_resume(conn: &Connection, session: &str, now: f64, stopped: bool) -> Resume {
     let events: Vec<(ResumeEventOrder, String, Option<String>)> = conn
         .prepare(
@@ -7607,6 +7621,22 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     // mutation. An exact surviving claim comes first: resuming its own Doing
     // work is not a second WIP claim and must not be hidden by the WIP cap.
     let woke_for_dispatch = if !fleet.is_running(lane).await {
+        // A STOP THAT HOLDS (GS-12 issues doc 4.1): `amux stop` on the fleet
+        // at 21:32Z on 2026-10-08, and 16 of 20 lanes were running again
+        // within two minutes, resumed here as "stopped-worker-exact-claim".
+        // An owner's explicit stop (session.stopped, source api-stop) with no
+        // start after it is a decision, not a crash: the drive leaves the
+        // lane stopped until someone starts it.
+        if state.store.read().ok().is_some_and(|conn| owner_stopped(&conn, lane)) {
+            tracing::info!(target: "amux::board_drive", session = lane, measured = true, n_considered = 1,
+                verdict = "owner_stop_held", "board_drive: lane was stopped by its owner; not woken");
+            return LaneTrace::skip(
+                lane,
+                "owner-stopped",
+                "stopped with amux stop; the drive does not restart it. Start it (amux start) to resume board work",
+            )
+            .with_counts(eligible, open);
+        }
         crate::fanout_workspace::adopt_at_boundary(state, lane).await;
         if crate::fanout_workspace::queue_integration(state, lane).await {
             return LaneTrace::skip(
@@ -18564,5 +18594,36 @@ mod af579_decline_exit_tests {
             body.contains("decline_exit(session)"),
             "pickup_prompt must call decline_exit, or the exit reaches no lane"
         );
+    }
+}
+
+#[cfg(test)]
+mod owner_stop_tests {
+    /// GS-12 4.1: an owner's `amux stop` holds until the lane is started again;
+    /// a stop from anywhere else (a crash path, the server) does not.
+    #[test]
+    fn an_owner_stop_holds_until_the_next_start() {
+        let d = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&d.path().join("t.db")).unwrap();
+        let ev = |ts: f64, session: &str, kind: &str, source: &str| {
+            let (s, k, src) = (session.to_string(), kind.to_string(), source.to_string());
+            store.write(move |c| {
+                c.execute("INSERT INTO session_events(ts, session, type, data, source) VALUES(?1, ?2, ?3, NULL, ?4)",
+                    rusqlite::params![ts, s, k, src])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+        };
+        ev(100.0, "lane-a", "session.started", "spawn");
+        ev(200.0, "lane-a", "session.stopped", "api-stop");
+        ev(100.0, "lane-b", "session.started", "spawn");
+        ev(200.0, "lane-b", "session.stopped", "api-stop");
+        ev(300.0, "lane-b", "session.started", "api-start");
+        ev(100.0, "lane-c", "session.started", "spawn");
+        ev(200.0, "lane-c", "session.stopped", "reaper");
+        let conn = store.read().unwrap();
+        assert!(super::owner_stopped(&conn, "lane-a"), "stopped by its owner, not started since");
+        assert!(!super::owner_stopped(&conn, "lane-b"), "started again after the stop");
+        assert!(!super::owner_stopped(&conn, "lane-c"), "a non-owner stop is recovered as before");
+        assert!(!super::owner_stopped(&conn, "never-seen"));
     }
 }

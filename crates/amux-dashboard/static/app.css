@@ -3721,6 +3721,9 @@
     max-height: var(--tc-max-h, 60vh); overflow-y: auto; overscroll-behavior: contain;
   }
   #peek-tab-customizer-menu { position: fixed; z-index: 300; }
+  .tab-cust-search-wrap {
+    padding: 6px 10px 4px; position: sticky; top: 0; background: var(--card); z-index: 1;
+  }
   .tab-customizer-item {
     display: flex; align-items: center; gap: 8px; padding: 6px 14px;
     font-size: 0.82rem; cursor: pointer; color: var(--fg); user-select: none;
@@ -7809,7 +7812,10 @@ body.light .header-row .btn-needs-input { color:#bc4c00; border-color:rgba(188,7
 /* Answer box at the top of a card waiting on the owner (2026-10-01). */
 .bd-answer { margin: 8px 0 12px; padding: 12px; border: 1px solid rgba(240,136,62,0.6); background: rgba(240,136,62,0.10); border-radius: 10px; display: flex; flex-direction: column; gap: 8px; }
 .bd-answer[hidden] { display: none; }
-.bd-answer-head { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #f0883e; }
+.bd-answer-head { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #f0883e; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bd-answer-x { background: none; border: none; color: var(--dim); width: 32px; height: 32px; margin: -6px -6px -6px 0; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.bd-answer-x:hover { color: var(--text); background: rgba(240,136,62,0.16); }
+@media (max-width: 600px) { .bd-answer-x { width: 44px; height: 44px; } }
 body.light .bd-answer-head { color: #bc4c00; }
 .bd-answer-ask { font-size: 0.9rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .bd-answer-text { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; font: inherit; }
@@ -7963,4 +7969,146 @@ body.light .bd-answer-head { color: #bc4c00; }
 @media (max-width: 600px) {
   .file-overlay-body.file-xlsx-editor { border-radius: 0; border-left: 0; border-right: 0; }
   #file-save-btn { min-height: 44px; }
+}
+
+/* Scratchpad: its own toolbar class (.fe-tb-actions is hidden at every width,
+   which hid New Note / New Folder / Refresh), and the paste-to-save box. */
+.sp-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.sp-capture-row { display:flex; gap:8px; padding:8px 12px; align-items:stretch; }
+.sp-capture { flex:1; min-height:44px; resize:vertical; font-family:inherit; font-size:0.85rem; }
+.sp-capture-save { min-width:64px; min-height:44px; }
+.sp-copy-btn { min-width:32px; }
+@media (max-width: 600px) {
+  .sp-actions .fe-tb-btn { min-height:44px; min-width:44px; }
+  .sp-actions .fe-tb-btn span { display:none; }
+  .sp-copy-btn { min-width:44px; min-height:44px; }
+}
+/* Scratchpad rows carry two actions (copy, menu); the shared 30px column
+   overflowed every row by 10px and pushed both off-screen. */
+#scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
+  grid-template-columns: minmax(0,1fr) 60px 92px 72px;
+}
+#scratchpad-view .fe-cell-actions { display:flex; gap:4px; justify-content:flex-end; align-items:center; }
+@media (max-width: 600px) {
+  #scratchpad-view .fe-row, #scratchpad-view .fe-col-headers, #scratchpad-view .fe-back-row {
+    grid-template-columns: minmax(0,1fr) 92px 96px;
+  }
+  #scratchpad-view .fe-cell-size { display:none; }
+}
+
+/* Peek side panel (Ethan, 2026-10-08): on desktop the split shows files,
+   messages or chat beside the terminal. */
+.psp-switch { display:flex; gap:4px; align-items:center; padding:6px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+.psp-opt { background:none; border:1px solid var(--border); color:var(--dim); border-radius:6px; padding:3px 10px; font-size:0.75rem; cursor:pointer; }
+.psp-opt.active { color:var(--text); border-color:var(--accent); background:var(--surface); }
+.psp-close { margin-left:auto; font-size:0.7rem; padding:2px 8px; }
+.psp-frame { flex:1; min-height:0; width:100%; border:0; background:var(--bg); }
+.peek-split-files.psp-embed .peek-split-files-header,
+.peek-split-files.psp-embed .psf-col-headers,
+.peek-split-files.psp-embed .peek-split-files-body { display:none !important; }
+.psp-menu { position:fixed; z-index:9999; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:4px; box-shadow:0 6px 24px rgba(0,0,0,0.35); display:flex; flex-direction:column; min-width:150px; }
+.psp-menu button { background:none; border:0; color:var(--text); text-align:left; padding:8px 10px; border-radius:6px; font-size:0.85rem; cursor:pointer; }
+.psp-menu button:hover, .psp-menu button:focus { background:var(--surface); outline:none; }
+
+/* Chat copy buttons (Ethan, 2026-10-08) and room below a code block for its
+   scrollbar, which sat on the next paragraph's first line. */
+.chat-code { position:relative; margin:6px 0 12px; }
+.chat-code pre { margin:0; padding-bottom:12px; }
+.chat-code-copy { position:absolute; top:4px; right:4px; z-index:1; font-size:0.7rem; padding:2px 8px; border-radius:5px;
+  border:1px solid var(--border); background:var(--card); color:var(--dim); cursor:pointer; opacity:0.85; }
+.chat-code-copy:hover, .chat-code-copy:focus { opacity:1; color:var(--text); }
+.chat-copy-btn { margin-left:6px; font-size:0.72rem; padding:1px 8px; border-radius:5px; border:1px solid var(--border);
+  background:none; color:var(--dim); cursor:pointer; }
+.chat-copy-btn:hover, .chat-copy-btn:focus { color:var(--text); }
+@media (max-width: 600px) {
+  .chat-code-copy, .chat-copy-btn { min-height:44px; min-width:44px; }
+}
+/* A worker's active Claude Code /goal (AMUX-5746). */
+.badge.goal { color:var(--accent); border-color:var(--accent); }
+
+/* Scratchpad files and expiry (Ethan, 2026-10-09). */
+.sp-retain-wrap { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--dim); }
+.sp-retain { padding:2px 6px; font-size:0.75rem; height:auto; }
+#scratchpad-view.sp-drop { outline:2px dashed var(--accent); outline-offset:-6px; }
+@media (max-width: 600px) { .sp-retain { min-height:44px; } }
+/* The split-view control reads as one on desktop (Ethan, 2026-10-09: "I still
+   dont see the Split View for chat, and others in place of just folder"); on a
+   phone the same button opens the file explorer, so it keeps the folder. */
+#peek-split-toggle { display:inline-flex; align-items:center; gap:4px; width:auto; padding-left:10px; padding-right:10px; }
+#peek-split-toggle .psp-btn-lbl { font-size:0.8rem; font-weight:600; }
+#peek-split-toggle .psp-btn-caret { font-size:0.65rem; opacity:0.7; }
+#peek-split-toggle .psp-ico-folder { display:none; }
+@media (max-width: 600px) {
+  #peek-split-toggle .psp-ico-split, #peek-split-toggle .psp-btn-lbl, #peek-split-toggle .psp-btn-caret { display:none; }
+  #peek-split-toggle .psp-ico-folder { display:inline; }
+}
+
+/* ── Connectors tab: card grid + detail drawer (2026-10-09) ── */
+.cx-page { max-width: 980px; width: 100%; margin: 0 auto; padding: 16px 16px 40px; box-sizing: border-box; }
+.cx-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.cx-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.cx-filter { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 999px; padding: 6px 14px; font-size: 0.8rem; cursor: pointer; min-height: 34px; }
+.cx-filter.on { background: color-mix(in srgb, var(--accent) 16%, var(--card)); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.cx-search { margin-left: auto; max-width: 240px; flex: 1 1 160px; }
+.cx-titlebar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.cx-h1 { font-size: 1.15rem; font-weight: 700; margin-bottom: 2px; }
+.cx-dim { color: var(--dim); font-size: 0.8rem; }
+.cx-small { font-size: 0.75rem; line-height: 1.5; }
+.cx-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 12px; margin-top: 4px; }
+.cx-card { border: 1px solid var(--border); border-radius: var(--radius-dialog, 12px); background: var(--card); padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; transition: border-color .15s; }
+.cx-card:hover, .cx-card:focus-visible { border-color: var(--accent); outline: none; }
+.cx-card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.cx-head, .cx-dhead { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cx-icon { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 10px; color: #fff; font-weight: 800; font-size: 1rem; display: inline-flex; align-items: center; justify-content: center; }
+.cx-title { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.cx-name { font-weight: 700; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-cat { color: var(--dim); font-size: 0.75rem; }
+.cx-count { color: var(--dim); font-size: 0.75rem; white-space: nowrap; }
+.cx-connect { flex: 0 0 auto; }
+.cx-blurb { color: var(--dim); font-size: 0.78rem; line-height: 1.45; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.cx-acct { display: flex; align-items: center; gap: 10px; padding: 4px 0; min-width: 0; }
+.cx-avatar { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 22%, var(--card)); color: var(--accent); font-weight: 700; font-size: 0.8rem; display: inline-flex; align-items: center; justify-content: center; }
+.cx-acct-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.cx-acct-name { font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-acct-sub { font-size: 0.7rem; color: var(--dim); }
+.cx-pill { font-size: 0.7rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; border: 1px solid transparent; }
+.cx-pill.cx-ok { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.cx-pill.cx-warn { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent); }
+.cx-pill.cx-bad { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.cx-pill.cx-idle { color: var(--dim); border-color: var(--border); }
+.btn.cx-mini { min-height: 28px; padding: 2px 10px; font-size: 0.72rem; }
+.cx-add { align-self: flex-start; background: none; border: none; color: var(--accent); font-size: 0.82rem; font-weight: 600; padding: 4px 0; cursor: pointer; min-height: 32px; }
+.cx-drawer-wrap { position: fixed; inset: 0; z-index: var(--layer-dialog, 1100); background: rgba(0,0,0,0.35); display: flex; justify-content: flex-end; }
+.cx-drawer { width: min(480px, 100vw); height: 100%; background: var(--bg); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,0.25); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); box-sizing: border-box; }
+.cx-dhead { padding: 16px 16px 10px; }
+.cx-x { background: none; border: none; color: var(--dim); font-size: 1.1rem; cursor: pointer; width: 36px; height: 36px; border-radius: 8px; }
+.cx-x:hover { background: var(--card); color: var(--text); }
+.cx-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); padding: 0 12px; overflow-x: auto; scrollbar-width: none; }
+.cx-tabs::-webkit-scrollbar { display: none; }
+.cx-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim); padding: 10px 10px; font-size: 0.82rem; cursor: pointer; white-space: nowrap; }
+.cx-tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.cx-dbody { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
+.cx-p { font-size: 0.85rem; line-height: 1.55; margin: 0 0 12px; }
+.cx-cap { display: flex; gap: 10px; align-items: flex-start; font-size: 0.82rem; margin: 8px 0; }
+.cx-cap-dot { color: var(--accent); font-size: 0.6rem; margin-top: 4px; }
+.cx-sec { font-weight: 700; font-size: 0.85rem; margin: 18px 0 8px; }
+.cx-test { font-size: 0.78rem; line-height: 1.5; word-break: break-word; }
+.cx-test.ok { color: var(--green); }
+.cx-test.bad { color: var(--red); }
+.cx-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cx-dbody .cx-acct { border: 1px solid var(--border); border-radius: var(--radius-control, 8px); padding: 8px 10px; margin-bottom: 8px; background: var(--card); }
+.cx-cfg { border: none; padding: 0; background: none; }
+.cx-code { display: flex; align-items: center; gap: 8px; font-size: 0.75rem; word-break: break-all; }
+.cx-code code { background: var(--card); border: 1px solid var(--border); padding: 4px 8px; border-radius: 6px; flex: 1; }
+.cx-scope code { font-size: 0.75rem; }
+.cx-scope { padding: 3px 0; }
+.cx-danger { margin-top: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid color-mix(in srgb, var(--red) 45%, var(--border)); border-radius: var(--radius-control, 8px); background: color-mix(in srgb, var(--red) 7%, transparent); font-size: 0.82rem; }
+@media (max-width: 600px) {
+  .cx-grid { grid-template-columns: minmax(0, 1fr); }
+  .cx-search { max-width: none; margin-left: 0; flex-basis: 100%; }
+  .cx-filter, .cx-add, .btn.cx-mini, .cx-tab { min-height: 44px; }
+  .cx-x { width: 44px; height: 44px; }
+  .cx-drawer { width: 100vw; border-left: none; }
+  .cx-acct-name { white-space: normal; overflow-wrap: break-word; }
 }

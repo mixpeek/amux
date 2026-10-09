@@ -556,6 +556,13 @@ pub fn derive_reply_plan(
         } else {
             raw_from.join(", ")
         };
+        // A thread whose only party IS the sending account (ethan@ wrote to
+        // ethan@) left nobody, so the opt-in the refusal recommends could
+        // never succeed (amux connector e2e, 2026-10-08). With the explicit
+        // opt-in, the self-test replies to the account itself.
+        if to_addr.is_empty() {
+            to_addr = account.to_string();
+        }
     }
     if to_addr.is_empty() {
         // NEVER fall back to emailing ourselves (without explicit allow_self).
@@ -3012,6 +3019,20 @@ mod tests {
         ]);
         let plan = derive_reply_plan(&h, "<m@x>", ME, &connected(), false, true).unwrap();
         assert_eq!(plan.to, "info@mixpeek.com"); // the other owned account, never the sender
+    }
+
+    #[test]
+    fn allow_self_works_when_the_only_party_is_the_sending_account() {
+        let h = hdrs(&[
+            ("message-id", "<m@x>"),
+            ("subject", "s"),
+            ("from", ME),
+            ("to", ME),
+        ]);
+        assert!(derive_reply_plan(&h, "<m@x>", ME, &connected(), false, false).is_err(), "without the opt-in it stays refused");
+        let plan = derive_reply_plan(&h, "<m@x>", ME, &connected(), false, true).unwrap();
+        assert_eq!(plan.to, ME, "the opt-in the refusal names must be able to succeed");
+        assert_eq!(plan.subject, "Re: s");
     }
 
     #[test]

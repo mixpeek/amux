@@ -90,6 +90,12 @@ test('pause refresh keeps shared Resume disabled until lifecycle operation settl
   release();
   await expect(resume).toHaveAttribute('aria-disabled','false');
   await expect(resume).toHaveText(/Resume/);
+  // Status refreshes must preserve the live menu item. Feedback decorates it
+  // with data attributes, which used to make an innerHTML comparison rebuild
+  // the open menu on every refresh and lose an iOS tap during DOM replacement.
+  const resumeNode=await resume.elementHandle();
+  await page.evaluate(()=>{(window as any).updatePeekStatus();(window as any).updatePeekStatus();});
+  expect(await resume.evaluate((node, original)=>node===original,resumeNode)).toBe(true);
   const resumed=page.waitForResponse(r=>r.url().endsWith('/api/workers/pause-probe/resume') && r.request().method()==='POST');
   await resume.click();
   expect(await (await resumed).json()).toMatchObject({lifecycle:'active',running:true});
