@@ -31450,6 +31450,70 @@ async fn rename_session(state: &AppState, name: &str, raw_new: &str) -> Response
 // on precisely the sessions it exists for — the ones with a conversation worth
 // keeping.
 
+/// The global defaults a `/model` or `/effort` argument rewrites.
+const CLAUDE_DEFAULT_KEYS: [&str; 2] = ["model", "effortLevel"];
+
+/// The current values of [`CLAUDE_DEFAULT_KEYS`] in `<claude_home>/settings.json`
+/// (`None` for an absent key or an unreadable file).
+pub(crate) fn claude_global_defaults(claude_home: &std::path::Path) -> Vec<Option<Value>> {
+    let v: Value = std::fs::read_to_string(claude_home.join("settings.json"))
+        .ok()
+        .and_then(|r| serde_json::from_str(&r).ok())
+        .unwrap_or(Value::Null);
+    CLAUDE_DEFAULT_KEYS.iter().map(|k| v.get(*k).cloned()).collect()
+}
+
+/// Put [`CLAUDE_DEFAULT_KEYS`] back to `prev`, touching nothing else in the
+/// file (it is shared with hooks and with Ethan's own edits). A string value
+/// already present is replaced IN PLACE, so the file keeps its key order and
+/// formatting; only adding or removing a key rewrites the whole object.
+pub(crate) fn restore_claude_global_defaults(claude_home: &std::path::Path, prev: &[Option<Value>], session: &str) {
+    let path = claude_home.join("settings.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&raw) else { return };
+    let mut text = raw.clone();
+    let mut rewrite = obj.clone();
+    let mut changed = Vec::new();
+    let mut needs_full = false;
+    for (k, want) in CLAUDE_DEFAULT_KEYS.iter().zip(prev) {
+        if obj.get(*k) == want.as_ref() {
+            continue;
+        }
+        changed.push(*k);
+        match (obj.get(*k), want) {
+            (Some(Value::String(_)), Some(Value::String(w))) => {
+                let re = regex::Regex::new(&format!(r#"("{}"\s*:\s*)"(?:[^"\\]|\\.)*""#, regex::escape(k))).expect("static pattern");
+                let lit = serde_json::to_string(w).unwrap_or_default();
+                text = re.replacen(&text, 1, |c: &regex::Captures| format!("{}{}", &c[1], lit)).into_owned();
+            }
+            _ => needs_full = true,
+        }
+        match want {
+            Some(v) => { rewrite.insert(k.to_string(), v.clone()); }
+            None => { rewrite.remove(*k); }
+        }
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let body = if needs_full {
+        serde_json::to_string_pretty(&Value::Object(rewrite)).unwrap_or_default() + "\n"
+    } else {
+        text
+    };
+    // Never write something that is not the intended JSON.
+    let Ok(check) = serde_json::from_str::<Value>(&body) else { return };
+    if CLAUDE_DEFAULT_KEYS.iter().zip(prev).any(|(k, w)| check.get(*k) != w.as_ref()) {
+        return;
+    }
+    let tmp = path.with_extension("json.amux-tmp");
+    if std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, &path).is_ok() {
+        tracing::info!(session, keys = ?changed, measured = true, n_considered = changed.len(),
+            verdict = "claude_global_default_restored",
+            "a worker's live model/effort switch rewrote the global claude default; restored it");
+    }
+}
+
 /// What Claude Code prints when a slash config command lands.
 const CC_MODEL_ACK: &str = "Set model to ";
 const CC_EFFORT_ACK: &str = "Set effort level to ";
@@ -31830,6 +31894,12 @@ async fn apply_live_config_change(
             hot_error: None,
         },
         SwapMode::Hot => {
+            // `/model x` and `/effort x` also save x as the GLOBAL default in
+            // ~/.claude/settings.json ("saved as your default for new
+            // sessions"), so a worker's switch changed the model of every
+            // claude Ethan starts by hand (2026-10-08: a test switch rewrote
+            // claude-opus-5-5 to sonnet). Snapshot the defaults, put them back.
+            let defaults = (provider == "claude").then(|| claude_global_defaults(&claude_home()));
             let mut outcomes = Vec::with_capacity(cmds.len());
             for (cmd, ack) in cmds {
                 let o = deliver_hot_config(state, name, cmd, ack).await;
@@ -31843,6 +31913,24 @@ async fn apply_live_config_change(
                 }
             }
             let fold = fold_hot_outcomes(&outcomes);
+            if let Some(prev) = defaults {
+                let home = claude_home();
+                restore_claude_global_defaults(&home, &prev, name);
+                if !matches!(fold, HotFold::AllApplied) {
+                    // Queued mid-turn: the command runs at the next boundary
+                    // and saves again then. Watch for it, then restore.
+                    let name = name.to_string();
+                    tokio::spawn(async move {
+                        for _ in 0..240 {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if claude_global_defaults(&home) != prev {
+                                restore_claude_global_defaults(&home, &prev, &name);
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
             match mode_after_delivery(&fold) {
                 SwapMode::Restart => {
                     let why = match fold {
@@ -48979,6 +49067,28 @@ mod pipe_reconcile_tests {
 #[cfg(test)]
 mod delivery_mode_tests {
     use super::*;
+
+    /// 2026-10-08: a worker's `/model sonnet` rewrote the global default in
+    /// ~/.claude/settings.json from claude-opus-5-5 to sonnet. The restore puts
+    /// it back in place, keeps every other byte, and handles an absent key.
+    #[test]
+    fn a_live_switch_leaves_the_global_claude_default_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        let original = "{\n  \"zeta\": 1,\n  \"model\": \"claude-opus-5-5\",\n  \"hooks\": {\"a\": [1, 2]},\n  \"effortLevel\": \"high\"\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let prev = claude_global_defaults(d.path());
+        std::fs::write(&path, original.replace("claude-opus-5-5", "sonnet").replace("\"high\"", "\"low\"")).unwrap();
+        restore_claude_global_defaults(d.path(), &prev, "t");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "restored in place, every other byte kept");
+        // A default that did not exist before the switch is removed again.
+        std::fs::write(&path, "{\"zeta\": 1}").unwrap();
+        let prev = claude_global_defaults(d.path());
+        std::fs::write(&path, "{\"zeta\": 1, \"model\": \"sonnet\"}").unwrap();
+        restore_claude_global_defaults(d.path(), &prev, "t");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(v.get("model").is_none() && v["zeta"] == 1);
+    }
 
     /// mxp-gs12, 2026-10-08: a long `/goal ...` was pasted whole and Claude
     /// Code wrapped it, so /goal never ran. The command token is typed.
