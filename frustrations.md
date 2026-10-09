@@ -5500,3 +5500,14 @@ CARD: AA-29
 SYMPTOM: AA-29 asked "merge PR #247 as is, or keep isolated auto-proceed?" and AA-30 asked whether worker messaging should become strictly same-group (PR #239). Both were ask_type=decision about fleet policy. Within minutes each got "Approved ... Proceed. (Approved automatically under the owner's needs-input policy.)" and moved from needsyou to backlog. This happened right after #244 merged, which was meant to keep explicit-approval asks with the owner.
 COST: The reply picks neither option, so it cannot be obeyed truthfully. A lane that read it as consent would have merged a reversal of an explicit owner request (#247) and a fleet-wide messaging policy change (#239). Re-parking both cards and diagnosing took one round trip.
 FIX: Treat an ask whose question offers alternatives ("X, or Y?") as never auto-approvable, since "Proceed" selects nothing. Classify policy and default changes to fleet behavior as owner-control decisions, and log verdict=either_or_not_approvable when one is skipped.
+
+## Land waiters check installed behavior once a minute, delaying adoption and the CI lifecycle gate
+AREA: CI and land lifecycle
+SEVERITY: degrades
+STATUS: fixed
+DATE: 2026-10-08
+SESSION: amux
+CARD: AGH-8
+SYMPTOM: The `checks` workflow's chained land precheck spent 167 s in one run. An unchanged-source `scripts/test-land-demote-sticks.sh` took 77.27 s locally, including a 60 s self-upgrade poll in a real land waiter. Its old 100 s test deadline hid the delay. A 30 s deadline failed on the unchanged CLI with `no re-exec within 30s`.
+COST: New land behavior can sit unapplied for a minute in queued processes, and the CI job spends most of that time waiting for the lifecycle test.
+FIX: Poll the installed behavior version every 10 s while waiting, emit `verdict=land_self_upgrade_reexec check_interval_s=10` on re-exec, and enforce a 30 s re-exec deadline in the lifecycle test. The same test passed in 27.50 s afterward. The whole chained land precheck passed locally in 239.50 s; that total is not comparable with the hosted runner's 167 s because it ran on different hardware.
