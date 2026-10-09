@@ -73,4 +73,4 @@ Document:
 
 | Integration | Status | MCP package |
 |-------------|--------|-------------|
-| [Google Docs](./google-docs/) | ready to configure | `@modelcontextprotocol/server-gdrive` |
+| [Google Docs](./google-docs/) | deprecated: use the built-in Google connector | `@modelcontextprotocol/server-gdrive` (archived upstream) |
