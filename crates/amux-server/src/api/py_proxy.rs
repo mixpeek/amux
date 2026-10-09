@@ -108,6 +108,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/log-search", "grep across session log files"),
     ("/api/memory", "global memory document"),
     ("/api/review", "weekly trends engine + digest markdown"),
+    ("/api/scratchpad", "scratchpad expiry setting: retain_days and folder in ~/.amux/scratchpad.json; the storage sweep expires old items (api/scratchpad.rs)"),
     ("/api/workers", "modern worker API (+dead-letters)"),
     (
         "/api/models",
