@@ -62,6 +62,11 @@ struct Rig {
     child: Option<Child>,
     client: reqwest::Client,
     log: PathBuf,
+    /// Local OAuth fixtures own the wire; suppress external health probes.
+    no_external_probes: bool,
+    server_binary: Option<PathBuf>,
+    #[cfg(unix)]
+    server_uid: Option<u32>,
     /// Keeps the temp dir alive for the rig's lifetime.
     _tmp: tempfile::TempDir,
 }
@@ -80,7 +85,10 @@ fn free_port() -> u16 {
 
 impl Rig {
     fn new() -> Self {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        Self::in_temp(tempfile::tempdir().expect("tempdir"))
+    }
+
+    fn in_temp(tmp: tempfile::TempDir) -> Self {
         let home = tmp.path().join("amux-home");
         std::fs::create_dir_all(&home).unwrap();
         let db = tmp.path().join("test.db");
@@ -98,8 +106,51 @@ impl Rig {
             child: None,
             client,
             log,
+            no_external_probes: false,
+            server_binary: None,
+            #[cfg(unix)]
+            server_uid: None,
             _tmp: tmp,
         }
+    }
+
+    /// Root ignores chmod-based write faults. Run only this fixture's server
+    /// without root privileges; retain the same failed-write assertion in CI.
+    #[cfg(unix)]
+    fn permission_fault_fixture() -> Self {
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::geteuid() } == 0 {
+            // /tmp is traversable after dropping uid; a root-private TMPDIR is not.
+            let tmp = tempfile::Builder::new()
+                .prefix("amux-oauth-permission-")
+                .tempdir_in("/tmp")
+                .expect("unprivileged fixture tempdir");
+            let mut rig = Self::in_temp(tmp);
+            rig.server_uid = Some(65534);
+            return rig;
+        }
+        Self::new()
+    }
+
+    #[cfg(unix)]
+    fn prepare_permission_fault_server(&mut self) {
+        let Some(uid) = self.server_uid else { return; };
+        let binary = self._tmp.path().join("amux-server-fixture");
+        // The shared build-cache ancestors may be root-private. Never chown them.
+        std::fs::copy(server_bin(), &binary).expect("copy fixture server");
+        fn chown_fixture(path: &std::path::Path, uid: u32) {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            assert!(!meta.file_type().is_symlink(), "fixture must contain no symlinks");
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(path).unwrap() {
+                    chown_fixture(&entry.unwrap().path(), uid);
+                }
+            }
+            std::os::unix::fs::chown(path, Some(uid), Some(uid)).unwrap();
+        }
+        chown_fixture(self._tmp.path(), uid);
+        self.server_binary = Some(binary);
+        eprintln!("permission_fault_server uid={uid} gid={uid} private_home={}", self.home.display());
     }
 
     fn spawn(&mut self) {
@@ -109,7 +160,13 @@ impl Rig {
             .open(&self.log)
             .expect("log");
         let err = out.try_clone().unwrap();
-        let child = Command::new(server_bin())
+        let mut command = Command::new(self.server_binary.clone().unwrap_or_else(server_bin));
+        #[cfg(unix)]
+        if let Some(uid) = self.server_uid {
+            use std::os::unix::process::CommandExt;
+            command.uid(uid).gid(uid);
+        }
+        let child = command
             .env_clear()
             .env("HOME", self.home.join("fixture-home"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -117,6 +174,7 @@ impl Rig {
             .env("AMUX_DB", &self.db)
             .env("TMUX_TMPDIR", self._tmp.path())
             .env("AMUX_NO_SELF_ADOPT", "1")
+            .envs(self.no_external_probes.then_some(("AMUX_AUTOFIX_SECS", "0")))
             .env("AMUX_RS_PORT", self.port.to_string())
             // Auth off: this is a loopback-only temp server.
             .env("AMUX_AUTH_TOKEN", "none")
@@ -129,6 +187,15 @@ impl Rig {
             .spawn()
             .expect("spawn server");
         self.child = Some(child);
+        #[cfg(target_os = "linux")]
+        if let Some(uid) = self.server_uid {
+            let status = std::fs::read_to_string(format!("/proc/{}/status", self.child.as_ref().unwrap().id())).unwrap();
+            for field in ["Uid:", "Gid:"] {
+                let line = status.lines().find(|line| line.starts_with(field)).unwrap();
+                let ids = line.split_whitespace().skip(1).map(|id| id.parse::<u32>().unwrap()).collect::<Vec<_>>();
+                assert_eq!(ids, vec![uid; 4], "{line}");
+            }
+        }
     }
 
     async fn wait_healthy(&self) -> Value {
@@ -294,6 +361,19 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
         format!("CC_DIR=/tmp\nCC_CREATOR=rr0150-suite\nCC_NAME={lane}\n"),
     )
     .unwrap();
+
+    // The request header names a real registered worker. Shared membership
+    // permits the queued-input controls; no stale unrestricted sender bypass.
+    std::fs::write(sessions.join("rr0150-suite.env"), "CC_DIR=/tmp\nCC_TAGS=restart-fixture\n").unwrap();
+    std::fs::OpenOptions::new().append(true).open(sessions.join(format!("{lane}.env")))
+        .and_then(|mut f| { use std::io::Write; f.write_all(b"CC_TAGS=restart-fixture\n") }).unwrap();
+    let (c, suite) = rig.post("/api/workers", json!({"name":"rr0150-suite"})).await;
+    assert!((200..300).contains(&c), "registered suite identity: {suite}");
+    // This identity writes API fixtures, not executable worker work. Keep it
+    // paused so restart cannot claim the suite's board row and add a real lease
+    // to the two seeded lease controls.
+    let (c, paused) = rig.post("/api/workers/rr0150-suite/pause", json!({})).await;
+    assert!((200..300).contains(&c), "paused suite identity: {paused}");
 
     // ---------------- phase A: write one row per subsystem ----------------
     let (c, board) = rig
@@ -946,4 +1026,114 @@ async fn acknowledged_connector_state_survives_sigkill_without_lost_concurrent_u
         }
     }
     assert!(!list.to_string().contains("fixture-only"), "inventory never returns a credential");
+}
+
+/// Real TLS broker -> local OAuth fixture -> durable rotation -> SIGKILL ->
+/// TLS broker. The fixture is an actual HTTP server, never a live provider.
+#[cfg(unix)]
+#[tokio::test]
+async fn committed_oauth_rotation_is_served_after_sigkill() {
+    use axum::{extract::Form, http::StatusCode, Json};
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fixture_calls = calls.clone();
+    let endpoint = axum::Router::new().route("/token", axum::routing::post(move |Form(form): Form<std::collections::HashMap<String,String>>| {
+        let calls = fixture_calls.clone();
+        async move {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            if n != 0 || form.get("refresh_token").map(String::as_str) != Some("old-refresh") || form.get("grant_type").map(String::as_str) != Some("refresh_token") {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_grant"})));
+            }
+            (StatusCode::OK, Json(json!({"access_token":"committed-access","refresh_token":"rotated-refresh","expires_in":3600})))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}/token", listener.local_addr().unwrap());
+    let provider = tokio::spawn(async move {
+        axum::serve(listener, endpoint).await.unwrap();
+    });
+    let mut rig = Rig::permission_fault_fixture();
+    rig.no_external_probes = true;
+    let account = "fixture@example.com";
+    let canonical = rig
+        .home
+        .join("connectors/google")
+        .join(format!("{account}.json"));
+    let mirror = rig
+        .home
+        .join("gmail-tokens")
+        .join(format!("{account}.json"));
+    std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+    let old = json!({"token":"old-access","refresh_token":"old-refresh","client_id":"fixture-client","client_secret":"fixture-secret","token_uri":uri,"scopes":"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify","expires_at":0});
+    std::fs::write(&canonical, old.to_string()).unwrap();
+    std::fs::write(&mirror, old.to_string()).unwrap();
+    rig.prepare_permission_fault_server();
+    rig.spawn();
+    rig.wait_healthy().await;
+    // Make the compatibility write fail after the canonical commit. Both the
+    // old copy and its fingerprint survive; readers must use the new grant.
+    std::fs::set_permissions(
+        mirror.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
+    let response = rig
+        .client
+        .post(rig.url("/api/connectors/google-drive/token?account=fixture%40example.com"))
+        .send()
+        .await;
+    std::fs::set_permissions(
+        mirror.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let response = response.unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["access_token"], "committed-access");
+    assert_eq!(body["source"], "user-grant (refreshed)");
+    let committed: Value = serde_json::from_slice(&std::fs::read(&canonical).unwrap()).unwrap();
+    assert_eq!(committed["refresh_token"], "rotated-refresh");
+    assert_eq!(
+        committed["gmail_mirror_refresh_sha256"],
+        hex::encode(Sha256::digest(b"old-refresh"))
+    );
+    let stale: Value = serde_json::from_slice(&std::fs::read(&mirror).unwrap()).unwrap();
+    assert_eq!(
+        stale["refresh_token"], "old-refresh",
+        "the failed mirror write must actually be exercised"
+    );
+    rig.restart().await;
+    let response = rig
+        .client
+        .post(rig.url("/api/connectors/google-drive/token?account=fixture%40example.com"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["access_token"], "committed-access");
+    assert_eq!(body["source"], "user-grant (stored)");
+    let retained: Value = serde_json::from_slice(&std::fs::read(&canonical).unwrap()).unwrap();
+    assert_eq!(retained["refresh_token"], "rotated-refresh");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "restart must adopt the committed refresh without replaying it"
+    );
+    assert!(
+        std::fs::read_to_string(&rig.log)
+            .unwrap()
+            .contains("connector_gmail_mirror_deferred"),
+        "the recoverable copy failure must self-announce"
+    );
+    rig.kill();
+    provider.abort();
+    let _ = provider.await;
 }

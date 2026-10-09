@@ -23,6 +23,11 @@ AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/auto-resume-handoff-recovery.mjs 2>&1
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/conversation-recycle-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/conversation-recycle.log"
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/maintenance-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/maintenance.log"
 AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/native-launch.mjs 2>&1 | tee "$ARTIFACT_DIR/native-launch.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/observed-edits-identity-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/observed-edits.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/scheduler-dispatch-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/scheduler-dispatch.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/peer-receive-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/peer-receive.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/worker-group-boundary-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/worker-group-boundary.log"
+AMUX_CHAOS_BINARY="$BINARY" node e2e/chaos/land-startup-recovery.mjs 2>&1 | tee "$ARTIFACT_DIR/land-startup.log"
 python3 scripts/test-orch-pace-scope.py 2>&1 | tee "$ARTIFACT_DIR/scope.log"
 bash scripts/test-orch-pace-proof.sh 2>&1 | tee "$ARTIFACT_DIR/pace.log"
 python3 - "$BINARY" "$ARTIFACT_DIR/binary.sha256" <<'PY'

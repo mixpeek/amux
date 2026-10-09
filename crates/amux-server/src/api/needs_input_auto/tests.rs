@@ -71,6 +71,14 @@ fn defaults_approve_judgment_only() {
 }
 
 #[test]
+fn a_group_setting_decision_does_not_go_through_the_credential_ladder() {
+    let policy = Policy::default();
+    let q = "Can you set the AMUX_CONTRACT_REVIEW_MODEL key in the gs12-platform group scope to Sonnet?";
+    assert_eq!(decide(&policy, &item("card", "other", "decision", q)), Decision::Never("owner_must_act"));
+    assert_eq!(decide(&policy, &item("card", "other", "access", "Can you sign in to Studio?")), Decision::SendBack("credential_or_access"));
+}
+
+#[test]
 fn credential_and_access_are_never_approved() {
     let all = Policy { prod_data: true, outbound: true, money_cap_usd: 1e9, send_back: false, ..Policy::default() };
     assert!(matches!(decide(&all, &item("card", "other", "credential", "Mint a key")), Decision::Never(_)));

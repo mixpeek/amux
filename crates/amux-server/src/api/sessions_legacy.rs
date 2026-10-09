@@ -5142,10 +5142,10 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             // `_own` says whether the WORKER's own file sets it, so the UI can
             // tell "this worker" from "inherited" and can refuse to offer a
             // local switch-off for something it did not set locally.
-            "spans_groups": !cross_group.value.is_empty(),
-            "spans_groups_value": cross_group.value,
-            "spans_groups_source": cross_group.source,
-            "spans_groups_reason": cross_group.reason,
+            "spans_groups": false,
+            "spans_groups_value": "",
+            "spans_groups_source": "shared-group-only",
+            "spans_groups_reason": "Worker messages must stay within a shared group. Owner input remains permitted.",
             "spans_groups_explicit_deny": cross_group.explicit_deny,
             "spans_groups_own": cross_group.worker_defined,
             "steering_queue": [],
@@ -7001,6 +7001,21 @@ pub(crate) mod tests {
         assert_eq!(cflags, "--model qwen3.8:27b");
         assert!(cmodel.is_empty(), "agent CLIs have no CC_MODEL");
         assert_eq!(cresolved, "qwen3.8:27b");
+        // Grok is an agent CLI too: model rides in CC_FLAGS, never CC_MODEL.
+        let (gflags, gmodel, gresolved) = worker_model_env("grok", "grok-4.6", "", "opus");
+        assert_eq!(gflags, "--model grok-4.6");
+        assert!(gmodel.is_empty(), "grok must not use the ollama CC_MODEL path");
+        assert_eq!(gresolved, "grok-4.6");
+        // Empty model at create (the SPA path): CC_FLAGS stays empty so grok's own
+        // CLI decides, exactly like every other non-claude, non-ollama provider
+        // (worker_model_env only special-cases claude and ollama by name); the
+        // Claude default ("opus") must not leak in either.
+        // `default_model_for_provider("grok")` supplies grok-4.6 at launch instead.
+        let (gflags2, gmodel2, gresolved2) = worker_model_env("grok", "", "", "opus");
+        assert!(gflags2.is_empty(), "empty grok model must not become --model opus: {gflags2}");
+        assert!(!gflags2.contains("opus"));
+        assert!(gmodel2.is_empty());
+        assert!(gresolved2.is_empty());
         // Muse: an agent CLI, so the model rides in CC_FLAGS and CC_MODEL stays
         // empty (the ollama CC_MODEL path is ollama-only).
         let (mflags, mmodel, mresolved) = worker_model_env("muse", "muse-spark-1.2", "", "opus");

@@ -35,6 +35,7 @@ pub mod commit_mentions;
 pub mod computer;
 pub mod config_iac;
 pub mod connection;
+pub mod gcal;
 pub mod connectors;
 pub mod criteria;
 pub mod crm;
@@ -139,6 +140,7 @@ pub mod why;
 pub mod worker_create;
 pub mod worker_exec;
 pub mod workers;
+mod worker_messaging;
 pub mod workers_deadletters;
 
 use crate::db::SharedStore;
@@ -236,6 +238,7 @@ pub fn router(state: AppState) -> Router {
         )
         .nest("/api/email", email::routes())
         .nest("/api/cal-events", calendar::routes())
+        .nest("/api/gcal", gcal::routes())
         // Legacy SHAPE (not just path): the SPA renders this array (RR-0075).
         // POST creates a FLEET worker (an env file), which is a different
         // substrate from POST /api/workers (a `workers` table row) — the

@@ -384,11 +384,9 @@ async function toggleCrossGroupDefault(checked) {
       return;
     }
     if (cb) cb.checked = !!saved.enabled;
-    showToast(d.message || (checked ? 'Cross-group messaging on' : 'Cross-group messaging off'));
+    showToast(d.message || 'Worker messaging stays within shared groups');
     if (note) {
-      note.textContent = saved.gate_enforcing === false
-        ? 'Note: AMUX_GROUP_SEND_ENFORCE is off, so all cross-group sends pass regardless of this switch.'
-        : (saved.note || 'An explicit empty group or worker setting can deny this for that scope.');
+      note.textContent = saved.note || 'Workers may message only workers in a shared group. Direct owner input remains permitted.';
     }
   } catch (e) {
     rollback();
@@ -400,9 +398,8 @@ async function toggleCrossGroupDefault(checked) {
   try {
     const d = await readCrossGroupDefault();
     const cb = document.getElementById('crossgroup-default-checkbox');
-    if (cb) cb.checked = !!d.enabled;
-    // SAY IT OUT LOUD when the gate is not enforcing at all. Otherwise an
-    // operator reads an OFF switch as a closed door that is not there.
+    if (cb) { cb.checked = !!d.enabled; cb.disabled = d.editable === false; }
+    // Show the effective worker authority returned by the server.
     const note = document.getElementById('crossgroup-default-note');
     if (note) {
       note.textContent = d.gate_enforcing === false
@@ -657,7 +654,7 @@ let _logMatches = {};       // name -> matched snippet string
 let _logSearchTimer = null;
 let _logSearchAbort = null;
 // Filters modal facets (session list). Multi-select within a facet.
-let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2'
+let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2' | 'ollama' | 'grok' | 'muse'
 let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle' | 'stopped'
 // Stable status key for filtering: card WORKING = 'active' internally.
 function _sessStatusKey(s) {
@@ -6702,6 +6699,7 @@ function providerLabel(provider) {
   if (provider === 'ollama') return 'Ollama';
   if (provider === 'muse') return 'Muse Code';
   if (provider === 'iterm2') return 'iTerm2';
+  if (provider === 'grok') return 'Grok';
   return 'Claude';
 }
 
@@ -6712,13 +6710,14 @@ function sessionProvider(s) {
   // muse lane would have shown a Claude badge, a Claude model and Claude's yolo
   // flag while running `muse`. Anything added to SESSION_PROVIDERS server-side
   // belongs here too.
-  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'iterm2') ? p : 'claude';
+  return (p === 'codex' || p === 'gemini' || p === 'ollama' || p === 'muse' || p === 'grok' || p === 'iterm2') ? p : 'claude';
 }
 
 function providerDefaultModel(provider) {
   if (provider === 'codex') return 'gpt-6-luna';
   if (provider === 'gemini') return 'auto';
   if (provider === 'ollama') return 'qwen3.8:27b';
+  if (provider === 'grok') return 'grok-4.6';
   if (provider === 'muse') return 'muse-spark-1.3-contributor';
   return window._AMUX_DEFAULT_MODEL || 'sonnet';
 }
@@ -7087,9 +7086,9 @@ function _workerActionDefinitions(s) {
       title: 'When this worker runs out of todo cards, pull its oldest eligible backlog card into todo automatically. Human, trigger, and dependency blocks stay parked.',
       run: "toggleAutoDrain('" + name + "')" } : null,
     !s.isolated ? { key: 'spans-groups', icon: s.spans_groups ? '&#x2611;' : '&#x2610;',
-      labelHtml: 'Spans groups' + _spansLabel(s),
-      title: 'Let this worker message workers in other groups according to its resolved cross-group configuration.',
-      run: "toggleSpansGroups('" + name + "')" } : null,
+      label: 'Messaging: shared groups only',
+      title: 'Worker messages stay within a shared group. Owner input remains permitted.',
+      run: "showToast('Worker messages stay within a shared group.')" } : null,
     { key: 'directory', icon: '&#x1F4C1;', label: 'Change directory',
       run: "editField('" + name + "','dir','" + escJs(s.dir || '') + "')" },
     s.dir ? { key: 'copy-directory-link', icon: '&#x1F517;', label: 'Copy directory link',
@@ -9722,6 +9721,7 @@ function editField(session, field, current, provider) {
       {v:'claude',l:'Claude Code'},
       {v:'codex',l:'Codex'},
       {v:'gemini',l:'Gemini'},
+      {v:'grok',l:'Grok'},
       {v:'ollama',l:'Ollama (local)'},
       {v:'muse',l:'Muse Code'}
     ];
@@ -11478,7 +11478,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   const permissions = [
     _workerConfigurationRow('yolo', 'Model tool approval bypass (YOLO)', s.yolo ? 'Enabled' : 'Disabled', 'Uses the selected provider’s native tool-permission flag.', sw(!!s.yolo, 'toggleYolo', 'Toggle model tool approval bypass')),
     _workerConfigurationRow('isolated', 'Isolated raw agent', s.isolated ? 'Enabled' : 'Disabled', 'Direct CLI messages; no boards, task intake, injected prompts, behavioral hooks, MCP config, or peer discovery. Passive lifecycle hooks report status only. Restart to remove an already-loaded harness.', sw(!!s.isolated, 'toggleIsolated', 'Toggle isolated mode')),
-    s.isolated ? '' : _workerConfigurationRow('cross_group', 'Cross-group messaging', s.spans_groups_value || 'Refused', s.spans_groups_reason || (s.spans_groups ? 'Standing allowance is active.' : 'No standing allowance.'), edit('send_allow', s.spans_groups_own ? (s.spans_groups_value || '') : '')),
+    s.isolated ? '' : _workerConfigurationRow('cross_group', 'Worker messaging', 'Shared groups only', 'Owner input remains permitted.', ''),
     s.isolated ? '' : _workerConfigurationRow('external_email', 'Send external email without approval', s.external_email_allowed ? 'Allowed' : 'Approval required', s.external_email_allowed_own ? 'Worker override; applies immediately.' : 'Inherited/default; disabled by default.', _workerEmailPermissionControls(name, s)),
   ];
   const advanced = [
@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1288';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1291';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14991,7 +14991,7 @@ function _selectWorkerType(id) {
   const t = _workerTypeInfo(id);
   _renderCreateTypeRow();
   const allowed = p => !t.providers || !t.providers.length || t.providers.includes(p);
-  ['claude', 'codex', 'gemini', 'ollama', 'muse'].forEach(p => {
+  ['claude', 'codex', 'gemini', 'ollama', 'grok', 'muse'].forEach(p => {
     const b = document.getElementById('create-provider-' + p);
     if (b) { b.disabled = !allowed(p); b.style.opacity = allowed(p) ? '' : '0.4'; }
   });
@@ -23838,7 +23838,7 @@ function closeFiltersModal() {
   if (m) m.classList.remove('active');
   renderActiveFilters();
 }
-const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2' };
+const _PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', iterm2: 'iTerm2', ollama: 'Ollama', grok: 'Grok' };
 const _MODEL_LABELS = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT', gemini: 'Gemini', 'o-series': 'o-series' };
 function _mLabel(x){ return _MODEL_LABELS[x] || (x.charAt(0).toUpperCase()+x.slice(1)); }
 const _STATUS_LABELS = { starting: 'Starting', error: 'Error', working: 'Working', blocked: 'Blocked', waiting: 'Waiting', rate_limited: 'Rate limited', api_error: 'API error', idle: 'Idle', stopped: 'Stopped', unknown: 'Unknown' };
@@ -29413,6 +29413,8 @@ function _selectProvider(p) {
   document.getElementById('create-provider-claude').classList.toggle('selected', p === 'claude');
   document.getElementById('create-provider-codex').classList.toggle('selected', p === 'codex');
   document.getElementById('create-provider-gemini').classList.toggle('selected', p === 'gemini');
+  const _grokBtn = document.getElementById('create-provider-grok');
+  if (_grokBtn) _grokBtn.classList.toggle('selected', p === 'grok');
   const _ollamaBtn = document.getElementById('create-provider-ollama');
   if (_ollamaBtn) _ollamaBtn.classList.toggle('selected', p === 'ollama');
   const _museBtn = document.getElementById('create-provider-muse');
@@ -29456,6 +29458,8 @@ function openCreate() {
   document.getElementById('create-provider-claude').classList.add('selected');
   document.getElementById('create-provider-codex').classList.remove('selected');
   document.getElementById('create-provider-gemini').classList.remove('selected');
+  const _grokBtn0 = document.getElementById('create-provider-grok');
+  if (_grokBtn0) _grokBtn0.classList.remove('selected');
   const _iso0 = document.getElementById('create-isolated');
   // Isolated by default (Ethan, 2026-10-09: "when creating a new worker make
   // isolated checked by default"); untick it for a harness-driven worker.
@@ -39498,24 +39502,37 @@ async function deleteBoardStatus(id) {
 // ═══════ CALENDAR (FullCalendar) ═══════
 let _fcInstance = null;
 
-// The calendar has three layers, each independently toggleable:
-//   • events — real calendar events (the ONLY layer that syncs to Google Calendar)
+// The calendar has four layers, each independently toggleable:
+//   • events — amux's own calendar events (the layer that exports OUT via /api/calendar.ics)
 //   • tasks  — schedules (in-app only)
 //   • issues — board items with a due date (in-app only)
-// Only events reach the iCal feed; tasks/issues never leave amux.
+//   • gcal   — events read live from connected Google accounts (crates/amux-server/src/api/gcal.rs),
+//              read-only here; created via POST /api/gcal/events, not this modal.
+// Only "events" reaches the iCal feed; tasks/issues/gcal never leave amux from here.
 let calEvents = [];
+let gcalEvents = [];
 let _calShowEvents = localStorage.getItem('amux_cal_show_events') !== '0';   // default on
 let _calShowSched  = localStorage.getItem('amux_cal_show_sched')  !== '0';   // default on
 let _calShowIssues = localStorage.getItem('amux_cal_show_issues') === '1';   // default off (noisy)
+let _calShowGcal   = localStorage.getItem('amux_cal_show_gcal')   !== '0';   // default on
 
+// "Events"/"Google" read as the same thing filtered two ways — they are two
+// unrelated data sources (amux's own /api/cal-events vs Google-synced
+// /api/gcal/events). Labeled "Local" vs "Google" so toggling one with the
+// other's data on screen doesn't look like a no-op (it wasn't a no-op — it
+// was correctly hiding a currently-empty layer next to a populated one).
 const _CAL_LAYERS = {
-  events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Events',          btn: 'eventsToggle' },
+  events: { get: () => _calShowEvents, ls: 'amux_cal_show_events', label: 'Local',           btn: 'eventsToggle' },
   sched:  { get: () => _calShowSched,  ls: 'amux_cal_show_sched',  label: 'Tasks',           btn: 'schedToggle'  },
   issues: { get: () => _calShowIssues, ls: 'amux_cal_show_issues', label: 'Issues',          btn: 'issuesToggle' },
+  gcal:   { get: () => _calShowGcal,   ls: 'amux_cal_show_gcal',   label: 'Google',          btn: 'gcalToggle'   },
 };
 
 function _fcLayerLabel(key) {
-  return (_CAL_LAYERS[key].get() ? '☑' : '☐') + ' ' + _CAL_LAYERS[key].label;
+  // Plain text — the ☑/☐ glyphs used to prefix this rendered as tofu/misaligned
+  // boxes in several fonts. On/off state is carried by aria-pressed (set right
+  // below) and the CSS in app.css that dims the "off" state, not by a character.
+  return _CAL_LAYERS[key].label;
 }
 
 function _fcToggleLayer(key) {
@@ -39523,6 +39540,7 @@ function _fcToggleLayer(key) {
   if (key === 'events') _calShowEvents = on;
   else if (key === 'sched') _calShowSched = on;
   else if (key === 'issues') _calShowIssues = on;
+  else if (key === 'gcal') _calShowGcal = on;
   localStorage.setItem(_CAL_LAYERS[key].ls, on ? '1' : '0');
   document.querySelectorAll('.fc-' + _CAL_LAYERS[key].btn + '-button').forEach(b => {
     b.textContent = _fcLayerLabel(key);
@@ -39536,6 +39554,15 @@ async function fetchCalEvents() {
     const r = await fetch(API + '/api/cal-events');
     calEvents = await r.json();
     if (!Array.isArray(calEvents)) calEvents = [];
+  } catch (e) { /* keep last */ }
+  if (_fcInstance && activeView === 'calendar') _fcInstance.refetchEvents();
+}
+
+async function fetchGcalEvents() {
+  try {
+    const r = await fetch(API + '/api/gcal/events');
+    const d = await r.json();
+    gcalEvents = Array.isArray(d.events) ? d.events : [];
   } catch (e) { /* keep last */ }
   if (_fcInstance && activeView === 'calendar') _fcInstance.refetchEvents();
 }
@@ -39588,6 +39615,28 @@ function _fcGetEvents() {
       });
     });
   }
+  if (_calShowGcal) {
+    (gcalEvents || []).forEach(e => {
+      if (String(e.status || '').toLowerCase() === 'cancelled') return;
+      out.push({
+        id: 'gcal-' + e.id,
+        title: (e.meeting_url ? '📹 ' : '📅 ') + e.title,
+        start: e.start_time,
+        end: e.end_time || undefined,
+        allDay: !!e.all_day,
+        backgroundColor: 'rgba(66,133,244,0.16)',
+        borderColor: '#4285f4',
+        textColor: '#8ab4f8',
+        extendedProps: {
+          _type: 'gcal', gcalId: e.id, accountId: e.account_id,
+          desc: e.description || '', location: e.location || '',
+          meetingUrl: e.meeting_url || '', htmlLink: e.html_link || '',
+          organizer: e.organizer || '',
+          attendees: (() => { try { return JSON.parse(e.attendees || '[]'); } catch (_) { return []; } })(),
+        },
+      });
+    });
+  }
   return out;
 }
 
@@ -39613,11 +39662,11 @@ function _fcInit() {
     } : {
       left: 'prev,today,next addEvent',
       center: 'title',
-      right: 'eventsToggle,schedToggle,issuesToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
+      right: 'eventsToggle,schedToggle,issuesToggle,gcalToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
     // Mobile's header row is already full — give the layer toggles their own footer bar.
     // Subscribe stays hidden on mobile (pre-existing `display:none`), so it's not here.
-    footerToolbar: isMobile ? { left: 'prev,next today', right: 'eventsToggle,schedToggle,issuesToggle' } : false,
+    footerToolbar: isMobile ? { left: 'prev,next today', right: 'eventsToggle,schedToggle,issuesToggle,gcalToggle' } : false,
     buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
     customButtons: {
       addEvent: {
@@ -39631,6 +39680,7 @@ function _fcInit() {
       eventsToggle: { text: _fcLayerLabel('events'), click: () => _fcToggleLayer('events') },
       schedToggle:  { text: _fcLayerLabel('sched'),  click: () => _fcToggleLayer('sched')  },
       issuesToggle: { text: _fcLayerLabel('issues'), click: () => _fcToggleLayer('issues') },
+      gcalToggle:   { text: _fcLayerLabel('gcal'),   click: () => _fcToggleLayer('gcal')   },
     },
     events: function(info, successCallback) { successCallback(_fcGetEvents()); },
     height: isMobile ? (window.visualViewport ? window.visualViewport.height : window.innerHeight) - el.getBoundingClientRect().top : window.innerHeight - el.getBoundingClientRect().top,
@@ -39652,6 +39702,7 @@ function _fcInit() {
       if (props._type === 'event') openEventModal(props.evId);
       else if (props._type === 'schedule') openSchedModal(props.schedId);
       else if (props._type === 'issue') { switchView('board'); }
+      else if (props._type === 'gcal') openGcalEventModal(info.event);
     },
     // Clicking/selecting an empty slot creates an EVENT (the primary calendar citizen).
     dateClick: function(info) { openEventModal(null, info.dateStr); },
@@ -39693,6 +39744,7 @@ function renderCalendar() {
     _fcInit();
   }
   fetchCalEvents();   // refresh the events layer whenever the calendar is shown
+  fetchGcalEvents();  // refresh the Google Calendar layer too
 }
 
 // ── Calendar event modal (create / edit / delete a real calendar event) ──────
@@ -39760,6 +39812,70 @@ function _evToggleAllDay() {
 }
 function closeEventModal() {
   const m = document.getElementById('event-modal');
+  if (m) m.remove();
+}
+
+// Read-only detail view for a Google Calendar event (write goes through
+// POST/PUT /api/gcal/events, not this modal). Previously eventClick just
+// showed a toast with title/location/time — no way to see the meeting
+// link, attendees/RSVP status, or organizer, even though the backend now
+// carries all of it (api/gcal.rs, GoogleCalendarEvent in gcal_sync.rs).
+function openGcalEventModal(fcEvent) {
+  const p = fcEvent.extendedProps || {};
+  const title = String(fcEvent.title || '').replace(/^(📹|📅)\s*/, '');
+  const when = fcEvent.allDay
+    ? (fcEvent.start ? fcEvent.start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ' (all day)' : '')
+    : [fcEvent.start, fcEvent.end].filter(Boolean).map(d => d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })).join(' – ');
+
+  const RSVP_META = {
+    accepted:    ['accepted', '#1f8f4e'],
+    declined:    ['declined', '#c0392b'],
+    tentative:   ['maybe', '#8a6d3b'],
+    needsAction: ['no reply', '#666'],
+  };
+  const attendeesHtml = (p.attendees || []).length
+    ? '<div class="conn-gmail-h" style="margin-top:4px">Attendees</div>' + p.attendees.map(a => {
+        const meta = RSVP_META[a.responseStatus] || [a.responseStatus || 'unknown', '#666'];
+        const who = a.displayName || a.email || '?';
+        return '<div class="conn-gmail-row">'
+          + '<span class="conn-gmail-addr">' + esc(who) + (a.organizer ? ' <em style="opacity:0.6">(organizer)</em>' : '') + '</span>'
+          + '<span class="conn-gmail-badge" style="background:' + meta[1] + '">' + esc(meta[0]) + '</span>'
+          + '</div>';
+      }).join('')
+    : '';
+
+  closeGcalEventModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'gcal-event-modal';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 style="margin:0">${esc(title)}</h3>
+        <button class="modal-close" onclick="closeGcalEventModal()">×</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;font-size:0.85rem">
+        <div style="color:var(--dim)">${esc(when)}</div>
+        ${p.location ? '<div>📍 ' + esc(p.location) + '</div>' : ''}
+        ${p.organizer ? '<div style="color:var(--dim)">Organized by ' + esc(p.organizer) + '</div>' : ''}
+        ${p.desc ? '<div id="gcal-desc" style="white-space:pre-wrap">' + _sanitizeHtml(p.desc) + '</div>' : ''}
+        ${attendeesHtml}
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+        ${p.meetingUrl ? '<a class="btn primary" href="' + esc(p.meetingUrl) + '" target="_blank" rel="noopener">📹 Join call</a>' : ''}
+        ${p.htmlLink ? '<a class="btn" href="' + esc(p.htmlLink) + '" target="_blank" rel="noopener">Open in Google Calendar ↗</a>' : ''}
+        <button class="btn" onclick="closeGcalEventModal()">Close</button>
+      </div>
+    </div>`;
+  overlay.onclick = closeGcalEventModal;
+  document.body.appendChild(overlay);
+  // Google's description HTML rarely sets target itself — force new-tab so a
+  // link inside it doesn't navigate the dashboard away.
+  const descEl = document.getElementById('gcal-desc');
+  if (descEl) descEl.querySelectorAll('a').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
+}
+function closeGcalEventModal() {
+  const m = document.getElementById('gcal-event-modal');
   if (m) m.remove();
 }
 function _evCompose(dateId, timeId, allDay) {

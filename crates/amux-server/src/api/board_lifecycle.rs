@@ -2009,7 +2009,10 @@ async fn commit_plan(
         .unwrap_or(false)
     };
     if board_conversation {
-        session_verbs::enqueue_board_conversation(state, session, id, text)
+        session_verbs::enqueue_board_conversation(state, session, id, text, &{
+            let c = state.store.read()?;
+            c.query_row("SELECT origin FROM cmd_history WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0))?.unwrap_or_default()
+        })
             .await
             .map_err(anyhow::Error::msg)?;
     }

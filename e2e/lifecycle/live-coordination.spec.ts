@@ -18,7 +18,7 @@ async function send(page: Page, name: string, text: string) {
 }
 
 for (const crossGroup of [false, true]) {
-  test(`LC-COORD-LIVE: ${crossGroup ? 'cross-group' : 'same-group'} awareness, rejected review, revision, approval and dependent handoff`, async ({ page, request }, info) => {
+  test(`LC-COORD-LIVE: ${crossGroup ? 'overlapping-group' : 'same-group'} awareness, rejected review, revision, approval and dependent handoff`, async ({ page, request }, info) => {
     test.setTimeout(1_800_000);
     expect(process.env.AMUX_LIFECYCLE_LAB_ACK).toBe('dedicated-test-instance');
     const cwd = process.env.AMUX_LIFECYCLE_LAB_WORKSPACE;
@@ -38,7 +38,7 @@ for (const crossGroup of [false, true]) {
     if (!observe) for (const name of names) {
       const group = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       const made = await request.post('/api/sessions', { headers, data: { name, dir: cwd,
-        tags: [group], provider, ...(provider === 'claude' ? { flags: '--model sonnet --dangerously-skip-permissions' }
+        tags: crossGroup && name === author ? [`${run}-build`, `${run}-quality`] : [group], provider, ...(provider === 'claude' ? { flags: '--model sonnet --dangerously-skip-permissions' }
           : provider === 'gemini' ? { flags: '--yolo' } : {}) } });
       expect(made.status()).toBe(201);
     }
@@ -48,6 +48,7 @@ for (const crossGroup of [false, true]) {
     for (const name of names) {
       const expectedGroup = crossGroup && name !== author ? `${run}-quality` : `${run}-build`;
       expect(roster.find((row: any) => row.name === name)?.tags).toContain(expectedGroup);
+      if (crossGroup && name === author) expect(roster.find((row: any) => row.name === name)?.tags).toContain(`${run}-quality`);
       expectLifecycleWorker(roster.find((row: any) => row.name === name));
     }
     const common = `This is an authorized coordination acceptance run ${run}. Work only in ${cwd},

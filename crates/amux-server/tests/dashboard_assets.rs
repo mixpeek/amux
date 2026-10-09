@@ -610,7 +610,9 @@ fn cross_group_default_can_initialize_before_the_main_api_constant() {
         "referencing API before its declaration throws in the temporal dead zone and silently leaves the toggle off"
     );
     for needle in [
-        "saved.note || 'An explicit empty group or worker setting can deny this for that scope.'",
+        "saved.note || 'Workers may message only workers in a shared group. Direct owner input remains permitted.'",
+        "cb.disabled = d.editable === false",
+        "Messaging: shared groups only",
         "s.spans_groups_source",
         "s.spans_groups_reason",
         "refused (' + esc(source) + ' deny)",

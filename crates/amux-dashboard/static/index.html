@@ -340,11 +340,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Workers may message across groups</span>
             <label class="theme-toggle">
-              <input type="checkbox" id="crossgroup-default-checkbox" onchange="toggleCrossGroupDefault(this.checked)" checked>
+              <input type="checkbox" id="crossgroup-default-checkbox" disabled aria-label="Cross-group worker messaging is disabled">
               <span class="theme-track"><span class="theme-thumb"></span></span>
             </label>
           </div>
-          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Default ON: workers can discover and message every non-isolated peer without per-message approval. A worker/group/global configuration may opt out; isolated raw workers stay unreachable.</div>
+          <div style="font-size:0.68rem;color:var(--dim);margin-top:3px;" id="crossgroup-default-note">Workers may message only workers in a shared group. Owner input remains permitted.</div>
           <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:10px;">
             <span style="font-size:0.85rem;">Auto-drain backlog for all workers</span>
             <label class="theme-toggle">
@@ -2321,10 +2321,11 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <div class="field-group">
       <label class="field-label">Provider</label>
-      <div style="display:flex;gap:6px;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button type="button" id="create-provider-claude" class="btn provider-btn selected" onclick="_selectProvider('claude')">Claude Code</button>
         <button type="button" id="create-provider-codex" class="btn provider-btn" onclick="_selectProvider('codex')">Codex</button>
         <button type="button" id="create-provider-gemini" class="btn provider-btn" onclick="_selectProvider('gemini')">Gemini</button>
+        <button type="button" id="create-provider-grok" class="btn provider-btn" onclick="_selectProvider('grok')">Grok</button>
         <button type="button" id="create-provider-ollama" class="btn provider-btn" onclick="_selectProvider('ollama')">Ollama</button>
         <button type="button" id="create-provider-muse" class="btn provider-btn" onclick="_selectProvider('muse')">Muse Code</button>
       </div>

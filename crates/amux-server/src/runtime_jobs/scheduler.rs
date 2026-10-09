@@ -1021,7 +1021,8 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
     select_schedules(
         conn,
         "SELECT * FROM schedules WHERE deleted IS NULL AND enabled = 1
-         AND next_run IS NOT NULL AND next_run != '' AND next_run <= ?1",
+         AND next_run IS NOT NULL AND next_run != '' AND next_run <= ?1
+         ORDER BY next_run ASC, created ASC, id ASC",
         &[&now_str],
     )
 }
@@ -1903,11 +1904,40 @@ impl LiveDeliverer {
                     };
                     let out = child.stdout.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
                     let err = child.stderr.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
-                    let (o, e) = tokio::join!(
-                        async { match out { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
-                        async { match err { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
-                    );
-                    let status = child.wait().await.map_err(|e| format!("wait failed: {e}"))?;
+                    let drains = async {
+                        tokio::join!(
+                            async { match out { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
+                            async { match err { Some(r) => pump(r, log.clone(), combined.clone()).await, None => Vec::new() } },
+                        )
+                    };
+                    tokio::pin!(drains);
+                    let waited = child.wait();
+                    tokio::pin!(waited);
+                    let (status, o, e) = tokio::select! {
+                        (o, e) = &mut drains => {
+                            let status = waited.await.map_err(|e| format!("wait failed: {e}"))?;
+                            (status, o, e)
+                        }
+                        status = &mut waited => {
+                            let status = status.map_err(|e| format!("wait failed: {e}"))?;
+                            match tokio::time::timeout(std::time::Duration::from_secs(1), &mut drains).await {
+                                Ok((o, e)) => (status, o, e),
+                                Err(_) => {
+                                    // Detached descendants can retain inherited pipes after the
+                                    // actual command exits. Keep its real exit code and captured
+                                    // output; never hold the scheduler until the shell deadline.
+                                    tracing::warn!(schedule = %sid, verdict = "shell_descendant_pipes_closed",
+                                        measured = true, n_considered = 1,
+                                        "shell exited; stopped draining descendant-held pipes after one second");
+                                    let captured = combined.lock().map(|c| c.0.clone()).unwrap_or_default();
+                                    let marker = b"\n[output capture incomplete: descendant-held pipes closed after shell exit]\n";
+                                    if let Ok(mut l) = log.lock() { l.write(marker); }
+                                    if let Ok(mut c) = combined.lock() { c.0.extend_from_slice(marker); }
+                                    (status, captured, Vec::new())
+                                }
+                            }
+                        }
+                    };
                     let code = status.code().unwrap_or(-1);
                     if let Ok(mut l) = log.lock() { l.write(format!("\n[exit {code}]\n").as_bytes()); }
                     let tail = combined
@@ -2217,6 +2247,8 @@ impl Deliverer for LiveDeliverer {
 pub struct TickReport {
     pub due: usize,
     pub fired: usize,
+    /// Started asynchronously; completion is reported by its durable run row.
+    pub dispatched: usize,
     pub shadowed: usize,
     /// Due schedules whose shadow event was already journaled for this
     /// occurrence (in-memory dedupe hit).
@@ -2239,6 +2271,49 @@ pub async fn scheduler_tick(
     shadow_seen: &mut HashMap<String, String>,
     deliverer: &dyn Deliverer,
 ) -> anyhow::Result<TickReport> {
+    scheduler_tick_inner(store, firing, policy, shadow_seen, deliverer, None).await
+}
+
+/// Production dispatch is bounded independently for shell and provider jobs.
+/// One slow shell must not consume the provider slots or stop future ticks.
+#[derive(Default)]
+struct FireDispatch {
+    tasks: tokio::task::JoinSet<anyhow::Result<bool>>,
+    active: HashMap<tokio::task::Id, (String, bool)>,
+}
+
+impl FireDispatch {
+    fn reap(&mut self) {
+        while let Some(result) = self.tasks.try_join_next_with_id() {
+            let (id, verdict) = match result {
+                Ok((id, result)) => (id, result.map(|fired| if fired { "finished" } else { "raced" })),
+                Err(e) => (e.id(), Err(anyhow::anyhow!(e))),
+            };
+            let schedule = self.active.remove(&id).map(|(id, _)| id).unwrap_or_default();
+            match verdict {
+                Ok(verdict) => tracing::info!(schedule, verdict, measured = true, n_considered = 1,
+                    "scheduler dispatch completed; durable result recorded"),
+                Err(e) => tracing::warn!(schedule, error = %e, verdict = "schedule_dispatch_failed",
+                    "scheduler dispatch failed; provisional receipt remains authoritative"),
+            }
+        }
+    }
+
+    fn admit(&self, id: &str, shell: bool) -> bool {
+        !self.active.values().any(|(active, _)| active == id)
+            && self.active.values().filter(|(_, kind)| *kind == shell).count() < 4
+    }
+}
+
+async fn scheduler_tick_inner(
+    store: &SharedStore,
+    firing: bool,
+    policy: MissedRunPolicy,
+    shadow_seen: &mut HashMap<String, String>,
+    deliverer: &dyn Deliverer,
+    mut dispatch: Option<(&mut FireDispatch, std::sync::Arc<dyn Deliverer>)>,
+) -> anyhow::Result<TickReport> {
+    if let Some((queue, _)) = dispatch.as_mut() { queue.reap(); }
     let now = Local::now();
     let now_str = fmt_minute(now);
     let store_read = store.clone();
@@ -2308,46 +2383,67 @@ pub async fn scheduler_tick(
             continue;
         }
 
-        // FIRING mode: one write transaction PER schedule (the Python loop's
-        // MO-3058 lesson: a shared batch turns one poison entry into missed
-        // and double fires for everyone else).
-        match fire_one(store, deliverer, &id, now, policy).await {
-            Ok(true) => report.fired += 1,
-            Ok(false) => {} // raced: no longer due inside the txn
-            Err(e) => {
-                report.errors += 1;
-                tracing::warn!(schedule = %id, error = %e, "fire failed");
-                // Poison-entry guard (Python parity): record the error run
-                // and push next_run out so the row cannot wedge every tick.
-                let eid = id.clone();
-                let bump = fmt_minute(now + ChronoDuration::minutes(15));
-                let emsg: String = format!("fire aborted: {e}").chars().take(500).collect();
-                let _ = store
-                    .write_async(move |conn| {
-                        insert_run(
-                            conn,
-                            &eid,
-                            chrono::Utc::now().timestamp(),
-                            &RunOutcome::Failed {
-                                reason: emsg.clone(),
-                            },
-                            "cron-rs",
-                            None,
-                        )?;
-                        conn.execute(
-                            "UPDATE schedules SET next_run=?1, updated=?2 WHERE id=?3",
-                            rusqlite::params![bump, chrono::Utc::now().timestamp(), eid],
-                        )?;
-                        Ok(WriteOutcome {
-                            applied: true,
-                            events: vec![],
-                        })
-                    })
-                    .await;
+        if let Some((queue, live)) = dispatch.as_mut() {
+            let shell = sched.str_field("kind") == "shell";
+            if !queue.admit(&id, shell) {
+                report.deferred += 1;
+                continue;
             }
+            let owned_store = store.clone();
+            let owned_deliverer = live.clone();
+            let owned_id = id.clone();
+            let task = queue.tasks.spawn(async move {
+                fire_recorded(&owned_store, owned_deliverer.as_ref(), &owned_id, now, policy).await
+            });
+            queue.active.insert(task.id(), (id.clone(), shell));
+            report.dispatched += 1;
+            tracing::info!(schedule = %id, shell, verdict = "schedule_dispatched",
+                measured = true, n_considered = 1, "due schedule dispatched without blocking the next tick");
+            continue;
+        }
+        match fire_recorded(store, deliverer, &id, now, policy).await {
+            Ok(true) => report.fired += 1,
+            Ok(false) => {},
+            Err(_) => report.errors += 1,
         }
     }
     Ok(report)
+}
+
+/// Preserve the same poison-entry receipt in synchronous and dispatched paths.
+async fn fire_recorded(
+    store: &SharedStore,
+    deliverer: &dyn Deliverer,
+    id: &str,
+    now: DateTime<Local>,
+    policy: MissedRunPolicy,
+) -> anyhow::Result<bool> {
+    use futures::FutureExt;
+    let result = std::panic::AssertUnwindSafe(fire_one(store, deliverer, id, now, policy))
+        .catch_unwind().await.unwrap_or_else(|_| {
+            tracing::warn!(schedule = id, verdict = "schedule_consumer_panicked",
+                measured = true, n_considered = 1, "schedule consumer panicked; outcome remains unknown");
+            Err(anyhow::anyhow!("schedule consumer panicked; delivery outcome unknown"))
+        });
+    if let Err(e) = &result {
+        tracing::warn!(schedule = id, error = %e, "fire failed");
+        let eid = id.to_owned();
+        let bump = fmt_minute(now + ChronoDuration::minutes(15));
+        let emsg: String = format!("fire aborted: {e}").chars().take(500).collect();
+        store.write_async(move |conn| {
+            let finalized = conn.execute(
+                "UPDATE schedule_runs SET status='error', note=?1, delivery='unknown', submission=NULL                  WHERE schedule_id=?2 AND source='cron-rs' AND status='running'",
+                rusqlite::params![emsg, eid])?;
+            if finalized == 0 {
+                insert_run(conn, &eid, chrono::Utc::now().timestamp(),
+                    &RunOutcome::Failed { reason: emsg }, "cron-rs", None)?;
+            }
+            conn.execute("UPDATE schedules SET next_run=?1, updated=?2 WHERE id=?3",
+                rusqlite::params![bump, chrono::Utc::now().timestamp(), eid])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).await?;
+    }
+    result
 }
 
 /// What the claim transaction handed back: the row we won, and one note per
@@ -2722,6 +2818,7 @@ pub async fn run_scheduler(
     let policy = missed_policy_from_env();
     let retry = RetryPolicy::default();
     let mut shadow_seen: HashMap<String, String> = HashMap::new();
+    let mut dispatch = FireDispatch::default();
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_TICK_SECS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tracing::info!(
@@ -2738,12 +2835,13 @@ pub async fn run_scheduler(
         super::registry::tick(super::registry::ids::SCHEDULER);
         let mut attempt = 0u32;
         loop {
-            match scheduler_tick(
+            match scheduler_tick_inner(
                 &store,
                 enabled,
                 policy,
                 &mut shadow_seen,
                 deliverer.as_ref(),
+                Some((&mut dispatch, deliverer.clone())),
             )
             .await
             {
@@ -2752,6 +2850,8 @@ pub async fn run_scheduler(
                         tracing::info!(
                             due = r.due,
                             fired = r.fired,
+                            dispatched = r.dispatched,
+                            deferred = r.deferred,
                             shadowed = r.shadowed,
                             deduped = r.deduped,
                             errors = r.errors,
@@ -3059,6 +3159,100 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("sched-test.db")).unwrap();
         (Arc::new(s), dir)
+    }
+
+    #[tokio::test]
+    async fn dispatched_consumer_panic_finishes_its_durable_claim_and_releases_capacity() {
+        struct Panics;
+        #[async_trait::async_trait]
+        impl Deliverer for Panics {
+            async fn deliver(&self, _: &DurableSchedule, _: &str) -> RunOutcome { panic!("injected consumer panic"); }
+        }
+        let (store, _dir) = store();
+        let at = fmt_minute(Local::now() - ChronoDuration::minutes(1));
+        store.write(move |conn| {
+            let mut row = make_row("PANIC-CLAIM", "lane", None, &at);
+            row.raw.insert("kind".into(), Value::from("shell"));
+            insert_schedule(conn, &row)?;
+            Ok(WriteOutcome { applied:true, events:vec![] })
+        }).unwrap();
+        let mut queue = FireDispatch::default();
+        let mut seen = HashMap::new();
+        let deliverer = Arc::new(Panics);
+        let tick = scheduler_tick_inner(&store, true, MissedRunPolicy::Skip, &mut seen,
+            deliverer.as_ref(), Some((&mut queue, deliverer.clone()))).await.unwrap();
+        assert_eq!(tick.dispatched, 1);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !queue.tasks.is_empty() { queue.reap(); tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert!(queue.admit("PANIC-CLAIM", true), "panicked consumer cannot retain a dispatch slot");
+        let conn = store.read().unwrap();
+        let runs: Vec<(String, String, String)> = conn.prepare("SELECT status,note,delivery FROM schedule_runs WHERE schedule_id='PANIC-CLAIM'").unwrap()
+            .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(runs.len(),1,"finalize the original claim instead of duplicating it");
+        assert_eq!(runs[0].0,"error");
+        assert!(runs[0].1.contains("delivery outcome unknown"));
+        assert_eq!(runs[0].2,"unknown");
+        assert!(!get_schedule(&conn,"PANIC-CLAIM").unwrap().unwrap().enabled(), "uncertain one-off work is not replayed");
+    }
+
+    #[tokio::test]
+    async fn dispatched_shell_capacity_does_not_consume_provider_slots_or_duplicate_claims() {
+        struct Held {
+            calls: std::sync::atomic::AtomicUsize,
+            release: tokio::sync::Notify,
+        }
+        #[async_trait::async_trait]
+        impl Deliverer for Held {
+            async fn deliver(&self, _: &DurableSchedule, _: &str) -> RunOutcome {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.release.notified().await;
+                RunOutcome::Delivered { submission: "confirmed".into(), detail: "actual held consumer released".into() }
+            }
+        }
+        let (store, _dir) = store();
+        store.write(|conn| {
+            for n in 0..6 {
+                let mut row = make_row(&format!("DISPATCH-{n}"), "alpha", None, "2020-01-01T00:00");
+                row.raw.insert("kind".into(), Value::from(if n < 5 { "shell" } else { "tmux" }));
+                insert_schedule(conn, &row)?;
+            }
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let held = Arc::new(Held { calls: std::sync::atomic::AtomicUsize::new(0), release: tokio::sync::Notify::new() });
+        let mut queue = FireDispatch::default();
+        let mut seen = HashMap::new();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1),
+            scheduler_tick_inner(&store, true, MissedRunPolicy::Skip, &mut seen, held.as_ref(), Some((&mut queue, held.clone())))).await.unwrap().unwrap();
+        assert_eq!(first.dispatched, 5, "four held shells and an independent provider slot");
+        assert_eq!(first.deferred, 1);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while held.calls.load(std::sync::atomic::Ordering::SeqCst) < 5 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let second = scheduler_tick_inner(&store, true, MissedRunPolicy::Skip, &mut seen, held.as_ref(), Some((&mut queue, held.clone()))).await.unwrap();
+        assert_eq!(second.dispatched, 0, "a full shell pool leaves the fifth occurrence due");
+        let conn = store.read().unwrap();
+        let running: i64 = conn.query_row("SELECT count(*) FROM schedule_runs WHERE status='running'", [], |r| r.get(0)).unwrap();
+        assert_eq!(running, 5, "repeated discovery cannot duplicate the active claims");
+        let provider: i64 = conn.query_row("SELECT count(*) FROM schedule_runs WHERE schedule_id='DISPATCH-5'", [], |r| r.get(0)).unwrap();
+        assert_eq!(provider, 1, "provider made progress while all shell slots were occupied");
+        drop(conn);
+        held.release.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !queue.tasks.is_empty() { queue.reap(); tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let third = scheduler_tick_inner(&store, true, MissedRunPolicy::Skip, &mut seen, held.as_ref(), Some((&mut queue, held.clone()))).await.unwrap();
+        assert_eq!(third.dispatched, 1, "the deferred shell recovers when capacity returns");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while held.calls.load(std::sync::atomic::Ordering::SeqCst) < 6 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        held.release.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !queue.tasks.is_empty() { queue.reap(); tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let conn = store.read().unwrap();
+        let completed: i64 = conn.query_row("SELECT count(*) FROM schedule_runs WHERE status='delivered'", [], |r| r.get(0)).unwrap();
+        assert_eq!(completed, 6);
     }
 
     /// A deliverer that returns whatever verdict a test needs, and COUNTS its

@@ -2205,6 +2205,16 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/cal-events/{id}",
         methods: &["PATCH", "DELETE"],
     },
+    // Google Calendar (api/gcal.rs): live read-through and create against
+    // the connected Google grants. Distinct from /api/cal-events above.
+    RouteEntry {
+        path: "/api/gcal/accounts",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/gcal/events",
+        methods: &["GET", "POST"],
+    },
     // -- sessions (legacy list + native per-name verbs) / identity / scope
     RouteEntry {
         path: "/api/sessions",
