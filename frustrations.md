@@ -5665,3 +5665,58 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: The real OAuth rotation/SIGKILL test passes locally but fails in the root-run bookworm recovery CI container: chmod 0500 does not deny root a compatibility mirror write, so the asserted stale mirror never exists.
 COST: The connector maintenance PR recovery check is red despite its local fault test passing, and the CI fixture does not exercise the intended post-commit copy failure.
 FIX: Run only the permission-fault fixture server as uid/gid 65534 when its Linux controller is root, copy the executable into its owned temporary tree, and assert the actual child uid. Retain the failed-write, committed-token, one-refresh and real SIGKILL assertions; print the fixture identity. No live account or production permissions are changed.
+
+## Codex worker Chat inherits an unusable global model and omits initial worker context
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: A new isolated Codex terminal worker completes its synthetic task with the terminal default, but its first two real Chat UI turns inherit gpt-6.1-sol from global desktop configuration and fail with a ChatGPT account model-not-supported error. Codex also sets fresh=false for its first Chat turn, so the companion introduction never reaches it; the refreshed context omits directory and isolation, and a later reply confuses synthetic fixture isolation with terminal isolation.
+COST: Two real provider turns fail, and the owner cannot trust that Chat describes the worker's actual scope. The native terminal rollout remained unchanged throughout the failed and configured-model Chat tests.
+FIX: PR candidate shares the terminal default with Codex headless turns, preserves explicit models including -m, introduces new/rebuilt Codex conversations, and supplies directory/isolation each turn with chat_model_terminal_default and chat_companion_context log signals. Private real-provider UI and SIGKILL/restart validation required; no merge or deployment authorized.
+
+## Declared OAuth consent and token endpoints return unknown connector
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: A runtime OAuth declaration and saved client credentials both succeed, but /auth and /token return 404 despite advertising the token endpoint. Its connection test also used the client ID as a bearer.
+COST: The pre-fix private specimen could not complete any declared OAuth consent or worker token flow.
+FIX: Route declared OAuth through the existing durable broker, use PKCE and exact pending-request bindings, and run real per-account bearer canaries; emit declared_oauth_started/committed/exchange_refused.
+
+## Worker account pin is checked then discarded before token selection
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: With Alice and Beth grants and a worker scope pinning Beth, a token request without an account query returns 400 several accounts instead of Beth.
+COST: A worker following the advertised token endpoint cannot use its selected account; baseline request and fixed native worker evidence retained.
+FIX: Carry the account returned by connector entitlement into the actual mint request; retain denial logs, enforce explicit other-account 403 and disconnected pinned-account 404.
+
+## Connector creation and toggles erase other saved connector scopes
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: Browser creation replaced the complete global connector map with the new connector, deleting a sentinel account/MCP configuration. Its unsupported GET query and wrong response-shape read made client read/replace unsafe.
+COST: Two private UI reproductions erased saved scope selections, including the preserved stale-cache specimen.
+FIX: Send partial updates through an IMMEDIATE SQLite transaction with merge:true, reject unreadable saved state without replacement, and log connector_scope_committed/commit_failed; test 24 concurrent additions and SIGKILL.
+
+## Revoked declared account has no reconnect action in its summary
+AREA: connectors
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: An actual provider 401 produces families.fixture-oauth=needs_reauth but the account summary reports needs_reauth=false and reconnect=null. Global account expiration also marks unrelated healthy connectors sharing the label expired.
+COST: The synthetic provider revocation produced contradictory worker-facing health until an additional root-cause fix.
+FIX: Include declared OAuth families in reconnect selection, derive expiration per family in the dashboard, emit declared_oauth_needs_reauth, and assert revoked Beth plus healthy Alice and same-label healthy grants.

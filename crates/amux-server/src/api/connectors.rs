@@ -2938,7 +2938,7 @@ pub(crate) async fn google_calendar_token(account: &str) -> Result<String, Value
         Auth::OAuth2 { scopes, .. } => *scopes,
         _ => "https://www.googleapis.com/auth/calendar",
     };
-    let resp = mint_from_user_grant(&ctx, p, family_of(p), account, scope).await;
+    let resp = mint_from_user_grant(&ctx, p.id, family_of(p), account, scope).await;
     let ok = resp.status().is_success();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
