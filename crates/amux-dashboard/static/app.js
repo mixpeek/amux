@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1285';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1286';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27490,10 +27490,15 @@ let _connOpenTab = 'overview';
 // google-admin is absent on purpose: the per-account grant carries no admin
 // scope, so Admin only ever works through the service account.
 const _CONN_LEG = { 'google-gmail': 'gmail', 'google-calendar': 'calendar', 'google-drive': 'drive' };
-const _CONN_ICON = {
-  'google-gmail': ['M', '#ea4335'], 'google-calendar': ['31', '#1a73e8'], 'google-drive': ['D', '#0f9d58'],
-  'google-admin': ['A', '#5f6368'], 'slack': ['#', '#611f69'], 'telegram': ['T', '#229ed9'],
-  'mattermost': ['M', '#1e325c'], 'granola': ['G', '#3d7a3d'],
+// Each connector's real favicon, vendored under static/connectors/ so the tab
+// renders offline in the PWA. A declared (custom) connector has no vendored
+// file, so it asks Google's favicon service for its docs domain and falls back
+// to a monogram if that fails.
+const _CONN_FAVICON = {
+  'google-gmail': '/connectors/google-gmail.png', 'google-calendar': '/connectors/google-calendar.png',
+  'google-drive': '/connectors/google-drive.png', 'google-admin': '/connectors/google-admin.png',
+  'slack': '/connectors/slack.png', 'telegram': '/connectors/telegram.svg',
+  'mattermost': '/connectors/mattermost.svg', 'granola': '/connectors/granola.svg',
 };
 const _CONN_CAPS = {
   'google-gmail': [['Read and search mail', 'Inbox, sent and threads for every connected account'], ['Send and reply', 'Threaded replies with the account signature']],
@@ -27507,8 +27512,14 @@ const _CONN_CAPS = {
 };
 
 function _connIcon(c) {
-  const p = _CONN_ICON[c.id] || [String(c.label || c.id || '?').charAt(0).toUpperCase(), 'var(--accent)'];
-  return '<span class="cx-icon" style="background:' + p[1] + '" aria-hidden="true">' + esc(p[0]) + '</span>';
+  const letter = String(c.label || c.id || '?').charAt(0).toUpperCase();
+  let src = _CONN_FAVICON[c.id] || '';
+  if (!src && c.docs) {
+    try { src = 'https://www.google.com/s2/favicons?sz=64&domain=' + encodeURIComponent(new URL(c.docs).hostname); } catch (e) {}
+  }
+  if (!src) return '<span class="cx-icon cx-mono" aria-hidden="true">' + esc(letter) + '</span>';
+  return '<span class="cx-icon" aria-hidden="true"><img src="' + esc(src) + '" alt="" loading="lazy"'
+    + ' onerror="this.parentNode.classList.add(\'cx-mono\');this.parentNode.textContent=\'' + escJs(letter) + '\'"></span>';
 }
 
 function _connAgo(ts) {

@@ -8060,7 +8060,9 @@ body.light .bd-answer-head { color: #bc4c00; }
 .cx-card:hover, .cx-card:focus-visible { border-color: var(--accent); outline: none; }
 .cx-card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .cx-head, .cx-dhead { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.cx-icon { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 10px; color: #fff; font-weight: 800; font-size: 1rem; display: inline-flex; align-items: center; justify-content: center; }
+.cx-icon { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 10px; background: #fff; border: 1px solid var(--border); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; }
+.cx-icon img { width: 24px; height: 24px; object-fit: contain; }
+.cx-icon.cx-mono { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 800; font-size: 1rem; }
 .cx-title { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .cx-name { font-weight: 700; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-cat { color: var(--dim); font-size: 0.75rem; }
