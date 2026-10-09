@@ -828,7 +828,17 @@ async fn recover_completed_review(exit: &str, verdict: &str, live: bool) {
     }
     assert!(std::fs::read_to_string(rig.home.join("native-status.py")).unwrap().contains("X-Amux-Worker-Token"));
     let archives = rig.home.join("review-evidence").join(card);
-    let artifact = std::fs::read_dir(&archives).unwrap().next().unwrap().unwrap().path();
+    // Reopening also creates an advisory `pre-...` archive. Directory order
+    // cannot identify the completion review whose immutable inputs we seeded.
+    let generation = format!("{sha}-1-");
+    let candidates: Vec<_> = std::fs::read_dir(&archives).unwrap()
+        .map(|entry| entry.unwrap().path()).collect();
+    let matching: Vec<_> = candidates.iter().filter(|path| {
+        path.file_name().unwrap().to_string_lossy().starts_with(&generation)
+    }).collect();
+    eprintln!("review_archive_selection: measured=true n_considered={} generation={generation} matching={} candidates={candidates:?}", candidates.len(), matching.len());
+    assert_eq!(matching.len(), 1, "exactly one retained completion review for {generation}; all archives: {candidates:?}");
+    let artifact = matching[0];
     assert!(std::fs::read_to_string(artifact.join(".amux-review.out")).unwrap().contains("missing required measurement"));
     assert_eq!(std::fs::read_to_string(artifact.join(".amux-review.exit")).unwrap().trim(), exit);
     assert_eq!(std::fs::read_to_string(artifact.join("card-source.md")).unwrap(), "original full measurement requirements");
