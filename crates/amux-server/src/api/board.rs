@@ -1405,7 +1405,7 @@ async fn get_contract(
                     "verify_kind": c.kind, "deploy_check": c.deploy_check, "amended": c.amended, "sha": c.sha,
                 }),
                 Ok(None) => json!({"frozen": false,
-                    "how": "a code card freezes its contract on entering doing, or when acceptance_criteria/verify_cmd are PATCHed onto it while in doing"}),
+                    "how": "a code card freezes its contract on entering doing; a complete explicit server check can also be prepared on backlog, todo or doing without changing the card status"}),
                 Err(e) => json!({"frozen": null, "measured": false, "why_unmeasured": e.to_string()}),
             });
             match bs::get_issue(&conn, card_id) {
@@ -3551,7 +3551,7 @@ mod callback_dispatch_tests {
         let _home_guard = crate::api::settings::test_env::set_home(home.path());
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
         std::fs::write(home.path().join("sessions/worker-a.env"), "CC_TAGS=\"a\"\n").unwrap();
-        std::fs::write(home.path().join("sessions/worker-b.env"), "CC_TAGS=\"b\"\n").unwrap();
+        std::fs::write(home.path().join("sessions/worker-b.env"), "CC_TAGS=\"a\"\n").unwrap();
         let state = state(home.path());
         let id = pending_request(&state);
 
@@ -8944,6 +8944,7 @@ mod overlap_reconciliation_tests {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = crate::api::settings::test_env::set_home(home.path());
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/handoff-producer-0907.env"), "CC_TAGS=test\n").unwrap();
         let db = store();
         let producer = seed_card(&db, "handoff-producer-0907");
         let consumer = seed_card(&db, "handoff-consumer-0907");
@@ -8973,7 +8974,7 @@ mod overlap_reconciliation_tests {
         let (missing, pending) = post(&app, "handoff-producer-0907", payload.clone()).await;
         assert_eq!(missing, StatusCode::ACCEPTED);
         assert_eq!(pending["coordination"]["callback"]["state"], "retryable");
-        assert_eq!(pending["coordination"]["callback"]["error"], "no-env-file");
+        assert_eq!(pending["coordination"]["callback"]["error"], "worker_group_boundary");
         // Supply the fixture's own persisted identity; never depend on a real
         // worker's env file or whichever AMUX_HOME another test selected.
         std::fs::write(
@@ -10568,19 +10569,29 @@ async fn patch_item_route(
             .store
             .read_async(move |c| {
                 let row = bs::get_issue(c, &id2)?;
-                let contract = match &row {
-                    // An uncontracted review record is not a contract (rules 1, 2).
-                    Some(_) => super::contract::load(c, &id2)?.filter(|k| !k.is_uncontracted()),
+                let review = match &row {
+                    Some(_) => super::contract::load(c, &id2)?,
                     None => None,
                 };
-                Ok((row, contract))
+                let review_state: Option<String> = c.query_row("SELECT review_state FROM card_contracts WHERE card=?1", [&id2], |r| r.get(0)).optional()?.flatten();
+                let escalated = review_state.as_deref() == Some("escalated");
+                // An uncontracted review record is not a verification contract.
+                let contract = review.filter(|k| !k.is_uncontracted());
+                Ok((row, contract, escalated))
             })
             .await
             .ok();
-        if let Some((Some(row), existing)) = facts {
+        if let Some((Some(row), existing, escalated)) = facts {
             let lane = row.session.clone().unwrap_or_default();
             let home = crate::config::amux_home();
             if super::contract::enabled_for(&home, &lane) {
+                if !owner && escalated
+                    && matches!(body.get("status").and_then(Value::as_str), Some("todo" | "doing" | "done" | "verified"))
+                {
+                    // Use the common writer refusal before verification can be
+                    // enqueued; it also preserves optimistic-revision precedence.
+                    return patch_item(State(state), Path(id), headers, Json(body)).await;
+                }
                 // Contract A1: a planned production change starts only after its owner notice.
                 if !owner
                     && row.status != "doing"
@@ -10627,7 +10638,7 @@ async fn patch_item_route(
                     }
                     super::contract::Action::Pass => {
                         let wants_done = body.get("status").and_then(Value::as_str) == Some("done");
-                        if wants_done && !owner && row.status == "doing" && row.item_type == "code" && existing.is_some() {
+                        if wants_done && !owner && row.status == "doing" && existing.is_some() {
                             if let Err(r) = super::contract::record_left_undone(&state, &id, left_undone.clone().unwrap_or_default()).await {
                                 return r;
                             }
@@ -10656,10 +10667,14 @@ async fn patch_item_route(
             // otherwise had to read the database to learn its verify_cmd stuck.
             let (cmd, kind) = (c.command.clone(), c.kind.clone());
             let stored = super::contract::freeze(&state, c).await;
-            let status = resp.status();
+            let status = if stored { resp.status() } else { StatusCode::SERVICE_UNAVAILABLE };
             if let Ok(bytes) = axum::body::to_bytes(resp.into_body(), usize::MAX).await {
                 let mut v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
                 if let Some(o) = v.as_object_mut() {
+                    if !stored {
+                        o.insert("ok".into(), json!(false));
+                        o.insert("code".into(), json!("contract_persistence_failed"));
+                    }
                     o.insert("contract".into(), if stored {
                         json!({"frozen": true, "verify_cmd": cmd, "verify_kind": kind})
                     } else {
@@ -10668,7 +10683,7 @@ async fn patch_item_route(
                 }
                 resp = (status, Json(v)).into_response();
             } else {
-                resp = (status, Json(json!({"ok": true, "contract": {"frozen": stored}}))).into_response();
+                resp = (status, Json(json!({"ok": stored, "contract": {"frozen": stored}}))).into_response();
             }
         }
     }
@@ -10937,6 +10952,25 @@ pub async fn patch_item(
                         ),
                         no_write(),
                     );
+                }
+            }
+
+            // GD-75: a worker moved an escalated proof to done and believed a
+            // fourth review had begun. A state move cannot answer the owner's
+            // decision. Guard the shared writer path, including internal aliases.
+            if !caller_lane.is_empty()
+                && super::contract::enabled_for(&crate::config::amux_home(), row.session.as_deref().unwrap_or(""))
+                && matches!(map.get("status").and_then(Value::as_str), Some("todo" | "doing" | "done" | "verified"))
+            {
+                let review: Option<String> = conn.query_row("SELECT review_state FROM card_contracts WHERE card=?1", [&id_w], |r| r.get(0)).optional()?.flatten();
+                if review.as_deref() == Some("escalated") {
+                    tracing::warn!(card = %id_w, worker = %caller_lane, measured = true, n_considered = 1,
+                        verdict = "contract_review_owner_direction_required", "worker transition refused after review escalation");
+                    return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT, json!({
+                        "ok":false,"code":"contract_review_owner_direction_required",
+                        "error":"Independent review exhausted its quality rounds; an owner decision is still required.",
+                        "question":row.ask_question,"how_to_fix":"Keep the review findings and acceptance unchanged; ask the owner to change the contract or reopen with named direction. Do not claim another review is running."
+                    })), no_write());
                 }
             }
 
@@ -15608,6 +15642,13 @@ mod af701_archive_guard_tests {
         as_code(&id);
         let me = || owner_headers("lane-c");
 
+        let prepared = seed(&store, "lane-c", "todo");
+        as_code(&prepared);
+        assert_eq!(route(&state, &prepared, me(), json!({"acceptance_criteria":["ok.txt exists"], "verify_cmd":"test -f ok.txt", "reason":"prepare before claiming"})).await, StatusCode::OK);
+        assert_eq!(current(&store, &prepared).status, "todo", "preparation does not claim or finish work");
+        assert_eq!(super::super::contract::load(&store.read().unwrap(), &prepared).unwrap().unwrap().command, "test -f ok.txt");
+        assert_eq!(route(&state, &prepared, me(), json!({"status":"done", "left_undone":[]})).await, StatusCode::CONFLICT);
+
         assert_eq!(route(&state, &id, me(), json!({"status": "doing"})).await, StatusCode::CONFLICT, "rule 1: no acceptance criteria");
         assert_eq!(route(&state, &id, me(), json!({"status": "doing", "acceptance_criteria": ["ok.txt exists"]})).await, StatusCode::OK);
         let frozen = super::super::contract::load(&store.read().unwrap(), &id).unwrap().expect("contract frozen at doing");
@@ -15825,6 +15866,11 @@ mod af701_archive_guard_tests {
         let row = current(&store, &a);
         assert!(row.desc.contains("x.rs:1 the test asserts nothing"), "{}", row.desc);
         assert_eq!(review(&store, &a).0.as_deref(), Some("escalated"));
+        for status in ["todo", "doing", "done", "verified"] {
+            assert_eq!(route(&state, &a, me(), json!({"status":status,"left_undone":[]})).await, StatusCode::CONFLICT, "a worker cannot answer the owner decision with a state move");
+        }
+        assert_eq!(current(&store, &a).status, "needsyou");
+        assert_eq!(review(&store, &a).1, 3, "the exhausted review budget is retained");
 
         let b = new_card();
         assert_eq!(route(&state, &b, me(), json!({"status": "doing", "acceptance_criteria": ["it works"]})).await, StatusCode::OK);

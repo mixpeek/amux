@@ -25,6 +25,7 @@ pub mod computer;
 pub mod email;
 pub(crate) mod oauth_store;
 pub(crate) mod secure_store;
+pub mod gcal_sync;
 
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;

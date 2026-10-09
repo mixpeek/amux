@@ -769,8 +769,10 @@ enum PatchOutcome {
 pub async fn patch_worker(
     State(state): State<AppState>,
     Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<PatchWorkerBody>,
 ) -> Response {
+    if let Some(refusal) = crate::api::session_verbs::membership_patch_refusal(&headers, body.group.is_some()) { return refusal; }
     let display_name = match resolve_name_fields(body.display_name.clone(), body.name.clone()) {
         Ok(n) => n,
         Err(resp) => return *resp,
@@ -1571,6 +1573,35 @@ async fn change_pause(
                 result?;
             }
         }
+        if !paused {
+            // Resume with a lost conversation ref (#73): the next turn
+            // starts a fresh provider conversation, so queue one bounded
+            // memory re-supply. Best-effort and idempotent. A failure here
+            // must not fail the resume itself, and a live conversation
+            // needs nothing.
+            if let Some(row) = &row {
+                if let Ok(worker) = WorkerId::parse(&row.id) {
+                    let worker_id = worker.clone();
+                    if let Err(e) = state.store.write_async(move |conn| {
+                        let enqueued = if crate::orchestrator::memory_resupply::has_conversation_ref(conn, &worker_id) {
+                            false
+                        } else {
+                            crate::orchestrator::memory_resupply::enqueue_resupply(
+                                conn,
+                                &worker_id,
+                                amux_core::protocol::MemoryResupplyReason::Resume,
+                                chrono::Utc::now(),
+                            )?
+                        };
+                        Ok(WriteOutcome { applied: enqueued, events: vec![] })
+                    }).await {
+                        tracing::warn!(target: "amux::memory_resupply", worker = %row.id, error = %e,
+                            measured = false, n_considered = 1, verdict = "memory_resupply_enqueue_failed",
+                            "resume memory re-supply enqueue failed; resume continues without it");
+                    }
+                }
+            }
+        }
         if legacy {
             if paused {
                 fleet::stop_for_pause(&state, &name).await?;
@@ -2148,6 +2179,7 @@ pub async fn git_commit_guard_worker(
 pub async fn config_worker(
     State(state): State<AppState>,
     Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
     body_bytes: axum::body::Bytes,
 ) -> Response {
     let name = match resolve_key(&state, key).await {
@@ -2158,6 +2190,7 @@ pub async fn config_worker(
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
     };
+    if let Some(refusal) = crate::api::session_verbs::membership_patch_refusal(&headers, body.get("tags").is_some()) { return refusal; }
     crate::api::session_verbs::config_patch(&state, &name, &body).await
 }
 
@@ -2542,7 +2575,7 @@ mod tests {
     /// of the same persisted worker policy. Both must return the effective
     /// composed source/reason, not just echo the value they wrote.
     #[tokio::test]
-    async fn both_worker_config_routes_persist_and_explain_cross_group_policy() {
+    async fn both_worker_config_routes_enforce_shared_groups_and_clear_obsolete_allowances() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
         std::fs::write(home.path().join("amux.env"), "CC_SEND_ALLOW=*\n").unwrap();
@@ -2564,7 +2597,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{denied}");
         assert_eq!(denied["spans_groups"], json!(false), "{denied}");
-        assert_eq!(denied["source"], json!("worker"), "{denied}");
+        assert_eq!(denied["source"], json!("shared-group-only"), "{denied}");
         assert_eq!(denied["explicit_deny"], json!(true), "{denied}");
 
         std::fs::write(
@@ -2579,24 +2612,35 @@ mod tests {
             Some(json!({"send_allow": "ops"})),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{allowed}");
-        assert_eq!(allowed["spans_groups"], json!(true), "{allowed}");
-        assert_eq!(allowed["effective"], json!("*"), "{allowed}");
-        assert_eq!(allowed["source"], json!("global + worker"), "{allowed}");
-        assert!(
-            allowed["reason"]
-                .as_str()
-                .unwrap_or("")
-                .contains("additive"),
-            "{allowed}"
-        );
-        assert_eq!(
-            crate::config::parse_env_file(&home.path().join("sessions/legacy-policy-worker.env"))
-                .get("CC_SEND_ALLOW")
-                .map(String::as_str),
-            Some("ops"),
-            "legacy route must persist into the same worker env file"
-        );
+        assert_eq!(status, StatusCode::FORBIDDEN, "{allowed}");
+        assert_eq!(allowed["code"], json!("worker_group_boundary"));
+        assert!(!crate::config::parse_env_file(&home.path().join("sessions/legacy-policy-worker.env")).contains_key("CC_SEND_ALLOW"), "refusal must precede persistence");
+        let (status, _, cleared) = send(&app, "PATCH", "/api/sessions/legacy-policy-worker/config", Some(json!({"send_allow":""}))).await;
+        assert_eq!(status, StatusCode::OK, "{cleared}");
+        assert_eq!(cleared["spans_groups"], false);
+        assert_eq!(cleared["effective"], "", "global wildcard cannot become permission");
+        assert_eq!(cleared["source"], "shared-group-only");
+    }
+
+    #[tokio::test]
+    async fn worker_group_patch_requires_owner_input_and_preserves_native_membership() {
+        let home=tempfile::tempdir().unwrap();
+        let _guard=crate::api::settings::test_env::set_home(home.path());
+        let (app, _db)=app();
+        let id=create(&app,"membership-worker").await;
+        let new_group=GroupId::from_ulid(ulid::Ulid::new());
+        for (path,body) in [(format!("/api/workers/{id}"),json!({"group":new_group.as_str()})),(format!("/api/workers/{id}/config"),json!({"tags":["outside"]}))] {
+            let response=app.clone().oneshot(Request::builder().method("PATCH").uri(&path)
+                .header(axum::http::header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&id)
+                .body(Body::from(body.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        }
+        let (status,_,before)=send(&app,"GET",&format!("/api/workers/{id}"),None).await;
+        assert_eq!(status,StatusCode::OK);
+        assert!(before["group"].is_null());
+        let (status,_,after)=send(&app,"PATCH",&format!("/api/workers/{id}"),Some(json!({"group":new_group.as_str()}))).await;
+        assert_eq!(status,StatusCode::OK,"owner control: {after}");
+        assert_eq!(after["group"],new_group.as_str());
     }
 
     // ---- RR-0034 test list ----------------------------------------------

@@ -816,7 +816,7 @@ test('settings_usage_meter', async ({ page, request }) => {
   // intended maintenance. The comment above says "all shipped providers have a
   // compact row", and this list is what makes that claim checkable.
   expect(wire.providers.map((provider: any) => provider.id).sort()).toEqual([
-    'claude', 'codex', 'gemini', 'muse', 'ollama',
+    'claude', 'codex', 'gemini', 'grok', 'muse', 'ollama',
   ]);
 
   await openSettings(page);

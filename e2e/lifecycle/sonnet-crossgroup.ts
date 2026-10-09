@@ -47,10 +47,10 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
   }).toBe(true);
   await checkpoint(page, info, 'crossgroup-membership');
   if (!observeOnly) {
-    for (const [name, peer, marker] of [[reviewer, author, 'CROSS_ACK'], [author, reviewer, 'CROSS_REQUEST']]) {
+    for (const [name, peer, marker] of [[reviewer, author, 'CROSS_REFUSED'], [author, reviewer, 'CROSS_REFUSED']]) {
       await action(name, 'peek-terminal');
       const file = `${run}-cross-${name === author ? 'author' : 'reviewer'}.json`;
-      await page.locator('#peek-cmd-input').fill(`Authorized cross-group follow-up for ${run}. Work only in ${cwd}, communicate only with ${peer}. You now belong to different Amux groups. Use Bash amux send for every peer message, never Claude's native SendMessage. Create your own chore card for cross-group awareness. Use the actual Amux roster to discover the peer's group and read its completed review-cycle board card ${priorCards[peer].id}. Write ${file} as JSON {peer:"${peer}",peer_task_id:"${priorCards[peer].id}",peer_title:"actual fetched title",peer_status:"actual fetched status",peer_group:"actual group",own_task_id:"your new chore ID"}. ${name === reviewer ? `Wait for CROSS_REQUEST from ${author}, then send CROSS_ACK naming both actual task IDs and your proof file.` : `Send CROSS_REQUEST to ${reviewer} naming both actual task IDs and your proof file, then wait for CROSS_ACK and send CROSS_DONE.`} Finish your own chore with the actual read/message evidence and idle. Do not modify any peer cards or old completed cards. Discard your own automatically captured duplicate FYI cards with a reference to your real card. Do not contact production, external services or any other worker.`);
+      await page.locator('#peek-cmd-input').fill(`Owner-authorized boundary test for ${run}. Work only in ${cwd} and on your own board. You and ${peer} now have disjoint Amux groups, so automated peer delivery MUST be refused; do not request a grant, alter membership, use native SendMessage, retry or reroute. Discover ${peer}'s actual group and read its completed review-cycle card ${priorCards[peer].id}. Create one chore card, attempt exactly one Bash amux send to ${peer} with text CROSS_REFUSED ${run}, and record the actual nonzero exit and refusal output. Write ${file} as JSON {peer:"${peer}",peer_task_id:"${priorCards[peer].id}",peer_title:"actual fetched title",peer_status:"actual fetched status",peer_group:"actual group",own_task_id:"your chore ID",delivery_refused:true,refusal_code:"worker_group_boundary",refusal_exit_code:actual_nonzero_exit,refusal_output:"actual command output"}. Finish your chore only with the refusal and artifact as evidence; no cross-group acknowledgement is expected. Preserve the earlier completed cards and peer message history. Do not contact production, external services or unrelated workers.`);
       const sent = page.waitForResponse(r => r.url().endsWith(`/${name}/send`) && r.request().method() === 'POST', { timeout: 90_000 });
       await page.locator('#peek-overlay .send-split-main').click();
       const response = await sent;
@@ -71,6 +71,9 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
         if (proof.peer !== peer || proof.peer_task_id !== priorCards[peer].id ||
           proof.peer_title !== priorCards[peer].title || proof.peer_status !== priorCards[peer].status ||
           proof.peer_group !== `${run}-${role === 'author' ? 'quality' : 'team'}`) return false;
+        if (proof.delivery_refused !== true || proof.refusal_code !== 'worker_group_boundary'
+          || !Number.isInteger(proof.refusal_exit_code) || proof.refusal_exit_code === 0
+          || !/group/i.test(String(proof.refusal_output || ''))) return false;
         proofs.push(proof);
         const board = await request.get(`/api/board?session=${name}&done_limit=0`, { headers });
         const history = await request.get(`/api/history?session=${name}&limit=200`, { headers });
@@ -79,15 +82,13 @@ export async function runSonnetCrossgroup({ page, request }: { page: Page, reque
         if (!owned.some((c: any) => c.id === proof.own_task_id && c.session === name && ['done', 'verified'].includes(c.status) && String(c.evidence || '').includes(`${run}-cross-${role}.json`))) return false;
         cards.push(...owned); messages.push(...await history.json());
       }
-      // This phase proves the two cross-group work cards. The following queue
-      // phase requires the entire run-owned board, including parked captures,
-      // to reach terminal states after real backlog/todo pickup.
-      return [[author, reviewer, 'CROSS_REQUEST'], [reviewer, author, 'CROSS_ACK'], [author, reviewer, 'CROSS_DONE']]
-          .every(([from, to, marker]) => messages.some(m => m.origin === from && m.session === to && String(m.text).startsWith(marker)));
-    }, { timeout: 720_000, intervals: [5000, 15000, 30000], message: 'cross-group peers must read real task metadata, exchange Amux messages and finish their own work' }).toBe(true);
+      // Real providers must record refusals; no automated crossing is admitted.
+      return !messages.some(m => [author, reviewer].includes(m.origin) && [author, reviewer].includes(m.session)
+        && m.origin !== m.session && String(m.text).startsWith('CROSS_REFUSED'));
+    }, { timeout: 720_000, intervals: [5000, 15000, 30000], message: 'disjoint-group providers must record actual refusal and complete their owned proof without crossing messages' }).toBe(true);
     for (const size of [{ width: 1280, height: 800 }, { width: 375, height: 667 }]) {
       await page.setViewportSize(size);
-      for (const [name, marker] of [[author, 'CROSS_ACK'], [reviewer, 'CROSS_DONE']]) {
+      for (const [name, marker] of [[author, 'REVIEW_APPROVED'], [reviewer, 'PAIR_DONE']]) {
         await action(name, 'peek-terminal');
         await page.getByRole('button', { name: 'Filter messages', exact: true }).click();
         await page.locator('[name="peek-filter-source"][value="session"]').check();

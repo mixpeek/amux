@@ -322,6 +322,13 @@ install_hook_from_head() {
   return 1
 }
 
+# Installing these tracked bytes must not alter owner/provider hook settings.
+mkdir -p "$AMUX_HOME/hooks"
+for observed_half in pre post; do
+  install_hook_from_head "scripts/claude-hooks/observed-edits-${observed_half}.py" \
+    "$AMUX_HOME/hooks/observed-edits-${observed_half}.py"
+done
+
 # Shared-checkout git guard (AMUX-3033). The PreToolUse Bash hook runs
 # ~/.amux/hooks/git-shared-guard.py on EVERY Bash tool call across the fleet, so
 # it gates git in shared checkouts. It used to be an unversioned 32KB runtime

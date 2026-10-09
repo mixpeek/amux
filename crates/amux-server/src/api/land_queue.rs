@@ -236,10 +236,23 @@ async fn push(dir: &Path, refspec: &str, lock: Option<&LandLock>) -> Result<Stri
 // ---------------------------------------------------------------------------
 
 enum Attempt {
+    /// Main moved during push: cleanup, then compose the same batch again.
+    Retry,
     /// Pushed: (merged head, entries it carries, per-entry outcomes for the rest).
     Done(Vec<(i64, Outcome)>),
     /// The gate or the push hook refused the composed tree.
     Red(String, Vec<Entry>, Vec<(i64, Outcome)>),
+}
+
+async fn cleanup_candidate(tree: &Path, dir: &Path) {
+    // Only the server-created candidate is removed. Double force is required
+    // for git's "locked initializing" residue after a checkout timeout.
+    match git(tree, &["worktree", "remove", "--force", "--force", &dir.to_string_lossy()]).await {
+        Ok(_) => tracing::info!(candidate = %dir.display(), measured = true, n_considered = 1,
+            verdict = "land_candidate_removed", "land candidate removed"),
+        Err(why) => tracing::warn!(candidate = %dir.display(), reason = %why, measured = false, n_considered = 1,
+            verdict = "land_candidate_cleanup_failed", "land candidate cleanup could not be confirmed"),
+    }
 }
 
 /// ONE REUSED CANDIDATE PER REPOSITORY (gs12-extra-2, land 119, 2026-10-08:
@@ -277,8 +290,7 @@ async fn candidate(tree: &Path, main: &str) -> Result<PathBuf, String> {
         }
     }
     let d = dir.to_string_lossy().into_owned();
-    let _ = git(tree, &["worktree", "remove", "--force", &d]).await;
-    let _ = std::fs::remove_dir_all(&dir);
+    cleanup_candidate(tree, &dir).await;
     let _ = git(tree, &["worktree", "prune"]).await;
     let t = tree.to_string_lossy().into_owned();
     let out = crate::api::session_verbs::run_cmd("git", &["-C", &t, "-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "--detach", &d, main],
@@ -290,8 +302,8 @@ async fn candidate(tree: &Path, main: &str) -> Result<PathBuf, String> {
             Ok(dir)
         }
         other => {
-            let _ = git(tree, &["worktree", "remove", "--force", &d]).await;
-            let _ = std::fs::remove_dir_all(&dir);
+            tracing::warn!(dir = %dir.display(), measured = true, n_considered = 1, verdict = "land_candidate_start_failed", "land candidate could not start; cleanup runs before requeue");
+            cleanup_candidate(tree, &dir).await;
             Err(match other {
                 Some(o) => format!("git worktree add failed: {}", tail(String::from_utf8_lossy(&o.stderr).trim(), 400)),
                 None => format!("git worktree add timed out after {CANDIDATE_CREATE_S}s"),
@@ -306,15 +318,16 @@ const CANDIDATE_CREATE_S: u64 = 900;
 /// hour old or more, are removed with their worktree registration.
 async fn sweep_old_candidates(tree: &Path, root: &Path) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
+    let Ok(registered) = git(tree, &["worktree", "list", "--porcelain"]).await else { return };
     let mut n = 0;
     for e in rd.flatten() {
         let p = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
         let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() > 3600);
-        if name.starts_with("c-") && old {
-            let _ = git(tree, &["worktree", "remove", "--force", &p.to_string_lossy()]).await;
-            let _ = std::fs::remove_dir_all(&p);
-            n += 1;
+        if name.starts_with("c-") && old && !p.is_symlink()
+            && std::fs::canonicalize(&p).ok().is_some_and(|p| registered.lines().any(|l| l == format!("worktree {}", p.display()))) {
+            cleanup_candidate(tree, &p).await;
+            if !p.exists() { n += 1; }
         }
     }
     if n > 0 {
@@ -324,84 +337,133 @@ async fn sweep_old_candidates(tree: &Path, root: &Path) {
     }
 }
 
-/// Compose `entries` onto origin/main in a fresh worktree of `tree`'s repo,
-/// gate it, and push. Retries when main moves under the push.
-async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>) -> Result<Attempt, String> {
+async fn adopt_push_receipts(tree: &Path, entries: &[Entry], main: &str, state: Option<&AppState>) -> Result<(Vec<Entry>, Vec<(i64, Outcome)>), String> {
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    if let Some(state) = state {
+        use rusqlite::OptionalExtension;
+        for entry in entries.iter().cloned() {
+            let id = entry.id;
+            let candidate: Option<String> = state.store.read_async(move |conn| {
+                Ok(conn.query_row("SELECT merged_sha FROM land_queue WHERE id=?1", [id], |r| r.get(0)).optional()?.flatten())
+            }).await.map_err(|e| e.to_string())?;
+            if let Some(candidate) = candidate {
+                if is_ancestor(tree, &candidate, main).await {
+                    tracing::info!(id, candidate, measured = true, n_considered = 1, verdict = "land_push_receipt_adopted",
+                        "remote ancestry proves the accepted push; do not replay its rebased commits");
+                    out.push((id, Outcome::Merged(candidate)));
+                    continue;
+                }
+            }
+            pending.push(entry);
+        }
+    } else { pending = entries.to_vec(); }
+    Ok((pending, out))
+}
+
+async fn compose(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, state: Option<&AppState>) -> Result<Attempt, String> {
     for _ in 0..PUSH_TRIES {
         git(tree, &["fetch", "-q", "origin", "main"]).await?;
         let main = git(tree, &["rev-parse", "origin/main"]).await?;
-        let mut out: Vec<(i64, Outcome)> = Vec::new();
+        // Reconcile before every retry as well as after controller recovery.
+        let (pending, mut adopted) = adopt_push_receipts(tree, entries, &main, state).await?;
+        if pending.is_empty() { return Ok(Attempt::Done(adopted)); }
         let dir = candidate(tree, &main).await?;
-        let mut applied: Vec<Entry> = Vec::new();
-        for e in entries {
-            if is_ancestor(tree, &e.sha, &main).await {
-                out.push((e.id, Outcome::Merged(main.clone())));
-                continue;
-            }
-            let base = match git(tree, &["merge-base", &e.sha, &main]).await {
-                Ok(b) => b,
-                Err(err) => {
-                    out.push((e.id, Outcome::Refused(format!("{} shares no history with origin/main: {err}", e.sha))));
-                    continue;
-                }
-            };
-            let merges = git(tree, &["rev-list", "--merges", &format!("{base}..{}", e.sha)]).await.unwrap_or_default();
-            if !merges.trim().is_empty() {
-                out.push((e.id, Outcome::Refused("the range contains a merge commit; rebase it onto origin/main first".into())));
-                continue;
-            }
-            let before = git(&dir, &["rev-parse", "HEAD"]).await?;
-            // Hooks off for the replay only: the push below runs the repo's gate.
-            match git(&dir, &["-c", "core.hooksPath=/dev/null", "cherry-pick", "--allow-empty", "--keep-redundant-commits", &format!("{base}..{}", e.sha)]).await {
-                Ok(_) => applied.push(e.clone()),
-                Err(err) => {
-                    let _ = git(&dir, &["cherry-pick", "--abort"]).await;
-                    let _ = git(&dir, &["reset", "-q", "--hard", &before]).await;
-                    out.push((e.id, Outcome::Refused(format!("conflicts with origin/main {}: rebase onto origin/main and land again. {}", &main[..12.min(main.len())], tail(&err, 600)))));
-                }
-            }
-        }
-        // The candidate is kept for the next land (candidate()); it is reset
-        // to origin/main there, so nothing is removed here.
-        let finish = |_dir: PathBuf| async move {};
-        if applied.is_empty() {
-            finish(dir).await;
-            return Ok(Attempt::Done(out));
-        }
-        if let Some(g) = gate.filter(|g| !g.trim().is_empty()) {
-            let (ok, text) = crate::api::contract::sh(&dir, g, prefix, Duration::from_secs(GATE_TIMEOUT_S)).await;
-            if !ok {
-                finish(dir).await;
-                return Ok(Attempt::Red(format!("land gate `{g}` failed on the composed tree:\n{text}"), applied, out));
-            }
-        }
-        let merged = git(&dir, &["rev-parse", "HEAD"]).await?;
-        match push(&dir, &format!("{merged}:refs/heads/main"), lock).await {
-            Ok(_) => {
-                finish(dir).await;
-                out.extend(applied.iter().map(|e| (e.id, Outcome::Merged(merged.clone()))));
-                return Ok(Attempt::Done(out));
-            }
-            Err(err) => {
-                finish(dir).await;
-                git(tree, &["fetch", "-q", "origin", "main"]).await?;
-                if git(tree, &["rev-parse", "origin/main"]).await? != main {
-                    continue; // main moved under us: recompose on the new tip
-                }
-                return Ok(Attempt::Red(format!("push refused (the repository's pre-push gate ran on the composed tree):\n{}", tail(&err, 1800)), applied, out));
-            }
+        let result = compose_candidate(tree, &pending, gate, prefix, lock, (&dir, &main), state).await;
+        match result {
+            Ok(Attempt::Retry) => continue,
+            Ok(Attempt::Done(done)) => { adopted.extend(done); return Ok(Attempt::Done(adopted)); }
+            Ok(Attempt::Red(why, pending, done)) => { adopted.extend(done); return Ok(Attempt::Red(why, pending, adopted)); }
+            Err(why) => return Err(why),
         }
     }
     Err(format!("origin/main moved under {PUSH_TRIES} consecutive pushes; the batch stays queued"))
 }
 
+async fn compose_candidate(tree: &Path, entries: &[Entry], gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, candidate: (&Path, &str), state: Option<&AppState>) -> Result<Attempt, String> {
+    let (dir, main) = candidate;
+    let mut out: Vec<(i64, Outcome)> = Vec::new();
+    let mut applied: Vec<Entry> = Vec::new();
+    for e in entries {
+        if is_ancestor(tree, &e.sha, main).await {
+            out.push((e.id, Outcome::Merged(main.to_string())));
+            continue;
+        }
+        let base = match git(tree, &["merge-base", &e.sha, main]).await {
+            Ok(b) => b,
+            Err(err) => {
+                out.push((e.id, Outcome::Refused(format!("{} shares no history with origin/main: {err}", e.sha))));
+                continue;
+            }
+        };
+        let merges = git(tree, &["rev-list", "--merges", &format!("{base}..{}", e.sha)]).await.unwrap_or_default();
+        if !merges.trim().is_empty() {
+            out.push((e.id, Outcome::Refused("the range contains a merge commit; rebase it onto origin/main first".into())));
+            continue;
+        }
+        let before = git(dir, &["rev-parse", "HEAD"]).await?;
+        // Hooks off for the replay only: the push below runs the repo's gate.
+        match git(dir, &["-c", "core.hooksPath=/dev/null", "cherry-pick", "--allow-empty", "--keep-redundant-commits", &format!("{base}..{}", e.sha)]).await {
+            Ok(_) => applied.push(e.clone()),
+            Err(err) => {
+                let _ = git(dir, &["cherry-pick", "--abort"]).await;
+                let _ = git(dir, &["reset", "-q", "--hard", &before]).await;
+                out.push((e.id, Outcome::Refused(format!("conflicts with origin/main {}: rebase onto origin/main and land again. {}", &main[..12.min(main.len())], tail(&err, 600)))));
+            }
+        }
+    }
+    if applied.is_empty() {
+        return Ok(Attempt::Done(out));
+    }
+    if let Some(g) = gate.filter(|g| !g.trim().is_empty()) {
+        let (ok, text) = crate::api::contract::sh(dir, g, prefix, Duration::from_secs(GATE_TIMEOUT_S)).await;
+        if !ok {
+            return Ok(Attempt::Red(format!("land gate `{g}` failed on the composed tree:\n{text}"), applied, out));
+        }
+    }
+    let merged = git(dir, &["rev-parse", "HEAD"]).await?;
+    if let Some(state) = state {
+        let ids: Vec<i64> = applied.iter().map(|e| e.id).collect();
+        let intended = merged.clone();
+        let saved = state.store.write_async(move |conn| {
+            for id in &ids {
+                if conn.execute("UPDATE land_queue SET merged_sha=?2 WHERE id=?1 AND state='running'", rusqlite::params![id, intended])? != 1 {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await.map_err(|e| format!("land push intent was not persisted; no push attempted: {e}"))?;
+        if !saved.applied { return Err("land push intent was not applied; no push attempted".into()); }
+        tracing::info!(candidate = %merged, measured = true, n_considered = applied.len(),
+            verdict = "land_push_intent_saved", "exact composed SHA persisted before remote push");
+    }
+    match push(dir, &format!("{merged}:refs/heads/main"), lock).await {
+        Ok(_) => {
+            out.extend(applied.iter().map(|e| (e.id, Outcome::Merged(merged.clone()))));
+            Ok(Attempt::Done(out))
+        }
+        Err(err) => {
+            git(tree, &["fetch", "-q", "origin", "main"]).await?;
+            if git(tree, &["rev-parse", "origin/main"]).await? != main {
+                return Ok(Attempt::Retry); // recompose on the new tip
+            }
+            Ok(Attempt::Red(format!("push refused (the repository's pre-push gate ran on the composed tree):\n{}", tail(&err, 1800)), applied, out))
+        }
+    }
+}
+
 /// Land a batch. A red batch of more than one is split in halves until each
 /// red commit is alone, so nobody inherits another lane's refusal.
 pub async fn land(tree: &Path, entries: Vec<Entry>, gate: Option<&str>, prefix: &str, lock: Option<&LandLock>) -> Result<Vec<(i64, Outcome)>, String> {
+    land_with_receipts(tree, entries, gate, prefix, lock, None).await
+}
+
+async fn land_with_receipts(tree: &Path, entries: Vec<Entry>, gate: Option<&str>, prefix: &str, lock: Option<&LandLock>, state: Option<&AppState>) -> Result<Vec<(i64, Outcome)>, String> {
     let mut stack = vec![entries];
     let mut out = Vec::new();
     while let Some(batch) = stack.pop() {
-        match compose(tree, &batch, gate, prefix, lock).await? {
+        match compose(tree, &batch, gate, prefix, lock, state).await? {
+            Attempt::Retry => unreachable!("compose consumes retries"),
             Attempt::Done(o) => out.extend(o),
             Attempt::Red(why, applied, o) => {
                 out.extend(o);
@@ -555,7 +617,7 @@ async fn run_batch(state: &AppState, entries: Vec<Entry>) {
         },
         Err(_) => None,
     };
-    let result = land(&tree, entries.clone(), gate.as_deref(), &prefix, lock.as_ref()).await;
+    let result = land_with_receipts(&tree, entries.clone(), gate.as_deref(), &prefix, lock.as_ref(), Some(state)).await;
     drop(lock);
     match result {
         Ok(results) => record(state, &results, &lanes).await,
@@ -702,7 +764,8 @@ async fn status_route(State(state): State<AppState>, Query(q): Query<HashMap<Str
     let n = waits.len();
     let p95 = wait_p95(&mut waits);
     let items: Vec<Value> = rows.iter().map(|r| json!({"id": r.0, "repo": r.1, "lane": r.2, "sha": r.3, "priority": r.4 != 0,
-        "state": r.5, "merged_sha": r.6, "output": r.7.as_deref().map(|o| tail(o, 600)), "queued_at": r.8, "done_at": r.9})).collect();
+        "state": r.5, "merged_sha": if r.5 == "merged" { r.6.as_deref() } else { None },
+        "push_candidate_sha": if matches!(r.5.as_str(), "queued" | "running") { r.6.as_deref() } else { None }, "output": r.7.as_deref().map(|o| tail(o, 600)), "queued_at": r.8, "done_at": r.9})).collect();
     Json(json!({"since_h": since_h, "measured": true, "n_considered": n, "wait_p95_min": p95,
         "why_unmeasured": if n == 0 { Some("no land finished in the window") } else { None },
         "items": items, "contract": "docs/orchestration-contract.md (rule 5)"})).into_response()
@@ -770,7 +833,7 @@ mod tests {
         sh(&lane, &["fetch", "-q", "origin"]);
         let main = sh(&lane, &["rev-parse", "origin/main"]);
         let old = home().join("tmp").join("land").join("c-1-1");
-        std::fs::create_dir_all(&old).unwrap();
+        sh(&lane, &["worktree", "add", "-q", "--detach", &old.to_string_lossy(), &main]);
         let hour_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
         std::fs::File::open(&old).unwrap().set_modified(hour_ago).unwrap();
         let first = candidate(&lane, &main).await.unwrap();
@@ -877,6 +940,31 @@ mod tests {
     /// Through the real routes and job: off unless rule 5 is on for the lane;
     /// on, a queued commit is landed by the server and the wait is measured;
     /// the push policy names the queue for the lane.
+    #[tokio::test]
+    async fn failed_checkout_cleanup_removes_a_locked_candidate_and_releases_the_land_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(d.path());
+        let lane = fixture(d.path());
+        commit(&lane, "feature.txt", "x\n");
+        sh(&lane, &["fetch", "-q", "origin", "main"]);
+        let main = sh(&lane, &["rev-parse", "origin/main"]);
+        let dir = candidate(&lane, &main).await.unwrap();
+        sh(&lane, &["worktree", "lock", "--reason", "initializing", &dir.to_string_lossy()]);
+        let path = d.path().join("locks/failed-candidate");
+        let lock = match acquire_lock(&path, Duration::from_millis(100), Duration::from_millis(10)).await {
+            LockWait::Acquired(lock) => lock,
+            LockWait::TimedOut(_) => panic!("private lock unexpectedly held"),
+        };
+        // Cleanup's consumer must remove a real locked candidate. The process
+        // case additionally fails real creation before exercising requeue.
+        cleanup_candidate(&lane, &dir).await;
+        assert!(!sh(&lane, &["worktree","list","--porcelain"]).contains("locked initializing"));
+        assert_eq!(std::fs::read_dir(d.path().join("tmp/land")).unwrap().count(), 0);
+        drop(lock);
+        assert!(!path.exists());
+        assert!(!sh(&lane, &["ls-tree","--name-only","origin/main"]).contains("feature.txt"));
+    }
+
     #[tokio::test]
     async fn a_queued_commit_is_landed_by_the_server_only_where_rule_5_is_on() {
         let d = tempfile::tempdir().unwrap();
