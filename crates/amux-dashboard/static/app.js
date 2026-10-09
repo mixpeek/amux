@@ -14000,7 +14000,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1276';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1277';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -26716,7 +26716,7 @@ function _spRender(path, data) {
   if (!entries.length) {
     const msg = document.createElement('div');
     msg.style.cssText = 'padding:32px;color:var(--dim);font-size:0.85rem;text-align:center;';
-    msg.textContent = 'Nothing here yet. Paste anywhere on this tab and it is saved.';
+    msg.textContent = 'Nothing here yet. Paste or drop text and files anywhere on this tab and they are saved.';
     body.appendChild(msg);
     return;
   }
@@ -26782,27 +26782,48 @@ async function _spCaptureSave(text) {
   showToast('Saved ' + name);
   return true;
 }
-async function _spSaveImage(file) {
+// Any file (pasted, picked or dropped) is stored as-is in the scratchpad
+// folder (Ethan, 2026-10-09: "scratchpad should support sending files too").
+// A pasted image with no real name gets a timestamp name.
+async function _spSaveFile(file) {
   const dir = (_spLastData && _spLastData.path === _spPath && _spLastData.data.path) || _spPath;
-  const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
-  const name = _spUniqueName(_spStamp(), '.' + ext);
+  const generic = !file.name || /^image\.(png|jpe?g|gif|webp)$/i.test(file.name);
+  const ext = (file.type.split('/')[1] || 'bin').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+  const name = generic ? _spUniqueName(_spStamp(), '.' + ext) : file.name;
   const fd = new FormData();
   fd.append('dir', dir);
   fd.append('file', file, name);
   try {
-    const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
+    const r = await fetch(API + '/api/fs/upload', { method: 'POST', body: fd, signal: AbortSignal.timeout(120000) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !(d.saved || []).length) throw new Error(d.error || ('HTTP ' + r.status));
     showToast('Saved ' + name);
-  } catch (e) { showToast('Could not save the image: ' + e.message); }
-  _scratchpadLoad();
+  } catch (e) { showToast('Could not save ' + name + ': ' + e.message); }
+}
+async function _spUploadFiles(list) {
+  const files = [...(list || [])];
+  for (const f of files) await _spSaveFile(f);
+  if (files.length) _scratchpadLoad();
+}
+const _spSaveImage = async (file) => { await _spSaveFile(file); _scratchpadLoad(); };
+async function _spLoadRetain() {
+  try {
+    const d = await (await fetch(API + '/api/scratchpad/config', { signal: AbortSignal.timeout(8000) })).json();
+    const sel = document.getElementById('sp-retain');
+    if (sel && d.retain_days != null) sel.value = String(d.retain_days);
+  } catch (e) {}
+}
+async function _spSetRetain(v) {
+  const days = parseInt(v, 10);
+  const r = await apiCall(API + '/api/scratchpad/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retain_days: days }) });
+  showToast(r && r.ok ? (days ? 'Scratchpad items now expire after ' + days + ' day' + (days === 1 ? '' : 's') : 'Scratchpad items are kept forever') : 'Could not save the setting');
 }
 // One paste path for the box and for the whole tab: images are stored as
 // files, text as a note. A paste into a box that already holds typing joins
 // the typing instead (the person is composing).
 function _spHandlePaste(e, box) {
   const items = [...(e.clipboardData?.items || [])];
-  const images = items.filter(i => i.kind === 'file' && i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+  const images = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
   const text = e.clipboardData?.getData('text/plain') || '';
   if (box && box.value.trim()) return;
   if (!images.length && !text.trim()) return;
@@ -26831,6 +26852,13 @@ function _spWireCapture() {
   if (!box || box._spWired) return;
   box._spWired = true;
   box.addEventListener('paste', e => _spHandlePaste(e, box));
+  const view = document.getElementById('scratchpad-view');
+  if (view) {
+    view.addEventListener('dragover', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); view.classList.add('sp-drop'); } });
+    view.addEventListener('dragleave', e => { if (e.target === view) view.classList.remove('sp-drop'); });
+    view.addEventListener('drop', e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); view.classList.remove('sp-drop'); _spUploadFiles(e.dataTransfer.files); } });
+  }
+  _spLoadRetain();
   box.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _spCaptureSaveTyped(); } });
   document.addEventListener('paste', e => {
     if (activeView !== 'scratchpad' || e.target === box) return;

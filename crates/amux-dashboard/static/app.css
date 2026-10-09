@@ -8022,3 +8022,9 @@ body.light .bd-answer-head { color: #bc4c00; }
 }
 /* A worker's active Claude Code /goal (AMUX-5746). */
 .badge.goal { color:var(--accent); border-color:var(--accent); }
+
+/* Scratchpad files and expiry (Ethan, 2026-10-09). */
+.sp-retain-wrap { display:flex; align-items:center; gap:4px; font-size:0.75rem; color:var(--dim); }
+.sp-retain { padding:2px 6px; font-size:0.75rem; height:auto; }
+#scratchpad-view.sp-drop { outline:2px dashed var(--accent); outline-offset:-6px; }
+@media (max-width: 600px) { .sp-retain { min-height:44px; } }
