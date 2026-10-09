@@ -53,7 +53,7 @@ fn defaults_approve_judgment_only() {
     );
     assert_eq!(
         p.summary("all workers"),
-        "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties or scope. Key, sign-in and grant asks go back to the worker to do itself."
+        "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties, scope, priorities or reversals of owner actions. Key, sign-in and grant asks go back to the worker to do itself."
     );
 
     // Even a policy struct with them switched on cannot approve these.
@@ -288,7 +288,7 @@ async fn job_approves_new_items_once_and_leaves_the_rest() {
     let v = view(&home, "", &led, &[], now + 120.0);
     // Two approvals (one to a paused lane), one send-back, one refusal.
     assert_eq!(v["recent_count"], 4);
-    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties or scope. Key, sign-in and grant asks go back to the worker to do itself.");
+    assert_eq!(v["summary"], "Auto-approve is ON for all workers: judgment asks and never money, production data, outside parties, scope, priorities or reversals of owner actions. Key, sign-in and grant asks go back to the worker to do itself.");
 
     // The owner's explicit sweep, with outbound switched on globally: the
     // baseline item and the held email are re-evaluated; the credential ask,
@@ -582,4 +582,17 @@ fn an_ask_to_speak_in_the_owners_name_is_never_auto_approved_or_sent_back() {
     assert!(matches!(decide(&policy, &it), Decision::Never("owner_voice")));
     let plain = item("needsyou", "other", "decision", "Should gs12-planes take GP-201 before GP-199 this afternoon?");
     assert_ne!(never_reason(&plain), Some("owner_voice"));
+}
+
+#[test]
+fn owner_control_decisions_are_held_without_credential_send_back() {
+    let policy = Policy { send_back: true, ..Policy::default() };
+    for q in [
+        "Should I change the fleet's priorities?",
+        "Should I stop all workers?",
+        "Want me to re-enable SCHED-608, which you turned off?",
+    ] {
+        assert_eq!(decide(&policy, &item("card", "other", "decision", q)), Decision::Never("owner_control_decision"), "{q}");
+    }
+    assert_eq!(decide(&policy, &item("card", "other", "decision", "Should I rerun the flaky fixture test?")), Decision::Approve);
 }

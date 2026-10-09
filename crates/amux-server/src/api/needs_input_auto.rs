@@ -225,7 +225,7 @@ impl Policy {
         if parts.is_empty() {
             return format!("Auto-approve is ON for {who}, but every category is off, so nothing is approved.");
         }
-        parts.push("never money, production data, outside parties or scope".to_string());
+        parts.push("never money, production data, outside parties, scope, priorities or reversals of owner actions".to_string());
         let list = match parts.len() {
             1 => parts[0].clone(),
             n => format!("{} and {}", parts[..n - 1].join(", "), parts[n - 1]),
@@ -596,8 +596,24 @@ fn effective_category(item: &Value) -> String {
 /// auto-approval that named no list deferred seven GS-12 plan items).
 pub fn is_scope_decision(item: &Value) -> bool {
     let t = ask_text(item).to_ascii_lowercase();
-    let re = r"\b(defer\w*|descope\w*|de-scope\w*|out of (the )?scope|scope (cut|change|reduction)|cut list|done[- ]by|deadline|postpone\w*|(drop|remove) (it |them |these |those )?from (the )?(plan|scope|done))\b";
+    let re = r"\b(defer\w*|descope\w*|de-scope\w*|out of (the )?scope|scope (cut|change|reduction)|(?:cut|change|reduce|expand|narrow) (?:the |project |goal )?scope|cut list|done[- ]by|deadline|postpone\w*|(drop|remove) (it |them |these |those )?from (the )?(plan|scope|done))\b";
     regex::Regex::new(re).map(|r| r.is_match(&t)).unwrap_or(false)
+}
+
+/// Fleet control and changes to owner-set priorities or disabled automation
+/// require a new owner decision, not an implementation-choice auto-approval.
+pub(crate) fn is_owner_control_decision(item: &Value) -> bool {
+    let t = ask_text(item).to_ascii_lowercase();
+    static CONTROL: std::sync::LazyLock<[regex::Regex; 6]> = std::sync::LazyLock::new(|| [
+        r"\b(stop|pause|halt|archive|shut ?down)\b",
+        r"\b(fleet|all (the )?(workers|lanes)|every (worker|lane))\b",
+        r"\b(change|shift|reorder|override|reprioriti[sz]e)\b",
+        r"\bpriorit\w*\b",
+        r"\b(re[- ]?enable|enable|turn (it |them )?back on|resume|restart|undo|override|overrule)\b",
+        r"\b(disabled|turned off|owner[- ]stop|you (stopped|paused|held)|owner'?s (stop|hold|instruction))\b",
+    ].map(|s| regex::Regex::new(s).expect("constant owner control pattern")));
+    let hit = |i: usize| CONTROL[i].is_match(&t);
+    (hit(0) && hit(1)) || (hit(2) && hit(3)) || (hit(4) && hit(5))
 }
 
 pub fn decide(policy: &Policy, item: &Value) -> Decision {
@@ -613,6 +629,9 @@ pub fn decide(policy: &Policy, item: &Value) -> Decision {
     }
     if is_scope_decision(item) {
         return Decision::Never("scope_decision");
+    }
+    if is_owner_control_decision(item) {
+        return Decision::Never("owner_control_decision");
     }
     if let Some(why) = never_reason(item) {
         // A worker can complete a credential step down the access ladder; it
@@ -856,7 +875,7 @@ impl Actions for RealActions {
             state,
             worker,
             text,
-            crate::api::turn_end::OWNER_POLICY_GUARD,
+            "needs-input:auto-approve",
             "",
             msg_id,
         )
@@ -1139,6 +1158,7 @@ pub async fn tick_with(acts: &dyn Actions, state: &AppState, home: &Path, now: f
                 let label_why = match why {
                     "owner_must_act" => "only you can do this (it asks you to act)",
                     "public_surface" => "a new endpoint or public surface: yours by the repo rule",
+                    "owner_control_decision" => "fleet control, priorities and reversals of owner actions require an owner decision",
                     "sent_back_once" => "sent back once already; the worker re-asked, so it is yours",
                     "scope_decision" => "a scope or deadline decision stays with you (contract rule 11)",
                     "explicit_approval_required" => "this ask requires explicit approval; automatic approval does not cover it",

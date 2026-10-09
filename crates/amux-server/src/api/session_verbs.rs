@@ -11881,11 +11881,7 @@ pub(crate) fn is_schedule_guard(guard: &str) -> bool {
 /// have been continued automatically on the harness level. especially since
 /// its a /goal"). Both reach isolated workers, as owner input.
 pub(crate) fn is_owner_configured_guard(guard: &str) -> bool {
-    // `owner-policy:` is standing authority the owner configured (Ethan,
-    // 2026-09-27 13:20: "it needs to be optimized for auto pushing"): an
-    // in-boundary ask from an isolated lane is answered "proceed" on his behalf
-    // instead of parking as a card only he can clear. Same class as a schedule.
-    is_schedule_guard(guard) || guard.starts_with("goal:") || guard.starts_with("owner-policy:")
+    is_schedule_guard(guard) || guard.starts_with("goal:")
 }
 
 pub(crate) async fn deliver_automated(
@@ -12083,8 +12079,8 @@ impl SendMode {
             ..Self::plain(origin)
         }
     }
-    /// A drain off the steering queue. Already gated at enqueue, so the origin
-    /// here is whatever was allowed to queue.
+    /// A drain off the steering queue. The claimed-row delivery boundary
+    /// restores its persisted origin before checking the current isolation.
     fn drained(allow_mid_turn: bool, hook_confirmed_idle: bool) -> Self {
         Self {
             defer_if_busy: false,
@@ -12448,11 +12444,6 @@ async fn send_text_inner_bound(
             "the unfinished conversation recycle retains input for its replacement");
         return (false, "worker is still starting (conversation recycle pending)".into());
     }
-    // Every text amux types reaches this line, including sends that write no
-    // Messages row (a raw curl without record_history). Noting it here is what
-    // lets the UserPromptSubmit hook tell an amux delivery from a prompt a
-    // person typed into the pane (F8(c)).
-    super::pane_prompts::note_delivery(name, text);
     let SendMode {
         defer_if_busy,
         from_steering,
@@ -12474,6 +12465,9 @@ async fn send_text_inner_bound(
     if let Some(refusal) = isolation_refusal(name, origin) {
         return (false, refusal.into());
     }
+    // Only an admitted input may mark an Amux delivery. A refused automated
+    // nudge must not stamp the raw owner's next prompt as harness input.
+    super::pane_prompts::note_delivery(name, text);
     // AMUX-4574: same rule at the layer that types, before the herdr branch
     // returns past every other check.
     if (origin == SendOrigin::Automation || from_steering) && lane_is_paused(name) {
@@ -22412,13 +22406,54 @@ async fn send_claimed_steering(
         );
         return None;
     }
+    let (id_s, session_s) = (id.to_string(), session.to_string());
+    let source = state.store.read_async(move |conn| {
+        Ok(conn.query_row(
+            "SELECT COALESCE(guard,''), COALESCE(sender,'') FROM steering_queue WHERE id=?1 AND session=?2",
+            rusqlite::params![id_s, session_s], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )?)
+    }).await;
+    let (guard, sender) = match source {
+        Ok(source) => source,
+        Err(e) => {
+            unclaim_steering_row(&state.store, id).await;
+            tracing::warn!(session, delivery_id = id, measured = false, n_considered = 0,
+                verdict = "steering_source_unmeasured", error = %e,
+                "queued input retained because its authority could not be measured");
+            return Some((false, "could not measure queued input authority; retained".into()));
+        }
+    };
+    if guard.starts_with("owner-policy:") {
+        let (id_s, safe_text) = (id.to_string(), redact_secrets(text));
+        let retired = state.store.write_async(move |conn| {
+            let n = conn.execute(
+                "INSERT OR REPLACE INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) \
+                 SELECT id,session,?2,queued_at,?3,'void:retired-owner-policy',guard,sender FROM steering_queue WHERE id=?1",
+                rusqlite::params![id_s, safe_text, now_f64()],
+            )?;
+            conn.execute("DELETE FROM steering_queue WHERE id=?1", [&id_s])?;
+            Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+        }).await;
+        if let Err(e) = retired {
+            unclaim_steering_row(&state.store, id).await;
+            tracing::warn!(session, delivery_id = id, verdict = "steering_legacy_policy_retained", error = %e,
+                "retired policy could not be recorded; it will not be delivered");
+            return Some((false, "retired owner-policy automation is not delivered".into()));
+        }
+        tracing::info!(session, delivery_id = id, measured = true, n_considered = 1,
+            verdict = "steering_legacy_owner_policy_voided", "obsolete owner-policy input retained in history, never typed");
+        return None;
+    }
     // A boot prompt waits for a turn boundary while its lane is still
     // starting, so it never lands in a startup picker. After that it is a
     // queued message like any other: 2026-10-06 three gs12-mvs boot prompts
     // were released mid-turn by the background ceiling every pass for up to
     // 64 minutes, and each release was turned back into a boundary send the
     // generating lane refused.
-    let mode = boot_delivery_mode(id, mode, lane_still_booting(&load_meta(session), now_i64()));
+    let mut mode = boot_delivery_mode(id, mode, lane_still_booting(&load_meta(session), now_i64()));
+    if !guard.is_empty() && !(guard == "project-steering" && sender.is_empty()) && !is_owner_configured_guard(&guard) {
+        mode.origin = SendOrigin::Automation;
+    }
     let mut queue_id = None;
     let result = send_text_inner_bound(state, session, text, mode, Some(id), &mut queue_id).await;
     if !result.0 {
@@ -36201,6 +36236,82 @@ mod tests {
             && !is_owner_configured_guard("project-steering"));
         assert!(!body.contains("send_text(state, name, text, false, SendOrigin::Automation)"),
             "the direct send must use the computed origin");
+    }
+
+    #[tokio::test]
+    async fn queued_automation_retains_its_origin_and_retires_legacy_owner_policy() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let worker = "raw-queued-authority";
+        std::fs::write(env_path(worker), "CC_ISOLATED=1\nCC_PAUSED=1\n").unwrap();
+        // Pause is a second guard: a mutation must never launch a provider.
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("fixture.db")).unwrap());
+        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(),
+            auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        for guard in ["owner-policy:auto-proceed", "owner-ask", "needs-input:auto-approve", "", "sched:SCHED-12", "goal:fixture", "project-steering"] {
+            let id = format!("legacy-{guard}");
+            let (id_s, guard_s) = (id.clone(), guard.to_string());
+            store.write(move |conn| {
+                ensure_fleet_tables(conn)?;
+                conn.execute("INSERT INTO steering_queue(id,session,text,guard,sender,queued_at) VALUES(?1,?2,'Proceed',?3,'',1)",
+                    rusqlite::params![id_s, worker, guard_s])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            }).unwrap();
+            let result = send_claimed_steering(&state, &id, worker, "Proceed", SendMode::drained(false, true)).await;
+            if guard.starts_with("owner-policy:") {
+                assert!(result.is_none());
+                let conn = store.read().unwrap();
+                assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1", [&id], |r| r.get::<_,i64>(0)).unwrap(), 0);
+                assert_eq!(conn.query_row("SELECT outcome FROM steering_history WHERE id=?1", [&id], |r| r.get::<_,String>(0)).unwrap(), "void:retired-owner-policy");
+            } else if guard == "project-steering" {
+                assert!(result.is_none(), "an unbound project note stays held before delivery");
+                assert_eq!(store.read().unwrap().query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1 AND delivering_since IS NULL", [&id], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            } else {
+                let (sent, reason) = result.unwrap_or_else(|| panic!("{guard}: refusal leaves the queued row available"));
+                assert!(!sent);
+                if matches!(guard, "owner-ask" | "needs-input:auto-approve") {
+                    assert!(reason.starts_with(ISOLATED_REFUSAL_PREFIX), "{guard}: {reason}");
+                } else {
+                    assert!(reason.starts_with("target is paused"), "owner input and exceptions reach the pause guard: {guard}: {reason}");
+                }
+                assert_eq!(store.read().unwrap().query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1 AND delivering_since IS NULL", [&id], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_authority_storage_failures_retain_input_without_delivery() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let worker = "raw-storage-authority";
+        for name in [worker, "paused-other"] {
+            std::fs::write(env_path(name), "CC_ISOLATED=1\nCC_PAUSED=1\n").unwrap();
+        }
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("fixture.db")).unwrap());
+        let state = AppState { store: store.clone(), started: std::time::Instant::now(), build_hash: "test".into(),
+            auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        store.write(move |conn| {
+            ensure_fleet_tables(conn)?;
+            for (id, guard) in [("fault-missing", ""), ("fault-retire", "owner-policy:auto-proceed")] {
+                conn.execute("INSERT INTO steering_queue(id,session,text,guard,sender,queued_at) VALUES(?1,?2,'Proceed',?3,'',1)",
+                    rusqlite::params![id, worker, guard])?;
+            }
+            conn.execute_batch("CREATE TRIGGER fixture_retirement_failure BEFORE INSERT ON steering_history WHEN NEW.id='fault-retire' BEGIN SELECT RAISE(ABORT,'fixture retirement storage failure'); END;")?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        for (id, target, prefix) in [("fault-missing", "paused-other", "could not measure queued input authority"),
+            ("fault-retire", worker, "retired owner-policy automation is not delivered")] {
+            let (sent, reason) = send_claimed_steering(&state, id, target, "Proceed", SendMode::drained(false, true)).await.unwrap();
+            assert!(!sent);
+            assert!(reason.starts_with(prefix), "{id}: {reason}");
+            assert_eq!(send_failure_status(&reason).0, StatusCode::INTERNAL_SERVER_ERROR,
+                "a failed storage measurement or retirement transaction is an infrastructure fault");
+            let conn = store.read().unwrap();
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_queue WHERE id=?1 AND delivering_since IS NULL", [id], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM steering_history WHERE id=?1", [id], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        }
     }
 
     #[test]
@@ -50020,6 +50131,10 @@ mod refusal_status_tests {
             "tmux not found or timed out",
             "Claude failed to start",
             "could not write session env",
+            // The queue cannot be measured or its retirement transaction failed.
+            // These retain input and report real storage faults, not policy refusals.
+            "could not measure queued input authority; retained",
+            "retired owner-policy automation is not delivered",
             // A stop that cannot establish process exit is an operational
             // failure, not a successful or safely refused stop receipt.
             "worker is still running; herdr hard-kill is unavailable",
