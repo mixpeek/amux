@@ -90,34 +90,67 @@ pub fn latest_goal(records: &[Value]) -> Option<Goal> {
     })
 }
 
-/// A worker's Claude Code `/goal` for the session payload (amux-helper ask,
-/// 2026-10-08: GET /api/sessions/mxp-gs12 carried no goal while the worker
-/// showed "/goal active (10m)", and the absence was read as "no goal").
+/// The newest `goal_status` in a whole transcript, scanning backward from
+/// `len` in chunks until one is found or the file start is reached.
 ///
-/// INCREMENTAL, because the session list is polled ~6000 times an hour: per
-/// transcript it keeps the bytes already read and the last goal seen, and on
-/// a later call scans only what was appended for `goal_status` lines. A new
-/// or truncated file is read once from its tail. Always answers `measured`;
-/// a transcript that cannot be read says why instead of leaving the field out.
-pub fn goal_payload(name: &str) -> Value {
+/// A fixed tail was not enough: measured 2026-10-09 on mxp-gs12, the goal was
+/// set at 01:27Z and by 12:04Z the transcript had grown 7.1 MB past it. The
+/// keeper read the last 6 MB, found no goal, and skipped the worker silently
+/// while its footer read "/goal active" and it sat idle for hours.
+fn last_goal_before(f: &mut std::fs::File, len: u64, chunk: u64) -> Option<Goal> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut end = len;
+    let mut chunk = chunk.max(1);
+    while end > 0 {
+        let start = end.saturating_sub(chunk);
+        let mut buf = Vec::with_capacity((end - start) as usize);
+        f.seek(SeekFrom::Start(start)).ok()?;
+        f.by_ref().take(end - start).read_to_end(&mut buf).ok()?;
+        // Unless at the file start, the first line may be cut: leave it whole
+        // for the next chunk. A chunk with no newline is inside one long line,
+        // so widen it rather than skip what might be the record.
+        let first = if start == 0 { 0 } else {
+            match buf.iter().position(|&b| b == b'\n') {
+                // A newline as the last byte leaves no whole line either.
+                Some(i) if i + 1 < buf.len() => i + 1,
+                _ => {
+                    chunk = chunk.saturating_mul(2);
+                    continue;
+                }
+            }
+        };
+        for line in buf[first..].split(|&b| b == b'\n').rev() {
+            if line.windows(11).any(|w| w == b"goal_status") {
+                if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                    if let Some(g) = latest_goal(std::slice::from_ref(&v)) {
+                        return Some(g);
+                    }
+                }
+            }
+        }
+        end = start + first as u64;
+    }
+    None
+}
+
+/// A transcript's newest goal, INCREMENTAL: per path it keeps the bytes
+/// already read and the last goal seen, and on a later call scans only what
+/// was appended. A new or truncated file is scanned backward from its end
+/// once ([`last_goal_before`]), so a goal set long ago is still found.
+pub fn cached_goal(path: &std::path::Path) -> Result<Option<Goal>, String> {
     use std::io::{Read, Seek, SeekFrom};
     type Cache = std::collections::HashMap<std::path::PathBuf, (u64, Option<Goal>)>;
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
-    let Some(path) = crate::api::session_verbs::session_jsonl_path(name) else {
-        return serde_json::json!({"measured": false, "why_unmeasured": "no transcript for this worker", "active": false});
-    };
-    let len = match std::fs::metadata(&path) {
-        Ok(m) => m.len(),
-        Err(e) => return serde_json::json!({"measured": false, "why_unmeasured": format!("transcript unreadable: {e}"), "active": false}),
-    };
+    let len = std::fs::metadata(path).map_err(|e| format!("transcript unreadable: {e}"))?.len();
     let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    let (mut offset, mut goal) = cache.get(&path).cloned().unwrap_or((u64::MAX, None));
+    let (mut offset, mut goal) = cache.get(path).cloned().unwrap_or((u64::MAX, None));
     if offset == u64::MAX || len < offset {
-        goal = latest_goal(&crate::api::session_verbs::iter_jsonl_tail(&path, 6_000_000));
+        let mut f = std::fs::File::open(path).map_err(|e| format!("transcript unreadable: {e}"))?;
+        goal = last_goal_before(&mut f, len, 4 << 20);
         offset = len;
     } else if len > offset {
         let mut buf = Vec::new();
-        if let Ok(mut f) = std::fs::File::open(&path) {
+        if let Ok(mut f) = std::fs::File::open(path) {
             if f.seek(SeekFrom::Start(offset)).is_ok() {
                 let _ = f.take(len - offset).read_to_end(&mut buf);
             }
@@ -135,16 +168,31 @@ pub fn goal_payload(name: &str) -> Value {
         }
         offset += whole as u64;
     }
-    cache.insert(path, (offset, goal.clone()));
-    match goal {
-        Some(g) => serde_json::json!({
+    cache.insert(path.to_path_buf(), (offset, goal.clone()));
+    Ok(goal)
+}
+
+/// A worker's Claude Code `/goal` for the session payload (amux-helper ask,
+/// 2026-10-08: GET /api/sessions/mxp-gs12 carried no goal while the worker
+/// showed "/goal active (10m)", and the absence was read as "no goal").
+///
+/// Polled ~6000 times an hour, so it reads through [`cached_goal`]. Always
+/// answers `measured`; a transcript that cannot be read says why instead of
+/// leaving the field out.
+pub fn goal_payload(name: &str) -> Value {
+    let Some(path) = crate::api::session_verbs::session_jsonl_path(name) else {
+        return serde_json::json!({"measured": false, "why_unmeasured": "no transcript for this worker", "active": false});
+    };
+    match cached_goal(&path) {
+        Err(why) => serde_json::json!({"measured": false, "why_unmeasured": why, "active": false}),
+        Ok(Some(g)) => serde_json::json!({
             "measured": true,
             "active": !g.met && !g.condition.trim().is_empty(),
             "met": g.met,
             "condition": g.condition,
             "since": g.ts,
         }),
-        None => serde_json::json!({"measured": true, "active": false}),
+        Ok(None) => serde_json::json!({"measured": true, "active": false}),
     }
 }
 
@@ -196,6 +244,7 @@ struct Keep {
     last_sent: f64,
     no_progress: u32,
     exhausted_logged: bool,
+    no_record_logged: bool,
 }
 
 fn state() -> &'static Mutex<HashMap<String, Keep>> {
@@ -299,8 +348,9 @@ async fn tick(app: crate::api::AppState) {
         }
         let Some(path) = crate::api::session_verbs::session_jsonl_path(&name) else { continue };
         let n2 = name.clone();
-        let (records, footer) = tokio::task::spawn_blocking(move || {
+        let (records, footer, goal) = tokio::task::spawn_blocking(move || {
             let records = crate::api::session_verbs::iter_jsonl_tail(&path, 6_000_000);
+            let goal = cached_goal(&path).ok().flatten();
             // Exact-match target: a bare `amux-x` resolves to a sibling
             // `amux-x-2` pane while `amux-x` is briefly absent.
             let pt = crate::backend::tmux::pane_target(&format!("amux-{n2}"));
@@ -310,11 +360,25 @@ async fn tick(app: crate::api::AppState) {
                 .ok()
                 .map(|o| String::from_utf8_lossy(&o.stdout).contains("/goal active"))
                 .unwrap_or(false);
-            (records, footer)
+            (records, footer, goal)
         })
         .await
         .unwrap_or_default();
-        let Some(goal) = latest_goal(&records) else { continue };
+        let Some(goal) = goal else {
+            // The footer says a goal is active but no record of one was
+            // found: the keeper cannot continue it, so say so once.
+            if footer {
+                let Ok(mut map) = state().lock() else { return };
+                let k = map.entry(name.clone()).or_default();
+                if !k.no_record_logged {
+                    k.no_record_logged = true;
+                    tracing::warn!(target: "amux::goal_keeper", session = %name, verdict = "goal_footer_without_record",
+                        measured = true, n_considered = 1,
+                        "footer shows /goal active but the transcript has no goal_status record; the keeper cannot continue this worker");
+                }
+            }
+            continue;
+        };
         considered += 1;
         let decision = {
             let Ok(mut map) = state().lock() else { return };
@@ -383,6 +447,40 @@ mod tests {
         json!({"type":"user","timestamp":ts,"message":{"content":text}})
     }
     fn t(s: &str) -> f64 { chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64 }
+
+    /// mxp-gs12, 2026-10-09: the goal record sat 7.1 MB before the end and a
+    /// 6 MB tail never saw it. The backward scan finds it at any distance,
+    /// including when a chunk boundary cuts the record in half.
+    #[test]
+    fn a_goal_far_before_the_tail_is_still_found() {
+        let dir = std::env::temp_dir().join(format!("goal-far-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.jsonl");
+        let mut body = String::new();
+        body.push_str(&format!("{}\n", goal_rec("2026-10-08T21:00:00Z", false, "older goal")));
+        body.push_str(&format!("{}\n", goal_rec("2026-10-09T01:27:40Z", false, "every proof row passes")));
+        for i in 0..2000 {
+            body.push_str(&format!("{}\n", json!({"type":"assistant","timestamp":"2026-10-09T02:00:00Z","n":i,"pad":"x".repeat(200)})));
+        }
+        std::fs::write(&p, &body).unwrap();
+        let len = body.len() as u64;
+        // Tail reading misses it, as it did live.
+        assert!(latest_goal(&crate::api::session_verbs::iter_jsonl_tail(&p, 100_000)).is_none());
+        // Every chunk size finds the NEWER goal, whether or not a boundary cuts it.
+        for chunk in [97u64, 1000, 4096, 100_000, len + 1] {
+            let mut f = std::fs::File::open(&p).unwrap();
+            let g = last_goal_before(&mut f, len, chunk).unwrap_or_else(|| panic!("chunk {chunk}: not found"));
+            assert_eq!(g.condition, "every proof row passes", "chunk {chunk}");
+        }
+        let g = cached_goal(&p).unwrap().unwrap();
+        assert_eq!(g.condition, "every proof row passes");
+        // An appended goal is picked up incrementally.
+        let mut more = body.clone();
+        more.push_str(&format!("{}\n", goal_rec("2026-10-09T03:00:00Z", true, "every proof row passes")));
+        std::fs::write(&p, &more).unwrap();
+        assert!(cached_goal(&p).unwrap().unwrap().met);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn reads_the_newest_goal_and_counts_progress_as_tool_calls() {
