@@ -2716,6 +2716,48 @@ async fn mint_connector_token(
     }
 }
 
+/// Accounts holding a Google family grant, with whether that grant carries
+/// the Calendar scope. The grant files the Connectors page writes are the
+/// one source of truth; `/api/gcal` keeps no account table of its own.
+pub(crate) fn google_calendar_accounts(home: &std::path::Path) -> Vec<(String, bool)> {
+    store_accounts(home, "google")
+        .into_iter()
+        .map(|account| {
+            let granted = std::fs::read_to_string(store_path(home, "google", &account))
+                .ok()
+                .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+                .and_then(|v| v.get("scopes").and_then(Value::as_str).map(|s| s.contains("auth/calendar")))
+                .unwrap_or(false);
+            (account, granted)
+        })
+        .collect()
+}
+
+/// A Calendar bearer for one account, minted through the same user-grant
+/// path workers use: stored-token reuse, refresh, the legacy gmail-tokens
+/// fallback and the `invalid_grant` WARN all apply. `Err` carries the
+/// mint's own JSON body (status, detail, the reconnect action).
+pub(crate) async fn google_calendar_token(account: &str) -> Result<String, Value> {
+    let ctx = default_ctx();
+    let Some(p) = provider("google-calendar") else {
+        return Err(json!({"status": "error", "detail": "google-calendar connector is not registered"}));
+    };
+    let scope = match &p.auth {
+        Auth::OAuth2 { scopes, .. } => *scopes,
+        _ => "https://www.googleapis.com/auth/calendar",
+    };
+    let resp = mint_from_user_grant(&ctx, p, family_of(p), account, scope).await;
+    let ok = resp.status().is_success();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .map_err(|e| json!({"status": "error", "detail": e.to_string()}))?;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
+    match body.get("access_token").and_then(Value::as_str) {
+        Some(token) if ok && !token.is_empty() => Ok(token.to_string()),
+        _ => Err(body),
+    }
+}
+
 /// Mint a bearer from a stored USER grant, refreshing through the broker when
 /// stale — the path that makes "authorize once per account" real for workers.
 /// Response shape matches the SA mint. `invalid_grant` names the ONE reconnect
