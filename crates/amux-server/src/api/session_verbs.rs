@@ -31450,6 +31450,27 @@ async fn rename_session(state: &AppState, name: &str, raw_new: &str) -> Response
 // on precisely the sessions it exists for — the ones with a conversation worth
 // keeping.
 
+/// Is `id` a model a Claude worker can run: an alias, or a Claude id in the
+/// live catalog (static catalog when the live one has not loaded), with or
+/// without the `[1m]` long-context suffix.
+pub(crate) fn claude_model_known(id: &str) -> bool {
+    let base = id.trim().trim_end_matches("[1m]");
+    if matches!(base, "opus" | "sonnet" | "haiku" | "fable" | "opusplan" | "default") {
+        return true;
+    }
+    let live: Vec<String> = crate::provider::live_catalog::current()
+        .map(|snap| snap.entries.iter()
+            .filter_map(|e| serde_json::to_value(e).ok())
+            .filter(|v| v.get("provider").and_then(Value::as_str) == Some("claude"))
+            .filter_map(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect())
+        .unwrap_or_default();
+    if !live.is_empty() {
+        return live.iter().any(|m| m == base);
+    }
+    crate::provider::model_catalog::catalog().into_iter().any(|m| m.provider == "claude" && m.id == base)
+}
+
 /// The global defaults a `/model` or `/effort` argument rewrites.
 const CLAUDE_DEFAULT_KEYS: [&str; 2] = ["model", "effortLevel"];
 
@@ -32371,6 +32392,22 @@ async fn config_patch_with_liveness(
             Ok(v) => v,
             Err(e) => return jresp(StatusCode::BAD_REQUEST, json!({"error": e})),
         };
+        // An id nobody knows must not reach the worker (AMUX-5759 live test 5):
+        // a failed hot switch falls back to a RESTART on the new value, so an
+        // unknown id became a worker that cannot call its API. Checked against
+        // the model catalog before anything is written; `force` admits an id
+        // newer than the catalog.
+        if provider_of(&cfg) == "claude" && !model_val.is_empty()
+            && !claude_model_known(&model_val)
+            && body.get("force").and_then(Value::as_bool) != Some(true)
+        {
+            tracing::warn!(session = %name, model = %model_val, measured = true, n_considered = 1,
+                verdict = "model_switch_unknown_id_refused", "a model id absent from the catalog was refused before any change");
+            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                "ok": false, "applied": false, "model": model_val,
+                "error": format!("'{model_val}' is not a known Claude model (GET /api/models); nothing changed. Send \"force\": true to use an id newer than the catalog."),
+            }));
+        }
         // The env as it was, so an agent's refusal can put it back.
         let cfg_before_model = cfg.clone();
         let flags_no_model = match strip_model_from_flags(cfg.get_or("CC_FLAGS", "")) {
@@ -49140,6 +49177,18 @@ mod pipe_reconcile_tests {
 #[cfg(test)]
 mod delivery_mode_tests {
     use super::*;
+
+    /// AMUX-5759 live test 5: an unknown id restarted the worker onto it.
+    #[test]
+    fn only_known_claude_models_pass_the_switch_check() {
+        // The SPA picker's own values must all pass (spa_picker_values_pass_through_verbatim).
+        for ok in ["sonnet", "opus", "haiku", "claude-opus-5-5", "claude-opus-5[1m]", "claude-haiku-4-5-20251001", "claude-sonnet-4-6[1m]"] {
+            assert!(claude_model_known(ok), "{ok}");
+        }
+        for bad in ["definitely-not-a-model", "claude-opus-9-9", "gpt-5.5", ""] {
+            assert!(!claude_model_known(bad), "{bad}");
+        }
+    }
 
     /// 2026-10-08: a worker's `/model sonnet` rewrote the global default in
     /// ~/.claude/settings.json from claude-opus-5-5 to sonnet. The restore puts
