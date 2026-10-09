@@ -1141,11 +1141,55 @@ pub(crate) fn browser_is_on_this_machine(
     peer: Option<std::net::IpAddr>,
     host_header: Option<&str>,
 ) -> bool {
-    browser_is_on_this_machine_with(peer, host_header, |h| {
-        std::net::ToSocketAddrs::to_socket_addrs(&(h, 0u16))
-            .map(|it| it.map(|a| a.ip()).collect())
-            .unwrap_or_default()
-    })
+    browser_is_on_this_machine_checked(
+        peer,
+        host_header,
+        |h| {
+            std::net::ToSocketAddrs::to_socket_addrs(&(h, 0u16))
+                .map(|it| it.map(|a| a.ip()).collect())
+                .unwrap_or_default()
+        },
+        address_is_this_host,
+    )
+}
+
+/// Whether `ip` is assigned to one of this host's own interfaces. Binding a
+/// socket to an address succeeds only for a local one (EADDRNOTAVAIL
+/// otherwise), so this needs no interface enumeration and no new dependency.
+fn address_is_this_host(ip: std::net::IpAddr) -> bool {
+    std::net::UdpSocket::bind((ip, 0)).is_ok()
+}
+
+/// THE HOST HEADER IS THE CLIENT'S OWN CLAIM. A remote peer that sends its
+/// own IP literal as Host resolves to itself and passed the pair check
+/// alone, which put the owner bearer in its dashboard shell (reported by an
+/// outside researcher, 2026-10-09). A browser on this machine connects from
+/// one of this machine's addresses, so a non-loopback peer must also be one
+/// of those. The name check still applies on top.
+fn browser_is_on_this_machine_checked(
+    peer: Option<std::net::IpAddr>,
+    host_header: Option<&str>,
+    resolve: impl Fn(&str) -> Vec<std::net::IpAddr>,
+    is_this_host: impl Fn(std::net::IpAddr) -> bool,
+) -> bool {
+    let Some(p) = peer else { return false };
+    if p.is_loopback() {
+        return true;
+    }
+    let named = browser_is_on_this_machine_with(peer, host_header, resolve);
+    if named && !is_this_host(p) {
+        // The attack signature: a foreign address that named itself as the
+        // host. A sweep counts this verdict; any hit is worth a look.
+        tracing::warn!(
+            target: "amux::auth",
+            verdict = "remote_peer_claimed_local_host",
+            peer = %p,
+            host = host_header.unwrap_or(""),
+            "a remote peer sent a Host that resolves to its own address; treated as REMOTE"
+        );
+        return false;
+    }
+    named
 }
 
 /// The decision, with DNS injected so the incident is testable offline.
@@ -3677,7 +3721,7 @@ mod tests {
 
 #[cfg(test)]
 mod open_native_locality_tests {
-    use super::browser_is_on_this_machine_with;
+    use super::{browser_is_on_this_machine_checked, browser_is_on_this_machine_with};
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
@@ -3694,6 +3738,38 @@ mod open_native_locality_tests {
     /// LOCAL machine and the button emitted an `sftp://` URL that no macOS
     /// handler accepts. Both halves are pinned here: the same-machine pair must
     /// read local, and a different tailnet node must not.
+    /// The outside report: a remote peer naming ITSELF in Host resolves to
+    /// itself, so the pair check alone read it as this machine.
+    #[test]
+    fn a_remote_peer_naming_itself_in_host_is_not_local() {
+        let remote = ip("100.66.26.84");
+        let own = ip("100.108.219.90");
+        let host = Some("100.66.26.84:8824");
+        let dns = |h: &str| h.parse::<std::net::IpAddr>().into_iter().collect::<Vec<_>>();
+        let this_host = |p: std::net::IpAddr| p == own;
+        assert!(
+            browser_is_on_this_machine_with(Some(remote), host, dns),
+            "precondition: the name check alone is fooled"
+        );
+        assert!(
+            !browser_is_on_this_machine_checked(Some(remote), host, dns, this_host),
+            "a foreign address that names itself must stay REMOTE"
+        );
+        // The control: this machine's own address naming itself is local.
+        assert!(browser_is_on_this_machine_checked(
+            Some(own),
+            Some("100.108.219.90:8824"),
+            dns,
+            this_host
+        ));
+        assert!(browser_is_on_this_machine_checked(
+            Some(ip("127.0.0.1")),
+            None,
+            dns,
+            this_host
+        ));
+    }
+
     #[test]
     fn a_tailscale_name_for_your_own_machine_is_local_and_another_node_is_not() {
         let own = ip("100.108.219.90"); // this host's tailnet address

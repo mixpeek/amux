@@ -49,6 +49,12 @@ committed grant, and the next successful rotation updates the copy.
 Recovery tests use private AMUX_HOME directories, synthetic credentials,
 mocked OAuth transport, actual SIGKILL at file-publication and compatibility
 boundaries, and a separate real server over TLS. They do not use live accounts.
+The compatibility-copy fault uses a read-only directory. When the Linux test
+controller is root, only that fixture's server drops to uid/gid 65534 in a
+private temporary tree: root otherwise bypasses the fault. The test copies its
+executable into that tree, verifies the child UID/GID, and retains the stale-copy,
+committed-token, one-refresh and SIGKILL assertions. Shared caches and production
+paths keep their permissions.
 This protects acknowledged local state against process termination; it does
 not provide off-host disaster recovery or an atomic transaction with the
 remote OAuth provider. Provider revocation still requires reauthorization.

@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2499,
+  "n_considered": 2520,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -682,6 +682,18 @@
     },
     "_composerUnconfirmed": {
       "kind": "command._composerUnconfirmed",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connAddAccount": {
+      "kind": "command._connAddAccount",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connConnect": {
+      "kind": "command._connConnect",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

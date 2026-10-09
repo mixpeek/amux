@@ -64,6 +64,9 @@ struct Rig {
     log: PathBuf,
     /// Local OAuth fixtures own the wire; suppress external health probes.
     no_external_probes: bool,
+    server_binary: Option<PathBuf>,
+    #[cfg(unix)]
+    server_uid: Option<u32>,
     /// Keeps the temp dir alive for the rig's lifetime.
     _tmp: tempfile::TempDir,
 }
@@ -82,7 +85,10 @@ fn free_port() -> u16 {
 
 impl Rig {
     fn new() -> Self {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        Self::in_temp(tempfile::tempdir().expect("tempdir"))
+    }
+
+    fn in_temp(tmp: tempfile::TempDir) -> Self {
         let home = tmp.path().join("amux-home");
         std::fs::create_dir_all(&home).unwrap();
         let db = tmp.path().join("test.db");
@@ -101,8 +107,50 @@ impl Rig {
             client,
             log,
             no_external_probes: false,
+            server_binary: None,
+            #[cfg(unix)]
+            server_uid: None,
             _tmp: tmp,
         }
+    }
+
+    /// Root ignores chmod-based write faults. Run only this fixture's server
+    /// without root privileges; retain the same failed-write assertion in CI.
+    #[cfg(unix)]
+    fn permission_fault_fixture() -> Self {
+        #[cfg(target_os = "linux")]
+        if unsafe { libc::geteuid() } == 0 {
+            // /tmp is traversable after dropping uid; a root-private TMPDIR is not.
+            let tmp = tempfile::Builder::new()
+                .prefix("amux-oauth-permission-")
+                .tempdir_in("/tmp")
+                .expect("unprivileged fixture tempdir");
+            let mut rig = Self::in_temp(tmp);
+            rig.server_uid = Some(65534);
+            return rig;
+        }
+        Self::new()
+    }
+
+    #[cfg(unix)]
+    fn prepare_permission_fault_server(&mut self) {
+        let Some(uid) = self.server_uid else { return; };
+        let binary = self._tmp.path().join("amux-server-fixture");
+        // The shared build-cache ancestors may be root-private. Never chown them.
+        std::fs::copy(server_bin(), &binary).expect("copy fixture server");
+        fn chown_fixture(path: &std::path::Path, uid: u32) {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            assert!(!meta.file_type().is_symlink(), "fixture must contain no symlinks");
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(path).unwrap() {
+                    chown_fixture(&entry.unwrap().path(), uid);
+                }
+            }
+            std::os::unix::fs::chown(path, Some(uid), Some(uid)).unwrap();
+        }
+        chown_fixture(self._tmp.path(), uid);
+        self.server_binary = Some(binary);
+        eprintln!("permission_fault_server uid={uid} gid={uid} private_home={}", self.home.display());
     }
 
     fn spawn(&mut self) {
@@ -112,7 +160,13 @@ impl Rig {
             .open(&self.log)
             .expect("log");
         let err = out.try_clone().unwrap();
-        let child = Command::new(server_bin())
+        let mut command = Command::new(self.server_binary.clone().unwrap_or_else(server_bin));
+        #[cfg(unix)]
+        if let Some(uid) = self.server_uid {
+            use std::os::unix::process::CommandExt;
+            command.uid(uid).gid(uid);
+        }
+        let child = command
             .env_clear()
             .env("HOME", self.home.join("fixture-home"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -133,6 +187,15 @@ impl Rig {
             .spawn()
             .expect("spawn server");
         self.child = Some(child);
+        #[cfg(target_os = "linux")]
+        if let Some(uid) = self.server_uid {
+            let status = std::fs::read_to_string(format!("/proc/{}/status", self.child.as_ref().unwrap().id())).unwrap();
+            for field in ["Uid:", "Gid:"] {
+                let line = status.lines().find(|line| line.starts_with(field)).unwrap();
+                let ids = line.split_whitespace().skip(1).map(|id| id.parse::<u32>().unwrap()).collect::<Vec<_>>();
+                assert_eq!(ids, vec![uid; 4], "{line}");
+            }
+        }
     }
 
     async fn wait_healthy(&self) -> Value {
@@ -981,7 +1044,7 @@ async fn committed_oauth_rotation_is_served_after_sigkill() {
     let provider = tokio::spawn(async move {
         axum::serve(listener, endpoint).await.unwrap();
     });
-    let mut rig = Rig::new();
+    let mut rig = Rig::permission_fault_fixture();
     rig.no_external_probes = true;
     let account = "fixture@example.com";
     let canonical = rig
@@ -997,6 +1060,7 @@ async fn committed_oauth_rotation_is_served_after_sigkill() {
     let old = json!({"token":"old-access","refresh_token":"old-refresh","client_id":"fixture-client","client_secret":"fixture-secret","token_uri":uri,"scopes":"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.modify","expires_at":0});
     std::fs::write(&canonical, old.to_string()).unwrap();
     std::fs::write(&mirror, old.to_string()).unwrap();
+    rig.prepare_permission_fault_server();
     rig.spawn();
     rig.wait_healthy().await;
     // Make the compatibility write fail after the canonical commit. Both the

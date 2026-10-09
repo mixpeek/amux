@@ -5534,6 +5534,17 @@ SYMPTOM: Six private regressions fail on main 964662d7: concurrent credential an
 COST: Six new regression tests fail; the 245-second baseline run proves that acknowledgement can follow data loss or failed state consumption.
 FIX: PR candidate serializes updates, commits private synced files atomically, retains corrupt stores, and refuses exchange when consumption cannot commit. No live storage changed; validation and review required before deployment.
 
+## The shared cargo target dir links another checkout's amux-core, so the pre-commit hook reports false compile errors
+AREA: build
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: amux-app
+CARD: AA-28
+SYMPTOM: Landing PR #227 from a fresh detached worktree, the pre-commit hook failed four times with a compile error saying a new amux-core enum variant did not exist, though the worktree's source defined it. scripts/safe-cargo.sh builds into the shared ~/.amux/rust-build-target. Cargo fingerprints workspace path dependencies by their path relative to the workspace root, so every checkout on the box shares one amux-core artifact; a peer checkout built it at 18:10 and cargo judged it fresh against that peer's sources. Exporting CARGO_TARGET_DIR=<worktree>/target for the commit made it pass.
+COST: four failed commits and a diagnosis round on one PR. The same mechanism can also PASS the hook on code that does not compile, because the check ran against a peer's amux-core rather than this tree's, and nothing in the output says whose artifact was linked.
+FIX: have the pre-commit hook (and safe-cargo.sh when run from a worktree other than the main checkout) use a per-worktree target dir, or key the shared dir by checkout path, and print the target dir in the hook's result line.
+
 ## Connector refresh can discard rotated grants or acknowledge an uncommitted rotation
 AREA: instruments
 SEVERITY: blocks
@@ -5544,3 +5555,14 @@ CARD: none (user authorized PRs only; no live board changes)
 SYMPTOM: Connector mint and Google/Gmail health refreshes reuse the old refresh token after a provider returns a new one. Concurrent workers exchange the same grant without a lease. Gmail caches successful HTTP refreshes before their best-effort write. Slack tokens with no expiry or refresh token are rejected despite being valid nonexpiring grants.
 COST: Five regression tests fail on storage-only source 0f75eacd (0 passed, 5 failed), confirmed by a second run. The first run cost 141 seconds. After the fixes, 120 focused tests pass, including actual SIGKILL before the Gmail mirror update. Provider calls use private mocks, never live accounts.
 FIX: PR candidate serializes refresh and grant replacement with an account lease, retains rotations and identity metadata, commits before success, and links Gmail compatibility copies by refresh-credential identity. Test SIGKILL after the canonical commit and before mirror update, then recover the committed grant and lease. Review required; no deployment.
+
+## OAuth crash recovery fixture skips its failed-write boundary under root
+AREA: tests
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: The real OAuth rotation/SIGKILL test passes locally but fails in the root-run bookworm recovery CI container: chmod 0500 does not deny root a compatibility mirror write, so the asserted stale mirror never exists.
+COST: The connector maintenance PR recovery check is red despite its local fault test passing, and the CI fixture does not exercise the intended post-commit copy failure.
+FIX: Run only the permission-fault fixture server as uid/gid 65534 when its Linux controller is root, copy the executable into its owned temporary tree, and assert the actual child uid. Retain the failed-write, committed-token, one-refresh and real SIGKILL assertions; print the fixture identity. No live account or production permissions are changed.

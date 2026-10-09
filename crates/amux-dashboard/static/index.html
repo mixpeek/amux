@@ -1144,22 +1144,26 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
   </div>
 </div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
-  <div style="max-width:760px;width:100%;margin:0 auto;padding:16px 16px 40px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">
-      <div style="font-size:1.05rem;font-weight:700;">Connectors</div>
-      <button class="btn" onclick="_connectorsTabLoad()">Refresh</button>
+  <div class="cx-page">
+    <div class="cx-top">
+      <div id="cx-filters" class="cx-filters"></div>
+      <input class="input cx-search" type="search" placeholder="Search connectors" aria-label="Search connectors" oninput="_connSearch(this.value)">
     </div>
-    <div style="font-size:0.78rem;color:var(--dim);line-height:1.5;margin-bottom:14px;">
-      Third-party integrations scoped across global, group, and worker. Paste each connector's key or OAuth client credentials below;
-      values are written to <code>~/.amux/server.env</code> and never shown again. Adding a new connector is one registry row.
+    <div class="cx-titlebar">
+      <div>
+        <div class="cx-h1">Your connections</div>
+        <div class="cx-dim">Manage your integrations and add new ones. Every worker shares these grants.</div>
+      </div>
+      <div class="cx-actions">
+        <button class="btn" onclick="_connectorsTabLoad()">Refresh</button>
+        <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()">＋ Add connector</button>
+      </div>
     </div>
-    <div id="connectors-accounts"></div>
     <!-- AMUX-3993: declare a connector without a rebuild. The registry is a const
          table in connectors.rs; adding a row there needs a commit and a deploy
          before a key can be pasted. This form writes the DEFINITION (names only)
          and then sets scope through the existing /api/scope capability. -->
     <div class="conn-add">
-      <button class="btn" id="conn-add-toggle" onclick="_connAddToggle()">＋ Add connector</button>
       <div id="conn-add-form" style="display:none;margin-top:10px;">
         <div class="conn-add-grid">
           <label>Name <input id="conn-new-label" placeholder="Linear"></label>
@@ -2238,7 +2242,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="board-detail-status-row" id="bd-status-row"></div>
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <section id="bd-answer" class="bd-answer" hidden aria-label="Answer this card">
-      <div class="bd-answer-head">Waiting on you</div>
+      <div class="bd-answer-head"><span>Waiting on you</span><button type="button" class="bd-answer-x" id="bd-answer-cancel" aria-label="Cancel: close without answering" title="Close without answering. Nothing is sent; the card stays waiting." onclick="_bdAnswerCancel()"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
       <div id="bd-answer-ask" class="bd-answer-ask"></div>
       <textarea id="bd-answer-text" class="input bd-answer-text" rows="3" placeholder="Your answer…" aria-label="Your answer"></textarea>
       <div class="bd-answer-actions">
