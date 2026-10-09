@@ -51,6 +51,9 @@ pub struct CreateEventRequest {
     start_time: String,
     end_time: String,
     attendees: Option<Vec<String>>,
+    /// Email the attendees a Google invitation. Owner only; default false.
+    #[serde(default)]
+    send_invites: bool,
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -75,6 +78,34 @@ fn entitled(state: &AppState, headers: &HeaderMap, account: &str) -> Result<(), 
         Some(account),
     )
     .map(|_| ())
+}
+
+/// Google's invitation is an email to the attendees, usually people outside
+/// the company, so it follows the standing rule for outbound mail: the owner
+/// sends it. Every create is written with `sendUpdates=none` unless the owner
+/// asks for invites; a worker asking for them is refused before any network
+/// call.
+fn invite_policy(headers: &HeaderMap, send_invites: bool, attendees: usize) -> Result<bool, Value> {
+    if !send_invites {
+        if attendees > 0 {
+            tracing::info!(target: "amux::gcal", measured = true, n_considered = attendees,
+                verdict = "gcal_invites_suppressed", "event created without emailing its attendees");
+        }
+        return Ok(false);
+    }
+    if super::standing_approvals::is_owner_request(headers) {
+        tracing::info!(target: "amux::gcal", measured = true, n_considered = attendees,
+            verdict = "gcal_invites_sent_by_owner", "owner asked Google to email the attendees");
+        return Ok(true);
+    }
+    let worker = super::email::hdr_worker(headers).unwrap_or_default();
+    tracing::warn!(target: "amux::gcal", worker = %worker, measured = true, n_considered = attendees,
+        verdict = "gcal_invites_refused_worker", "a worker asked to email calendar invitations");
+    Err(json!({
+        "error": "calendar invitations email the attendees, so only the owner can send them; create the event without send_invites and ask the owner to send the invites",
+        "code": "gcal_invites_owner_only",
+        "rule": "outbound: anything an outside person reads is drafted by a worker and sent by the owner",
+    }))
 }
 
 /// GET /api/gcal/accounts — Google accounts with a stored grant, and whether
@@ -165,13 +196,17 @@ pub async fn list_events(
 }
 
 /// POST /api/gcal/events — create an event in a connected account's calendar,
-/// with optional attendees (Google emails them an invitation). Writes straight
-/// through to Google; amux stores nothing about it.
+/// with optional attendees. Google emails the attendees only when the owner
+/// sets `send_invites` (see [`invite_policy`]). Writes straight through to
+/// Google; amux stores nothing about it.
 pub async fn create_event(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let n_attendees = req.attendees.as_ref().map_or(0, Vec::len);
+    let send_invites = invite_policy(&headers, req.send_invites, n_attendees)
+        .map_err(|denial| err(StatusCode::FORBIDDEN, denial))?;
     let accounts = super::connectors::google_calendar_accounts(&crate::config::amux_home());
     match accounts.iter().find(|(a, _)| *a == req.account_id) {
         None => {
@@ -204,15 +239,17 @@ pub async fn create_event(
         &req.start_time,
         &req.end_time,
         attendees,
+        send_invites,
     )
     .await
     .map_err(|e| err(StatusCode::BAD_GATEWAY, json!({"error": e.to_string()})))?;
 
     tracing::info!(target: "amux::gcal", account = %req.account_id, calendar = %calendar_id,
-        event_id = %event_id, verdict = "gcal_event_created", "created a Google Calendar event");
+        event_id = %event_id, send_invites, verdict = "gcal_event_created", "created a Google Calendar event");
     Ok(Json(json!({
         "ok": true,
         "event_id": event_id,
+        "invites_sent": send_invites,
         "account_id": req.account_id,
         "calendar_id": calendar_id,
     })))
@@ -279,5 +316,59 @@ mod tests {
         let missing = list_events(State(state()), HeaderMap::new(),
             Query(EventsQuery { account_id: Some("nobody@example.com".into()) })).await.unwrap_err();
         assert_eq!(missing.0, StatusCode::NOT_FOUND);
+    }
+
+    fn create_req(send_invites: bool) -> CreateEventRequest {
+        CreateEventRequest {
+            account_id: "cal@example.com".into(),
+            calendar_id: None,
+            title: "Sync".into(),
+            description: None,
+            start_time: "2026-10-10T10:00:00Z".into(),
+            end_time: "2026-10-10T10:30:00Z".into(),
+            attendees: Some(vec!["someone@outside.example".into()]),
+            send_invites,
+        }
+    }
+
+    #[test]
+    fn every_create_sends_no_invitation_unless_cleared() {
+        let quiet = gcal_sync::create_event_url("primary", false).unwrap();
+        let pairs: Vec<(String, String)> = quiet.query_pairs().map(|(k, v)| (k.into(), v.into())).collect();
+        assert_eq!(pairs, vec![("sendUpdates".to_string(), "none".to_string())], "{quiet}");
+        let loud = gcal_sync::create_event_url("primary", true).unwrap();
+        assert!(loud.query_pairs().any(|(k, v)| k == "sendUpdates" && v == "all"), "{loud}");
+        assert!(!quiet.as_str().contains("sendNotifications"), "the deprecated always-notify flag is gone");
+        // No send_invites: attendees are added silently, owner or worker.
+        let mut worker = HeaderMap::new();
+        worker.insert("x-amux-session", "lane-a".parse().unwrap());
+        assert_eq!(invite_policy(&worker, false, 1), Ok(false));
+        assert_eq!(invite_policy(&HeaderMap::new(), false, 1), Ok(false));
+    }
+
+    #[test]
+    fn only_the_owner_can_send_invitations() {
+        assert_eq!(invite_policy(&HeaderMap::new(), true, 2), Ok(true), "owner request may send invites");
+        for header in ["x-amux-session", "x-amux-worker"] {
+            let mut h = HeaderMap::new();
+            h.insert(header, "lane-a".parse().unwrap());
+            let denial = invite_policy(&h, true, 2).unwrap_err();
+            assert_eq!(denial["code"], json!("gcal_invites_owner_only"), "{header}: {denial}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_worker_asking_for_invites_is_refused_before_any_google_call() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        // A real grant exists, so a missing refusal would proceed to the token
+        // mint and Google; the 403 must come first.
+        grant(home.path(), "cal@example.com",
+            "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar");
+        let mut h = HeaderMap::new();
+        h.insert("x-amux-session", "lane-a".parse().unwrap());
+        let (status, Json(body)) = create_event(State(state()), h, Json(create_req(true))).await.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], json!("gcal_invites_owner_only"));
     }
 }

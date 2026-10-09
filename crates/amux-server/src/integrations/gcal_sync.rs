@@ -147,7 +147,18 @@ fn parse_google_datetime(gdt: &GoogleDateTime, all_day: bool) -> Option<String> 
     }
 }
 
+/// The insert URL for a new event. `sendUpdates` is always explicit: `none`
+/// unless the caller has already cleared `send_invites` with the owner gate
+/// in `api::gcal`, because Google's invitation is an email to the attendees,
+/// who are usually outside the company.
+pub(crate) fn create_event_url(calendar_id: &str, send_invites: bool) -> anyhow::Result<reqwest::Url> {
+    let mut url = calendar_events_url(calendar_id, None)?;
+    url.query_pairs_mut().append_pair("sendUpdates", if send_invites { "all" } else { "none" });
+    Ok(url)
+}
+
 /// Create a new Google Calendar event
+#[allow(clippy::too_many_arguments)]
 pub async fn create_calendar_event(
     access_token: &str,
     calendar_id: &str,
@@ -156,6 +167,7 @@ pub async fn create_calendar_event(
     start_time: &str,
     end_time: &str,
     attendees: Option<Vec<&str>>,
+    send_invites: bool,
 ) -> anyhow::Result<String> {
     let mut event = serde_json::json!({
         "summary": title,
@@ -183,8 +195,7 @@ pub async fn create_calendar_event(
     }
 
     let client = reqwest::Client::new();
-    let mut url = calendar_events_url(calendar_id, None)?;
-    url.query_pairs_mut().append_pair("sendNotifications", "true");
+    let url = create_event_url(calendar_id, send_invites)?;
 
     let response = client
         .post(url)
