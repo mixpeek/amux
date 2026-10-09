@@ -13999,7 +13999,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1272';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1273';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -14619,6 +14619,29 @@ function _chatLinkify(html) {
   return _linkifyPaths(html);
 }
 
+// COPY LIKE OPENAI'S CHAT (Ethan, 2026-10-08): a finished reply copies its raw
+// text from the meta line, and every code block in it has its own Copy.
+function _chatCodeCopy(html) {
+  return html.replace(/<pre(\s[^>]*)?>/g, (m0) => '<div class="chat-code"><button type="button" class="chat-code-copy" onclick="_chatCopy(this)" title="Copy code" aria-label="Copy code">Copy</button>' + m0)
+    .replace(/<\/pre>/g, '</pre></div>');
+}
+async function _chatCopy(btn) {
+  const text = btn.dataset.copy != null ? decodeURIComponent(btn.dataset.copy)
+    : (btn.parentElement.querySelector('pre')?.innerText || '');
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch (e2) {}
+    ta.remove();
+  }
+  const was = btn.textContent;
+  btn.textContent = ok ? 'Copied' : 'Copy failed';
+  setTimeout(() => { btn.textContent = was; }, 1500);
+}
+
 function _chatBubble(role, html, meta, cls, attrs) {
   return '<div class="chat-msg chat-' + role + (cls ? ' ' + cls : '') + '"' + (attrs || '') + '>'
     + '<div class="chat-bubble">' + html + '</div>'
@@ -14715,7 +14738,8 @@ function _chatMessageHtml(m) {
   if (m.duration_ms) bits.push((m.duration_ms / 1000).toFixed(1) + 's');
   bits.push(..._chatUsageBits(m));
   if (m.interrupted) bits.push('stopped');
-  return _chatBubble('assistant', head + _chatLinkify(renderMarkdown(m.text || '')), esc(bits.filter(Boolean).join(' · ')),
+  const copy = m.text ? ' <button type="button" class="chat-copy-btn" data-copy="' + encodeURIComponent(m.text) + '" onclick="_chatCopy(this)" title="Copy reply" aria-label="Copy reply">Copy</button>' : '';
+  return _chatBubble('assistant', head + _chatCodeCopy(_chatLinkify(renderMarkdown(m.text || ''))), esc(bits.filter(Boolean).join(' · ')) + copy,
     m.interrupted ? 'is-interrupted' : '');
 }
 

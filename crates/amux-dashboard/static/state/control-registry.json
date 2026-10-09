@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2489,
+  "n_considered": 2491,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
