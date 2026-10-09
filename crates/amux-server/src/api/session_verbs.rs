@@ -5005,6 +5005,14 @@ fn strip_harness_envelopes(text: &str) -> String {
     let out = sysrem.replace_all(text, "");
     let out = tasknote.replace_all(&out, "");
     let out = caveat.replace_all(&out, "");
+    // A message delivered as a paste (amux pastes whenever the worker is
+    // mid-turn) is recorded by Claude Code wrapped in <pasted_content id="..">
+    // ... </pasted_content id="..">. The wrapper is transport, not what was
+    // sent, so the tags go and the text stays (Ethan, 2026-10-09: "we still
+    // have this pasted content thing"; 3f8b8961 fixed only the dashboard's
+    // live highlighter, not this transcript render).
+    let paste_tag = cached_re!(r"</?pasted_content\b[^>]*>");
+    let out = paste_tag.replace_all(&out, "");
     out.trim().to_string()
 }
 
@@ -5025,6 +5033,17 @@ mod peek_history_is_verbatim {
         crate::backend::adapter::strip_ansi(&super::render_transcript_records(
             records, usize::MAX, false,
         ))
+    }
+
+    #[test]
+    fn a_pasted_message_shows_its_text_without_the_paste_wrapper() {
+        let out = render(vec![json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "<pasted_content id=\"ed64\">\nlooks like `@mxp-gs12` stopped?\n</pasted_content id=\"ed64\">"}]}})]);
+        assert!(out.contains("looks like `@mxp-gs12` stopped?"), "{out}");
+        assert!(!out.contains("pasted_content"), "the wrapper must not render:\n{out}");
+        let queued = render(vec![json!({"type": "attachment", "attachment": {"type": "queued_command",
+            "prompt": "<pasted_content id=\"9\">ship it</pasted_content>"}})]);
+        assert!(queued.contains("ship it") && !queued.contains("pasted_content"), "{queued}");
     }
 
     #[test]
@@ -5181,6 +5200,7 @@ fn render_transcript_records(
                         if txt.contains("<system-reminder>")
                             || txt.contains("<task-notification>")
                             || txt.contains("<local-command-caveat>")
+                            || txt.contains("<pasted_content")
                         {
                             // The SAME function the attachment branch calls, so
                             // the two paths cannot drift apart again.
