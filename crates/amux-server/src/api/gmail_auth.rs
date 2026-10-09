@@ -40,6 +40,7 @@ use crate::integrations::email::{
     connected_accounts_in, default_amux_home, html_escape, urlencode, HttpTransport,
     ReqwestTransport, DEFAULT_TOKEN_URI, GMAIL_BASE,
 };
+use crate::integrations::oauth_store;
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
@@ -317,12 +318,18 @@ fn pending_take(home: &Path, state: &str) -> Option<(String, Option<String>)> {
     let take = || -> std::io::Result<Option<Value>> {
         let _lease = crate::integrations::secure_store::lock(&p)?;
         let mut d: Map<String, Value> = crate::integrations::secure_store::read_json(&p)?;
-        let Some(e) = d.remove(state) else { return Ok(None); };
+        let Some(e) = d.remove(state) else {
+            return Ok(None);
+        };
         crate::integrations::secure_store::write(&p, Value::Object(d).to_string().as_bytes())?;
         Ok(Some(e))
     };
     let e = match take() {
-        Ok(e) => e?, Err(error) => { tracing::warn!(%error, verdict = "gmail_pending_consume_failed", "OAuth state not consumed; no exchange attempted"); return None; }
+        Ok(e) => e?,
+        Err(error) => {
+            tracing::warn!(%error, verdict = "gmail_pending_consume_failed", "OAuth state not consumed; no exchange attempted");
+            return None;
+        }
     };
     if now_ts() - e.get("ts").and_then(Value::as_f64).unwrap_or(0.0) > PENDING_TTL_S {
         return None;
@@ -375,10 +382,10 @@ pub async fn auth_url(
 ) -> Response {
     let account = p.account.unwrap_or_default().trim().to_string();
     if account.is_empty() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "account required" }),
-        );
+        return err(StatusCode::BAD_REQUEST, json!({"error":"account required"}));
+    }
+    if !oauth_store::valid_account(&account) {
+        return err(StatusCode::BAD_REQUEST, json!({"error":"invalid account"}));
     }
     let cfg = match client_config(&ctx.home) {
         Ok(c) => c,
@@ -690,6 +697,24 @@ pub async fn callback(
 
     // Python's exact token-file shape — the one integrations/email.rs
     // `load_token_file` reads. The formats must be ONE.
+    if !oauth_store::valid_account(&account) {
+        return html(
+            StatusCode::BAD_REQUEST,
+            "<h2>Invalid Gmail account</h2>".into(),
+        );
+    }
+    let _lease = match oauth_store::lock(&ctx.home, "google", &account).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            return html(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "<h2>Grant storage unavailable</h2><pre>{}</pre>",
+                    html_escape(&error.to_string())
+                ),
+            )
+        }
+    };
     let tokens_dir = ctx.home.join("gmail-tokens");
     if let Err(e) = std::fs::create_dir_all(&tokens_dir) {
         return html(
@@ -846,10 +871,11 @@ pub(crate) async fn health_for(http: Arc<dyn HttpTransport>, home: &Path, accoun
 }
 
 async fn probe_health(ctx: &GmailAuthCtx, account: &str) -> String {
-    let path = ctx
-        .home
-        .join("gmail-tokens")
-        .join(format!("{account}.json"));
+    let _lease = match oauth_store::lock(&ctx.home, "google", account).await {
+        Ok(lease) => lease,
+        Err(_) => return "storage_error".into(),
+    };
+    let path = oauth_store::gmail_path(&ctx.home, account);
     let Some(tf) = std::fs::read_to_string(&path)
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
@@ -905,19 +931,23 @@ async fn probe_health(ctx: &GmailAuthCtx, account: &str) -> String {
             if new_access.is_empty() {
                 return "not_connected".into();
             }
-            // Persist in Python's shape so the next reader skips the refresh
-            // (same behavior as _gmail_load_creds).
-            let _ = crate::integrations::secure_store::write(
-                &path,
-                json!({
-                    "token": new_access,
-                    "refresh_token": refresh,
-                    "token_uri": token_uri,
-                    "client_id": cid,
-                    "client_secret": csec,
-                })
-                .to_string().as_bytes(),
-            );
+            let mut document = tf.clone();
+            document["client_id"] = json!(cid);
+            document["client_secret"] = json!(csec);
+            document["token_uri"] = json!(token_uri);
+            let updated = match oauth_store::refreshed(
+                &document,
+                &body,
+                document.get("expires_at").is_some(),
+            ) {
+                Ok(updated) => updated,
+                Err(_) => return "not_connected".into(),
+            };
+            if oauth_store::persist_refresh(&ctx.home, "google", account, &path, &document, updated)
+                .is_err()
+            {
+                return "storage_error".into();
+            }
             match ctx.http.get(&profile_url, Some(new_access)).await {
                 Ok((st2, _)) if st2 < 400 => "ok".into(),
                 _ => "not_connected".into(),
@@ -947,13 +977,40 @@ pub async fn delete_account(
     Query(p): Query<AccountParams>,
 ) -> Response {
     let account = p.account.unwrap_or_default().trim().to_string();
+    if !oauth_store::valid_account(&account) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"valid account required"}),
+        );
+    }
+    let _lease = match oauth_store::lock(&ctx.home, "google", &account).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error":error.to_string()}),
+            )
+        }
+    };
     let path = ctx
         .home
         .join("gmail-tokens")
         .join(format!("{account}.json"));
-    if !account.is_empty() && path.exists() {
-        let _ = std::fs::remove_file(&path);
+    if let Err(error) = std::fs::remove_file(&path)
+        .and_then(|_| std::fs::File::open(path.parent().unwrap())?.sync_all())
+    {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%error, verdict = "gmail_disconnect_commit_failed", "Gmail disconnect could not be committed");
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error":"Gmail disconnect could not be committed"}),
+            );
+        }
     }
+    ctx.health_cache
+        .lock()
+        .expect("health cache")
+        .remove(&account);
     Json(json!({ "ok": true })).into_response()
 }
 
