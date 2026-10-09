@@ -2242,7 +2242,7 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     <div class="board-detail-status-row" id="bd-status-row"></div>
     <textarea id="bd-title" class="board-detail-title-input" placeholder="Untitled" autocomplete="off" autocorrect="on" spellcheck="true" rows="1" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
     <section id="bd-answer" class="bd-answer" hidden aria-label="Answer this card">
-      <div class="bd-answer-head">Waiting on you</div>
+      <div class="bd-answer-head"><span>Waiting on you</span><button type="button" class="bd-answer-x" id="bd-answer-cancel" aria-label="Cancel: close without answering" title="Close without answering. Nothing is sent; the card stays waiting." onclick="_bdAnswerCancel()"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
       <div id="bd-answer-ask" class="bd-answer-ask"></div>
       <textarea id="bd-answer-text" class="input bd-answer-text" rows="3" placeholder="Your answer…" aria-label="Your answer"></textarea>
       <div class="bd-answer-actions">

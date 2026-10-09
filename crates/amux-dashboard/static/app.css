@@ -7812,7 +7812,10 @@ body.light .header-row .btn-needs-input { color:#bc4c00; border-color:rgba(188,7
 /* Answer box at the top of a card waiting on the owner (2026-10-01). */
 .bd-answer { margin: 8px 0 12px; padding: 12px; border: 1px solid rgba(240,136,62,0.6); background: rgba(240,136,62,0.10); border-radius: 10px; display: flex; flex-direction: column; gap: 8px; }
 .bd-answer[hidden] { display: none; }
-.bd-answer-head { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #f0883e; }
+.bd-answer-head { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #f0883e; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bd-answer-x { background: none; border: none; color: var(--dim); width: 32px; height: 32px; margin: -6px -6px -6px 0; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.bd-answer-x:hover { color: var(--text); background: rgba(240,136,62,0.16); }
+@media (max-width: 600px) { .bd-answer-x { width: 44px; height: 44px; } }
 body.light .bd-answer-head { color: #bc4c00; }
 .bd-answer-ask { font-size: 0.9rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .bd-answer-text { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; font: inherit; }

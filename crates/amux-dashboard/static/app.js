@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1284';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1285';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -38544,6 +38544,17 @@ async function openBoardDetail(id) {
 // needs-input triage: message to the asking worker (deduped), marked note on the
 // card, card out of needsyou, read back.
 let _bdAnswerCtx = null;   // {card, worker}
+// The X on the answer box: close it without answering. Nothing is sent and the
+// card stays in needsyou; a re-render while this card is open keeps it closed.
+let _bdAnswerDismissed = '';
+function _bdAnswerCancel() {
+  _bdAnswerDismissed = boardDetailId || '';
+  _bdAnswerCtx = null;
+  const box = document.getElementById('bd-answer');
+  if (box) box.hidden = true;
+  const ta = document.getElementById('bd-answer-text');
+  if (ta) ta.value = '';
+}
 function _bdAnswerItem(card) {
   const ctx = _bdAnswerCtx || {};
   const found = (typeof _niItems === 'function' ? _niItems(true) : []).find(i => i.card === card);
@@ -38559,7 +38570,8 @@ function _bdShowAnswer(item, force) {
   const box = document.getElementById('bd-answer');
   if (!box || !item) return;
   if (_bdAnswerCtx && _bdAnswerCtx.card !== item.id) _bdAnswerCtx = null;
-  const show = force || item.status === 'needsyou' || !!_bdAnswerCtx;
+  if (force) _bdAnswerDismissed = '';
+  const show = _bdAnswerDismissed !== item.id && (force || item.status === 'needsyou' || !!_bdAnswerCtx);
   box.hidden = !show;
   if (!show) return;
   if (!_bdAnswerCtx) _bdAnswerCtx = { card: item.id, worker: item.session || '' };
@@ -38794,6 +38806,7 @@ function closeBoardDetail() {
   document.getElementById('board-detail-overlay').classList.remove('active');
   _boardDetailOpenGeneration++;
   boardDetailId = null;
+  _bdAnswerDismissed = '';
   _bdActiveDirty = false;
   // Refresh peek issues panel if open
   if (_peekTab === 'issues') renderPeekIssues();
