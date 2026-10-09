@@ -30,13 +30,14 @@ case "$(tk)" in 000*) echo "ok   queued with priority" ;; *) echo "FAIL setup: n
 HOME="$H" AMUX_WORKER=orch bash "$H/amux-copy" land --demote tl >/dev/null 2>&1
 for _ in $(seq 1 40); do case "$(tk)" in 000*|"") sleep 1 ;; *) break ;; esac; done
 case "$(tk)" in 000*|"") echo "FAIL the demote did not take ($(tk))"; fail=1 ;; *) echo "ok   demoted to ordinary order" ;; esac
-# A newer land is installed: the waiter re-execs on its next self-upgrade check,
-# at most once a minute since land .39, so wait up to 100 s (AMUX-5511: 50 s
-# went red on CI once .39 moved the check from 30 s to 60 s).
+# A newer land is installed: the waiter must re-exec within the 10 s poll
+# budget, with 30 s for CI scheduling noise. This deadline must fail if the
+# old one-minute poll returns; otherwise this test can quietly cost a minute.
 sed 's/^LAND_BEHAVIOR_VERSION="\([^"]*\)"/LAND_BEHAVIOR_VERSION="\1-next"/' "$H/amux-copy" > "$H/amux-next"
 mv -f "$H/amux-next" "$H/amux-copy"
-for _ in $(seq 1 100); do grep -q 're-executing at its place' "$H/.amux/logs/land.log" 2>/dev/null && break; sleep 1; done
-grep -q 're-executing at its place' "$H/.amux/logs/land.log" 2>/dev/null && echo "ok   the waiter re-executed" || { echo "FAIL setup: no re-exec"; fail=1; }
+for _ in $(seq 1 30); do grep -q 're-executing at its place' "$H/.amux/logs/land.log" 2>/dev/null && break; sleep 1; done
+grep -q 're-executing at its place' "$H/.amux/logs/land.log" 2>/dev/null && echo "ok   the waiter re-executed within 30s" || { echo "FAIL setup: no re-exec within 30s"; fail=1; }
+grep -q 're-executing at its place.*verdict=land_self_upgrade_reexec' "$H/.amux/logs/land.log" 2>/dev/null && echo "ok   the re-exec has a named verdict" || { echo "FAIL no measured re-exec verdict"; fail=1; }
 sleep 6
 n_prio="$(sed -n '/re-executing at its place/,$p' "$H/.amux/logs/land.log" | grep -c 'queued with --priority')"
 [ "$n_prio" = 0 ] && echo "ok   no 'queued with --priority' after the re-exec" || { echo "FAIL the re-exec claimed priority again ($n_prio line(s))"; fail=1; }
