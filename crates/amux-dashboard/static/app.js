@@ -3747,7 +3747,7 @@ async function _runSyncBanner(quiet = false) {
     if (typeof loadExplore === 'function' && typeof _explorePath !== 'undefined') {
       try { loadExplore(_explorePath); } catch (error) {}
     }
-    if (activeView === 'scratchpad' && typeof _scratchpadLoad === 'function') {
+    if (typeof activeView !== 'undefined' && activeView === 'scratchpad' && typeof _scratchpadLoad === 'function') {
       try { _scratchpadLoad(); } catch (error) {}
     }
   }
@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1282';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1283';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
