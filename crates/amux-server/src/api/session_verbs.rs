@@ -5815,7 +5815,7 @@ fn is_yolo_enabled(flags: &str, cfg: &EnvFile) -> bool {
     yolo_enabled(flags, cfg.get("CC_AUTO_CONTINUE"))
 }
 
-fn default_model_for_provider(provider: &str) -> String {
+pub(crate) fn default_model_for_provider(provider: &str) -> String {
     match provider {
         "codex" => "gpt-5.5".into(),
         "gemini" => "auto".into(),
@@ -15148,7 +15148,7 @@ pub(crate) async fn start_session(
                 opts += &format!(" {}", shell_quote_flags(extra_flags));
             }
             if !opts.contains("--model") && !opts.contains("-m ") {
-                opts += " --model gpt-5.5";
+                opts += &format!(" --model {}", sh_quote(&default_model_for_provider("codex")));
             }
             if !opts.contains("--dangerously-bypass") && !opts.contains("-a ") {
                 opts += if codex_yolo {

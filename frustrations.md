@@ -5533,3 +5533,15 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: Six private regressions fail on main 964662d7: concurrent credential and pending-state writes lose entries; initial server.env is 0644; unreadable credential bytes and corrupt connector definitions are overwritten; pending_take returns a state even when its removal failed.
 COST: Six new regression tests fail; the 245-second baseline run proves that acknowledgement can follow data loss or failed state consumption.
 FIX: PR candidate serializes updates, commits private synced files atomically, retains corrupt stores, and refuses exchange when consumption cannot commit. No live storage changed; validation and review required before deployment.
+
+
+## Codex worker Chat inherits an unusable global model and omits initial worker context
+AREA: instruments
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: A new isolated Codex terminal worker completes its synthetic task with the terminal default, but its first two real Chat UI turns inherit gpt-6.1-sol from global desktop configuration and fail with a ChatGPT account model-not-supported error. Codex also sets fresh=false for its first Chat turn, so the companion introduction never reaches it; the refreshed context omits directory and isolation, and a later reply confuses synthetic fixture isolation with terminal isolation.
+COST: Two real provider turns fail, and the owner cannot trust that Chat describes the worker's actual scope. The native terminal rollout remained unchanged throughout the failed and configured-model Chat tests.
+FIX: PR candidate shares the terminal default with Codex headless turns, preserves explicit models including -m, introduces new/rebuilt Codex conversations, and supplies directory/isolation each turn with chat_model_terminal_default and chat_companion_context log signals. Private real-provider UI and SIGKILL/restart validation required; no merge or deployment authorized.
