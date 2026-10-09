@@ -49,6 +49,16 @@ try{
  await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.includes('Active: cdp'));
  const advanced=await api(base,'/api/browser/routing/request','POST',{verb:'status',session:sessionBefore,body:{}},sessionBefore);
  prove('Browser tab advances the unmet goal to the selected work CDP profile',advanced.route.backend==='cdp'&&advanced.route.profile===chromeProfile&&advanced.route.selected_profile==='routing-work'&&advanced.route.attempts.some(a=>a.verdict==='goal_unmet'));
+ await p.evaluate(()=>window._bwGo());
+ await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.includes('Active: amux'));
+ const replaced=await api(base,'/api/browser/routing/request','POST',{verb:'status',session:sessionBefore,body:{}},sessionBefore);
+ let oldGone=false;
+ for(let i=0;i<20&&!oldGone;i++){
+  try{oldGone=!(await api(`http://127.0.0.1:${advanced.route.cdp_port}`,'/json/list')).some(t=>t.id===advanced.route.target);}
+  catch(e){if(e.code==='ECONNREFUSED')oldGone=true;else if(e.code!=='ECONNRESET')throw e;}
+  if(!oldGone)await new Promise(r=>setTimeout(r,100));
+ }
+ prove('Browser tab Go replaces CDP with fresh Native and releases its old owned tab',replaced.route.backend==='amux'&&oldGone);
  await p.screenshot({path:join(out,'dashboard-desktop.png'),fullPage:true});
  await p.setViewportSize({width:375,height:812});await p.screenshot({path:join(out,'dashboard-mobile.png'),fullPage:true});
  const bounds=await p.locator('#bw-routing').evaluate(e=>({scroll:e.scrollWidth,width:e.clientWidth}));prove('route settings fit phone width',bounds.scroll<=bounds.width+1);

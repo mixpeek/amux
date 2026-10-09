@@ -200,7 +200,7 @@ async function launch(ctx,b,attempts=[],from=0) {
 async function stopOwnedNative(ctx,state) {
   try {return await native(ctx,'stop',{profile:state.selected_profile||state.profile,expected_started_by:ctx.session});}
   catch(e){
-    if(e.status!==403&&!(e.status===409&&['browser_stop_target_unresolved','browser_stop_ownership_changed'].includes(e.payload?.code)))throw e;
+    if(!(e.status===409&&['browser_stop_target_unresolved','browser_stop_ownership_changed'].includes(e.payload?.code)))throw e;
     return {ok:true,stopped:false,note:'Original native browser was already released or its ownership changed; preserved the replacement.'};
   }
 }
@@ -221,8 +221,20 @@ export async function route(ctx,verb,b={}) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
   ctx.cleanup_events=[];
   ctx.receipt=join(ctx.home,'browser-routing','sessions',key(ctx.session)+'.json');
-  if(verb==='start') {ctx.native_started=false;ctx.previous_routes=[];return launch(ctx,b);}
   const state=read(ctx.receipt,null);
+  if(verb==='start') {
+    // Validate before closing a usable route. Replacement never abandons its
+    // old receipt, tabs or desktop; an unknown cleanup failure retains them.
+    if(!b.url||!/^https?:|^about:/.test(b.url))throw new RouteError('start requires an HTTP(S) or about: URL',400);
+    const selectedIdentity=ctx.identity;
+    if(state) {
+      await route(ctx,'stop',{});
+      ctx.cleanup_events.push({backend:state.backend,profile:state.profile,target:state.target,verdict:'owned_route_replaced'});
+    }
+    ctx.identity=selectedIdentity;ctx.native_started=false;ctx.previous_routes=[];
+    const result=await launch(ctx,b);
+    return {...result,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
+  }
   if(!state) {if(verb==='status')return {running:false};throw new RouteError('select a profile and start the browser route first',409);}
   ctx.identity=state.identity||ctx.identity;
   ctx.native_started=!!state.native_started;

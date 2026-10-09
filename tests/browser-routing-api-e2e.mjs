@@ -32,7 +32,7 @@ writeFileSync(join(dir,'cookies.json'),JSON.stringify(cookies),{mode:0o600});
 await api(base,'/api/browser/profile/meta','POST',{name:profile,identity:'api-proof@example.test',role:'test',label:'Isolated API acceptance'});
 const discovered=await api(base,'/api/browser/routing/config');prove('candidate discovers only the configured Chrome fixture',discovered.chrome_profiles.some(p=>p.name===chromeProfile&&p.identity==='api-proof@example.test')&&!discovered.chrome_profiles.some(p=>p.name==='Profile 14'));
 await api(base,'/api/browser/routing/config','POST',{native_profile:profile,chrome_profile:chromeProfile,cua_profile:profile,allow_cua:true});
-const sessions=['routing-api-native','routing-api-cdp','routing-api-cua','routing-api-goal'];
+const sessions=['routing-api-native','routing-api-cdp','routing-api-cua','routing-api-goal','routing-api-peer'];
 mkdirSync(join(home,'sessions'),{recursive:true});
 writeFileSync(join(home,'sessions',sessions[0]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+'\n');
 writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
@@ -51,7 +51,7 @@ try{
   const native=await route(sessions[0],'start',{url:url+'/protected',profile});prove('routing API opens allowed Amux even when unused Chrome fallback is outside scope',native.route.backend==='amux');await perform(sessions[0],'api-native');
   let refused;try{await route('routing-api-refusal','start',{url:url+'/protected',profile});}catch(e){refused=e;}
   prove('routing API refuses out-of-scope CDP without bypassing into CUA',refused?.status===403&&refused.payload.attempts.some(a=>a.backend==='cdp'&&a.status===403)&&!refused.payload.attempts.some(a=>a.backend==='cua'));
-  const cdp=await route(sessions[1],'start',{url:url+'/protected',profile});prove('routing API reaches CDP after actual native contention',cdp.route.backend==='cdp'&&cdp.route.attempts[0].status===409);await perform(sessions[1],'api-cdp');
+  let cdp=await route(sessions[1],'start',{url:url+'/protected',profile});prove('routing API reaches CDP after actual native contention',cdp.route.backend==='cdp'&&cdp.route.attempts[0].status===409);await perform(sessions[1],'api-cdp');
   const goneSession='routing-api-gone-target';
   writeFileSync(join(home,'sessions',goneSession+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
   const gone=await route(goneSession,'start',{url:url+'/protected',profile});
@@ -61,6 +61,17 @@ try{
   const goneReceipt=join(home,'browser-routing','sessions',createHash('sha256').update(goneSession).digest('hex').slice(0,24)+'.json');
   prove('shipped API retires an already-closed owned CDP target and its receipt',retired.cleanup_verdict==='owned_cdp_already_closed'&&retired.cleanup_events.some(e=>e.target===gone.route.target)&&!existsSync(goneReceipt));
   prove('already-closed target cleanup preserves the other worker tab',(await route(sessions[1],'state')).route.target===cdp.route.target);
+  writeFileSync(join(home,'sessions',sessions[4]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');
+  const peer=await route(sessions[4],'start',{url:url+'/protected',profile});
+  const priorCdp=cdp;cdp=await route(sessions[1],'start',{url:url+'/protected',profile});
+  const reopenedTabs=await api('http://127.0.0.1:'+cdp.route.cdp_port,'/json/list');
+  writeFileSync(join(out,'repeat-start.json'),JSON.stringify({prior:priorCdp.route,current:cdp.route,peer:peer.route,tabs:reopenedTabs},null,2));
+  prove('repeated start releases the prior owned CDP target and preserves the peer tab',cdp.route.target!==priorCdp.route.target&&!reopenedTabs.some(t=>t.id===priorCdp.route.target)&&reopenedTabs.some(t=>t.id===peer.route.target));
+  const newProfile='routing-api-new-scope';
+  writeFileSync(join(home,'sessions',sessions[4]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+newProfile+'\n');
+  let replacementDenied;try{await route(sessions[4],'start',{url:url+'/protected',profile:newProfile});}catch(e){replacementDenied=e;}
+  prove('replacement start cannot bypass the original profile scope through cleanup',replacementDenied?.status===403&&(await api('http://127.0.0.1:'+peer.route.cdp_port,'/json/list')).some(t=>t.id===peer.route.target));
+  writeFileSync(join(home,'sessions',sessions[4]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW='+profile+',Profile*\n');await route(sessions[4],'stop');
   writeFileSync(join(home,'sessions',sessions[1]+'.env'),'AMUX_BROWSER_PROFILES_ALLOW=Profile*\n');
   let revoked;try{await route(sessions[1],'state');}catch(e){revoked=e;}
   prove('receipt retains selected profile for authorization after handoff',revoked?.status===403);
@@ -123,6 +134,9 @@ try{
   prove('advance retains the prior CDP target for owned cleanup',goalCua.route.backend==='cua'&&goalCua.route.previous_routes.some(r=>r.backend==='cdp'&&r.target===goal.route.target));
   let exhausted;try{await route(sessions[3],'advance',{reason:'Still cannot complete goal'});}catch(e){exhausted=e;}
   prove('exhausted CUA refuses another route without changing accounts',exhausted?.status===409&&submissions.length===3);
+  const restartedGoal=await route(sessions[3],'start',{url:url+'/protected',profile});
+  const restartFleet=await api(base,'/api/computer/status');
+  prove('restarting a CUA route releases its desktop and prior CDP tab without closing a peer desktop',restartedGoal.route.backend==='cdp'&&!restartFleet.sandboxes.some(b=>b.lane===sessions[3])&&restartFleet.sandboxes.some(b=>b.lane===sessions[2])&&!(await api('http://127.0.0.1:'+goal.route.cdp_port,'/json/list')).some(t=>t.id===goal.route.target));
   await route(sessions[3],'stop');
   const tabs=await api('http://127.0.0.1:'+goal.route.cdp_port,'/json/list');
   prove('stop after CDP to CUA closes exactly its previous CDP tab',!tabs.some(t=>t.id===goal.route.target)&&tabs.some(t=>t.id===cdp.route.target));

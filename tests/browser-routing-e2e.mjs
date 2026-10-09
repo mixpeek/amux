@@ -64,6 +64,10 @@ try {
   const receiptFor=lane=>join(home,'browser-routing','sessions',createHash('sha256').update(lane).digest('hex').slice(0,24)+'.json');
   prove('fresh CDP start does not inherit prior native ownership and stop removes its receipt',tab2.route.native_started===false&&!secondStopped.error&&!existsSync(receiptFor(second.session)));
   const crashed={...cdCtx,session:'routing-e2e-crashed-cleanup'};await request('start',{url:siteUrl+'/protected',profile},crashed);
+  const oldTarget=cd.route.target;
+  const replaced=await request('start',{url:siteUrl+'/protected',profile},cdCtx);
+  const replacementTabs=await api(`http://127.0.0.1:${replaced.route.cdp_port}`,'/json/list');
+  prove('replacement closes only the previous owned CDP tab',!replacementTabs.some(t=>t.id===oldTarget)&&replacementTabs.some(t=>t.id===replaced.route.target)&&replacementTabs.length===2&&replaced.cleanup_events.some(e=>e.verdict==='owned_route_replaced'));
   // Kill only the fixture's isolated Chrome, then reopen from durable storage.
   const crashBrowser=await chromium.connectOverCDP(`http://127.0.0.1:${cd.route.cdp_port}`);
   const crashSession=await crashBrowser.newBrowserCDPSession();
@@ -84,9 +88,27 @@ try {
   writeFileSync(receiptFor(unknownCtx.session),JSON.stringify({...recovered.route,cdp_port:unavailable.address().port,native_started:false,previous_routes:[]}));
   const unknownStop=await request('stop',{},unknownCtx);
   prove('cleanup preserves its receipt for an unmeasured CDP failure',unknownStop.status===503&&existsSync(receiptFor(unknownCtx.session)));
+  const unknownStart=await request('start',{url:siteUrl+'/protected',profile},unknownCtx);
+  prove('replacement cannot overwrite a route whose cleanup is unmeasured',unknownStart.status===503&&existsSync(receiptFor(unknownCtx.session))&&JSON.parse(readFileSync(receiptFor(unknownCtx.session))).cdp_port===unavailable.address().port);
   await new Promise(r=>unavailable.close(r));
   const knownClosed=await request('stop',{},unknownCtx);
   prove('cleanup retires the receipt only after the local port is known closed',!knownClosed.error&&!existsSync(receiptFor(unknownCtx.session)));
+  let cleanupStatus=403;
+  const nativeCleanup=createServer((_q,res)=>{res.statusCode=cleanupStatus;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({error:'native cleanup classification fixture',...(cleanupStatus===409?{code:'browser_stop_ownership_changed'}:{})}));});
+  await new Promise(r=>nativeCleanup.listen(0,'127.0.0.1',r));
+  const deniedCtx={...ctx,session:'routing-e2e-denied-cleanup',base:`http://127.0.0.1:${nativeCleanup.address().port}`};
+  writeFileSync(receiptFor(deniedCtx.session),JSON.stringify({backend:'amux',profile,selected_profile:profile,identity:'old@example.test',native_started:true,previous_routes:[]}));
+  const deniedCleanup=await request('stop',{},deniedCtx);
+  prove('a genuine Native cleanup scope refusal retains the receipt',deniedCleanup.status===403&&existsSync(receiptFor(deniedCtx.session)));
+  cleanupStatus=409;const releasedNative=await request('stop',{},deniedCtx);
+  prove('confirmed Native ownership change retires only the owned receipt',!releasedNative.error&&!existsSync(receiptFor(deniedCtx.session)));
+  await new Promise(r=>nativeCleanup.close(r));
+  const identityCtx={...cdCtx,session:'routing-e2e-replacement-identity',identity:'old@example.test',chrome_identity:'old@example.test'};
+  await request('start',{url:siteUrl+'/protected',profile},identityCtx);
+  identityCtx.identity='new@example.test';identityCtx.chrome_identity='new@example.test';
+  const newIdentity=await request('start',{url:siteUrl+'/protected',profile},identityCtx);
+  prove('replacement preserves the newly selected identity after old cleanup',!newIdentity.error&&newIdentity.route.identity==='new@example.test');
+  await request('stop',{},identityCtx);
   const persistent=await request('action',{action:'eval',script:'localStorage.getItem("route-local")'},cdCtx);
   prove('CDP authentication and storage survive SIGKILL',persistent.data?.result==='persisted');
   const native2=await request('start',{url:siteUrl+'/protected',profile},ctx);prove('native opened for no-replay test',native2.route?.backend==='amux');

@@ -305,6 +305,21 @@ async fn request(
     if let Err(denied) = super::browser_scope::profile_allowed(&r.session, &chosen) {
         return denied.response();
     }
+    // Replacement includes cleanup of the previous route. Reauthorize that
+    // route's original profile just as explicit stop does, before any mutation.
+    if r.verb == "start" {
+        if let Some(previous) = receipt.get("selected_profile").and_then(Value::as_str) {
+            if previous != chosen {
+                if let Err(denied) = super::browser_scope::profile_allowed(&r.session, previous) {
+                    tracing::warn!(session=%r.session, previous_profile=previous,
+                        selected_profile=%chosen, measured=true, n_considered=2,
+                        verdict="browser_route_replacement_scope_denied",
+                        "replacement refused before cleaning an out-of-scope route");
+                    return denied.response();
+                }
+            }
+        }
+    }
     c = c.selected(&chosen);
     // Revalidate the actual active fallback, not just the original Amux
     // profile or a newly edited owner choice. Cleanup may close a revoked tab.
