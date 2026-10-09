@@ -300,20 +300,25 @@ struct CustomProvider {
     test_url: String,
 }
 
+fn load_custom_checked(home: &std::path::Path) -> std::io::Result<Vec<CustomProvider>> {
+    crate::integrations::secure_store::read_json(&custom_store_path(home))
+}
+
 fn load_custom(home: &std::path::Path) -> Vec<CustomProvider> {
-    std::fs::read_to_string(custom_store_path(home))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Vec<CustomProvider>>(&t).ok())
-        .unwrap_or_default()
+    load_custom_checked(home).unwrap_or_else(|e| {
+        tracing::warn!(%e, verdict = "connector_registry_unreadable", "connector registry could not be read; retained on disk");
+        Vec::new()
+    })
 }
 
 fn save_custom(home: &std::path::Path, list: &[CustomProvider]) -> std::io::Result<()> {
-    let path = custom_store_path(home);
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let body = serde_json::to_string_pretty(list).unwrap_or_else(|_| "[]".into());
-    std::fs::write(&path, body)
+    let body = serde_json::to_vec_pretty(list)?;
+    crate::integrations::secure_store::write(&custom_store_path(home), &body)
+}
+
+fn storage_error(error: std::io::Error) -> Response {
+    tracing::warn!(%error, verdict = "connector_storage_refused", "connector update not acknowledged; inspect storage before retrying");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok":false,"error":"connector storage is unreadable or could not be durably committed","acknowledged":false}))).into_response()
 }
 
 /// The owned, source-agnostic view of a connector.
@@ -796,36 +801,31 @@ fn pending_save(
     verifier: Option<&str>,
 ) -> std::io::Result<()> {
     let p = pending_path(home);
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut d: Map<String, Value> = std::fs::read_to_string(&p)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
+    let _lease = crate::integrations::secure_store::lock(&p)?;
+    let mut d: Map<String, Value> = crate::integrations::secure_store::read_json(&p)?;
     let now = now_ts();
     d.retain(|_, v| now - v.get("ts").and_then(Value::as_f64).unwrap_or(0.0) < PENDING_TTL_S);
     d.insert(
         state.to_string(),
         json!({ "family": family, "account": account, "verifier": verifier, "ts": now }),
     );
-    std::fs::write(&p, Value::Object(d).to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    crate::integrations::secure_store::write(&p, Value::Object(d).to_string().as_bytes())
 }
 
 /// SINGLE-USE take (removed even when expired); `(family, account, verifier)`
 /// while fresh.
 fn pending_take(home: &std::path::Path, state: &str) -> Option<(String, String, Option<String>)> {
     let p = pending_path(home);
-    let mut d: Map<String, Value> =
-        serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
-    let e = d.remove(state)?;
-    let _ = std::fs::write(&p, Value::Object(d).to_string());
+    let take = || -> std::io::Result<Option<Value>> {
+        let _lease = crate::integrations::secure_store::lock(&p)?;
+        let mut d: Map<String, Value> = crate::integrations::secure_store::read_json(&p)?;
+        let Some(e) = d.remove(state) else { return Ok(None); };
+        crate::integrations::secure_store::write(&p, Value::Object(d).to_string().as_bytes())?;
+        Ok(Some(e))
+    };
+    let e = match take() {
+        Ok(e) => e?, Err(error) => { tracing::warn!(%error, verdict = "connector_pending_consume_failed", "OAuth state not consumed; no exchange attempted"); return None; }
+    };
     if now_ts() - e.get("ts").and_then(Value::as_f64).unwrap_or(0.0) > PENDING_TTL_S {
         return None;
     }
@@ -873,16 +873,7 @@ fn store_accounts(home: &std::path::Path, family: &str) -> Vec<String> {
 }
 
 fn write_store_file(path: &std::path::Path, body: &Value) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, body.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    crate::integrations::secure_store::write(path, body.to_string().as_bytes())
 }
 
 /// `POST {base}/api/v4/users/login` — Mattermost's login endpoint. Goes
@@ -936,6 +927,7 @@ async fn mattermost_login(
 /// global (credential presence + token); per-scope enablement is the scope
 /// read.
 async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
+    if let Err(e) = load_custom_checked(&amux_home()) { return storage_error(e); }
     let file_env = parse_env_file(&amux_home().join("server.env"));
     let items: Vec<Value> = REGISTRY
         .iter()
@@ -1202,7 +1194,12 @@ async fn create_connector(Json(body): Json<Value>) -> Response {
         )
             .into_response();
     }
-    let mut list = load_custom(&home);
+    let _lease = match crate::integrations::secure_store::lock(&custom_store_path(&home)) {
+        Ok(lease) => lease, Err(e) => return storage_error(e),
+    };
+    let mut list = match load_custom_checked(&home) {
+        Ok(list) => list, Err(e) => return storage_error(e),
+    };
     if list.iter().any(|c| c.id == id) {
         return (
             StatusCode::CONFLICT,
@@ -1297,7 +1294,12 @@ async fn delete_connector(Path(id): Path<String>) -> Response {
         )
             .into_response();
     }
-    let mut list = load_custom(&home);
+    let _lease = match crate::integrations::secure_store::lock(&custom_store_path(&home)) {
+        Ok(lease) => lease, Err(e) => return storage_error(e),
+    };
+    let mut list = match load_custom_checked(&home) {
+        Ok(list) => list, Err(e) => return storage_error(e),
+    };
     let before = list.len();
     let removed: Vec<String> = list
         .iter()
@@ -1367,29 +1369,8 @@ async fn set_credentials(Path(id): Path<String>, Json(body): Json<Value>) -> Res
             rejected.push(k.clone());
             continue;
         }
-        if let Err(e) = super::settings::set_server_env_key(&home, k, val) {
-            tracing::warn!(
-                "connector_credentials: write failed for {} key {}: {}",
-                id,
-                k,
-                e
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("write failed for {k}")})),
-            )
-                .into_response();
-        }
         written.push(k.clone());
     }
-    // Redacted audit — names of keys written, NEVER the values (two-fixes rule:
-    // grep `connector_credentials` to see who set what, without leaking it).
-    tracing::info!(
-        "connector_credentials: {} wrote {:?} to server.env (rejected {:?})",
-        id,
-        written,
-        rejected
-    );
     if written.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1403,18 +1384,18 @@ async fn set_credentials(Path(id): Path<String>, Json(body): Json<Value>) -> Res
         )
             .into_response();
     }
-    // server.env is read at startup (setdefault); a fresh paste needs the value
-    // in the PROCESS env to take effect without a restart. Mirror it in-process
-    // so a just-pasted key works immediately for this run (settings.rs does the
-    // same for ANTHROPIC_API_KEY).
-    let file_env = parse_env_file(&home.join("server.env"));
-    for k in &written {
-        if let Some(v) = file_env.get(k) {
-            // SAFETY: single-threaded config mutation at request time, same
-            // pattern settings.rs uses; value came from our own atomic write.
-            std::env::set_var(k, v);
-        }
-    }
+    let updates: Vec<(&str, &str)> = written.iter().map(|k| (k.as_str(), obj[k].as_str().unwrap_or("").trim())).collect();
+    if let Err(e) = super::settings::set_server_env_keys(&home, &updates) { return storage_error(e); }
+    // Redacted audit — names of keys written, NEVER the values (two-fixes rule:
+    // grep `connector_credentials` to see who set what, without leaking it).
+    tracing::info!(
+        "connector_credentials: {} wrote {:?} to server.env (rejected {:?})",
+        id,
+        written,
+        rejected
+    );
+    // Consumers resolve credentials file-first; changing process-global env
+    // from a multithreaded request handler is unsafe and unnecessary.
     // REPUBLISH THE PREFLIGHT, because this is the event that makes it stale
     // (AF-372).
     //
@@ -2027,7 +2008,7 @@ async fn complete_exchange(
         });
         let dir = ctx.home.join("gmail-tokens");
         mirrored = std::fs::create_dir_all(&dir)
-            .and_then(|_| std::fs::write(dir.join(format!("{account}.json")), legacy.to_string()))
+            .and_then(|_| crate::integrations::secure_store::write(&dir.join(format!("{account}.json")), legacy.to_string().as_bytes()))
             .is_ok();
     }
     tracing::info!(
@@ -4837,5 +4818,51 @@ mod tests {
                 .any(|(id, _)| *id == "slack"),
             "slack is fully configured and must disappear from the gaps"
         );
+    }
+}
+
+#[cfg(test)]
+mod connector_storage_regressions {
+    use super::*;
+
+    #[tokio::test]
+    async fn connector_storage_corrupt_registry_is_retained_on_create() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(home.path().join("connectors")).unwrap();
+        let path = custom_store_path(home.path());
+        std::fs::write(&path, "{broken registry").unwrap();
+        let response = create_connector(Json(json!({"id":"fixture", "label":"Fixture", "key_env":"FIXTURE_KEY"}))).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken registry");
+    }
+
+    #[test]
+    fn connector_storage_pending_saves_preserve_concurrent_grants() {
+        let home = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let home = home.path(); let barrier = barrier.clone();
+                scope.spawn(move || { barrier.wait(); pending_save(home, &format!("state-{i}"), "google", "fixture@example.com", Some("verifier")).unwrap(); });
+            }
+        });
+        for i in 0..16 { assert!(pending_take(home.path(), &format!("state-{i}")).is_some(), "lost pending state {i}"); }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connector_storage_pending_take_refuses_an_uncommitted_consumption() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        pending_save(home.path(), "state", "google", "fixture@example.com", Some("verifier")).unwrap();
+        let path = pending_path(home.path()); let dir = path.parent().unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let taken = pending_take(home.path(), "state");
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(taken.is_none(), "must not exchange a state whose removal failed");
+        assert!(pending_take(home.path(), "state").is_some(), "failed consume must remain recoverable");
     }
 }

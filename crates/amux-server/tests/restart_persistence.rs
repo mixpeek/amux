@@ -923,3 +923,40 @@ async fn stale_media_intent_and_lost_output_recover_with_a_real_consumer() {
     assert_eq!(lost["started"], true, "a done row without its output cannot grant ready: {lost}");
     assert_eq!(completed(&rig, &uri).await, out);
 }
+
+#[tokio::test]
+async fn acknowledged_connector_state_survives_sigkill_without_lost_concurrent_updates() {
+    let mut rig = Rig::new();
+    rig.spawn(); rig.wait_healthy().await;
+    let creates = (0..16).map(|i| rig.post("/api/connectors", json!({
+        "id": format!("rr-connector-{i}"), "label": format!("Restart fixture {i}"),
+        "kind": "api_key", "key_env": format!("RR_CONNECTOR_{i}_KEY")
+    })));
+    for (status, body) in futures::future::join_all(creates).await { assert_eq!(status, 200, "{body}"); }
+    let writes = (0..16).map(|i| {
+        let client = rig.client.clone(); let url = rig.url(&format!("/api/connectors/rr-connector-{i}/credentials"));
+        async move {
+            let response = client.post(url).json(&json!({format!("RR_CONNECTOR_{i}_KEY"): "fixture-only"})).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+        }
+    });
+    futures::future::join_all(writes).await;
+    assert_eq!(rig.post("/api/connectors/google-drive/credentials", json!({"GOOGLE_OAUTH_CLIENT_ID":"fixture-client", "GOOGLE_OAUTH_CLIENT_SECRET":"fixture-secret"})).await.0, 200);
+    rig.restart().await; // SIGKILL, not graceful flush.
+    let (status, list) = rig.get("/api/connectors").await; assert_eq!(status, 200);
+    let rows = list["connectors"].as_array().unwrap();
+    for i in 0..16 {
+        let id = format!("rr-connector-{i}"); let row = rows.iter().find(|r| r["id"] == id).unwrap();
+        assert_eq!(row["status"], "connected"); assert_eq!(row["env_keys"][0]["set"], true);
+    }
+    let values = amux_server::config::parse_env_file(&rig.home.join("server.env"));
+    for i in 0..16 { assert_eq!(values.get(&format!("RR_CONNECTOR_{i}_KEY")).map(String::as_str), Some("fixture-only")); }
+    assert_eq!(values.get("GOOGLE_OAUTH_CLIENT_SECRET").map(String::as_str), Some("fixture-secret"));
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        for relative in ["server.env", "connectors/custom.json"] {
+            assert_eq!(std::fs::metadata(rig.home.join(relative)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+    assert!(!list.to_string().contains("fixture-only"), "inventory never returns a credential");
+}

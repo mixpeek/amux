@@ -299,33 +299,31 @@ fn now_ts() -> f64 {
 /// Python `_gmail_pending_save`: prune >1h entries, add ours, 0600.
 fn pending_save(home: &Path, state: &str, account: &str, verifier: &str) -> std::io::Result<()> {
     let p = pending_path(home);
-    let mut d: Map<String, Value> = std::fs::read_to_string(&p)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
+    let _lease = crate::integrations::secure_store::lock(&p)?;
+    let mut d: Map<String, Value> = crate::integrations::secure_store::read_json(&p)?;
     let now = now_ts();
     d.retain(|_, v| now - v.get("ts").and_then(Value::as_f64).unwrap_or(0.0) < PENDING_TTL_S);
     d.insert(
         state.to_string(),
         json!({ "account": account, "verifier": verifier, "ts": now }),
     );
-    std::fs::write(&p, Value::Object(d).to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    crate::integrations::secure_store::write(&p, Value::Object(d).to_string().as_bytes())
 }
 
 /// Python `_gmail_pending_restore`: SINGLE-USE (the entry is removed even
 /// when expired), returns (account, verifier) while fresh.
 fn pending_take(home: &Path, state: &str) -> Option<(String, Option<String>)> {
     let p = pending_path(home);
-    let mut d: Map<String, Value> =
-        serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
-    let e = d.remove(state)?;
-    let _ = std::fs::write(&p, Value::Object(d).to_string());
+    let take = || -> std::io::Result<Option<Value>> {
+        let _lease = crate::integrations::secure_store::lock(&p)?;
+        let mut d: Map<String, Value> = crate::integrations::secure_store::read_json(&p)?;
+        let Some(e) = d.remove(state) else { return Ok(None); };
+        crate::integrations::secure_store::write(&p, Value::Object(d).to_string().as_bytes())?;
+        Ok(Some(e))
+    };
+    let e = match take() {
+        Ok(e) => e?, Err(error) => { tracing::warn!(%error, verdict = "gmail_pending_consume_failed", "OAuth state not consumed; no exchange attempted"); return None; }
+    };
     if now_ts() - e.get("ts").and_then(Value::as_f64).unwrap_or(0.0) > PENDING_TTL_S {
         return None;
     }
@@ -725,9 +723,9 @@ pub async fn callback(
         token_file["identity_unverified"] = json!(true);
         token_file["identity_unverified_why"] = json!(why);
     }
-    if let Err(e) = std::fs::write(
-        tokens_dir.join(format!("{account}.json")),
-        token_file.to_string(),
+    if let Err(e) = crate::integrations::secure_store::write(
+        &tokens_dir.join(format!("{account}.json")),
+        token_file.to_string().as_bytes(),
     ) {
         return html(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -909,7 +907,7 @@ async fn probe_health(ctx: &GmailAuthCtx, account: &str) -> String {
             }
             // Persist in Python's shape so the next reader skips the refresh
             // (same behavior as _gmail_load_creds).
-            let _ = std::fs::write(
+            let _ = crate::integrations::secure_store::write(
                 &path,
                 json!({
                     "token": new_access,
@@ -918,7 +916,7 @@ async fn probe_health(ctx: &GmailAuthCtx, account: &str) -> String {
                     "client_id": cid,
                     "client_secret": csec,
                 })
-                .to_string(),
+                .to_string().as_bytes(),
             );
             match ctx.http.get(&profile_url, Some(new_access)).await {
                 Ok((st2, _)) if st2 < 400 => "ok".into(),

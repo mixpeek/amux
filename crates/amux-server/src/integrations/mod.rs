@@ -23,6 +23,7 @@ pub mod browser_login_sync;
 pub mod calendar;
 pub mod computer;
 pub mod email;
+pub(crate) mod secure_store;
 
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;

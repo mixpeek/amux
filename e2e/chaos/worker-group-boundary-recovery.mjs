@@ -2,8 +2,8 @@
 // Real worker credentials and providers; global group confinement survives old
 // open settings, queued reports, reply history, grants and controller crashes.
 import fs from 'node:fs';
+import {DatabaseSync} from 'node:sqlite';
 import path from 'node:path';
-import {execFileSync} from 'node:child_process';
 import {startAmux, waitFor} from './harness.mjs';
 const amux = await startAmux({binary: process.env.AMUX_CHAOS_BINARY, env: {
   RUST_LOG:'info', AMUX_ISOLATED:'0', AMUX_GROUP_SEND_ENFORCE:'0',
@@ -13,9 +13,17 @@ const amux = await startAmux({binary: process.env.AMUX_CHAOS_BINARY, env: {
 }});
 const checks=[];
 const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw Error(name+': '+JSON.stringify(detail));};
-const db=(sql,args=[])=>JSON.parse(execFileSync('python3',['-c',
-  'import sqlite3,json,sys;c=sqlite3.connect(sys.argv[1],timeout=10);c.row_factory=sqlite3.Row;r=c.execute(sys.argv[2],json.loads(sys.argv[3]));print(json.dumps([dict(x) for x in r.fetchall()]));c.commit()',
-  path.join(amux.home,'amux.db'),sql,JSON.stringify(args)],{encoding:'utf8'}));
+// node:sqlite, not the container's python3: Debian bookworm's SQLite 3.40
+// evaluates board_change_log.changed_at's DEFAULT unixepoch('subsec') to NULL
+// (the modifier needs 3.42), so any raw issues write failed NOT NULL there.
+const db=(sql,args=[])=>{
+  const c=new DatabaseSync(path.join(amux.home,'amux.db'));
+  try{
+    c.exec('PRAGMA busy_timeout=10000');
+    const st=c.prepare(sql);
+    return /^\s*(select|with|pragma)\b/i.test(sql)||/\breturning\b/i.test(sql)?st.all(...args).map(r=>({...r})):(st.run(...args),[]);
+  }finally{c.close();}
+};
 const peer='gs12-peer', hub='gs12-hub', harness='amux-harness', outside='unrelated-peer';
 const received=text=>amux.fakeLog().filter(x=>x.text?.includes(text)).length;
 let headers={};
