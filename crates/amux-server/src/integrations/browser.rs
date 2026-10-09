@@ -1019,7 +1019,8 @@ pub(crate) fn persisted_last_exit(home: &Path) -> Option<serde_json::Value> {
 /// traversal bug in a path built from a profile name is a worse failure than
 /// anything this file is protecting. Rewritten whole on every change, always
 /// under the RUNNING lock, so two concurrent starts cannot interleave a
-/// read-modify-write.
+/// read-modify-write. The dedicated file-update lock also covers exits and
+/// startup guards, which do not hold the live registry lock.
 ///
 /// READS TOLERATE THE LEGACY SHAPE. Before this change the file was a single
 /// bare object; a server that upgrades mid-flight must still adopt the browser
@@ -1045,13 +1046,21 @@ fn read_running_file(home: &Path) -> std::collections::HashMap<String, serde_jso
         .unwrap_or_default()
 }
 
+static RUNNING_FILE_UPDATES: Mutex<()> = Mutex::new(());
+
 fn write_running_file(home: &Path, map: &std::collections::HashMap<String, serde_json::Value>) {
     let obj: serde_json::Map<String, serde_json::Value> =
         map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let _ = std::fs::write(
-        running_state_path(home),
-        serde_json::Value::Object(obj).to_string(),
-    );
+    let path = running_state_path(home);
+    let temp = home.join(format!("browser-running-{}.tmp", ulid::Ulid::new()));
+    if let Err(error) = std::fs::write(&temp, serde_json::Value::Object(obj).to_string())
+        .and_then(|_| std::fs::rename(&temp, &path))
+    {
+        let _ = std::fs::remove_file(&temp);
+        tracing::warn!(%error, measured=true, n_considered=1,
+            verdict="browser_running_state_write_failed",
+            "browser restart records could not be atomically published");
+    }
 }
 
 /// How long a just-spawned Chrome is protected from reconciliation (AMUX-4961).
@@ -1095,6 +1104,7 @@ fn persist_running(
     started_by: &str,
     cdp_ready: bool,
 ) {
+    let _guard = RUNNING_FILE_UPDATES.lock().expect("browser running-file lock poisoned");
     let mut map = read_running_file(home);
     map.insert(
         profile.to_string(),
@@ -1116,6 +1126,7 @@ fn persist_running(
 /// on a single browser's death is how the remaining ones become unadoptable
 /// orphans after a restart.
 fn clear_running_for(home: &Path, profile: &str) {
+    let _guard = RUNNING_FILE_UPDATES.lock().expect("browser running-file lock poisoned");
     let mut map = read_running_file(home);
     map.remove(profile);
     if map.is_empty() {
@@ -1123,11 +1134,6 @@ fn clear_running_for(home: &Path, profile: &str) {
     } else {
         write_running_file(home, &map);
     }
-}
-
-#[allow(dead_code)]
-fn clear_running(home: &Path) {
-    let _ = std::fs::remove_file(running_state_path(home));
 }
 
 /// Re-adopt a browser this server did not spawn, if one is still there.
@@ -1388,7 +1394,7 @@ async fn reconcile_orphan_before_launch(home: &Path, target_dir: &Path) {
                      unreachable — a launch on this dir would delegate to it and exit 0 (AMUX-3207)"
                 );
                 let _ = run_kill(pid, "-KILL", "orphan reconciliation").await;
-                clear_running(home);
+                clear_running_for(home, v.get("profile").and_then(Value::as_str).unwrap_or("default"));
             }
         }
     }
@@ -2527,7 +2533,11 @@ pub async fn stop_profile_as_reason(
             }
         }
     }
-    clear_running(home);
+    clear_running_for(home, &running.profile);
+    tracing::info!(profile=%running.profile, measured=true, n_considered=1,
+        remaining_profiles=read_running_file(home).len(),
+        verdict="browser_profile_restart_record_retired",
+        "retired only the stopped profile's restart record");
 
     let clean_exit = locks_present(&running.user_data_dir).is_empty();
     let locks_cleaned = if !clean_exit && is_amux_owned(home, &running.user_data_dir) {
@@ -7630,5 +7640,38 @@ mod pending_chrome_tests {
         let mut published = PendingChrome(Some(child)).publish();
         assert!(published.try_wait().unwrap().is_none());
         published.kill().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod running_file_ownership_tests {
+    use super::*;
+    #[test]
+    fn parallel_profile_updates_preserve_peer_restart_records() {
+        let home = tempfile::tempdir().unwrap();
+        let path = std::sync::Arc::new(home.path().to_path_buf());
+        persist_running(&path, "keep", &path.join("keep"), 9000, 9001, 1, "peer", true);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(17));
+        let mut threads = Vec::new();
+        for i in 0..16 {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let profile = format!("worker-{i}");
+                persist_running(&path, &profile, &path.join(&profile), 9100+i, 9101+u32::from(i), 1, &profile, true);
+                barrier.wait();
+                barrier.wait();
+                clear_running_for(&path, &profile);
+            }));
+        }
+        barrier.wait();
+        let before = read_running_file(&path);
+        barrier.wait();
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(before.len(), 17, "a parallel start lost a profile's restart record");
+        let after = read_running_file(&path);
+        assert_eq!(after.len(), 1, "single-profile retirements changed their peer population");
+        assert_eq!(after["keep"]["pid"], 9001);
+        assert_eq!(after["keep"]["started_by"], "peer");
     }
 }

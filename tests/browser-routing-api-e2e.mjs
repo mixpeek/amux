@@ -139,12 +139,20 @@ try{
   prove('restarting a CUA route releases its desktop and prior CDP tab without closing a peer desktop',restartedGoal.route.backend==='cdp'&&!restartFleet.sandboxes.some(b=>b.lane===sessions[3])&&restartFleet.sandboxes.some(b=>b.lane===sessions[2])&&!(await api('http://127.0.0.1:'+goal.route.cdp_port,'/json/list')).some(t=>t.id===goal.route.target));
   await route(sessions[3],'stop');
   const tabs=await api('http://127.0.0.1:'+goal.route.cdp_port,'/json/list');
-  prove('stop after CDP to CUA closes exactly its previous CDP tab',!tabs.some(t=>t.id===goal.route.target)&&tabs.some(t=>t.id===cdp.route.target));
-  const afterStop=await api(base,'/api/computer/status');prove('stop after handoff removes only its own CUA desktop',!afterStop.sandboxes.some(b=>b.lane===sessions[3])&&afterStop.sandboxes.some(b=>b.lane===sessions[2]));
+  prove('stop after CUA replacement keeps the old CDP tab retired and preserves its peer',!tabs.some(t=>t.id===goal.route.target)&&tabs.some(t=>t.id===cdp.route.target));
+  const afterStop=await api(base,'/api/computer/status');prove('CUA replacement cleanup leaves its peer desktop alive after route stop',!afterStop.sandboxes.some(b=>b.lane===sessions[3])&&afterStop.sandboxes.some(b=>b.lane===sessions[2]));
 
   const nativeStatus=await api(base,'/api/browser/status');prove('fallback preserved the native owner process',nativeStatus.browsers.some(b=>b.pid===native.pid&&b.profile===profile));
   let conditionalStop;try{await api(base,'/api/browser/stop','POST',{profile,expected_started_by:'another-route'},sessions[0]);}catch(e){conditionalStop=e;}
   prove('conditional route cleanup preserves a browser owned by another lane',conditionalStop?.status===409&&conditionalStop.payload.code==='browser_stop_ownership_changed'&&(await route(sessions[0],'status')).running);
+  const nativePeerProfile='routing-api-native-peer',nativePeerOwner='routing-api-native-peer-owner';
+  const nativePeerDir=join(home,'playwright-auth','profiles',nativePeerProfile);mkdirSync(nativePeerDir,{recursive:true});
+  const nativePeer=await api(base,'/api/browser/start','POST',{profile:nativePeerProfile,url:url+'/protected',session:nativePeerOwner},nativePeerOwner);
+  try {
+    await api(base,'/api/browser/stop','POST',{profile:nativePeerProfile,expected_started_by:nativePeerOwner},nativePeerOwner);
+    const persisted=JSON.parse(readFileSync(join(home,'browser-running.json')));
+    prove('stopping one Native profile preserves its live peer and exact restart ownership',nativePeer.pid!==native.pid&&persisted[profile]?.pid===native.pid&&persisted[profile]?.started_by===sessions[0]&&(await route(sessions[0],'status')).running);
+  } finally {await api(base,'/api/browser/stop','POST',{profile:nativePeerProfile,expected_started_by:nativePeerOwner},nativePeerOwner).catch(()=>{});}
   const driverBytes=readFileSync(new URL('../scripts/browser-route-driver.mjs',import.meta.url));
   const driverPath=join(home,'browser-routing','driver-'+createHash('sha256').update(driverBytes).digest('hex').slice(0,24)+'.mjs');
   assert(existsSync(driverPath),'server must materialize the exact embedded driver content');
