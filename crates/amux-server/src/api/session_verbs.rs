@@ -8756,7 +8756,14 @@ async fn steer_enqueue_precond_with_id(
         );
         return Err("project controller owns executor prompts");
     }
-    let automation = !guard.is_empty() && !(guard == "project-steering" && sender.is_empty());
+    // A chat's note or relay is owner input, not amux automation, so isolation,
+    // pause and contract gates treat it as the owner's own send.
+    let chat_input = chat_speaks_for_owner(sender);
+    if chat_input && session_is_isolated(name) {
+        tracing::info!(session = name, sender, guard, measured = true, n_considered = 1,
+            verdict = "isolated_input_from_chat", "chat input delivered to an isolated worker as owner input");
+    }
+    let automation = !chat_input && !guard.is_empty() && !(guard == "project-steering" && sender.is_empty());
     // SCHEDULES REACH ISOLATED WORKERS (Ethan, 2026-09-26: "isolated workers
     // can still have schedulers they should"). A schedule is standing
     // configuration of that worker, not amux steering it, so it is exempt
@@ -26734,12 +26741,16 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
 /// an env file cannot turn its pending message into owner input.
 fn queued_peer_input_refusal(sender: &str, target: &str) -> Option<PeerInputRefusal> {
     if sender.is_empty() || sender == "owner" || sender.starts_with("harness:") || sender == "browser-reaper" { return None; }
+    if chat_speaks_for_owner(sender) { return None; }
     peer_input_refusal(sender, target)
 }
 
 pub(crate) fn cross_group_policy_ok(origin: &str, target: &str) -> Result<&'static str, String> {
     if origin.is_empty() || origin == target {
         return Ok("self-or-human");
+    }
+    if chat_speaks_for_owner(origin) {
+        return Ok("chat-for-owner");
     }
     // ISOLATED TARGET (AMUX-3232): a raw agent is not a peer/relay target. The
     // OWNER (empty origin) already returned above, so this refuses ONLY a PEER
@@ -27208,6 +27219,18 @@ pub(crate) fn chat_tab_of(origin: &str, target: &str) -> bool {
     super::chat_worker::companion_parent(origin) == Some(target)
 }
 
+/// A chat speaks for the owner, so its input reaches any worker the owner's
+/// would, isolated ones included (Ethan, 2026-10-10: "chats should be able to
+/// interact with a worker, write, read, interact etc even if its isolated").
+/// A chat is a worker's Chat tab or a worker whose type is `chat`; both are
+/// conversations only the owner starts. Widens AMUX-5350's own-tab exception,
+/// which refused a chat's card note and a chat's send to any other worker.
+pub(crate) fn chat_speaks_for_owner(origin: &str) -> bool {
+    !origin.is_empty()
+        && (is_chat_companion(origin)
+            || crate::api::worker_exec::worker_type_of(origin).as_str() == "chat")
+}
+
 async fn isolated_peer_refusal(
     state: &AppState,
     name: &str,
@@ -27226,9 +27249,10 @@ async fn isolated_peer_refusal(
     // worker if needed?"). Its turns are started only by the owner, and the tab
     // is part of the worker, not a peer (chat_worker.rs), so its send to its
     // own worker is owner input relayed through that worker's tab.
-    if chat_tab_of(&origin, name) {
+    if chat_speaks_for_owner(&origin) {
+        let verdict = if chat_tab_of(&origin, name) { "isolated_send_from_own_chat_tab" } else { "isolated_send_from_chat" };
         tracing::info!(origin = %origin, target = %name, measured = true, n_considered = 1,
-            verdict = "isolated_send_from_own_chat_tab", "an isolated worker took a send from its own Chat tab (owner input)");
+            verdict, "an isolated worker took a send from a chat (owner input)");
         return None;
     }
     let reason = format!(
@@ -35511,6 +35535,31 @@ mod tests {
         .unwrap();
         assert_eq!(body["cleared"], 4, "the full sweep takes the system rows: {body}");
         assert_eq!(body["spared_system"], 0, "nothing was spared: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_chat_reaches_an_isolated_worker_as_owner_input_and_a_peer_still_does_not() {
+        let (st, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("raw.env"), "CC_TAGS=alpha\nCC_ISOLATED=1\n").unwrap();
+        std::fs::write(sessions.join("talker.env"), "CC_TAGS=beta\nCC_WORKER_TYPE=chat\n").unwrap();
+        std::fs::write(sessions.join("peer.env"), "CC_TAGS=beta\nCC_SEND_ALLOW=*\n").unwrap();
+        // Another worker's Chat tab, a chat-type worker, and a plain peer.
+        for (sender, allowed) in [("other@chat", true), ("talker", true), ("peer", false)] {
+            assert_eq!(chat_speaks_for_owner(sender), allowed, "{sender}");
+            assert_eq!(cross_group_policy_ok(sender, "raw").is_ok(), allowed, "{sender}");
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amux-worker", sender.parse().unwrap());
+            let refused = isolated_peer_refusal(&st, "raw", &headers).await;
+            assert_eq!(refused.is_none(), allowed, "direct send from {sender}");
+            // A card note rides the automation queue with a producer guard.
+            let noted = steer_enqueue(&st, "raw", "[board note on X-1] note", "board-progress", sender).await;
+            assert_eq!(noted.is_ok(), allowed, "card note from {sender}: {noted:?}");
+        }
+        // Owner-free automation still never reaches the isolated worker.
+        assert!(steer_enqueue(&st, "raw", "nudge", "commit-nudge", "").await.is_err());
     }
 
     #[tokio::test]

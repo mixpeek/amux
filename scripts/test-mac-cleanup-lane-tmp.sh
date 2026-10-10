@@ -37,6 +37,10 @@ printf '%s' "$out" | grep -q 'lane tmp: removed 2 entries' && echo "ok   the tic
 [ ! -e "$R/lane4/big.bin" ] && echo "ok   a large old file is still reaped" || { echo "FAIL large idle file kept"; fail=1; }
 printf '%s' "$out" | grep -q 'kept 2 named by an enabled schedule, 1 small file' && echo "ok   the keeps are counted in the log" || { echo "FAIL keep counts: $out"; fail=1; }
 mkdir -p "$R/lane5/old"; touch -t 202609300000 "$R/lane5/old"
+# DESKT-95: lsof that cannot run must remove NOTHING. An empty in-use list used
+# to read as "nothing is in use" and lane2/inuse was deleted.
+outn="$(LANE_TMP_ROOT="$R" LANE_TMP_IDLE_MIN=1440 AMUX_CLEANUP_LSOF_BIN=/nonexistent/lsof bash -c ". '$F'; reap_lane_tmp 0")"
+[ -d "$R/lane5/old" ] && [ -d "$R/lane2/inuse" ] && printf '%s' "$outn" | grep -q 'lane_tmp_cwd_unmeasured' && echo "ok   with no lsof nothing is removed, and it says so" || { echo "FAIL no-lsof: $outn"; fail=1; }
 out3="$(LANE_TMP_SCHED_DB="$T/missing.db" LANE_TMP_ROOT="$R" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 0")"
 [ -d "$R/lane5/old" ] && printf '%s' "$out3" | grep -q 'lane_tmp_schedules_unmeasured' && echo "ok   unreadable schedules reap nothing and say so" || { echo "FAIL unreadable schedules: $out3"; fail=1; }
 mkdir -p "$R/lane3/a" "$R/lane3/b" "$R/lane3/c"; touch -t 202609300000 "$R/lane3/a" "$R/lane3/b" "$R/lane3/c"

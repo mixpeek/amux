@@ -40,6 +40,8 @@ metadata; a restarted raw CLI must not inherit harness routing.
 Two owner-configured exceptions reach isolated workers as owner input: their
 schedules, and the goal keeper continuing an owner-set Claude Code `/goal` that
 is not met (`AMUX_GOAL_CONTINUE=0` opts out).
+A chat speaks for the owner: a worker's Chat tab or a `chat`-type worker can read,
+send to, queue for and leave card notes that reach any worker, isolated included.
 
 ## Primitives (do not reinvent)
 

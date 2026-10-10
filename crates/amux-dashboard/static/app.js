@@ -2348,19 +2348,22 @@ function _uiComponentCheck(root = document) {
 
 // AF-749: measure open dialogs against the keyboard-visible viewport. Keep
 // diagnostics free of dialog text (worker messages and credentials live here).
-const _dialogSelector = '.amux-dialog-backdrop,.amux-workspace-dialog,#cmd-history-modal,#filters-modal,#saved-messages-modal,#skill-edit-modal,#file-overlay,#mdai-overlay,#channel-drawer,#board-detail-overlay,#apikey-setup-modal,#upgrade-modal,#video-overlay,.modal-backdrop,.edit-overlay,.queue-overlay,.board-edit-overlay,.map-modal,.modal-overlay,#conn-hist-modal,#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,[data-ical-modal],.chip-picker-overlay,.tts-overlay,.focus-overlay,.conn-picker-overlay,.mdai-picker-overlay';
+const _dialogSelector = '#psf-body,.amux-dialog-backdrop,.amux-workspace-dialog,#cmd-history-modal,#filters-modal,#saved-messages-modal,#skill-edit-modal,#file-overlay,#mdai-overlay,#channel-drawer,#board-detail-overlay,#apikey-setup-modal,#upgrade-modal,#video-overlay,.modal-backdrop,.edit-overlay,.queue-overlay,.board-edit-overlay,.map-modal,.modal-overlay,#conn-hist-modal,#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,[data-ical-modal],.chip-picker-overlay,.tts-overlay,.focus-overlay,.conn-picker-overlay,.mdai-picker-overlay';
 function _modalLayoutCheck() {
   const viewport = window.visualViewport;
   const top = viewport?.offsetTop || 0, height = viewport?.height || innerHeight;
   let n = 0;
   const clipped = [];
   document.querySelectorAll(_dialogSelector).forEach(root => {
+    if (root.id === 'psf-body' && !root.classList.contains('psf-file-view')) return;
     const style = getComputedStyle(root);
     if (root.id === 'proxy-form-overlay' && root.style.display === 'flex' && !root.classList.contains('active')) {
       n++; clipped.push('proxy-form-overlay:inactive'); return;
     }
     if (style.display === 'none' || style.opacity === '0' || style.pointerEvents === 'none') return;
-    const box = root.firstElementChild;
+    // File overlays are themselves the flex frame. Their first child is only
+    // the header; measuring that missed a scrollport ending below the window.
+    const box = root.classList.contains('file-overlay') ? root : root.firstElementChild;
     if (!box || getComputedStyle(box).opacity === '0') return;
     const r = box.getBoundingClientRect();
     if (!r.width || !r.height) return;
@@ -2416,7 +2419,7 @@ function _modalLayoutCheck() {
     }
     // Safari pans the fixed containing block with the keyboard; offsetTop
     // is not in the same coordinate space as its rendered child rectangles.
-    const visibleTop = root.classList.contains('amux-dialog-viewport') ? root.getBoundingClientRect().top : top;
+    const visibleTop = root.classList.contains('amux-dialog-viewport') && !root.classList.contains('file-overlay') ? root.getBoundingClientRect().top : top;
     if (r.top < visibleTop - 2 || r.bottom > visibleTop + height + 2 || r.left < -2 || r.right > innerWidth + 2)
       clipped.push(root.id || root.classList[0]);
     for (const issue of _dialogReachCheck(root)) clipped.push((root.id || root.classList[0]) + ':' + issue);
@@ -2442,6 +2445,12 @@ function _modalLayoutCheck() {
 function _dialogReachCheck(root) {
   const issues = [];
   const cs = el => getComputedStyle(el);
+  root.querySelectorAll('.file-overlay-body.file-image').forEach(holder => {
+    const card = holder.firstElementChild;
+    if (!card || card.classList.contains('img-zoom-wrap') || holder.scrollTop > 1) return;
+    if (card.getBoundingClientRect().top < holder.getBoundingClientRect().top - 1)
+      issues.push('start-content-unreachable');
+  });
   // A box is not a view. A collapsed <details> is 80px tall with overflow
   // hidden and a 1400px child inside it, and that child's rect runs a thousand
   // pixels past the fold while being painted nowhere. Intersect with every
@@ -2533,7 +2542,7 @@ function _dialogReachCheck(root) {
       document.documentElement.style.setProperty('--dialog-viewport-height', (vv?.height || innerHeight) + 'px');
       document.documentElement.style.setProperty('--dialog-viewport-top', (vv?.offsetTop || 0) + 'px');
     }
-    document.querySelectorAll(_dialogSelector).forEach(root => { if (!root.classList.contains('amux-dialog-viewport')) root.classList.add('amux-dialog-viewport'); });
+    document.querySelectorAll(_dialogSelector).forEach(root => { if (root.id !== 'psf-body' && !root.classList.contains('amux-dialog-viewport')) root.classList.add('amux-dialog-viewport'); });
     clearTimeout(timer);
     timer = setTimeout(() => {
       const result = _modalLayoutCheck(), signature = result.clipped.join(',');
@@ -2553,9 +2562,9 @@ function _dialogReachCheck(root) {
     }, 350);
   };
   new MutationObserver(records => {
-    if (records.some(r => r.type === 'childList' ? r.target === document.body || r.target.matches?.('[data-component="board-list"],#peek-issues-list') :
+    if (records.some(r => r.type === 'childList' ? r.target === document.body || r.target.matches?.('[data-component="board-list"],#peek-issues-list,#file-body,#mdai-body,#psf-body') :
       r.target.matches?.(_dialogSelector) && !r.target.classList.contains('amux-dialog-viewport'))) refresh();
-    else if (records.some(r => r.type === 'attributes' && (r.target === document.body || r.target.matches?.(_dialogSelector)))) {
+    else if (records.some(r => r.type === 'attributes' && (r.target === document.body || r.target.matches?.(_dialogSelector + ',#file-body,#mdai-body')))) {
       clearTimeout(timer); timer = setTimeout(refresh, 50);
     }
   }).observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:['class','style']});
@@ -15606,6 +15615,14 @@ document.addEventListener('mouseover', function(e) {
 // --- Split pane sorting ---
 let _psfSort = { col: 'modified', dir: -1 };
 let _psfLastData = null;
+let _psfLoadGeneration = 0;
+function _psfAcceptResponse(generation) {
+  if (generation === _psfLoadGeneration) return true;
+  // Navigation wins over an older directory/file response, even on slow links.
+  fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({kind:'file-split-stale-response',verdict:'discarded',measured:true,n:1,ver:APP_VER})}).catch(() => {});
+  return false;
+}
 function _psfSortEntries(entries) {
   return [...entries].sort((a, b) => {
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
@@ -15639,6 +15656,7 @@ function _psfUpdateSortHeaders() {
 
 function _psfRenderEntries(dirPath, data) {
   const body = document.getElementById('psf-body');
+  body.classList.remove('psf-file-view');
   const hdrs = document.getElementById('psf-col-headers');
   if (hdrs) hdrs.style.display = '';
   body.innerHTML = '';
@@ -15673,9 +15691,12 @@ function _psfRenderEntries(dirPath, data) {
 }
 
 async function _psfLoad(dirPath) {
+  const generation = ++_psfLoadGeneration;
+  _psfLastData = null;
   _peekSplitPath = dirPath;
   _savePeekState();
   const body = document.getElementById('psf-body');
+  body.classList.remove('psf-file-view');
   const bc = document.getElementById('psf-breadcrumb');
   const hdrs = document.getElementById('psf-col-headers');
   const parts = dirPath.split('/').filter(Boolean);
@@ -15692,19 +15713,24 @@ async function _psfLoad(dirPath) {
   try {
     const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(dirPath));
     const data = await r.json();
+    if (!_psfAcceptResponse(generation)) return;
     if (data.error) { body.innerHTML = '<div style="padding:12px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _psfLastData = { dirPath, data };
     _psfUpdateSortHeaders();
     _psfRenderEntries(dirPath, data);
   } catch(e) {
+    if (!_psfAcceptResponse(generation)) return;
     body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(e.message) + '</div>';
   }
 }
 
 async function _psfViewFile(filePath) {
+  const generation = ++_psfLoadGeneration;
+  _psfLastData = null;
   if (/\.mdai$/i.test(filePath || '')) { openMdaiNode(filePath); return; }
   if (/\.(xlsx|xls|ods)$/i.test(filePath || '')) { _openXlsxPreview(filePath); return; }
   const body = document.getElementById('psf-body');
+  body.classList.add('psf-file-view');
   const bc = document.getElementById('psf-breadcrumb');
   const hdrs = document.getElementById('psf-col-headers');
   if (hdrs) hdrs.style.display = 'none';
@@ -15717,6 +15743,7 @@ async function _psfViewFile(filePath) {
     if (peekSessionDir) url += '&cwd=' + encodeURIComponent(peekSessionDir);
     const r = await fetch(url);
     const data = await r.json();
+    if (!_psfAcceptResponse(generation)) return;
     if (data.error) { body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(data.error) + '</div>'; return; }
     body.innerHTML = '';
     const content = document.createElement('div');
@@ -15757,7 +15784,7 @@ async function _psfViewFile(filePath) {
       const iframe = document.createElement('iframe');
       iframe.sandbox = 'allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox';
       iframe.setAttribute('scrolling', 'yes');
-      iframe.style.cssText = 'width:100%;flex:1;min-height:300px;border:none;background:#fff;';
+      iframe.style.cssText = 'width:100%;flex:1;min-height:0;border:none;background:#fff;';
       content.appendChild(iframe);
       // Same as the file overlay: load from the file's own URL so in-page
       // anchors and relative links stay inside the document (see _htmlPreviewUrl).
@@ -15773,6 +15800,7 @@ async function _psfViewFile(filePath) {
     }
     body.appendChild(content);
   } catch(e) {
+    if (!_psfAcceptResponse(generation)) return;
     body.innerHTML = '<div style="padding:12px;color:var(--dim)">Error: ' + esc(e.message) + '</div>';
   }
 }
@@ -24433,6 +24461,11 @@ function _ensurePdfjs() {
 const _PDF_PAGE_CAP = 30;
 
 async function _renderPdf(data, body) {
+  const owner = Symbol('pdf-render');
+  body._pdfRender = owner;
+  const current = () => body._pdfRender === owner && body.isConnected && body.classList.contains('file-pdf') && body.getClientRects().length > 0;
+  const report = (verdict, pages = 0, total = 0) => fetch(API + '/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({kind:'file-pdf-render',verdict,pages,total_pages:total,viewer:body.id==='file-body'?'overlay':'split',measured:true,n_considered:1,ver:APP_VER})}).catch(()=>{});
   // The server inlines PDFs as a base64 data_url; decode to bytes for pdf.js.
   let bytes = null;
   const b64 = (data.data_url || '').split(',')[1];
@@ -24447,11 +24480,13 @@ async function _renderPdf(data, body) {
   try {
     pdfjs = await _ensurePdfjs();
   } catch (e) {
+    if (!current()) return;
     // Lib unavailable (offline / CDN blocked): fall back to the native embed,
     // which at least renders on desktop, plus the always-present Download button.
     body.innerHTML = '<embed src="' + (data.data_url || '') + '" type="application/pdf" '
       + 'style="width:100%;height:100%;min-height:520px;border-radius:4px;">'
       + '<div class="pdf-note">Inline rendering needs a connection — use Download to open offline.</div>';
+    report('native_fallback');
     return;
   }
   try {
@@ -24459,9 +24494,9 @@ async function _renderPdf(data, body) {
       ? { data: bytes }
       : { url: _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(data.path)) };
     const pdf = await pdfjs.getDocument(src).promise;
-    // The overlay may have been closed while the lib/doc loaded.
-    const overlay = document.getElementById('file-overlay');
-    if (!overlay || !overlay.classList.contains('active')) return;
+    // Split-pane PDFs have no open file overlay. Check the actual container;
+    // navigation invalidates obsolete asynchronous renders too.
+    if (!current()) return;
     body.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'pdf-pages';
@@ -24470,6 +24505,7 @@ async function _renderPdf(data, body) {
     const pages = Math.min(pdf.numPages, _PDF_PAGE_CAP);
     for (let n = 1; n <= pages; n++) {
       const page = await pdf.getPage(n);
+      if (!current()) return;
       const cssWidth = Math.min(wrap.clientWidth || body.clientWidth || 800, 900) - 4;
       const base = page.getViewport({ scale: 1 });
       const vp = page.getViewport({ scale: (cssWidth / base.width) * dpr });
@@ -24489,7 +24525,10 @@ async function _renderPdf(data, body) {
         + ' pages — use Download to open the full document.';
       wrap.appendChild(more);
     }
+    report('rendered', pages, pdf.numPages);
   } catch (e) {
+    if (!current()) return;
+    report('failed');
     body.innerHTML = '<div class="pdf-note">Could not render this PDF ('
       + ((e && e.message) || e) + '). Use Download to open it.</div>';
   }
@@ -25431,11 +25470,11 @@ async function openFilePreview(path, options = {}) {
   // versions, and RUNS THE CHAIN on open — none of which the generic file body
   // does. Route before touching the file-overlay DOM so a .mdai opened from the
   // file browser or a file link lands in the right viewer.
-  if (/\.mdai$/i.test(path || '')) { openMdaiNode(path); return; }
+  if (!options.raw && /\.mdai$/i.test(path || '')) { openMdaiNode(path); return; }
   // Spreadsheets render as tables, not a download (AMUX-3343).
   if (/\.(xlsx|xls|ods)$/i.test(path || '')) { _openXlsxPreview(path); return; }
   _fileData = null;
-  _fileViewMode = 'preview';
+  _fileViewMode = options.raw ? 'raw' : 'preview';
   document.getElementById('file-save-btn').style.display = 'none';
   document.getElementById('file-edit-wrap').style.display = 'none';
   document.getElementById('file-title').textContent = path.split('/').pop();
@@ -28431,11 +28470,19 @@ function _mdaiMenu(btn) {
   });
   item('Open raw .mdai file', _mdaiOpenRaw);
   document.body.appendChild(popup);
-  const r = btn.getBoundingClientRect();
+  const r = _cssRect(btn), z = _uiZoomFactor();
+  const vh = (window.visualViewport?.height || innerHeight) / z, vw = innerWidth / z;
+  const naturalHeight = popup.offsetHeight;
+  popup.style.maxHeight = Math.max(0, vh - 16) + 'px';
+  popup.style.overflowY = 'auto';
   popup.style.position = 'fixed';
-  popup.style.top = (r.bottom + 4) + 'px';
-  popup.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  popup.style.top = Math.max(8, Math.min(r.bottom + 4, vh - popup.offsetHeight - 8)) + 'px';
+  popup.style.right = Math.max(8, vw - r.right) + 'px';
   popup.style.zIndex = '400';
+  if (r.bottom + 4 + naturalHeight > vh - 8) {
+    fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'file-menu-layout',verdict:'clamped',measured:true,n:1,ver:APP_VER})}).catch(() => {});
+  }
   setTimeout(() => {
     const close = (e) => {
       if (!popup.contains(e.target) && e.target !== btn) {
@@ -28497,7 +28544,10 @@ function _mdaiOpenRaw() {
   if (!_mdaiCur) return;
   const abs = _mdaiCur.abs;
   closeMdaiNode();
-  openFilePreview(abs);
+  return openFilePreview(abs, {raw:true}).then(() => {
+    fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'mdai-raw-view',verdict:_fileData?.content != null && _fileViewMode === 'raw' ? 'opened' : 'unavailable',measured:true,n:1,ver:APP_VER})}).catch(() => {});
+  });
 }
 function _mdaiRender() {
   const el = document.getElementById('mdai-body');
