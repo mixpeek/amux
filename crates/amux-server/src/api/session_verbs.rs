@@ -35559,7 +35559,7 @@ mod tests {
             assert_eq!(noted.is_ok(), allowed, "card note from {sender}: {noted:?}");
         }
         // Owner-free automation still never reaches the isolated worker.
-        assert!(steer_enqueue(&st, "raw", "nudge", "board-drive", "").await.is_err());
+        assert!(steer_enqueue(&st, "raw", "nudge", "commit-nudge", "").await.is_err());
     }
 
     #[tokio::test]
