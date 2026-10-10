@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1292';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1293';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -44461,6 +44461,13 @@ function _restoreScreen() {
           if (wrap) wrap.classList.add('split-active');
           if (btn) btn.classList.add('active');
           _psfLoad(_ps.splitPath || peekSessionDir || '/');
+          // The same three steps togglePeekSplit takes when it opens the split.
+          // Skipping them left a restored split with a divider that could not
+          // be dragged (no handler), its default width, and the file view in
+          // place of the Chat/Messages panel that had been open.
+          _initSplitResize();
+          _restoreSplitWidths();
+          _peekSplitShow(_peekSplitView);
         }, 300);
       }
     }, 200);
