@@ -1,4 +1,5 @@
 import {test,expect} from './fixtures';
+import {cleanup} from './teardown';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -42,5 +43,5 @@ test('Markdown file anchors open complete real files in finished, interrupted an
   await expect.poll(()=>beacons.length).toBe(4);expect(beacons.every(x=>x.measured===true&&x.n===1)).toBe(true);
   await render('finished','[external](https://example.com/docs/proof.md) [heading](#evidence) [bad](javascript:alert(1))');
   await expect(page.locator('.chat-bubble a.md-file-link')).toHaveCount(0);await expect(page.locator('.chat-bubble a[href="https://example.com/docs/proof.md"]')).toHaveAttribute('target','_blank');await expect(page.locator('.chat-bubble a[href^="javascript:"]')).toHaveCount(0);
- }finally{await rm(dir,{recursive:true,force:true});}
+ }finally{await cleanup('remove temp folder',()=>rm(dir,{recursive:true,force:true}),info);}
 });
