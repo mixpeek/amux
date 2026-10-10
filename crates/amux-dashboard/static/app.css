@@ -1880,6 +1880,8 @@
     border-bottom: 1px solid var(--border);
   }
   .ac-item:last-child { border-bottom: none; }
+  .ac-item.ac-example { padding-left: 22px; }
+  .ac-item .ac-eg { font-family: -apple-system, sans-serif; color: var(--dim); font-size: 0.7rem; margin-right: 6px; }
   .ac-item:active, .ac-item.selected { background: rgba(88,166,255,0.15); }
   .ac-section { padding: 4px 12px; font-size: 0.68rem; font-family: -apple-system, sans-serif;
     color: var(--dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;

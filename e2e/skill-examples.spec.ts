@@ -59,3 +59,52 @@ test('when nothing can be inferred the reason is shown', async ({ page }, info) 
   const box = await expand(page, name);
   await expect(box).toContainText('No examples yet: meta-task model call failed: no key');
 });
+
+// The same examples appear in the `/` dropdown of the worker/Chat input and a
+// worker card's input once the typed text names the skill, filtered by what
+// has been typed; picking one fills the whole invocation.
+test('typing a skill in a composer offers its examples and a pick fills the invocation', async ({ page }, info) => {
+  const name = `ex-ac-${info.project.name}-${Date.now().toString(36)}`;
+  const worker = { name: 'ex-ac-worker', provider: 'claude', model: 'sonnet', running: true, status: 'idle', dir: '/tmp' };
+  await page.route(/\/api\/sessions(?:\?.*)?$/, (r) => r.fulfill({ json: [worker] }));
+  await page.route(/\/api\/skills\/[^/]+\/examples/, (r) => r.fulfill({ json: {
+    name, written: [], cached: true, measured: true, n_considered: 1,
+    inferred: [
+      { invocation: `/${name} 3 8 auto tighten the README`, purpose: 'Three passes aiming for 8/10' },
+      { invocation: `/${name} 5`, purpose: 'Five passes, default target' },
+    ],
+  } }));
+  await createSkill(page, name, '---\ndescription: Iterate on something\n---\nbody\n');
+  await page.evaluate(() => (window as any)._loadSlashCommands());
+  await page.evaluate((w) => {
+    eval('sessions=' + JSON.stringify([w]) + '; render();');
+    (window as any).openPeek(w.name); (window as any)._stopPeekPoll();
+  }, worker);
+
+  const input = page.locator('#peek-cmd-input');
+  const list = page.locator('#slash-ac-list');
+  await input.fill('');
+  await input.pressSequentially(`/${name}`);
+  await expect(list.locator('.ac-example')).toHaveCount(2);
+  await expect(list.locator('.ac-example').first()).toContainText('e.g.');
+  await expect(list).toContainText('Three passes aiming for 8/10');
+  // Typing arguments narrows the examples to the ones that still fit.
+  await input.pressSequentially(' 3');
+  await expect(list.locator('.ac-example')).toHaveCount(1);
+  await list.locator('.ac-example').first().dispatchEvent('mousedown');
+  await expect(input).toHaveValue(`/${name} 3 8 auto tighten the README`);
+  await page.evaluate(() => (window as any).closePeek());
+
+  // A worker card's own input offers the same examples.
+  await page.evaluate((n) => {
+    if (!document.querySelector(`.card[data-session="${n}"]`)?.classList.contains('expanded')) (window as any).toggle(n);
+  }, worker.name);
+  const cardInput = page.locator(`#input-${worker.name}`);
+  await expect(cardInput).toBeVisible();
+  await cardInput.fill('');
+  await cardInput.pressSequentially(`/${name}`);
+  const cardList = page.locator(`#card-ac-${worker.name}`);
+  await expect(cardList.locator('.ac-example')).toHaveCount(2);
+  await cardList.locator('.ac-example').nth(1).dispatchEvent('mousedown');
+  await expect(cardInput).toHaveValue(`/${name} 5`);
+});

@@ -20216,6 +20216,45 @@ function _loadSlashCommands() {
 }
 _loadSlashCommands();
 
+// EXAMPLES IN THE `/` DROPDOWN (Ethan, 2026-10-10: "the example should also be
+// in the dropdown when i type it"). Once the typed text names one command,
+// that skill's example invocations (the same ones its expanded Skills card
+// shows, from /api/skills/<name>/examples) are listed under it, filtered by
+// what has been typed so far; picking one fills the whole invocation.
+const _skillExamplesCache = {};   // name -> [{invocation, purpose}], [] for none
+function _skillExamplesFor(name, rerender) {
+  if (name in _skillExamplesCache) return _skillExamplesCache[name];
+  _skillExamplesCache[name] = null;   // in flight
+  fetch(API + '/api/skills/' + encodeURIComponent(name) + '/examples')
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(d => {
+      const rows = [];
+      for (const inv of (d && d.written) || []) rows.push({ invocation: inv, purpose: 'Written in the skill file' });
+      for (const ex of (d && d.inferred) || []) if (!rows.some(r => r.invocation === ex.invocation)) rows.push(ex);
+      // A refused or unmeasured answer is not remembered, so a later `/` retries.
+      if (d && d.measured === false && !rows.length) delete _skillExamplesCache[name];
+      else _skillExamplesCache[name] = rows;
+      if (rows.length && rerender) rerender();
+    });
+  return null;
+}
+function _slashAcMatches(q, rerender) {
+  let items = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  const head = q.split(/\s/)[0];
+  const target = SLASH_COMMANDS.find(c => c.cmd === head) || (items.length === 1 ? items[0] : null);
+  if (target && !_isBuiltinCmd(target.cmd)) {
+    const ex = _skillExamplesFor(target.cmd.slice(1), rerender) || [];
+    const more = ex.filter(e => e.invocation.toLowerCase().startsWith(q) && e.invocation.toLowerCase() !== q)
+      .map(e => ({ cmd: e.invocation, desc: e.purpose || '', example: true }));
+    items = items.concat(more);
+  }
+  return items;
+}
+function _slashAcRow(c) {
+  return (c.example ? '<span class="ac-eg">e.g.</span>' : '') + esc(c.cmd) + '<span class="ac-desc">' + esc(c.desc) + '</span>';
+}
+
 // ── Customizable chip bar ──
 // Each chip: { id, label, action, value, danger? }
 // action: 'send' (text), 'keys' (keystroke), 'slash' (populate input), 'special' (named fn)
@@ -21652,11 +21691,11 @@ function slashAcUpdate() {
   if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
   if (_slashCmdsLoading) { const v = val; _slashCmdsLoading.then(() => { if (inp.value === v) slashAcUpdate(); }); }
   const q = val.toLowerCase();
-  slashAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  slashAcItems = _slashAcMatches(q, () => { if (inp.value === val) slashAcUpdate(); });
   slashAcSelected = -1;
   if (!slashAcItems.length) { el.classList.remove('open'); return; }
   el.innerHTML = slashAcItems.map((c, i) =>
-    `<div class="ac-item" onmousedown="slashAcPick(${i})">${esc(c.cmd)}<span class="ac-desc">${esc(c.desc)}</span></div>`
+    `<div class="ac-item${c.example ? ' ac-example' : ''}" onmousedown="slashAcPick(${i})">${_slashAcRow(c)}</div>`
   ).join('') + '<button class="ac-close" onmousedown="event.preventDefault();slashAcDismiss()" title="Close">&times;</button>';
   el.classList.add('open');
 }
@@ -23849,11 +23888,11 @@ function cardSlashAcUpdate(name) {
   if (!val.startsWith('/')) { el.classList.remove('open'); _cardAcItems = []; return; }
   if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
   const q = val.toLowerCase();
-  _cardAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  _cardAcItems = _slashAcMatches(q, () => { if (inp.value === val && _cardAcName === name) cardSlashAcUpdate(name); });
   _cardAcSelected = -1;
   if (!_cardAcItems.length) { el.classList.remove('open'); return; }
   el.innerHTML = _cardAcItems.map((c, i) =>
-    `<div class="ac-item" onmousedown="cardSlashAcPick('${esc(name)}',${i})">${esc(c.cmd)}<span class="ac-desc">${esc(c.desc)}</span></div>`
+    `<div class="ac-item${c.example ? ' ac-example' : ''}" onmousedown="cardSlashAcPick('${esc(name)}',${i})">${_slashAcRow(c)}</div>`
   ).join('');
   el.classList.add('open');
 }
