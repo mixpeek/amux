@@ -137,7 +137,10 @@ total=0; worst=0
 # Without the split, a miss cannot say whether it was the handler, a cold
 # first query, or connection setup.
 SEARCH_BODY="$WORK/search-body.json"
-for term in deploy migration quokka "index gateway" regression; do
+# Two passes over the five terms: ten samples, judged on the median like
+# perf-baseline.sh (AMUX-5712); the average is still reported.
+search_samples=""; n_search=0
+for term in deploy migration quokka "index gateway" regression deploy migration quokka "index gateway" regression; do
   t=$(curl -sk -o "$SEARCH_BODY" -w '%{time_appconnect} %{time_total}' -H "Authorization: Bearer $TOKEN" \
       --get --data-urlencode "q=$term" "https://localhost:$PORT/api/search")
   read -r t_tls t_total <<<"$t"
@@ -146,14 +149,17 @@ for term in deploy migration quokka "index gateway" regression; do
   tls=$(python3 -c "print(int(float('$t_tls')*1000))")
   echo "   search q=\"$term\": client ${ms}ms (tls done at ${tls}ms), server took_ms=${took}" >&2
   total=$((total + ms)); [ "$ms" -gt "$worst" ] && worst=$ms
+  search_samples="$search_samples $ms"; n_search=$((n_search + 1))
 done
-SEARCH_AVG=$((total / 5))
+SEARCH_AVG=$((total / n_search))
+SEARCH_MEDIAN=$(printf '%s\n' $search_samples | sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}')
 BINARY_BYTES=$(wc -c < "$BIN" | tr -d ' ')
 
-python3 - "$BASE_JSON" "$SEARCH_AVG" "$worst" "$BINARY_BYTES" "$DOCS" "$OUT" <<'PY'
+python3 - "$BASE_JSON" "$SEARCH_AVG" "$worst" "$BINARY_BYTES" "$DOCS" "$OUT" "$SEARCH_MEDIAN" <<'PY'
 import json, sys
 base = json.loads(sys.argv[1])
 base["search_avg_ms"] = int(sys.argv[2])
+base["search_median_ms"] = int(sys.argv[7])
 base["search_worst_ms"] = int(sys.argv[3])
 base["binary_bytes"] = int(sys.argv[4])
 base["_corpus"] = {

@@ -41,10 +41,16 @@ done
 
 TOKEN=$(cat "$WORK/auth-token" 2>/dev/null || echo "")
 
+# MEDIAN OF N, judged; average and worst still reported (AMUX-5712). Five
+# averaged samples on a shared runner moved 181 -> 202ms for board between two
+# runs of the SAME code, and health 13 -> 44ms, so the verdict tracked runner
+# weather and one 284ms outlier more than the code. The thresholds are
+# unchanged; only which statistic they are applied to.
+PERF_SAMPLES="${PERF_SAMPLES:-9}"
 measure() { # name url [auth]
   local name=$1 url=$2 auth=${3:-}
-  local total=0 worst=0
-  for _ in 1 2 3 4 5; do
+  local total=0 worst=0 samples=""
+  for _ in $(seq 1 "$PERF_SAMPLES"); do
     local t
     if [ -n "$auth" ]; then
       t=$(curl -sk -o /dev/null -w '%{time_total}' -H "Authorization: Bearer $TOKEN" "$url")
@@ -53,9 +59,12 @@ measure() { # name url [auth]
     fi
     t_ms=$(python3 -c "print(int(float('$t')*1000))")
     total=$((total + t_ms))
+    samples="$samples $t_ms"
     [ "$t_ms" -gt "$worst" ] && worst=$t_ms
   done
-  echo "\"${name}_avg_ms\": $((total / 5)), \"${name}_worst_ms\": $worst"
+  local median
+  median=$(printf '%s\n' $samples | sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}')
+  echo "\"${name}_avg_ms\": $((total / PERF_SAMPLES)), \"${name}_median_ms\": $median, \"${name}_worst_ms\": $worst"
 }
 
 M1=$(measure dashboard "https://localhost:$PORT/")
@@ -106,11 +115,11 @@ echo "{ $M1, $M2, $M3, $M4, $M5, \"rss_mb\": $RSS_MB, \"dirty_mb\": ${DIRTY_MB:-
 # and route the reader to AMUX-3488.
 RSS_MAX_MB="${PERF_RSS_MAX_MB:-280}"
 fail=0
-avg() { echo "$1" | sed 's/.*_avg_ms": \([0-9]*\).*/\1/'; }
-[ "$(avg "$M1")" -lt 500 ] || { echo "FAIL: dashboard >= 500ms"; fail=1; }
-[ "$(avg "$M2")" -lt 50 ] || { echo "FAIL: health >= 50ms"; fail=1; }
-[ "$(avg "$M3")" -lt 200 ] || {
-  echo "FAIL: board >= 200ms"
+med() { echo "$1" | sed 's/.*_median_ms": \([0-9]*\).*/\1/'; }
+[ "$(med "$M1")" -lt 500 ] || { echo "FAIL: dashboard median >= 500ms"; fail=1; }
+[ "$(med "$M2")" -lt 50 ] || { echo "FAIL: health median >= 50ms"; fail=1; }
+[ "$(med "$M3")" -lt 200 ] || {
+  echo "FAIL: board median >= 200ms"
   fail=1
   # SAY WHERE (AMUX-5374). This gate was red for 30 nights with nothing but a
   # total, and the time turned out to be in three different places. The server

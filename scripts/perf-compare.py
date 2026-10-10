@@ -74,11 +74,15 @@ THRESHOLDS: dict[str, tuple[float, str]] = {
 # relative to a baseline: they hold no matter what the baseline drifted to,
 # which is what stops a slow creep of baseline bumps from legalising a
 # 2-second dashboard one 9% step at a time.
+# Latency ceilings apply to the MEDIAN of the harness's samples (AMUX-5712):
+# five averaged samples on a shared runner moved 181 -> 202ms for board between
+# two runs of the same code. Same numbers; a missing median key is reported by
+# the missing-metric check below rather than passing silently.
 ABSOLUTE_MAX: dict[str, float] = {
-    "dashboard_avg_ms": 500,
-    "health_avg_ms": 50,
-    "board_avg_ms": 200,
-    "search_avg_ms": 50,   # RR-0110: "FTS5 over 10k entities returns < 50ms"
+    "dashboard_median_ms": 500,
+    "health_median_ms": 50,
+    "board_median_ms": 200,
+    "search_median_ms": 50,   # RR-0110: "FTS5 over 10k entities returns < 50ms"
     # The RSS ceiling moved ONCE, on the record, from the plan's 200: the
     # server outgrew it (66MB on 2026-08-09 -> 220MB in CI on a frozen corpus
     # by 08-22) and the nightly perf leg died on it for its whole silent
@@ -200,6 +204,26 @@ def main() -> int:
             "delta_pct": round(delta * 100, 2), "threshold_pct": limit * 100,
             "verdict": verdict,
         })
+
+    # Ceilings on metrics that have no relative threshold (the latency
+    # MEDIANS, AMUX-5712). The loop above only visits THRESHOLDS keys, so
+    # without this a ceiling keyed on a median would never be checked and
+    # the gate could not fail on latency at all.
+    for metric, ceiling in ABSOLUTE_MAX.items():
+        if metric in THRESHOLDS:
+            continue
+        meas = measured.get(metric)
+        if meas is None:
+            missing_from_measurement.append(metric)
+            continue
+        over = float(meas) >= ceiling
+        if over:
+            failures.append(
+                f"{metric}: {float(meas):g} exceeds the ABSOLUTE ceiling {ceiling:g} "
+                f"(plan §Performance targets)."
+            )
+        rows.append({"metric": metric, "measured": float(meas), "baseline": None,
+                     "verdict": "over-ceiling" if over else "ok"})
 
     # ---- report ----------------------------------------------------------
     print(f"{'metric':<22} {'measured':>12} {'baseline':>12} {'delta':>9}  verdict")
