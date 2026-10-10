@@ -678,6 +678,19 @@ async fn async_main() {
         tracing::info!(lanes = n, measured = true, n_considered = n, verdict = "memory_recomposed_at_boot",
             "recomposed every live lane's MEMORY.md with this build's composer");
     });
+    // AA-40: skills saved in the Skills tab before their command file was
+    // written on save exist only in the table, where Claude Code cannot run
+    // them. Give each one a file once per boot (create only).
+    {
+        let st = state.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(conn) = st.store.read() else { return };
+            let dir = crate::api::skills::user_commands_dir();
+            let (created, n) = crate::api::skills::materialize_missing(&conn, &dir);
+            tracing::info!(created, measured = true, n_considered = n, verdict = "skill_command_files_reconciled",
+                "gave every Skills-tab skill a command file Claude Code can run");
+        });
+    }
     // Contract rules 2b and 3 (AH-377, AH-378): post-deploy checks and reviewers.
     drop(runtime_jobs::contract_watch::spawn(state.clone()));
     // Contract rule 5 (AH-380): the server-owned land queue.
