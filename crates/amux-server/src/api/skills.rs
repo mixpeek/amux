@@ -198,10 +198,19 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/voice", "Toggle voice dictation"),
 ];
 
+/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set (Claude Code
+/// reads it the same way), else `~/.claude`. The e2e harness sets it so a
+/// test that saves a skill never writes into the developer's real commands.
+fn claude_config_dir() -> std::path::PathBuf {
+    match std::env::var("CLAUDE_CONFIG_DIR") {
+        Ok(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+        _ => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude"),
+    }
+}
+
 fn command_dirs() -> Vec<std::path::PathBuf> {
-    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
     vec![
-        home.join(".claude").join("commands"),
+        claude_config_dir().join("commands"),
         std::path::PathBuf::from(".")
             .join(".claude")
             .join("commands"),
