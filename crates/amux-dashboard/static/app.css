@@ -8171,3 +8171,51 @@ body.light .bd-answer-head { color: #bc4c00; }
   #sp-actions .fe-tb-btn span { display: inline !important; }
   #sp-actions .sp-retain-wrap { justify-content: space-between; min-height: 44px; padding: 0 4px; }
 }
+
+/* ── Calendar: Google-Calendar look, mobile first (2026-10-10) ── */
+#fc-container .fc { --fc-border-color: var(--border); --fc-today-bg-color: transparent; --fc-now-indicator-color: #ea4335; font-size: 0.8rem; }
+#fc-container .fc-toolbar-title { font-size: 1.15rem; font-weight: 500; }
+#fc-container .fc .fc-button { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px; font-weight: 500; text-transform: none; box-shadow: none; }
+#fc-container .fc .fc-button-primary:not(:disabled).fc-button-active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: transparent; }
+#fc-container .fc .fc-prev-button, #fc-container .fc .fc-next-button { border: none; border-radius: 50%; padding: 6px 10px; }
+#fc-container .gc-dh { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0; }
+#fc-container .gc-dow { font-size: 0.68rem; font-weight: 600; color: var(--dim); letter-spacing: 0.04em; }
+#fc-container .gc-dnum { font-size: 1.35rem; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--text); }
+#fc-container .gc-dnum.gc-today { background: #1a73e8; color: #fff; }
+#fc-container .fc-col-header-cell { border-left: none; border-right: none; }
+#fc-container .fc-col-header-cell-cushion { padding: 0; text-decoration: none; }
+#fc-container .fc-timegrid-slot { height: 2.6em; }
+#fc-container .fc-timegrid-slot-minor { border-top-style: none; }
+#fc-container .fc-timegrid-slot-label-cushion { font-size: 0.68rem; color: var(--dim); }
+#fc-container .fc-timegrid-event, #fc-container .fc-daygrid-block-event { border-radius: 6px; padding: 2px 4px; border-width: 1px; box-shadow: 0 1px 2px rgba(0,0,0,0.15); }
+#fc-container .fc-timegrid-event .fc-event-title { font-weight: 600; }
+#fc-container .fc-timegrid-event .fc-event-time { font-size: 0.72rem; opacity: 0.95; }
+#fc-container .gc-declined { opacity: 0.55; }
+#fc-container .gc-declined .fc-event-title { text-decoration: line-through; }
+#fc-container .fc-timegrid-now-indicator-line { border-width: 2px 0 0; }
+#fc-container .fc-timegrid-now-indicator-arrow { border: none; width: 10px; height: 10px; border-radius: 50%; background: #ea4335; margin-top: -5px; margin-left: -5px; }
+.cal-panel { position: fixed; z-index: var(--layer-dialog, 1100); top: 110px; right: 16px; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.3); padding: 8px 12px 12px; }
+.cal-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 0 8px; }
+.cal-x { background: none; border: none; color: var(--dim); font-size: 1rem; width: 36px; height: 36px; border-radius: 8px; cursor: pointer; }
+.cal-group { font-size: 0.72rem; font-weight: 600; color: var(--dim); margin: 10px 0 4px; overflow: hidden; text-overflow: ellipsis; }
+.cal-row { display: flex; align-items: center; gap: 10px; padding: 6px 2px; font-size: 0.85rem; cursor: pointer; min-height: 36px; }
+.cal-row input { position: absolute; opacity: 0; pointer-events: none; }
+.cal-swatch { width: 18px; height: 18px; flex: 0 0 18px; border-radius: 4px; border: 2px solid var(--sw); background: transparent; position: relative; }
+.cal-row input:checked + .cal-swatch { background: var(--sw); }
+.cal-row input:checked + .cal-swatch::after { content: ''; position: absolute; left: 4px; top: 0; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.cal-row input:focus-visible + .cal-swatch { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cal-name { display: flex; flex-direction: column; min-width: 0; }
+.cal-name small { color: var(--dim); font-size: 0.7rem; }
+.cal-warn { font-size: 0.75rem; color: var(--yellow); margin-top: 8px; }
+.gc-card .modal-header { gap: 12px; }
+.gc-card-sq { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 4px; }
+@media (max-width: 600px) {
+  #fc-container .fc-toolbar-title { font-size: 1rem; }
+  #fc-container .fc .fc-button { padding: 8px 12px; min-height: 44px; }
+  #fc-container .fc-footer-toolbar { padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); margin: 0; border-top: 1px solid var(--border); background: var(--bg); }
+  #fc-container .gc-dnum { font-size: 1.1rem; width: 34px; height: 34px; }
+  .cal-panel { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 75vh; border-radius: 16px 16px 0 0; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .cal-row { min-height: 44px; }
+  #gcal-event-modal { align-items: flex-end; }
+  #gcal-event-modal .modal { max-width: none !important; width: 100%; margin: 0; border-radius: 16px 16px 0 0; max-height: 85vh; padding-bottom: env(safe-area-inset-bottom); }
+}
