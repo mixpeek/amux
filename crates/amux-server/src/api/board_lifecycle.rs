@@ -309,7 +309,7 @@ fn candidates(
 ) -> rusqlite::Result<(Vec<Candidate>, usize)> {
     // Search the whole non-archived corpus cheaply; send only relevant compact
     // candidates to the semantic pass. Recency is a tie breaker, not the search scope.
-    let mut stmt = conn.prepare("SELECT id,CASE WHEN project_group IS NOT NULL THEN 'project:'||project_group ELSE COALESCE(session,'') END,title,substr(desc,1,700),status,COALESCE(type,'code'),rev,evidence,updated,acceptance_criteria FROM issues WHERE deleted IS NULL AND archived=0 AND owner_type='agent' AND COALESCE(type,'')!='epic' AND status NOT IN ('discarded','quarantined','cancelled') AND ((?1 IS NULL AND project_group IS NULL) OR project_group=?1)")?;
+    let mut stmt = conn.prepare("SELECT id,CASE WHEN project_group IS NOT NULL THEN 'project:'||project_group ELSE COALESCE(session,'') END,title,substr(desc,1,700),status,COALESCE(type,'code'),rev,evidence,CAST(updated AS INTEGER),acceptance_criteria FROM issues WHERE deleted IS NULL AND archived=0 AND owner_type='agent' AND COALESCE(type,'')!='epic' AND status NOT IN ('discarded','quarantined','cancelled') AND ((?1 IS NULL AND project_group IS NULL) OR project_group=?1)")?;
     let tokens = words(text);
     let current_contract_refs = current_project_contract_refs(conn, session);
     let mut rows = stmt
@@ -2710,6 +2710,42 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn intake_candidates_tolerate_a_fractional_updated_stamp() {
+        // A raw writer stored time.time() into issues.updated; reading it as
+        // i64 failed intake and held 37 owner messages undelivered.
+        let c = crate::db::migrate::test_memdb();
+        let row = bs::create_issue(
+            &c,
+            &new_issue("fixture", "Produce report", "Write the output report", "chore"),
+            1,
+        )
+        .unwrap();
+        c.execute_batch("DROP TRIGGER IF EXISTS issues_updated_integer_au")
+            .unwrap();
+        c.execute("UPDATE issues SET updated=1791381275.64653 WHERE id=?1", [&row.id])
+            .unwrap();
+        let (rows, _) = candidates(&c, "fixture", "report", 24).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn issues_updated_is_coerced_to_integer_at_storage() {
+        let c = crate::db::migrate::test_memdb();
+        let row = bs::create_issue(
+            &c,
+            &new_issue("fixture", "Produce report", "Write the output report", "chore"),
+            1,
+        )
+        .unwrap();
+        c.execute("UPDATE issues SET updated=1791381275.64653 WHERE id=?1", [&row.id])
+            .unwrap();
+        let kind: String = c
+            .query_row("SELECT typeof(updated) FROM issues WHERE id=?1", [&row.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kind, "integer");
     }
 
     #[test]

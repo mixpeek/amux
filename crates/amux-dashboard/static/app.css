@@ -3207,9 +3207,13 @@
   }
 
   /* Card description */
+  /* Rendered only on an EXPANDED card, so it shows the whole description:
+     wrapped, line breaks kept, long words broken instead of overflowing the
+     card. It used to be one ellipsized line, so an expanded card never showed
+     more of the description than the collapsed one (Ethan, 2026-10-10). */
   .card-desc {
     color: var(--text); font-size: 0.82rem; margin-top: 4px; margin-left: 20px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4;
     opacity: 0.85;
   }
 
