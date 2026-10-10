@@ -185,15 +185,71 @@ pub fn goal_payload(name: &str) -> Value {
     };
     match cached_goal(&path) {
         Err(why) => serde_json::json!({"measured": false, "why_unmeasured": why, "active": false}),
-        Ok(Some(g)) => serde_json::json!({
-            "measured": true,
-            "active": !g.met && !g.condition.trim().is_empty(),
-            "met": g.met,
-            "condition": g.condition,
-            "since": g.ts,
-        }),
-        Ok(None) => serde_json::json!({"measured": true, "active": false}),
+        Ok(g) => goal_view(g, || footer_goal_active(name)),
     }
+}
+
+/// THE BADGE AND THE KEEPER SHARE ONE PREDICATE (Ethan, 2026-10-10: "goal
+/// indicator seems wrong"). A cleared `/goal` writes no new transcript record;
+/// it only removes Claude Code's "◎ /goal active" footer. The keeper already
+/// required both signals, but this payload read the transcript alone, so the
+/// card kept a GOAL badge on `random` long after the goal was gone. The footer
+/// is consulted only when the transcript says a goal is unmet.
+pub(crate) fn goal_view(goal: Option<Goal>, footer: impl FnOnce() -> Option<bool>) -> Value {
+    let Some(g) = goal else {
+        return serde_json::json!({"measured": true, "active": false});
+    };
+    let unmet = !g.met && !g.condition.trim().is_empty();
+    let (active, footer_field, cleared) = if unmet {
+        match footer() {
+            Some(true) => (true, Value::Bool(true), false),
+            Some(false) => (false, Value::Bool(false), true),
+            // No pane to read (worker stopped): nothing is pursuing the goal.
+            None => (false, Value::Null, false),
+        }
+    } else {
+        (false, Value::Null, false)
+    };
+    serde_json::json!({
+        "measured": true,
+        "active": active,
+        "met": g.met,
+        "cleared": cleared,
+        "footer_active": footer_field,
+        "condition": g.condition,
+        "since": g.ts,
+    })
+}
+
+/// Whether the worker's pane footer shows "/goal active", cached 30s per
+/// worker so the session list (polled often) costs at most one capture per
+/// worker per 30s, and only for workers whose transcript holds an unmet goal.
+/// None when the pane cannot be read.
+type FooterCache = Mutex<HashMap<String, (std::time::Instant, Option<bool>)>>;
+
+pub(crate) fn footer_goal_active(name: &str) -> Option<bool> {
+    static CACHE: std::sync::OnceLock<FooterCache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some((at, v)) = map.get(name) {
+            if at.elapsed() < std::time::Duration::from_secs(30) {
+                return *v;
+            }
+        }
+    }
+    // Exact-match target: a bare `amux-x` resolves to a sibling `amux-x-2`
+    // pane while `amux-x` is briefly absent.
+    let pt = crate::backend::tmux::pane_target(&format!("amux-{name}"));
+    let v = std::process::Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", &pt, "-S", "-12"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("/goal active"));
+    if let Ok(mut map) = cache.lock() {
+        map.insert(name.to_string(), (std::time::Instant::now(), v));
+    }
+    v
 }
 
 /// Tool calls the agent made after `since` (progress is an event, not text).
@@ -339,15 +395,7 @@ async fn tick(app: crate::api::AppState) {
         let (records, footer, goal) = tokio::task::spawn_blocking(move || {
             let records = crate::api::session_verbs::iter_jsonl_tail(&path, 6_000_000);
             let goal = cached_goal(&path).ok().flatten();
-            // Exact-match target: a bare `amux-x` resolves to a sibling
-            // `amux-x-2` pane while `amux-x` is briefly absent.
-            let pt = crate::backend::tmux::pane_target(&format!("amux-{n2}"));
-            let footer = std::process::Command::new("tmux")
-                .args(["capture-pane", "-p", "-t", &pt, "-S", "-12"])
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains("/goal active"))
-                .unwrap_or(false);
+            let footer = footer_goal_active(&n2).unwrap_or(false);
             (records, footer, goal)
         })
         .await
@@ -414,6 +462,27 @@ pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
 mod tests {
     /// A worker whose transcript cannot be found says so: an absent field was
     /// read as "no goal" (amux-helper, mxp-gs12, 2026-10-08).
+    /// The `random` case: the transcript's last goal_status is unmet, but
+    /// the goal was cleared, so the footer no longer shows it. The badge must
+    /// read inactive and say why; an unmet goal WITH the footer stays active;
+    /// a met goal never consults the footer.
+    #[test]
+    fn a_cleared_goal_reads_inactive_and_the_footer_is_only_read_for_an_unmet_one() {
+        let unmet = || Some(super::Goal { met: false, condition: "use the bumble app".into(), ts: 1.0 });
+        let v = super::goal_view(unmet(), || Some(false));
+        assert_eq!(v["active"], false, "{v}");
+        assert_eq!(v["cleared"], true, "{v}");
+        let v = super::goal_view(unmet(), || Some(true));
+        assert_eq!(v["active"], true, "{v}");
+        assert_eq!(v["cleared"], false, "{v}");
+        let v = super::goal_view(unmet(), || None);
+        assert_eq!(v["active"], false, "no pane to read: nothing is pursuing it: {v}");
+        let met = Some(super::Goal { met: true, condition: "x".into(), ts: 1.0 });
+        let v = super::goal_view(met, || panic!("a met goal must not read the footer"));
+        assert_eq!(v["active"], false, "{v}");
+        let v = super::goal_view(None, || panic!("no goal must not read the footer"));
+        assert_eq!(v["active"], false, "{v}");
+    }
     #[test]
     fn goal_payload_without_a_transcript_is_unmeasured_not_absent() {
         let v = super::goal_payload("no-such-worker-for-goal-test");
