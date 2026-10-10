@@ -2457,7 +2457,9 @@ mod tests {
 
         let db = dir.path().join("org-full-test.db");
         let mut actor = String::new();
-        for _ in 0..50 {
+        // The request log is written by a background batch task; on a loaded CI
+        // shard 500ms was not enough (#254 shard 8, twice). Poll up to 5s.
+        for _ in 0..500 {
             actor = rusqlite::Connection::open(&db).unwrap().query_row(
                 "SELECT amux_session FROM _amux_request_log WHERE path='/api/org/members' ORDER BY ts DESC LIMIT 1",
                 [], |row| row.get(0)).optional().unwrap().unwrap_or_default();
@@ -2468,7 +2470,7 @@ mod tests {
         }
         assert_eq!(actor, "member:guest@example.com");
         let mut board_actor = String::new();
-        for _ in 0..50 {
+        for _ in 0..500 {
             board_actor = rusqlite::Connection::open(&db)
                 .unwrap()
                 .query_row(
