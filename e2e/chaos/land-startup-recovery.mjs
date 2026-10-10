@@ -63,7 +63,9 @@ try {
   // Crash after a real locked checkout is registered, before candidate() can
   // return or clean it. The next controller must reuse that same candidate.
   fs.writeFileSync(faultFlag,'crash');
-  await amux.up();
+  // The requeued intent retries at boot, so the injected kill can land before
+  // /health answers. That exit is the fault under test, not a boot failure.
+  try { await amux.up(); } catch (e) { if (!fs.existsSync(faultFlag+'.killed')) throw e; console.error('crash fault fired during boot, as injected'); }
   await waitFor('controller crash left one actual registered candidate',()=>fs.existsSync(faultFlag+'.killed')&&candidates().length===1&&git(lane,'worktree','list','--porcelain').includes('locked initializing'),45000);
   await amux.down();
   check('interrupted checkout retains bounded candidate state',candidates().length===1&&candidates()[0].startsWith('cand-'));
@@ -76,7 +78,8 @@ try {
   const moved=git(origin,'rev-parse','refs/heads/main');
   const acceptedHook=path.join(origin,'hooks/post-receive');
   fs.writeFileSync(acceptedHook,'#!/bin/sh\nrm -f "$0"\n[ -n "$AMUX_LAND_HOLDER_PID" ] || exit 41\nkill -KILL "$AMUX_LAND_HOLDER_PID"\nsleep 1\n',{mode:0o755});
-  await amux.up();
+  // Same boot race as the checkout crash: the hook removes itself when it fires.
+  try { await amux.up(); } catch (e) { if (fs.existsSync(acceptedHook)) throw e; console.error('post-receive kill fired during boot, as injected'); }
   await waitFor('remote accepted the rebased commit before controller receipt',()=>git(origin,'rev-parse','refs/heads/main')!==moved,45000);
   await amux.down();
   const accepted=git(origin,'rev-parse','refs/heads/main');

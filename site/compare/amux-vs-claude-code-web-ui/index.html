@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>amux vs Claude Code Web UIs — amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Compare amux with other web-based interfaces for Claude Code like CloudCLI and claude-code-web.">
-  <meta name="keywords" content="claude code web ui, claude code dashboard, claude code gui, remote claude code">
+  <title>amux vs Claude Code Web UIs — Dashboard Comparison 2026</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Compare amux with other web interfaces for Claude Code in 2026. amux adds self-healing, multi-agent orchestration, mobile control, and a full productivity suite beyond what basic web UIs offer.">
+  <meta name="keywords" content="claude code web ui, claude code dashboard, claude code gui, remote claude code, claude code browser interface, multi-agent dashboard 2026">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-claude-code-web-ui/">
-  <meta property="og:title" content="amux vs Claude Code Web UIs — amux">
-  <meta property="og:description" content="Compare amux with other web-based interfaces for Claude Code like CloudCLI and claude-code-web.">
+  <meta property="og:title" content="amux vs Claude Code Web UIs — Dashboard Comparison 2026">
+  <meta property="og:description" content="Compare amux with other web interfaces for Claude Code. amux goes beyond a terminal proxy with self-healing, multi-agent orchestration, mobile control, and kanban.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-claude-code-web-ui/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -22,8 +22,9 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/site.js"></script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Claude Code Web UIs","item":"https://amux.io/compare/amux-vs-claude-code-web-ui/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"amux vs Claude Code Web UIs","description":"Compare amux with other web-based interfaces for Claude Code like CloudCLI and claude-code-web.","url":"https://amux.io/compare/amux-vs-claude-code-web-ui/","about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
-  </head>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Claude Code Web UIs — Dashboard Comparison 2026","description":"Compare amux with other web interfaces for Claude Code. amux adds self-healing, multi-agent orchestration, mobile control, and a full productivity suite.","url":"https://amux.io/compare/amux-vs-claude-code-web-ui/","datePublished":"2026-02-26","dateModified":"2026-10-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between amux and a Claude Code web UI?","acceptedAnswer":{"@type":"Answer","text":"A Claude Code web UI (like CloudCLI or claude-code-web) proxies the terminal to a browser. amux is a full control plane: it runs multiple Claude Code, Codex, or Gemini CLI agents in parallel, self-heals crashes, coordinates work via a shared kanban board, and lets you monitor and redirect agents from your phone. It also includes built-in CRM, email, browser automation, a scheduler, and vault secrets management."}},{"@type":"Question","name":"Can I manage Claude Code from my phone with amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux has a native iOS app and a mobile-optimized PWA. You can see all agent activity, approve pending actions, send messages, and check task status from your phone. Basic web UIs are not designed for mobile use and lack native notification support."}},{"@type":"Question","name":"What happens if a Claude Code agent crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"amux has a self-healing watchdog: if a session runs out of context, amux automatically compacts it and continues. If a session crashes, amux restarts it and replays the last message. Basic web UIs have no watchdog — a crash just leaves the session dead until you manually restart it."}},{"@type":"Question","name":"Does amux work with Codex and Gemini CLI, not just Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux supports Claude Code, OpenAI Codex CLI, and Google Gemini CLI. You can run agents from different providers in the same fleet, assign different models to different tasks, and see all activity in one dashboard."}},{"@type":"Question","name":"How many agents can amux run in parallel?","acceptedAnswer":{"@type":"Answer","text":"amux has been tested with 50+ agents running simultaneously. Each agent gets its own tmux session and optional git worktree (AMUX_WORKSPACE_ISOLATION=1). The dashboard shows all sessions on one screen with live output streaming."}},{"@type":"Question","name":"Is amux open source?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is MIT+Commons Clause licensed and available at github.com/mixpeek/amux. The Rust server, dashboard SPA, and CLI are all open source. A paid cloud tier (amux.io/cloud) adds tunnel URLs, cloud hosting, and managed onboarding."}}]}</script>
+</head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
@@ -39,17 +40,116 @@
   </header>
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Claude Code Web UIs</span></div>
+
     <h1>amux vs Claude Code Web UIs</h1>
-<p class="subtitle">Several projects add web interfaces to Claude Code. Here's how amux differs.</p>
-<p>Projects like <strong>CloudCLI</strong>, <strong>claude-code-web</strong>, and <strong>Remote Code</strong> add web frontends to Claude Code. amux goes further with self-healing, agent orchestration, and a full productivity suite.</p>
-<h2>What other web UIs provide</h2>
-<ul><li>Basic web terminal for Claude Code</li><li>Session listing and switching</li><li>Some offer multi-session support</li></ul>
-<h2>What amux adds</h2>
-<ul><li><strong>Self-healing watchdog</strong> — auto-compact, restart, unstick</li><li><strong>Kanban board</strong> with atomic task claiming</li><li><strong>Agent-to-agent orchestration</strong> via REST API</li><li><strong>Mobile PWA</strong> with offline support</li><li><strong>Conversation forking</strong> — clone history to new branches</li><li><strong>Token spend tracking</strong> per session</li><li><strong>Git conflict detection</strong> across agents</li><li><strong>Built-in cron scheduler</strong></li><li><strong>iCal sync</strong> for board due dates</li></ul>
-<div class="cta-box"><h3>Get started with amux</h3><p>Run dozens of Claude Code agents in parallel. Python 3 + tmux. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
+    <p class="subtitle">Updated October 2026</p>
+
+    <div class="cta-box cta-box--top" style="background:color-mix(in oklab,var(--green) 12%,var(--bg-2));border-color:color-mix(in oklab,var(--green) 40%,transparent)">
+      <strong>Run your entire AI engineering team from one dashboard</strong> — not just a browser window around one terminal.
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="posthog.capture('exp122_claudecodeweb_compare_topofpage_cta_click')">View amux on GitHub</a>
+    </div>
+
+    <p>Several projects add a web interface to Claude Code: <strong>CloudCLI</strong>, <strong>claude-code-web</strong>, <strong>Remote Code</strong>, and others. They solve one problem well: getting a browser window around a Claude Code terminal. amux is a different kind of tool.</p>
+
+    <p>amux is an open-source control plane for running an AI engineering team from your browser or phone. It launches, monitors, and self-heals dozens of parallel Claude Code, Codex, or Gemini CLI agents, with built-in kanban, vault secrets, email, browser automation, and a scheduler. You manage the team; the agents handle the code.</p>
+
+    <h2>What basic Claude Code web UIs do</h2>
+    <ul>
+      <li>Proxy a Claude Code terminal to a browser tab</li>
+      <li>List active sessions and switch between them</li>
+      <li>Some offer multi-session or multi-window views</li>
+      <li>Useful for remote access when SSH is inconvenient</li>
+    </ul>
+
+    <h2>What amux adds</h2>
+    <p>These capabilities have no equivalent in basic web UI projects:</p>
+
+    <table>
+      <thead>
+        <tr><th>Capability</th><th>Basic web UI</th><th>amux</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Run multiple agents in parallel</td><td>Usually 1 at a time</td><td>50+ agents simultaneously</td></tr>
+        <tr><td>Self-healing watchdog</td><td>None</td><td>Auto-compact, restart, replay last message</td></tr>
+        <tr><td>Task coordination</td><td>None</td><td>Shared kanban board with atomic claiming</td></tr>
+        <tr><td>Mobile control</td><td>Not optimized</td><td>Native iOS app + PWA with push notifications</td></tr>
+        <tr><td>Workspace isolation</td><td>None</td><td>Per-agent git worktrees (AMUX_WORKSPACE_ISOLATION=1)</td></tr>
+        <tr><td>Vault secrets</td><td>None</td><td>Scoped secret injection — global, group, or per-worker</td></tr>
+        <tr><td>Standing approvals</td><td>None</td><td>Pre-approve actions by category so agents run unattended</td></tr>
+        <tr><td>Goal keeper</td><td>None</td><td>Set a /goal and amux checks progress every N turns</td></tr>
+        <tr><td>Companion chat</td><td>None</td><td>Ask any agent what it is doing in natural language</td></tr>
+        <tr><td>Pinned notes</td><td>None</td><td>Persistent context injected at session start, scoped per worker or group</td></tr>
+        <tr><td>Built-in scheduler</td><td>None</td><td>Cron jobs for agents, shell scripts, or recurring tasks</td></tr>
+        <tr><td>Email integration</td><td>None</td><td>Gmail API — agents can read and send email</td></tr>
+        <tr><td>Browser automation</td><td>None</td><td>Saved browser profiles with per-agent scoping</td></tr>
+        <tr><td>Multi-runtime support</td><td>Claude Code only</td><td>Claude Code, Codex CLI, Gemini CLI</td></tr>
+        <tr><td>Tunnel (localhost to HTTPS)</td><td>None</td><td>amux tunnel start — stable public URL from any localhost port</td></tr>
+        <tr><td>Token spend tracking</td><td>None</td><td>Per-session cost dashboard</td></tr>
+      </tbody>
+    </table>
+
+    <h2>When to use a basic web UI</h2>
+    <p>A basic Claude Code web UI is the right choice if you need to view a single Claude Code terminal from a browser and nothing else — for example, remote access to a session from a machine where you cannot install amux.</p>
+
+    <h2>When to use amux</h2>
+    <p>amux is the right choice when you want to run more than one agent, leave agents running overnight, coordinate work across a team of agents, or manage your engineering queue from your phone. It treats Claude Code, Codex, and Gemini CLI as workers in a fleet, not as individual terminals to observe.</p>
+
+    <h2>What amux shipped in October 2026</h2>
+    <ul>
+      <li><strong>Scratchpad tab</strong> — a global markdown scratch area at <code>~/.amux/scratchpad/</code>, accessible from the dashboard without leaving your session</li>
+      <li><strong>Companion chat inherits worker model</strong> — the companion conversation now uses the same model as the worker it is monitoring</li>
+      <li><strong>Create modal for all providers</strong> — branch, worktree, and template options now appear for Codex, Gemini CLI, and Ollama workers, not just Claude Code</li>
+      <li><strong>Tab search filter</strong> — filter across all open dashboard tabs by keyword</li>
+      <li><strong>Workspace isolation per-agent</strong> — each agent gets its own git worktree and <code>TMPDIR</code> with a single env flag</li>
+      <li><strong>Pinned notes</strong> — persistent markdown injected into agent context at startup, scoped to worker, group, or global</li>
+      <li><strong>Goal keeper</strong> — set a goal, walk away, wake up to a finished task</li>
+    </ul>
+
+    <h2>Getting started</h2>
+    <pre><code>brew install mixpeek/amux/amux
+amux register myproject --dir ~/Dev/myproject
 amux start myproject
-amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
+amux serve  # opens at https://localhost:8824</code></pre>
+
+    <p>Or download the <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a> to manage your fleet from your phone.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details>
+        <summary>What is the difference between amux and a Claude Code web UI?</summary>
+        <p>A Claude Code web UI proxies one terminal to a browser. amux runs many agents in parallel, self-heals crashes, coordinates work via a shared kanban board, and lets you monitor and redirect agents from your phone. It also includes built-in CRM, email, browser automation, a scheduler, and vault secrets.</p>
+      </details>
+      <details>
+        <summary>Can I manage Claude Code agents from my phone?</summary>
+        <p>Yes. amux has a native iOS app and a mobile-optimized PWA. You can check agent status, approve pending actions, send messages, and redirect work from your phone. Basic web UIs are not mobile-optimized and have no push notifications.</p>
+      </details>
+      <details>
+        <summary>What happens if a Claude Code agent crashes overnight?</summary>
+        <p>amux's self-healing watchdog detects the crash, restarts the session, and replays the last message. Context exhaustion triggers automatic compaction before the session fails. Basic web UIs have no watchdog; a crashed session stays dead.</p>
+      </details>
+      <details>
+        <summary>Does amux work with Codex and Gemini CLI?</summary>
+        <p>Yes. amux supports Claude Code, OpenAI Codex CLI, and Google Gemini CLI in the same fleet. Assign different models to different tasks and see all activity in one dashboard.</p>
+      </details>
+      <details>
+        <summary>How many agents can amux run at once?</summary>
+        <p>amux has been tested with 50+ agents simultaneously. Each agent gets its own tmux session and optionally its own git worktree via <code>AMUX_WORKSPACE_ISOLATION=1</code>.</p>
+      </details>
+      <details>
+        <summary>Is amux open source?</summary>
+        <p>Yes. amux is MIT+Commons Clause licensed at <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">github.com/mixpeek/amux</a>. A paid cloud tier adds tunnel URLs, cloud hosting, and managed onboarding.</p>
+      </details>
+    </div>
+
+    <div class="cta-box">
+      <h3>See amux in action</h3>
+      <p>Open-source control plane for AI agent teams. Run dozens of Claude Code, Codex, or Gemini CLI agents from your browser or phone.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux serve</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/demos/">Watch demos</a>
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
@@ -96,7 +196,6 @@ amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" 
       </div>
     </div>
   </footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

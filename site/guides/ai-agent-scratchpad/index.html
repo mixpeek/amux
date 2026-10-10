@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI Agent Scratchpad: Persistent Notes for Your Coding Agent Fleet</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="Learn how amux's built-in scratchpad gives your AI coding agent fleet a shared, persistent note space. Store context, track decisions, and coordinate across sessions without polluting each agent's memory.">
+  <meta name="keywords" content="ai agent scratchpad, ai coding agent notes, shared notes AI agents, persistent notes claude code, ai agent markdown notes, amux scratchpad">
+  <link rel="canonical" href="https://amux.io/guides/ai-agent-scratchpad/">
+  <meta property="og:title" content="AI Agent Scratchpad: Persistent Notes for Your Coding Agent Fleet">
+  <meta property="og:description" content="amux's built-in scratchpad gives your AI agent fleet a shared markdown workspace — store context, track decisions, and coordinate without consuming agent memory.">
+  <meta property="og:url" content="https://amux.io/guides/ai-agent-scratchpad/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/site.js"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"AI Agent Scratchpad","item":"https://amux.io/guides/ai-agent-scratchpad/"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Scratchpad: Persistent Notes for Your Coding Agent Fleet","description":"amux's built-in scratchpad gives your AI agent fleet a shared markdown workspace. Store context, track decisions, and coordinate without consuming agent memory.","url":"https://amux.io/guides/ai-agent-scratchpad/","datePublished":"2026-10-10","dateModified":"2026-10-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set up the amux scratchpad for your AI agent fleet","description":"Use amux's built-in scratchpad to store persistent notes, coordination state, and reference documents for your AI coding agents.","step":[{"@type":"HowToStep","position":1,"name":"Open the Scratchpad tab","text":"In the amux dashboard, click the Scratchpad tab in the global tab bar. The directory ~/.amux/scratchpad/ is created automatically on first visit."},{"@type":"HowToStep","position":2,"name":"Create a note","text":"Click New File in the scratchpad, type a filename (e.g. context.md), and write your content. The file is saved automatically."},{"@type":"HowToStep","position":3,"name":"Reference the scratchpad from an agent","text":"Tell an agent to read from or write to ~/.amux/scratchpad/filename.md. The path is stable across restarts and shared by all agents on the same machine."},{"@type":"HowToStep","position":4,"name":"Use pinned notes for startup injection","text":"If you want the content automatically injected at session start, copy it to a pinned note with: amux pin set --scope global \"$(cat ~/.amux/scratchpad/context.md)\""},{"@type":"HowToStep","position":5,"name":"Organize with subdirectories","text":"Create subdirectories in the scratchpad for different projects: ~/.amux/scratchpad/project-a/, ~/.amux/scratchpad/shared/. The dashboard's breadcrumb navigation lets you browse them."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the amux scratchpad?","acceptedAnswer":{"@type":"Answer","text":"The amux scratchpad is a global tab in the amux dashboard that provides a shared markdown file workspace at ~/.amux/scratchpad/. It lets you create, browse, and edit notes without leaving the dashboard. All agents running on the same machine can read from and write to scratchpad files."}},{"@type":"Question","name":"How is the scratchpad different from pinned notes?","acceptedAnswer":{"@type":"Answer","text":"Pinned notes are injected automatically into agent context at session start — they consume tokens on every session. The scratchpad is a passive file store: agents only read it when you tell them to. Use pinned notes for standing instructions that every agent always needs, and the scratchpad for larger documents, reference material, or ad-hoc notes that agents access on demand."}},{"@type":"Question","name":"Can multiple AI agents share the same scratchpad?","acceptedAnswer":{"@type":"Answer","text":"Yes. All agents on the same machine share the same ~/.amux/scratchpad/ directory. One agent can write a decision log, another can read it. For large teams with workspace isolation enabled (AMUX_WORKSPACE_ISOLATION=1), each agent gets its own worktree but still shares the scratchpad."}},{"@type":"Question","name":"Does the scratchpad survive an agent restart?","acceptedAnswer":{"@type":"Answer","text":"Yes. The scratchpad is a directory of plain files at ~/.amux/scratchpad/ — it exists independently of any agent session and persists across restarts, context compactions, and server upgrades."}},{"@type":"Question","name":"Can I use the scratchpad from my phone?","acceptedAnswer":{"@type":"Answer","text":"The scratchpad is available in the amux dashboard, which is accessible from any browser. The iOS app focuses on agent monitoring and control; for scratchpad editing, use the mobile web dashboard at your amux server address."}},{"@type":"Question","name":"What file types can I store in the scratchpad?","acceptedAnswer":{"@type":"Answer","text":"The scratchpad uses the same file viewer and editor as the rest of amux. Markdown (.md), plain text (.txt), JSON, YAML, and other text formats work well. Binary files and images are stored but not rendered inline."}},{"@type":"Question","name":"How does the scratchpad relate to amux memory?","acceptedAnswer":{"@type":"Answer","text":"amux memory (the ~/.claude/projects/*/memory/ directories) is used by Claude Code itself for cross-session memory between Claude Code sessions. The scratchpad is a separate, lighter-weight workspace managed by amux — use it for shared reference documents, task logs, and coordination notes that are not specific to one agent's memory."}}]}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/guides/" class="hide-mobile">guides</a>
+      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/blog/" class="hide-mobile">blog</a>
+      <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" class="nav-cta-primary nav-cta">iOS app</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta">GitHub <span class="gh-stars" id="gh-stars"></span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/guides/">Guides</a> <span class="sep">›</span> <span>AI Agent Scratchpad</span></div>
+
+    <h1>AI Agent Scratchpad: Persistent Notes for Your Coding Agent Fleet</h1>
+    <p class="subtitle">Updated October 2026</p>
+
+    <div class="cta-box cta-box--top" style="background:color-mix(in oklab,var(--green) 12%,var(--bg-2));border-color:color-mix(in oklab,var(--green) 40%,transparent)">
+      <strong>A persistent shared workspace your entire agent fleet can read and write</strong> — no token cost until an agent asks for it.
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux" onclick="posthog.capture('exp123_scratchpad_guide_topofpage_cta_click')">Get amux on GitHub</a>
+    </div>
+
+    <p>Every AI coding agent fleet eventually needs a place to store things that do not fit inside a single agent's context window: architecture decisions, a running list of completed tasks, a file ownership map, a shared API reference. Injecting this into every agent's pinned notes wastes tokens. Leaving it in a one-off file with no access from the dashboard loses it.</p>
+
+    <p>amux ships a built-in scratchpad: a global markdown workspace in the dashboard backed by <code>~/.amux/scratchpad/</code>. Every agent on the machine can read from or write to it. It persists across restarts. It costs zero tokens unless an agent explicitly asks to read a file.</p>
+
+    <h2>What the scratchpad solves</h2>
+
+    <p>When you run more than a handful of agents in parallel, three categories of information accumulate that have no good home:</p>
+
+    <ul>
+      <li><strong>Decisions and rationale</strong> — why the team chose one approach over another, which trade-offs were accepted, what was explicitly ruled out.</li>
+      <li><strong>Coordination state</strong> — which agent owns which file, the current sprint priorities, a list of PRs waiting for review.</li>
+      <li><strong>Reference documents</strong> — API contracts, schema definitions, vendor-specific quirks that multiple agents need to consult but do not need in memory every turn.</li>
+    </ul>
+
+    <p>The scratchpad is the right place for all of these. Pinned notes are the right place for standing instructions that must be in context on every turn.</p>
+
+    <h2>How the scratchpad works</h2>
+
+    <p>The scratchpad tab appears in the amux dashboard's global tab bar. Clicking it opens a file browser rooted at <code>~/.amux/scratchpad/</code>. The directory is created automatically the first time you visit the tab.</p>
+
+    <p>From the dashboard you can:</p>
+    <ul>
+      <li>Create, browse, and edit markdown files and subdirectories</li>
+      <li>View a breadcrumb navigation path for nested directories</li>
+      <li>Sort files by name or modification date</li>
+      <li>Edit any text file with the same inline editor used in the rest of the dashboard</li>
+    </ul>
+
+    <p>From an agent session, the path is just a regular filesystem path:</p>
+    <pre><code># an agent reads a reference doc
+cat ~/.amux/scratchpad/api-contract.md
+
+# an agent appends to a decision log
+echo "2026-10-10: chose postgres over sqlite for volume reasons" >> ~/.amux/scratchpad/decisions.md</code></pre>
+
+    <h2>Scratchpad vs. pinned notes vs. amux memory</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>Scratchpad</th>
+          <th>Pinned notes</th>
+          <th>amux memory</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>When content enters agent context</td>
+          <td>On demand — only when agent reads the file</td>
+          <td>Every session start</td>
+          <td>On demand (Claude Code decides)</td>
+        </tr>
+        <tr>
+          <td>Token cost per session</td>
+          <td>Zero unless agent reads it</td>
+          <td>Proportional to note length, every time</td>
+          <td>Proportional to memory size, on recall</td>
+        </tr>
+        <tr>
+          <td>Managed by</td>
+          <td>You + agents via filesystem</td>
+          <td>amux (amux pin set / get)</td>
+          <td>Claude Code (saves memory automatically)</td>
+        </tr>
+        <tr>
+          <td>Scope</td>
+          <td>All agents on the machine</td>
+          <td>Global, group, or per-worker</td>
+          <td>Per Claude Code session</td>
+        </tr>
+        <tr>
+          <td>Visible in dashboard</td>
+          <td>Yes — Scratchpad tab with file browser</td>
+          <td>Yes — Pins panel</td>
+          <td>No — Claude Code internal</td>
+        </tr>
+        <tr>
+          <td>Persists across restarts</td>
+          <td>Yes — plain files</td>
+          <td>Yes — stored in amux DB</td>
+          <td>Yes — stored in ~/.claude/</td>
+        </tr>
+        <tr>
+          <td>Best for</td>
+          <td>Reference docs, coordination state, decision logs</td>
+          <td>Standing instructions, rules every agent must follow</td>
+          <td>Preferences, past-decision recall within one agent's history</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Setting up a shared scratchpad for a fleet</h2>
+
+    <p>A useful starting layout for a multi-agent engineering team:</p>
+
+    <pre><code>~/.amux/scratchpad/
+  architecture.md      # system design decisions
+  file-ownership.md    # which agent owns which directory
+  decisions.md         # running log of architectural choices
+  current-sprint.md    # active tasks and their status
+  api-reference.md     # vendor APIs, endpoints, auth patterns
+  blockers.md          # anything waiting on a human decision</code></pre>
+
+    <p>Tell agents about the scratchpad in a pinned note (this is the one case where a pinned note pointing to the scratchpad makes sense — the standing instruction is short, and the reference doc it points to is not injected automatically):</p>
+
+    <pre><code># in a pinned note (global scope)
+Team reference docs live in ~/.amux/scratchpad/.
+Read architecture.md before starting work on a new feature.
+Append to decisions.md when you make a non-obvious architectural choice.
+Read file-ownership.md before editing a file outside your assigned directory.</code></pre>
+
+    <h2>Combining scratchpad with workspace isolation</h2>
+
+    <p>When workspace isolation is enabled (<code>AMUX_WORKSPACE_ISOLATION=1</code>), each agent gets its own git worktree at <code>.worktrees/&lt;worker&gt;/</code>. This means agents can stage and commit without interfering with each other, but they all still share the same <code>~/.amux/scratchpad/</code> directory on the host. The scratchpad is outside the git tree by design — it is a coordination layer, not a versioned artifact.</p>
+
+    <p>This combination works well for large teams where agents each own a domain:</p>
+    <ul>
+      <li>Each agent writes a one-line status to <code>~/.amux/scratchpad/status/&lt;worker-name&gt;.md</code> after finishing each task</li>
+      <li>An orchestrator agent reads all status files to check progress without needing to query the board</li>
+      <li>The human reviews the scratchpad daily to understand what the team decided without reading every commit</li>
+    </ul>
+
+    <h2>Scratchpad as an agent handoff mechanism</h2>
+
+    <p>When you restart a long-running agent or fork a session to a fresh context, the agent loses its in-memory knowledge of what it did. The scratchpad solves this: the outgoing agent writes a handoff note before its context is compacted, and the incoming agent reads it on startup.</p>
+
+    <pre><code># agent writes at the end of a work session
+cat >> ~/.amux/scratchpad/handoff.md &lt;&lt;'EOF'
+## 2026-10-10 evening handoff
+
+Completed: implemented the new /api/events endpoint (see PR #142).
+In progress: the integration test in tests/test_events.py is failing on the
+  date serialization case — I left a comment in the test with the suspected fix.
+Next: after the PR merges, update the OpenAPI spec in docs/api.yaml.
+Blocker: waiting for Ethan to approve the schema change in PR #141.
+EOF</code></pre>
+
+    <p>The next agent starts with:</p>
+    <pre><code>Read ~/.amux/scratchpad/handoff.md and then continue the work described there.</code></pre>
+
+    <h2>How to set up the scratchpad</h2>
+
+    <ol>
+      <li><strong>Install amux</strong> — <code>brew install mixpeek/amux/amux</code> and run <code>amux serve</code>.</li>
+      <li><strong>Open the Scratchpad tab</strong> — click Scratchpad in the global tab bar. The directory <code>~/.amux/scratchpad/</code> is created automatically.</li>
+      <li><strong>Create your first note</strong> — click New File, name it <code>context.md</code>, and write the shared context your agents need.</li>
+      <li><strong>Reference it from agents</strong> — tell agents the path: <code>cat ~/.amux/scratchpad/context.md</code>. Or add a one-line pinned note pointing to the file.</li>
+      <li><strong>Build a handoff practice</strong> — ask long-running agents to append to <code>~/.amux/scratchpad/handoff.md</code> before their session ends.</li>
+    </ol>
+
+    <h2>Frequently asked questions</h2>
+
+    <div class="faq-list">
+      <details>
+        <summary>What is the amux scratchpad?</summary>
+        <p>The amux scratchpad is a global tab in the amux dashboard that provides a shared markdown file workspace at <code>~/.amux/scratchpad/</code>. All agents on the machine can read from and write to scratchpad files. It is separate from each agent's context window — files only enter context when an agent explicitly reads them.</p>
+      </details>
+      <details>
+        <summary>How is the scratchpad different from pinned notes?</summary>
+        <p>Pinned notes are injected automatically into agent context at session start and consume tokens every time. The scratchpad is a passive file store — agents only read it when directed to. Use pinned notes for short standing instructions, and the scratchpad for larger reference documents that are read on demand.</p>
+      </details>
+      <details>
+        <summary>Can multiple agents share the same scratchpad?</summary>
+        <p>Yes. All agents on the same machine share <code>~/.amux/scratchpad/</code>. One agent can write a decision log and another can read it. The scratchpad is outside the git worktree, so workspace isolation does not affect it.</p>
+      </details>
+      <details>
+        <summary>Does the scratchpad survive an agent restart?</summary>
+        <p>Yes. It is plain files on disk — it persists across agent restarts, context compactions, and amux server upgrades.</p>
+      </details>
+      <details>
+        <summary>Can I use the scratchpad from my phone?</summary>
+        <p>The scratchpad is accessible in the amux web dashboard from any browser. Visit your amux server URL from your phone's browser to read and edit scratchpad notes.</p>
+      </details>
+      <details>
+        <summary>How does the scratchpad relate to amux memory?</summary>
+        <p>amux memory (<code>~/.claude/projects/*/memory/</code>) is Claude Code's own mechanism for persisting facts between Claude Code sessions. The scratchpad is a separate, lighter-weight workspace managed by amux — use it for shared reference documents and coordination notes that are not specific to one agent's history.</p>
+      </details>
+    </div>
+
+    <div class="cta-box">
+      <h3>Give your agent fleet a shared workspace</h3>
+      <p>amux is an open-source control plane for running an AI engineering team — with built-in scratchpad, kanban, vault secrets, email, and mobile control.</p>
+      <pre><code>brew install mixpeek/amux/amux
+amux serve</code></pre>
+      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <a class="btn" href="/guides/ai-agent-pinned-notes/">Pinned notes guide</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Open-source control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Guides</div>
+          <ul>
+            <li><a href="/guides/ai-agent-pinned-notes/">Pinned notes</a></li>
+            <li><a href="/guides/ai-agent-goal-keeper/">Goal keeper</a></li>
+            <li><a href="/guides/ai-agent-companion-chat/">Companion chat</a></li>
+            <li><a href="/guides/ai-agent-workspace-isolation/">Workspace isolation</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/compare/">Compare</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT License. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

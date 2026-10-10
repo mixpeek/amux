@@ -3352,8 +3352,15 @@ fn hydrate_light(
             // condition for the eighteen LIKEs: a row it rejects cannot match
             // any of them. Measured 2026-09-30 on the 10k corpus: 98ms vs 131ms
             // with the LIKEs alone, same rows hydrated whole.
+            //
+            // Two LIKEs, not instr(lower(desc||' '||log)): same ASCII case
+            // fold, and the ' ' separator meant no match could span the two
+            // columns anyway, so the rows selected are identical. It skips
+            // building a lowered copy of both columns per row. Measured
+            // 2026-10-10 on the live board's 2,330-row default page: 49ms ->
+            // 33ms, 1,268 rows either way.
             let marker = format!(
-                "(instr(lower(COALESCE(i.\"desc\",'')||' '||COALESCE(i.log,'')), 'need') > 0 AND ({}))",
+                "((COALESCE(i.\"desc\",'') LIKE '%need%' OR COALESCE(i.log,'') LIKE '%need%') AND ({}))",
                 needsyou_marker_sql()
             );
             // WHY A NUL ESCAPES TO THE FULL COLUMN. SQLite's LENGTH() on TEXT
@@ -3382,10 +3389,17 @@ fn hydrate_light(
             // exact on every row that uses it.
             // `d_folded` is read only for a row that came back CUT, and a cut
             // row is longer than the prefix, so the count is skipped (0) for
-            // every row the first arm above returned whole.
+            // every row the first arm above returned whole. The REPLACE count
+            // also runs only when a column contains the token: it summed to 0
+            // over all 2,330 live default-page rows and cost 77ms, the largest
+            // single term of this query (2026-10-10, AMUX-5712). A token split
+            // across the desc/log seam is the one case the guard reads as 0;
+            // it is an artifact of joining them with no separator.
             let extra = format!(
                 ", LENGTH(COALESCE(i.\"desc\",'')) AS d_len, \
-                 CASE WHEN LENGTH(COALESCE(i.\"desc\",'')) <= {DESC_PREFIX_CHARS} THEN 0 ELSE \
+                 CASE WHEN LENGTH(COALESCE(i.\"desc\",'')) <= {DESC_PREFIX_CHARS} THEN 0 \
+                 WHEN instr(COALESCE(i.\"desc\",''),'New task:') = 0 \
+                  AND instr(COALESCE(i.log,''),'New task:') = 0 THEN 0 ELSE \
                  (LENGTH(COALESCE(i.\"desc\",'')||COALESCE(i.log,'')) \
                   - LENGTH(REPLACE(COALESCE(i.\"desc\",'')||COALESCE(i.log,''),'New task:',''))) / 9 \
                  END AS d_folded"
@@ -3396,9 +3410,16 @@ fn hydrate_light(
     let mut by_id: std::collections::HashMap<String, IssueRow> = std::collections::HashMap::new();
     for chunk in kept_light.chunks(500) {
         let marks = vec!["?"; chunk.len()].join(",");
+        // Tags by correlated subquery rather than LEFT JOIN + GROUP BY: one
+        // row per id either way (id is the primary key), without the
+        // aggregate pass over the joined rows. 51ms -> 40ms over the nightly
+        // corpus's 6,652 default-page rows (AMUX-5712).
+        let cols = cols.replace(
+            "GROUP_CONCAT(t.tag)",
+            "(SELECT GROUP_CONCAT(t.tag) FROM issue_tags t WHERE t.issue_id = i.id)",
+        );
         let mut stmt = conn.prepare(&format!(
-            "SELECT {cols} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
-             WHERE i.deleted IS NULL AND i.id IN ({marks}) GROUP BY i.id"
+            "SELECT {cols} FROM issues i WHERE i.deleted IS NULL AND i.id IN ({marks})"
         ))?;
         let params: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
@@ -6758,6 +6779,14 @@ mod tests {
             )
             .unwrap();
         }
+        // A marker ONLY in the log (AMUX-5712). The pre-filter checks desc and
+        // log separately; dropping the log arm must lose this row's escape.
+        conn.execute(
+            "INSERT INTO issues (id, title, \"desc\", status, session, created, updated, log, type) \
+             VALUES ('P-5', 'a card', ?1, 'todo', 's', ?2, ?2, ?3, 'code')",
+            rusqlite::params![plain, now, "`10:00` one\n\n`10:01` two\n\n\n`10:02` NEEDS-YOU: asked in the log"],
+        )
+        .unwrap();
 
         let (full, _, _) =
             list_issues_capped(&conn, &[], &[], ArchivedFilter::All, 100, Prose::Full).unwrap();
@@ -6782,7 +6811,7 @@ mod tests {
         );
         assert!(p1.desc_prefixed.is_some(), "and must SAY it is truncated");
         // The escapes must NOT be truncated, and must say so the same way.
-        for id in ["P-2", "P-3", "P-4"] {
+        for id in ["P-2", "P-3", "P-4", "P-5"] {
             let r = slim.iter().find(|r| r.id == id).unwrap();
             assert!(
                 r.desc_prefixed.is_none(),
@@ -6793,7 +6822,7 @@ mod tests {
         }
 
         // Now the claim: identical output, whichever way the row was loaded.
-        for id in ["P-1", "P-2", "P-3"] {
+        for id in ["P-1", "P-2", "P-3", "P-5"] {
             let f = crate::api::board::list_body(
                 full.iter().find(|r| r.id == id).unwrap(),
                 true,

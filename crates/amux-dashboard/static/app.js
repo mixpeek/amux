@@ -4301,7 +4301,13 @@ const _origFetch = window.fetch.bind(window);
 // deploy has its fetch fail, get queued, and report success. Ethan saw the two
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
-const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
+//
+// `connectors/<id>/(auth|token|test)` joined for the same ANSWER-NEEDED-NOW
+// reason (2026-10-10): a Google reconnect pressed while the server restarted
+// got the synthetic 202, which has no authorize_url, so the button said
+// "Could not start the grant: unknown", and the queued POST would later
+// start a sign-in nobody was there to open.
+const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
 const _outboxManualAction = url => /\/api\/projects\/(?:draft|[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))(?:[?#]|$)/.test(url || '');
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
@@ -14032,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1294';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1296';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15494,57 +15500,71 @@ function togglePeekSplit(ev, force) {
 }
 
 // --- Split pane drag resize ---
+// Pointer Events + pointer capture (Ethan, 2026-10-10: "the drag middle in
+// split view is buggy"). The side panel is an iframe for Chat/Messages, and a
+// document mousemove/mouseup listener goes deaf the moment the cursor crosses
+// into it: the drag stalls, and a release over the iframe never arrives, so
+// the handle stays stuck to the cursor. Capture routes every move and the
+// release to the handle wherever the pointer is; the CSS also turns iframe
+// pointer events off while dragging. Moves apply once per animation frame so
+// the terminal does not reflow on every pixel.
 let _splitResizeInit = false;
 function _initSplitResize() {
   const handle = document.getElementById('peek-split-handle');
   if (!handle || _splitResizeInit) return;
   _splitResizeInit = true;
-  const start = (startX) => {
+  let ctx = null;
+  let pendingX = null;
+  let raf = 0;
+  const apply = () => {
+    raf = 0;
+    if (!ctx || pendingX == null) return;
+    const delta = pendingX - ctx.startX;
+    const newTpW = Math.max(150, Math.min(ctx.avail - 160, ctx.tpW + delta));
+    const ratio = newTpW / ctx.avail;
+    ctx.tp.style.flex = ratio + ' 1 0%';
+    ctx.sf.style.flex = (1 - ratio) + ' 1 0%';
+  };
+  const finish = () => {
+    if (!ctx) return;
+    if (raf) { cancelAnimationFrame(raf); apply(); }
+    const tp = ctx.tp;
+    ctx = null; pendingX = null;
+    handle.classList.remove('dragging');
+    document.body.classList.remove('split-dragging');
+    try { localStorage.setItem('peekSplitRatio', tp.style.flex); } catch (e) {}
+  };
+  handle.addEventListener('pointerdown', e => {
+    if (e.button !== undefined && e.button !== 0) return;
     const wrap = document.getElementById('peek-split-wrap');
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
-    if (!wrap || !tp || !sf) return null;
-    const wrapW = wrap.offsetWidth;
-    const tpW = tp.offsetWidth;
+    if (!wrap || !tp || !sf) return;
+    // The panes share the wrapper's width MINUS the handle; dividing by the
+    // whole width made the divider jump on the first move.
+    const avail = Math.max(1, wrap.clientWidth - handle.offsetWidth);
+    ctx = { tp, sf, avail, tpW: tp.getBoundingClientRect().width, startX: e.clientX };
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
     handle.classList.add('dragging');
     document.body.classList.add('split-dragging');
-    return { wrapW, tpW, startX };
-  };
-  const move = (ctx, clientX) => {
-    if (!ctx) return;
-    const tp = document.getElementById('peek-terminal-panel');
-    const sf = document.getElementById('peek-split-files');
-    const delta = clientX - ctx.startX;
-    const newTpW = Math.max(150, Math.min(ctx.wrapW - 160, ctx.tpW + delta));
-    const ratio = newTpW / ctx.wrapW;
-    tp.style.flex = ratio + ' 1 0%';
-    sf.style.flex = (1 - ratio) + ' 1 0%';
-  };
-  const end = () => {
-    handle.classList.remove('dragging');
-    document.body.classList.remove('split-dragging');
-    const tp = document.getElementById('peek-terminal-panel');
-    if (tp) localStorage.setItem('peekSplitRatio', tp.style.flex);
-  };
-  handle.addEventListener('mousedown', e => {
-    const ctx = start(e.clientX);
-    if (!ctx) return;
-    const onMove = ev => move(ctx, ev.clientX);
-    const onUp = () => { end(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
     e.preventDefault();
   });
-  handle.addEventListener('touchstart', e => {
-    if (!e.touches.length) return;
-    const ctx = start(e.touches[0].clientX);
+  handle.addEventListener('pointermove', e => {
     if (!ctx) return;
-    const onMove = ev => { if (ev.touches.length) move(ctx, ev.touches[0].clientX); };
-    const onEnd = () => { end(); handle.removeEventListener('touchmove', onMove); handle.removeEventListener('touchend', onEnd); };
-    handle.addEventListener('touchmove', onMove, { passive: true });
-    handle.addEventListener('touchend', onEnd);
-    e.preventDefault();
-  }, { passive: false });
+    pendingX = e.clientX;
+    if (!raf) raf = requestAnimationFrame(apply);
+  });
+  handle.addEventListener('pointerup', finish);
+  handle.addEventListener('pointercancel', finish);
+  handle.addEventListener('lostpointercapture', finish);
+  // Double-click puts the divider back in the middle.
+  handle.addEventListener('dblclick', () => {
+    const tp = document.getElementById('peek-terminal-panel');
+    const sf = document.getElementById('peek-split-files');
+    if (!tp || !sf) return;
+    tp.style.flex = '0.5 1 0%'; sf.style.flex = '0.5 1 0%';
+    try { localStorage.setItem('peekSplitRatio', tp.style.flex); } catch (e) {}
+  });
 }
 function _restoreSplitWidths() {
   const saved = localStorage.getItem('peekSplitRatio');
@@ -27703,6 +27723,8 @@ function _connectorsRender(d) {
     if (s.kind === 'connected' && s.rows.length) {
       for (const r of s.rows) h += _connAcctRow(c, r, false);
       if (c.auth === 'oauth2') h += '<button class="cx-add" onclick="event.stopPropagation();_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add account</button>';
+    } else if (c.auth === 'oauth2' && _connAcctsState !== 'ok' && c.status !== 'needs_credentials') {
+      h += _connAcctsNote();
     } else {
       const failed = c.last_test && !c.last_test.ok;
       const blurb = s.kind === 'connected' && failed ? 'Last live test failed ' + _connAgo(c.last_test.at) + '. Open for details.' : c.setup_note;
@@ -27718,12 +27740,34 @@ function _connectorsRender(d) {
 function _connSetFilter(k) { _connFilter = k; _connectorsRender(_connectorsData); }
 function _connSearch(v) { _connQuery = String(v || '').trim(); _connectorsRender(_connectorsData); }
 
+// `_connAcctsState` keeps "not loaded" apart from "zero accounts": a load that
+// failed (a server restart mid-request) used to leave _connAccts null, which
+// every view read as an empty list, so the Google drawer said "No accounts
+// yet" over five working grants (Ethan, 2026-10-10). A failure now retries
+// with backoff and the views say what actually happened.
+let _connAcctsState = 'idle';   // idle | loading | ok | failed
+let _connAcctsRetry = 0;
 async function _connAccountsLoad() {
+  if (_connAcctsState !== 'ok') _connAcctsState = 'loading';
   try {
     const r = await fetch('/api/connectors/accounts');
-    _connAccts = await r.json();
-  } catch (e) { _connAccts = null; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d || !Array.isArray(d.accounts)) throw new Error('no accounts list');
+    _connAccts = d; _connAcctsState = 'ok'; _connAcctsRetry = 0;
+  } catch (e) {
+    if (_connAcctsState !== 'ok') _connAcctsState = 'failed';
+    if (_connAcctsRetry < 5) {
+      const wait = 1500 * Math.pow(2, _connAcctsRetry++);
+      setTimeout(() => { if (activeView === 'connectors') _connAccountsLoad(); }, wait);
+    }
+  }
   if (_connectorsData) _connectorsRender(_connectorsData);
+}
+function _connAcctsNote() {
+  if (_connAcctsState === 'failed') return '<div class="cx-dim cx-small">Could not load account health. <button class="btn cx-mini" onclick="_connAcctsRetry=0;_connAccountsLoad()">Retry</button></div>';
+  if (_connAcctsState !== 'ok') return '<div class="cx-dim cx-small">Loading accounts…</div>';
+  return '';
 }
 
 function _connById(id) {
@@ -27792,7 +27836,7 @@ function _connDrawerRender() {
   let h = '<div class="cx-drawer" role="dialog" aria-label="' + esc(c.label) + '">';
   h += '<div class="cx-dhead">' + _connIcon(c) + '<span class="cx-title"><span class="cx-name">' + esc(c.label) + '</span><span class="cx-cat">' + esc(c.category) + '</span></span>'
     + _connPill(s.label, s.cls) + '<button class="cx-x" aria-label="Close" onclick="_connClose()"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>';
-  h += '<div class="cx-tabs">' + tab('overview', 'Overview') + tab('connections', 'Connections (' + s.rows.length + ')') + tab('config', 'Configuration') + tab('perms', 'Permissions') + '</div>';
+  h += '<div class="cx-tabs">' + tab('overview', 'Overview') + tab('connections', 'Connections' + (_connAcctsState === 'ok' ? ' (' + s.rows.length + ')' : '')) + tab('config', 'Configuration') + tab('perms', 'Permissions') + '</div>';
   h += '<div class="cx-dbody">';
   if (_connOpenTab === 'overview') {
     if (c.setup_note) h += '<p class="cx-p">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">Docs ↗</a>' : '') + '</p>';
@@ -27821,7 +27865,8 @@ function _connDrawerRender() {
   } else if (_connOpenTab === 'connections') {
     h += '<div class="cx-row-head"><span class="cx-sec" style="margin:0">Your connections (' + s.rows.length + ')</span>'
       + (c.auth === 'oauth2' ? '<button class="btn" onclick="_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add connection</button>' : '') + '</div>';
-    if (!s.rows.length) h += '<div class="cx-dim cx-small">No accounts yet.' + (c.auth === 'oauth2' ? ' Add one to grant access.' : ' This connector authenticates with its key, set under Configuration.') + '</div>';
+    if (_connAcctsState !== 'ok') h += _connAcctsNote();
+    else if (!s.rows.length) h += '<div class="cx-dim cx-small">No accounts yet.' + (c.auth === 'oauth2' ? ' Add one to grant access.' : ' This connector authenticates with its key, set under Configuration.') + '</div>';
     for (const r of s.rows) h += _connAcctRow(c, r, true);
     if (_connIsGoogle(c) && s.rows.length) h += '<div class="cx-dim cx-small" style="margin-top:8px">One Google approval per account covers Gmail, Calendar, Drive and Docs, and every worker mints its token from it.</div>';
   } else if (_connOpenTab === 'config') {
@@ -27883,8 +27928,10 @@ async function _connReconnect(family, account) {
     if (d && d.authorize_url) {
       window.open(d.authorize_url, '_blank');
       showToast('Approve in the opened tab — one approval repairs every worker using ' + account);
+    } else if (!r.ok || (d && d.queued)) {
+      showToast('Could not reach the server (HTTP ' + r.status + '). Try again in a moment.');
     } else {
-      showToast('Could not start the grant: ' + ((d && (d.error || d.detail)) || 'unknown'));
+      showToast('Could not start the grant: ' + ((d && (d.error || d.detail)) || 'the server sent no sign-in link'));
     }
   } catch (e) { showToast('Could not start the grant: ' + e); }
 }
@@ -44497,6 +44544,13 @@ function _restoreScreen() {
           if (wrap) wrap.classList.add('split-active');
           if (btn) btn.classList.add('active');
           _psfLoad(_ps.splitPath || peekSessionDir || '/');
+          // The same three steps togglePeekSplit takes when it opens the split.
+          // Skipping them left a restored split with a divider that could not
+          // be dragged (no handler), its default width, and the file view in
+          // place of the Chat/Messages panel that had been open.
+          _initSplitResize();
+          _restoreSplitWidths();
+          _peekSplitShow(_peekSplitView);
         }, 300);
       }
     }, 200);
