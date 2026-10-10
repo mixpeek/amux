@@ -8158,3 +8158,16 @@ body.light .bd-answer-head { color: #bc4c00; }
   .cx-drawer { width: 100vw; border-left: none; }
   .cx-acct-name { white-space: normal; overflow-wrap: break-word; }
 }
+
+/* Scratchpad: the real folder path in the toolbar; phone actions behind "⋯" (2026-10-10) */
+.sp-dir { font-family: var(--mono, ui-monospace, monospace); font-size: 0.8rem; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.sp-more-btn { display: none; }
+@media (max-width: 600px) {
+  .sp-more-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; font-size: 1.2rem; margin-left: auto; }
+  #scratchpad-view .fe-toolbar { position: relative; }
+  #sp-actions { display: none; position: absolute; right: 8px; top: calc(100% - 4px); z-index: 30; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px; min-width: 200px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-control, 8px); box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+  #sp-actions.open { display: flex; }
+  #sp-actions .fe-tb-btn { justify-content: flex-start; width: 100%; }
+  #sp-actions .fe-tb-btn span { display: inline !important; }
+  #sp-actions .sp-retain-wrap { justify-content: space-between; min-height: 44px; padding: 0 4px; }
+}
