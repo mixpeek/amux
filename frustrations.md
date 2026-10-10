@@ -5852,3 +5852,14 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: The UI race fixture holds every polling GET and removes the handler before all delayed fulfills finish, aborting a real browser run with Route is already handled. The worker fixture also scores cold CUA provisioning before the driver's supported startup budget expires.
 COST: The Browser tab run stopped after eleven checks; the CUA worker was scored as failed during a still-running first image build.
 FIX: Hold exactly one response and await its fulfillment before unroute, retain a measured failure receipt, test reload restoration, and log a phase-appropriate bounded worker timeout. A private main browser retest completed all seventeen UI checks; the failed receipts are retained separately.
+
+## Forget connector blocks the embedded browser on a native confirm dialog
+AREA: connectors
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: The declared connector Forget button still uses native confirm(), despite the shared app modal explicitly replacing it for standalone/PWA browsers. The real in-app browser validation loses focus after this action and cannot complete deletion. The text also omits saved-account disconnect and pending-consent cancellation.
+COST: A valid owner deletion cannot be completed/verified reliably through the browser, and its credential consequences are hidden.
+FIX: Use the shared asynchronous danger confirmation, describe the actual account/pending effects and retained environment values, and emit measured connector-forget cancelled/removed/refused/failed receipts. Real browser regression covers Cancel without a DELETE, confirmed deletion, unrelated config/keys preservation, old-grant tombstones, rejected late callback and no resurrection after redeclaration.
