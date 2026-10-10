@@ -20222,7 +20222,12 @@ _loadSlashCommands();
 // shows, from /api/skills/<name>/examples) are listed under it, filtered by
 // what has been typed so far; picking one fills the whole invocation.
 const _skillExamplesCache = {};   // name -> [{invocation, purpose}], [] for none
+// The LATEST keystroke's re-render, not the first: the request usually starts
+// mid-word, and that keystroke's closure no longer matches the input when the
+// answer lands, so calling it would drop the examples until the next key.
+const _skillExamplesWaiter = {};
 function _skillExamplesFor(name, rerender) {
+  if (rerender) _skillExamplesWaiter[name] = rerender;
   if (name in _skillExamplesCache) return _skillExamplesCache[name];
   _skillExamplesCache[name] = null;   // in flight
   fetch(API + '/api/skills/' + encodeURIComponent(name) + '/examples')
@@ -20235,7 +20240,9 @@ function _skillExamplesFor(name, rerender) {
       // A refused or unmeasured answer is not remembered, so a later `/` retries.
       if (d && d.measured === false && !rows.length) delete _skillExamplesCache[name];
       else _skillExamplesCache[name] = rows;
-      if (rows.length && rerender) rerender();
+      const again = _skillExamplesWaiter[name];
+      delete _skillExamplesWaiter[name];
+      if (rows.length && again) again();
     });
   return null;
 }
