@@ -39,6 +39,59 @@ pub fn routes() -> Router<AppState> {
 pub struct EventsQuery {
     /// Filter to one connected account (email); omit for every account.
     account_id: Option<String>,
+    /// The visible range (RFC 3339). With both, the read covers exactly that
+    /// window, every account and calendar in parallel, cached 30 s. Without
+    /// them it keeps the old +/- SYNC_WINDOW_DAYS read for existing callers.
+    time_min: Option<String>,
+    time_max: Option<String>,
+}
+
+/// 30 s per (account, window): a calendar view polls every 60 s and on focus,
+/// so this bounds Google calls without letting the view go stale.
+type WindowCache = std::sync::Mutex<
+    std::collections::HashMap<(String, String, String), (std::time::Instant, Vec<gcal_sync::CalendarMeta>, Vec<gcal_sync::CalendarEvent>)>,
+>;
+fn window_cache() -> &'static WindowCache {
+    static C: std::sync::OnceLock<WindowCache> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// One account's calendars and events for the window, every calendar fetched
+/// concurrently. A calendar that fails is reported, never fatal.
+async fn account_window(
+    token: &str,
+    account: &str,
+    time_min: &str,
+    time_max: &str,
+) -> anyhow::Result<(Vec<gcal_sync::CalendarMeta>, Vec<gcal_sync::CalendarEvent>, usize)> {
+    let key = (account.to_string(), time_min.to_string(), time_max.to_string());
+    if let Ok(c) = window_cache().lock() {
+        if let Some((at, cals, evs)) = c.get(&key) {
+            if at.elapsed() < std::time::Duration::from_secs(30) {
+                return Ok((cals.clone(), evs.clone(), 0));
+            }
+        }
+    }
+    let cals = gcal_sync::fetch_calendar_meta(token, account).await?;
+    let fetches = cals.iter().map(|c| gcal_sync::fetch_calendar_window(token, c, time_min, time_max));
+    let results = futures::future::join_all(fetches).await;
+    let mut events = Vec::new();
+    let mut failed = 0usize;
+    for (cal, r) in cals.iter().zip(results) {
+        match r {
+            Ok(mut v) => events.append(&mut v),
+            Err(e) => {
+                failed += 1;
+                tracing::warn!(target: "amux::gcal", account = %account, calendar = %cal.id, error = %e,
+                    verdict = "gcal_calendar_fetch_failed", "one calendar failed; the rest are shown");
+            }
+        }
+    }
+    if let Ok(mut c) = window_cache().lock() {
+        c.retain(|_, (at, _, _)| at.elapsed() < std::time::Duration::from_secs(120));
+        c.insert(key, (std::time::Instant::now(), cals.clone(), events.clone()));
+    }
+    Ok((cals, events, failed))
 }
 
 #[derive(Deserialize)]
@@ -145,6 +198,10 @@ pub async fn list_events(
         None => all,
     };
 
+    if let (Some(tmin), Some(tmax)) = (q.time_min.as_deref(), q.time_max.as_deref()) {
+        return Ok(Json(list_window(&state, &headers, &targets, tmin, tmax).await));
+    }
+
     let mut events = Vec::new();
     let mut outcomes = Vec::new();
     for (account, calendar_granted) in &targets {
@@ -193,6 +250,71 @@ pub async fn list_events(
         body["why_empty"] = json!("no Google account is connected; connect one on the Connectors page (one approval covers gmail, calendar and drive)");
     }
     Ok(Json(body))
+}
+
+/// The windowed read: every eligible account concurrently.
+async fn list_window(
+    state: &AppState,
+    headers: &HeaderMap,
+    targets: &[(String, bool)],
+    tmin: &str,
+    tmax: &str,
+) -> Value {
+    let mut outcomes = Vec::new();
+    let mut ready = Vec::new();
+    for (account, calendar_granted) in targets {
+        if !calendar_granted {
+            outcomes.push(json!({"account": account, "ok": false, "status": "not_granted",
+                "detail": "this account's Google grant does not include Calendar; reconnect it on the Connectors page"}));
+            continue;
+        }
+        if let Err(denial) = entitled(state, headers, account) {
+            outcomes.push(json!({"account": account, "ok": false, "status": "not_entitled", "detail": denial}));
+            continue;
+        }
+        match super::connectors::google_calendar_token(account).await {
+            Ok(t) => ready.push((account.clone(), t)),
+            Err(body) => {
+                tracing::warn!(target: "amux::gcal", account = %account, verdict = "gcal_token_unavailable",
+                    detail = %body, "gcal window: skipped account, no usable token");
+                outcomes.push(json!({"account": account, "ok": false, "status": "no_token", "detail": body}));
+            }
+        }
+    }
+    let runs = ready.iter().map(|(a, t)| account_window(t, a, tmin, tmax));
+    let results = futures::future::join_all(runs).await;
+    let mut events = Vec::new();
+    let mut calendars = Vec::new();
+    for ((account, _), r) in ready.iter().zip(results) {
+        match r {
+            Ok((mut cals, mut evs, failed)) => {
+                outcomes.push(json!({"account": account, "ok": true, "events": evs.len(), "calendars": cals.len(), "calendars_failed": failed}));
+                calendars.append(&mut cals);
+                events.append(&mut evs);
+            }
+            Err(e) => {
+                tracing::warn!(target: "amux::gcal", account = %account, verdict = "gcal_fetch_failed",
+                    error = %e, "gcal window: fetch failed for account");
+                outcomes.push(json!({"account": account, "ok": false, "status": "fetch_failed", "detail": e.to_string()}));
+            }
+        }
+    }
+    events.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+    let total = events.len();
+    let mut body = json!({
+        "events": events,
+        "calendars": calendars,
+        "total": total,
+        "accounts": outcomes,
+        "time_min": tmin,
+        "time_max": tmax,
+        "measured": true,
+        "n_considered": targets.len(),
+    });
+    if targets.is_empty() {
+        body["why_empty"] = json!("no Google account is connected; connect one on the Connectors page (one approval covers gmail, calendar and drive)");
+    }
+    body
 }
 
 /// POST /api/gcal/events — create an event in a connected account's calendar,
@@ -299,7 +421,7 @@ mod tests {
     async fn an_empty_event_list_says_whether_and_why() {
         let home = tempfile::tempdir().unwrap();
         let _g = crate::api::settings::test_env::set_home(home.path());
-        let Json(v) = list_events(State(state()), HeaderMap::new(), Query(EventsQuery { account_id: None }))
+        let Json(v) = list_events(State(state()), HeaderMap::new(), Query(EventsQuery { account_id: None, time_min: None, time_max: None }))
             .await.unwrap();
         assert_eq!((v["measured"].clone(), v["n_considered"].clone(), v["total"].clone()), (json!(true), json!(0), json!(0)));
         assert!(v["why_empty"].as_str().is_some_and(|s| s.contains("Connectors")), "{v}");
@@ -307,14 +429,14 @@ mod tests {
         // A grant without the Calendar scope is reported, never silently
         // dropped, and costs no network call.
         grant(home.path(), "mail@example.com", "https://www.googleapis.com/auth/gmail.modify");
-        let Json(v) = list_events(State(state()), HeaderMap::new(), Query(EventsQuery { account_id: None }))
+        let Json(v) = list_events(State(state()), HeaderMap::new(), Query(EventsQuery { account_id: None, time_min: None, time_max: None }))
             .await.unwrap();
         assert_eq!(v["n_considered"], json!(1));
         assert_eq!(v["accounts"][0]["status"], json!("not_granted"), "{v}");
         assert!(v.get("why_empty").is_none());
 
         let missing = list_events(State(state()), HeaderMap::new(),
-            Query(EventsQuery { account_id: Some("nobody@example.com".into()) })).await.unwrap_err();
+            Query(EventsQuery { account_id: Some("nobody@example.com".into()), time_min: None, time_max: None })).await.unwrap_err();
         assert_eq!(missing.0, StatusCode::NOT_FOUND);
     }
 

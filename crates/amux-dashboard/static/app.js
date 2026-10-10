@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1309';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1312';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -20222,16 +20222,30 @@ function _atInsert(inp, el) {
 // ── Slash command autocomplete ──
 let SLASH_COMMANDS = [];
 let SKILLS_LIST = [];   // amux skills (DB) — get their own section in the chip picker
-(async function _loadSlashCommands() {
-  try {
-    const r = await fetch(API + '/api/slash-commands');
-    if (r.ok) SLASH_COMMANDS = await r.json();
-  } catch(e) {}
-  try {
-    const r2 = await fetch(API + '/api/skills');
-    if (r2.ok) SKILLS_LIST = await r2.json();
-  } catch(e) {}
-})();
+// Reloaded after a Skills-tab save or delete, and when a `/` is typed into an
+// empty composer, so a skill added in another tab or device appears without a
+// page reload (AA-40). The fetch is a local file listing, cheap enough per `/`.
+// A dropdown that opens while a reload is in flight re-renders when it lands
+// (_slashCmdsLoading), or a skill saved a moment ago shows its old text.
+let _slashCmdsLoadedAt = 0;
+let _slashCmdsLoading = null;
+function _loadSlashCommands() {
+  _slashCmdsLoadedAt = Date.now();
+  const p = (async () => {
+    try {
+      const r = await fetch(API + '/api/slash-commands');
+      if (r.ok) SLASH_COMMANDS = await r.json();
+    } catch(e) {}
+    try {
+      const r2 = await fetch(API + '/api/skills');
+      if (r2.ok) SKILLS_LIST = await r2.json();
+    } catch(e) {}
+  })();
+  _slashCmdsLoading = p;
+  p.finally(() => { if (_slashCmdsLoading === p) _slashCmdsLoading = null; });
+  return p;
+}
+_loadSlashCommands();
 
 // ── Customizable chip bar ──
 // Each chip: { id, label, action, value, danger? }
@@ -21666,6 +21680,8 @@ function slashAcUpdate() {
   if (_atRender(inp, el, 'slashAcPick')) { slashAcItems = []; slashAcSelected = -1; return; }
   el._atItems = null; el._atSel = -1;
   if (!val.startsWith('/')) { el.classList.remove('open'); slashAcItems = []; return; }
+  if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
+  if (_slashCmdsLoading) { const v = val; _slashCmdsLoading.then(() => { if (inp.value === v) slashAcUpdate(); }); }
   const q = val.toLowerCase();
   slashAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
   slashAcSelected = -1;
@@ -23862,6 +23878,7 @@ function cardSlashAcUpdate(name) {
   if (_atRender(inp, el, 'cardAtPick')) { _cardAcItems = []; _cardAcSelected = -1; return; }
   el._atItems = null; el._atSel = -1;
   if (!val.startsWith('/')) { el.classList.remove('open'); _cardAcItems = []; return; }
+  if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
   const q = val.toLowerCase();
   _cardAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
   _cardAcSelected = -1;
@@ -39846,13 +39863,135 @@ async function fetchCalEvents() {
 }
 
 async function fetchGcalEvents() {
-  try {
-    const r = await fetch(API + '/api/gcal/events');
-    const d = await r.json();
-    gcalEvents = Array.isArray(d.events) ? d.events : [];
-  } catch (e) { /* keep last */ }
-  if (_fcInstance && activeView === 'calendar') _fcInstance.refetchEvents();
+  // The Google layer is a windowed FullCalendar source (_gcalSource) that
+  // reads only the visible range; refreshing it is a refetch of that source.
+  const src = _fcInstance && _fcInstance.getEventSourceById('gcal');
+  if (src && activeView === 'calendar') src.refetch();
 }
+
+// ── Google calendars, Google-Calendar style (Ethan, 2026-10-10: "it should
+// basically be Google Calendar view but optimized mobile clean aesthetic").
+// Every calendar of every connected account, in its own Google color, with
+// the account's own RSVP shown the way Google shows it, read per visible
+// window from /api/gcal/events?time_min&time_max and refreshed every 60 s
+// and on return to the tab. Visibility per calendar defaults to the
+// account's own Google setting (`selected`) and is remembered here.
+let _gcalCalendars = [];
+let _gcalAccounts = null;
+const _gcalKey = c => c.account_id + '|' + c.id;
+function _gcalCalOn(c) {
+  const v = localStorage.getItem('amux_gcal_cal_' + _gcalKey(c));
+  return v === null ? !!c.selected : v === '1';
+}
+function _gcalEventToFc(e) {
+  const bg = e.color || '#039be5';
+  const resp = e.self_response || '';
+  const cls = ['gc-ev'];
+  if (resp === 'declined') cls.push('gc-declined');
+  else if (resp === 'needsAction' || resp === 'tentative') cls.push('gc-pending');
+  return {
+    id: 'gcal-' + e.id,
+    title: e.title,
+    start: e.start_time,
+    end: e.end_time || undefined,
+    allDay: !!e.all_day,
+    backgroundColor: bg,
+    borderColor: bg,
+    textColor: e.fg_color || '#ffffff',
+    classNames: cls,
+    extendedProps: {
+      _type: 'gcal', gcalId: e.id, accountId: e.account_id, calendarId: e.calendar_id,
+      calendarName: e.calendar_name || '', calColor: bg, selfResponse: resp,
+      desc: e.description || '', location: e.location || '',
+      meetingUrl: e.meeting_url || '', htmlLink: e.html_link || '',
+      organizer: e.organizer || '',
+      attendees: (() => { try { return JSON.parse(e.attendees || '[]'); } catch (_) { return []; } })(),
+    },
+  };
+}
+async function _gcalSource(info, success, failure) {
+  if (!_calShowGcal) { success([]); return; }
+  try {
+    const r = await fetch(API + '/api/gcal/events?time_min=' + encodeURIComponent(info.start.toISOString())
+      + '&time_max=' + encodeURIComponent(info.end.toISOString()));
+    const d = await r.json();
+    if (Array.isArray(d.calendars)) _gcalCalendars = d.calendars;
+    _gcalAccounts = Array.isArray(d.accounts) ? d.accounts : null;
+    const byKey = new Map(_gcalCalendars.map(c => [_gcalKey(c), c]));
+    // ONE ENTRY PER EVENT. The same invite sits in several connected inboxes
+    // and a shared calendar (Partiful) is subscribed from three accounts, so
+    // the raw read listed Stone Street Oktoberfest three times. Merged on
+    // Google's event id + start AFTER hidden calendars are dropped, keeping
+    // the copy from the account's own primary calendar when there is one.
+    const rank = e => (e.calendar_id === e.account_id ? 0 : (byKey.get(e.account_id + '|' + e.calendar_id) || {}).primary ? 1 : 2);
+    const best = new Map();
+    for (const e of (d.events || [])) {
+      const cal = byKey.get(e.account_id + '|' + e.calendar_id);
+      if (cal && !_gcalCalOn(cal)) continue;
+      const k = (e.event_id || e.id) + '|' + (e.start_time || '');
+      const prev = best.get(k);
+      if (!prev || rank(e) < rank(prev)) best.set(k, e);
+    }
+    success([...best.values()].map(_gcalEventToFc));
+    _calPanelRefresh();
+  } catch (err) { failure(err); }
+}
+function _gcalSetCal(key, on) {
+  localStorage.setItem('amux_gcal_cal_' + key, on ? '1' : '0');
+  fetchGcalEvents();
+}
+// The calendar list (Google's "My calendars"): a popover on desktop, a bottom
+// sheet on phones. amux's own layers sit above the Google accounts.
+function _calPanelHtml() {
+  const row = (checked, color, label, onchange, sub) => '<label class="cal-row"><input type="checkbox" '
+    + (checked ? 'checked ' : '') + 'onchange="' + onchange + '"><span class="cal-swatch" style="--sw:' + esc(color) + '"></span>'
+    + '<span class="cal-name">' + esc(label) + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</span></label>';
+  let h = '<div class="cal-panel-head"><b>Calendars</b><button class="cal-x" aria-label="Close" onclick="_calPanelClose()">&#x2715;</button></div>';
+  h += '<div class="cal-group">amux</div>';
+  h += row(_calShowEvents, '#7c4dff', 'Local events', "_fcToggleLayer('events');_calPanelRefresh()", 'synced out via the iCal feed');
+  h += row(_calShowSched, '#8a6d3b', 'Scheduled tasks', "_fcToggleLayer('sched');_calPanelRefresh()");
+  h += row(_calShowIssues, '#5f6368', 'Board due dates', "_fcToggleLayer('issues');_calPanelRefresh()");
+  h += row(_calShowGcal, '#4285f4', 'Google calendars', "_fcToggleLayer('gcal');_calPanelRefresh()");
+  const byAcct = new Map();
+  for (const c of _gcalCalendars) { if (!byAcct.has(c.account_id)) byAcct.set(c.account_id, []); byAcct.get(c.account_id).push(c); }
+  for (const [acct, cals] of byAcct) {
+    h += '<div class="cal-group">' + esc(acct) + '</div>';
+    cals.sort((a, b) => (b.primary - a.primary) || a.name.localeCompare(b.name));
+    for (const c of cals) h += row(_gcalCalOn(c), c.color || '#039be5', c.primary ? c.name + ' (primary)' : c.name,
+      "_gcalSetCal('" + escJs(_gcalKey(c)) + "', this.checked)");
+  }
+  const bad = (_gcalAccounts || []).filter(a => !a.ok);
+  for (const a of bad) h += '<div class="cal-warn">' + esc(a.account) + ': ' + esc(a.status || 'unavailable') + ' (Connectors &rarr; Google)</div>';
+  if (!byAcct.size && !bad.length) h += '<div class="cal-warn">No Google account connected. Connect one under Connectors.</div>';
+  return h;
+}
+function _calPanelToggle() {
+  const open = document.getElementById('cal-panel');
+  if (open) { _calPanelClose(); return; }
+  const el = document.createElement('div');
+  el.id = 'cal-panel';
+  el.className = 'cal-panel';
+  el.innerHTML = _calPanelHtml();
+  document.body.appendChild(el);
+  setTimeout(() => document.addEventListener('pointerdown', _calPanelOutside, true), 0);
+}
+function _calPanelOutside(e) {
+  if (e.target.closest && (e.target.closest('#cal-panel') || e.target.closest('.fc-calendars-button'))) return;
+  _calPanelClose();
+}
+function _calPanelClose() {
+  const el = document.getElementById('cal-panel');
+  if (el) el.remove();
+  document.removeEventListener('pointerdown', _calPanelOutside, true);
+}
+function _calPanelRefresh() {
+  const el = document.getElementById('cal-panel');
+  if (el) el.innerHTML = _calPanelHtml();
+}
+// "Updated in real time": every 60 s while the calendar is on screen, and the
+// moment the tab is visible again. The server caches each window 30 s.
+setInterval(() => { if (activeView === 'calendar' && !document.hidden) fetchGcalEvents(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && activeView === 'calendar') fetchGcalEvents(); });
 
 function _fcGetEvents() {
   const out = [];
@@ -39902,28 +40041,6 @@ function _fcGetEvents() {
       });
     });
   }
-  if (_calShowGcal) {
-    (gcalEvents || []).forEach(e => {
-      if (String(e.status || '').toLowerCase() === 'cancelled') return;
-      out.push({
-        id: 'gcal-' + e.id,
-        title: (e.meeting_url ? '📹 ' : '📅 ') + e.title,
-        start: e.start_time,
-        end: e.end_time || undefined,
-        allDay: !!e.all_day,
-        backgroundColor: 'rgba(66,133,244,0.16)',
-        borderColor: '#4285f4',
-        textColor: '#8ab4f8',
-        extendedProps: {
-          _type: 'gcal', gcalId: e.id, accountId: e.account_id,
-          desc: e.description || '', location: e.location || '',
-          meetingUrl: e.meeting_url || '', htmlLink: e.html_link || '',
-          organizer: e.organizer || '',
-          attendees: (() => { try { return JSON.parse(e.attendees || '[]'); } catch (_) { return []; } })(),
-        },
-      });
-    });
-  }
   return out;
 }
 
@@ -39938,28 +40055,31 @@ function _fcInit() {
   if (!['dayGridMonth','timeGridWeek','timeGridDay'].includes(savedView)) savedView = 'dayGridMonth';
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.body.classList.contains('light'));
   const isMobile = window.innerWidth <= 600;
-  const mobileViews = ['listWeek','dayGridMonth','timeGridDay'];
-  const mobileDefault = mobileViews.includes(savedView) ? savedView : 'listWeek';
+  if (!['dayGridMonth','timeGridWeek','timeGridDay','timeGrid3Day','listWeek'].includes(localStorage.getItem('amux_cal_view') || '')) savedView = 'timeGridWeek';
+  const mobileViews = ['timeGridDay','timeGrid3Day','listWeek','dayGridMonth'];
+  const mobileDefault = mobileViews.includes(localStorage.getItem('amux_cal_view')) ? localStorage.getItem('amux_cal_view') : 'timeGridDay';
   _fcInstance = new FullCalendar.Calendar(el, {
     initialView: isMobile ? mobileDefault : savedView,
     headerToolbar: isMobile ? {
-      left: 'addEvent',
+      left: 'today',
       center: 'title',
-      right: 'listWeek,dayGridMonth,timeGridDay',
+      right: 'prev,next',
     } : {
-      left: 'prev,today,next addEvent',
+      left: 'today prev,next',
       center: 'title',
-      right: 'eventsToggle,schedToggle,issuesToggle,gcalToggle dayGridMonth,timeGridWeek,timeGridDay subscribe',
+      right: 'calendars addEvent dayGridMonth,timeGridWeek,timeGridDay subscribe',
     },
-    // Mobile's header row is already full — give the layer toggles their own footer bar.
-    // Subscribe stays hidden on mobile (pre-existing `display:none`), so it's not here.
-    footerToolbar: isMobile ? { left: 'prev,next today', right: 'eventsToggle,schedToggle,issuesToggle,gcalToggle' } : false,
-    buttonText: isMobile ? { listWeek: 'List', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' } : {},
+    // Phones: views and the calendar list on a thumb-reach footer.
+    footerToolbar: isMobile ? { left: 'calendars', center: 'timeGridDay,timeGrid3Day,listWeek,dayGridMonth', right: 'addEvent' } : false,
+    buttonText: isMobile ? { listWeek: 'Agenda', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' }
+      : { dayGridMonth: 'Month', timeGridWeek: 'Week', timeGridDay: 'Day', today: 'Today' },
+    views: { timeGrid3Day: { type: 'timeGrid', duration: { days: 3 }, buttonText: '3 day' } },
     customButtons: {
       addEvent: {
         text: '+ Event',
         click: () => openEventModal(null),
       },
+      calendars: { text: 'Calendars', click: _calPanelToggle },
       subscribe: {
         text: 'Subscribe',
         click: showIcalInfo,
@@ -39969,7 +40089,19 @@ function _fcInit() {
       issuesToggle: { text: _fcLayerLabel('issues'), click: () => _fcToggleLayer('issues') },
       gcalToggle:   { text: _fcLayerLabel('gcal'),   click: () => _fcToggleLayer('gcal')   },
     },
-    events: function(info, successCallback) { successCallback(_fcGetEvents()); },
+    eventSources: [
+      { id: 'amux', events: function(info, successCallback) { successCallback(_fcGetEvents()); } },
+      { id: 'gcal', events: _gcalSource },
+    ],
+    // Google's day header: small weekday over the date, today circled.
+    dayHeaderContent: function(arg) {
+      if (arg.view.type.startsWith('dayGrid')) return arg.text;
+      const dow = arg.date.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase();
+      return { html: '<div class="gc-dh"><span class="gc-dow">' + esc(dow) + '</span><span class="gc-dnum' + (arg.isToday ? ' gc-today' : '') + '">' + arg.date.getDate() + '</span></div>' };
+    },
+    eventTimeFormat: { hour: 'numeric', minute: '2-digit', meridiem: 'short' },
+    slotLabelFormat: { hour: 'numeric', meridiem: 'short' },
+    scrollTime: String(Math.max(0, new Date().getHours() - 1)).padStart(2, '0') + ':00:00',
     height: isMobile ? (window.visualViewport ? window.visualViewport.height : window.innerHeight) - el.getBoundingClientRect().top : window.innerHeight - el.getBoundingClientRect().top,
     nowIndicator: true,
     navLinks: true,
@@ -39980,9 +40112,9 @@ function _fcInit() {
     eventMaxStack: 3,   // timeGrid: >3 concurrent events collapse to "+N more" instead of unreadable slivers
     weekNumbers: false,
     firstDay: 0,
-    slotMinTime: '06:00:00',
-    slotMaxTime: '22:00:00',
-    expandRows: true,
+    slotMinTime: '00:00:00',
+    slotMaxTime: '24:00:00',
+    expandRows: false,
     stickyHeaderDates: true,
     eventClick: function(info) {
       const props = info.event.extendedProps;
@@ -39998,12 +40130,29 @@ function _fcInit() {
       localStorage.setItem('amux_cal_view', info.view.type);
     },
     eventDidMount: function(info) {
-      // Tooltip with description
-      const desc = info.event.extendedProps.desc;
-      if (desc) info.el.title = desc;
+      const p = info.event.extendedProps;
+      // Google's look for an unanswered invite: the calendar color as outline
+      // and text on a plain background.
+      if (info.el.classList.contains('gc-pending')) {
+        info.el.style.background = 'var(--bg)';
+        info.el.style.color = p.calColor || '#039be5';
+        info.el.style.borderColor = p.calColor || '#039be5';
+      }
+      const tip = [info.event.title, p.calendarName, p.location].filter(Boolean).join(' · ');
+      if (tip) info.el.title = tip;
     },
   });
   _fcInstance.render();
+  // Swipe left/right to move a page, the way Google Calendar does on a phone.
+  if (!el._gcSwipe) {
+    el._gcSwipe = true;
+    let sx = 0, sy = 0, st = 0;
+    el.addEventListener('touchstart', e => { const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = Date.now(); }, { passive: true });
+    el.addEventListener('touchend', e => {
+      const t = e.changedTouches[0]; const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Date.now() - st < 600 && Math.abs(dx) > 60 && Math.abs(dy) < 40 && _fcInstance) { dx < 0 ? _fcInstance.next() : _fcInstance.prev(); }
+    }, { passive: true });
+  }
   const _titles = {
     events: 'Real calendar events — the only layer that syncs to Google Calendar',
     sched:  'Scheduled tasks (in-app only — never synced to Google Calendar)',
@@ -40131,19 +40280,25 @@ function openGcalEventModal(fcEvent) {
       }).join('')
     : '';
 
+  const going = { accepted: 'Yes', declined: 'No', tentative: 'Maybe', needsAction: 'Not answered' }[p.selfResponse] || '';
+  const yes = (p.attendees || []).filter(a => a.responseStatus === 'accepted').length;
   closeGcalEventModal();
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay active';
   overlay.id = 'gcal-event-modal';
   overlay.innerHTML = `
-    <div class="modal" style="max-width:440px" onclick="event.stopPropagation()">
+    <div class="modal gc-card" style="max-width:460px" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <h3 style="margin:0">${esc(title)}</h3>
+        <span class="gc-card-sq" style="background:${esc(p.calColor || '#039be5')}"></span>
+        <h3 style="margin:0;flex:1">${esc(title)}</h3>
         <button class="modal-close" onclick="closeGcalEventModal()">×</button>
       </div>
       <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;font-size:0.85rem">
         <div style="color:var(--dim)">${esc(when)}</div>
-        ${p.location ? '<div>📍 ' + esc(p.location) + '</div>' : ''}
+        ${p.location ? '<div>📍 <a href="https://maps.google.com/?q=' + encodeURIComponent(p.location) + '" target="_blank" rel="noopener">' + esc(p.location) + '</a></div>' : ''}
+        ${p.calendarName ? '<div style="color:var(--dim)">📅 ' + esc(p.calendarName) + (p.accountId && p.accountId !== p.calendarName ? ' · ' + esc(p.accountId) : '') + '</div>' : ''}
+        ${going ? '<div>Going? <b>' + esc(going) + '</b></div>' : ''}
+        ${(p.attendees || []).length ? '<div style="color:var(--dim)">' + p.attendees.length + ' guest' + (p.attendees.length === 1 ? '' : 's') + ' · ' + yes + ' yes</div>' : ''}
         ${p.organizer ? '<div style="color:var(--dim)">Organized by ' + esc(p.organizer) + '</div>' : ''}
         ${p.desc ? '<div id="gcal-desc" style="white-space:pre-wrap">' + _sanitizeHtml(p.desc) + '</div>' : ''}
         ${attendeesHtml}
@@ -42525,9 +42680,12 @@ async function saveSkill() {
     body: JSON.stringify({ content })
   });
   if (r.ok) {
-    showToast('Saved /' + name);
+    const d = await r.json().catch(() => ({}));
+    if (d.command_file === null) showToast('Saved /' + name + ', but Claude Code cannot run it yet: ' + (d.command_file_error || 'command file not written'));
+    else showToast('Saved /' + name);
     closeSkillEdit();
     _skillsTabLoad();  // refresh the Skills tab
+    _loadSlashCommands();  // and the composer's `/` list
   } else {
     showToast('Save failed');
   }
@@ -42540,6 +42698,7 @@ async function deleteSkill() {
     showToast('Deleted /' + name);
     closeSkillEdit();
     _skillsTabLoad();
+    _loadSlashCommands();
   }
 }
 

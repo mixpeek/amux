@@ -198,17 +198,108 @@ const BUILTIN_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/voice", "Toggle voice dictation"),
 ];
 
+/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set (Claude Code
+/// reads it the same way), else `~/.claude`. The e2e harness sets it so a
+/// test that saves a skill never writes into the developer's real commands.
+fn claude_config_dir() -> std::path::PathBuf {
+    match std::env::var("CLAUDE_CONFIG_DIR") {
+        Ok(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+        _ => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude"),
+    }
+}
+
 fn command_dirs() -> Vec<std::path::PathBuf> {
-    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
     vec![
-        home.join(".claude").join("commands"),
+        claude_config_dir().join("commands"),
         std::path::PathBuf::from(".")
             .join(".claude")
             .join("commands"),
     ]
 }
 
-async fn list_slash_commands() -> Response {
+/// Where a skill saved in the Skills tab becomes runnable. Claude Code reads
+/// `/name` from `~/.claude/commands/<name>.md`, never from the amux `skills`
+/// table, so a skill that only lived in the table could be edited in the UI
+/// but neither offered in the composer's `/` list nor run (AA-40).
+pub(crate) fn user_commands_dir() -> std::path::PathBuf {
+    command_dirs().swap_remove(0)
+}
+
+/// Write `<dir>/<name>.md` through a temp file and a rename, so Claude Code
+/// never reads a half-written command.
+pub(crate) fn write_command_file(
+    dir: &std::path::Path,
+    name: &str,
+    content: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{name}.md"));
+    let tmp = dir.join(format!(".{name}.md.amux-tmp"));
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
+/// Boot reconcile: every table skill with no command file gets one. Create
+/// only: an existing file may carry edits made outside amux, and the table
+/// does not know which copy is newer. Returns (created, considered).
+pub(crate) fn materialize_missing(
+    conn: &rusqlite::Connection,
+    dir: &std::path::Path,
+) -> (usize, usize) {
+    let Ok(mut stmt) = conn.prepare("SELECT name, content FROM skills") else {
+        return (0, 0);
+    };
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    else {
+        return (0, 0);
+    };
+    let (mut created, mut considered) = (0, 0);
+    for (name, content) in rows.flatten() {
+        considered += 1;
+        if bad_name(&name) || dir.join(format!("{name}.md")).exists() {
+            continue;
+        }
+        match write_command_file(dir, &name, &content) {
+            Ok(_) => created += 1,
+            Err(e) => tracing::warn!(skill = %name, error = %e, verdict = "skill_command_file_unwritten",
+                "a Skills-tab skill has no command file, so Claude Code cannot run it"),
+        }
+    }
+    (created, considered)
+}
+
+/// Table skills as composer entries, for any name no command file claimed.
+fn table_skill_commands(conn: &rusqlite::Connection) -> Vec<(String, String)> {
+    let Ok(mut stmt) = conn.prepare("SELECT name, content FROM skills ORDER BY name") else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    else {
+        return Vec::new();
+    };
+    rows.flatten()
+        .map(|(name, content)| (format!("/{name}"), frontmatter_fields(&content).0))
+        .collect()
+}
+
+async fn list_slash_commands(State(state): State<AppState>) -> Response {
+    let mut cmds = file_slash_commands();
+    if let Ok(conn) = state.store.read() {
+        let mut seen: std::collections::BTreeSet<String> = cmds
+            .iter()
+            .filter_map(|c| c["cmd"].as_str().map(str::to_string))
+            .collect();
+        for (cmd, desc) in table_skill_commands(&conn) {
+            if seen.insert(cmd.clone()) {
+                cmds.push(json!({ "cmd": cmd, "desc": desc }));
+            }
+        }
+    }
+    Json(serde_json::Value::Array(cmds)).into_response()
+}
+
+fn file_slash_commands() -> Vec<serde_json::Value> {
     let mut cmds: Vec<serde_json::Value> = BUILTIN_SLASH_COMMANDS
         .iter()
         .map(|(c, d)| json!({ "cmd": c, "desc": d }))
@@ -246,7 +337,7 @@ async fn list_slash_commands() -> Response {
             cmds.push(json!({ "cmd": name, "desc": desc }));
         }
     }
-    Json(serde_json::Value::Array(cmds)).into_response()
+    cmds
 }
 
 async fn get_slash_command(Path(name): Path<String>) -> Response {
@@ -270,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn slash_commands_do_not_offer_claude_diff() {
-        let response = list_slash_commands().await;
+        let response = Json(serde_json::Value::Array(file_slash_commands())).into_response();
         let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
             .await
             .unwrap();
@@ -331,6 +422,7 @@ async fn save_skill(
         )
             .into_response();
     }
+    let file_content = content.clone();
     let n2 = name.clone();
     let write = state
         .store
@@ -351,7 +443,23 @@ async fn save_skill(
         })
         .await;
     match write {
-        Ok(_) => Json(json!({ "ok": true, "name": name })).into_response(),
+        Ok(_) => {
+            // The table row is what the Skills tab edits; the command file is
+            // what Claude Code runs and what the composer's `/` list reads.
+            // Report both, so a skill that saved but cannot run says so.
+            match write_command_file(&user_commands_dir(), &name, &file_content) {
+                Ok(path) => Json(json!({ "ok": true, "name": name,
+                    "command_file": path.display().to_string() }))
+                .into_response(),
+                Err(e) => {
+                    tracing::warn!(skill = %name, error = %e, verdict = "skill_command_file_unwritten",
+                        "saved a skill but could not write its command file, so Claude Code cannot run it");
+                    Json(json!({ "ok": true, "name": name, "command_file": null,
+                        "command_file_error": e.to_string() }))
+                    .into_response()
+                }
+            }
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -388,7 +496,20 @@ async fn delete_skill(State(state): State<AppState>, Path(name): Path<String>) -
     match write {
         Ok(_) => {
             let n = *slot.lock().expect("slot");
-            Json(json!({ "ok": true, "name": name, "deleted": n > 0 })).into_response()
+            // Deleting in the Skills tab removes the runnable command too, or
+            // the skill would vanish from the tab and keep answering to /name.
+            let path = user_commands_dir().join(format!("{name}.md"));
+            let file_removed = match std::fs::remove_file(&path) {
+                Ok(()) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => {
+                    tracing::warn!(skill = %name, error = %e, verdict = "skill_command_file_not_removed",
+                        "deleted a skill but its command file remains, so /name still runs");
+                    false
+                }
+            };
+            Json(json!({ "ok": true, "name": name, "deleted": n > 0, "command_file_removed": file_removed }))
+                .into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -401,6 +522,40 @@ async fn delete_skill(State(state): State<AppState>, Path(name): Path<String>) -
 #[cfg(test)]
 mod write_tests {
     use super::*;
+
+    fn table(rows: &[(&str, &str)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE skills (name TEXT PRIMARY KEY, content TEXT NOT NULL)", [])
+            .unwrap();
+        for (n, c) in rows {
+            conn.execute("INSERT INTO skills (name, content) VALUES (?1, ?2)", [n, c]).unwrap();
+        }
+        conn
+    }
+
+    /// AA-40: a skill saved in the Skills tab must exist where Claude Code
+    /// reads commands, or `/name` is neither offered nor runnable.
+    #[test]
+    fn a_table_skill_without_a_command_file_gets_one_and_an_edited_file_is_kept() {
+        let dir = std::env::temp_dir().join(format!("amux-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("kept.md"), "edited outside amux").unwrap();
+        let conn = table(&[("pr-merge", "---\ndescription: Merge a PR\n---\nbody"), ("kept", "table copy"), ("../x", "never")]);
+
+        assert_eq!(materialize_missing(&conn, &dir), (1, 3));
+        assert_eq!(std::fs::read_to_string(dir.join("pr-merge.md")).unwrap(), "---\ndescription: Merge a PR\n---\nbody");
+        assert_eq!(std::fs::read_to_string(dir.join("kept.md")).unwrap(), "edited outside amux");
+        assert!(!dir.join("../x.md").exists());
+        assert_eq!(materialize_missing(&conn, &dir), (0, 3), "idempotent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn table_skills_are_offered_as_slash_commands_with_their_description() {
+        let conn = table(&[("pr-merge", "---\ndescription: Merge a PR\n---\nbody")]);
+        assert_eq!(table_skill_commands(&conn), vec![("/pr-merge".to_string(), "Merge a PR".to_string())]);
+    }
 
     /// The name rule is shared by read and both writes. A writer with its own
     /// copy is how a path that GET rejects becomes one POST accepts.
