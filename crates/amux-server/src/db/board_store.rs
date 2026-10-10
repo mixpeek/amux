@@ -3410,9 +3410,16 @@ fn hydrate_light(
     let mut by_id: std::collections::HashMap<String, IssueRow> = std::collections::HashMap::new();
     for chunk in kept_light.chunks(500) {
         let marks = vec!["?"; chunk.len()].join(",");
+        // Tags by correlated subquery rather than LEFT JOIN + GROUP BY: one
+        // row per id either way (id is the primary key), without the
+        // aggregate pass over the joined rows. 51ms -> 40ms over the nightly
+        // corpus's 6,652 default-page rows (AMUX-5712).
+        let cols = cols.replace(
+            "GROUP_CONCAT(t.tag)",
+            "(SELECT GROUP_CONCAT(t.tag) FROM issue_tags t WHERE t.issue_id = i.id)",
+        );
         let mut stmt = conn.prepare(&format!(
-            "SELECT {cols} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
-             WHERE i.deleted IS NULL AND i.id IN ({marks}) GROUP BY i.id"
+            "SELECT {cols} FROM issues i WHERE i.deleted IS NULL AND i.id IN ({marks})"
         ))?;
         let params: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
