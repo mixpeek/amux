@@ -47,7 +47,7 @@ test.beforeEach(async ({ context }) => {
       if (m.op === 'save') {
         if (w.__tpBridge.refuseSave) throw new Error('Photos access is off for amux');
         const bin = files[m.id].map((s) => atob(s)).join('');
-        const head = Array.from(bin.slice(0, 4), (c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+        const head = Array.from(bin.slice(0, 8), (c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
         w.__tpBridge.saved.push({ name: m.id, bytes: bin.length, head });
         delete files[m.id];
         return true;
@@ -84,9 +84,10 @@ test('a take records over the running script and its bytes reach Photos', async 
   await expect.poll(async () => (await saved(page)).length, { timeout: 15_000 }).toBe(1);
   const [take] = await saved(page);
   expect(take.bytes).toBeGreaterThan(1000);
-  // Chromium records WebM, whose EBML header is 1a45dfa3: the bytes are a
-  // real container, reassembled in order from the slices.
-  expect(take.head).toBe('1a45dfa3');
+  // The bytes are a real container, reassembled in order from the slices:
+  // WebM opens with the EBML magic 1a45dfa3, MP4 with an ftyp box (66747970
+  // at offset 4). Which one depends on the Chromium build's encoders.
+  expect(take.head.startsWith('1a45dfa3') || take.head.slice(8) === '66747970', take.head).toBe(true);
   await expect(rec).toContainText('Rec');
   await expect(page.locator('#tp-rec-badge')).toBeHidden();
   await expect(page.locator('#tp-save-btn')).toBeHidden();
