@@ -284,6 +284,11 @@ TARGET_SCAN_S=${AMUX_CLEANUP_TARGET_SCAN_S:-90}
 TARGET_WALK_S=${AMUX_CLEANUP_TARGET_WALK_S:-60}
 TARGET_BUDGET_S=${AMUX_CLEANUP_TARGET_BUDGET_S:-200}
 LSOF_CMD=${AMUX_CLEANUP_LSOF_CMD:-lsof -nP}
+# The binary the tmp reapers ask "which directories are a process's cwd" (DESKT-95).
+# By absolute path: lsof lives in /usr/sbin, which a shell's PATH can lack, and
+# both reapers read an empty answer as "nothing is in use" and deleted in-use
+# directories (test-mac-cleanup-user-tmp and -lane-tmp failed exactly so).
+LSOF_BIN=${AMUX_CLEANUP_LSOF_BIN:-$(command -v lsof 2>/dev/null || echo /usr/sbin/lsof)}
 # Idle detached-worktree scratch checkouts (MO-3631/MO-3633, recurred 3 times in
 # one day at up to 24GB per incident: gs-10-zero-base-cicd alone, an isolated
 # worker that cannot be messaged, created a fresh ~4GB detached mixpeek checkout
@@ -1401,7 +1406,14 @@ reap_lane_tmp() { # <dry:0|1>
   fi
   named=$(printf '%s\n' "$named" | grep -oE '(~|\$HOME|\$\{HOME\}|'"$HOME"')/\.amux/tmp/[^/[:space:]"'"'"';,`)|&<>]+/[^/[:space:]"'"'"';,`)|&<>]+' \
     | sed -E 's#^.*/\.amux/tmp/##' | sort -u)
-  inuse=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed 's|^/private||')
+  # Resolved here, not only at the top: the suites run this function on its own.
+  local lsof_bin=${LSOF_BIN:-${AMUX_CLEANUP_LSOF_BIN:-$(command -v lsof 2>/dev/null || echo /usr/sbin/lsof)}}
+  inuse=$("$lsof_bin" -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed 's|^/private||')
+  # Fail closed: an empty answer means lsof did not run, never that nothing is in use.
+  if [ -z "$inuse" ]; then
+    echo "mac-cleanup: lane tmp: WARN in-use directories UNMEASURED ($lsof_bin gave nothing), reaped nothing this tick (verdict=lane_tmp_cwd_unmeasured)"
+    return 0
+  fi
   for e in "$root"/*/*; do
     [ -e "$e" ] || continue
     if [ "$n" -ge "${LANE_TMP_MAX:-300}" ]; then capped=1; break; fi
@@ -1422,7 +1434,15 @@ reap_lane_tmp() { # <dry:0|1>
 reap_user_tmp() { # <dry:0|1>
   local dry=$1 root="${USER_TMP_ROOT%/}" d b n=0 kb=0 k inuse
   [ -d "$root" ] || { echo "mac-cleanup: user tmp: no $root"; return 0; }
-  inuse=$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed 's|^/private||' | grep -oE '/tmp\.[A-Za-z0-9]+' | sort -u)
+  # Resolved here, not only at the top: the suites run this function on its own.
+  local raw lsof_bin=${LSOF_BIN:-${AMUX_CLEANUP_LSOF_BIN:-$(command -v lsof 2>/dev/null || echo /usr/sbin/lsof)}}
+  raw=$("$lsof_bin" -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed 's|^/private||')
+  # Fail closed: an empty answer means lsof did not run, never that nothing is in use.
+  if [ -z "$raw" ]; then
+    echo "mac-cleanup: user tmp: WARN in-use directories UNMEASURED ($lsof_bin gave nothing), reaped nothing this tick (verdict=user_tmp_cwd_unmeasured)"
+    return 0
+  fi
+  inuse=$(printf '%s\n' "$raw" | grep -oE '/tmp\.[A-Za-z0-9]+' | sort -u)
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     b=${d##*/}
