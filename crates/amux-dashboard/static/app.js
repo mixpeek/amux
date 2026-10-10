@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1302';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1303';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16657,12 +16657,12 @@ let _peekThin = false;
 // the IndexedDB cache by older code). A mode change repaints even when the raw
 // text is unchanged; otherwise a cached transcript-mode paint survives.
 let _peekModePainted = null;
+// Thin still TAGS each prompt with its source (Ethan, 2026-10-10: the Human
+// filter on momentbench-oss found nothing). Without the tag there is no
+// .peek-prompt element, so every filter and the up/down message keys report
+// "No matching ... messages" over a pane full of them. The tag is the one
+// change peek may make; the text inside stays exactly as drawn.
 function _peekHtml(raw) {
-  // Thin still TAGS each prompt with its source (Ethan, 2026-10-10: the
-  // Human filter on momentbench-oss found nothing). Without the tag there is
-  // no .peek-prompt element, so every filter and the up/down message keys
-  // report "No matching ... messages" over a pane full of them. The tag is
-  // the one change peek may make; the text inside stays exactly as drawn.
   if (_peekThin) return highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(raw))), {thin: true});
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
