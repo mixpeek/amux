@@ -297,6 +297,10 @@ export default defineConfig({
       // "rejects a bad token" assertion is a check that cannot pass — it was
       // read as an auth regression on 2026-08-09 when the code was correct.
       AMUX_RS_NO_LOOPBACK_BYPASS: '1',
+      // Saving a skill writes <CLAUDE_CONFIG_DIR>/commands/<name>.md (AA-40).
+      // Without this the e2e server would write into the developer's real
+      // ~/.claude/commands, because the server runs with the real $HOME.
+      CLAUDE_CONFIG_DIR: path.join(homes[t.name], 'claude-config'),
     },
   })),
 });

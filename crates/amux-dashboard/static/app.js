@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1307';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1308';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -20191,16 +20191,30 @@ function _atInsert(inp, el) {
 // ── Slash command autocomplete ──
 let SLASH_COMMANDS = [];
 let SKILLS_LIST = [];   // amux skills (DB) — get their own section in the chip picker
-(async function _loadSlashCommands() {
-  try {
-    const r = await fetch(API + '/api/slash-commands');
-    if (r.ok) SLASH_COMMANDS = await r.json();
-  } catch(e) {}
-  try {
-    const r2 = await fetch(API + '/api/skills');
-    if (r2.ok) SKILLS_LIST = await r2.json();
-  } catch(e) {}
-})();
+// Reloaded after a Skills-tab save or delete, and when a `/` is typed into an
+// empty composer, so a skill added in another tab or device appears without a
+// page reload (AA-40). The fetch is a local file listing, cheap enough per `/`.
+// A dropdown that opens while a reload is in flight re-renders when it lands
+// (_slashCmdsLoading), or a skill saved a moment ago shows its old text.
+let _slashCmdsLoadedAt = 0;
+let _slashCmdsLoading = null;
+function _loadSlashCommands() {
+  _slashCmdsLoadedAt = Date.now();
+  const p = (async () => {
+    try {
+      const r = await fetch(API + '/api/slash-commands');
+      if (r.ok) SLASH_COMMANDS = await r.json();
+    } catch(e) {}
+    try {
+      const r2 = await fetch(API + '/api/skills');
+      if (r2.ok) SKILLS_LIST = await r2.json();
+    } catch(e) {}
+  })();
+  _slashCmdsLoading = p;
+  p.finally(() => { if (_slashCmdsLoading === p) _slashCmdsLoading = null; });
+  return p;
+}
+_loadSlashCommands();
 
 // ── Customizable chip bar ──
 // Each chip: { id, label, action, value, danger? }
@@ -21635,6 +21649,8 @@ function slashAcUpdate() {
   if (_atRender(inp, el, 'slashAcPick')) { slashAcItems = []; slashAcSelected = -1; return; }
   el._atItems = null; el._atSel = -1;
   if (!val.startsWith('/')) { el.classList.remove('open'); slashAcItems = []; return; }
+  if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
+  if (_slashCmdsLoading) { const v = val; _slashCmdsLoading.then(() => { if (inp.value === v) slashAcUpdate(); }); }
   const q = val.toLowerCase();
   slashAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
   slashAcSelected = -1;
@@ -23831,6 +23847,7 @@ function cardSlashAcUpdate(name) {
   if (_atRender(inp, el, 'cardAtPick')) { _cardAcItems = []; _cardAcSelected = -1; return; }
   el._atItems = null; el._atSel = -1;
   if (!val.startsWith('/')) { el.classList.remove('open'); _cardAcItems = []; return; }
+  if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
   const q = val.toLowerCase();
   _cardAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
   _cardAcSelected = -1;
@@ -42494,9 +42511,12 @@ async function saveSkill() {
     body: JSON.stringify({ content })
   });
   if (r.ok) {
-    showToast('Saved /' + name);
+    const d = await r.json().catch(() => ({}));
+    if (d.command_file === null) showToast('Saved /' + name + ', but Claude Code cannot run it yet: ' + (d.command_file_error || 'command file not written'));
+    else showToast('Saved /' + name);
     closeSkillEdit();
     _skillsTabLoad();  // refresh the Skills tab
+    _loadSlashCommands();  // and the composer's `/` list
   } else {
     showToast('Save failed');
   }
@@ -42509,6 +42529,7 @@ async function deleteSkill() {
     showToast('Deleted /' + name);
     closeSkillEdit();
     _skillsTabLoad();
+    _loadSlashCommands();
   }
 }
 
