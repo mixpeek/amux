@@ -40,8 +40,11 @@ function claudeRuns(commandsDir: string, name: string): string {
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith('AMUX_')) delete env[k];
   try {
-    return execFileSync('claude', ['-p', `/${name}`, '--setting-sources', 'project', '--model', 'haiku'],
+    const out = execFileSync('claude', ['-p', `/${name}`, '--setting-sources', 'project', '--model', 'haiku'],
       { cwd: proj, env, encoding: 'utf8', timeout: 120_000 });
+    // Printed so a pass shows that Claude Code really ran, not that it was skipped.
+    console.log(`[real-claude] /${name} -> ${out.trim().slice(0, 200)}`);
+    return out;
   } finally {
     fs.rmSync(proj, { recursive: true, force: true });
   }
@@ -112,6 +115,7 @@ test('a skill created and edited in the Skills tab is offered, written and recog
   expect(offered.some((r) => r.includes(`/${name}`) && r.includes('first version')), offered.join(' | ')).toBe(true);
 
   const claude = realClaude() && info.project.name === 'desktop';
+  console.log(`[real-claude] ${claude ? 'running' : 'skipped (set AMUX_E2E_REAL_CLAUDE=1 with claude on PATH, desktop project)'}`);
   if (claude) expect(claudeRuns(path.dirname(file), name)).toContain('SKILL-TOKEN-V1');
 
   // ── Update ──
