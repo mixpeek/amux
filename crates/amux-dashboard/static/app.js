@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1311';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1313';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -42559,7 +42559,7 @@ async function _skillToggle(cardId, fetchKey) {
   }
   body.style.display = 'block';
   if (btn) btn.textContent = '▴';
-  if (_skillContentCache[fetchKey]) { body.innerHTML = _skillContentCache[fetchKey]; return; }
+  if (_skillContentCache[fetchKey]) { body.innerHTML = _skillContentCache[fetchKey]; _skillLoadExamples(body, fetchKey); return; }
   if (!fetchKey) { body.innerHTML = '<span style="color:var(--dim);font-size:0.8rem;">No details available for built-in commands.</span>'; return; }
   body.innerHTML = '<span style="color:var(--dim);font-size:0.8rem;">Loading...</span>';
   try {
@@ -42570,9 +42570,50 @@ async function _skillToggle(cardId, fetchKey) {
     const html = _skillRenderContent(content);
     _skillContentCache[fetchKey] = html;
     body.innerHTML = html;
+    _skillLoadExamples(body, fetchKey);
   } catch(e) {
     body.innerHTML = '<span style="color:var(--red);font-size:0.8rem;">Failed to load</span>';
   }
+}
+
+// Example invocations for an expanded skill: lines the skill file already
+// writes as `/name ...`, plus examples the meta-task model inferred from the
+// file (cached server-side per version of the file, so this is one model call
+// per edit, not per expand).
+async function _skillLoadExamples(body, fetchKey) {
+  const [type, name] = fetchKey.split(':', 2);
+  if (!name) return;
+  const box = document.createElement('div');
+  box.className = 'skill-examples';
+  box.style.cssText = 'margin:0 0 10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;';
+  box.innerHTML = '<div style="font-size:0.75rem;color:var(--dim);margin-bottom:4px;">Examples</div>'
+    + '<div class="skill-ex-status" style="color:var(--dim);font-size:0.8rem;">Finding examples\u2026</div>';
+  body.prepend(box);
+  let d = null;
+  try {
+    const r = await fetch(API + '/api/skills/' + encodeURIComponent(name) + '/examples?source=' + (type === 'db' ? 'db' : 'file'));
+    d = r.ok ? await r.json() : null;
+  } catch (e) { d = null; }
+  if (!box.isConnected) return;
+  const rows = [];
+  for (const inv of (d && d.written) || []) rows.push({ invocation: inv, purpose: 'Written in the skill file' });
+  for (const ex of (d && d.inferred) || []) if (!rows.some(r => r.invocation === ex.invocation)) rows.push(ex);
+  const status = box.querySelector('.skill-ex-status');
+  if (!rows.length) {
+    status.textContent = 'No examples yet' + (d && d.why_unmeasured ? ': ' + d.why_unmeasured : (d ? '' : ': could not reach the server'));
+    return;
+  }
+  status.remove();
+  box.insertAdjacentHTML('beforeend', rows.map(ex =>
+    '<div class="skill-example" style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;">'
+    + '<div style="flex:1;min-width:0;"><code class="skill-example-inv" style="font-size:0.8rem;word-break:break-word;">' + esc(ex.invocation) + '</code>'
+    + (ex.purpose ? '<div style="font-size:0.75rem;color:var(--dim);margin-top:2px;">' + esc(ex.purpose) + '</div>' : '') + '</div>'
+    + '<button class="btn" style="font-size:0.65rem;padding:2px 8px;flex-shrink:0;" data-inv="' + esc(ex.invocation) + '" onclick="event.stopPropagation();_skillCopyExample(this)">Copy</button>'
+    + '</div>').join(''));
+}
+function _skillCopyExample(btn) {
+  const inv = btn.getAttribute('data-inv') || '';
+  try { navigator.clipboard.writeText(inv); showToast('Copied ' + inv); } catch (e) { showToast('Copy failed'); }
 }
 
 function _skillRenderContent(raw) {
