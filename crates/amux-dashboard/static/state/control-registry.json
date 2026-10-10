@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2523,
+  "n_considered": 2524,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2516,6 +2516,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_psfAcceptResponse": {
+      "kind": "command._psfAcceptResponse",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_psfLoad": {
       "kind": "command._psfLoad",
       "feedback_required": true,
@@ -2770,6 +2776,12 @@
     },
     "_renderOrgSwitcher": {
       "kind": "command._renderOrgSwitcher",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_renderPdf": {
+      "kind": "command._renderPdf",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -1276,7 +1276,7 @@
   .file-actions .file-view-tab { width: 100%; justify-content: flex-start; text-align: left; border-radius: 8px; font-size: 0.82rem; padding: 7px 14px; flex-shrink: 0; }
   .file-menu-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 1.15rem; line-height: 1; padding: 4px 8px; flex-shrink: 0; }
   .file-overlay-body {
-    flex: 1; overflow: auto; background: #010409; border: 1px solid var(--border); border-radius: 8px;
+    flex: 1; min-height: 0; overflow: auto; background: #010409; border: 1px solid var(--border); border-radius: 8px;
     padding: 14px; font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
     font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap;
     word-break: break-word; -webkit-overflow-scrolling: touch;
@@ -1335,7 +1335,9 @@
   /* The light-mode file viewer keeps a DARK body (#1c2128, see the rule near the
      top of this file), so the gutter must match that, not the page background. */
   body.light .file-overlay-body.file-code .hljs-gutter { background: #1c2128; color: #6e7781; }
-  .file-overlay-body.file-image { display:flex;align-items:center;justify-content:center;background:var(--bg);white-space:normal;position:relative; }
+  /* Oversized audio/download cards must start inside the scrollport. Ordinary
+     centering can put their first lines above scrollTop=0 in a short window. */
+  .file-overlay-body.file-image { display:flex;align-items:safe center;justify-content:safe center;background:var(--bg);white-space:normal;position:relative; }
   /* Zoomable image preview (pinch / trackpad / double-tap). */
   .img-zoom-wrap { position:absolute;inset:0;overflow:hidden;touch-action:none;display:flex;align-items:center;justify-content:center; }
   .img-zoomable { max-width:100%;max-height:100%;height:auto;border-radius:4px;display:block;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-select:none;-webkit-user-drag:none;cursor:zoom-in; }
@@ -1493,7 +1495,7 @@
   /* File overlay markdown: slightly larger font for full-width reading */
   .file-overlay-body.markdown.md-content { font-size: 0.92rem; }
   /* File edit textarea */
-  #file-edit-wrap { display:none; flex:1; overflow:hidden; }
+  #file-edit-wrap { display:none; flex:1; min-height:0; overflow:hidden; }
   .file-edit-ta {
     width:100%; height:100%; resize:none; border:1px solid var(--border);
     border-radius:8px; background:var(--bg); color:var(--text);
@@ -2909,6 +2911,8 @@
   .peek-split-files-header .psf-crumb { color: var(--accent); cursor: pointer; white-space: nowrap; }
   .peek-split-files-header .psf-crumb:hover { text-decoration: underline; }
   .peek-split-files-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+  /* A file owns one bounded scrollport; listings continue scrolling normally. */
+  .peek-split-files-body.psf-file-view { display:flex; flex-direction:column; overflow:hidden; }
   .psf-col-headers { flex-shrink: 0; }
   .peek-split-btn.active, #peek-split-toggle.active { background: var(--accent); color: #000; border-color: var(--accent); }
   /* Split pane file content — match the file preview overlay styles */
@@ -7116,7 +7120,11 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
      costs nothing on phones, where the strip is display:none and the JS already
      forces --chrome-tab-h to 0. Same idiom as the .overlay rule below. */
   top: max(var(--dialog-viewport-top, 0px), var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)) !important;
-  height: var(--dialog-viewport-height, 100dvh) !important;
+  /* Height is the REMAINING viewport below the effective top. Keeping a full
+     viewport height after moving down for the tab strip puts the scrollbar's
+     end off screen, even when scrollTop has reached its maximum. offsetTop
+     belongs to the visual viewport: its bottom is offsetTop + height. */
+  height: max(0px, calc(var(--dialog-viewport-height, 100dvh) + var(--dialog-viewport-top, 0px) - max(var(--dialog-viewport-top, 0px), var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)))) !important;
   bottom: auto !important;
 }
 .amux-dialog-viewport > :is(.edit-box,.board-edit-box,.queue-box,.map-modal-box,.amux-modal,.modal) {
@@ -7230,7 +7238,6 @@ input.mdai-edge-path-input:focus { border-color: var(--accent); box-shadow: 0 0 
 }
 .amux-dialog-viewport.overlay {
   top:max(var(--dialog-viewport-top, 0px),var(--chrome-tab-h, 0px),env(safe-area-inset-top, 0px)) !important;
-  height:calc(var(--dialog-viewport-height, 100dvh) - env(safe-area-inset-top, 0px)) !important;
 }
 
 #upgrade-modal > div { max-height:calc(var(--dialog-viewport-height, 100dvh) - 40px) !important; }
