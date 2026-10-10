@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1303';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1304';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -18345,6 +18345,13 @@ async function _peekLoadEarlierUntil(found) {
   let verdict = 'none', pages = 0;
   while (pages < _PEEK_EARLIER_MAX_PAGES) {
     verdict = await _peekLoadEarlier({quiet: true});
+    // Another load already in flight is not a failure: wait for it (up to
+    // 10s) and continue. Giving up here reported "Earlier output could not
+    // be loaded" on random while a page was simply still arriving.
+    for (let waited = 0; verdict === 'busy' && waited < 10000; waited += 250) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (!_peekEarlier.loading) verdict = await _peekLoadEarlier({quiet: true});
+    }
     pages++;
     await _peekExtendKindHints(peekSession);
     _peekReclassifyPrompts();
@@ -18377,6 +18384,8 @@ async function _peekMsgMove(direction, event) {
         : ((_MSG_KIND[_peekMsgNavKind] || _MSG_KIND.unknown).label.toLowerCase() + ' messages');
       const why = earlier === 'subagent-tail' ? 'Only recent subagent output is loaded.' : earlier === 'beginning' ? 'Reached the beginning of the saved output.'
         : earlier === 'scrollback' ? "Searched this worker's whole terminal scrollback."
+        : earlier === 'busy' ? 'Earlier output is still loading; try again in a moment.'
+        : earlier === 'stale' || earlier === 'identity-mismatch' ? 'The worker changed while loading; reopen it to search again.'
         : earlier === 'loaded' || earlier === 'empty' ? 'Loaded an earlier output page.'
         : earlier === 'missing' ? 'This worker has no saved earlier output.'
         : 'Earlier output could not be loaded.';
