@@ -5830,3 +5830,14 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: A failed declared API-key test returns and persists the provider response body and transport error, which may echo the bearer or include a credential-bearing request URL.
 COST: A connector provider can disclose its credential through inventory/last-test results that workers can read.
 FIX: Use the shared redacted provider canary, retain connector_provider_test_failed/unreachable signals, and test a real HTTP provider that echoes the rejected bearer; assert no full key in the response, inventory or durable result.
+
+## Corrupt saved connector scope grants a denied worker unrestricted access
+AREA: connectors
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: On main 6e794eeb, invalid JSON, a non-object root or an empty stored scope becomes an empty map. A previously disabled worker can then mint a live bearer as though the connector were never scoped.
+COST: A storage fault broadens credential access; four private main fault cases minted a synthetic bearer and successfully used it with an independent provider.
+FIX: Distinguish absent scope from unreadable scope, propagate database/JSON/type errors through every effective layer, reject mint/send with connector_scope_unreadable and a repair path, and emit a measured WARN. Preserve damaged rows until explicit owner repair. Configurations shows unreadable local/inherited layers and direct repair controls; the editor requires explicit replacement JSON instead of offering a blank default. Real process tests cover all three layers, three SIGKILL restarts, immutable grants and exact metadata repair; private endpoint faults assert zero provider access.

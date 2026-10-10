@@ -11263,6 +11263,17 @@ async function _scopeEditOpen(lvl, name, key) {
                           { headers: _authHeaders() });
     const d = await r.json();
     const cap = (d.capabilities || []).find(c => c.key === key) || {};
+    if (!r.ok) throw new Error(d.error || ('scope ' + r.status));
+    if (cap.error) {
+      // Do not disguise damaged saved state as an empty/inherited scope. A
+      // connector repair is an explicit full replacement, never a blank Save.
+      ta.value = ''; ta.disabled = !cap.supported || key !== 'connectors';
+      _scopeEditCtx.repairRequired = true;
+      document.getElementById('scope-edit-src').textContent = 'unreadable saved scope';
+      document.getElementById('scope-edit-msg').textContent = cap.error
+        + (key === 'connectors' ? '. Connector access is blocked. Enter the complete replacement JSON, including account pins and MCP settings, to repair this level.' : '');
+      return;
+    }
     const v = cap.value || {};
     let text = '';
     if (key === 'memory' || key === 'rules') {
@@ -11315,6 +11326,10 @@ async function _scopeEditSave() {
   const { lvl, name, key } = _scopeEditCtx;
   const ta = document.getElementById('scope-edit-input');
   const msg = document.getElementById('scope-edit-msg');
+  if (_scopeEditCtx.repairRequired && !ta.value.trim()) {
+    msg.textContent = 'Enter the complete replacement JSON before repairing the saved scope.';
+    return;
+  }
   let value;
   if (key === 'memory' || key === 'rules') value = { text: ta.value };
   else if (key === 'env') {
@@ -11631,6 +11646,7 @@ async function _scopeLoad(scope, targetId) {
     const G = byKey(gl), Gr = grp.map(byKey);
     const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const sum = (c) => {
+      if (c && c.error) return c.key === 'connectors' ? 'Access blocked' : 'Unreadable';
       let v = c && c.value;
       if (!v) return '\u2014';
       // UNWRAP THE ENVELOPE FIRST. `skin` and `connectors` come back as
@@ -11703,6 +11719,16 @@ async function _scopeLoad(scope, targetId) {
         src = 'group:' + grpHit[0]; srcC = '#d29922';
         win = (Gr[groups.indexOf(grpHit[0])] || {})[c.key] || c;
       } else if (gset) { src = 'global'; srcC = 'var(--dim)'; win = G[c.key] || c; }
+      const errors = [{ level: lvl, name: w || '', cap: c }];
+      if (c.key === 'connectors') {
+        if (gl) errors.push({ level: 'global', name: '', cap: G[c.key] });
+        Gr.forEach((m, j) => errors.push({ level: 'group', name: groups[j], cap: m[c.key] }));
+      }
+      c._errors = errors.filter(x => x.cap && x.cap.error);
+      if (c._errors.length) {
+        src = 'unreadable'; srcC = 'var(--red)';
+        win = Object.assign({}, c, { error: c._errors[0].cap.error });
+      }
       c._win = win;   // the detail panel must agree with the tile
       c._src = src;
       // HORIZONTAL tiles, mobile-first (Ethan: "this should be horizontal below
@@ -11738,6 +11764,11 @@ async function _scopeLoad(scope, targetId) {
         + ' <span style="opacity:0.6;">\u00b7 ' + esc(_l.merge) + '</span>'
         + (_l.supported ? '' : ' <span style="color:#d29922;">\u00b7 not settable at this level</span>')
         + '</div>'
+        + (_l._errors || []).map(x => '<div role="alert" style="color:var(--red);font-size:0.75rem;margin-top:6px;">'
+          + esc(x.level + (x.name ? ' ' + x.name : '') + ': ' + x.cap.error)
+          + (x.cap.supported ? ' <button class="btn" onclick="event.stopPropagation();_scopeEditOpen(\''
+              + escJs(x.level) + '\',\'' + escJs(x.name) + '\',\'' + escJs(_l.key) + '\')">Repair saved scope</button>' : '')
+          + '</div>').join('')
         + (_l.supported
             ? '<div style="margin-top:7px;"><button class="btn primary" '
               + 'style="font-size:0.7rem;min-height:36px;padding:5px 11px;" '
@@ -14038,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1307';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1309';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
