@@ -25,7 +25,7 @@ function fixture() {
     _peekEarlier:{}, _peekEarlierHTML:()=>'', _trimPeekLiveOverlap:(_history,live)=>live,
     _peekLiveHtml:value=>value, _peekHtml:value=>value, hidePeekLoading(){}, _stopPeekPoll(){},
     _peekPollActive:true, _peekPollInFlight:false, _peekPollAgain:false, _peekFullPending:false,
-    _peekScrollLocked:false, _peekFollowBottom:true, _peekBufferedOutput:false, _peekPendingFindScroll:false,
+    _peekScrollLocked:false, _peekPressHold:false, _peekFollowBottom:true, _peekBufferedOutput:false, _peekPendingFindScroll:false,
     _isScrolledToBottom:()=>true, _sendingSnapshot:null, _hideScrollLockBadge(){}, _showScrollLockBadge(){},
     _peekReclassifyPrompts(){}, _idb:{set(){},get:async()=>null},
     document:{getElementById:id=>id==='peek-body'?body:id==='peek-status'?status:null},
