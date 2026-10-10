@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1300';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1301';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16884,6 +16884,8 @@ const _PROVIDER_PROMPT_MARKS = [
   // Claude Code's /goal evaluator re-prompts the agent with this after each
   // stop; 18 of random's 23 prompts were it, all reading Unclassified.
   'Stop hook feedback:',
+  // ...and announces itself with this when the goal is set.
+  'A session-scoped Stop hook is now active',
   'Your claude.ai usage limit has reset',
   'Goal check-in:',
   'Base directory for this skill:',
@@ -16994,6 +16996,8 @@ function _classifyPromptKind(promptText) {
   // and delivers through the steering queue, which writes no ledger row. It
   // is the harness acting on standing policy, so Harness, never Human.
   if (clean.includes("(Approved automatically under the owner's needs-input policy.)")) return 'amux';
+  // Its send-back (needs_input_auto.rs send_back_text) is harness text too.
+  if (clean.includes("This is yours to do; Ethan's needs-input policy returns")) return 'amux';
   // The Messages tab is a fetched snapshot; cmdHistoryAdd is the immediate
   // record of a prompt submitted while this terminal is open. Using the
   // snapshot EXCLUSIVELY made every new prompt "Unclassified" until Messages
