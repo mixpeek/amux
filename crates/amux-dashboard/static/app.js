@@ -20194,17 +20194,25 @@ let SKILLS_LIST = [];   // amux skills (DB) — get their own section in the chi
 // Reloaded after a Skills-tab save or delete, and when a `/` is typed into an
 // empty composer, so a skill added in another tab or device appears without a
 // page reload (AA-40). The fetch is a local file listing, cheap enough per `/`.
+// A dropdown that opens while a reload is in flight re-renders when it lands
+// (_slashCmdsLoading), or a skill saved a moment ago shows its old text.
 let _slashCmdsLoadedAt = 0;
-async function _loadSlashCommands() {
+let _slashCmdsLoading = null;
+function _loadSlashCommands() {
   _slashCmdsLoadedAt = Date.now();
-  try {
-    const r = await fetch(API + '/api/slash-commands');
-    if (r.ok) SLASH_COMMANDS = await r.json();
-  } catch(e) {}
-  try {
-    const r2 = await fetch(API + '/api/skills');
-    if (r2.ok) SKILLS_LIST = await r2.json();
-  } catch(e) {}
+  const p = (async () => {
+    try {
+      const r = await fetch(API + '/api/slash-commands');
+      if (r.ok) SLASH_COMMANDS = await r.json();
+    } catch(e) {}
+    try {
+      const r2 = await fetch(API + '/api/skills');
+      if (r2.ok) SKILLS_LIST = await r2.json();
+    } catch(e) {}
+  })();
+  _slashCmdsLoading = p;
+  p.finally(() => { if (_slashCmdsLoading === p) _slashCmdsLoading = null; });
+  return p;
 }
 _loadSlashCommands();
 
@@ -21641,7 +21649,8 @@ function slashAcUpdate() {
   if (_atRender(inp, el, 'slashAcPick')) { slashAcItems = []; slashAcSelected = -1; return; }
   el._atItems = null; el._atSel = -1;
   if (!val.startsWith('/')) { el.classList.remove('open'); slashAcItems = []; return; }
-  if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands().then(() => { if (inp.value.startsWith('/')) slashAcUpdate(); });
+  if (val === '/' && Date.now() - _slashCmdsLoadedAt > 5000) _loadSlashCommands();
+  if (_slashCmdsLoading) { const v = val; _slashCmdsLoading.then(() => { if (inp.value === v) slashAcUpdate(); }); }
   const q = val.toLowerCase();
   slashAcItems = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
   slashAcSelected = -1;

@@ -111,8 +111,8 @@ test('a skill created and edited in the Skills tab is offered, written and recog
   expect(fs.readFileSync(file, 'utf8')).toBe(body('SKILL-TOKEN-V1', 'first version'));
 
   await expect(page.locator('#skills-tab-sections')).toContainText(`/${name}`);
-  const offered = await slashOffers(page, `/${name}`);
-  expect(offered.some((r) => r.includes(`/${name}`) && r.includes('first version')), offered.join(' | ')).toBe(true);
+  await expect.poll(async () => (await slashOffers(page, `/${name}`)).join(' | '), { timeout: 15_000 })
+    .toContain('first version');
 
   const claude = realClaude() && info.project.name === 'desktop';
   console.log(`[real-claude] ${claude ? 'running' : 'skipped (set AMUX_E2E_REAL_CLAUDE=1 with claude on PATH, desktop project)'}`);
@@ -126,8 +126,8 @@ test('a skill created and edited in the Skills tab is offered, written and recog
   const updated = await saveInEditor(page, body('SKILL-TOKEN-V2', 'second version'));
   expect(updated.command_file).toBe(file);
   expect(fs.readFileSync(file, 'utf8')).toBe(body('SKILL-TOKEN-V2', 'second version'));
-  const offeredAfter = await slashOffers(page, `/${name}`);
-  expect(offeredAfter.some((r) => r.includes(`/${name}`) && r.includes('second version')), offeredAfter.join(' | ')).toBe(true);
+  await expect.poll(async () => (await slashOffers(page, `/${name}`)).join(' | '), { timeout: 15_000 })
+    .toContain('second version');
   if (claude) {
     const out = claudeRuns(path.dirname(file), name);
     expect(out).toContain('SKILL-TOKEN-V2');
