@@ -2006,6 +2006,10 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 
 <!-- Teleprompter overlay -->
 <div id="teleprompter-overlay" style="display:none;position:fixed;inset:0;z-index:10002;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
+  <!-- Selfie camera behind the script (AA-39): mirrored like a mirror, the take itself is not -->
+  <video id="tp-camera" playsinline muted autoplay style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);"></video>
+  <div id="tp-camera-scrim" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.45);pointer-events:none;"></div>
+  <div id="tp-rec-badge" style="display:none;position:absolute;top:calc(14px + env(safe-area-inset-top));left:18px;z-index:2;background:rgba(0,0,0,0.55);border-radius:6px;padding:6px 10px;font-size:0.9rem;font-variant-numeric:tabular-nums;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;margin-right:6px;vertical-align:middle;"></span><span id="tp-rec-time">0:00</span></div>
   <div id="tp-viewport" style="position:absolute;inset:0;overflow:hidden;">
     <div id="tp-content" style="position:absolute;top:0;left:50%;transform:translate(-50%,0);max-width:70ch;width:90%;font-size:48px;line-height:1.5;font-weight:600;padding:50vh 20px;will-change:transform;"></div>
   </div>
@@ -2027,6 +2031,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
     </div>
     <button onclick="_tpRestart()" title="Restart (R)" style="background:none;border:1px solid #555;color:#fff;padding:6px 10px;border-radius:5px;cursor:pointer;">&#x21BB;</button>
     <button id="tp-mirror-btn" onclick="_tpToggleMirror()" title="Mirror (M)" style="background:none;border:1px solid #555;color:#fff;padding:6px 10px;border-radius:5px;cursor:pointer;">Mirror</button>
+    <button id="tp-cam-btn" onclick="_tpCameraToggle()" title="Front camera preview (C)" style="background:none;border:1px solid #555;color:#fff;padding:6px 10px;border-radius:5px;cursor:pointer;">Camera</button>
+    <button id="tp-rec-btn" onclick="_tpRecordToggle()" title="Record yourself with the front camera while the script scrolls" style="background:none;border:1px solid #ef4444;color:#fff;padding:6px 10px;border-radius:5px;cursor:pointer;">&#x25CF; Rec</button>
+    <button id="tp-save-btn" onclick="_tpRecordRetrySave()" title="Save the last take again" style="display:none;background:none;border:1px solid #fbbf24;color:#fff;padding:6px 10px;border-radius:5px;cursor:pointer;">Save take</button>
     <button onclick="_tpFullscreen()" title="Fullscreen (F)" style="background:none;border:1px solid #555;color:#fff;padding:6px 10px;border-radius:5px;cursor:pointer;">&#x26F6;</button>
   </div>
 </div>
