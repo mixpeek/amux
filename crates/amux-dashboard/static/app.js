@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1299';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1306';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15769,8 +15769,8 @@ async function _psfViewFile(filePath) {
     } else if (data.is_video) {
       content.className = 'file-overlay-body file-video';
       const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path || filePath);
-      content.innerHTML = '<div class="file-video-wrap"><video class="file-video" controls playsinline preload="metadata" style="max-width:100%;">'
-        + '<source src="' + esc(rawUrl) + '" type="' + esc(_vpMimeFromUrl(rawUrl)) + '"></video></div>';
+      content.innerHTML = '<div class="file-video-wrap"><video class="file-video" controls playsinline preload="metadata" style="max-width:100%;"'
+        + ' src="' + esc(_authUrl(rawUrl)) + '"></video></div>';
     } else if (data.is_markdown) {
       content.className = 'file-overlay-body markdown md-content';
       const fm = typeof _parseFrontmatter === 'function' ? _parseFrontmatter(data.content) : { meta: null, body: data.content };
@@ -16657,12 +16657,12 @@ let _peekThin = false;
 // the IndexedDB cache by older code). A mode change repaints even when the raw
 // text is unchanged; otherwise a cached transcript-mode paint survives.
 let _peekModePainted = null;
+// Thin still TAGS each prompt with its source (Ethan, 2026-10-10: the Human
+// filter on momentbench-oss found nothing). Without the tag there is no
+// .peek-prompt element, so every filter and the up/down message keys report
+// "No matching ... messages" over a pane full of them. The tag is the one
+// change peek may make; the text inside stays exactly as drawn.
 function _peekHtml(raw) {
-  // Thin still TAGS each prompt with its source (Ethan, 2026-10-10: the
-  // Human filter on momentbench-oss found nothing). Without the tag there is
-  // no .peek-prompt element, so every filter and the up/down message keys
-  // report "No matching ... messages" over a pane full of them. The tag is
-  // the one change peek may make; the text inside stays exactly as drawn.
   if (_peekThin) return highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(raw))), {thin: true});
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
@@ -16884,6 +16884,8 @@ const _PROVIDER_PROMPT_MARKS = [
   // Claude Code's /goal evaluator re-prompts the agent with this after each
   // stop; 18 of random's 23 prompts were it, all reading Unclassified.
   'Stop hook feedback:',
+  // ...and announces itself with this when the goal is set.
+  'A session-scoped Stop hook is now active',
   'Your claude.ai usage limit has reset',
   'Goal check-in:',
   'Base directory for this skill:',
@@ -16918,6 +16920,8 @@ async function _peekLoadKindHints(sess) {
   if (_peekKindHintsFor === sess) return;
   _peekKindHintsFor = sess;
   _peekKindHints = [];
+  // The rows a lookup added are gone with the hints, so forget what was asked.
+  if (typeof _peekKindLookups !== 'undefined') _peekKindLookups.delete(sess);
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, 0, 50);
     if (peekSession !== sess) return;
@@ -16945,10 +16949,55 @@ async function _peekExtendKindHints(sess) {
   } catch (e) { return false; } finally { _peekKindHintsBusy = false; }
 }
 
+// ASK THE LEDGER ABOUT THE PROMPT, NOT THE NEWEST N ROWS (Ethan, 2026-10-10:
+// "analyze from first principles how we classify messages"). The server
+// records who sent every message it delivers; the client loaded only the
+// newest 50-2000 rows and guessed, so an older schedule run or reply read
+// Unclassified although its row existed ("[Automated] NYC IG events" on
+// random: three `schedule` rows, none in the window). For each prompt still
+// Unclassified, look up its own first line with /api/history?q=, bounded and
+// cached per worker, and reclassify from the rows it returns.
+const _peekKindLookups = new Map();   // session -> Set of snippets already asked
+let _peekKindLookupBusy = false;
+async function _peekLookupUnknownKinds(sess) {
+  if (_peekKindLookupBusy || !sess || peekSession !== sess) return;
+  const asked = _peekKindLookups.get(sess) || new Set();
+  _peekKindLookups.set(sess, asked);
+  const snippets = [];
+  for (const el of document.querySelectorAll('#peek-body .peek-prompt[data-msg-kind="unknown"]')) {
+    const first = _peekPromptNormalized((el.textContent || '').split('\n')[0]);
+    const snip = first.length > 60 ? first.slice(0, 60).replace(/\s+\S*$/, '') : first;
+    if (snip.length < 4 || asked.has(snip)) continue;
+    asked.add(snip); snippets.push(snip);
+    if (snippets.length >= 12 || asked.size > 200) break;
+  }
+  if (!snippets.length) return;
+  _peekKindLookupBusy = true;
+  let added = 0;
+  try {
+    const seen = new Set(_peekKindHints.map(r => r && r.id));
+    for (const snip of snippets) {
+      const r = await fetch(API + '/api/history?limit=20&session=' + encodeURIComponent(sess) + '&q=' + encodeURIComponent(snip), { headers: _authHeaders() });
+      if (!r.ok || peekSession !== sess) break;
+      for (const row of (await r.json()).map(_msgNorm)) {
+        if (row && !seen.has(row.id)) { seen.add(row.id); _peekKindHints.push(row); added++; }
+      }
+    }
+  } catch (e) { /* the marker table still classifies */ } finally { _peekKindLookupBusy = false; }
+  if (added && peekSession === sess) _peekReclassifyPrompts();
+}
+
 function _classifyPromptKind(promptText) {
   const clean = _peekPromptNormalized(promptText);
   if (!clean) return 'unknown';
   if (_PROVIDER_PROMPT_MARKS.some(mark => clean.startsWith(mark))) return 'amux';
+  // The needs-input auto-approver sends the SAME opening words as the owner's
+  // own Approve ("Approved (ID): ... Proceed."), but ends with this literal,
+  // and delivers through the steering queue, which writes no ledger row. It
+  // is the harness acting on standing policy, so Harness, never Human.
+  if (clean.includes("(Approved automatically under the owner's needs-input policy.)")) return 'amux';
+  // Its send-back (needs_input_auto.rs send_back_text) is harness text too.
+  if (clean.includes("This is yours to do; Ethan's needs-input policy returns")) return 'amux';
   // The Messages tab is a fetched snapshot; cmdHistoryAdd is the immediate
   // record of a prompt submitted while this terminal is open. Using the
   // snapshot EXCLUSIVELY made every new prompt "Unclassified" until Messages
@@ -17084,6 +17133,7 @@ function _peekReclassifyPrompts() {
     el.dataset.msgLabel = (_MSG_KIND[kind] || _MSG_KIND.unknown).label;
   }
   _peekMsgCount(_peekMsgPrompts());
+  if (peekSession && body.querySelector('.peek-prompt[data-msg-kind="unknown"]')) _peekLookupUnknownKinds(peekSession);
 }
 
 // Wrap each contiguous run of box-drawing lines (tables, framed boxes, wide rules)
@@ -17124,6 +17174,39 @@ function wrapBoxBlocks(html) {
 let peekSelecting = false;
 let _peekScrollLocked = false;
 let _peekBufferedOutput = false;
+// HOLD REPAINTS WHILE A PRESS IS IN PEEK (Ethan, 2026-10-10: "clicking these
+// links nothing happens"). On an active worker the thin view rebuilt its
+// history about every 270 ms (37 node swaps in 10 s, measured on
+// short-form-videos), so a link pressed on one node was released over its
+// replacement and the browser fired no click at all. A press inside
+// #peek-body now buffers output exactly like a scrolled-up reader does; 400 ms
+// after the release (long enough for the click handler to run on the same
+// node) the buffered frame is painted, unless a text selection is in progress.
+let _peekPressHold = false;
+let _peekPressTimer = 0;
+document.addEventListener('pointerdown', e => {
+  if (!(e.target && e.target.closest && e.target.closest('#peek-body'))) return;
+  _peekPressHold = true;
+  clearTimeout(_peekPressTimer);
+}, true);
+function _peekPressRelease() {
+  if (!_peekPressHold) return;
+  clearTimeout(_peekPressTimer);
+  _peekPressTimer = setTimeout(() => {
+    _peekPressHold = false;
+    if (!_peekBufferedOutput || _peekScrollLocked) return;
+    if (window.getSelection && String(window.getSelection()) !== '') return;   // selecting: keep the nodes
+    const body = document.getElementById('peek-body');
+    if (!body) return;
+    const follow = _peekFollowBottom || _isScrolledToBottom(body);
+    const top = body.scrollTop;
+    _peekBufferedOutput = false;
+    applyPeekSearch(false, false);
+    body.scrollTop = follow ? body.scrollHeight : top;
+  }, 400);
+}
+document.addEventListener('pointerup', _peekPressRelease, true);
+document.addEventListener('pointercancel', _peekPressRelease, true);
 let _peekFollowBottom = false;
 // Did a SELECTION cause the current pause? Only that pause may be undone when
 // the selection clears; a reader who dragged toward history keeps their pause.
@@ -17453,6 +17536,10 @@ function _peekAfterConversation(saved, current) {
 }
 async function _peekLoadEarlier(options) {
   if (_peekAgents.selected) return 'subagent-tail';
+  // Thin peek already holds the pane's whole tmux scrollback; transcript
+  // pages are never drawn there, so loading them can find nothing and the
+  // old message ("Earlier output could not be loaded") was false.
+  if (_peekThin) return 'scrollback';
   const quiet = !!(options && options.quiet);
   const name = peekSession;
   const identity = _peekIdentity(name);
@@ -17770,7 +17857,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     const chatOwnsBody = body.classList.contains('peek-chat');
     if (chatOwnsBody) _peekChatPaintSkips++;
     else {
-    if (_peekScrollLocked || hasSearch) _peekBufferedOutput = true;
+    if (_peekScrollLocked || hasSearch || _peekPressHold) _peekBufferedOutput = true;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
     if (hasSearch && (!_peekScrollLocked || _peekPendingFindScroll)) {
@@ -17791,12 +17878,14 @@ async function _refreshPeekFrame(liveOnly, request) {
         _peekScrollTo(peekSearchIndex, true, true);
         _peekNavBeacon('deferred-search-landed', _peekMsgPrompts(), _peekMatches[peekSearchIndex]);
       }
-    } else if (!_peekScrollLocked) {
+    } else if (!_peekScrollLocked && !_peekPressHold) {
       const _liveEl = document.getElementById('pk-live');
       if (!histChanged && _liveEl) { _liveEl.innerHTML = _lastLiveHTML; _peekReclassifyPrompts(); }   // live tick → swap the small region only
       else applyPeekSearch(false);
     }
-    if (!_peekScrollLocked && (atBottom || _peekFollowBottom) && !hasSearch) {
+    if (_peekPressHold) {
+      // Held for a press: neither repaint nor scroll; the release flushes.
+    } else if (!_peekScrollLocked && (atBottom || _peekFollowBottom) && !hasSearch) {
       body.scrollTop = body.scrollHeight;
       _peekBufferedOutput = false;
       _hideScrollLockBadge(body);
@@ -18291,6 +18380,13 @@ async function _peekLoadEarlierUntil(found) {
   let verdict = 'none', pages = 0;
   while (pages < _PEEK_EARLIER_MAX_PAGES) {
     verdict = await _peekLoadEarlier({quiet: true});
+    // Another load already in flight is not a failure: wait for it (up to
+    // 10s) and continue. Giving up here reported "Earlier output could not
+    // be loaded" on random while a page was simply still arriving.
+    for (let waited = 0; verdict === 'busy' && waited < 10000; waited += 250) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (!_peekEarlier.loading) verdict = await _peekLoadEarlier({quiet: true});
+    }
     pages++;
     await _peekExtendKindHints(peekSession);
     _peekReclassifyPrompts();
@@ -18322,6 +18418,9 @@ async function _peekMsgMove(direction, event) {
       const label = _peekMsgNavKind === 'all' ? 'messages'
         : ((_MSG_KIND[_peekMsgNavKind] || _MSG_KIND.unknown).label.toLowerCase() + ' messages');
       const why = earlier === 'subagent-tail' ? 'Only recent subagent output is loaded.' : earlier === 'beginning' ? 'Reached the beginning of the saved output.'
+        : earlier === 'scrollback' ? "Searched this worker's whole terminal scrollback."
+        : earlier === 'busy' ? 'Earlier output is still loading; try again in a moment.'
+        : earlier === 'stale' || earlier === 'identity-mismatch' ? 'The worker changed while loading; reopen it to search again.'
         : earlier === 'loaded' || earlier === 'empty' ? 'Loaded an earlier output page.'
         : earlier === 'missing' ? 'This worker has no saved earlier output.'
         : 'Earlier output could not be loaded.';
@@ -24615,8 +24714,14 @@ function _renderFileBody(data, mode) {
     body.className = 'file-overlay-body file-video';
     const size = data.size ? _fmtBytes(data.size) : '';
     body.innerHTML = '<div class="file-video-wrap">'
-      + '<video class="file-video" controls playsinline preload="metadata">'
-      + '<source src="' + esc(rawUrl) + '" type="' + esc(_vpMimeFromUrl(rawUrl)) + '"></video>'
+      // src ON THE VIDEO, authed (Ethan, 2026-10-10: "video doesnt play until
+      // i do full screen"). This was an unauthenticated <source> typed by
+      // _vpMimeFromUrl, which read the extension of "/api/file/raw" and so
+      // declared every file video/mp4. The full-screen player sets
+      // v.src = _authUrl(url) and played the same .webm. A failed <source>
+      // also fires its error on the source, not the video, so the "cannot
+      // play" fallback below never ran and the player sat black at 00:00.
+      + '<video class="file-video" controls playsinline preload="metadata" src="' + esc(_authUrl(rawUrl)) + '"></video>'
       + '<div class="file-video-meta"><span>' + esc(size) + '</span>'
       + '<button class="btn" onclick="_fileVideoFullscreen()">Full-screen player</button></div></div>';
     const v = body.querySelector('video');
@@ -26793,6 +26898,10 @@ async function _scratchpadLoad() {
     if (gen !== _spLoadGen) return;
     if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _spLastData = { path: _spPath, data };
+    // The folder's REAL path, not the word "Scratchpad" (Ethan, 2026-10-10:
+    // "this should be the dir path"). /api/ls answers with the absolute path.
+    const dirEl = document.getElementById('sp-dir');
+    if (dirEl) { const shown = data.path || _spPath; dirEl.textContent = shown; dirEl.title = shown; }
     _spRender(_spPath, data);
   } catch(e) {
     if (gen !== _spLoadGen) return;
@@ -26948,6 +27057,28 @@ async function _spCopy(path) {
     await navigator.clipboard.writeText(d.content);
     showToast('Copied ' + path.split('/').pop());
   } catch (e) { showToast('Could not copy: ' + e.message); }
+}
+// Phone toolbar: the actions fold behind a "⋯" button (Ethan, 2026-10-10).
+function _spMoreToggle(e) {
+  if (e) e.stopPropagation();
+  const box = document.getElementById('sp-actions');
+  const btn = document.getElementById('sp-more-btn');
+  if (!box) return;
+  const open = !box.classList.contains('open');
+  box.classList.toggle('open', open);
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+  if (open) setTimeout(() => document.addEventListener('pointerdown', _spMoreOutside, true), 0);
+}
+function _spMoreOutside(e) {
+  if (e.target.closest && (e.target.closest('#sp-actions') || e.target.closest('#sp-more-btn'))) return;
+  _spMoreClose();
+}
+function _spMoreClose() {
+  const box = document.getElementById('sp-actions');
+  if (box) box.classList.remove('open');
+  const btn = document.getElementById('sp-more-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', _spMoreOutside, true);
 }
 function _spWireCapture() {
   const box = document.getElementById('sp-capture');
@@ -46808,7 +46939,10 @@ let _vpHideTimer = null;
 function _vpPosKey(url) { return 'amux_vp_pos_' + url; }
 
 function _vpMimeFromUrl(url) {
-  const ext = url.split('?')[0].split('.').pop().toLowerCase();
+  // /api/file/raw?path=/x/take.webm: the extension is the PATH's, not the route's.
+  let target = url;
+  try { target = new URL(url, location.origin).searchParams.get('path') || url; } catch (e) {}
+  const ext = String(target).split('?')[0].split('.').pop().toLowerCase();
   const map = { mp4:'video/mp4', m4v:'video/mp4', mov:'video/quicktime', webm:'video/webm', mkv:'video/x-matroska', avi:'video/x-msvideo' };
   return map[ext] || 'video/mp4';
 }

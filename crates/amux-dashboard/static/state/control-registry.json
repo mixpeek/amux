@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2527,
+  "n_considered": 2532,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2192,6 +2192,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekLookupUnknownKinds": {
+      "kind": "command._peekLookupUnknownKinds",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekMarkupWarn": {
       "kind": "command._peekMarkupWarn",
       "feedback_required": true,
@@ -2284,6 +2290,12 @@
     },
     "_peekPollStop": {
       "kind": "command._peekPollStop",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekPressRelease": {
+      "kind": "command._peekPressRelease",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

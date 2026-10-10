@@ -1479,10 +1479,18 @@ vm_image_prune_by_tag() { # <ctx> <age: Nh | Nm | seconds>
   used=$("$VM_DOCKER" --context "$ctx" ps -aq --no-trunc) || return 1
   [ -z "$used" ] || used=$("$VM_DOCKER" --context "$ctx" inspect -f '{{.Image}}' $used) || return 1
   # shellcheck disable=SC2086
-  plan=$("$VM_DOCKER" --context "$ctx" image inspect $ids | USED="$used" SECS="$secs" python3 -c '
+  # SUPERSEDED TAGS GO TOO (Mac disk RCA 20261010-162636). mxp-gs12 builds a
+  # 9.84 GB mixpeek/standalone image per commit (10:41, 12:53, 13:21, 14:12 on
+  # 2026-10-10) and each stayed until it was 6 h old, so four unused copies
+  # (39 GB) sat in the VM and the host burned ~17 G/h for the afternoon. An
+  # unused image older than a NEWER image of the same repository is a
+  # superseded build: it goes once it is VM_IMAGE_SUPERSEDE_MIN old (30 min,
+  # so a build still tagging is never raced). In-use images are always kept.
+  plan=$("$VM_DOCKER" --context "$ctx" image inspect $ids | USED="$used" SECS="$secs" SUPERSEDE="$(( ${VM_IMAGE_SUPERSEDE_MIN:-30} * 60 ))" python3 -c '
 import json, os, sys, time
 import calendar
 used = set(os.environ["USED"].split()); cutoff = time.time() - int(os.environ["SECS"])
+floor = time.time() - int(os.environ["SUPERSEDE"])
 def utc(v):
     v = (v or "").rstrip("Z")
     if not v or v.startswith("0001-"): return None
@@ -1492,22 +1500,36 @@ def utc(v):
         if i > 0:
             h, m = v[i+1:].split(":"); off = (int(h) * 3600 + int(m) * 60) * (1 if sign == "+" else -1); v = v[:i]; break
     return calendar.timegm(time.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")) - off
-for im in json.load(sys.stdin):
+images = json.load(sys.stdin)
+def when(im): return utc((im.get("Metadata") or {}).get("LastTagTime")) or utc(im.get("Created"))
+def repos(im): return {t.rsplit(":", 1)[0] for t in (im.get("RepoTags") or []) if ":" in t and not t.startswith("<none>")}
+newest = {}
+for im in images:
+    t = when(im)
+    if t is None: continue
+    for r in repos(im): newest[r] = max(newest.get(r, 0), t)
+for im in images:
     if im["Id"] in used: continue
-    t = utc((im.get("Metadata") or {}).get("LastTagTime")) or utc(im.get("Created"))
-    if t is None or t > cutoff: continue
-    print(im["Id"], im.get("Size", 0))
+    t = when(im)
+    if t is None: continue
+    if t <= cutoff: print(im["Id"], im.get("Size", 0), "age")
+    elif t <= floor and any(newest.get(r, 0) > t for r in repos(im)): print(im["Id"], im.get("Size", 0), "superseded")
 ') || return 1
-  local n=0 bytes=0 sz
-  while read -r id sz; do
+  local n=0 bytes=0 sz why sup=0
+  while read -r id sz why; do
     [ -n "$id" ] || continue
     if "$VM_DOCKER" --context "$ctx" rmi "$id" >/dev/null 2>&1; then
-      echo "deleted: $id"; n=$((n+1)); bytes=$((bytes + sz))
+      echo "deleted: $id${why:+ ($why)}"; n=$((n+1)); bytes=$((bytes + sz))
+      [ "$why" = superseded ] && sup=$((sup+1))
     fi
   done <<EOF
 $plan
 EOF
-  echo "Total reclaimed space: $(awk -v b="$bytes" 'BEGIN{printf "%.2fGB", b/1e9}') ($n image(s), verdict=vm_images_pruned_by_tag_age)"
+  if [ "$sup" -gt 0 ]; then
+    echo "Total reclaimed space: $(awk -v b="$bytes" 'BEGIN{printf "%.2fGB", b/1e9}') ($n image(s), $sup superseded, verdict=vm_images_pruned_by_tag_age)"
+  else
+    echo "Total reclaimed space: $(awk -v b="$bytes" 'BEGIN{printf "%.2fGB", b/1e9}') ($n image(s), verdict=vm_images_pruned_by_tag_age)"
+  fi
 }
 
 # Prune unused images older than VM_IMAGE_PRUNE_AGE in every running VM.
@@ -1792,8 +1814,12 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
 fi
 reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
 VMS_PRUNED=0
-if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
+# Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
+# freed VM blocks back to the host, and with images swept after it, the 2-4
+# superseded 9.84 GB builds a tick removed stayed allocated on the host until
+# the next hourly trim.
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && prune_vm_images "$DRY"
+if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 [ "${AMUX_CLEANUP_USER_TMP:-1}" = 1 ] && reap_user_tmp "$DRY"
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && reap_lane_tmp "$DRY"
 VMS_STOPPED=0

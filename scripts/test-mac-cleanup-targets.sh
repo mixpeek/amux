@@ -307,6 +307,34 @@ check "a stale tag nobody uses is removed" "yes" "$(yn grep -q stale "$RMI")"
 check "an image a container uses is kept" "no" "$(yn grep -q pinned "$RMI")"
 check "a never-tagged image falls back to its creation time" "yes" "$(yn grep -q pulled "$RMI")"
 check "the summary reports bytes and its verdict" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "Total reclaimed space: 3.00GB (2 image(s), verdict=vm_images_pruned_by_tag_age)"' _ "$out")"
+echo "12f. a superseded unused tag of the same repository goes at 30 min; a lone or in-use image keeps the 6 h rule (disk RCA 20261010-162636)"
+cat > "$FIX/images2.json" <<JSON
+[{"Id":"sha256:new","RepoTags":["mixpeek/standalone:c"],"Created":"$(iso $((NOW-300)))","Metadata":{"LastTagTime":"$(iso $((NOW-300)))"},"Size":9840000000},
+ {"Id":"sha256:old","RepoTags":["mixpeek/standalone:a"],"Created":"$(iso $((NOW-7200)))","Metadata":{"LastTagTime":"$(iso $((NOW-7200)))"},"Size":9840000000},
+ {"Id":"sha256:recent","RepoTags":["mixpeek/standalone:b"],"Created":"$(iso $((NOW-600)))","Metadata":{"LastTagTime":"$(iso $((NOW-600)))"},"Size":9840000000},
+ {"Id":"sha256:inuse","RepoTags":["mixpeek/standalone:z"],"Created":"$(iso $((NOW-7200)))","Metadata":{"LastTagTime":"$(iso $((NOW-7200)))"},"Size":9840000000},
+ {"Id":"sha256:lone","RepoTags":["redis:7"],"Created":"$(iso $((NOW-7200)))","Metadata":{"LastTagTime":"$(iso $((NOW-7200)))"},"Size":60000000}]
+JSON
+RMI2="$FIX/rmi2.txt"; : > "$RMI2"
+cat > "$FIX/fakedocker2.sh" <<SH
+#!/bin/bash
+shift 2
+case "\$1 \$2" in
+  "images -q") printf 'sha256:new\nsha256:old\nsha256:recent\nsha256:inuse\nsha256:lone\n' ;;
+  "ps -aq") echo c1 ;;
+  "inspect -f") echo sha256:inuse ;;
+  "image inspect") cat "$FIX/images2.json" ;;
+  "rmi "*) echo "\$2" >> "$RMI2" ;;
+esac
+SH
+chmod +x "$FIX/fakedocker2.sh"
+out=$(VM_DOCKER="$FIX/fakedocker2.sh" vm_image_prune_by_tag colima-x 6h)
+check "a superseded unused tag 2 h old goes" "yes" "$(yn grep -q 'sha256:old' "$RMI2")"
+check "the newest tag of the repository stays" "no" "$(yn grep -q 'sha256:new' "$RMI2")"
+check "a superseded tag only 10 min old stays (a build may still be tagging)" "no" "$(yn grep -q 'sha256:recent' "$RMI2")"
+check "a superseded tag a container uses stays" "no" "$(yn grep -q 'sha256:inuse' "$RMI2")"
+check "a lone image of its repository keeps the 6 h rule" "no" "$(yn grep -q 'sha256:lone' "$RMI2")"
+check "the summary counts the superseded removal" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "(1 image(s), 1 superseded, verdict=vm_images_pruned_by_tag_age)"' _ "$out")"
 check "the default image prune is the tag-age function" "yes" "$(yn sh -c 'printf "%s" "$1" | grep -q "^vm_image_prune_by_tag colima-PROFILE AGE$"' _ "$DEFAULT_VM_IMAGE")"
 
 echo "12d. the build cache is also capped by size, after the age prune and before the trim (disk RCA 20261007-081932)"
