@@ -2896,7 +2896,7 @@
   .peek-split-wrap.split-active > .peek-split-handle {
     display: block; width: 6px; flex-shrink: 0; cursor: col-resize;
     background: var(--border); transition: background 0.15s;
-    position: relative; z-index: 2;
+    position: relative; z-index: 2; touch-action: none;
   }
   .peek-split-wrap.split-active > .peek-split-handle::before {
     content: ''; position: absolute; inset: 0 -6px; cursor: col-resize;
@@ -2904,6 +2904,8 @@
   .peek-split-wrap.split-active > .peek-split-handle:hover,
   .peek-split-handle.dragging { background: var(--accent); }
   body.split-dragging, body.split-dragging * { cursor: col-resize !important; user-select: none !important; -webkit-user-select: none !important; }
+  /* An iframe under the cursor would take the drag's events. */
+  body.split-dragging iframe { pointer-events: none !important; }
   .peek-split-files-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px;
     border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 0.8rem; min-width: 0; }
   .peek-split-files-header .psf-crumb { color: var(--accent); cursor: pointer; white-space: nowrap; }
