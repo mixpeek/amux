@@ -14029,7 +14029,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1294';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1295';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27684,6 +27684,8 @@ function _connectorsRender(d) {
     if (s.kind === 'connected' && s.rows.length) {
       for (const r of s.rows) h += _connAcctRow(c, r, false);
       if (c.auth === 'oauth2') h += '<button class="cx-add" onclick="event.stopPropagation();_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add account</button>';
+    } else if (c.auth === 'oauth2' && _connAcctsState !== 'ok' && c.status !== 'needs_credentials') {
+      h += _connAcctsNote();
     } else {
       const failed = c.last_test && !c.last_test.ok;
       const blurb = s.kind === 'connected' && failed ? 'Last live test failed ' + _connAgo(c.last_test.at) + '. Open for details.' : c.setup_note;
@@ -27699,12 +27701,34 @@ function _connectorsRender(d) {
 function _connSetFilter(k) { _connFilter = k; _connectorsRender(_connectorsData); }
 function _connSearch(v) { _connQuery = String(v || '').trim(); _connectorsRender(_connectorsData); }
 
+// `_connAcctsState` keeps "not loaded" apart from "zero accounts": a load that
+// failed (a server restart mid-request) used to leave _connAccts null, which
+// every view read as an empty list, so the Google drawer said "No accounts
+// yet" over five working grants (Ethan, 2026-10-10). A failure now retries
+// with backoff and the views say what actually happened.
+let _connAcctsState = 'idle';   // idle | loading | ok | failed
+let _connAcctsRetry = 0;
 async function _connAccountsLoad() {
+  if (_connAcctsState !== 'ok') _connAcctsState = 'loading';
   try {
     const r = await fetch('/api/connectors/accounts');
-    _connAccts = await r.json();
-  } catch (e) { _connAccts = null; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d || !Array.isArray(d.accounts)) throw new Error('no accounts list');
+    _connAccts = d; _connAcctsState = 'ok'; _connAcctsRetry = 0;
+  } catch (e) {
+    if (_connAcctsState !== 'ok') _connAcctsState = 'failed';
+    if (_connAcctsRetry < 5) {
+      const wait = 1500 * Math.pow(2, _connAcctsRetry++);
+      setTimeout(() => { if (activeView === 'connectors') _connAccountsLoad(); }, wait);
+    }
+  }
   if (_connectorsData) _connectorsRender(_connectorsData);
+}
+function _connAcctsNote() {
+  if (_connAcctsState === 'failed') return '<div class="cx-dim cx-small">Could not load account health. <button class="btn cx-mini" onclick="_connAcctsRetry=0;_connAccountsLoad()">Retry</button></div>';
+  if (_connAcctsState !== 'ok') return '<div class="cx-dim cx-small">Loading accounts…</div>';
+  return '';
 }
 
 function _connById(id) {
@@ -27773,7 +27797,7 @@ function _connDrawerRender() {
   let h = '<div class="cx-drawer" role="dialog" aria-label="' + esc(c.label) + '">';
   h += '<div class="cx-dhead">' + _connIcon(c) + '<span class="cx-title"><span class="cx-name">' + esc(c.label) + '</span><span class="cx-cat">' + esc(c.category) + '</span></span>'
     + _connPill(s.label, s.cls) + '<button class="cx-x" aria-label="Close" onclick="_connClose()"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>';
-  h += '<div class="cx-tabs">' + tab('overview', 'Overview') + tab('connections', 'Connections (' + s.rows.length + ')') + tab('config', 'Configuration') + tab('perms', 'Permissions') + '</div>';
+  h += '<div class="cx-tabs">' + tab('overview', 'Overview') + tab('connections', 'Connections' + (_connAcctsState === 'ok' ? ' (' + s.rows.length + ')' : '')) + tab('config', 'Configuration') + tab('perms', 'Permissions') + '</div>';
   h += '<div class="cx-dbody">';
   if (_connOpenTab === 'overview') {
     if (c.setup_note) h += '<p class="cx-p">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">Docs ↗</a>' : '') + '</p>';
@@ -27802,7 +27826,8 @@ function _connDrawerRender() {
   } else if (_connOpenTab === 'connections') {
     h += '<div class="cx-row-head"><span class="cx-sec" style="margin:0">Your connections (' + s.rows.length + ')</span>'
       + (c.auth === 'oauth2' ? '<button class="btn" onclick="_connAddAccount(\'' + escJs(c.id) + '\')">＋ Add connection</button>' : '') + '</div>';
-    if (!s.rows.length) h += '<div class="cx-dim cx-small">No accounts yet.' + (c.auth === 'oauth2' ? ' Add one to grant access.' : ' This connector authenticates with its key, set under Configuration.') + '</div>';
+    if (_connAcctsState !== 'ok') h += _connAcctsNote();
+    else if (!s.rows.length) h += '<div class="cx-dim cx-small">No accounts yet.' + (c.auth === 'oauth2' ? ' Add one to grant access.' : ' This connector authenticates with its key, set under Configuration.') + '</div>';
     for (const r of s.rows) h += _connAcctRow(c, r, true);
     if (_connIsGoogle(c) && s.rows.length) h += '<div class="cx-dim cx-small" style="margin-top:8px">One Google approval per account covers Gmail, Calendar, Drive and Docs, and every worker mints its token from it.</div>';
   } else if (_connOpenTab === 'config') {
