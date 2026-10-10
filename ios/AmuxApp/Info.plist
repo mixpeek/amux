@@ -24,6 +24,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>amux uses the front camera to record you while the teleprompter scrolls your script.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Used to protect access to your amux dashboard</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
@@ -35,8 +37,12 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>amux records your location history (where you go, and whether you walk, cycle, drive or ride a train) and saves it on your own amux server, so you can see it on the Map.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>amux uses the microphone for your voice in teleprompter recordings and for dictation.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>amux uses motion activity to label your location history as walking, cycling, driving or train. It stays with your history on your own amux server.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>amux saves your teleprompter recordings to Photos.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1306';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1307';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -48179,6 +48179,7 @@ function _filesOpenTeleprompter() {
 }
 
 function _tpClose() {
+  _tpCameraRelease();
   _tp.running = false;
   if (_tp.raf) cancelAnimationFrame(_tp.raf);
   _tp.raf = null;
@@ -48300,6 +48301,184 @@ function _tpKeyHandler(e) {
   else if (e.key === 'f' || e.key === 'F') { _tpFullscreen(); }
   else if (e.key === 'm' || e.key === 'M') { _tpToggleMirror(); _tpShowToolbar(); }
   else if (e.key === 'r' || e.key === 'R') { _tpRestart(); _tpShowToolbar(); }
+  else if (e.key === 'c' || e.key === 'C') { _tpCameraToggle(); _tpShowToolbar(); }
+}
+
+// ── Teleprompter selfie recording (AA-39) ──
+// The front camera runs behind the script and MediaRecorder takes camera + mic
+// while the text scrolls. In the iOS app the take goes to Photos through the
+// amuxMedia bridge, because a WKWebView has no download path; in a browser it
+// downloads. A take that fails to save is kept for "Save take" instead of lost.
+let _tpCam = { stream: null, rec: null, chunks: [], startedAt: 0, timer: 0, take: null, saving: false, releaseAfter: false };
+const _TP_REC_MIMES = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'];
+
+function _tpRecording() { return !!(_tpCam.rec && _tpCam.rec.state !== 'inactive'); }
+
+function _tpCamUi() {
+  const on = !!_tpCam.stream, rec = _tpRecording();
+  const v = document.getElementById('tp-camera');
+  if (v) v.style.display = on ? 'block' : 'none';
+  const scrim = document.getElementById('tp-camera-scrim');
+  if (scrim) scrim.style.display = on ? 'block' : 'none';
+  const cam = document.getElementById('tp-cam-btn');
+  if (cam) { cam.style.background = on ? '#7c6fcd' : 'none'; cam.disabled = rec; }
+  const btn = document.getElementById('tp-rec-btn');
+  if (btn) {
+    btn.innerHTML = _tpCam.saving ? 'Saving&hellip;' : rec ? '&#x25A0; Stop' : '&#x25CF; Rec';
+    btn.style.background = rec ? '#ef4444' : 'none';
+    btn.disabled = _tpCam.saving;
+  }
+  const save = document.getElementById('tp-save-btn');
+  if (save) save.style.display = (_tpCam.take && !_tpCam.saving) ? '' : 'none';
+  const badge = document.getElementById('tp-rec-badge');
+  if (badge) badge.style.display = rec ? 'block' : 'none';
+}
+
+async function _tpCameraOn() {
+  if (_tpCam.stream) return true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    showToast('Camera recording is not supported here');
+    return false;
+  }
+  try {
+    _tpCam.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (e) {
+    const why = (e && (e.message || e.name)) || 'refused';
+    console.warn('[teleprompter] camera unavailable: ' + (e && e.name) + ' ' + why);
+    showToast('Camera unavailable: ' + why);
+    return false;
+  }
+  const v = document.getElementById('tp-camera');
+  if (v) { v.srcObject = _tpCam.stream; v.play().catch(() => {}); }
+  _tpCamUi();
+  return true;
+}
+
+function _tpCameraOff() {
+  if (_tpRecording()) return;
+  if (_tpCam.stream) _tpCam.stream.getTracks().forEach(t => t.stop());
+  _tpCam.stream = null;
+  const v = document.getElementById('tp-camera');
+  if (v) v.srcObject = null;
+  _tpCamUi();
+}
+
+// Closing the teleprompter mid-take stops the take, saves it, then frees the camera.
+function _tpCameraRelease() {
+  if (_tpRecording()) { _tpCam.releaseAfter = true; _tpRecordStop(); return; }
+  _tpCameraOff();
+}
+
+async function _tpCameraToggle() {
+  if (_tpRecording()) return;
+  if (_tpCam.stream) _tpCameraOff();
+  else await _tpCameraOn();
+}
+
+async function _tpRecordToggle() {
+  if (_tpRecording()) { _tpRecordStop(); return; }
+  if (_tpCam.saving) return;
+  if (!await _tpCameraOn()) return;
+  const mime = _TP_REC_MIMES.find(m => !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(m)) || '';
+  let rec;
+  try { rec = new MediaRecorder(_tpCam.stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : undefined); }
+  catch (e) { try { rec = new MediaRecorder(_tpCam.stream); } catch (e2) { showToast('Recorder unavailable'); return; } }
+  _tpCam.rec = rec;
+  _tpCam.chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) _tpCam.chunks.push(e.data); };
+  rec.onstop = () => _tpRecordFinish(rec);
+  rec.onerror = e => console.error('[teleprompter] recorder error: ' + ((e && e.error && e.error.message) || 'unknown'));
+  rec.start(1000);
+  _tpCam.startedAt = Date.now();
+  document.getElementById('tp-rec-time').textContent = '0:00';
+  clearInterval(_tpCam.timer);
+  _tpCam.timer = setInterval(() => {
+    const s = Math.floor((Date.now() - _tpCam.startedAt) / 1000);
+    const el = document.getElementById('tp-rec-time');
+    if (el) el.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }, 500);
+  if (!_tp.running) _tpToggle();
+  _tpCamUi();
+}
+
+function _tpRecordStop() {
+  if (!_tpRecording()) return;
+  clearInterval(_tpCam.timer);
+  if (_tp.running) _tpToggle();
+  try { _tpCam.rec.stop(); } catch (e) { _tpRecordFinish(_tpCam.rec); }
+}
+
+async function _tpRecordFinish(rec) {
+  const type = (rec && rec.mimeType) || 'video/mp4';
+  const blob = new Blob(_tpCam.chunks, { type });
+  _tpCam.chunks = [];
+  _tpCam.rec = null;
+  if (_tpCam.releaseAfter) { _tpCam.releaseAfter = false; _tpCameraOff(); }
+  if (!blob.size) { console.warn('[teleprompter] take produced no data'); showToast('Nothing was recorded'); _tpCamUi(); return; }
+  const base = ((_fileData && _fileData.path) || 'take').split('/').pop().replace(/\.[^.]+$/, '') || 'take';
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  _tpCam.take = { blob, type, name: base + '-take-' + stamp + (/mp4/.test(type) ? '.mp4' : '.webm') };
+  await _tpRecordSave();
+}
+
+async function _tpRecordRetrySave() { if (_tpCam.take && !_tpCam.saving) await _tpRecordSave(); }
+
+function _tpNativeMedia() {
+  return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxMedia);
+}
+
+async function _tpRecordSave() {
+  const take = _tpCam.take;
+  if (!take) return;
+  _tpCam.saving = true;
+  _tpCamUi();
+  try {
+    if (_tpNativeMedia()) {
+      await _tpSaveToPhotos(take);
+      showToast('Take saved to Photos');
+    } else {
+      const url = URL.createObjectURL(take.blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = take.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      showToast('Take downloaded: ' + take.name);
+    }
+    _tpCam.take = null;
+  } catch (e) {
+    const why = (e && e.message) || String(e);
+    console.error('[teleprompter] take not saved (' + take.blob.size + ' bytes): ' + why);
+    showToast('Take not saved: ' + why + '. Tap Save take to retry.');
+  } finally {
+    _tpCam.saving = false;
+    _tpCamUi();
+  }
+}
+
+// Base64 slices through the reply-capable bridge: each postMessage resolves
+// once the app has written that slice, so a long take never sits in memory twice.
+async function _tpSaveToPhotos(take) {
+  const h = window.webkit.messageHandlers.amuxMedia;
+  const id = await h.postMessage({ op: 'begin', name: take.name, mime: take.type, size: take.blob.size });
+  const step = 3 * 1024 * 1024;
+  try {
+    for (let off = 0; off < take.blob.size; off += step) {
+      const data = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result).split(',')[1] || '');
+        r.onerror = () => rej(r.error || new Error('could not read the take'));
+        r.readAsDataURL(take.blob.slice(off, off + step));
+      });
+      await h.postMessage({ op: 'chunk', id, data });
+    }
+    await h.postMessage({ op: 'save', id });
+  } catch (e) {
+    h.postMessage({ op: 'abort', id }).catch(() => {});
+    throw e;
+  }
 }
 
 
