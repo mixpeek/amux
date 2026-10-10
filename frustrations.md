@@ -5830,3 +5830,25 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: A failed declared API-key test returns and persists the provider response body and transport error, which may echo the bearer or include a credential-bearing request URL.
 COST: A connector provider can disclose its credential through inventory/last-test results that workers can read.
 FIX: Use the shared redacted provider canary, retain connector_provider_test_failed/unreachable signals, and test a real HTTP provider that echoes the rejected bearer; assert no full key in the response, inventory or durable result.
+
+## Idle rotating connector credentials depend on unrelated autofix
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-10
+SESSION: human Codex connector longevity PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: Account health canaries an expired rotating Slack bearer without attempting its saved refresh credential. Idle credential upkeep otherwise depends on the broad autofix loop.
+COST: The new main regression fails with zero refreshes where one is required; an idle connector can appear broken despite a renewable grant, and disabling board maintenance removes its upkeep.
+FIX: Dedicated registered connector-maintenance job, early leased atomic refresh, account/configuration preservation, durable secret-free status, and actual HTTP scheduled-process SIGKILL/restart proof. Provider revocation remains needs_reauth; no account substitution or automatic consent expansion.
+
+## Concurrent connector Test receipts lose durable history
+AREA: connectors
+SEVERITY: friction
+STATUS: open
+DATE: 2026-10-10
+SESSION: human Codex connector longevity PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: record_test reads and replaces shared last-test state without a lock, uses a shared temp filename, and does not synchronize its publication.
+COST: Parallel canary/Test results can overwrite each other or disappear after restart, obscuring whether a saved connection still works.
+FIX: Stable sidecar lock, private atomic synced publication, corrupt-state preservation, connector_test_record_not_durable signal, and sixteen concurrent distinct-result checks. Canary and maintenance snapshots are also atomic.
