@@ -30,6 +30,12 @@ try {
   });
   assert.equal(imported.status, 0, imported.stderr || imported.error?.message);
   assert.equal(imported.stdout, 'imported');
+  // An argv[1] naming no file must not make the import throw.
+  const ghost = spawnSync(process.execPath, ['--input-type=module', '-e', importer, join(home, 'no-such-entry.mjs')], {
+    input: '', encoding: 'utf8', timeout: 10000,
+  });
+  assert.equal(ghost.status, 0, ghost.stderr || ghost.error?.message);
+  assert.equal(ghost.stdout, 'imported');
   console.log('PASS browser driver entrypoint: canonical, file alias, directory alias and import-only boundaries');
 } finally {
   rmSync(home, {recursive: true, force: true});

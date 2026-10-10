@@ -285,7 +285,10 @@ export async function run(input) {
 }
 // Node canonicalizes the module URL, but keeps the caller's symlink spelling
 // in argv. Compare canonical paths so /tmp on macOS still executes the driver.
-if(process.argv[1]&&import.meta.url===pathToFileURL(realpathSync(process.argv[1])).href) {
+// An argv[1] that is not a file (a test runner's pattern, a deleted path) is
+// not this module being executed; it must not throw on import.
+const canonicalEntry=entry=>{try{return realpathSync(entry);}catch{return entry;}};
+if(process.argv[1]&&import.meta.url===pathToFileURL(canonicalEntry(process.argv[1])).href) {
   let text='';for await(const chunk of process.stdin)text+=chunk;
   try {const result=await run(JSON.parse(text));process.stdout.write(JSON.stringify(result));}catch(e){process.stdout.write(JSON.stringify({error:e.message,status:400}));}
 }
