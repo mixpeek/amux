@@ -27,6 +27,15 @@ test('an absolute path in inline code is a link', () => {
 test('the four chat render sites go through the linkifier', () => {
   const chat = source.slice(source.indexOf('function _chatBubble('), source.indexOf('function _chatRender('))
     + source.slice(source.indexOf('function _chatRender('), source.indexOf('function _chatRender(') + 12000);
-  assert.equal((chat.match(/_chatLinkify\(renderMarkdown\(/g) || []).length, 4);
+  assert.equal((chat.match(/_chatMarkdown\(/g) || []).length, 4);
   assert.equal((chat.match(/[^(]renderMarkdown\(/g) || []).length, 0, 'no chat site renders markdown without it');
+});
+
+
+test('Chat uses the worker cwd for Markdown files and binds delegated viewer clicks', () => {
+  const markdown = fn('_chatMarkdown');
+  assert.match(markdown, /peekSessionDir/);
+  assert.match(markdown, /renderMarkdown\(text, base\)/);
+  const render = source.slice(source.indexOf('function _chatRender('), source.indexOf('function _chatRender(') + 400);
+  assert.match(render, /_bindMdFileLinks\(body\)/);
 });

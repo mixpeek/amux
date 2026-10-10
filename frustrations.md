@@ -5830,3 +5830,14 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: A failed declared API-key test returns and persists the provider response body and transport error, which may echo the bearer or include a credential-bearing request URL.
 COST: A connector provider can disclose its credential through inventory/last-test results that workers can read.
 FIX: Use the shared redacted provider canary, retain connector_provider_test_failed/unreachable signals, and test a real HTTP provider that echoes the rejected bearer; assert no full key in the response, inventory or durable result.
+
+## Chat Markdown artifact links navigate away instead of opening files
+AREA: dashboard Chat files
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: A real Codex Chat reply linking an absolute local file with Markdown navigates the dashboard to that filesystem path. Plain path links work, but Markdown anchors never enter the file viewer.
+COST: The worker's artifact cannot be read through Chat, and opening it loses the dashboard view.
+FIX: Render Chat Markdown with the worker cwd and bind the existing delegated Markdown file handler. Emit chat-markdown-file-open with measured/count on actual clicks. Desktop/mobile browser regression opens real absolute/relative files including spaces from finished, interrupted and incrementally streamed replies, verifies the visible final line and unchanged URL, and preserves safe external links.
