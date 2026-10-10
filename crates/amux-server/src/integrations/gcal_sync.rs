@@ -32,6 +32,35 @@ pub struct CalendarEvent {
     pub organizer: Option<String>,  // organizer's email
     pub html_link: Option<String>,  // "open in Google Calendar" URL
     pub meeting_url: Option<String>, // Meet/conference join URL, if any
+    /// The calendar's own name and colors as the account shows them, so the
+    /// amux view can look like Google's without a second lookup.
+    #[serde(default)]
+    pub calendar_name: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub fg_color: Option<String>,
+    /// This account's own RSVP: accepted | tentative | declined | needsAction.
+    #[serde(default)]
+    pub self_response: Option<String>,
+}
+
+fn untitled() -> String {
+    "(No title)".to_string()
+}
+
+/// One calendar an account can see, with the presentation Google gives it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarMeta {
+    pub account_id: String,
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+    pub fg_color: Option<String>,
+    /// Shown by default in the account's own Google Calendar.
+    pub selected: bool,
+    pub primary: bool,
+    pub access_role: Option<String>,
 }
 
 /// Build a `.../calendars/{calendar_id}[/events[/{event_id}]]` URL with each
@@ -66,6 +95,11 @@ fn calendar_events_url(calendar_id: &str, event_id: Option<&str>) -> anyhow::Res
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleCalendarEvent {
     pub id: String,
+    // Google OMITS summary on an untitled or busy-only event. As a required
+    // field every such event failed to parse and was dropped by the
+    // filter_map below, so the amux calendar silently showed fewer events
+    // than Google's own (2026-10-10 calendar parity work).
+    #[serde(default = "untitled")]
     pub summary: String,
     pub description: Option<String>,
     pub start: GoogleDateTime,
@@ -246,6 +280,107 @@ pub async fn fetch_calendar_events(access_token: &str, account_id: &str) -> anyh
     Ok(all_events)
 }
 
+/// Every calendar the account can see, with name, colors and default visibility.
+pub async fn fetch_calendar_meta(access_token: &str, account_id: &str) -> anyhow::Result<Vec<CalendarMeta>> {
+    let client = reqwest::Client::new();
+    let mut out = Vec::new();
+    let mut page: Option<String> = None;
+    for _ in 0..10 {
+        let mut req = client
+            .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .query(&[("maxResults", "250")]);
+        if let Some(t) = &page {
+            req = req.query(&[("pageToken", t.as_str())]);
+        }
+        let response = req.send().await?;
+        let status = response.status();
+        let data: serde_json::Value = response.json().await?;
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("calendarList request failed: {status} {data}"));
+        }
+        for item in data.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            let Some(id) = item.get("id").and_then(|v| v.as_str()) else { continue };
+            let str_of = |k: &str| item.get(k).and_then(|v| v.as_str()).map(str::to_string);
+            out.push(CalendarMeta {
+                account_id: account_id.to_string(),
+                id: id.to_string(),
+                name: str_of("summaryOverride").or_else(|| str_of("summary")).unwrap_or_else(|| id.to_string()),
+                color: str_of("backgroundColor"),
+                fg_color: str_of("foregroundColor"),
+                selected: item.get("selected").and_then(|v| v.as_bool()).unwrap_or(false),
+                primary: item.get("primary").and_then(|v| v.as_bool()).unwrap_or(false),
+                access_role: str_of("accessRole"),
+            });
+        }
+        page = data.get("nextPageToken").and_then(|v| v.as_str()).map(str::to_string);
+        if page.is_none() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Events of one calendar in [time_min, time_max): recurring events EXPANDED
+/// into their occurrences (singleEvents), ordered, every page followed.
+/// Without singleEvents a weekly meeting came back as its series template on
+/// the day the series began, so it was missing from every later week.
+pub async fn fetch_calendar_window(
+    access_token: &str,
+    cal: &CalendarMeta,
+    time_min: &str,
+    time_max: &str,
+) -> anyhow::Result<Vec<CalendarEvent>> {
+    let client = reqwest::Client::new();
+    let url = calendar_events_url(&cal.id, None)?;
+    let mut out = Vec::new();
+    let mut page: Option<String> = None;
+    for _ in 0..20 {
+        let mut req = client
+            .get(url.clone())
+            .header("Authorization", format!("Bearer {access_token}"))
+            .query(&[
+                ("timeMin", time_min),
+                ("timeMax", time_max),
+                ("singleEvents", "true"),
+                ("orderBy", "startTime"),
+                ("maxResults", "2500"),
+            ]);
+        if let Some(t) = &page {
+            req = req.query(&[("pageToken", t.as_str())]);
+        }
+        let response = req.send().await?;
+        let status = response.status();
+        let data: serde_json::Value = response.json().await?;
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("events.list for calendar {} failed: {} {}", cal.id, status, data));
+        }
+        let mut unparsed = 0usize;
+        for item in data.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+            match serde_json::from_value::<GoogleCalendarEvent>(item) {
+                Ok(ev) if ev.status == "cancelled" => {}
+                Ok(ev) => {
+                    let mut e = convert_event(&ev, &cal.account_id, &cal.id);
+                    e.calendar_name = Some(cal.name.clone());
+                    e.color = cal.color.clone();
+                    e.fg_color = cal.fg_color.clone();
+                    out.push(e);
+                }
+                Err(_) => unparsed += 1,
+            }
+        }
+        if unparsed > 0 {
+            tracing::warn!(target: "amux::gcal", calendar = %cal.id, unparsed, verdict = "gcal_event_unparsed",
+                "events Google returned that amux could not parse; they are missing from the view");
+        }
+        page = data.get("nextPageToken").and_then(|v| v.as_str()).map(str::to_string);
+        if page.is_none() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// Fetch list of calendar IDs
 async fn fetch_calendar_list(access_token: &str) -> anyhow::Result<Vec<String>> {
     let client = reqwest::Client::new();
@@ -345,6 +480,11 @@ pub fn convert_event(
         .attendees
         .as_ref()
         .and_then(|a| serde_json::to_string(a).ok());
+    let self_response = google_event
+        .attendees
+        .as_ref()
+        .and_then(|a| a.iter().find(|x| x.is_self))
+        .and_then(|x| x.response_status.clone());
 
     CalendarEvent {
         id: format!("{}:{}:{}", account_id, calendar_id, google_event.id),
@@ -369,11 +509,35 @@ pub fn convert_event(
         meeting_url,
         organizer: google_event.organizer.as_ref().and_then(|o| o.email.clone()),
         attendees,
+        calendar_name: None,
+        color: None,
+        fg_color: None,
+        self_response,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// Parity with Google's own view (2026-10-10): an untitled event must
+    /// survive parsing, and the account's own RSVP must come through.
+    #[test]
+    fn an_untitled_event_parses_and_carries_the_accounts_own_rsvp() {
+        let raw = serde_json::json!({
+            "id": "e1", "status": "confirmed",
+            "start": {"dateTime": "2026-10-10T14:00:00-04:00"},
+            "end": {"dateTime": "2026-10-10T15:00:00-04:00"},
+            "attendees": [
+                {"email": "someone@x.com", "responseStatus": "accepted"},
+                {"email": "me@x.com", "responseStatus": "declined", "self": true}
+            ]
+        });
+        let ev: GoogleCalendarEvent = serde_json::from_value(raw).expect("untitled events must parse");
+        assert_eq!(ev.summary, "(No title)");
+        let c = convert_event(&ev, "me@x.com", "primary");
+        assert_eq!(c.self_response.as_deref(), Some("declined"));
+        assert_eq!(c.title, "(No title)");
+    }
+
     use super::*;
 
     #[test]
