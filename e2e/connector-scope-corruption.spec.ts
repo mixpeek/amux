@@ -1,5 +1,6 @@
 // Opt-in fault proof against a disposable local server. Never damage live prefs.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -65,10 +66,10 @@ test('damaged local or inherited connector scope is visible and explicitly repai
       await page.screenshot({ path: info.outputPath(layer.level + '-repair.png'), fullPage: true });
     }
   } finally {
-    layers.forEach((l, i) => {
+    await cleanup('restore scope prefs', () => layers.forEach((l, i) => {
       sql('DELETE FROM prefs WHERE key=?', [l.pref]);
       if (original[i].length) sql('INSERT INTO prefs(key,value) VALUES(?,?)', [l.pref, original[i][0][0]]);
-    });
-    await request.delete('/api/sessions/' + worker, { headers: auth });
+    }), info);
+    await cleanup('delete fixture worker', () => request.delete('/api/sessions/' + worker, { headers: auth }), info);
   }
 });
