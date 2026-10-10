@@ -15769,8 +15769,8 @@ async function _psfViewFile(filePath) {
     } else if (data.is_video) {
       content.className = 'file-overlay-body file-video';
       const rawUrl = API + '/api/file/raw?path=' + encodeURIComponent(data.path || filePath);
-      content.innerHTML = '<div class="file-video-wrap"><video class="file-video" controls playsinline preload="metadata" style="max-width:100%;">'
-        + '<source src="' + esc(rawUrl) + '" type="' + esc(_vpMimeFromUrl(rawUrl)) + '"></video></div>';
+      content.innerHTML = '<div class="file-video-wrap"><video class="file-video" controls playsinline preload="metadata" style="max-width:100%;"'
+        + ' src="' + esc(_authUrl(rawUrl)) + '"></video></div>';
     } else if (data.is_markdown) {
       content.className = 'file-overlay-body markdown md-content';
       const fm = typeof _parseFrontmatter === 'function' ? _parseFrontmatter(data.content) : { meta: null, body: data.content };
@@ -24722,8 +24722,14 @@ function _renderFileBody(data, mode) {
     body.className = 'file-overlay-body file-video';
     const size = data.size ? _fmtBytes(data.size) : '';
     body.innerHTML = '<div class="file-video-wrap">'
-      + '<video class="file-video" controls playsinline preload="metadata">'
-      + '<source src="' + esc(rawUrl) + '" type="' + esc(_vpMimeFromUrl(rawUrl)) + '"></video>'
+      // src ON THE VIDEO, authed (Ethan, 2026-10-10: "video doesnt play until
+      // i do full screen"). This was an unauthenticated <source> typed by
+      // _vpMimeFromUrl, which read the extension of "/api/file/raw" and so
+      // declared every file video/mp4. The full-screen player sets
+      // v.src = _authUrl(url) and played the same .webm. A failed <source>
+      // also fires its error on the source, not the video, so the "cannot
+      // play" fallback below never ran and the player sat black at 00:00.
+      + '<video class="file-video" controls playsinline preload="metadata" src="' + esc(_authUrl(rawUrl)) + '"></video>'
       + '<div class="file-video-meta"><span>' + esc(size) + '</span>'
       + '<button class="btn" onclick="_fileVideoFullscreen()">Full-screen player</button></div></div>';
     const v = body.querySelector('video');
@@ -26900,6 +26906,10 @@ async function _scratchpadLoad() {
     if (gen !== _spLoadGen) return;
     if (data.error) { body.innerHTML = '<div style="padding:16px;color:var(--dim)">' + esc(data.error) + '</div>'; return; }
     _spLastData = { path: _spPath, data };
+    // The folder's REAL path, not the word "Scratchpad" (Ethan, 2026-10-10:
+    // "this should be the dir path"). /api/ls answers with the absolute path.
+    const dirEl = document.getElementById('sp-dir');
+    if (dirEl) { const shown = data.path || _spPath; dirEl.textContent = shown; dirEl.title = shown; }
     _spRender(_spPath, data);
   } catch(e) {
     if (gen !== _spLoadGen) return;
@@ -27055,6 +27065,28 @@ async function _spCopy(path) {
     await navigator.clipboard.writeText(d.content);
     showToast('Copied ' + path.split('/').pop());
   } catch (e) { showToast('Could not copy: ' + e.message); }
+}
+// Phone toolbar: the actions fold behind a "⋯" button (Ethan, 2026-10-10).
+function _spMoreToggle(e) {
+  if (e) e.stopPropagation();
+  const box = document.getElementById('sp-actions');
+  const btn = document.getElementById('sp-more-btn');
+  if (!box) return;
+  const open = !box.classList.contains('open');
+  box.classList.toggle('open', open);
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+  if (open) setTimeout(() => document.addEventListener('pointerdown', _spMoreOutside, true), 0);
+}
+function _spMoreOutside(e) {
+  if (e.target.closest && (e.target.closest('#sp-actions') || e.target.closest('#sp-more-btn'))) return;
+  _spMoreClose();
+}
+function _spMoreClose() {
+  const box = document.getElementById('sp-actions');
+  if (box) box.classList.remove('open');
+  const btn = document.getElementById('sp-more-btn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', _spMoreOutside, true);
 }
 function _spWireCapture() {
   const box = document.getElementById('sp-capture');
@@ -46919,7 +46951,10 @@ let _vpHideTimer = null;
 function _vpPosKey(url) { return 'amux_vp_pos_' + url; }
 
 function _vpMimeFromUrl(url) {
-  const ext = url.split('?')[0].split('.').pop().toLowerCase();
+  // /api/file/raw?path=/x/take.webm: the extension is the PATH's, not the route's.
+  let target = url;
+  try { target = new URL(url, location.origin).searchParams.get('path') || url; } catch (e) {}
+  const ext = String(target).split('?')[0].split('.').pop().toLowerCase();
   const map = { mp4:'video/mp4', m4v:'video/mp4', mov:'video/quicktime', webm:'video/webm', mkv:'video/x-matroska', avi:'video/x-msvideo' };
   return map[ext] || 'video/mp4';
 }
