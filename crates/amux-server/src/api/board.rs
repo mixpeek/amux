@@ -115,6 +115,53 @@ pub fn routes() -> Router<AppState> {
             "/{id}/artifacts/{aid}",
             axum::routing::patch(patch_artifact).delete(delete_artifact),
         )
+        .layer(axum::middleware::from_fn(refuse_isolated_caller))
+}
+
+/// An ISOLATED worker has no board (Ethan, 2026-10-10: "isolated = no
+/// understanding of board").
+///
+/// Isolation already stopped the board from reaching the lane: no prompt
+/// capture, no dispatch, no board-drive resume. The other direction stayed
+/// open. Two isolated lanes, amux-helper and mxp-gs12, created, closed and
+/// appended to cards through this API on 2026-10-10 because their own
+/// instructions told them to, and the owner-policy then answered those cards'
+/// asks back into the isolated lanes. Refusing here closes that loop for every
+/// verb: list, read and write.
+///
+/// The caller is named by `X-Amux-Worker` / `X-Amux-Session`, the attribution
+/// every board write already uses. The owner (a verified local member, i.e. the
+/// dashboard) is never refused, so Ethan can still put a card on an isolated
+/// lane's board by hand.
+async fn refuse_isolated_caller(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let headers = req.headers();
+    if super::org::local_member_actor(headers).is_none() {
+        let name = crate::api::groups::hdr_worker(headers);
+        if !name.is_empty() && crate::api::session_verbs::session_is_isolated(&name) {
+            tracing::info!(
+                target: "amux::board",
+                session = %name,
+                method = %req.method(),
+                path = %req.uri().path(),
+                measured = true,
+                n_considered = 1,
+                verdict = "isolated_board_refused",
+                "board: refused a request from an isolated worker; isolated lanes have no board"
+            );
+            return err(
+                StatusCode::FORBIDDEN,
+                json!({
+                    "error": format!("'{name}' is an isolated worker, and isolated workers have no board"),
+                    "code": "isolated_no_board",
+                    "how": "Keep task state in your own files (a ledger in the repo you work in). The owner can still edit the board from the dashboard.",
+                }),
+            );
+        }
+    }
+    next.run(req).await
 }
 
 /// GET /api/board/needsyou — THE owner view, capped (AF-318).
@@ -9168,6 +9215,47 @@ mod overlap_reconciliation_tests {
         .await;
         assert_eq!(permit_status, StatusCode::OK);
         assert_eq!(permit["allowed"], true);
+    }
+
+    /// Ethan, 2026-10-10: "isolated = no understanding of board". An isolated
+    /// worker is refused on every board verb, an ordinary worker and the owner
+    /// are not. Both directions, so a guard that refused everyone, or no one,
+    /// fails here.
+    #[tokio::test]
+    async fn an_isolated_worker_is_refused_by_the_board_and_others_are_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).expect("sessions");
+        std::fs::write(dir.path().join("sessions/raw.env"), "CC_ISOLATED=\"1\"\n").expect("w");
+        std::fs::write(dir.path().join("sessions/normal.env"), "CC_TAGS=\"amux\"\n").expect("w");
+        assert!(crate::api::session_verbs::session_is_isolated("raw"), "premise");
+        assert!(!crate::api::session_verbs::session_is_isolated("normal"), "premise");
+
+        let db = store();
+        let app = Router::new()
+            .nest("/api/board", routes())
+            .with_state(state(db.clone()));
+        for (method, uri, body) in [
+            ("GET", "/api/board", None),
+            ("POST", "/api/board", Some(json!({"title": "isolated lane card", "status": "todo"}))),
+            ("GET", "/api/board/AB-1", None),
+            ("PATCH", "/api/board/AB-1", Some(json!({"desc_append": "x"}))),
+        ] {
+            let (status, body) = call(&app, method, uri, "raw", body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {body}");
+            assert_eq!(body["code"], "isolated_no_board", "{method} {uri}: {body}");
+        }
+        let (status, body) = call(&app, "GET", "/api/board", "normal", None).await;
+        assert_eq!(status, StatusCode::OK, "ordinary worker list: {body}");
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/board",
+            "normal",
+            Some(json!({"title": "ordinary lane card", "status": "todo"})),
+        )
+        .await;
+        assert!(status.is_success(), "ordinary worker create: {status} {body}");
     }
 }
 
