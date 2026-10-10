@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1309';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1310';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39887,13 +39887,21 @@ async function _gcalSource(info, success, failure) {
     if (Array.isArray(d.calendars)) _gcalCalendars = d.calendars;
     _gcalAccounts = Array.isArray(d.accounts) ? d.accounts : null;
     const byKey = new Map(_gcalCalendars.map(c => [_gcalKey(c), c]));
-    const out = [];
+    // ONE ENTRY PER EVENT. The same invite sits in several connected inboxes
+    // and a shared calendar (Partiful) is subscribed from three accounts, so
+    // the raw read listed Stone Street Oktoberfest three times. Merged on
+    // Google's event id + start AFTER hidden calendars are dropped, keeping
+    // the copy from the account's own primary calendar when there is one.
+    const rank = e => (e.calendar_id === e.account_id ? 0 : (byKey.get(e.account_id + '|' + e.calendar_id) || {}).primary ? 1 : 2);
+    const best = new Map();
     for (const e of (d.events || [])) {
       const cal = byKey.get(e.account_id + '|' + e.calendar_id);
       if (cal && !_gcalCalOn(cal)) continue;
-      out.push(_gcalEventToFc(e));
+      const k = (e.event_id || e.id) + '|' + (e.start_time || '');
+      const prev = best.get(k);
+      if (!prev || rank(e) < rank(prev)) best.set(k, e);
     }
-    success(out);
+    success([...best.values()].map(_gcalEventToFc));
     _calPanelRefresh();
   } catch (err) { failure(err); }
 }
