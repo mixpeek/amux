@@ -327,6 +327,8 @@ jobs:
         run: python3 scripts/test-board-ack-unknown.py
       - name: Cargo worktrees reuse builds without stale commit identity
         run: python3 scripts/test-cargo-worktree-provenance.py
+      - name: connector account health classifier
+        run: node scripts/test-connector-account-health.mjs
       - name: no harness is written and then never invoked (AF-346)
         run: |
           set -uo pipefail

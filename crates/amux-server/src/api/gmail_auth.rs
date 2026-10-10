@@ -519,6 +519,11 @@ pub async fn callback(
     let state = p.state.unwrap_or_default().trim().to_string();
     let error = p.error.unwrap_or_default().trim().to_string();
     if !error.is_empty() {
+        if !state.is_empty() {
+            let _ = pending_take(&ctx.home, &state);
+            super::connectors::cancel_delegated_gmail_state(&ctx.home, &state);
+            tracing::warn!(verdict="gmail_oauth_cancelled", "OAuth error consumed pending consent state");
+        }
         // A redirect_uri_mismatch is the reauth-blocking case (AMUX-3352):
         // render the one-time console fix instead of a dead-end "Auth failed".
         if error.contains("redirect_uri_mismatch") {

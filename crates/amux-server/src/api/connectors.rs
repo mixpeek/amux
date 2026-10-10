@@ -62,8 +62,8 @@ use std::time::Instant;
 
 /// Broker context: the HTTP transport (mockable in tests, like
 /// [`super::gmail_auth::GmailAuthCtx`]) plus the amux home the token store
-/// lives under. Only the broker endpoints (auth/callback/token/accounts) use
-/// it; list/credentials/test keep reading the process-global home.
+/// lives under. Broker and provider tests share this boundary; credentials
+/// and the dashboard inventory use the process home.
 pub struct ConnectorsCtx {
     pub http: Arc<dyn HttpTransport>,
     pub home: PathBuf,
@@ -222,7 +222,7 @@ const REGISTRY: &[Provider] = &[
         // needed, unlike a webhook) picks it up on the next server restart.
         // Chats link themselves to a session by sending `/link <session>` to
         // the bot; `/api/telegram/mappings` is the operator-side view.
-        setup_note: "Message @BotFather on Telegram, /newbot, paste the token it gives you. No webhook/public URL needed — amux polls. After saving, restart the server so the poll loop picks up the token, then send /link <session> to the bot from Telegram.",
+        setup_note: "Message @BotFather on Telegram, /newbot, paste the token it gives you. No webhook/public URL needed — amux polls. After saving, amux discovers the token within five seconds. Send /link <session> to the bot from Telegram.",
         docs: "https://core.telegram.org/bots#how-do-i-create-a-bot",
         test_url: "",
     },
@@ -237,7 +237,7 @@ const REGISTRY: &[Provider] = &[
         },
         // Self-hosted: no fixed docs/console URL, no fixed test_url — the
         // server is wherever MATTERMOST_URL says it is (see mattermost_test_url).
-        setup_note: "Self-hosted Mattermost. Paste the server URL (e.g. https://chat.example.com, no trailing slash), plus a login and password — a personal access token works too as the password.",
+        setup_note: "Self-hosted Mattermost. Paste the server URL (e.g. https://chat.example.com, no trailing slash), plus a login and password. This connector uses the server login endpoint.",
         docs: "",
         test_url: "",
     },
@@ -1967,6 +1967,12 @@ pub(crate) async fn delegate_gmail_callback(
     Some(complete_exchange(&ctx, family, code.to_string(), hint_account, verifier).await)
 }
 
+/// The Gmail callback also receives connector-family states. A provider error
+/// must consume that state before rendering its cancellation page.
+pub(crate) fn cancel_delegated_gmail_state(home: &std::path::Path, state: &str) {
+    let _ = pending_take(home, state);
+}
+
 /// The code→token exchange + store write shared by BOTH entry points: the
 /// connectors callback above, and the gmail callback delegating a
 /// connectors-minted state that arrived on the gmail redirect URI.
@@ -2253,14 +2259,14 @@ async fn test_connection(
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
 ) -> Response {
-    let resp = test_connection_inner(Extension(ctx), Path(id.clone())).await;
+    let resp = test_connection_inner(Extension(ctx.clone()), Path(id.clone())).await;
     let (parts, body) = resp.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
         return (parts.status, "test response unreadable").into_response();
     };
     if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
         if v.get("ok").is_some() {
-            record_test(&amux_home(), &id, &v);
+            record_test(&ctx.home, &id, &v);
         }
     }
     Response::from_parts(parts, axum::body::Body::from(bytes))
@@ -2276,11 +2282,11 @@ async fn test_connection_inner(
     // GET the declared test_url with the declared key as a bearer. When no
     // test_url was given, say the test did not RUN rather than return a
     // pass/fail neither of us measured (ethos rule 4).
-    if let Some(d) = def_of(&amux_home(), &id).filter(|d| !d.builtin) {
+    if let Some(d) = def_of(&ctx.home, &id).filter(|d| !d.builtin) {
         if d.kind == "oauth2" {
             return declared_oauth::test(&ctx, &d).await;
         }
-        let file_env = parse_env_file(&amux_home().join("server.env"));
+        let file_env = parse_env_file(&ctx.home.join("server.env"));
         let missing: Vec<&String> = d
             .env_keys
             .iter()
@@ -2310,203 +2316,121 @@ async fn test_connection_inner(
             .first()
             .and_then(|k| env_val(&file_env, k))
             .unwrap_or_default();
-        let res = ReqwestTransport::new().get(&d.test_url, Some(&key)).await;
-        return match res {
-            Ok((code, _)) if (200..300).contains(&code) => Json(json!({
-                "ok": true, "status": "connected", "measured": true, "http": code,
-            }))
-            .into_response(),
-            Ok((code, body)) => Json(json!({
-                "ok": false,
-                "status": "error",
-                "measured": true,
-                "http": code,
-                "detail": format!("{} answered {code}", d.test_url),
-                "body": body,
-            }))
-            .into_response(),
-            Err(e) => Json(json!({
-                "ok": false, "status": "error", "measured": true,
-                "detail": format!("{}: {e}", d.test_url),
-            }))
-            .into_response(),
-        };
+        return Json(provider_canary(&ctx, &d.id, &d.test_url, &key).await).into_response();
     }
     let Some(p) = provider(&id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("unknown connector '{id}'")})),
+            Json(json!({"error":"unknown connector"})),
         )
             .into_response();
     };
-    let file_env = parse_env_file(&amux_home().join("server.env"));
-    let mut url = p.test_url.to_string();
-    let bearer = match p.auth {
-        Auth::ApiKey { key_env } => match env_val(&file_env, key_env) {
-            Some(k) => k,
-            None => {
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_credentials",
-                    "detail": format!("set {key_env} first — nothing to test yet"),
-                }))
-                .into_response();
-            }
-        },
-        // Self-hosted: test_url is static-empty in the registry (there is no
-        // fixed host), built here from the stored grant's own base_url — the
-        // one that was ACTUALLY reached at login time, not merely whatever
-        // MATTERMOST_URL currently says, in case it changed since.
-        Auth::LoginPassword { .. } => {
-            let home = amux_home();
-            let Some(account) = store_accounts(&home, p.id).into_iter().next() else {
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_auth",
-                    "detail": "not connected yet — POST /api/connectors/mattermost/auth first",
-                }))
-                .into_response();
-            };
-            let store: Value = std::fs::read_to_string(store_path(&home, p.id, &account))
-                .ok()
-                .and_then(|r| serde_json::from_str(&r).ok())
-                .unwrap_or(json!({}));
-            let (Some(token), Some(base_url)) = (
-                store.get("token").and_then(Value::as_str),
-                store.get("base_url").and_then(Value::as_str),
-            ) else {
-                return Json(json!({
-                    "ok": false,
-                    "status": "error",
-                    "detail": format!("stored grant for {account} is malformed — reconnect"),
-                }))
-                .into_response();
-            };
-            url = format!("{base_url}/api/v4/users/me");
-            token.to_string()
+    let file_env = parse_env_file(&ctx.home.join("server.env"));
+    if let Auth::OAuth2 { scopes, .. } = p.auth {
+        let family = family_of(p);
+        let mut accounts = store_accounts(&ctx.home, family);
+        if accounts.is_empty() && id == "google-gmail" {
+            accounts = connected_accounts_in(&ctx.home);
         }
-        Auth::OAuth2 { scopes, .. } => {
-            // Mixpeek Google connectors mint an impersonated token via the
-            // service-account domain-wide delegation (AMUX-3347) — no per-user
-            // browser grant. If no SA is configured, fall back to the honest
-            // "connect first" until the OAuth broker (AMUX-3192) lands.
-            if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
-                match super::google_sa::mint_token(scopes).await {
-                    Ok(tok) => tok,
-                    Err(e) => {
-                        tracing::warn!("connector_test: {} SA delegation failed: {}", id, e);
-                        // "error", not "needs_auth": the connector IS configured
-                        // (an SA exists) and its configured path failed, which a
-                        // caller must not read as "not set up yet".
-                        return Json(json!({
-                            "ok": false,
-                            "status": "error",
-                            "detail": format!("service-account delegation failed: {e}. If this is 'unauthorized_client', a Workspace super-admin must authorize this connector's scope for the SA in Admin console -> Security -> API controls -> Domain-wide delegation."),
-                        }))
-                        .into_response();
+        if !accounts.is_empty() {
+            let mut checks = Vec::new();
+            for account in accounts {
+                let response = mint_from_user_grant(&ctx, p.id, family, &account, scopes).await;
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                let minted: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                let mut check = if status.is_success() {
+                    match minted["access_token"].as_str() {
+                        Some(token) => provider_canary(&ctx, p.id, p.test_url, token).await,
+                        None => {
+                            json!({"ok":false,"status":"error","measured":false,"detail":"grant mint returned no bearer"})
+                        }
                     }
-                }
-            } else if p.category == "Google" {
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_auth",
-                    "detail": "Connect first — configure a service account (GOOGLE_SA_KEY_FILE) or wait for the OAuth token exchange (AMUX-3192).",
-                }))
-                .into_response();
-            } else {
-                // A non-Google OAuth connector (Slack) used to be told to set a
-                // Google service-account key (connector e2e, 2026-10-08).
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_auth",
-                    "detail": format!("not connected yet — set its client id and secret, then complete the grant with POST /api/connectors/{}/auth", p.id),
-                }))
-                .into_response();
-            }
-        }
-    };
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return Json(
-            json!({"ok": false, "status": "error", "detail": format!("client build failed: {e}")}),
-        )
-        .into_response(),
-    };
-    // Telegram's Bot API puts the token IN THE URL PATH (`/bot<token>/getMe`),
-    // not an Authorization header — the one connector here where `bearer`
-    // isn't a header value, so it can't share the generic GET below (an empty
-    // `test_url` there would hit `client.get("")`, a malformed-URL error that
-    // reads as "could not reach the provider" — true of the request, false of
-    // the actual cause).
-    if id == "telegram" {
-        let started = std::time::Instant::now();
-        let resp = client
-            .get(format!("https://api.telegram.org/bot{bearer}/getMe"))
-            .send()
-            .await;
-        let ms = started.elapsed().as_millis();
-        return match resp {
-            Ok(r) => {
-                let code = r.status().as_u16();
-                let body: Value = r.json().await.unwrap_or_default();
-                let ok = body.get("ok").and_then(Value::as_bool) == Some(true);
-                tracing::info!("connector_test: telegram -> {code} ({ok}) in {ms}ms");
-                Json(json!({
-                    "ok": ok,
-                    "status": if ok { "connected" } else { "error" },
-                    "http_status": code,
-                    "elapsed_ms": ms,
-                    "detail": if ok {
-                        format!("live: bot @{} in {ms}ms", body.get("result").and_then(|r| r.get("username")).and_then(Value::as_str).unwrap_or("?"))
-                    } else {
-                        format!("Telegram rejected the token: {body}")
-                    },
-                }))
-                .into_response()
-            }
-            Err(e) => Json(json!({"ok": false, "status": "error", "detail": format!("could not reach Telegram: {e}")}))
-                .into_response(),
-        };
-    }
-    let started = std::time::Instant::now();
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {bearer}"))
-        .send()
-        .await;
-    let ms = started.elapsed().as_millis();
-    match resp {
-        Ok(r) => {
-            let code = r.status().as_u16();
-            let ok = r.status().is_success();
-            tracing::info!("connector_test: {id} -> {code} ({ok}) in {ms}ms");
-            Json(json!({
-                "ok": ok,
-                "status": if ok { "connected" } else { "error" },
-                "http_status": code,
-                "elapsed_ms": ms,
-                "detail": if ok {
-                    format!("live: HTTP {code} in {ms}ms")
                 } else {
-                    format!("provider returned HTTP {code} — the key may be invalid or lack scope")
-                },
-            }))
-            .into_response()
+                    // Never return the mint response: it can contain a bearer.
+                    json!({"ok":false,"status":minted["status"],"measured":false,"http_status":status.as_u16(),"reconnect":minted["reconnect"]})
+                };
+                check["account"] = json!(account);
+                checks.push(check);
+            }
+            let ok = checks.iter().all(|c| c["ok"] == true);
+            return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c| c["measured"] == true),"accounts":checks,"detail":if ok {"all saved accounts passed the live provider test"} else {"one or more saved accounts failed; inspect accounts"}})).into_response();
         }
-        Err(e) => {
-            let msg = if e.is_timeout() {
-                "timed out after 10s".to_string()
-            } else if e.is_connect() {
-                "could not reach the provider".to_string()
-            } else {
-                format!("request failed: {e}")
+        if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
+            return match super::google_sa::mint_token(scopes).await {
+                Ok(token) => {
+                    Json(provider_canary(&ctx, p.id, p.test_url, &token).await).into_response()
+                }
+                Err(e) => {
+                    tracing::warn!(connector=%id, verdict="connector_delegation_failed", error=%e,"service-account delegation failed");
+                    Json(json!({"ok":false,"status":if delegation_refusal(&e) {"needs_auth"} else {"error"},"measured":false,"detail":"service-account delegation failed; inspect delegation configuration and server logs"})).into_response()
+                }
             };
-            tracing::warn!("connector_test: {id} failed ({msg}) in {ms}ms");
-            Json(json!({"ok": false, "status": "error", "detail": msg, "elapsed_ms": ms}))
-                .into_response()
+        }
+        return Json(json!({"ok":false,"status":"needs_auth","measured":false,"detail":format!("connect first — POST /api/connectors/{}/auth",p.id)})).into_response();
+    }
+    if let Auth::LoginPassword { .. } = p.auth {
+        let accounts = store_accounts(&ctx.home, p.id);
+        if accounts.is_empty() {
+            return Json(json!({"ok":false,"status":"needs_auth","measured":false,"detail":"connect first — POST /api/connectors/mattermost/auth"})).into_response();
+        }
+        let mut checks = Vec::new();
+        for account in accounts {
+            let grant = crate::integrations::secure_store::read_json::<Value>(&store_path(
+                &ctx.home, p.id, &account,
+            ))
+            .unwrap_or_default();
+            let mut check = match (grant["token"].as_str(), grant["base_url"].as_str()) {
+                (Some(token), Some(base)) => {
+                    provider_canary(&ctx, p.id, &format!("{base}/api/v4/users/me"), token).await
+                }
+                _ => {
+                    json!({"ok":false,"status":"error","measured":false,"detail":"malformed grant; reconnect"})
+                }
+            };
+            check["account"] = json!(account);
+            checks.push(check);
+        }
+        let ok = checks.iter().all(|c| c["ok"] == true);
+        return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c|c["measured"]==true),"accounts":checks})).into_response();
+    }
+    let Auth::ApiKey { key_env } = p.auth else {
+        unreachable!()
+    };
+    let Some(key) = env_val(&file_env, key_env) else {
+        return Json(json!({"ok":false,"status":"needs_credentials","measured":false}))
+            .into_response();
+    };
+    let url = if id == "telegram" {
+        format!("https://api.telegram.org/bot{key}/getMe")
+    } else {
+        p.test_url.into()
+    };
+    Json(provider_canary(&ctx, p.id, &url, &key).await).into_response()
+}
+
+/// Provider success includes application-level errors (Slack/Telegram can return HTTP 200).
+/// Keep response bodies and request URLs out of results/logs: either may echo credentials.
+async fn provider_canary(ctx: &ConnectorsCtx, id: &str, url: &str, token: &str) -> Value {
+    let started = Instant::now();
+    match ctx
+        .http
+        .get(url, if id == "telegram" { None } else { Some(token) })
+        .await
+    {
+        Ok((code, body)) => {
+            let ok = (200..300).contains(&code)
+                && (!matches!(id, "slack" | "telegram") || body["ok"] == true);
+            if !ok {
+                tracing::warn!(connector=%id,http_status=code,verdict="connector_provider_test_failed","provider rejected connector canary");
+            }
+            json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":true,"http_status":code,"elapsed_ms":started.elapsed().as_millis(),"detail":if ok {"live provider call passed"} else {"provider rejected the credential or scope; reconnect"}})
+        }
+        Err(_) => {
+            tracing::warn!(connector=%id,verdict="connector_provider_unreachable","connector canary transport failed");
+            json!({"ok":false,"status":"error","measured":false,"detail":"provider unreachable; inspect network configuration"})
         }
     }
 }

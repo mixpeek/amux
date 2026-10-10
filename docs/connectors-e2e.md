@@ -29,6 +29,59 @@ checks 24 concurrent additions, preservation of account/MCP fields, and refusal 
 replace malformed saved state. The existing acknowledged-state crash test also
 runs under the `connector` filter. A wrapper exit 75 means no test ran.
 
+## Every builtin connector
+
+Run the checked-in matrix through the production router, authentication and durable
+store. Only the provider network boundary is translated to loopback fixtures; each
+request still crosses a real HTTP socket. A separate Amux child process is killed
+with SIGKILL and restarted against the same home and SQLite database. Its test
+executable is copied once into the private home and SHA256-checked at completion,
+so shared Cargo cache cleanup cannot replace the restart image. No real
+account credentials or customer messages are used.
+
+```bash
+CARGO_TARGET_DIR=~/.amux/rust-build-target CARGO_BUILD_JOBS=1 \
+  scripts/test-contended.sh -p amux-server --test connector_matrix -- --nocapture
+```
+
+| Connector | Flows in the matrix |
+| --- | --- |
+| Granola | Missing/invalid/saved API key, provider canary, unsupported OAuth mint, restart |
+| Gmail | Google consent with PKCE, registered Gmail callback delegation, cancel/replay, two accounts, pinned mint/denials, canary, rotating refresh/revocation/reconnect, restart, signed service-account delegation/refusal |
+| Calendar | Same Google family lifecycle and its own canary/mint/delegation scope |
+| Drive | Same Google family lifecycle and its own canary/mint/delegation scope |
+| Admin | Same Google family lifecycle and its own canary/mint/delegation scope |
+| Slack | Code exchange, cancellation/replay, two accounts, pin/denials, HTTP200 application errors, rotation/revocation/reconnect, restart |
+| Telegram | Missing/invalid/saved key, getMe, immediate status/send use, poll /link, private-before-group gate, scoped send, HTML-to-plain retry, HTTP200 rejection, durable mapping/cursor and no duplicate acknowledged link after SIGKILL |
+| Mattermost | Missing/invalid login, Token response header, two saved logins, pin/denials, both-account canaries, expired login/reconnect, restart |
+
+The test inventories all builtin IDs and fails if a new connector lacks a matrix
+entry. A declared API-key adversarial canary also verifies that a provider-echoed
+bearer is absent from the response, inventory and persisted last-test result.
+Granola and Telegram do not mint user OAuth grants. Mattermost uses login
+and password; a personal access token is not a password in this implementation.
+The existing declared-connector restart suite covers custom OAuth and API-key
+registry/credential persistence, disconnect, pending-consent cancellation, deletion
+and redeclaration. This matrix does not claim that a local disconnect revokes a
+provider-side grant.
+
+For an explicitly authorized native worker pass, set `AMUX_MATRIX_OWNER_HANDOFF`
+to an output receipt path. After initial scopes/grants/refresh checks, the test
+publishes only the private origins/home and waits up to ten minutes for the owner
+to create `release_file`. Use a new isolated native Codex worker with direct owner
+input, no MCP or injected harness, and explicitly configured worker-only network
+access. Give it the synthetic broker credential in a private file, pin its grants
+to Beth, and ask it to discover accounts and correct a stale Alice invoice report.
+The provider returns duplicates, revisions and a void invoice: Beth must yield
+IDs A/C/D and 137 through all six OAuth/login connectors, while explicit Alice
+requests return 403. Granola must pass its server-managed canary; Telegram must
+pass getMe and a synthetic send. The Chat companion must read the actual report;
+a second browser-composer turn must render the same result in the same native
+conversation. Stop the worker, remove the temporary network flag, preserve
+sanitized receipts/rollout hashes, close test tabs, and release the matrix to
+finish crash/revocation/delegation checks. The default CI run never waits for a
+worker and never starts one.
+
 ## Actual browser and native Codex worker
 
 The example uses the production router/assets/auth/store, a private home/database,

@@ -643,9 +643,12 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     pub fn new() -> Self {
+        Self::with_timeout(std::time::Duration::from_secs(30))
+    }
+    pub fn with_timeout(timeout: std::time::Duration) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(timeout)
                 .build()
                 .expect("reqwest client"),
         }

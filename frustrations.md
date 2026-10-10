@@ -5720,3 +5720,58 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: An actual provider 401 produces families.fixture-oauth=needs_reauth but the account summary reports needs_reauth=false and reconnect=null. Global account expiration also marks unrelated healthy connectors sharing the label expired.
 COST: The synthetic provider revocation produced contradictory worker-facing health until an additional root-cause fix.
 FIX: Include declared OAuth families in reconnect selection, derive expiration per family in the dashboard, emit declared_oauth_needs_reauth, and assert revoked Beth plus healthy Alice and same-label healthy grants.
+
+## Builtin connector Test ignores saved OAuth grants
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: Google and Slack Test paths return needs_auth even after storing a usable user grant; Mattermost tests only the first saved account. HTTP 200 alone also cannot distinguish Slack/Telegram application-level rejection.
+COST: The connector inventory and actual ability to use an account disagree; the matrix needed separate real provider calls for both accounts of every OAuth/login connector.
+FIX: Test every saved account through the existing grant broker and supplied network boundary, validate provider ok fields, publish measured/account results without credentials, and warn connector_provider_test_failed/unreachable. Exercise all eight builtin flows over HTTP and real SIGKILL.
+
+## Telegram ignores credentials saved while the server is running
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: The connector saves and tests TELEGRAM_BOT_TOKEN from server.env, but status/send/poll read only startup process env and require a restart before the same key works.
+COST: A successful credential save and Test do not activate Telegram's operational flow; the required restart is a manual recovery step.
+FIX: Resolve the durable credential file in all Telegram consumers, rediscover every five seconds without contacting Telegram while unconfigured, preserve long-poll timeout, and log telegram_saved_credential_observed. Real HTTP tests cover link/send immediately after save and cursor/mapping survival through SIGKILL.
+
+## Telegram outbound ignores the worker connector scope
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: POST /api/telegram/send does not consult the connectors capability when X-Amux-Session identifies a worker; disabled Telegram can still send.
+COST: The Connectors scope's disabled setting does not constrain the actual provider operation.
+FIX: Apply the existing connector entitlement check before any provider call and log telegram_send_not_entitled. A disabled fixture worker returns 403 with no provider call; an enabled worker sends, formatting retries use plain text, and HTTP200/okfalse returns 502.
+
+## Google cancellation leaves delegated connector consent reusable
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: Google connector grants use the registered Gmail callback. Its OAuth error page returns before consuming either pending store, so a later code can still complete cancelled consent.
+COST: The single-use state contract holds for successful callbacks but not cancelled consent on the registered redirect path.
+FIX: Consume both the Gmail and delegated connector states before rendering OAuth errors, log gmail_oauth_cancelled, and test cancellation followed by a code on each of the four Google entry points and Slack.
+
+## Declared API-key test persists credential-bearing provider errors
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: A failed declared API-key test returns and persists the provider response body and transport error, which may echo the bearer or include a credential-bearing request URL.
+COST: A connector provider can disclose its credential through inventory/last-test results that workers can read.
+FIX: Use the shared redacted provider canary, retain connector_provider_test_failed/unreachable signals, and test a real HTTP provider that echoes the rejected bearer; assert no full key in the response, inventory or durable result.

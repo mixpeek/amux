@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1292';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1293';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27782,7 +27782,7 @@ function _connDrawerRender() {
           + '<span class="cx-dim cx-small" id="conn-test-' + esc(sv.id) + '">' + (t.at ? (t.ok ? '✓ ' : '✗ ') + esc(_niClip(t.detail || t.status || '', 140)) + ' (' + esc(_connAgo(t.at)) + ')' : 'Not tested yet') + '</span></span>'
           + '<button class="btn cx-mini" onclick="_connectorTest(\'' + escJs(sv.id) + '\', this)">Test</button></div>';
       }
-      h += '<div class="cx-dim cx-small">These tests cover the service-account path. Accounts work through their own grant; see Connections.</div>';
+      h += '<div class="cx-dim cx-small">These tests check every saved account through its grant. When no account is saved, they check the configured service-account path.</div>';
     } else if (c.last_test) {
       h += '<div class="cx-sec">Last live test</div><div class="cx-test ' + (c.last_test.ok ? 'ok' : 'bad') + '">' + (c.last_test.ok ? '✓ ' : '✗ ') + esc(c.last_test.detail || c.last_test.status || '') + ' <span class="cx-dim">(' + esc(_connAgo(c.last_test.at)) + ')</span></div>';
       if (!c.last_test.ok && s.rows.some(r => r.st[1] === 'ok')) h += '<div class="cx-dim cx-small">Accounts below still work through their own grant; this test covers the service-account path only.</div>';
