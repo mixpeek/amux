@@ -18,16 +18,23 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
+use std::sync::Arc;
+use crate::integrations::email::{HttpTransport, ReqwestTransport};
+use axum::http::HeaderMap;
 use serde::Deserialize;
 use serde_json::json;
 
 pub fn routes() -> Router<AppState> {
+    routes_with(Arc::new(ReqwestTransport::new()))
+}
+pub fn routes_with(http: Arc<dyn HttpTransport>) -> Router<AppState> {
     Router::new()
         .route("/status", get(status))
         .route("/mappings", get(list_mappings).post(create_mapping))
         .route("/mappings/{chat_id}", axum::routing::delete(delete_mapping))
         .route("/send", axum::routing::post(send))
+        .layer(Extension(http))
 }
 
 fn err(status: StatusCode, body: serde_json::Value) -> Response {
@@ -46,7 +53,7 @@ async fn status(State(state): State<AppState>) -> Response {
     (
         StatusCode::OK,
         Json(json!({
-            "bot_token_set": std::env::var("TELEGRAM_BOT_TOKEN").map(|v| !v.trim().is_empty()).unwrap_or(false),
+            "bot_token_set": telegram_poll::bot_token().is_some(),
             "mapping_count": mapping_count,
             "last_poll_at": report.last_poll_at,
             "last_error": report.last_error,
@@ -192,7 +199,29 @@ struct SendReq {
     parse_mode: Option<String>,
 }
 
-async fn send(State(state): State<AppState>, Json(body): Json<SendReq>) -> Response {
+async fn send(
+    State(state): State<AppState>,
+    Extension(http): Extension<Arc<dyn HttpTransport>>,
+    headers: HeaderMap,
+    Json(body): Json<SendReq>,
+) -> Response {
+    if let Some(worker) = headers.get("X-Amux-Session").and_then(|v| v.to_str().ok()) {
+        let conn = state.store.read().ok();
+        if let Err(denial) = super::connectors::connector_entitlement_check(
+            conn.as_deref(),
+            &crate::config::amux_home(),
+            worker,
+            "telegram",
+            None,
+        ) {
+            tracing::warn!(
+                worker,
+                verdict = "telegram_send_not_entitled",
+                "worker connector scope denied Telegram send"
+            );
+            return err(StatusCode::FORBIDDEN, denial);
+        }
+    }
     if body.text.trim().is_empty() {
         return err(
             StatusCode::BAD_REQUEST,
@@ -213,7 +242,7 @@ async fn send(State(state): State<AppState>, Json(body): Json<SendReq>) -> Respo
                     return err(
                         StatusCode::NOT_FOUND,
                         json!({ "error": "no Telegram chat linked to that session", "session": session }),
-                    )
+                    );
                 }
             }
         }
@@ -221,22 +250,26 @@ async fn send(State(state): State<AppState>, Json(body): Json<SendReq>) -> Respo
             return err(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "one of chat_id or session is required" }),
-            )
+            );
         }
     };
     let Some(chat_id) = chat_id else {
         unreachable!()
     };
-    let Some(token) = std::env::var("TELEGRAM_BOT_TOKEN")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    else {
+    let Some(token) = telegram_poll::bot_token() else {
         return err(
             StatusCode::PRECONDITION_FAILED,
             json!({ "error": "TELEGRAM_BOT_TOKEN not set" }),
         );
     };
-    match telegram_poll::send_message(&token, chat_id, &body.text, body.parse_mode.as_deref()).await
+    match telegram_poll::send_message_with(
+        http.as_ref(),
+        &token,
+        chat_id,
+        &body.text,
+        body.parse_mode.as_deref(),
+    )
+    .await
     {
         Ok(()) => (
             StatusCode::OK,

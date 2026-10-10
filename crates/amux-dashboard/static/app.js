@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1297';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1298';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27179,24 +27179,17 @@ function _connAddScope() {
 // there. The connectors capability stores one JSON object per level mapping
 // connector -> config, so a bare PUT of {id:{enabled:true}} would delete every
 // other connector's entry at that level. Read, merge, write.
-async function _connScopeEnable(id, level, name) {
-  const qs = '/api/scope?level=' + encodeURIComponent(level)
-    + (level === 'global' ? '' : '&name=' + encodeURIComponent(name || ''))
-    + '&capability=connectors';
-  let current = {};
-  try {
-    const r = await fetch(API + qs, { headers: _authHeaders() });
-    const d = await r.json();
-    if (d && d.connectors && typeof d.connectors === 'object') current = d.connectors;
-  } catch (e) { /* absent layer reads as {} — the merge below still writes ours */ }
-  current[id] = Object.assign({}, current[id] || {}, { enabled: true });
-  const r2 = await fetch(API + '/api/scope', {
+async function _connScopePatch(id, level, name, patch) {
+  const r = await fetch(API + '/api/scope', {
     method: 'PUT',
     headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
-    body: JSON.stringify({ level: level, name: name || '', capability: 'connectors', value: current }),
+    body: JSON.stringify({ level, name: name || '', capability: 'connectors', value: { connectors: { [id]: patch }, merge: true } }),
   });
-  const d2 = await r2.json().catch(() => ({}));
-  if (!r2.ok || d2.error) throw new Error(d2.error || ('scope save failed (' + r2.status + ')'));
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error || !d.ok) throw new Error(d.error || ('scope save failed (' + r.status + ')'));
+}
+async function _connScopeEnable(id, level, name) {
+  return _connScopePatch(id, level, name, { enabled: true });
 }
 
 async function _connCreate() {
@@ -27221,7 +27214,8 @@ async function _connCreate() {
     body.client_secret_env = val('conn-new-csec-env').toUpperCase();
     body.authorize_url = val('conn-new-auth-url');
     body.token_url = val('conn-new-token-url');
-    body.scopes = val('conn-new-scopes');
+    body.scopes = val('conn-new-scopes').replace(/,/g, ' ').replace(/\s+/g, ' ');
+    body.test_url = val('conn-new-oauth-test-url');
   } else {
     body.key_env = val('conn-new-key-env').toUpperCase();
     body.test_url = val('conn-new-test-url');
@@ -27517,7 +27511,7 @@ async function _connectorsTabLoad() {
     const d = await r.json();
     _connectorsData = d;
     _connectorsRender(d);
-    _connAccountsLoad();
+    await _connAccountsLoad();
   } catch (e) {
     host.innerHTML = '<div class="conn-empty">Failed to load connectors: ' + esc(String(e)) + '</div>';
   }
@@ -27600,7 +27594,7 @@ function _cxGoogleSvcState(c, a) {
   const can = a.canary || {};
   const leg = _CONN_LEG[c.id];
   if (!leg || (!fam.google && !fam.gmail)) return null;
-  if (a.needs_reauth) return ['Expired', 'bad', 'reconnect'];
+  if (fam.google === 'needs_reauth' || fam.gmail === 'needs_reauth') return ['Expired', 'bad', 'reconnect'];
   if (!fam.google && leg !== 'gmail') return ['Not granted', 'warn', 'grant'];
   const l = can[leg] || {};
   return l.status === 'ok' ? ['Active', 'ok', '']
@@ -27622,7 +27616,7 @@ function _connAccountsFor(c) {
       const svcs = c.services.filter(sv => _CONN_LEG[sv.id]).map(sv => ({ sv, st: _cxGoogleSvcState(sv, a) })).filter(x => x.st);
       if (!svcs.length) continue;
       const ok = svcs.filter(x => x.st[1] === 'ok').length;
-      const st = a.needs_reauth ? ['Expired', 'bad', 'reconnect']
+      const st = svcs.some(x => x.st[0] === 'Expired') ? ['Expired', 'bad', 'reconnect']
         : ok === svcs.length ? ['Active', 'ok', '']
         : ok ? ['Partial', 'warn', 'grant'] : ['Error', 'bad', 'reconnect'];
       out.push({ a, st, svcs, checked: (can.gmail || {}).checked_at, family: 'google' });
@@ -27631,7 +27625,7 @@ function _connAccountsFor(c) {
       if (st) out.push({ a, st, checked: (can[_CONN_LEG[c.id]] || can.gmail || {}).checked_at, family: 'google' });
     } else if (fam[c.id]) {
       const l = can[c.id] || {};
-      const st = a.needs_reauth || fam[c.id] === 'needs_reauth' ? ['Expired', 'bad', 'reconnect']
+      const st = fam[c.id] === 'needs_reauth' ? ['Expired', 'bad', 'reconnect']
         : l.status && l.status !== 'ok' ? [l.status, 'bad', ''] : ['Active', 'ok', ''];
       out.push({ a, st, checked: l.checked_at, family: c.id });
     }
@@ -27685,7 +27679,8 @@ function _connAcctRow(c, r, wide) {
   for (const ch of String(a.account)) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
   return '<div class="cx-acct"><span class="cx-avatar" style="color:hsl(' + hue + ',70%,62%);background:hsla(' + hue + ',70%,55%,0.16)">' + esc(String(a.account).charAt(0).toUpperCase()) + '</span>'
     + '<span class="cx-acct-main"><span class="cx-acct-name">' + esc(a.account).replace('@', '<wbr>@') + '</span>' + sub + '</span>'
-    + _connPill(r.st[0], r.st[1]) + action + '</div>';
+    + _connPill(r.st[0], r.st[1]) + action
+    + (wide && c.custom && c.auth === 'oauth2' ? '<button class="btn cx-mini danger" onclick="event.stopPropagation();_connDisconnect(\'' + escJs(c.id) + '\',\'' + escJs(a.account) + '\')">Disconnect</button>' : '') + '</div>';
 }
 
 function _connMatches(c) {
@@ -27763,6 +27758,7 @@ async function _connAccountsLoad() {
     }
   }
   if (_connectorsData) _connectorsRender(_connectorsData);
+  if (_connOpenId) _connDrawerRender();
 }
 function _connAcctsNote() {
   if (_connAcctsState === 'failed') return '<div class="cx-dim cx-small">Could not load account health. <button class="btn cx-mini" onclick="_connAcctsRetry=0;_connAccountsLoad()">Retry</button></div>';
@@ -27794,7 +27790,24 @@ async function _connAddAccount(id) {
     if (email) _connReconnect('google', email);
     return;
   }
+  if (c.custom && c.auth === 'oauth2') {
+    const account = String((await showPrompt('Account label to connect (choose the matching account in the provider):', 'work')) || '').trim();
+    if (account) _connReconnect(id, account);
+    return;
+  }
   _connectorAuth(id);
+}
+
+async function _connDisconnect(id, account) {
+  if (!await showConfirm('Forget the saved grant for ' + account + '? Workers will lose access. This does not revoke access at the provider.')) return;
+  try {
+    const r = await fetch('/api/connectors/' + encodeURIComponent(id) + '/accounts/' + encodeURIComponent(account), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'disconnect failed');
+    _connAccts = null;
+    await _connectorsTabLoad();
+    showToast('Disconnected ' + account);
+  } catch (e) { showToast('Disconnect failed: ' + e); }
 }
 
 function _connOpen(id, tab) {
@@ -27852,7 +27865,7 @@ function _connDrawerRender() {
           + '<span class="cx-dim cx-small" id="conn-test-' + esc(sv.id) + '">' + (t.at ? (t.ok ? '✓ ' : '✗ ') + esc(_niClip(t.detail || t.status || '', 140)) + ' (' + esc(_connAgo(t.at)) + ')' : 'Not tested yet') + '</span></span>'
           + '<button class="btn cx-mini" onclick="_connectorTest(\'' + escJs(sv.id) + '\', this)">Test</button></div>';
       }
-      h += '<div class="cx-dim cx-small">These tests cover the service-account path. Accounts work through their own grant; see Connections.</div>';
+      h += '<div class="cx-dim cx-small">These tests check every saved account through its grant. When no account is saved, they check the configured service-account path.</div>';
     } else if (c.last_test) {
       h += '<div class="cx-sec">Last live test</div><div class="cx-test ' + (c.last_test.ok ? 'ok' : 'bad') + '">' + (c.last_test.ok ? '✓ ' : '✗ ') + esc(c.last_test.detail || c.last_test.status || '') + ' <span class="cx-dim">(' + esc(_connAgo(c.last_test.at)) + ')</span></div>';
       if (!c.last_test.ok && s.rows.some(r => r.st[1] === 'ok')) h += '<div class="cx-dim cx-small">Accounts below still work through their own grant; this test covers the service-account path only.</div>';
@@ -28033,12 +28046,8 @@ async function _connectorScope(id, level, enabled) {
 }
 
 async function _connectorScopeWrite(id, level, name, enabled) {
-  const body = { level, name, capability: 'connectors', value: {} };
-  body.value[id] = { enabled: !!enabled };
   try {
-    const r = await fetch('/api/scope', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json();
-    if (d && d.error) { showToast('Scope failed: ' + d.error); return; }
+    await _connScopePatch(id, level, name, { enabled: !!enabled });
     showToast((enabled ? 'Enabled ' : 'Disabled ') + id + ' at ' + level + (name ? (' ' + name) : ''));
   } catch (e) { showToast('Scope failed: ' + e); }
 }

@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2525,
+  "n_considered": 2527,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -710,6 +710,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_connDisconnect": {
+      "kind": "command._connDisconnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_connPillClick": {
       "kind": "command._connPillClick",
       "feedback_required": true,
@@ -724,6 +730,12 @@
     },
     "_connScopeEnable": {
       "kind": "command._connScopeEnable",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_connScopePatch": {
+      "kind": "command._connScopePatch",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

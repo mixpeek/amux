@@ -145,7 +145,7 @@ pub mod workers_deadletters;
 
 use crate::db::SharedStore;
 use axum::Router;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 use tower_http::compression::CompressionLayer;
 
 /// Shared application state for handlers.
@@ -166,6 +166,19 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    router_with_connector_transport(state, Arc::new(crate::integrations::email::ReqwestTransport::new()))
+}
+
+/// Supply the connector network boundary while retaining production authentication,
+/// routing and storage. Private provider rigs use this; production uses reqwest.
+pub fn router_with_connector_transport(
+    state: AppState,
+    http: Arc<dyn crate::integrations::email::HttpTransport>,
+) -> Router {
+    let connector_ctx = Arc::new(connectors::ConnectorsCtx {
+        http: http.clone(), home: crate::config::amux_home(),
+    });
+    let gmail_ctx = Arc::new(gmail_auth::GmailAuthCtx::new(http.clone(), crate::config::amux_home()));
     // For the request-log layer below — `state` itself is consumed by
     // `.with_state` before the outermost wrap.
     let store_for_reqlog = state.store.clone();
@@ -328,8 +341,8 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
         .merge(observability::routes())
-        .merge(connectors::routes())
-        .nest("/api/telegram", telegram::routes())
+        .merge(connectors::routes_with(connector_ctx.clone()))
+        .nest("/api/telegram", telegram::routes_with(http))
         .merge(grants::routes())
         // AMUX-5270: the owner's standing answers to escalations.
         .merge(standing_approvals::routes())
@@ -396,7 +409,7 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/org", org::routes())
         // Absolute-path routes (merged, not nested): the gmail callback
         // below is public, and a nest wildcard at /api/gmail would shadow it.
-        .merge(gmail_auth::routes())
+        .merge(gmail_auth::routes_with(gmail_ctx.clone()))
         // The mailbox half — labels/inbox/thread/send over GmailClient
         // (AMUX-2883: the Mail view's calls 404'd since the python retirement).
         .merge(gmail::routes())
@@ -597,10 +610,10 @@ pub fn router(state: AppState) -> Router {
         // admits it via the localhost auth bypass; require_bearer has no
         // such bypass, so the callback must sit outside it (single-use
         // server-minted state is the guard).
-        .merge(gmail_auth::callback_routes())
+        .merge(gmail_auth::callback_routes_with(gmail_ctx))
         // Same rationale: the connectors broker's callback receives provider
         // redirects (Google/Slack), which cannot carry a bearer.
-        .merge(connectors::callback_routes())
+        .merge(connectors::callback_routes_with(connector_ctx))
         // Public local invite landing + acceptance. A successful POST installs
         // a revocable member cookie; the outer identity layer below resolves
         // it before auth and request logging.

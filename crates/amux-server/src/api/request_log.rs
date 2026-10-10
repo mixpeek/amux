@@ -2981,6 +2981,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/connectors/{id}/accounts/{account}",
+        methods: &["DELETE"],
+    },
+    RouteEntry {
         path: "/api/connectors/{id}/token",
         methods: &["POST"],
     },

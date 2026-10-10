@@ -5731,3 +5731,102 @@ CARD: none (user authorized PRs only)
 SYMPTOM: Open raw .mdai file routes back through the normal node dispatch, reopening the node and starting its model run. Safari exposes an additional Share item, placing the raw action below a short viewport with no menu scrolling.
 COST: The owner cannot inspect the source through the advertised action; attempting it can execute a model instead.
 FIX: PR candidate explicitly selects the generic raw viewer, preserves normal node dispatch, clamps the menu within the viewport, and enables menu scrolling. mdai-raw-view and file-menu-layout record measured verdicts without source text. The real menu action is tested at four sizes with a zero-model-run request assertion.
+
+## Declared OAuth consent and token endpoints return unknown connector
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: A runtime OAuth declaration and saved client credentials both succeed, but /auth and /token return 404 despite advertising the token endpoint. Its connection test also used the client ID as a bearer.
+COST: The pre-fix private specimen could not complete any declared OAuth consent or worker token flow.
+FIX: Route declared OAuth through the existing durable broker, use PKCE and exact pending-request bindings, and run real per-account bearer canaries; emit declared_oauth_started/committed/exchange_refused.
+
+## Worker account pin is checked then discarded before token selection
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: With Alice and Beth grants and a worker scope pinning Beth, a token request without an account query returns 400 several accounts instead of Beth.
+COST: A worker following the advertised token endpoint cannot use its selected account; baseline request and fixed native worker evidence retained.
+FIX: Carry the account returned by connector entitlement into the actual mint request; retain denial logs, enforce explicit other-account 403 and disconnected pinned-account 404.
+
+## Connector creation and toggles erase other saved connector scopes
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: Browser creation replaced the complete global connector map with the new connector, deleting a sentinel account/MCP configuration. Its unsupported GET query and wrong response-shape read made client read/replace unsafe.
+COST: Two private UI reproductions erased saved scope selections, including the preserved stale-cache specimen.
+FIX: Send partial updates through an IMMEDIATE SQLite transaction with merge:true, reject unreadable saved state without replacement, and log connector_scope_committed/commit_failed; test 24 concurrent additions and SIGKILL.
+
+## Revoked declared account has no reconnect action in its summary
+AREA: connectors
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex connector E2E PR work
+CARD: none (user authorized PRs only; a live board write is outside this task)
+SYMPTOM: An actual provider 401 produces families.fixture-oauth=needs_reauth but the account summary reports needs_reauth=false and reconnect=null. Global account expiration also marks unrelated healthy connectors sharing the label expired.
+COST: The synthetic provider revocation produced contradictory worker-facing health until an additional root-cause fix.
+FIX: Include declared OAuth families in reconnect selection, derive expiration per family in the dashboard, emit declared_oauth_needs_reauth, and assert revoked Beth plus healthy Alice and same-label healthy grants.
+
+## Builtin connector Test ignores saved OAuth grants
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: Google and Slack Test paths return needs_auth even after storing a usable user grant; Mattermost tests only the first saved account. HTTP 200 alone also cannot distinguish Slack/Telegram application-level rejection.
+COST: The connector inventory and actual ability to use an account disagree; the matrix needed separate real provider calls for both accounts of every OAuth/login connector.
+FIX: Test every saved account through the existing grant broker and supplied network boundary, validate provider ok fields, publish measured/account results without credentials, and warn connector_provider_test_failed/unreachable. Exercise all eight builtin flows over HTTP and real SIGKILL.
+
+## Telegram ignores credentials saved while the server is running
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: The connector saves and tests TELEGRAM_BOT_TOKEN from server.env, but status/send/poll read only startup process env and require a restart before the same key works.
+COST: A successful credential save and Test do not activate Telegram's operational flow; the required restart is a manual recovery step.
+FIX: Resolve the durable credential file in all Telegram consumers, rediscover every five seconds without contacting Telegram while unconfigured, preserve long-poll timeout, and log telegram_saved_credential_observed. Real HTTP tests cover link/send immediately after save and cursor/mapping survival through SIGKILL.
+
+## Telegram outbound ignores the worker connector scope
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: POST /api/telegram/send does not consult the connectors capability when X-Amux-Session identifies a worker; disabled Telegram can still send.
+COST: The Connectors scope's disabled setting does not constrain the actual provider operation.
+FIX: Apply the existing connector entitlement check before any provider call and log telegram_send_not_entitled. A disabled fixture worker returns 403 with no provider call; an enabled worker sends, formatting retries use plain text, and HTTP200/okfalse returns 502.
+
+## Google cancellation leaves delegated connector consent reusable
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: Google connector grants use the registered Gmail callback. Its OAuth error page returns before consuming either pending store, so a later code can still complete cancelled consent.
+COST: The single-use state contract holds for successful callbacks but not cancelled consent on the registered redirect path.
+FIX: Consume both the Gmail and delegated connector states before rendering OAuth errors, log gmail_oauth_cancelled, and test cancellation followed by a code on each of the four Google entry points and Slack.
+
+## Declared API-key test persists credential-bearing provider errors
+AREA: connectors
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex every-connector flow PR work
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: A failed declared API-key test returns and persists the provider response body and transport error, which may echo the bearer or include a credential-bearing request URL.
+COST: A connector provider can disclose its credential through inventory/last-test results that workers can read.
+FIX: Use the shared redacted provider canary, retain connector_provider_test_failed/unreachable signals, and test a real HTTP provider that echoes the rejected bearer; assert no full key in the response, inventory or durable result.

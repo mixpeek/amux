@@ -38,11 +38,14 @@
 //! differs. The redirect URI follows [`crate::config::canonical_port`] so it is
 //! correct in the 8824 laptop and the 8822 container without a build flag.
 
+#[path = "declared_oauth.rs"]
+mod declared_oauth;
+
 use super::AppState;
 use crate::config::{amux_home, canonical_port, parse_env_file};
 use crate::integrations::email::{
-    base64url_nopad, connected_accounts_in, html_escape, HttpTransport, ReqwestTransport,
-    DEFAULT_TOKEN_URI,
+    DEFAULT_TOKEN_URI, HttpTransport, ReqwestTransport, base64url_nopad, connected_accounts_in,
+    html_escape,
 };
 use crate::integrations::oauth_store;
 use axum::extract::{Path, Query, State};
@@ -51,7 +54,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use p256::elliptic_curve::rand_core::{OsRng, RngCore};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -59,8 +62,8 @@ use std::time::Instant;
 
 /// Broker context: the HTTP transport (mockable in tests, like
 /// [`super::gmail_auth::GmailAuthCtx`]) plus the amux home the token store
-/// lives under. Only the broker endpoints (auth/callback/token/accounts) use
-/// it; list/credentials/test keep reading the process-global home.
+/// lives under. Broker and provider tests share this boundary; credentials
+/// and the dashboard inventory use the process home.
 pub struct ConnectorsCtx {
     pub http: Arc<dyn HttpTransport>,
     pub home: PathBuf,
@@ -127,7 +130,9 @@ const REGISTRY: &[Provider] = &[
         id: "granola",
         label: "Granola",
         category: "Notes / transcripts",
-        auth: Auth::ApiKey { key_env: "GRANOLA_API_KEY" },
+        auth: Auth::ApiKey {
+            key_env: "GRANOLA_API_KEY",
+        },
         setup_note: "Business or Enterprise plan required to mint a key: Granola desktop -> Settings -> Connectors -> API keys (grn_...). Key-only, no OAuth.",
         docs: "https://public-api.granola.ai",
         test_url: "https://public-api.granola.ai/v1/notes?limit=1",
@@ -209,13 +214,15 @@ const REGISTRY: &[Provider] = &[
         id: "telegram",
         label: "Telegram",
         category: "Chat",
-        auth: Auth::ApiKey { key_env: "TELEGRAM_BOT_TOKEN" },
+        auth: Auth::ApiKey {
+            key_env: "TELEGRAM_BOT_TOKEN",
+        },
         // No OAuth, no server URL to configure — one bot token, and the
         // `runtime_jobs::telegram_poll` long-poll loop (no public endpoint
         // needed, unlike a webhook) picks it up on the next server restart.
         // Chats link themselves to a session by sending `/link <session>` to
         // the bot; `/api/telegram/mappings` is the operator-side view.
-        setup_note: "Message @BotFather on Telegram, /newbot, paste the token it gives you. No webhook/public URL needed — amux polls. After saving, restart the server so the poll loop picks up the token, then send /link <session> to the bot from Telegram.",
+        setup_note: "Message @BotFather on Telegram, /newbot, paste the token it gives you. No webhook/public URL needed — amux polls. After saving, amux discovers the token within five seconds. Send /link <session> to the bot from Telegram.",
         docs: "https://core.telegram.org/bots#how-do-i-create-a-bot",
         test_url: "",
     },
@@ -230,7 +237,7 @@ const REGISTRY: &[Provider] = &[
         },
         // Self-hosted: no fixed docs/console URL, no fixed test_url — the
         // server is wherever MATTERMOST_URL says it is (see mattermost_test_url).
-        setup_note: "Self-hosted Mattermost. Paste the server URL (e.g. https://chat.example.com, no trailing slash), plus a login and password — a personal access token works too as the password.",
+        setup_note: "Self-hosted Mattermost. Paste the server URL (e.g. https://chat.example.com, no trailing slash), plus a login and password. This connector uses the server login endpoint.",
         docs: "",
         test_url: "",
     },
@@ -866,7 +873,9 @@ fn store_accounts(home: &std::path::Path, family: &str) -> Vec<String> {
             rd.flatten()
                 .filter_map(|e| {
                     let p = e.path();
-                    if p.extension().is_some_and(|x| x == "json") {
+                    if p.extension().is_some_and(|x| x == "json")
+                        && !declared_oauth::is_disconnected(&p)
+                    {
                         p.file_stem().map(|s| s.to_string_lossy().into_owned())
                     } else {
                         None
@@ -1089,6 +1098,9 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
         // builtin ladder applies, rather than calling a pasted client id
         // "connected" and handing a caller nothing (AMUX-3362).
         let usable = all_set && (!is_oauth || has_grant);
+        let last_test = last_tests(&home).get(&d.id).cloned();
+        let (status, detail) = status_after_test(status, last_test.as_ref());
+        let usable = usable && status == "connected";
         items.push(json!({
             "id": d.id,
             "label": d.label,
@@ -1096,7 +1108,7 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
             "auth": if is_oauth { "oauth2" } else { "apikey" },
             "oauth": if is_oauth {
                 json!({
-                    "redirect_uri": format!("{}/api/connectors/{}/callback", origin(), d.id),
+                    "redirect_uri": declared_oauth::redirect_uri(&home, &d.id).ok(),
                     "scopes": d.scopes,
                     "authorize_url": d.authorize_url,
                     "token_url": d.token_url,
@@ -1108,12 +1120,14 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
             "status": status,
             "cred_source": if all_set { json!("server.env") } else { Value::Null },
             "usable": usable,
-            "token_endpoint": if usable {
+            "token_endpoint": if usable && is_oauth {
                 json!(format!("/api/connectors/{}/token", d.id))
             } else {
                 Value::Null
             },
-            "detail": Value::Null,
+            "detail": detail,
+            "last_test": last_test,
+            "accounts": store_accounts(&home, &d.id),
             "setup_note": d.setup_note,
             "docs": d.docs,
             // The ONLY field a builtin does not carry. The tab offers Delete on
@@ -1232,7 +1246,11 @@ async fn create_connector(Json(body): Json<Value>) -> Response {
         client_secret_env: get("client_secret_env").to_ascii_uppercase(),
         authorize_url: get("authorize_url"),
         token_url: get("token_url"),
-        scopes: get("scopes"),
+        scopes: get("scopes")
+            .replace(',', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
         setup_note: get("setup_note"),
         docs: get("docs"),
         test_url: get("test_url"),
@@ -1253,6 +1271,36 @@ async fn create_connector(Json(body): Json<Value>) -> Response {
                 format!("invalid env var name '{k}'"),
                 "A-Z, 0-9 and '_' only, not starting with a digit — this name is what the credential paste is restricted to, so it is validated before the connector is stored",
             );
+        }
+    }
+    if kind == "oauth2" {
+        for endpoint in [&c.authorize_url, &c.token_url] {
+            let valid = reqwest::Url::parse(endpoint).ok().is_some_and(|u| {
+                let loopback = matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+                (u.scheme() == "https" || (u.scheme() == "http" && loopback))
+                    && u.host_str().is_some()
+                    && u.username().is_empty()
+                    && u.password().is_none()
+                    && u.fragment().is_none()
+                    && !u.query_pairs().any(|(k, _)| {
+                        matches!(
+                            k.as_ref(),
+                            "state"
+                                | "client_id"
+                                | "redirect_uri"
+                                | "response_type"
+                                | "scope"
+                                | "code_challenge"
+                                | "code_challenge_method"
+                        )
+                    })
+            });
+            if !valid {
+                return bad(
+                    "invalid OAuth endpoint".into(),
+                    "use HTTPS (HTTP only for loopback), without credentials, fragments or reserved OAuth query parameters",
+                );
+            }
         }
     }
     if kind == "oauth2" && (c.authorize_url.is_empty() || c.token_url.is_empty()) {
@@ -1319,6 +1367,9 @@ async fn delete_connector(Path(id): Path<String>) -> Response {
         .filter(|c| c.id == id)
         .flat_map(|c| Def::from(c).env_keys)
         .collect();
+    if let Err(error) = declared_oauth::forget_grants(&home, &id).await {
+        return storage_error(error);
+    }
     list.retain(|c| c.id != id);
     if list.len() == before {
         return (
@@ -1462,6 +1513,20 @@ async fn begin_auth(
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    if def_of(&ctx.home, &id).is_some_and(|d| !d.builtin) {
+        let _lease = match declared_oauth::registry_lease(&ctx.home).await {
+            Ok(lease) => lease,
+            Err(error) => return storage_error(error),
+        };
+        let Some(d) = def_of(&ctx.home, &id).filter(|d| !d.builtin) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"connector was deleted"})),
+            )
+                .into_response();
+        };
+        return declared_oauth::begin(&ctx, &d, q.get("account").map(String::as_str)).await;
+    }
     let p = if id == "google" {
         REGISTRY.iter().find(|p| p.category == "Google")
     } else {
@@ -1789,11 +1854,22 @@ async fn callback(
     Path(url_family): Path<String>,
     Query(p): Query<CallbackParams>,
 ) -> Response {
+    let _registry_lease = if def_of(&ctx.home, &url_family).is_some_and(|d| !d.builtin) {
+        match declared_oauth::registry_lease(&ctx.home).await {
+            Ok(lease) => Some(lease),
+            Err(error) => return storage_error(error),
+        }
+    } else {
+        None
+    };
     let code = p.code.unwrap_or_default().trim().to_string();
     let state = p.state.unwrap_or_default().trim().to_string();
     let error = p.error.unwrap_or_default().trim().to_string();
     let file_env = parse_env_file(&ctx.home.join("server.env"));
     if !error.is_empty() {
+        if !state.is_empty() {
+            let _ = pending_take(&ctx.home, &state);
+        }
         tracing::warn!(
             "connector_oauth_callback: {} answered error={}",
             url_family,
@@ -1846,6 +1922,15 @@ async fn callback(
             ),
         );
     }
+    if let Some(d) = def_of(&ctx.home, &family).filter(|d| !d.builtin) {
+        return declared_oauth::complete(&ctx, &d, code, hint_account, verifier).await;
+    }
+    if family != "google" && family != "slack" {
+        return cb_page(
+            StatusCode::BAD_REQUEST,
+            "<h2>Connector was deleted. Start a new connection.</h2>".into(),
+        );
+    }
     complete_exchange(&ctx, family, code, hint_account, verifier).await
 }
 
@@ -1882,6 +1967,12 @@ pub(crate) async fn delegate_gmail_callback(
     Some(complete_exchange(&ctx, family, code.to_string(), hint_account, verifier).await)
 }
 
+/// The Gmail callback also receives connector-family states. A provider error
+/// must consume that state before rendering its cancellation page.
+pub(crate) fn cancel_delegated_gmail_state(home: &std::path::Path, state: &str) {
+    let _ = pending_take(home, state);
+}
+
 /// The code→token exchange + store write shared by BOTH entry points: the
 /// connectors callback above, and the gmail callback delegating a
 /// connectors-minted state that arrived on the gmail redirect URI.
@@ -1905,7 +1996,9 @@ async fn complete_exchange(
     ) else {
         return cb_page(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("<h2>Token exchange failed</h2><pre>client credentials for {family} are no longer set</pre>"),
+            format!(
+                "<h2>Token exchange failed</h2><pre>client credentials for {family} are no longer set</pre>"
+            ),
         );
     };
     // Must match the auth request byte-for-byte: google grants were issued
@@ -1939,7 +2032,7 @@ async fn complete_exchange(
                     "<h2>Token exchange failed</h2><pre>{}</pre>",
                     html_escape(&e)
                 ),
-            )
+            );
         }
     };
     let access = body
@@ -2003,7 +2096,7 @@ async fn complete_exchange(
             return cb_page(
                 StatusCode::BAD_REQUEST,
                 "<h2>Invalid connector account</h2>".into(),
-            )
+            );
         }
     };
     let _lease = match oauth_store::lock(&ctx.home, &family, &account).await {
@@ -2015,7 +2108,7 @@ async fn complete_exchange(
                     "<h2>Grant storage unavailable</h2><pre>{}</pre>",
                     html_escape(&error.to_string())
                 ),
-            )
+            );
         }
     };
     let granted_scopes = body
@@ -2081,7 +2174,11 @@ async fn complete_exchange(
         format!(
             "<h2>✓ {} connected</h2><p>The grant is stored once and shared by every worker{}. You can close this tab.</p>",
             html_escape(&account),
-            if mirrored { " (email API included)" } else { "" }
+            if mirrored {
+                " (email API included)"
+            } else {
+                ""
+            }
         ),
     )
 }
@@ -2162,14 +2259,14 @@ async fn test_connection(
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
 ) -> Response {
-    let resp = test_connection_inner(Extension(ctx), Path(id.clone())).await;
+    let resp = test_connection_inner(Extension(ctx.clone()), Path(id.clone())).await;
     let (parts, body) = resp.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
         return (parts.status, "test response unreadable").into_response();
     };
     if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
         if v.get("ok").is_some() {
-            record_test(&amux_home(), &id, &v);
+            record_test(&ctx.home, &id, &v);
         }
     }
     Response::from_parts(parts, axum::body::Body::from(bytes))
@@ -2185,8 +2282,11 @@ async fn test_connection_inner(
     // GET the declared test_url with the declared key as a bearer. When no
     // test_url was given, say the test did not RUN rather than return a
     // pass/fail neither of us measured (ethos rule 4).
-    if let Some(d) = def_of(&amux_home(), &id).filter(|d| !d.builtin) {
-        let file_env = parse_env_file(&amux_home().join("server.env"));
+    if let Some(d) = def_of(&ctx.home, &id).filter(|d| !d.builtin) {
+        if d.kind == "oauth2" {
+            return declared_oauth::test(&ctx, &d).await;
+        }
+        let file_env = parse_env_file(&ctx.home.join("server.env"));
         let missing: Vec<&String> = d
             .env_keys
             .iter()
@@ -2216,203 +2316,121 @@ async fn test_connection_inner(
             .first()
             .and_then(|k| env_val(&file_env, k))
             .unwrap_or_default();
-        let res = ReqwestTransport::new().get(&d.test_url, Some(&key)).await;
-        return match res {
-            Ok((code, _)) if (200..300).contains(&code) => Json(json!({
-                "ok": true, "status": "connected", "measured": true, "http": code,
-            }))
-            .into_response(),
-            Ok((code, body)) => Json(json!({
-                "ok": false,
-                "status": "error",
-                "measured": true,
-                "http": code,
-                "detail": format!("{} answered {code}", d.test_url),
-                "body": body,
-            }))
-            .into_response(),
-            Err(e) => Json(json!({
-                "ok": false, "status": "error", "measured": true,
-                "detail": format!("{}: {e}", d.test_url),
-            }))
-            .into_response(),
-        };
+        return Json(provider_canary(&ctx, &d.id, &d.test_url, &key).await).into_response();
     }
     let Some(p) = provider(&id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("unknown connector '{id}'")})),
+            Json(json!({"error":"unknown connector"})),
         )
             .into_response();
     };
-    let file_env = parse_env_file(&amux_home().join("server.env"));
-    let mut url = p.test_url.to_string();
-    let bearer = match p.auth {
-        Auth::ApiKey { key_env } => match env_val(&file_env, key_env) {
-            Some(k) => k,
-            None => {
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_credentials",
-                    "detail": format!("set {key_env} first — nothing to test yet"),
-                }))
-                .into_response()
-            }
-        },
-        // Self-hosted: test_url is static-empty in the registry (there is no
-        // fixed host), built here from the stored grant's own base_url — the
-        // one that was ACTUALLY reached at login time, not merely whatever
-        // MATTERMOST_URL currently says, in case it changed since.
-        Auth::LoginPassword { .. } => {
-            let home = amux_home();
-            let Some(account) = store_accounts(&home, p.id).into_iter().next() else {
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_auth",
-                    "detail": "not connected yet — POST /api/connectors/mattermost/auth first",
-                }))
-                .into_response();
-            };
-            let store: Value = std::fs::read_to_string(store_path(&home, p.id, &account))
-                .ok()
-                .and_then(|r| serde_json::from_str(&r).ok())
-                .unwrap_or(json!({}));
-            let (Some(token), Some(base_url)) = (
-                store.get("token").and_then(Value::as_str),
-                store.get("base_url").and_then(Value::as_str),
-            ) else {
-                return Json(json!({
-                    "ok": false,
-                    "status": "error",
-                    "detail": format!("stored grant for {account} is malformed — reconnect"),
-                }))
-                .into_response();
-            };
-            url = format!("{base_url}/api/v4/users/me");
-            token.to_string()
+    let file_env = parse_env_file(&ctx.home.join("server.env"));
+    if let Auth::OAuth2 { scopes, .. } = p.auth {
+        let family = family_of(p);
+        let mut accounts = store_accounts(&ctx.home, family);
+        if accounts.is_empty() && id == "google-gmail" {
+            accounts = connected_accounts_in(&ctx.home);
         }
-        Auth::OAuth2 { scopes, .. } => {
-            // Mixpeek Google connectors mint an impersonated token via the
-            // service-account domain-wide delegation (AMUX-3347) — no per-user
-            // browser grant. If no SA is configured, fall back to the honest
-            // "connect first" until the OAuth broker (AMUX-3192) lands.
-            if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
-                match super::google_sa::mint_token(scopes).await {
-                    Ok(tok) => tok,
-                    Err(e) => {
-                        tracing::warn!("connector_test: {} SA delegation failed: {}", id, e);
-                        // "error", not "needs_auth": the connector IS configured
-                        // (an SA exists) and its configured path failed, which a
-                        // caller must not read as "not set up yet".
-                        return Json(json!({
-                            "ok": false,
-                            "status": "error",
-                            "detail": format!("service-account delegation failed: {e}. If this is 'unauthorized_client', a Workspace super-admin must authorize this connector's scope for the SA in Admin console -> Security -> API controls -> Domain-wide delegation."),
-                        }))
-                        .into_response();
+        if !accounts.is_empty() {
+            let mut checks = Vec::new();
+            for account in accounts {
+                let response = mint_from_user_grant(&ctx, p.id, family, &account, scopes).await;
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                let minted: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                let mut check = if status.is_success() {
+                    match minted["access_token"].as_str() {
+                        Some(token) => provider_canary(&ctx, p.id, p.test_url, token).await,
+                        None => {
+                            json!({"ok":false,"status":"error","measured":false,"detail":"grant mint returned no bearer"})
+                        }
                     }
-                }
-            } else if p.category == "Google" {
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_auth",
-                    "detail": "Connect first — configure a service account (GOOGLE_SA_KEY_FILE) or wait for the OAuth token exchange (AMUX-3192).",
-                }))
-                .into_response();
-            } else {
-                // A non-Google OAuth connector (Slack) used to be told to set a
-                // Google service-account key (connector e2e, 2026-10-08).
-                return Json(json!({
-                    "ok": false,
-                    "status": "needs_auth",
-                    "detail": format!("not connected yet — set its client id and secret, then complete the grant with POST /api/connectors/{}/auth", p.id),
-                }))
-                .into_response();
-            }
-        }
-    };
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return Json(
-            json!({"ok": false, "status": "error", "detail": format!("client build failed: {e}")}),
-        )
-        .into_response(),
-    };
-    // Telegram's Bot API puts the token IN THE URL PATH (`/bot<token>/getMe`),
-    // not an Authorization header — the one connector here where `bearer`
-    // isn't a header value, so it can't share the generic GET below (an empty
-    // `test_url` there would hit `client.get("")`, a malformed-URL error that
-    // reads as "could not reach the provider" — true of the request, false of
-    // the actual cause).
-    if id == "telegram" {
-        let started = std::time::Instant::now();
-        let resp = client
-            .get(format!("https://api.telegram.org/bot{bearer}/getMe"))
-            .send()
-            .await;
-        let ms = started.elapsed().as_millis();
-        return match resp {
-            Ok(r) => {
-                let code = r.status().as_u16();
-                let body: Value = r.json().await.unwrap_or_default();
-                let ok = body.get("ok").and_then(Value::as_bool) == Some(true);
-                tracing::info!("connector_test: telegram -> {code} ({ok}) in {ms}ms");
-                Json(json!({
-                    "ok": ok,
-                    "status": if ok { "connected" } else { "error" },
-                    "http_status": code,
-                    "elapsed_ms": ms,
-                    "detail": if ok {
-                        format!("live: bot @{} in {ms}ms", body.get("result").and_then(|r| r.get("username")).and_then(Value::as_str).unwrap_or("?"))
-                    } else {
-                        format!("Telegram rejected the token: {body}")
-                    },
-                }))
-                .into_response()
-            }
-            Err(e) => Json(json!({"ok": false, "status": "error", "detail": format!("could not reach Telegram: {e}")}))
-                .into_response(),
-        };
-    }
-    let started = std::time::Instant::now();
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {bearer}"))
-        .send()
-        .await;
-    let ms = started.elapsed().as_millis();
-    match resp {
-        Ok(r) => {
-            let code = r.status().as_u16();
-            let ok = r.status().is_success();
-            tracing::info!("connector_test: {id} -> {code} ({ok}) in {ms}ms");
-            Json(json!({
-                "ok": ok,
-                "status": if ok { "connected" } else { "error" },
-                "http_status": code,
-                "elapsed_ms": ms,
-                "detail": if ok {
-                    format!("live: HTTP {code} in {ms}ms")
                 } else {
-                    format!("provider returned HTTP {code} — the key may be invalid or lack scope")
-                },
-            }))
-            .into_response()
+                    // Never return the mint response: it can contain a bearer.
+                    json!({"ok":false,"status":minted["status"],"measured":false,"http_status":status.as_u16(),"reconnect":minted["reconnect"]})
+                };
+                check["account"] = json!(account);
+                checks.push(check);
+            }
+            let ok = checks.iter().all(|c| c["ok"] == true);
+            return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c| c["measured"] == true),"accounts":checks,"detail":if ok {"all saved accounts passed the live provider test"} else {"one or more saved accounts failed; inspect accounts"}})).into_response();
         }
-        Err(e) => {
-            let msg = if e.is_timeout() {
-                "timed out after 10s".to_string()
-            } else if e.is_connect() {
-                "could not reach the provider".to_string()
-            } else {
-                format!("request failed: {e}")
+        if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
+            return match super::google_sa::mint_token(scopes).await {
+                Ok(token) => {
+                    Json(provider_canary(&ctx, p.id, p.test_url, &token).await).into_response()
+                }
+                Err(e) => {
+                    tracing::warn!(connector=%id, verdict="connector_delegation_failed", error=%e,"service-account delegation failed");
+                    Json(json!({"ok":false,"status":if delegation_refusal(&e) {"needs_auth"} else {"error"},"measured":false,"detail":"service-account delegation failed; inspect delegation configuration and server logs"})).into_response()
+                }
             };
-            tracing::warn!("connector_test: {id} failed ({msg}) in {ms}ms");
-            Json(json!({"ok": false, "status": "error", "detail": msg, "elapsed_ms": ms}))
-                .into_response()
+        }
+        return Json(json!({"ok":false,"status":"needs_auth","measured":false,"detail":format!("connect first — POST /api/connectors/{}/auth",p.id)})).into_response();
+    }
+    if let Auth::LoginPassword { .. } = p.auth {
+        let accounts = store_accounts(&ctx.home, p.id);
+        if accounts.is_empty() {
+            return Json(json!({"ok":false,"status":"needs_auth","measured":false,"detail":"connect first — POST /api/connectors/mattermost/auth"})).into_response();
+        }
+        let mut checks = Vec::new();
+        for account in accounts {
+            let grant = crate::integrations::secure_store::read_json::<Value>(&store_path(
+                &ctx.home, p.id, &account,
+            ))
+            .unwrap_or_default();
+            let mut check = match (grant["token"].as_str(), grant["base_url"].as_str()) {
+                (Some(token), Some(base)) => {
+                    provider_canary(&ctx, p.id, &format!("{base}/api/v4/users/me"), token).await
+                }
+                _ => {
+                    json!({"ok":false,"status":"error","measured":false,"detail":"malformed grant; reconnect"})
+                }
+            };
+            check["account"] = json!(account);
+            checks.push(check);
+        }
+        let ok = checks.iter().all(|c| c["ok"] == true);
+        return Json(json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":checks.iter().all(|c|c["measured"]==true),"accounts":checks})).into_response();
+    }
+    let Auth::ApiKey { key_env } = p.auth else {
+        unreachable!()
+    };
+    let Some(key) = env_val(&file_env, key_env) else {
+        return Json(json!({"ok":false,"status":"needs_credentials","measured":false}))
+            .into_response();
+    };
+    let url = if id == "telegram" {
+        format!("https://api.telegram.org/bot{key}/getMe")
+    } else {
+        p.test_url.into()
+    };
+    Json(provider_canary(&ctx, p.id, &url, &key).await).into_response()
+}
+
+/// Provider success includes application-level errors (Slack/Telegram can return HTTP 200).
+/// Keep response bodies and request URLs out of results/logs: either may echo credentials.
+async fn provider_canary(ctx: &ConnectorsCtx, id: &str, url: &str, token: &str) -> Value {
+    let started = Instant::now();
+    match ctx
+        .http
+        .get(url, if id == "telegram" { None } else { Some(token) })
+        .await
+    {
+        Ok((code, body)) => {
+            let ok = (200..300).contains(&code)
+                && (!matches!(id, "slack" | "telegram") || body["ok"] == true);
+            if !ok {
+                tracing::warn!(connector=%id,http_status=code,verdict="connector_provider_test_failed","provider rejected connector canary");
+            }
+            json!({"ok":ok,"status":if ok {"connected"} else {"error"},"measured":true,"http_status":code,"elapsed_ms":started.elapsed().as_millis(),"detail":if ok {"live provider call passed"} else {"provider rejected the credential or scope; reconnect"}})
+        }
+        Err(_) => {
+            tracing::warn!(connector=%id,verdict="connector_provider_unreachable","connector canary transport failed");
+            json!({"ok":false,"status":"error","measured":false,"detail":"provider unreachable; inspect network configuration"})
         }
     }
 }
@@ -2536,15 +2554,16 @@ async fn mint_connector_token(
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Query(q): Query<std::collections::HashMap<String, String>>,
+    Query(mut q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let Some(p) = provider(&id) else {
+    let declared = def_of(&ctx.home, &id).filter(|d| !d.builtin);
+    if provider(&id).is_none() && declared.is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("unknown connector '{id}'")})),
         )
             .into_response();
-    };
+    }
     // ENTITLEMENT (APM-2): a live bearer is the actual secret — mint it only
     // for a worker the `connectors` scope actually names. No X-Amux-Session
     // header means the caller is the dashboard/human, not a worker, so the
@@ -2555,20 +2574,30 @@ async fn mint_connector_token(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         let conn = state.store.read().ok();
-        if let Err(denial) = connector_entitlement_check(
+        match connector_entitlement_check(
             conn.as_deref(),
             &ctx.home,
             &lane,
             &id,
             req_account.as_deref(),
         ) {
-            tracing::warn!(
-                worker = %lane, connector = %id,
-                "[connectors] token mint refused: not entitled (APM-2)"
-            );
-            return (StatusCode::FORBIDDEN, Json(denial)).into_response();
+            Ok(Some(account)) => {
+                q.insert("account".into(), account);
+            }
+            Ok(None) => {}
+            Err(denial) => {
+                tracing::warn!(
+                    worker = %lane, connector = %id,
+                    "[connectors] token mint refused: not entitled (APM-2)"
+                );
+                return (StatusCode::FORBIDDEN, Json(denial)).into_response();
+            }
         }
     }
+    if let Some(d) = declared {
+        return declared_oauth::mint(&ctx, &d, q.get("account").map(String::as_str)).await;
+    }
+    let p = provider(&id).expect("builtin was checked");
     // LoginPassword's mint has nothing in common with the Google-SA-impersonation
     // machinery the rest of this function is built around (no scopes, no
     // impersonation subject) — resolved and returned here directly rather than
@@ -2737,10 +2766,10 @@ async fn mint_connector_token(
             )
                 .into_response();
         };
-        return mint_from_user_grant(&ctx, p, family, &acct, &scope).await;
+        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
     }
     if let Some(acct) = user_account {
-        return mint_from_user_grant(&ctx, p, family, &acct, &scope).await;
+        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
     }
     let Some(subject) = impersonation_subject(&headers, &ctx.home) else {
         return (
@@ -2833,7 +2862,7 @@ pub(crate) async fn google_calendar_token(account: &str) -> Result<String, Value
         Auth::OAuth2 { scopes, .. } => *scopes,
         _ => "https://www.googleapis.com/auth/calendar",
     };
-    let resp = mint_from_user_grant(&ctx, p, family_of(p), account, scope).await;
+    let resp = mint_from_user_grant(&ctx, p.id, family_of(p), account, scope).await;
     let ok = resp.status().is_success();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
@@ -2851,7 +2880,7 @@ pub(crate) async fn google_calendar_token(account: &str) -> Result<String, Value
 /// action instead of a bare 502, and WARNs so a log sweep sees the rot.
 async fn mint_from_user_grant(
     ctx: &ConnectorsCtx,
-    p: &Provider,
+    id: &str,
     family: &str,
     account: &str,
     scope: &str,
@@ -2863,7 +2892,7 @@ async fn mint_from_user_grant(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok":false,"error":"invalid connector account"})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let _lease = match oauth_store::lock(&ctx.home, family, account).await {
@@ -2900,19 +2929,26 @@ async fn mint_from_user_grant(
         )
             .into_response();
     };
+    if tf["disconnected"] == true {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok":false,"status":"needs_auth","detail":"account was disconnected"})),
+        )
+            .into_response();
+    }
     let s = |k: &str| tf.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     // Slack's ordinary bot grants do not expire when rotation is disabled.
     // Unknown Google expiry still requires a refresh; it is not evidence of a
     // nonexpiring token. Rotating Slack grants always carry an expiry.
     let expires_at = tf.get("expires_at").and_then(Value::as_f64);
     let remaining = expires_at.map(|exp| exp - now_ts());
-    let nonexpiring = family == "slack" && expires_at.is_none() && s("refresh_token").is_empty();
+    let nonexpiring = family != "google" && expires_at.is_none() && s("refresh_token").is_empty();
     if !s("token").is_empty() && (remaining.is_some_and(|left| left > 60.0) || nonexpiring) {
         return Json(json!({
             "ok":true,"access_token":s("token"),"token_type":"Bearer",
             "expires_in":remaining.map(|left| left as u64),
             "scope":tf.get("scopes").and_then(Value::as_str).unwrap_or(scope),
-            "subject":account,"source":"user-grant (stored)","usage":"Authorization: Bearer <access_token>",
+            "subject":account,"identity_unverified":tf["identity_unverified"],"source":"user-grant (stored)","usage":"Authorization: Bearer <access_token>",
         })).into_response();
     }
     let refresh = s("refresh_token");
@@ -2962,7 +2998,7 @@ async fn mint_from_user_grant(
             }
             tracing::info!(
                 "connector_token: {} minted from user grant for {} (family {family}) expires_in={}",
-                p.id,
+                id,
                 account,
                 expires_in as u64
             );
@@ -2974,6 +3010,7 @@ async fn mint_from_user_grant(
                 "scope": tf.get("scopes").and_then(Value::as_str).unwrap_or(scope),
                 "subject": account,
                 "source": "user-grant (refreshed)",
+                "identity_unverified": tf["identity_unverified"],
                 "usage": "Authorization: Bearer <access_token>",
             }))
             .into_response()
@@ -2981,7 +3018,7 @@ async fn mint_from_user_grant(
         Ok((_, body)) if body.to_string().contains("invalid_grant") => {
             tracing::warn!(
                 "connector_token: {} user grant for {account} is REVOKED (invalid_grant) — needs one re-approval",
-                p.id
+                id
             );
             (
                 StatusCode::CONFLICT,
@@ -3124,6 +3161,7 @@ pub(crate) async fn accounts_rollup(
             }
         }
     }
+    declared_oauth::rollup(http, home, &mut rows, &mut canaries).await;
     let mut accounts: Vec<Value> = Vec::new();
     let mut needs_reauth: Vec<Value> = Vec::new();
     for (account, families) in rows {
@@ -3137,10 +3175,12 @@ pub(crate) async fn accounts_rollup(
         } else if broken.first().map(String::as_str) == Some("slack") {
             Some("slack")
         } else {
-            None
+            broken.iter().find(|id| def_of(home, id).is_some_and(|d| !d.builtin && d.kind == "oauth2")).map(String::as_str)
         };
         let reconnect = reconnect_family.map(|f| {
-            format!("POST /api/connectors/{f}/auth?account={account} → open authorize_url, approve once")
+            format!(
+                "POST /api/connectors/{f}/auth?account={account} → open authorize_url, approve once"
+            )
         });
         if let Some(rc) = &reconnect {
             // The age travels with the finding, so a reader sees the clock
@@ -3181,7 +3221,7 @@ pub(crate) async fn accounts_rollup(
             "account": account,
             "families": families,
             "canary": canaries.get(&account).cloned().map(Value::Object),
-            "needs_reauth": reconnect.is_some(),
+            "needs_reauth": !broken.is_empty(),
             "reconnect": reconnect,
             "missing": missing,
             "connect": connect,
@@ -3445,6 +3485,10 @@ pub fn routes_with(ctx: Arc<ConnectorsCtx>) -> Router<AppState> {
         .route("/api/connectors/{id}/auth", post(begin_auth))
         .route("/api/connectors/{id}/test", post(test_connection))
         .route("/api/connectors/{id}/token", post(mint_connector_token))
+        .route(
+            "/api/connectors/{id}/accounts/{account}",
+            axum::routing::delete(declared_oauth::disconnect),
+        )
         .layer(Extension(ctx))
 }
 
@@ -4315,10 +4359,12 @@ mod tests {
             .3
             .unwrap();
         assert_eq!(form["grant_type"], json!("authorization_code"));
-        assert!(form["redirect_uri"]
-            .as_str()
-            .unwrap()
-            .ends_with("/api/gmail/callback"));
+        assert!(
+            form["redirect_uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/api/gmail/callback")
+        );
         assert!(form["code_verifier"].as_str().is_some());
 
         // Family store: one file per ACCOUNT (named by userinfo, not the hint).
@@ -4335,12 +4381,14 @@ mod tests {
         assert_eq!(fam["token"], json!("PLACEHOLDER_AT"));
         assert_eq!(fam["refresh_token"], json!("PLACEHOLDER_RT"));
         assert!(fam["expires_at"].as_f64().unwrap() > now_ts());
-        assert!(!home
-            .path()
-            .join("connectors")
-            .join("google")
-            .join("hint@other.io.json")
-            .exists());
+        assert!(
+            !home
+                .path()
+                .join("connectors")
+                .join("google")
+                .join("hint@other.io.json")
+                .exists()
+        );
 
         // Gmail mirror: EXACT legacy shape (integrations/email.rs reads this),
         // so the one approval repaired the email subsystem too.
@@ -4431,17 +4479,19 @@ mod tests {
         assert!(page.contains("connected"), "{page}");
 
         // The delegated exchange wrote the family store AND the gmail mirror.
-        assert!(home
-            .path()
-            .join("connectors")
-            .join("google")
-            .join(format!("{ACCT}.json"))
-            .exists());
-        assert!(home
-            .path()
-            .join("gmail-tokens")
-            .join(format!("{ACCT}.json"))
-            .exists());
+        assert!(
+            home.path()
+                .join("connectors")
+                .join("google")
+                .join(format!("{ACCT}.json"))
+                .exists()
+        );
+        assert!(
+            home.path()
+                .join("gmail-tokens")
+                .join(format!("{ACCT}.json"))
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -4656,10 +4706,12 @@ mod tests {
             .find(|a| a["account"] == json!("broken@x.io"))
             .expect("broken row");
         assert_eq!(broken["families"]["gmail"], json!("needs_reauth"), "{v}");
-        assert!(broken["reconnect"]
-            .as_str()
-            .unwrap()
-            .contains("/api/connectors/google/auth?account=broken@x.io"));
+        assert!(
+            broken["reconnect"]
+                .as_str()
+                .unwrap()
+                .contains("/api/connectors/google/auth?account=broken@x.io")
+        );
         let healthy = accounts
             .iter()
             .find(|a| a["account"] == json!("healthy@x.io"))
@@ -4670,10 +4722,12 @@ mod tests {
         // A gmail-only grant never covered calendar/drive/docs: the row must
         // say so and carry the one grant that closes it.
         assert_eq!(broken["missing"], json!(["google"]), "{v}");
-        assert!(broken["connect"]
-            .as_str()
-            .unwrap()
-            .contains("/api/connectors/google/auth?account=broken@x.io"));
+        assert!(
+            broken["connect"]
+                .as_str()
+                .unwrap()
+                .contains("/api/connectors/google/auth?account=broken@x.io")
+        );
         assert_eq!(healthy["missing"], json!([]), "{v}");
         assert_eq!(healthy["connect"], Value::Null, "{v}");
     }
@@ -5147,7 +5201,7 @@ mod connector_maintenance_regressions {
         let http = RefreshHttp::new(false);
         let response = mint_from_user_grant(
             &ctx(home.path(), http.clone()),
-            provider("slack").unwrap(),
+            "slack",
             "slack",
             "Fixture Workspace",
             "",
@@ -5170,7 +5224,7 @@ mod connector_maintenance_regressions {
         let http = RefreshHttp::new(false);
         let response = mint_from_user_grant(
             &ctx(home.path(), http),
-            provider("google-drive").unwrap(),
+            "google-drive",
             "google",
             "fixture@example.com",
             "drive",
@@ -5208,7 +5262,7 @@ mod connector_maintenance_regressions {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
         let response = mint_from_user_grant(
             &ctx(home.path(), http.clone()),
-            provider("google-drive").unwrap(),
+            "google-drive",
             "google",
             "fixture@example.com",
             "drive",
@@ -5234,7 +5288,7 @@ mod connector_maintenance_regressions {
         let first = tokio::spawn(async move {
             mint_from_user_grant(
                 &first_ctx,
-                provider("google-drive").unwrap(),
+                "google-drive",
                 "google",
                 "fixture@example.com",
                 "drive",
@@ -5248,7 +5302,7 @@ mod connector_maintenance_regressions {
         let second = tokio::spawn(async move {
             mint_from_user_grant(
                 &second_ctx,
-                provider("google-drive").unwrap(),
+                "google-drive",
                 "google",
                 "fixture@example.com",
                 "drive",

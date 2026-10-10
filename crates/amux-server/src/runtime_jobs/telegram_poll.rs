@@ -56,6 +56,7 @@ use crate::api::session_verbs;
 use crate::api::AppState;
 use crate::db::telegram as tg_db;
 use serde_json::Value;
+use crate::integrations::email::{HttpTransport, ReqwestTransport};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -70,7 +71,7 @@ const POLL_TIMEOUT_SECS: u64 = 45;
 /// A connector without a token is healthy-but-idle. Its registry cadence must
 /// match this sleep or the shared scheduler-health predicate reports a stall
 /// before the loop is supposed to wake.
-const NO_TOKEN_SLEEP_SECS: u64 = 300;
+const NO_TOKEN_SLEEP_SECS: u64 = 5;
 
 fn poll_cadence(token_present: bool) -> Duration {
     Duration::from_secs(if token_present {
@@ -80,9 +81,13 @@ fn poll_cadence(token_present: bool) -> Duration {
     })
 }
 
-fn bot_token() -> Option<String> {
-    std::env::var("TELEGRAM_BOT_TOKEN")
-        .ok()
+pub(crate) fn bot_token() -> Option<String> {
+    // Credentials are saved live through the Connectors tab; reading only the
+    // startup environment made a passing Test leave send/poll unconfigured.
+    crate::config::parse_env_file(&crate::config::amux_home().join("server.env"))
+        .get("TELEGRAM_BOT_TOKEN")
+        .cloned()
+        .or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok())
         .filter(|s| !s.trim().is_empty())
 }
 
@@ -155,10 +160,7 @@ fn record_group_ignored() {
 /// propagated, so one bad response from Telegram's API doesn't kill the loop
 /// for the rest of the process lifetime.
 pub async fn run(state: AppState) {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(POLL_TIMEOUT_SECS + 10))
-        .build()
-        .expect("reqwest client build");
+    let client = ReqwestTransport::with_timeout(Duration::from_secs(POLL_TIMEOUT_SECS + 10));
 
     let mut warned_no_token = false;
     loop {
@@ -168,13 +170,16 @@ pub async fn run(state: AppState) {
             if !warned_no_token {
                 tracing::info!(
                     "telegram_poll: TELEGRAM_BOT_TOKEN not set — idling until a token is pasted \
-                     into the connector and the server restarts (connectors are env-loaded at boot)"
+                     into the connector; saved credentials are checked every 5s"
                 );
                 warned_no_token = true;
             }
             tokio::time::sleep(Duration::from_secs(NO_TOKEN_SLEEP_SECS)).await;
             continue;
         };
+        if warned_no_token {
+            tracing::info!(verdict="telegram_saved_credential_observed","saved Telegram credential found; polling resumed without restart");
+        }
         warned_no_token = false;
 
         match poll_once(&client, &token, &state).await {
@@ -191,7 +196,12 @@ pub async fn run(state: AppState) {
     }
 }
 
-async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> Result<(), String> {
+/// One normal polling tick, with its provider network boundary supplied by the caller.
+pub async fn poll_once(
+    client: &dyn HttpTransport,
+    token: &str,
+    state: &AppState,
+) -> Result<(), String> {
     let offset = {
         let conn = state.store.read().map_err(|e| e.to_string())?;
         tg_db::last_update_id(&conn).map_err(|e| e.to_string())?
@@ -202,18 +212,12 @@ async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> R
         offset + 1,
         POLL_TIMEOUT_SECS
     );
-    let resp = client
-        .get(&url)
-        .send()
+    let (status, body) = client
+        .get(&url, None)
         .await
-        .map_err(|e| format!("getUpdates request: {e}"))?;
-    let status = resp.status();
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("getUpdates body (status {status}): {e}"))?;
-    if !status.is_success() || body.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(format!("getUpdates rejected (status {status}): {body}"));
+        .map_err(|_| "getUpdates transport failed".to_string())?;
+    if !(200..300).contains(&status) || body.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(format!("getUpdates rejected (HTTP {status})"));
     }
     let updates = body
         .get("result")
@@ -225,7 +229,7 @@ async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> R
         if let Some(id) = update.get("update_id").and_then(Value::as_i64) {
             max_update_id = max_update_id.max(id);
         }
-        handle_update(state, update).await;
+        handle_update(client, state, update).await;
     }
     if max_update_id > offset {
         state
@@ -243,7 +247,7 @@ async fn poll_once(client: &reqwest::Client, token: &str, state: &AppState) -> R
     Ok(())
 }
 
-async fn handle_update(state: &AppState, update: &Value) {
+async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Value) {
     let Some(msg) = update.get("message") else {
         return;
     };
@@ -281,7 +285,15 @@ async fn handle_update(state: &AppState, update: &Value) {
     }
 
     if let Some(session) = text.strip_prefix("/link ").map(str::trim) {
-        link_chat(state, chat_id, session, username.as_deref(), chat_type).await;
+        link_chat(
+            client,
+            state,
+            chat_id,
+            session,
+            username.as_deref(),
+            chat_type,
+        )
+        .await;
         return;
     }
 
@@ -303,6 +315,7 @@ async fn handle_update(state: &AppState, update: &Value) {
         }
         record_unlinked();
         send_reply(
+            client,
             chat_id,
             "Not linked to any amux session yet. Send `/link <session-name>` first.",
         )
@@ -344,7 +357,8 @@ async fn handle_update(state: &AppState, update: &Value) {
             // per-message reply in a chat full of humans.
             tracing::warn!(
                 "telegram_poll: unknown lane mention '@{}' from GROUP chat {}, message ignored (not forwarded)",
-                mention, chat_id
+                mention,
+                chat_id
             );
             record_group_ignored();
             return;
@@ -362,14 +376,16 @@ async fn handle_update(state: &AppState, update: &Value) {
             // the sender inline, same as the unlinked-chat nudge below.
             tracing::warn!(
                 "telegram_poll: unknown lane mention '@{}' from chat {}, falling back to default session '{}'",
-                mention, chat_id, mapping.session
+                mention,
+                chat_id,
+                mapping.session
             );
             let reply = format!(
                 "Note: '@{mention}' isn't a known lane — delivered to '{}' instead. Known lanes: {}",
                 mapping.session,
                 known.join(", ")
             );
-            send_reply(chat_id, &reply).await;
+            send_reply(client, chat_id, &reply).await;
             (mapping.session.clone(), text.to_string())
         }
     } else if mapping.is_group() {
@@ -423,6 +439,7 @@ async fn handle_update(state: &AppState, update: &Value) {
             msg
         );
         send_reply(
+            client,
             chat_id,
             &format!("Couldn't deliver to '{}': {}", target_session, msg),
         )
@@ -431,6 +448,7 @@ async fn handle_update(state: &AppState, update: &Value) {
 }
 
 async fn link_chat(
+    client: &dyn HttpTransport,
     state: &AppState,
     chat_id: i64,
     session: &str,
@@ -438,12 +456,13 @@ async fn link_chat(
     chat_type: &str,
 ) {
     if session.is_empty() {
-        send_reply(chat_id, "Usage: /link <session-name>").await;
+        send_reply(client, chat_id, "Usage: /link <session-name>").await;
         return;
     }
     let known = session_verbs::all_lane_names();
     if !known.iter().any(|n| n == session) {
         send_reply(
+            client,
             chat_id,
             &format!(
                 "No such session '{session}'. Known sessions: {}",
@@ -467,6 +486,7 @@ async fn link_chat(
         };
         if !already_private {
             send_reply(
+                client,
                 chat_id,
                 &format!(
                     "'{session}' has no private link yet — message the bot directly and \
@@ -500,6 +520,7 @@ async fn link_chat(
     match stored {
         Ok(_) if is_group => {
             send_reply(
+                client,
                 chat_id,
                 &format!(
                     "Linked. Only messages here that start with @{session} go to it — \
@@ -510,6 +531,7 @@ async fn link_chat(
         }
         Ok(_) => {
             send_reply(
+                client,
                 chat_id,
                 &format!("Linked. Messages here now go to '{session}'."),
             )
@@ -517,7 +539,7 @@ async fn link_chat(
         }
         Err(e) => {
             tracing::warn!("telegram_poll: link write failed for chat {chat_id}: {e}");
-            send_reply(chat_id, "Internal error linking — try again.").await;
+            send_reply(client, chat_id, "Internal error linking — try again.").await;
         }
     }
 }
@@ -526,11 +548,11 @@ async fn link_chat(
 /// confirmation, unlinked nudge, delivery-failure notice). Errors are logged,
 /// not propagated — a failed reply must never take down the poll loop that's
 /// still holding real Telegram updates to process.
-async fn send_reply(chat_id: i64, text: &str) {
+async fn send_reply(client: &dyn HttpTransport, chat_id: i64, text: &str) {
     let Some(token) = bot_token() else { return };
     // Plain text, no formatting — these are short fixed status strings
     // ("Linked.", the unlinked nudge), never worth the entity-parsing risk.
-    if let Err(e) = send_message(&token, chat_id, text, None).await {
+    if let Err(e) = send_message_with(client, &token, chat_id, text, None).await {
         tracing::warn!("telegram_poll: reply to chat {chat_id} failed: {e}");
     }
 }
@@ -581,77 +603,68 @@ pub(crate) async fn send_message(
     text: &str,
     parse_mode: Option<&str>,
 ) -> Result<(), String> {
-    // AMUX-85/86 (2026-09-02): the previous bare `reqwest::Client::new()` had
-    // no timeout and no retry on a raw connection failure. Observed live:
-    // 84% of sends failing with "sendMessage request: error sending request"
-    // (a network-level failure, not a Telegram-side rejection -- that branch
-    // is handled separately below) at a suspiciously tight, consistent
-    // ~12.1s (p50 12111ms / p95 12169ms across 25 samples in one hour) --
-    // an ambient OS/network timeout this code was never bounding or retrying
-    // itself. An explicit timeout plus one retry on a transient send failure
-    // matches the resilience shape email.rs's api() already has for its own
-    // external calls; this call site had none.
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("building telegram http client: {e}"))?;
+    send_message_with(&ReqwestTransport::with_timeout(Duration::from_secs(15)), token, chat_id, text, parse_mode).await
+}
+
+pub(crate) async fn send_message_with(
+    client: &dyn HttpTransport,
+    token: &str,
+    chat_id: i64,
+    text: &str,
+    parse_mode: Option<&str>,
+) -> Result<(), String> {
     let mut body = serde_json::json!({ "chat_id": chat_id, "text": text });
     if let Some(mode) = parse_mode {
         body["parse_mode"] = serde_json::Value::String(mode.to_string());
     }
-    let resp = match client
-        .post(format!("{}/sendMessage", api_base(token)))
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(first_err) => {
+    let url = format!("{}/sendMessage", api_base(token));
+    let (status, response) = match client.post_json(&url, None, &body).await {
+        Ok(pair) => pair,
+        Err(_) => {
             tracing::warn!(
-                "telegram_poll: sendMessage request failed ({first_err}), retrying once after 500ms"
+                verdict = "telegram_send_retry",
+                "Telegram send transport failed; retrying once"
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
             client
-                .post(format!("{}/sendMessage", api_base(token)))
-                .json(&body)
-                .send()
+                .post_json(&url, None, &body)
                 .await
-                .map_err(|e| format!("sendMessage request (after 1 retry): {e}"))?
+                .map_err(|_| "Telegram send failed after retry".to_string())?
         }
     };
-    let status = resp.status();
-    if status.is_success() {
+    if (200..300).contains(&status) && response["ok"] == true {
         return Ok(());
     }
-    let err_body = resp.text().await.unwrap_or_default();
-    // Only retry when formatting was actually in play and Telegram's error
-    // shape says it choked on the entities, not on rate limits/auth/network.
     if parse_mode.is_some()
-        && status.as_u16() == 400
-        && err_body.to_lowercase().contains("parse entities")
+        && status == 400
+        && response["description"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("parse entities")
     {
         tracing::warn!(
-            "telegram_poll: sendMessage rejected formatted text for chat {chat_id}, retrying as plain: {err_body}"
+            verdict = "telegram_format_retry",
+            "Telegram rejected formatting; retrying plain text"
         );
-        let plain = strip_html_tags(text);
-        let retry = client
-            .post(format!("{}/sendMessage", api_base(token)))
-            .json(&serde_json::json!({ "chat_id": chat_id, "text": plain }))
-            .send()
+        let (status, response) = client
+            .post_json(
+                &url,
+                None,
+                &serde_json::json!({"chat_id":chat_id,"text":strip_html_tags(text)}),
+            )
             .await
-            .map_err(|e| format!("sendMessage plain-text retry: {e}"))?;
-        let retry_status = retry.status();
-        if retry_status.is_success() {
+            .map_err(|_| "Telegram plain-text retry failed".to_string())?;
+        if (200..300).contains(&status) && response["ok"] == true {
             return Ok(());
         }
-        let retry_body = retry.text().await.unwrap_or_default();
-        return Err(format!(
-            "sendMessage rejected formatted (status {status}): {err_body}; plain-text retry also rejected (status {retry_status}): {retry_body}"
-        ));
     }
-    Err(format!(
-        "sendMessage rejected (status {status}): {err_body}"
-    ))
+    tracing::warn!(
+        http_status = status,
+        verdict = "telegram_send_rejected",
+        "Telegram rejected outbound message"
+    );
+    Err(format!("Telegram send rejected (HTTP {status})"))
 }
 
 pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
@@ -673,6 +686,9 @@ mod cadence_tests {
             poll_cadence(false),
             Duration::from_secs(NO_TOKEN_SLEEP_SECS)
         );
-        assert!(poll_cadence(false) > poll_cadence(true));
+        assert!(
+            poll_cadence(false) <= Duration::from_secs(5),
+            "saved credentials must be discovered within five seconds without restart"
+        );
     }
 }
