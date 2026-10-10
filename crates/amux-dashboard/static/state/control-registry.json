@@ -1,6 +1,6 @@
 {
   "measured": true,
-  "n_considered": 2527,
+  "n_considered": 2528,
   "command_handlers": {
     "_addToPinGroup": {
       "kind": "command._addToPinGroup",
@@ -2188,6 +2188,12 @@
     },
     "_peekLookupSelection": {
       "kind": "command._peekLookupSelection",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekLookupUnknownKinds": {
+      "kind": "command._peekLookupUnknownKinds",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

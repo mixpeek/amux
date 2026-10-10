@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1299';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1300';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16918,6 +16918,8 @@ async function _peekLoadKindHints(sess) {
   if (_peekKindHintsFor === sess) return;
   _peekKindHintsFor = sess;
   _peekKindHints = [];
+  // The rows a lookup added are gone with the hints, so forget what was asked.
+  if (typeof _peekKindLookups !== 'undefined') _peekKindLookups.delete(sess);
   try {
     const rows = await _peekMsgFetch({ level: 'worker', name: sess }, 0, 50);
     if (peekSession !== sess) return;
@@ -16945,10 +16947,53 @@ async function _peekExtendKindHints(sess) {
   } catch (e) { return false; } finally { _peekKindHintsBusy = false; }
 }
 
+// ASK THE LEDGER ABOUT THE PROMPT, NOT THE NEWEST N ROWS (Ethan, 2026-10-10:
+// "analyze from first principles how we classify messages"). The server
+// records who sent every message it delivers; the client loaded only the
+// newest 50-2000 rows and guessed, so an older schedule run or reply read
+// Unclassified although its row existed ("[Automated] NYC IG events" on
+// random: three `schedule` rows, none in the window). For each prompt still
+// Unclassified, look up its own first line with /api/history?q=, bounded and
+// cached per worker, and reclassify from the rows it returns.
+const _peekKindLookups = new Map();   // session -> Set of snippets already asked
+let _peekKindLookupBusy = false;
+async function _peekLookupUnknownKinds(sess) {
+  if (_peekKindLookupBusy || !sess || peekSession !== sess) return;
+  const asked = _peekKindLookups.get(sess) || new Set();
+  _peekKindLookups.set(sess, asked);
+  const snippets = [];
+  for (const el of document.querySelectorAll('#peek-body .peek-prompt[data-msg-kind="unknown"]')) {
+    const first = _peekPromptNormalized((el.textContent || '').split('\n')[0]);
+    const snip = first.length > 60 ? first.slice(0, 60).replace(/\s+\S*$/, '') : first;
+    if (snip.length < 4 || asked.has(snip)) continue;
+    asked.add(snip); snippets.push(snip);
+    if (snippets.length >= 12 || asked.size > 200) break;
+  }
+  if (!snippets.length) return;
+  _peekKindLookupBusy = true;
+  let added = 0;
+  try {
+    const seen = new Set(_peekKindHints.map(r => r && r.id));
+    for (const snip of snippets) {
+      const r = await fetch(API + '/api/history?limit=20&session=' + encodeURIComponent(sess) + '&q=' + encodeURIComponent(snip), { headers: _authHeaders() });
+      if (!r.ok || peekSession !== sess) break;
+      for (const row of (await r.json()).map(_msgNorm)) {
+        if (row && !seen.has(row.id)) { seen.add(row.id); _peekKindHints.push(row); added++; }
+      }
+    }
+  } catch (e) { /* the marker table still classifies */ } finally { _peekKindLookupBusy = false; }
+  if (added && peekSession === sess) _peekReclassifyPrompts();
+}
+
 function _classifyPromptKind(promptText) {
   const clean = _peekPromptNormalized(promptText);
   if (!clean) return 'unknown';
   if (_PROVIDER_PROMPT_MARKS.some(mark => clean.startsWith(mark))) return 'amux';
+  // The needs-input auto-approver sends the SAME opening words as the owner's
+  // own Approve ("Approved (ID): ... Proceed."), but ends with this literal,
+  // and delivers through the steering queue, which writes no ledger row. It
+  // is the harness acting on standing policy, so Harness, never Human.
+  if (clean.includes("(Approved automatically under the owner's needs-input policy.)")) return 'amux';
   // The Messages tab is a fetched snapshot; cmdHistoryAdd is the immediate
   // record of a prompt submitted while this terminal is open. Using the
   // snapshot EXCLUSIVELY made every new prompt "Unclassified" until Messages
@@ -17084,6 +17129,7 @@ function _peekReclassifyPrompts() {
     el.dataset.msgLabel = (_MSG_KIND[kind] || _MSG_KIND.unknown).label;
   }
   _peekMsgCount(_peekMsgPrompts());
+  if (peekSession && body.querySelector('.peek-prompt[data-msg-kind="unknown"]')) _peekLookupUnknownKinds(peekSession);
 }
 
 // Wrap each contiguous run of box-drawing lines (tables, framed boxes, wide rules)
