@@ -71,6 +71,8 @@ struct WebView: UIViewRepresentable {
         // Map > Location history talks to the native recorder through this
         // bridge (AMUX-5458): status, enable, disable, upload.
         config.userContentController.add(context.coordinator, name: "amuxLocation")
+        // Teleprompter selfie takes go to Photos through this bridge (AA-39).
+        config.userContentController.addScriptMessageHandler(MediaBridge(), contentWorld: .page, name: "amuxMedia")
         config.userContentController.addUserScript(script)
 
         context.coordinator.requestedURL = url
@@ -239,6 +241,18 @@ struct WebView: UIViewRepresentable {
             // Allow all navigations — OAuth is handled in-place via the gateway JS
             // (window.open override converts popup OAuth to same-window navigation)
             decisionHandler(parent.onNavigationAction(navigationAction))
+        }
+
+        // Camera and microphone for the configured server (teleprompter
+        // recording, dictation). iOS already asked once through the Info.plist
+        // usage strings; WebKit's own per-page prompt on top of that would ask
+        // again on every load. Any other origin keeps WebKit's prompt.
+        func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            let own = origin.host == parent.url.host
+            logger.info("Media capture \(type.rawValue) requested by \(origin.host): \(own ? "granted" : "prompt")")
+            decisionHandler(own ? .grant : .prompt)
         }
 
         // Handle window.open — navigate in same webview instead of dropping
