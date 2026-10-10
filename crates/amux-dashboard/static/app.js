@@ -14023,7 +14023,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1291';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1292';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -15485,57 +15485,71 @@ function togglePeekSplit(ev, force) {
 }
 
 // --- Split pane drag resize ---
+// Pointer Events + pointer capture (Ethan, 2026-10-10: "the drag middle in
+// split view is buggy"). The side panel is an iframe for Chat/Messages, and a
+// document mousemove/mouseup listener goes deaf the moment the cursor crosses
+// into it: the drag stalls, and a release over the iframe never arrives, so
+// the handle stays stuck to the cursor. Capture routes every move and the
+// release to the handle wherever the pointer is; the CSS also turns iframe
+// pointer events off while dragging. Moves apply once per animation frame so
+// the terminal does not reflow on every pixel.
 let _splitResizeInit = false;
 function _initSplitResize() {
   const handle = document.getElementById('peek-split-handle');
   if (!handle || _splitResizeInit) return;
   _splitResizeInit = true;
-  const start = (startX) => {
+  let ctx = null;
+  let pendingX = null;
+  let raf = 0;
+  const apply = () => {
+    raf = 0;
+    if (!ctx || pendingX == null) return;
+    const delta = pendingX - ctx.startX;
+    const newTpW = Math.max(150, Math.min(ctx.avail - 160, ctx.tpW + delta));
+    const ratio = newTpW / ctx.avail;
+    ctx.tp.style.flex = ratio + ' 1 0%';
+    ctx.sf.style.flex = (1 - ratio) + ' 1 0%';
+  };
+  const finish = () => {
+    if (!ctx) return;
+    if (raf) { cancelAnimationFrame(raf); apply(); }
+    const tp = ctx.tp;
+    ctx = null; pendingX = null;
+    handle.classList.remove('dragging');
+    document.body.classList.remove('split-dragging');
+    try { localStorage.setItem('peekSplitRatio', tp.style.flex); } catch (e) {}
+  };
+  handle.addEventListener('pointerdown', e => {
+    if (e.button !== undefined && e.button !== 0) return;
     const wrap = document.getElementById('peek-split-wrap');
     const tp = document.getElementById('peek-terminal-panel');
     const sf = document.getElementById('peek-split-files');
-    if (!wrap || !tp || !sf) return null;
-    const wrapW = wrap.offsetWidth;
-    const tpW = tp.offsetWidth;
+    if (!wrap || !tp || !sf) return;
+    // The panes share the wrapper's width MINUS the handle; dividing by the
+    // whole width made the divider jump on the first move.
+    const avail = Math.max(1, wrap.clientWidth - handle.offsetWidth);
+    ctx = { tp, sf, avail, tpW: tp.getBoundingClientRect().width, startX: e.clientX };
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
     handle.classList.add('dragging');
     document.body.classList.add('split-dragging');
-    return { wrapW, tpW, startX };
-  };
-  const move = (ctx, clientX) => {
-    if (!ctx) return;
-    const tp = document.getElementById('peek-terminal-panel');
-    const sf = document.getElementById('peek-split-files');
-    const delta = clientX - ctx.startX;
-    const newTpW = Math.max(150, Math.min(ctx.wrapW - 160, ctx.tpW + delta));
-    const ratio = newTpW / ctx.wrapW;
-    tp.style.flex = ratio + ' 1 0%';
-    sf.style.flex = (1 - ratio) + ' 1 0%';
-  };
-  const end = () => {
-    handle.classList.remove('dragging');
-    document.body.classList.remove('split-dragging');
-    const tp = document.getElementById('peek-terminal-panel');
-    if (tp) localStorage.setItem('peekSplitRatio', tp.style.flex);
-  };
-  handle.addEventListener('mousedown', e => {
-    const ctx = start(e.clientX);
-    if (!ctx) return;
-    const onMove = ev => move(ctx, ev.clientX);
-    const onUp = () => { end(); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
     e.preventDefault();
   });
-  handle.addEventListener('touchstart', e => {
-    if (!e.touches.length) return;
-    const ctx = start(e.touches[0].clientX);
+  handle.addEventListener('pointermove', e => {
     if (!ctx) return;
-    const onMove = ev => { if (ev.touches.length) move(ctx, ev.touches[0].clientX); };
-    const onEnd = () => { end(); handle.removeEventListener('touchmove', onMove); handle.removeEventListener('touchend', onEnd); };
-    handle.addEventListener('touchmove', onMove, { passive: true });
-    handle.addEventListener('touchend', onEnd);
-    e.preventDefault();
-  }, { passive: false });
+    pendingX = e.clientX;
+    if (!raf) raf = requestAnimationFrame(apply);
+  });
+  handle.addEventListener('pointerup', finish);
+  handle.addEventListener('pointercancel', finish);
+  handle.addEventListener('lostpointercapture', finish);
+  // Double-click puts the divider back in the middle.
+  handle.addEventListener('dblclick', () => {
+    const tp = document.getElementById('peek-terminal-panel');
+    const sf = document.getElementById('peek-split-files');
+    if (!tp || !sf) return;
+    tp.style.flex = '0.5 1 0%'; sf.style.flex = '0.5 1 0%';
+    try { localStorage.setItem('peekSplitRatio', tp.style.flex); } catch (e) {}
+  });
 }
 function _restoreSplitWidths() {
   const saved = localStorage.getItem('peekSplitRatio');
