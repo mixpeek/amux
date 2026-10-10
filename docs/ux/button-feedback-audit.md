@@ -33,55 +33,55 @@ Counts are over control occurrences in the source (one markup site may render ma
 
 | where | control | handler | kind | handler's own feedback today | gap | covered by shared layer |
 |---|---|---|---|---|---|---|
-| app.js:20269 | Approve | `_apprApprove` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
-| app.js:20278 | Edit | `_apprEdit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:20287 | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:20216 | + | `_apprToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:38788 | \uD83D\uDD04 Refresh from … | `_askCardStatus` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:38797 | \uD83D\uDD04 Refresh from … | `_askCardStatus` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:38801 | \uD83D\uDCAC Ask … | `_askCardStatus` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:45389 | MSG-… | `_askOpenCitation` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:45296 | … | `_askPick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:20275 | Approve | `_apprApprove` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
+| app.js:20284 | Edit | `_apprEdit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:20293 | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:20222 | + | `_apprToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:38796 | \uD83D\uDD04 Refresh from … | `_askCardStatus` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:38805 | \uD83D\uDD04 Refresh from … | `_askCardStatus` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:38809 | \uD83D\uDCAC Ask … | `_askCardStatus` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:45397 | MSG-… | `_askOpenCitation` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:45304 | … | `_askPick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1678 | Ask | `_askRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2838 | Ask | `_askRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2249 | Send answer | `_bdAnswer` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2250 | Approve | `_bdAnswer` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2251 | Decline | `_bdAnswer` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
-| app.js:38229 | … | `_bdOpenCommit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:38317 | MSG-… | `_bdOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51018 | Recheck current gate | `_bdRecheckGate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:35406 | ? | `_beTagAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:35220 | x | `_beTagRemove` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:35874 | … | `_bfAppend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:35881 | apply | `_bfAppend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36362 | + esc(t) + | `_bfAppend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:35803 | \u2715 | `_bfRemoveTerm` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36140 | + esc(v.name) + (n ? | `_boardApplyView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36147 | + esc(v.name) + (n ? | `_boardApplyView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36551 | + | `_boardCtxMove` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36149 | Delete view | `_boardDeleteView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38237 | … | `_bdOpenCommit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:38325 | MSG-… | `_bdOpenMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51026 | Recheck current gate | `_bdRecheckGate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:35414 | ? | `_beTagAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:35228 | x | `_beTagRemove` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:35882 | … | `_bfAppend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:35889 | apply | `_bfAppend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36370 | + esc(t) + | `_bfAppend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:35811 | \u2715 | `_bfRemoveTerm` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36148 | + esc(v.name) + (n ? | `_boardApplyView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36155 | + esc(v.name) + (n ? | `_boardApplyView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36559 | + | `_boardCtxMove` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36157 | Delete view | `_boardDeleteView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:733 | All | `_boardQuick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:733 | My tasks | `_boardQuick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:733 | In progress | `_boardQuick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:733 | Needs you | `_boardQuick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:733 | Review | `_boardQuick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36158 | + Save view | `_boardSaveCurrentView` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:37176 | Show … more (… remaining) | `_boardShowMore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37247 | Show … more (… remaining) | `_boardShowMore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37274 | Show … more (… remaining) | `_boardShowMore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36166 | + Save view | `_boardSaveCurrentView` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:37184 | Show … more (… remaining) | `_boardShowMore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37255 | Show … more (… remaining) | `_boardShowMore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37282 | Show … more (… remaining) | `_boardShowMore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2579 | Browse directory | `_browseWorkerFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2664 | _toggleSendMode(event)) title=Switch send mode&gt; | `_btnFire` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7561 | sendFromInput(${s.name})) title=${esc(_sendTitle | `_btnFire` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7561 | _toggleSendMode(event)) title=Switch send mode&gt; | `_btnFire` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7567 | sendFromInput(${s.name})) title=${esc(_sendTitle | `_btnFire` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7567 | _toggleSendMode(event)) title=Switch send mode&gt; | `_btnFire` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1818 | Try next route | `_bwAdvanceRouting` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1844 | Run agent | `_bwAgentRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1801 | Back | `_bwBack` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1871 | Clear buffers | `_bwClearInspect` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1851 | bw-img | `_bwClick` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:49772 | + | `_bwClickIndex` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:49780 | + | `_bwClickIndex` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1803 | Go | `_bwGo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:49654 | Start browser | `_bwGo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:49662 | Restart browser | `_bwGo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:49662 | Start browser | `_bwGo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:49670 | Restart browser | `_bwGo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1806 | Which window? | `_bwIdentify` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1808 | Import | `_bwImportProfile` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:1865 | Console | `_bwInspTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -97,8 +97,8 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:1809 | Save | `_bwSaveProfile` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1817 | Save route | `_bwSaveRouting` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1805 | Snapshot | `_bwScreenshot` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:49655 | Retry frame | `_bwScreenshot` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:49661 | Retry | `_bwScreenshot` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:49663 | Retry frame | `_bwScreenshot` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:49669 | Retry | `_bwScreenshot` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1836 | Scroll up | `_bwScroll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1837 | Scroll down | `_bwScroll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1797 | Stop Safari | `_bwStopIos` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -106,140 +106,140 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:1839 | Inspect | `_bwToggleInspect` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1804 | Live | `_bwToggleLive` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1832 | Type | `_bwType` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:42855 | Approve | `_chatgptDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:42856 | Deny | `_chatgptDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:42851 | Publish connector | `_chatgptPublish` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:42860 | Disconnect | `_chatgptRevoke` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:14909 | Stop | `_chatInterrupt` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:14780 | Reconnect | `_chatReconnect` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:14782 | + Stream disconnected. | `_chatReconnect` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:14756 | Retry | `_chatRetryTurn` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:20509 | + (_chipEditing ? | `_chipAction` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:42863 | Approve | `_chatgptDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42864 | Deny | `_chatgptDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42859 | Publish connector | `_chatgptPublish` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:42868 | Disconnect | `_chatgptRevoke` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:14915 | Stop | `_chatInterrupt` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:14786 | Reconnect | `_chatReconnect` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:14788 | + Stream disconnected. | `_chatReconnect` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:14762 | Retry | `_chatRetryTurn` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:20515 | + (_chipEditing ? | `_chipAction` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:309 | Manage billing | `_cloudBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:21962 | … | `_cmdHistMore` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:21893 | … … | `_cmdHistSetCtx` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:21926 | … … | `_cmdHistSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:21968 | … | `_cmdHistMore` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:21899 | … … | `_cmdHistSetCtx` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:21932 | … … | `_cmdHistSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2671 | Collapse | `_collapsePeekInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36419 | Migrate all to … | `_colMigrateAll` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:12617 | ; html += | `_commitsSelect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:27680 | ＋ Add account | `_connAddAccount` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27794 | ＋ Add account | `_connAddAccount` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27798 | ＋ Add connection | `_connAddAccount` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27675 | Connect | `_connConnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36427 | Migrate all to … | `_colMigrateAll` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:12623 | ; html += | `_commitsSelect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:27686 | ＋ Add account | `_connAddAccount` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27800 | ＋ Add account | `_connAddAccount` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27804 | ＋ Add connection | `_connAddAccount` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27681 | Connect | `_connConnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1204 | Create | `_connCreate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27824 | Forget | `_connDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27830 | Forget | `_connDelete` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:468 | Validate and save certificate | `_connectionCertificateSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:457 | Refresh security status | `_connectionSecurityLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:462 | Sign in on this server | `_connectionSignIn` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27809 | Save keys | `_connectorSave` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:27817 | All workers | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27818 | A group… | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27819 | A worker… | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27820 | Disable for all | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27815 | Save keys | `_connectorSave` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:27823 | All workers | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27824 | A group… | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27825 | A worker… | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27826 | Disable for all | `_connectorScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1158 | Refresh | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:27793 | Refresh health | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:27784 | Test | `_connectorTest` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27792 | Test connection | `_connectorTest` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27799 | Refresh health | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:27790 | Test | `_connectorTest` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27798 | Test connection | `_connectorTest` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:192 | Connection and sync status. Tap for pending chan | `_connPillClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27633 | Reconnect | `_connReconnect` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27634 | Grant | `_connReconnect` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:45167 | ? | `_costOpenSession` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27639 | Reconnect | `_connReconnect` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27640 | Grant | `_connReconnect` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:45175 | ? | `_costOpenSession` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1565 | Refresh | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47832 | ? | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47834 | button | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47776 | + | `_dbSelectTable` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47848 | + esc(c) + arrow + | `_dbSortBy` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:23428 | Add new | `_dictAddWord` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:23390 | AI edit | `_dictAiEdit` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:23500 | Remove | `_dictClearKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:23392 | Delete | `_dictDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23438 | Delete | `_dictDelWord` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:23437 | Edit | `_dictEditWord` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:47840 | ? | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47842 | button | `_dbLoadData` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47784 | + | `_dbSelectTable` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47856 | + esc(c) + arrow + | `_dbSortBy` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:23434 | Add new | `_dictAddWord` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:23396 | AI edit | `_dictAiEdit` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:23506 | Remove | `_dictClearKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:23398 | Delete | `_dictDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23444 | Delete | `_dictDelWord` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:23443 | Edit | `_dictEditWord` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2633 | Dictate | `_dictOpenPopup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23340 | Retry | `_dictRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23499 | Save | `_dictSaveKey` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:23346 | Retry | `_dictRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23505 | Save | `_dictSaveKey` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2853 | Hold to dictate (or click to start/stop) | `_dictToggleRec` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23391 | Undo AI edit | `_dictUndo` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:23397 | Undo AI edit | `_dictUndo` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:1451 | Dismiss failed change | `_dismissQueuedOp` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27390 | … | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27408 | ✓ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27410 | ✕ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27412 | ▲ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27414 | ▼ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:27293 | … | `_emailFolderPick` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:27396 | … | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27414 | ✓ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27416 | ✕ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27418 | ▲ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27420 | ▼ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:27299 | … | `_emailFolderPick` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1129 | Refresh | `_emailLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:27277 | + esc(a) + (bad ?  ⚠️ : ) + | `_emailPick` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:27283 | + esc(a) + (bad ?  ⚠️ : ) + | `_emailPick` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1130 | Re-learn priorities | `_emailThemesRefresh` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | index.html:2622 | Expand to full screen | `_expandPeekInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2814 | Export | `_exportMessageHistory` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html:2821 | Export message history (JSON) | `_exportMessageHistory` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:26361 | Expand / collapse | `_feToggleExpand` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26367 | Expand / collapse | `_feToggleExpand` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3364 | Download | `_fileDownload` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3365 | Pin | `_filePinOverlay` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:1018 | + | `_filesAddBookmark` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3354 | Save | `_fileSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:25990 | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26010 | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:25996 | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26016 | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1027 | Contents | `_filesFtsToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:923 | Create a new folder here | `_filesNewFolder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:978 | button | `_filesNewFolder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:25991 | Remove  | `_filesRemoveBookmark` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:26012 | Remove  | `_filesRemoveBookmarkFrom` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:26610 | Back to folder | `_filesSearchFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:25997 | Remove  | `_filesRemoveBookmark` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:26018 | Remove  | `_filesRemoveBookmarkFrom` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:26616 | Back to folder | `_filesSearchFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1038 | Name | `_filesSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1039 | Size | `_filesSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1040 | Modified | `_filesSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:912 | Go up to the parent folder | `_filesUp` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:957 | button | `_filesUp` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:24557 | Full-screen player | `_fileVideoFullscreen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:36319 | \u270E Answer | `_focusAnswer` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:36225 | Done | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36307 | … \u2197 | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36310 | \u2715 | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36312 | … | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36320 | \u2713 Approve | `_focusDecide` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:36321 | \u2717 Reject | `_focusDecide` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:36324 | Skip \u2192 | `_focusNext` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36323 | \uD83D\uDC49 Nudge | `_focusNudge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:36318 | \u2190 | `_focusPrev` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36155 | \u26A1 Focus | `_focusStart` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:45489 | Clear them | `_focusStart` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:36322 | Unblock | `_focusUnblock` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:24563 | Full-screen player | `_fileVideoFullscreen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:36327 | \u270E Answer | `_focusAnswer` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:36233 | Done | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36315 | … \u2197 | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36318 | \u2715 | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36320 | … | `_focusClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36328 | \u2713 Approve | `_focusDecide` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:36329 | \u2717 Reject | `_focusDecide` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:36332 | Skip \u2192 | `_focusNext` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36331 | \uD83D\uDC49 Nudge | `_focusNudge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:36326 | \u2190 | `_focusPrev` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36163 | \u26A1 Focus | `_focusStart` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:45497 | Clear them | `_focusStart` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:36330 | Unblock | `_focusUnblock` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2673 | Send | `_fsSend` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27898 | + Add Gmail account | `_gmailAddAccount` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:48230 | + Connect Account | `_gmailConnectAccount` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:27893 | Reconnect ↗ | `_gmailReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:27894 | Remove | `_gmailRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:48427 | Send | `_gmailSendCompose` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:48512 | Connect | `_gmailSubmitCode` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:48238 | div | `_gmailSwitchAccount` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:48252 | div | `_gmailSwitchLabel` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:20238 | Allow once | `_grantApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:20241 | Deny | `_grantReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:49163 | ${n.label} | `_graphFocusNode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27906 | + Add Gmail account | `_gmailAddAccount` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:48238 | + Connect Account | `_gmailConnectAccount` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:27901 | Reconnect ↗ | `_gmailReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:27902 | Remove | `_gmailRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:48435 | Send | `_gmailSendCompose` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:48520 | Connect | `_gmailSubmitCode` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:48246 | div | `_gmailSwitchAccount` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:48260 | div | `_gmailSwitchLabel` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:20244 | Allow once | `_grantApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:20247 | Deny | `_grantReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:49171 | ${n.label} | `_graphFocusNode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1894 | Import | `_graphImportVault` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:49137 | graph-side-open | `_graphOpenSession` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:49145 | graph-side-open | `_graphOpenSession` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1910 | Reset layout | `_graphResetLayout` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:48590 | + | `_graphSelectNodeFromList` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:48598 | + | `_graphSelectNodeFromList` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1889 | Notes | `_graphSwitch` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1890 | Fleet | `_graphSwitch` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11744 | … \u2197 | `_grpGoto` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11100 | board | `_grpOpenBoard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11103 | + | `_grpTabToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11750 | … \u2197 | `_grpGoto` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11106 | board | `_grpOpenBoard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11109 | + | `_grpTabToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2036 | + | `_habitsAdd` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:32118 | delete | `_habitsDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:32117 | edit | `_habitsEdit` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:32107 | Toggle | `_habitsToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46037 | ↻ Refresh | `_hostLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:50324 | Delete | `_jrnlDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:50312 | button | `_jrnlDeleteMedia` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:50216 | All | `_jrnlFilterTag` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:50217 | … (…) | `_jrnlFilterTag` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:50297 | Detect | `_jrnlGetLocation` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:50323 | … | `_jrnlSave` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:50569 | Save | `_jrnlSaveConfig` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:32126 | delete | `_habitsDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:32125 | edit | `_habitsEdit` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:32115 | Toggle | `_habitsToggle` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46045 | ↻ Refresh | `_hostLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:50332 | Delete | `_jrnlDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:50320 | button | `_jrnlDeleteMedia` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:50224 | All | `_jrnlFilterTag` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:50225 | … (…) | `_jrnlFilterTag` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:50305 | Detect | `_jrnlGetLocation` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:50331 | … | `_jrnlSave` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:50577 | Save | `_jrnlSaveConfig` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1019 | Library | `_libOpen` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:26140 | + | `_libOpenBook` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26146 | + | `_libOpenBook` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1310 | Show | `_locApplyRange` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1324 | GeoJSON | `_locExport` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html:1325 | GPX | `_locExport` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -256,7 +256,7 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:1298 | Overview | `_locShowOverview` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1400 | Delete | `_mapDeletePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1417 | Delete | `_mapDeleteTag` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:33528 | + Pin | `_mapGeoQuickSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:33536 | + Pin | `_mapGeoQuickSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1398 | Save | `_mapSavePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1415 | Save | `_mapSaveTag` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1368 | Save View | `_mapSetDefaultView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -265,161 +265,161 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:1376 | Hide pins | `_mapTogglePins` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1266 | Collapse sidebar | `_mapToggleSidebar` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1361 | Open sidebar | `_mapToggleSidebar` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:32383 | … | `_mapToggleTagMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28629 | + | `_mdaiDoConnect` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:28490 | = _mdaiHist.length - 1 ?  disabled : ) +  title= | `_mdaiHistNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28492 | Newer | `_mdaiHistNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:32391 | … | `_mapToggleTagMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28637 | + | `_mdaiDoConnect` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:28498 | = _mdaiHist.length - 1 ?  disabled : ) +  title= | `_mdaiHistNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28500 | Newer | `_mdaiHistNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3394 | More actions | `_mdaiMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:931 | Create a new .mdai computed node here | `_mdaiNewFile` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:982 | button | `_mdaiNewFile` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:1076 | Create a new .mdai computed node | `_mdaiNewFile` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:28099 | Create your first .mdai | `_mdaiNewFile` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:28526 | Open the raw file | `_mdaiOpenRaw` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28541 | Disconnect | `_mdaiRemoveSource` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:28107 | Create your first .mdai | `_mdaiNewFile` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:28534 | Open the raw file | `_mdaiOpenRaw` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28549 | Disconnect | `_mdaiRemoveSource` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:3393 | Run | `_mdaiRun` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28552 | Save  re-run | `_mdaiSaveBody` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:28540 | Save  re-run | `_mdaiSavePrompt` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:28504 | Diagram | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28505 | List | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28570 | + | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:28585 | + | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28560 | Save  re-run | `_mdaiSaveBody` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:28548 | Save  re-run | `_mdaiSavePrompt` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:28512 | Diagram | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28513 | List | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28578 | + | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:28593 | + | `_mdaiSetBottomTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1080 | Reload the node list | `_mdaiTabLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1665 | Refresh | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47262 | group: … \u2715 | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47421 | \u21BB | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47581 | Search all history | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:45742 | \u21BB Refresh | `_metricsLoad` | async (reads) | outline pulse while running; disables itself; failure only in Recent actions | yes | yes |
-| app.js:45861 | Run speed test | `_metricsRunSpeedtest` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:47270 | group: … \u2715 | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47429 | \u21BB | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47589 | Search all history | `_messagesLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:45750 | \u21BB Refresh | `_metricsLoad` | async (reads) | outline pulse while running; disables itself; failure only in Recent actions | yes | yes |
+| app.js:45869 | Run speed test | `_metricsRunSpeedtest` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1460 | System | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1461 | Host | `_metricsSetMode` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:22523 | Find in ${esc(locSess)} | `_msgLocate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:22272 | Open task  | `_msgOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:47551 | Resend … | `_msgResend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22529 | Find in ${esc(locSess)} | `_msgLocate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:22278 | Open task  | `_msgOpenCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:47559 | Resend … | `_msgResend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1642 | Messages | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1643 | Trends | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1646 | Ask | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:47657 | … | `_msgsGoToPage` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:47427 | … … | `_msgsSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47665 | … | `_msgsGoToPage` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47435 | … … | `_msgsSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:210 | Refresh | `_needsYouFetch` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:5778 | … | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:5781 | Decline | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:5799 | Send reply | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:5808 | Approve and save rule | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:6022 | Approve all … | `_niApproveAllRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:6119 | … | `_niAutoSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:6123 | … | `_niAutoSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:6131 | Also apply to the … already waiting | `_niAutoSweep` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:5642 | Auto | `_niAutoToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:5745 | Back to queue | `_niAutoToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:5797 | … | `_niChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:5790 | Open | `_niOpenTarget` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:5788 | Snooze 1h | `_niSnooze` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:5789 | Tomorrow | `_niSnooze` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:5784 | … | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:5787 | Decline | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:5805 | Send reply | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:5814 | Approve and save rule | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:6028 | Approve all … | `_niApproveAllRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:6125 | … | `_niAutoSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:6129 | … | `_niAutoSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:6137 | Also apply to the … already waiting | `_niAutoSweep` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:5648 | Auto | `_niAutoToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:5751 | Back to queue | `_niAutoToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:5803 | … | `_niChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:5796 | Open | `_niOpenTarget` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:5794 | Snooze 1h | `_niSnooze` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:5795 | Tomorrow | `_niSnooze` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:199 | Test | `_notifSendTest` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:202 | Toggle native (background/lock-screen) notificat | `_notifToggleNative` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:13079 | … | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:13123 | On | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:13124 | Off | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:13085 | … | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:13129 | On | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:13130 | Off | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:766 | Nudges | `_nudgesTogglePanel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:607 | Save all workers for offline | `_offlinePrefetch` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:1943 | Connection  security | `_openConnectionSecurity` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:5358 | Connection  security · Sign in | `_openConnectionSecurity` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:42541 | Connection  security | `_openConnectionSecurity` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7766 | … | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:38361 | … | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:38366 | … | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:50967 | + | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:16253 | … | `_openLinkedPath` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:5364 | Connection  security · Sign in | `_openConnectionSecurity` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:42549 | Connection  security | `_openConnectionSecurity` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7772 | … | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38369 | … | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38374 | … | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:50975 | + | `_openIssue` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:16259 | … | `_openLinkedPath` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2632 | Saved messages | `_openSavedMessages` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:22203 | … | `_openScheduleFromMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:6567 | unknown ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:6574 | error ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:6580 | blocked ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:6582 | API ${esc(s.api_error_code \|\| 5xx)} ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:6598 | … | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:9599 | Status detail | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:7791 | Open active task  | `_openWorkerCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:6394 | Manage task queue:  | `_openWorkQueue` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:22670 | Remove | `_outboxRemoveMessage` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:22209 | … | `_openScheduleFromMessage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:6573 | unknown ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:6580 | error ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:6586 | blocked ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:6588 | API ${esc(s.api_error_code \|\| 5xx)} ▾ | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:6604 | … | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:9605 | Status detail | `_openStatusDetail` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:7797 | Open active task  | `_openWorkerCard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:6400 | Manage task queue:  | `_openWorkQueue` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:22676 | Remove | `_outboxRemoveMessage` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:1450 | Send again | `_outboxRetryNow` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:4016 | Send again | `_outboxRetryNow` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:22669 | ${retryLabel} | `_outboxRetryNow` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:22675 | ${retryLabel} | `_outboxRetryNow` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2599 | Previous agent | `_peekAgentStep` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2600 | Next agent | `_peekAgentStep` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:12146 | Turn on chat | `_peekChatSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:12154 | + | `_peekChatSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:12152 | Turn on chat | `_peekChatSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:12160 | + | `_peekChatSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2642 | Clear input | `_peekClearInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2498 | Reset | `_peekFiltersReset` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:17369 | Load earlier output… | `_peekLoadEarlier` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:17375 | Load earlier output… | `_peekLoadEarlier` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:3003 | Refresh | `_peekLogsLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:22743 | Retry | `_peekMessagesLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:22767 | … | `_peekMsgGoToPage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:22633 | ${lbl} ${_n(k)} | `_peekMsgSetFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22749 | Retry | `_peekMessagesLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22773 | … | `_peekMsgGoToPage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22639 | ${lbl} ${_n(k)} | `_peekMsgSetFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2982 | + New | `_peekNewSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:13531 | Run now | `_peekShellRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:22523 | Click to insert into the composer | `_pickCmdHistory` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46671 | Play | `_playVideo` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:22714 | Resend … | `_pmResend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52679 | … | `_projectAcceptanceAsset` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52683 | Approve | `_projectAcceptanceDecision` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52683 | Reject | `_projectAcceptanceDecision` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52686 | Rerun whole-project acceptance | `_projectAcceptanceRerun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52853 | … | `_projectAssetPreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51931 | button | `_projectChoose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52263 | + New project | `_projectChoose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52704 | … | `_projectCloseout` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52343 | Fill in the fields | `_projectDraftFields` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51973 | Apply reviewed migration | `_projectMigrationApply` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51973 | Preview migration | `_projectMigrationPreview` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:51973 | Roll back unchanged rows | `_projectMigrationRollback` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51878 | ${esc(text)} | `_projectOpenCheckoutPath` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51966 | Pause | `_projectPause` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52212 | Resume and open | `_projectResumeWorker` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52652 | Repair now | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52653 | Rerun checks | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52839 | Rerun checks | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52840 | Authorize one retry | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52624 | Retry intake | `_projectRetryIntake` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52263 | Retry now | `_projectRetryNow` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:51966 | Submit outcome | `_projectSend` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:39987 | Delete | `_proxyDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:13537 | Run now | `_peekShellRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22529 | Click to insert into the composer | `_pickCmdHistory` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46679 | Play | `_playVideo` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:22720 | Resend … | `_pmResend` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52687 | … | `_projectAcceptanceAsset` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52691 | Approve | `_projectAcceptanceDecision` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52691 | Reject | `_projectAcceptanceDecision` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52694 | Rerun whole-project acceptance | `_projectAcceptanceRerun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52861 | … | `_projectAssetPreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51939 | button | `_projectChoose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52271 | + New project | `_projectChoose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52712 | … | `_projectCloseout` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52351 | Fill in the fields | `_projectDraftFields` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51981 | Apply reviewed migration | `_projectMigrationApply` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51981 | Preview migration | `_projectMigrationPreview` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:51981 | Roll back unchanged rows | `_projectMigrationRollback` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51886 | ${esc(text)} | `_projectOpenCheckoutPath` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51974 | Pause | `_projectPause` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52220 | Resume and open | `_projectResumeWorker` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52660 | Repair now | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52661 | Rerun checks | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52847 | Rerun checks | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52848 | Authorize one retry | `_projectRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52632 | Retry intake | `_projectRetryIntake` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52271 | Retry now | `_projectRetryNow` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51974 | Submit outcome | `_projectSend` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:39995 | Delete | `_proxyDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1118 | Save | `_proxySaveForm` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
-| app.js:39985 | Start | `_proxyStart` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:39984 | Stop | `_proxyStop` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:15676 | / | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:15681 | … | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:15707 | ← back | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:39993 | Start | `_proxyStart` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:39992 | Stop | `_proxyStop` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:15682 | / | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:15687 | … | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:15713 | ← back | `_psfLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2697 | Name | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2698 | Size | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2699 | Modified | `_psfSetSort` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2635 | Read aloud latest | `_readLatestMessage` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:46358 | Stop scan | `_reclaimCancelScan` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46323 | g | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:46483 | ↑ up | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:46563 | Purge | `_reclaimPurge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:46514 | Move to quarantine… | `_reclaimQuarantineSelected` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:46562 | Restore | `_reclaimRestore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:46359 | ${scan ? Rescan : Run scan} | `_reclaimStartScan` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:46455 | Re-include | `_reclaimUnskip` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:51692 | Transcribe again | `_recorderRetranscribe` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:51691 | Retry sync | `_recorderRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46366 | Stop scan | `_reclaimCancelScan` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46331 | g | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:46491 | ↑ up | `_reclaimLoadTree` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:46571 | Purge | `_reclaimPurge` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:46522 | Move to quarantine… | `_reclaimQuarantineSelected` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:46570 | Restore | `_reclaimRestore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:46367 | ${scan ? Rescan : Run scan} | `_reclaimStartScan` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:46463 | Re-include | `_reclaimUnskip` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:51700 | Transcribe again | `_recorderRetranscribe` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:51699 | Retry sync | `_recorderRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:896 | Save | `_recorderSaveDir` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:51690 | Transcript | `_recorderShowTranscript` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:51698 | Transcript | `_recorderShowTranscript` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html:887 | Sync now | `_recorderSync` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:876 | Start recording | `_recorderToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:4017 | Discard this queued change | `_removeQueuedOperation` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:5347 | Retry connection | `_retrySessionRead` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:5353 | Retry connection | `_retrySessionRead` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:1320 | Ping server | `_runPing` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
-| app.js:34654 | + Run now | `_runSystemJob` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:11866 | Reset | `_scopeBpLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:11867 | Save | `_scopeBpSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:34662 | + Run now | `_runSystemJob` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:11872 | Reset | `_scopeBpLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:11873 | Save | `_scopeBpSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:3285 | scope-edit-backdrop | `_scopeEditClose` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3293 | Close | `_scopeEditClose` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11486 | Edit environment | `_scopeEditOpen` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
-| app.js:11729 | Edit … at this level | `_scopeEditOpen` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
+| app.js:11492 | Edit environment | `_scopeEditOpen` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
+| app.js:11735 | Edit … at this level | `_scopeEditOpen` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
 | index.html:3292 | Save | `_scopeEditSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:11700 | + | `_scopeRowToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:11784 | Manage in Settings \u2197 | `_scopeVaultManage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11706 | + | `_scopeRowToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:11790 | Manage in Settings \u2197 | `_scopeVaultManage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:850 | Refresh | `_scratchpadLoad` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:846 | Create a subfolder | `_scratchpadNewFolder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2325 | Claude Code | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -428,87 +428,87 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:2328 | Grok | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2329 | Ollama | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2330 | Muse Code | `_selectProvider` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:14982 | … | `_selectWorkerType` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:14988 | … | `_selectWorkerType` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:257 | Account | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:258 | Workers | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:259 | Alerts | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:260 | Connect | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:261 | Device | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:29180 | ⋯ | `_showExploreMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:15660 | Options | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:26368 | ⋯ | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:26775 | ⋯ | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:12064 | Read aloud | `_simplePlayEntry` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:29188 | ⋯ | `_showExploreMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:15666 | Options | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:26374 | ⋯ | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:26781 | ⋯ | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:12070 | Read aloud | `_simplePlayEntry` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | index.html:2876 | Generate | `_simpleRender` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:42117 | \u{1F4CC} | `_skillPinToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:42115 | … | `_skillToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:42120 | ▾ | `_skillToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:42125 | \u{1F4CC} | `_skillPinToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:42123 | … | `_skillToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:42128 | ▾ | `_skillToggle` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:3245 | Save | `_smSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3249 | This worker | `_smSetScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3250 | All workers | `_smSetScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:858 | Save | `_spCaptureSaveTyped` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26774 | ⧉ | `_spCopy` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
-| app.js:26711 | Scratchpad | `_spNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26715 | … | `_spNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26780 | ⧉ | `_spCopy` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js:26717 | Scratchpad | `_spNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26721 | … | `_spNav` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:861 | Name | `_spSortBy` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:862 | Size | `_spSortBy` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:863 | Modified | `_spSortBy` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:47763 | Retry | `_sqlInit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:47771 | Retry | `_sqlInit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1576 | Run | `_sqlRun` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:43352 | Revoke | `_standingApprovalRevoke` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:12362 | ✕ | `_steeringCancel` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:43360 | Revoke | `_standingApprovalRevoke` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:12368 | ✕ | `_steeringCancel` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2732 | Clear all | `_steeringClearAll` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:12350 | ⏱ | `_steeringDelayPrompt` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:12360 | Send now | `_steeringSendNow` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:12347 | DELAYED ${_formatDelay(m.delay_after_idle_s)} id | `_steeringSetDelay` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:12356 | ⏱ | `_steeringDelayPrompt` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:12366 | Send now | `_steeringSendNow` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:12353 | DELAYED ${_formatDelay(m.delay_after_idle_s)} id | `_steeringSetDelay` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2388 | ✨ | `_suggestBranch` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:163 | ← My workspace | `_switchOrg` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:1675 | div | `_switchOrg` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:2664 | Send | `_tapTraceEv` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1734 | Connect | `_termConnect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:1735 | Disconnect | `_termDisconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:31480 | … Archived (…) | `_toggleArchivedSection` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:36800 | button | `_togglePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:31488 | … Archived (…) | `_toggleArchivedSection` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:36808 | button | `_togglePin` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2354 | div | `_toggleTmplSection` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:46648 | Pause | `_torrentAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46649 | Resume | `_torrentAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46650 | Stop &amp; remove | `_torrentAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46656 | Pause | `_torrentAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46657 | Resume | `_torrentAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46658 | Stop &amp; remove | `_torrentAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1483 | Add torrent | `_torrentAdd` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1484 | Browse download folder | `_torrentBrowseDir` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46647 | Remove | `_torrentRemove` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:46655 | Remove | `_torrentRemove` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:1491 | Save | `_torrentSaveDir` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1485 | Settings | `_torrentShowSettings` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:45459 | \u26A1 … need you | `_trendsFocusTheme` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:45452 | + | `_trendsToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:45467 | \u26A1 … need you | `_trendsFocusTheme` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:45460 | + | `_trendsToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:3360 | Read Aloud | `_ttsSpeak` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:22523 | Read aloud | `_ttsSpeak` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:40079 | Start tunnel | `_tunnelSettingsStart` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:40075 | Stop | `_tunnelSettingsStop` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:40143 | Start public tunnel | `_tunnelStartUI` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:40137 | Stop tunnel | `_tunnelStopUI` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22529 | Read aloud | `_ttsSpeak` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:40087 | Start tunnel | `_tunnelSettingsStart` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:40083 | Stop | `_tunnelSettingsStop` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:40151 | Start public tunnel | `_tunnelStartUI` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:40145 | Stop tunnel | `_tunnelStopUI` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:305 | Upgrade | `_upgradeCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:538 | Talk to us  get started | `_upgradeCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:42813 | Remove | `_vaultRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:42811 | Activate | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:42812 | Save limit | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:42908 | Delete | `_vaultSecretRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:42907 | Replace value | `_vaultSecretReplace` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:11554 | … | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:11557 | Inherit | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:11522 | … | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:11524 | Inherit | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:11467 | … | `_workerTypeSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42821 | Remove | `_vaultRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42819 | Activate | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42820 | Save limit | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42916 | Delete | `_vaultSecretRemove` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:42915 | Replace value | `_vaultSecretReplace` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:11560 | … | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:11563 | Inherit | `_workerBoardConfigurationSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:11528 | … | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:11530 | Inherit | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:11473 | … | `_workerTypeSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:2981 | Clear | `_wselClear` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js:2979 | … … | `_wselRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:20645 | + | `addChipFromPicker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:20651 | + | `addChipFromPicker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:136 | apikey-login-btn | `apikeySetupLogin` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:151 | Save API key | `apikeySetupSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:9154 | Archive | `archiveSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:9208 | Archive | `archiveSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:9323 | Archive | `archiveSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:9160 | Archive | `archiveSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:9214 | Archive | `archiveSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:9329 | Archive | `archiveSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2239 | Delete | `boardDetailDelete` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2303 | Save | `boardDetailSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:38867 | Move | `boardDetailSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:38875 | Move | `boardDetailSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:2732 | Send continue to ${_n} limited worker${_n === 1  | `bulkContinueLimited` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js:2673 | Send continue to ${transient.length} session${tr | `bulkSendContinue` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js:2683 | Send continue anyway to ${capped.length} session | `bulkSendContinue` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -518,60 +518,60 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:990 | button | `cacheFilesDir` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
 | index.html:3265 | End channel | `channelEnd` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:3229 | Clear all | `clearAllFilters` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23925 | Clear all | `clearAllFilters` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37179 | Clear done | `clearDone` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:23931 | Clear all | `clearAllFilters` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37187 | Clear done | `clearDone` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2769 | Clear board | `clearPeekBoard` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:18555 | × | `clearPeekFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:18561 | × | `clearPeekFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2541 | Clear terminal search | `clearPeekSearch` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3056 | Clear queue | `clearQueue` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:693 | button | `clearSearch` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2236 | Back | `closeBoardDetail` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:50995 | button | `closeBoardDetail` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:51003 | button | `closeBoardDetail` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:909 | Return to worker | `closeExplore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3408 | button | `closeExplore` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2534 | Close worker | `closePeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2548 | button | `closePeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2637 | Open Projects | `closePeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2453 | Connect | `connectIterm2Pane` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:37106 | Delete the  | `deleteBoardStatus` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:39812 | Delete | `deleteEvent` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:43853 | revoke | `deleteInvite` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:43891 | revoke | `deleteInvite` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:8515 | Delete | `deleteLayoutPreset` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:31066 | Delete report | `deleteReport` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:34451 | Delete | `deleteSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:34482 | Delete | `deleteSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:9411 | button | `deleteSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:37114 | Delete the  | `deleteBoardStatus` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:39820 | Delete | `deleteEvent` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:43861 | revoke | `deleteInvite` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:43899 | revoke | `deleteInvite` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:8521 | Delete | `deleteLayoutPreset` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:31074 | Delete report | `deleteReport` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:34459 | Delete | `deleteSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:34490 | Delete | `deleteSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:9417 | button | `deleteSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:3328 | Delete | `deleteSkill` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:29310 | div | `doConnect` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:8107 | Create  checkout | `doCreateBranch` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7521 | Start | `doStart` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:39144 | Start | `doStart` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7512 | ${pLabel} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7516 | ${esc(effort)} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7518 | ${esc(model)} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7538 | ${esc(displayTaskName)} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11451 | Edit | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37111 | Gate | `editSessionGate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:29318 | div | `doConnect` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:8113 | Create  checkout | `doCreateBranch` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7527 | Start | `doStart` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:39152 | Start | `doStart` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7518 | ${pLabel} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7522 | ${esc(effort)} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7524 | ${esc(model)} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7544 | ${esc(displayTaskName)} | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11457 | Edit | `editField` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37119 | Gate | `editSessionGate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2049 | + New | `editSkill` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:42118 | Edit | `editSkill` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:37101 | Gate | `editStatusGate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:42126 | Edit | `editSkill` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:37109 | Gate | `editStatusGate` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:671 | tab-grid | `enterGridMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1229 | Refresh | `fetchLogs` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:715 | Retry now | `forceRetry` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:1467 | Retry now | `forceRetry` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3057 | Retry now | `forceRetry` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:21147 | Generate | `generateTTS` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
-| app.js:7427 | div | `headerTap` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:29126 | / | `loadExplore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:29131 | ${esc(part)} | `loadExplore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:21153 | Generate | `generateTTS` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js:7433 | div | `headerTap` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:29134 | / | `loadExplore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:29139 | ${esc(part)} | `loadExplore` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:919 | Go to your home folder | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:939 | Reload this folder | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:961 | button | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:998 | button | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26300 | / | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26305 | … | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:8513 | ${p.name} | `loadLayoutPreset` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:26306 | / | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26311 | … | `loadFiles` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:8519 | ${p.name} | `loadLayoutPreset` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1220 | All | `logsSetFilter` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1221 | Board | `logsSetFilter` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:1222 | Workers | `logsSetFilter` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -584,61 +584,61 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:1236 | Health | `logsSetTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:191 | About amux | `openAbout` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:647 | About amux  token stats | `openAbout` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:44138 | Manage billing | `openBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:44159 | Manage billing | `openBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:44146 | Manage billing | `openBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:44167 | Manage billing | `openBillingPortal` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:730 | Create board task | `openBoardAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:746 | button | `openBoardAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2790 | button | `openBoardAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37184 | + Add | `openBoardAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:6881 | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:31581 | + | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:36545 | div | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:36770 | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:36798 | ; h += | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:37727 | s.name))].sort(); let html = | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:45468 | div | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:45472 | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:20516 | + | `openChipPicker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37192 | + Add | `openBoardAdd` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:6887 | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:31589 | + | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:36553 | div | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:36778 | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:36806 | ; h += | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:37735 | s.name))].sort(); let html = | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:45476 | div | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:45480 | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:20522 | + | `openChipPicker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2631 | Message history | `openCmdHistoryModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:247 | div | `openConnect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:248 | div | `openConnectIterm2` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
 | index.html:246 | div | `openCreate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26620 | + | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:26625 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:38224 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:38243 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52210 | Review worker log | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52574 | Review worker log | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26626 | + | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:26631 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38232 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38251 | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52218 | Review worker log | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52582 | Review worker log | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1003 | button | `openInFinder` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:28113 | + | `openMdaiNode` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:43882 | change | `openMemberScope` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
+| app.js:28121 | + | `openMdaiNode` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:43890 | change | `openMemberScope` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html:228 | Needs your input: tap to triage | `openNeedsInput` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:5054 | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:6883 | Open terminal | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7505 | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7506 | +${hits.length - 2} more matches | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7547 | ${rewriteLocalhostUrls(s.preview_lines.map(l =&gt;  | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9103 | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9149 | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9153 | Open evidence | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9203 | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9405 | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9437 | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9598 | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11096 | + dot(s) + esc(s.name) + | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:38299 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:38328 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:5060 | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:6889 | Open terminal | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7511 | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7512 | +${hits.length - 2} more matches | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7553 | ${rewriteLocalhostUrls(s.preview_lines.map(l =&gt;  | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9109 | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9155 | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9159 | Open evidence | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9209 | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9411 | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9443 | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9604 | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11102 | + dot(s) + esc(s.name) + | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38307 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:38336 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:39127 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:40350 | Open in peek | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52226 | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52574 | Open lead worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:52838 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:38344 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:39135 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:40358 | Open in peek | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52234 | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52582 | Open lead worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:52846 | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:785 | + New | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:34449 | Edit | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:34481 | Edit | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:34457 | Edit | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:34489 | Edit | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:273 | + Team | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:43873 | Edit | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:43881 | Edit | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:274 | + Invite | `openTeamInvite` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html:2931 | Push | `peekGitPush` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2901 | Worker | `peekMemoryTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -647,25 +647,25 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:2904 | Inherited | `peekMemoryTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2518 | Next message | `peekMsgNext` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2517 | Previous message | `peekMsgPrev` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:19678 | { const br=await fetch(API+/api/sessions/…/trans | `peekShowTranscripts` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:19684 | { const br=await fetch(API+/api/sessions/…/trans | `peekShowTranscripts` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:3134 | Ping | `pingServer` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
 | index.html:3074 | Pull from remote | `pullFromRemote` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2907 | ↻ | `pullPeekMemory` | async (reads) | no busy state (request after an await); disables itself; toast on failure | yes | yes |
-| app.js:31065 | Refresh | `refreshReport` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:18762 | Remove attachment | `removeCardFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:20512 | \u00D7 | `removeChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:18594 | Remove attachment | `removePeekFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7351 | Remove draft | `render` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:31073 | Refresh | `refreshReport` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:18768 | Remove attachment | `removeCardFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:20518 | \u00D7 | `removeChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:18600 | Remove attachment | `removePeekFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7357 | Remove draft | `render` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:744 | button | `renderBoard` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2788 | button | `renderPeekIssues` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3083 | Reset | `resetBranding` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:7263 | \u21ba Reset | `resetGroupView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:42306 | Reset counters | `resetTokenStats` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:9103 | Resume worker | `resumeWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9322 | ${esc(pending \|\| Resume)} | `resumeWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:18757 | Retry | `retryCardFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:18582 | Retry | `retryPeekFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:34446 | Run Now | `runScheduleNow` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
+| app.js:7269 | \u21ba Reset | `resetGroupView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:42314 | Reset counters | `resetTokenStats` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:9109 | Resume worker | `resumeWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9328 | ${esc(pending \|\| Resume)} | `resumeWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:18763 | Retry | `retryCardFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:18588 | Retry | `retryPeekFile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:34454 | Run Now | `runScheduleNow` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | app.js:2795 | … | `runVisibleWorkerAction` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js:2905 | … … | `runWorkerGroupAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:508 | Save | `saveApiKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -673,10 +673,10 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:530 | Save | `saveApiKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2227 | Save | `saveBoardEdit` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3109 | Save branding | `saveBranding` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js:20672 | Add | `saveCustomChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:39815 | Save | `saveEvent` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:8501 | + Save current | `saveLayoutPreset` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:39445 | Add | `saveNewBoardStatus` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:20678 | Add | `saveCustomChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:39823 | Save | `saveEvent` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:8507 | + Save current | `saveLayoutPreset` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:39453 | Add | `saveNewBoardStatus` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2725 | Save | `savePeekInstructions` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2726 | Save  apply now | `savePeekInstructions` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2908 | Save | `savePeekMemory` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
@@ -695,7 +695,7 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:3351 | Preview | `setFileViewMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3352 | Raw | `setFileViewMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3357 | Edit | `setFileViewMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23921 | Logs search | `setLogSearchMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23927 | Logs search | `setLogSearchMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2762 | List view | `setPeekIssuesView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2763 | Board view | `setPeekIssuesView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2552 | peek-tab-terminal | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -718,14 +718,14 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:2608 | queued | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2634 | Dictation history | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2636 | Read-aloud history | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11001 | Terminal | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:12070 | Terminal | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:30928 | div | `setSortMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:8514 | Copy share link | `shareLayoutPreset` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:34447 | Skip | `skipSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:44142 | Annual \u2014 $200/yr (save 17%) | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:44151 | Start free trial | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:44156 | Start free trial | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11007 | Terminal | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:12076 | Terminal | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:30936 | div | `setSortMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:8520 | Copy share link | `shareLayoutPreset` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js:34455 | Skip | `skipSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:44150 | Annual \u2014 $200/yr (save 17%) | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:44159 | Start free trial | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:44164 | Start free trial | `startCheckout` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2420 | Create | `submitCreate` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html:3045 | Save | `submitEdit` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:657 | tab-projects | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -754,26 +754,26 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:681 | tab-browser | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:730 | Projects | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:1462 | Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:5136 | + | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9333 | div | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:11099 | workers | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:22181 | openBoardDetail(\…\), 250); style=color:var(--ac | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:34401 | ${esc(s.session)} | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:34402 | ${esc(s.session)} | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:45463 | openPeek(\…\),150)&gt;… | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:45790 | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:46079 | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7426 | div | `toggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:20518 | … | `toggleChipEdit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37080 | … | `toggleColCollapse` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:5142 | + | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9339 | div | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:11105 | workers | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:22187 | openBoardDetail(\…\), 250); style=color:var(--ac | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:34409 | ${esc(s.session)} | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:34410 | ${esc(s.session)} | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:45471 | openPeek(\…\),150)&gt;… | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:45798 | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:46087 | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7432 | div | `toggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:20524 | … | `toggleChipEdit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37088 | … | `toggleColCollapse` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:705 | Expand active workers — click again to collapse  | `toggleExpand` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3405 | .* | `toggleExploreHidden` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:969 | files-hidden-oitem | `toggleFilesHidden` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:704 | Freeze worker order — click again to unfreeze an | `toggleFreeze` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2930 | Worker | `toggleGitFilter` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js:7431 | Options | `toggleMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23890 | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23923 | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7437 | Options | `toggleMenu` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23896 | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23929 | ${esc(_mLabel(m))} | `toggleModelFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:194 | Notifications | `toggleNotifPanel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html:2525 | Find in terminal | `togglePeekFind` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2765 | This worker | `togglePeekIssuesAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -781,26 +781,26 @@ Counts are over control occurrences in the source (one markup site may render ma
 | index.html:2520 | Split view | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2689 | Close side panel | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2694 | button | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7142 | + | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7148 | + | `togglePeekSplit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:2569 | Customize worker tabs | `togglePeekTabCustomizer` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23880 | ${esc(_PROVIDER_LABELS[p]\|\|p)} | `toggleProviderFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23922 | ${esc(_PROVIDER_LABELS[p]\|\|p)} | `toggleProviderFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37237 | ; html += | `toggleSessionGroup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:37264 | ; html += | `toggleSessionGroup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23886 | ${esc(_PROVIDER_LABELS[p]\|\|p)} | `toggleProviderFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23928 | ${esc(_PROVIDER_LABELS[p]\|\|p)} | `toggleProviderFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37245 | ; html += | `toggleSessionGroup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:37272 | ; html += | `toggleSessionGroup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:126 | Add key in Settings | `toggleSettings` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:254 | Settings | `toggleSettings` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23869 | ${_STATUS_LABELS[k]} | `toggleStatusFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:23924 | ${_STATUS_LABELS[k]\|\|k} | `toggleStatusFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23875 | ${_STATUS_LABELS[k]} | `toggleStatusFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:23930 | ${_STATUS_LABELS[k]\|\|k} | `toggleStatusFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:684 | Show/hide tabs | `toggleTabCustomizer` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7269 | ${hiddenTags.has(t) ? \u2298  : }${esc(t)} | `toggleTagFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7517 | ${esc(g)} | `toggleTagFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:7642 | div | `toggleTagGroup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:9410 | Wake | `wakeSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:7275 | ${hiddenTags.has(t) ? \u2298  : }${esc(t)} | `toggleTagFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7523 | ${esc(g)} | `toggleTagFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:7648 | div | `toggleTagGroup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:9416 | Wake | `wakeSession` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html:3436 | _ Term | `wsAddTermPane` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html:3450 | Clear | `wsClearWorkspace` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:40527 | ${esc(n) } | `wsLoadProfile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js:40696 | button | `wsRemoveTermPane` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js:40695 | tmux | `wsTermSendTmux` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js:40535 | ${esc(n) } | `wsLoadProfile` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js:40704 | button | `wsRemoveTermPane` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js:40703 | tmux | `wsTermSendTmux` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 
 ## Local controls
 
@@ -830,44 +830,44 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:3135 | Clear cache | `` | onclick |
 | index.html:3141 | Close | `` | onclick |
 | index.html:3150 | Dismiss | `` | onclick |
-| app.js:5512 | + | `` | onclick |
-| app.js:7128 | + | `` | onclick |
-| app.js:7520 | div | `` | onclick |
-| app.js:7523 | ${isExp && (displayTaskName \|\| s.task_override)  | `` | onclick |
-| app.js:8099 | p.remove())&gt;Close | `` | onclick |
-| app.js:8108 | p.remove())&gt;✕ | `` | onclick |
-| app.js:8484 | + | `` | onclick |
-| app.js:8492 | ${t.id} | `` | onclick |
-| app.js:8498 | ; html += | `` | onclick |
-| app.js:8857 | + | `` | onclick |
-| app.js:8861 | + | `` | onclick |
-| app.js:8866 | + | `` | onclick |
-| app.js:9207 | ${_workerLifecyclePending.get(s.name) \|\| (s.runn | `` | onclick |
-| app.js:11383 | … | `` | onclick |
-| app.js:11455 | … | `` | onclick |
-| app.js:16605 | … | `` | onclick |
-| app.js:22220 | … | `` | onclick |
-| app.js:22465 | + | `` | onclick |
-| app.js:22467 | Close | `` | onclick |
-| app.js:22523 | ${caret} | `` | onclick |
-| app.js:22523 | Resend to ${esc(_target \|\| session)} | `` | onclick |
-| app.js:27407 | + | `` | onclick |
-| app.js:28009 | button | `` | onclick |
-| app.js:28607 | button | `` | onclick |
-| app.js:29786 | ${esc(s)} | `` | onclick |
-| app.js:33526 | View on Google Maps ↗ | `` | onclick |
-| app.js:35878 | + | `` | onclick |
-| app.js:36799 | Drag to move | `` | onclick |
-| app.js:39788 | div | `` | onclick |
-| app.js:39866 | div | `` | onclick |
-| app.js:40165 | Close | `` | onclick |
-| app.js:40175 | Close | `` | onclick |
-| app.js:41832 | Open | `` | onclick |
-| app.js:48351 | div | `` | onclick |
-| app.js:50316 | + | `` | onclick |
-| app.js:50568 | Cancel | `` | onclick |
-| app.js:51938 | div | `` | onclick |
-| app.js:52154 | ${esc(path)} | `` | onclick |
+| app.js:5518 | + | `` | onclick |
+| app.js:7134 | + | `` | onclick |
+| app.js:7526 | div | `` | onclick |
+| app.js:7529 | ${isExp && (displayTaskName \|\| s.task_override)  | `` | onclick |
+| app.js:8105 | p.remove())&gt;Close | `` | onclick |
+| app.js:8114 | p.remove())&gt;✕ | `` | onclick |
+| app.js:8490 | + | `` | onclick |
+| app.js:8498 | ${t.id} | `` | onclick |
+| app.js:8504 | ; html += | `` | onclick |
+| app.js:8863 | + | `` | onclick |
+| app.js:8867 | + | `` | onclick |
+| app.js:8872 | + | `` | onclick |
+| app.js:9213 | ${_workerLifecyclePending.get(s.name) \|\| (s.runn | `` | onclick |
+| app.js:11389 | … | `` | onclick |
+| app.js:11461 | … | `` | onclick |
+| app.js:16611 | … | `` | onclick |
+| app.js:22226 | … | `` | onclick |
+| app.js:22471 | + | `` | onclick |
+| app.js:22473 | Close | `` | onclick |
+| app.js:22529 | ${caret} | `` | onclick |
+| app.js:22529 | Resend to ${esc(_target \|\| session)} | `` | onclick |
+| app.js:27413 | + | `` | onclick |
+| app.js:28017 | button | `` | onclick |
+| app.js:28615 | button | `` | onclick |
+| app.js:29794 | ${esc(s)} | `` | onclick |
+| app.js:33534 | View on Google Maps ↗ | `` | onclick |
+| app.js:35886 | + | `` | onclick |
+| app.js:36807 | Drag to move | `` | onclick |
+| app.js:39796 | div | `` | onclick |
+| app.js:39874 | div | `` | onclick |
+| app.js:40173 | Close | `` | onclick |
+| app.js:40183 | Close | `` | onclick |
+| app.js:41840 | Open | `` | onclick |
+| app.js:48359 | div | `` | onclick |
+| app.js:50324 | + | `` | onclick |
+| app.js:50576 | Cancel | `` | onclick |
+| app.js:51946 | div | `` | onclick |
+| app.js:52162 | ${esc(path)} | `` | onclick |
 | index.html:3164 | Close player | `_abClose` | onclick |
 | index.html:3163 | 1x | `_abCycleSpeed` | onclick |
 | index.html:3157 | ab-play-btn | `_abTogglePlay` | onclick |
@@ -880,83 +880,83 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:2237 | Copy link to this card | `_bdCopyLink` | onclick |
 | index.html:742 | + Filter | `_bfOpenMenu` | onclick |
 | index.html:2781 | Add a filter | `_bfOpenMenu` | onclick |
-| app.js:36557 | div | `_boardCtxCopy` | onclick |
-| app.js:36159 | ? | `_boardQueryHelp` | onclick |
+| app.js:36565 | div | `_boardCtxCopy` | onclick |
+| app.js:36167 | ? | `_boardQueryHelp` | onclick |
 | index.html:1845 | Stop | `_bwAgentStop` | onclick |
-| app.js:14649 | Copy code | `_chatCopy` | onclick |
-| app.js:14765 | Copy reply | `_chatCopy` | onclick |
-| app.js:14806 | Latest | `_chatJumpToLatest` | onclick |
-| app.js:31780 | + | `_chromeAddTab` | onclick |
-| app.js:31777 | span | `_chromeCloseTab` | onclick |
-| app.js:31778 | div | `_chromeSwitchTab` | onclick |
-| app.js:31781 | … | `_chromeToggleCollapse` | onclick |
+| app.js:14655 | Copy code | `_chatCopy` | onclick |
+| app.js:14771 | Copy reply | `_chatCopy` | onclick |
+| app.js:14812 | Latest | `_chatJumpToLatest` | onclick |
+| app.js:31788 | + | `_chromeAddTab` | onclick |
+| app.js:31785 | span | `_chromeCloseTab` | onclick |
+| app.js:31786 | div | `_chromeSwitchTab` | onclick |
+| app.js:31789 | … | `_chromeToggleCollapse` | onclick |
 | index.html:2364 | Remove template | `_clearTemplate` | onclick |
 | index.html:2514 | Done | `_closePeekFilters` | onclick |
-| app.js:7145 | + | `_closePeekMore` | onclick |
+| app.js:7151 | + | `_closePeekMore` | onclick |
 | index.html:3236 | saved-messages-modal | `_closeSavedMessages` | onclick |
 | index.html:3240 | button | `_closeSavedMessages` | onclick |
 | index.html:1972 | video-overlay | `_closeVideo` | onclick |
 | index.html:1974 | Close video | `_closeVideo` | onclick |
 | app.js:2394 | .edit-actions,:scope &gt; .board-edit-actions,:scop | `_closeVideo` | onclick |
-| app.js:37123 | Column actions | `_colMenu` | onclick |
+| app.js:37131 | Column actions | `_colMenu` | onclick |
 | index.html:2962 | Commits | `_commitsBack` | onclick |
 | index.html:1159 | ＋ Add connector | `_connAddToggle` | onclick |
-| app.js:27769 | Close | `_connClose` | onclick |
-| app.js:27670 | ; h += | `_connOpen` | onclick |
-| app.js:27661 | … | `_connSetFilter` | onclick |
-| app.js:27766 | … | `_connTab` | onclick |
+| app.js:27775 | Close | `_connClose` | onclick |
+| app.js:27676 | ; h += | `_connOpen` | onclick |
+| app.js:27667 | … | `_connSetFilter` | onclick |
+| app.js:27772 | … | `_connTab` | onclick |
 | index.html:3363 | Link | `_copyFileDeeplink` | onclick |
 | index.html:3362 | Path | `_copyFilePath` | onclick |
-| app.js:22508 | MSG-${esc(_mid)} | `_copyMsgId` | onclick |
+| app.js:22514 | MSG-${esc(_mid)} | `_copyMsgId` | onclick |
 | index.html:288 | Copy | `_copyOwnerLink` | onclick |
-| app.js:34428 | ${esc(s.id)} | `_copySchedId` | onclick |
-| app.js:34470 | ${esc(s.id)} | `_copySchedId` | onclick |
-| app.js:27813 | Copy | `_copyTextWithToast` | onclick |
-| app.js:23989 | ${_csvEsc(h) \|\| | `_csvSortBy` | onclick |
+| app.js:34436 | ${esc(s.id)} | `_copySchedId` | onclick |
+| app.js:34478 | ${esc(s.id)} | `_copySchedId` | onclick |
+| app.js:27819 | Copy | `_copyTextWithToast` | onclick |
+| app.js:23995 | ${_csvEsc(h) \|\| | `_csvSortBy` | onclick |
 | index.html:1556 | Data | `_dbSetMode` | onclick |
 | index.html:1557 | Structure | `_dbSetMode` | onclick |
 | index.html:1558 | Query | `_dbSetMode` | onclick |
 | index.html:2659 | Cancel | `_dictClosePopup` | onclick |
-| app.js:23388 | Copy | `_dictCopy` | onclick |
-| app.js:23389 | Insert into composer | `_dictInsertId` | onclick |
-| app.js:23341 | Delete | `_dictOutboxDel` | onclick |
-| app.js:23339 | ▶ Play | `_dictPlay` | onclick |
+| app.js:23394 | Copy | `_dictCopy` | onclick |
+| app.js:23395 | Insert into composer | `_dictInsertId` | onclick |
+| app.js:23347 | Delete | `_dictOutboxDel` | onclick |
+| app.js:23345 | ▶ Play | `_dictPlay` | onclick |
 | index.html:2861 | History | `_dictSetSub` | onclick |
 | index.html:2862 | Dictionary | `_dictSetSub` | onclick |
 | index.html:2863 | Settings | `_dictSetSub` | onclick |
 | index.html:2660 | Done | `_dictStopRec` | onclick |
 | index.html:167 | Dismiss | `_dismissOrgBanner` | onclick |
-| app.js:50720 | _dpEl.querySelector('.amux-dp-clear') | `_dpClear` | addEventListener |
-| app.js:50692 | _dpBack | `_dpClose` | addEventListener |
-| app.js:50725 | _dpEl.querySelector('.amux-dp-done') | `_dpClose` | addEventListener |
-| app.js:50669 | trigger | `_dpOpen` | addEventListener |
-| app.js:50770 | b | `_dpPick` | addEventListener |
-| app.js:50718 | "prev"]') | `_dpShiftMonth` | addEventListener |
-| app.js:50719 | "next"]') | `_dpShiftMonth` | addEventListener |
-| app.js:27388 | // Star is the flag, in the position every clien | `_emailToggleBody` | onclick |
+| app.js:50728 | _dpEl.querySelector('.amux-dp-clear') | `_dpClear` | addEventListener |
+| app.js:50700 | _dpBack | `_dpClose` | addEventListener |
+| app.js:50733 | _dpEl.querySelector('.amux-dp-done') | `_dpClose` | addEventListener |
+| app.js:50677 | trigger | `_dpOpen` | addEventListener |
+| app.js:50778 | b | `_dpPick` | addEventListener |
+| app.js:50726 | "prev"]') | `_dpShiftMonth` | addEventListener |
+| app.js:50727 | "next"]') | `_dpShiftMonth` | addEventListener |
+| app.js:27394 | // Star is the flag, in the position every clien | `_emailToggleBody` | onclick |
 | index.html:994 | button | `_filesClearOfflineCache` | onclick |
 | index.html:927 | Create a new file here | `_filesNewFile` | onclick |
 | index.html:974 | button | `_filesNewFile` | onclick |
 | index.html:3358 | Teleprompter | `_filesOpenTeleprompter` | onclick |
 | index.html:952 | More actions | `_filesOverflowToggle` | onclick |
-| app.js:29692 | ${esc(b)} | `_filterBranches` | onclick |
+| app.js:29700 | ${esc(b)} | `_filterBranches` | onclick |
 | index.html:2942 | Files | `_gitDiffBack` | onclick |
-| app.js:48332 | ← Back | `_gmailCloseThread` | onclick |
-| app.js:48334 | Reply | `_gmailShowReply` | onclick |
+| app.js:48340 | ← Back | `_gmailCloseThread` | onclick |
+| app.js:48342 | Reply | `_gmailShowReply` | onclick |
 | index.html:1928 | button | `_graphClosePanel` | onclick |
 | index.html:1911 | Toggle all connections | `_graphToggleAllEdges` | onclick |
-| app.js:48736 | ${esc(f)} | `_graphToggleFilter` | onclick |
+| app.js:48744 | ${esc(f)} | `_graphToggleFilter` | onclick |
 | index.html:1885 | Collapse sidebar | `_graphToggleSidebar` | onclick |
 | index.html:1906 | Show sidebar | `_graphToggleSidebar` | onclick |
 | index.html:1908 | + | `_graphZoom` | onclick |
 | index.html:1909 | Zoom out | `_graphZoom` | onclick |
-| app.js:50445 | ; html += | `_jrnlCalDayClick` | onclick |
-| app.js:50429 | button | `_jrnlCalNext` | onclick |
-| app.js:50427 | button | `_jrnlCalPrev` | onclick |
-| app.js:50430 | Today | `_jrnlCalToday` | onclick |
+| app.js:50453 | ; html += | `_jrnlCalDayClick` | onclick |
+| app.js:50437 | button | `_jrnlCalNext` | onclick |
+| app.js:50435 | button | `_jrnlCalPrev` | onclick |
+| app.js:50438 | Today | `_jrnlCalToday` | onclick |
 | index.html:1943 | New entry | `_jrnlNew` | onclick |
-| app.js:50199 | ; html += | `_jrnlSelect` | onclick |
-| app.js:50499 | ; html += | `_jrnlSelect` | onclick |
+| app.js:50207 | ; html += | `_jrnlSelect` | onclick |
+| app.js:50507 | ; html += | `_jrnlSelect` | onclick |
 | index.html:1944 | Configure prompts | `_jrnlShowConfig` | onclick |
 | index.html:1957 | List | `_jrnlSwitchSub` | onclick |
 | index.html:1958 | Calendar | `_jrnlSwitchSub` | onclick |
@@ -964,16 +964,16 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:1960 | Map | `_jrnlSwitchSub` | onclick |
 | index.html:1945 | Collapse sidebar | `_jrnlToggleSidebar` | onclick |
 | index.html:1956 | Show entries list | `_jrnlToggleSidebar` | onclick |
-| app.js:50311 | ; html += | `_jrnlViewMedia` | onclick |
+| app.js:50319 | ; html += | `_jrnlViewMedia` | onclick |
 | index.html:1049 | Files | `_libClose` | onclick |
 | index.html:1292 | All Places | `_locAllPlaces` | onclick |
-| app.js:33071 | + | `_locFocus` | onclick |
-| app.js:33266 | + | `_locGoPlace` | onclick |
-| app.js:33377 | … | `_locNative` | onclick |
-| app.js:33387 | Full detail | `_locNative` | onclick |
-| app.js:33388 | Battery saver | `_locNative` | onclick |
-| app.js:33392 | Upload now | `_locNative` | onclick |
-| app.js:33226 | Show  | `_locToggleMode` | onclick |
+| app.js:33079 | + | `_locFocus` | onclick |
+| app.js:33274 | + | `_locGoPlace` | onclick |
+| app.js:33385 | … | `_locNative` | onclick |
+| app.js:33395 | Full detail | `_locNative` | onclick |
+| app.js:33396 | Battery saver | `_locNative` | onclick |
+| app.js:33400 | Upload now | `_locNative` | onclick |
+| app.js:33234 | Show  | `_locToggleMode` | onclick |
 | index.html:1265 | Drop a pin on the map | `_mapAddPin` | onclick |
 | index.html:1341 | + Group | `_mapAddTag` | onclick |
 | index.html:1382 | map-pin-modal | `_mapClosePinModal` | onclick |
@@ -981,24 +981,24 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:1405 | map-tag-modal | `_mapCloseTagModal` | onclick |
 | index.html:1416 | Cancel | `_mapCloseTagModal` | onclick |
 | index.html:1355 | Export / import pins | `_mapExportMenu` | onclick |
-| app.js:32372 | All | `_mapFilterByTag` | onclick |
-| app.js:32378 | … | `_mapFilterByTag` | onclick |
-| app.js:32447 | + | `_mapFlyToPin` | onclick |
+| app.js:32380 | All | `_mapFilterByTag` | onclick |
+| app.js:32386 | … | `_mapFilterByTag` | onclick |
+| app.js:32455 | + | `_mapFlyToPin` | onclick |
 | index.html:1334 | Clear | `_mapGeoClear` | onclick |
-| app.js:33549 | + Save as Pin | `_mapGeoSavePin` | onclick |
-| app.js:33521 | … | `_mapGeoSelect` | onclick |
+| app.js:33557 | + Save as Pin | `_mapGeoSavePin` | onclick |
+| app.js:33529 | … | `_mapGeoSelect` | onclick |
 | index.html:1367 | Locate Me | `_mapLocateMe` | onclick |
-| app.js:32454 | Edit | `_mapOpenPinModal` | onclick |
-| app.js:32553 | Edit | `_mapOpenPinModal` | onclick |
+| app.js:32462 | Edit | `_mapOpenPinModal` | onclick |
+| app.js:32561 | Edit | `_mapOpenPinModal` | onclick |
 | index.html:1366 | Drop Pin | `_mapToggleDropMode` | onclick |
-| app.js:32795 | + | `_mapToggleTagCheck` | onclick |
+| app.js:32803 | + | `_mapToggleTagCheck` | onclick |
 | index.html:3376 | Close search | `_mdSearchClose` | onclick |
 | index.html:3374 | Previous match | `_mdSearchStep` | onclick |
 | index.html:3375 | Next match | `_mdSearchStep` | onclick |
 | index.html:3359 | Find | `_mdSearchToggle` | onclick |
-| app.js:45862 | Reset | `_metricsResetSpeedtest` | onclick |
-| app.js:45712 | div | `_metricsSelectSession` | onclick |
-| app.js:45893 | tr | `_metricsSelectSession` | onclick |
+| app.js:45870 | Reset | `_metricsResetSpeedtest` | onclick |
+| app.js:45720 | div | `_metricsSelectSession` | onclick |
+| app.js:45901 | tr | `_metricsSelectSession` | onclick |
 | index.html:1452 | Collapse sidebar | `_metricsToggleSidebar` | onclick |
 | index.html:1458 | Show workers list | `_metricsToggleSidebar` | onclick |
 | index.html:3304 | modal-backdrop | `_modalBgClick` | onclick |
@@ -1008,25 +1008,25 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js:2606 | ${esc(confirmLabel)} | `_modalClose` | onclick |
 | app.js:2607 | Cancel | `_modalClose` | onclick |
 | app.js:3101 | Close | `_modalClose` | onclick |
-| app.js:19684 | Close | `_modalClose` | onclick |
-| app.js:48426 | Cancel | `_modalClose` | onclick |
-| app.js:48511 | Cancel | `_modalClose` | onclick |
-| app.js:22403 | ${esc(label)} | `_msgContextOpen` | onclick |
-| app.js:22523 | Copy text | `_msgCopyBtn` | onclick |
-| app.js:22523 | Actions | `_msgMenu` | onclick |
-| app.js:47552 | Select all … | `_msgSelAll` | onclick |
-| app.js:47553 | Clear | `_msgSelNone` | onclick |
-| app.js:22522 | ${_collapsed ?  : } | `_msgToggleCollapse` | onclick |
-| app.js:5642 | ni-approve-all | `_niApproveAllArm` | onclick |
-| app.js:6023 | Cancel | `_niApproveAllCancel` | onclick |
-| app.js:5782 | Reply | `_niShowPanel` | onclick |
-| app.js:5787 | Approve  always | `_niShowPanel` | onclick |
-| app.js:5799 | Cancel | `_niShowPanel` | onclick |
-| app.js:5808 | Cancel | `_niShowPanel` | onclick |
-| app.js:5643 | Previous | `_niStep` | onclick |
-| app.js:5644 | Next | `_niStep` | onclick |
-| app.js:5642 | ni-older-toggle | `_niToggleOlder` | onclick |
-| app.js:5752 | Show … more (decisions workers can make, stale,  | `_niToggleOlder` | onclick |
+| app.js:19690 | Close | `_modalClose` | onclick |
+| app.js:48434 | Cancel | `_modalClose` | onclick |
+| app.js:48519 | Cancel | `_modalClose` | onclick |
+| app.js:22409 | ${esc(label)} | `_msgContextOpen` | onclick |
+| app.js:22529 | Copy text | `_msgCopyBtn` | onclick |
+| app.js:22529 | Actions | `_msgMenu` | onclick |
+| app.js:47560 | Select all … | `_msgSelAll` | onclick |
+| app.js:47561 | Clear | `_msgSelNone` | onclick |
+| app.js:22528 | ${_collapsed ?  : } | `_msgToggleCollapse` | onclick |
+| app.js:5648 | ni-approve-all | `_niApproveAllArm` | onclick |
+| app.js:6029 | Cancel | `_niApproveAllCancel` | onclick |
+| app.js:5788 | Reply | `_niShowPanel` | onclick |
+| app.js:5793 | Approve  always | `_niShowPanel` | onclick |
+| app.js:5805 | Cancel | `_niShowPanel` | onclick |
+| app.js:5814 | Cancel | `_niShowPanel` | onclick |
+| app.js:5649 | Previous | `_niStep` | onclick |
+| app.js:5650 | Next | `_niStep` | onclick |
+| app.js:5648 | ni-older-toggle | `_niToggleOlder` | onclick |
+| app.js:5758 | Show … more (decisions workers can make, stale,  | `_niToggleOlder` | onclick |
 | index.html:200 | Clear | `_notifClearAll` | onclick |
 | index.html:201 | Toggle in-app banner pop-ups | `_notifToggleBanners` | onclick |
 | index.html:2812 | Ask | `_peekAskToggle` | onclick |
@@ -1035,78 +1035,78 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:3006 | All | `_peekLogsSetFilter` | onclick |
 | index.html:3007 | Errors | `_peekLogsSetFilter` | onclick |
 | index.html:3008 | Slow | `_peekLogsSetFilter` | onclick |
-| app.js:13720 | + | `_peekLogsToggle` | onclick |
+| app.js:13726 | + | `_peekLogsToggle` | onclick |
 | index.html:2630 | Attach file | `_peekMoreClose` | onclick |
-| app.js:30318 | peek-body | `_peekOpenLink` | addEventListener |
+| app.js:30326 | peek-body | `_peekOpenLink` | addEventListener |
 | index.html:2988 | button | `_peekRenderSchedules` | onclick |
 | index.html:2686 | Files | `_peekSplitShow` | onclick |
 | index.html:2687 | Messages | `_peekSplitShow` | onclick |
 | index.html:2688 | Chat | `_peekSplitShow` | onclick |
-| app.js:13822 | + | `_peekToggleInherited` | onclick |
+| app.js:13828 | + | `_peekToggleInherited` | onclick |
 | index.html:2587 | peek-plan-hdr | `_peekTogglePlan` | onclick |
-| app.js:16694 | + | `_peekToggleTool` | onclick |
-| app.js:22715 | Select all … | `_pmSelAll` | onclick |
-| app.js:22716 | Clear | `_pmSelNone` | onclick |
-| app.js:52662 | button | `_projectSelectTask` | onclick |
-| app.js:51948 | ${esc(lead&&key===tasks?Plan:label)} | `_projectSetTab` | onclick |
-| app.js:52089 | +action+(assets.length? · … artifacts:)+ | `_projectSetTab` | onclick |
-| app.js:52123 | _projectSelectTask(${escJs(c.id)}),0)&gt;${esc(c.id | `_projectSetTab` | onclick |
-| app.js:52127 | Review evidence | `_projectSetTab` | onclick |
-| app.js:52129 | _projectSelectTask(\…\),0)&gt;Open current task → | `_projectSetTab` | onclick |
-| app.js:52130 | _projectSelectTask(\…\),0)&gt;Open … → | `_projectSetTab` | onclick |
-| app.js:52138 | View all tasks → | `_projectSetTab` | onclick |
-| app.js:52138 | View evidence → | `_projectSetTab` | onclick |
-| app.js:52165 | _projectSelectTask(${escJs(c.id)}),0)&gt;Open task | `_projectSetTab` | onclick |
-| app.js:52219 | _projectSelectTask(${escJs(task)}),0)&gt;Open task  | `_projectSetTab` | onclick |
-| app.js:52224 | _projectSelectTask(${escJs(task)}),0)&gt;Open task  | `_projectSetTab` | onclick |
-| app.js:52242 | _projectSelectTask(${escJs(t.id)}),0)&gt;${esc(t.id | `_projectSetTab` | onclick |
-| app.js:52545 | View request | `_projectSetTab` | onclick |
-| app.js:52575 | View plan → | `_projectSetTab` | onclick |
-| app.js:52368 | Cancel | `_projectSettingsCancel` | onclick |
+| app.js:16700 | + | `_peekToggleTool` | onclick |
+| app.js:22721 | Select all … | `_pmSelAll` | onclick |
+| app.js:22722 | Clear | `_pmSelNone` | onclick |
+| app.js:52670 | button | `_projectSelectTask` | onclick |
+| app.js:51956 | ${esc(lead&&key===tasks?Plan:label)} | `_projectSetTab` | onclick |
+| app.js:52097 | +action+(assets.length? · … artifacts:)+ | `_projectSetTab` | onclick |
+| app.js:52131 | _projectSelectTask(${escJs(c.id)}),0)&gt;${esc(c.id | `_projectSetTab` | onclick |
+| app.js:52135 | Review evidence | `_projectSetTab` | onclick |
+| app.js:52137 | _projectSelectTask(\…\),0)&gt;Open current task → | `_projectSetTab` | onclick |
+| app.js:52138 | _projectSelectTask(\…\),0)&gt;Open … → | `_projectSetTab` | onclick |
+| app.js:52146 | View all tasks → | `_projectSetTab` | onclick |
+| app.js:52146 | View evidence → | `_projectSetTab` | onclick |
+| app.js:52173 | _projectSelectTask(${escJs(c.id)}),0)&gt;Open task | `_projectSetTab` | onclick |
+| app.js:52227 | _projectSelectTask(${escJs(task)}),0)&gt;Open task  | `_projectSetTab` | onclick |
+| app.js:52232 | _projectSelectTask(${escJs(task)}),0)&gt;Open task  | `_projectSetTab` | onclick |
+| app.js:52250 | _projectSelectTask(${escJs(t.id)}),0)&gt;${esc(t.id | `_projectSetTab` | onclick |
+| app.js:52553 | View request | `_projectSetTab` | onclick |
+| app.js:52583 | View plan → | `_projectSetTab` | onclick |
+| app.js:52376 | Cancel | `_projectSettingsCancel` | onclick |
 | index.html:1102 | proxy-form-overlay | `_proxyCloseForm` | onclick |
 | index.html:1117 | Cancel | `_proxyCloseForm` | onclick |
-| app.js:39971 | Copy | `_proxyCopy` | onclick |
-| app.js:39986 | Edit | `_proxyEdit` | onclick |
+| app.js:39979 | Copy | `_proxyCopy` | onclick |
+| app.js:39994 | Edit | `_proxyEdit` | onclick |
 | index.html:1092 | + New proxy | `_proxyOpenForm` | onclick |
-| app.js:21107 | Delete | `_raDelete` | onclick |
-| app.js:21104 | Replay | `_raReplay` | onclick |
-| app.js:46513 | Clear | `_reclaimRender` | onclick |
-| app.js:46506 | select all regenerable | `_reclaimSelectCategory` | onclick |
-| app.js:46467 | ${esc(meta.hint)} | `_reclaimSetCat` | onclick |
-| app.js:46505 | clear filter | `_reclaimSetCat` | onclick |
-| app.js:51693 | Delete from this device | `_recorderDeleteLocal` | onclick |
-| app.js:51689 | Play | `_recorderPlay` | onclick |
+| app.js:21113 | Delete | `_raDelete` | onclick |
+| app.js:21110 | Replay | `_raReplay` | onclick |
+| app.js:46521 | Clear | `_reclaimRender` | onclick |
+| app.js:46514 | select all regenerable | `_reclaimSelectCategory` | onclick |
+| app.js:46475 | ${esc(meta.hint)} | `_reclaimSetCat` | onclick |
+| app.js:46513 | clear filter | `_reclaimSetCat` | onclick |
+| app.js:51701 | Delete from this device | `_recorderDeleteLocal` | onclick |
+| app.js:51697 | Play | `_recorderPlay` | onclick |
 | app.js:1959 | Remove | `_removeConnection` | onclick |
-| app.js:42535 | button | `_removeConnection` | onclick |
-| app.js:11862 | Add | `_scopeBpAddInput` | onclick |
-| app.js:11859 | Add to Allow | `_scopeBpMode` | onclick |
-| app.js:11860 | Add to Deny | `_scopeBpMode` | onclick |
-| app.js:11838 | Remove  | `_scopeBpRemove` | onclick |
-| app.js:11849 | … | `_scopeBpToggle` | onclick |
+| app.js:42543 | button | `_removeConnection` | onclick |
+| app.js:11868 | Add | `_scopeBpAddInput` | onclick |
+| app.js:11865 | Add to Allow | `_scopeBpMode` | onclick |
+| app.js:11866 | Add to Deny | `_scopeBpMode` | onclick |
+| app.js:11844 | Remove  | `_scopeBpRemove` | onclick |
+| app.js:11855 | … | `_scopeBpToggle` | onclick |
 | index.html:3291 | Preview | `_scopeEditPreview` | onclick |
 | index.html:842 | Create a new note | `_scratchpadNewNote` | onclick |
-| app.js:29361 | ${esc(p.id)} | `_selectIterm2Pane` | onclick |
-| app.js:29608 | Use this template | `_selectTemplate` | onclick |
+| app.js:29369 | ${esc(p.id)} | `_selectIterm2Pane` | onclick |
+| app.js:29616 | Use this template | `_selectTemplate` | onclick |
 | index.html:622 | Attach this device | `_settingsToggleGeo` | onclick |
 | index.html:2875 | Translation prompt &amp; display settings | `_simpleCfgToggle` | onclick |
 | index.html:2742 | Show/hide sent history | `_steerHistToggle` | onclick |
-| app.js:42531 | ; html += | `_switchServerUrl` | onclick |
+| app.js:42539 | ; html += | `_switchServerUrl` | onclick |
 | index.html:1740 | Clear | `_termClear` | onclick |
 | index.html:540 | + Add | `_toggleAddConnectionForm` | onclick |
 | index.html:561 | Cancel | `_toggleAddConnectionForm` | onclick |
 | index.html:3355 | More actions | `_toggleFileMenu` | onclick |
-| app.js:33815 | + | `_togglePayload` | onclick |
+| app.js:33823 | + | `_togglePayload` | onclick |
 | index.html:2628 | Attach / history | `_togglePeekMore` | onclick |
-| app.js:29600 | div | `_toggleTmplItem` | onclick |
+| app.js:29608 | div | `_toggleTmplItem` | onclick |
 | index.html:2014 | Close | `_tpClose` | onclick |
 | index.html:2029 | Fullscreen (F) | `_tpFullscreen` | onclick |
 | index.html:2027 | Restart (R) | `_tpRestart` | onclick |
 | index.html:2017 | tp-play | `_tpToggle` | onclick |
 | index.html:2028 | Mirror | `_tpToggleMirror` | onclick |
-| app.js:20923 | … | `_ttsCancel` | onclick |
-| app.js:40136 | Copy URL | `_tunnelCopy` | onclick |
-| app.js:40074 | Copy URL | `_tunnelCopyURL` | onclick |
-| app.js:42849 | Copy | `_tunnelCopyURL` | onclick |
+| app.js:20929 | … | `_ttsCancel` | onclick |
+| app.js:40144 | Copy URL | `_tunnelCopy` | onclick |
+| app.js:40082 | Copy URL | `_tunnelCopyURL` | onclick |
+| app.js:42857 | Copy | `_tunnelCopyURL` | onclick |
 | app.js:2269 | Primary action | `_uiGuideAction` | onclick |
 | app.js:2269 | Secondary action | `_uiGuideAction` | onclick |
 | app.js:2269 | Destructive example | `_uiGuideAction` | onclick |
@@ -1120,26 +1120,26 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:1982 | vp-progress-wrap | `_vpSeek` | onclick |
 | index.html:1995 | vp-mute | `_vpToggleMute` | onclick |
 | index.html:1989 | vp-play | `_vpTogglePlay` | onclick |
-| app.js:46943 | video-player | `_vpTogglePlay` | addEventListener |
-| app.js:44932 | + _WT_CHAPTERS[k].label + (done[k] ? | `_wtChapter` | onclick |
-| app.js:44936 | Finish | `_wtDismiss` | onclick |
-| app.js:44949 | Skip | `_wtDismiss` | onclick |
-| app.js:44951 | … | `_wtNext` | onclick |
-| app.js:44950 | Back | `_wtPrev` | onclick |
-| app.js:25353 | … | `_xlsxShowSheet` | onclick |
-| app.js:25381 | … | `_xlsxShowSheet` | onclick |
-| app.js:37187 | + Add column | `addBoardStatus` | onclick |
-| app.js:43945 | submit | `async` | addEventListener |
-| app.js:44075 | modal.querySelector('#invite-copy-button') | `async` | addEventListener |
-| app.js:44097 | submit | `async` | addEventListener |
+| app.js:46951 | video-player | `_vpTogglePlay` | addEventListener |
+| app.js:44940 | + _WT_CHAPTERS[k].label + (done[k] ? | `_wtChapter` | onclick |
+| app.js:44944 | Finish | `_wtDismiss` | onclick |
+| app.js:44957 | Skip | `_wtDismiss` | onclick |
+| app.js:44959 | … | `_wtNext` | onclick |
+| app.js:44958 | Back | `_wtPrev` | onclick |
+| app.js:25359 | … | `_xlsxShowSheet` | onclick |
+| app.js:25387 | … | `_xlsxShowSheet` | onclick |
+| app.js:37195 | + Add column | `addBoardStatus` | onclick |
+| app.js:43953 | submit | `async` | addEventListener |
+| app.js:44083 | modal.querySelector('#invite-copy-button') | `async` | addEventListener |
+| app.js:44105 | submit | `async` | addEventListener |
 | index.html:2257 | Details | `boardDetailTab` | onclick |
 | index.html:2258 | Subtasks | `boardDetailTab` | onclick |
 | index.html:2259 | Files | `boardDetailTab` | onclick |
 | index.html:2260 | Related | `boardDetailTab` | onclick |
 | index.html:2261 | Worker actions | `boardDetailTab` | onclick |
 | index.html:2262 | Edit | `boardDetailTab` | onclick |
-| app.js:38438 | View all … worker actions | `boardDetailTab` | onclick |
-| app.js:39446 | button | `cancelNewBoardStatus` | onclick |
+| app.js:38446 | View all … worker actions | `boardDetailTab` | onclick |
+| app.js:39454 | button | `cancelNewBoardStatus` | onclick |
 | index.html:3257 | channel-drawer | `channelClose` | onclick |
 | index.html:3266 | Close | `channelClose` | onclick |
 | index.html:250 | div | `closeAddMenu` | onclick |
@@ -1148,9 +1148,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:3312 | bulk-actions-overlay | `closeBulkActions` | onclick |
 | index.html:3316 | button | `closeBulkActions` | onclick |
 | app.js:2396 | .edit-actions,:scope &gt; .board-edit-actions,:scop | `closeChipPicker` | onclick |
-| app.js:20627 | + | `closeChipPicker` | onclick |
-| app.js:20629 | Close command picker | `closeChipPicker` | onclick |
-| app.js:20671 | Cancel | `closeChipPicker` | onclick |
+| app.js:20633 | + | `closeChipPicker` | onclick |
+| app.js:20635 | Close command picker | `closeChipPicker` | onclick |
+| app.js:20677 | Cancel | `closeChipPicker` | onclick |
 | index.html:3175 | cmd-history-modal | `closeCmdHistoryModal` | onclick |
 | index.html:3179 | button | `closeCmdHistoryModal` | onclick |
 | index.html:2426 | connect-overlay | `closeConnect` | onclick |
@@ -1162,17 +1162,17 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:3479 | Close | `closeDevtools` | onclick |
 | index.html:3017 | edit-overlay | `closeEdit` | onclick |
 | index.html:3044 | Cancel | `closeEdit` | onclick |
-| app.js:39791 | × | `closeEventModal` | onclick |
-| app.js:39814 | Cancel | `closeEventModal` | onclick |
+| app.js:39799 | × | `closeEventModal` | onclick |
+| app.js:39822 | Cancel | `closeEventModal` | onclick |
 | index.html:3367 | button | `closeFilePreview` | onclick |
 | index.html:3200 | filters-modal | `closeFiltersModal` | onclick |
 | index.html:3204 | button | `closeFiltersModal` | onclick |
 | index.html:3230 | Done | `closeFiltersModal` | onclick |
-| app.js:39869 | × | `closeGcalEventModal` | onclick |
-| app.js:39881 | Close | `closeGcalEventModal` | onclick |
+| app.js:39877 | × | `closeGcalEventModal` | onclick |
+| app.js:39889 | Close | `closeGcalEventModal` | onclick |
 | index.html:3396 | button | `closeMdaiNode` | onclick |
-| app.js:5645 | Close triage | `closeNeedsInput` | onclick |
-| app.js:5753 | Close | `closeNeedsInput` | onclick |
+| app.js:5651 | Close triage | `closeNeedsInput` | onclick |
+| app.js:5759 | Close | `closeNeedsInput` | onclick |
 | index.html:3051 | queue-overlay | `closeQueueModal` | onclick |
 | index.html:3058 | Close | `closeQueueModal` | onclick |
 | index.html:2055 | sched-overlay | `closeSchedModal` | onclick |
@@ -1181,42 +1181,42 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:648 | Developer tools | `closeSettings` | onclick |
 | app.js:1937 | a | `closeSettings` | onclick |
 | app.js:1958 | Open | `closeSettings` | onclick |
-| app.js:43461 | ; html += | `closeSettings` | onclick |
+| app.js:43469 | ; html += | `closeSettings` | onclick |
 | index.html:3323 | skill-edit-modal | `closeSkillEdit` | onclick |
 | index.html:3330 | button | `closeSkillEdit` | onclick |
 | app.js:2265 | Close style guide | `closeStyleGuide` | onclick |
 | app.js:2274 | Close | `closeStyleGuide` | onclick |
-| app.js:21135 | + | `closeTTS` | onclick |
-| app.js:21138 | button | `closeTTS` | onclick |
-| app.js:21146 | Cancel | `closeTTS` | onclick |
+| app.js:21141 | + | `closeTTS` | onclick |
+| app.js:21144 | button | `closeTTS` | onclick |
+| app.js:21152 | Cancel | `closeTTS` | onclick |
 | index.html:3361 | Copy | `copyFileContent` | onclick |
 | index.html:3478 | Clear console | `dtClearConsole` | onclick |
 | index.html:3473 | Console | `dtSwitchTab` | onclick |
 | index.html:3474 | Network | `dtSwitchTab` | onclick |
 | index.html:3475 | Info | `dtSwitchTab` | onclick |
-| app.js:35423 | el | `ev` | addEventListener |
+| app.js:35431 | el | `ev` | addEventListener |
 | index.html:3452 | Exit | `exitGridMode` | onclick |
 | index.html:761 | MD | `exportBoard` | onclick |
 | index.html:762 | JSON | `exportBoard` | onclick |
 | index.html:2778 | MD | `exportPeekBoard` | onclick |
 | index.html:2779 | JSON | `exportPeekBoard` | onclick |
-| app.js:7702 | … | `f` | onclick |
-| app.js:7707 | … | `fn` | onclick |
+| app.js:7708 | … | `f` | onclick |
+| app.js:7713 | … | `fn` | onclick |
 | index.html:3071 | Tap to force update | `forceUpdate` | onclick |
-| app.js:24660 | iframe.contentDocument | `function` | addEventListener |
-| app.js:24697 | container | `function` | addEventListener |
-| app.js:37734 | board-columns | `function` | addEventListener |
+| app.js:24666 | iframe.contentDocument | `function` | addEventListener |
+| app.js:24703 | container | `function` | addEventListener |
+| app.js:37742 | board-columns | `function` | addEventListener |
 | index.html:224 | Continue all limited workers | `openBulkActions` | onclick |
-| app.js:20632 | + | `openCustomChipForm` | onclick |
+| app.js:20638 | + | `openCustomChipForm` | onclick |
 | index.html:695 | Filters | `openFiltersModal` | onclick |
 | index.html:646 | Style guide | `openStyleGuide` | onclick |
-| app.js:7278 | All shown | `openVisibleWorkerActions` | onclick |
-| app.js:12153 | + | `peek-action:chat-toggle` | data-peek-action |
-| app.js:7141 | + | `peek-action:file-browser` | data-peek-action |
+| app.js:7284 | All shown | `openVisibleWorkerActions` | onclick |
+| app.js:12159 | + | `peek-action:chat-toggle` | data-peek-action |
+| app.js:7147 | + | `peek-action:file-browser` | data-peek-action |
 | index.html:2932 | PR ↗ | `peekGitOpenPR` | onclick |
-| app.js:40351 | button | `removeGridPane` | onclick |
-| app.js:43466 | button | `removeServer` | onclick |
-| app.js:18552 | div | `renderPeekFiles` | onclick |
+| app.js:40359 | button | `removeGridPane` | onclick |
+| app.js:43474 | button | `removeServer` | onclick |
+| app.js:18558 | div | `renderPeekFiles` | onclick |
 | index.html:791 | button | `renderScheduler` | onclick |
 | index.html:598 | Reset | `resetZoom` | onclick |
 | index.html:3125 | Save | `saveNewServer` | onclick |
@@ -1227,9 +1227,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:2116 | 1h | `setLoopEvery` | onclick |
 | index.html:2117 | 2h | `setLoopEvery` | onclick |
 | index.html:2118 | 4h | `setLoopEvery` | onclick |
-| app.js:31104 | Monthly | `setReportPeriod` | onclick |
-| app.js:31105 | Weekly | `setReportPeriod` | onclick |
-| app.js:31106 | Daily | `setReportPeriod` | onclick |
+| app.js:31112 | Monthly | `setReportPeriod` | onclick |
+| app.js:31113 | Weekly | `setReportPeriod` | onclick |
+| app.js:31114 | Daily | `setReportPeriod` | onclick |
 | index.html:2137 | daily 9am | `setRoutineExpr` | onclick |
 | index.html:2138 | daily 6pm | `setRoutineExpr` | onclick |
 | index.html:2139 | weekdays 9am | `setRoutineExpr` | onclick |
@@ -1239,23 +1239,23 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:2065 | button | `setSchedMode` | onclick |
 | index.html:2066 | button | `setSchedMode` | onclick |
 | index.html:2074 | button | `setSchedMode` | onclick |
-| app.js:4791 | this.parentElement.remove(),250)&gt; | `setTimeout` | onclick |
-| app.js:8005 | ⎇ ${esc(displayBranch)}${conflictWarn} | `showBranchPopover` | onclick |
+| app.js:4797 | this.parentElement.remove(),250)&gt; | `setTimeout` | onclick |
+| app.js:8011 | ⎇ ${esc(displayBranch)}${conflictWarn} | `showBranchPopover` | onclick |
 | index.html:232 | Host pressure | `showHostPressure` | onclick |
 | index.html:220 | Status coverage | `showTelemetryDetail` | onclick |
-| app.js:42119 | Copy | `showToast` | onclick |
-| app.js:42203 | Copy | `showToast` | onclick |
+| app.js:42127 | Copy | `showToast` | onclick |
+| app.js:42211 | Copy | `showToast` | onclick |
 | index.html:237 | active-btn | `toggleActiveDropdown` | onclick |
 | index.html:244 | Create or connect | `toggleAddMenu` | onclick |
 | index.html:3118 | + Add | `toggleAddServer` | onclick |
 | index.html:3124 | Cancel | `toggleAddServer` | onclick |
-| app.js:40305 | … | `toggleGridPane` | onclick |
+| app.js:40313 | … | `toggleGridPane` | onclick |
 | index.html:2607 | Send command | `togglePeekCmd` | onclick |
 | index.html:2492 | Filter messages | `togglePeekFilters` | onclick |
 | index.html:2547 | Expand | `togglePeekFocus` | onclick |
 | index.html:2094 | Expand editor (fills the modal) | `toggleSchedCmdFullscreen` | onclick |
-| app.js:34429 | ${esc(s.title)} | `toggleSchedExpand` | onclick |
-| app.js:34444 | View | `toggleSchedExpand` | onclick |
+| app.js:34437 | ${esc(s.title)} | `toggleSchedExpand` | onclick |
+| app.js:34452 | View | `toggleSchedExpand` | onclick |
 | index.html:701 | A | `toggleSortMenu` | onclick |
 | index.html:3406 | Upload | `triggerExploreUpload` | onclick |
 | index.html:935 | Upload files into this folder | `triggerFilesUpload` | onclick |
@@ -1267,13 +1267,13 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html:3444 | button | `wsApplyPreset` | onclick |
 | index.html:3445 | button | `wsApplyPreset` | onclick |
 | index.html:3446 | button | `wsApplyPreset` | onclick |
-| app.js:40528 | Delete this browser profile | `wsDeleteProfile` | onclick |
+| app.js:40536 | Delete this browser profile | `wsDeleteProfile` | onclick |
 | index.html:3449 | Active | `wsExpandActive` | onclick |
 | index.html:3431 | ws-save-ok | `wsSaveProfileConfirm` | onclick |
-| app.js:40334 | Third width | `wsSetFraction` | onclick |
-| app.js:40335 | Half width | `wsSetFraction` | onclick |
-| app.js:40336 | Two-thirds width | `wsSetFraction` | onclick |
-| app.js:40337 | Full width | `wsSetFraction` | onclick |
+| app.js:40342 | Third width | `wsSetFraction` | onclick |
+| app.js:40343 | Half width | `wsSetFraction` | onclick |
+| app.js:40344 | Two-thirds width | `wsSetFraction` | onclick |
+| app.js:40345 | Full width | `wsSetFraction` | onclick |
 | index.html:3430 | Save | `wsShowSaveInput` | onclick |
 | index.html:3451 | Toggle fullscreen | `wsToggleFullscreen` | onclick |
 | index.html:3438 | Layout | `wsTogglePresetMenu` | onclick |
@@ -1284,9 +1284,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 
 | line | event | handler | why it needs no press feedback |
 |---|---|---|---|
-| app.js:30321 | touchend | `peekCheckSelection` | text selection in the terminal; the selection itself is the feedback |
-| app.js:48791 | mousedown | `_graphStartDrag` | graph node drag; the node follows the finger |
-| app.js:48792 | touchstart | `_graphStartDrag` | graph node drag; the node follows the finger |
-| app.js:48860 | touchend | `_graphEndDrag` | graph node drop; the node stays where it was dropped |
+| app.js:30329 | touchend | `peekCheckSelection` | text selection in the terminal; the selection itself is the feedback |
+| app.js:48799 | mousedown | `_graphStartDrag` | graph node drag; the node follows the finger |
+| app.js:48800 | touchstart | `_graphStartDrag` | graph node drag; the node follows the finger |
+| app.js:48868 | touchend | `_graphEndDrag` | graph node drop; the node stays where it was dropped |
 
 <!-- summary {"measured":true,"n_considered":1239,"async":768,"async_writes":645,"async_reads":123,"gaps_before_shared_layer":768,"uncovered_by_shared_layer":0,"non_click_mutations":4,"non_click_unexempted":0} -->

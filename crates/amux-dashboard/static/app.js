@@ -4292,7 +4292,13 @@ const _origFetch = window.fetch.bind(window);
 // deploy has its fetch fail, get queued, and report success. Ethan saw the two
 // halves separately — "mdai files are stuck at running", and a banner reading
 // `Syncing 0/1 · POST /api/files/mdai/run` that never cleared.
-const _OUTBOX_SKIP = /\/api\/(connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
+//
+// `connectors/<id>/(auth|token|test)` joined for the same ANSWER-NEEDED-NOW
+// reason (2026-10-10): a Google reconnect pressed while the server restarted
+// got the synthetic 202, which has no authorize_url, so the button said
+// "Could not start the grant: unknown", and the queued POST would later
+// start a sign-in nobody was there to open.
+const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/run|history\/ask|config\/cross-group|gateway\/switch-org|projects\/draft(?:[?#]|$)|projects\/[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))/;
 const _outboxManualAction = url => /\/api\/projects\/(?:draft|[^/]+\/(?:closeout|acceptance\/(?:approve|rerun)))(?:[?#]|$)/.test(url || '');
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
@@ -14023,7 +14029,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1293';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1294';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27858,8 +27864,10 @@ async function _connReconnect(family, account) {
     if (d && d.authorize_url) {
       window.open(d.authorize_url, '_blank');
       showToast('Approve in the opened tab — one approval repairs every worker using ' + account);
+    } else if (!r.ok || (d && d.queued)) {
+      showToast('Could not reach the server (HTTP ' + r.status + '). Try again in a moment.');
     } else {
-      showToast('Could not start the grant: ' + ((d && (d.error || d.detail)) || 'unknown'));
+      showToast('Could not start the grant: ' + ((d && (d.error || d.detail)) || 'the server sent no sign-in link'));
     }
   } catch (e) { showToast('Could not start the grant: ' + e); }
 }
