@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1304';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1305';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -17174,6 +17174,39 @@ function wrapBoxBlocks(html) {
 let peekSelecting = false;
 let _peekScrollLocked = false;
 let _peekBufferedOutput = false;
+// HOLD REPAINTS WHILE A PRESS IS IN PEEK (Ethan, 2026-10-10: "clicking these
+// links nothing happens"). On an active worker the thin view rebuilt its
+// history about every 270 ms (37 node swaps in 10 s, measured on
+// short-form-videos), so a link pressed on one node was released over its
+// replacement and the browser fired no click at all. A press inside
+// #peek-body now buffers output exactly like a scrolled-up reader does; 400 ms
+// after the release (long enough for the click handler to run on the same
+// node) the buffered frame is painted, unless a text selection is in progress.
+let _peekPressHold = false;
+let _peekPressTimer = 0;
+document.addEventListener('pointerdown', e => {
+  if (!(e.target && e.target.closest && e.target.closest('#peek-body'))) return;
+  _peekPressHold = true;
+  clearTimeout(_peekPressTimer);
+}, true);
+function _peekPressRelease() {
+  if (!_peekPressHold) return;
+  clearTimeout(_peekPressTimer);
+  _peekPressTimer = setTimeout(() => {
+    _peekPressHold = false;
+    if (!_peekBufferedOutput || _peekScrollLocked) return;
+    if (window.getSelection && String(window.getSelection()) !== '') return;   // selecting: keep the nodes
+    const body = document.getElementById('peek-body');
+    if (!body) return;
+    const follow = _peekFollowBottom || _isScrolledToBottom(body);
+    const top = body.scrollTop;
+    _peekBufferedOutput = false;
+    applyPeekSearch(false, false);
+    body.scrollTop = follow ? body.scrollHeight : top;
+  }, 400);
+}
+document.addEventListener('pointerup', _peekPressRelease, true);
+document.addEventListener('pointercancel', _peekPressRelease, true);
 let _peekFollowBottom = false;
 // Did a SELECTION cause the current pause? Only that pause may be undone when
 // the selection clears; a reader who dragged toward history keeps their pause.
@@ -17824,7 +17857,7 @@ async function _refreshPeekFrame(liveOnly, request) {
     const chatOwnsBody = body.classList.contains('peek-chat');
     if (chatOwnsBody) _peekChatPaintSkips++;
     else {
-    if (_peekScrollLocked || hasSearch) _peekBufferedOutput = true;
+    if (_peekScrollLocked || hasSearch || _peekPressHold) _peekBufferedOutput = true;
     // When user has scrolled up, skip DOM update to avoid fidgeting the view.
     // Buffer in lastPeekHTML and flush when they resume.
     if (hasSearch && (!_peekScrollLocked || _peekPendingFindScroll)) {
@@ -17845,12 +17878,14 @@ async function _refreshPeekFrame(liveOnly, request) {
         _peekScrollTo(peekSearchIndex, true, true);
         _peekNavBeacon('deferred-search-landed', _peekMsgPrompts(), _peekMatches[peekSearchIndex]);
       }
-    } else if (!_peekScrollLocked) {
+    } else if (!_peekScrollLocked && !_peekPressHold) {
       const _liveEl = document.getElementById('pk-live');
       if (!histChanged && _liveEl) { _liveEl.innerHTML = _lastLiveHTML; _peekReclassifyPrompts(); }   // live tick → swap the small region only
       else applyPeekSearch(false);
     }
-    if (!_peekScrollLocked && (atBottom || _peekFollowBottom) && !hasSearch) {
+    if (_peekPressHold) {
+      // Held for a press: neither repaint nor scroll; the release flushes.
+    } else if (!_peekScrollLocked && (atBottom || _peekFollowBottom) && !hasSearch) {
       body.scrollTop = body.scrollHeight;
       _peekBufferedOutput = false;
       _hideScrollLockBadge(body);
