@@ -5676,3 +5676,58 @@ CARD: none (user authorized PRs only; a live board write is outside this task)
 SYMPTOM: A new isolated Codex terminal worker completes its synthetic task with the terminal default, but its first two real Chat UI turns inherit gpt-6.1-sol from global desktop configuration and fail with a ChatGPT account model-not-supported error. Codex also sets fresh=false for its first Chat turn, so the companion introduction never reaches it; the refreshed context omits directory and isolation, and a later reply confuses synthetic fixture isolation with terminal isolation.
 COST: Two real provider turns fail, and the owner cannot trust that Chat describes the worker's actual scope. The native terminal rollout remained unchanged throughout the failed and configured-model Chat tests.
 FIX: PR candidate shares the terminal default with Codex headless turns, preserves explicit models including -m, introduces new/rebuilt Codex conversations, and supplies directory/isolation each turn with chat_model_terminal_default and chat_companion_context log signals. Private real-provider UI and SIGKILL/restart validation required; no merge or deployment authorized.
+
+## File previews move below the tab strip but retain a full viewport height
+AREA: instruments
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex file-view PR work
+CARD: none (user authorized PRs only)
+SYMPTOM: The reader reaches maximum scrollTop in a Markdown file but its final lines remain below the physical window. The dialog diagnostic measures only the file header, so it misses the offscreen body.
+COST: The owner cannot finish reading the artifact even though the scrollbar appears to be at its end.
+FIX: PR candidate subtracts the effective top from the visual viewport bottom, allows file/edit flex bodies to shrink, measures the complete file frame, and rechecks asynchronous file contents. Existing modal-layout-clipped beacons retain measured viewport evidence without file content. Real Preview/Raw/Edit and embedded-chat bottom-glyph checks cover short windows, phones, and WebKit.
+
+## Oversized media cards center their first lines above the file scrollport
+AREA: instruments
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex file-view PR work
+CARD: none (user authorized PRs only)
+SYMPTOM: An audio/download card taller than a short file pane is centered above scrollTop=0; scrolling cannot reach its first lines.
+COST: File identity and download information disappear on short screens.
+FIX: PR candidate uses safe centering and emits modal-layout-clipped:start-content-unreachable when an oversized card starts above its scrollport. Real image, video, audio, and download-card tests measure both ends.
+
+## Worker split files lack a bounded scrollport and PDFs check another viewer
+AREA: instruments
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex file-view PR work
+CARD: none (user authorized PRs only)
+SYMPTOM: A split file body's flex height expands instead of occupying the available pane; HTML imposes a 300px minimum in smaller panes. PDF rendering checks whether the separate file overlay is active, so a split-only PDF remains on Loading PDF.
+COST: Worker artifacts cannot reliably be read to their end, and PDFs never appear in the split view.
+FIX: PR candidate gives split previews their own bounded flex scrollport and shrinkable iframe, adds them to modal-layout-clipped checks, and ties PDF rendering to its actual visible container and render generation. file-pdf-render records verdict, rendered/total pages, and viewer. Real split Markdown/HTML/three-page PDF tests cover both normal and short panes.
+
+## Late directory responses overwrite a worker's newer file selection
+AREA: instruments
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex file-view PR work
+CARD: none (user authorized PRs only)
+SYMPTOM: Opening the split pane starts its default folder request; a later navigation can finish first, then the old directory response replaces its listing or selected file. WebKit's real file-list case timed out waiting for a row that the old response erased.
+COST: The worker file view silently returns to the wrong location on slow or reordered requests.
+FIX: PR candidate shares a navigation generation across split folder/file requests, clears obsolete sorting data, and discards stale success/error responses with file-split-stale-response verdict=discarded. E2E holds real backend directory/file responses, navigates to the current file, then releases the obsolete responses and verifies the final artifact remains visible.
+
+## Computed Markdown raw action reopens its node and its menu extends below Safari
+AREA: instruments
+SEVERITY: degrades
+STATUS: open
+DATE: 2026-10-09
+SESSION: human Codex file-view PR work
+CARD: none (user authorized PRs only)
+SYMPTOM: Open raw .mdai file routes back through the normal node dispatch, reopening the node and starting its model run. Safari exposes an additional Share item, placing the raw action below a short viewport with no menu scrolling.
+COST: The owner cannot inspect the source through the advertised action; attempting it can execute a model instead.
+FIX: PR candidate explicitly selects the generic raw viewer, preserves normal node dispatch, clamps the menu within the viewport, and enables menu scrolling. mdai-raw-view and file-menu-layout record measured verdicts without source text. The real menu action is tested at four sizes with a zero-model-run request assertion.
