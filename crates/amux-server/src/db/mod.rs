@@ -1995,11 +1995,23 @@ mod storage_maintenance_tests {
                 .is_err(),
             "negative control: readers must remain query-only"
         );
-        store
-            .maintenance_async(Maintenance::Checkpoint)
-            .await
-            .unwrap();
-        store.maintenance_async(Maintenance::Vacuum).await.unwrap();
+        // Maintenance yields to any reader still holding a snapshot (by design,
+        // production retries next tick). The negative-control reader above can
+        // still be releasing on a loaded CI runner, so retry the deferral the
+        // way the scheduler would. Any other error still fails.
+        for operation in [Maintenance::Checkpoint, Maintenance::Vacuum] {
+            let mut attempt = 0;
+            loop {
+                match store.maintenance_async(operation).await {
+                    Ok(_) => break,
+                    Err(e) if attempt < 100 && e.to_string().contains("deferred by an active reader") => {
+                        attempt += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    Err(e) => panic!("maintenance failed after {attempt} deferrals: {e:?}"),
+                }
+            }
+        }
         assert_eq!(
             store.current_rev().unwrap(),
             rev,
