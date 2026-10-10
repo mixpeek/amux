@@ -1814,8 +1814,12 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
 fi
 reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
 VMS_PRUNED=0
-if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
+# Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
+# freed VM blocks back to the host, and with images swept after it, the 2-4
+# superseded 9.84 GB builds a tick removed stayed allocated on the host until
+# the next hourly trim.
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && prune_vm_images "$DRY"
+if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 [ "${AMUX_CLEANUP_USER_TMP:-1}" = 1 ] && reap_user_tmp "$DRY"
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && reap_lane_tmp "$DRY"
 VMS_STOPPED=0
