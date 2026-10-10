@@ -1,5 +1,9 @@
 //! Shared worker messaging authority. This check has no permission exceptions:
 //! shared membership, self input, and direct owner input are the only controls.
+//! A worker's own Chat tab (`<worker>@chat`) sending to that worker is self
+//! input: it is the owner talking to the worker through another surface. It
+//! reaches no other worker this way (Ethan, 2026-10-10: the chat said it was
+//! blocked from sending to its own isolated worker).
 
 #[derive(Clone, Debug)]
 pub(crate) struct PeerInputRefusal {
@@ -13,6 +17,11 @@ pub(crate) fn worker_group_refusal(
     target_groups: &std::collections::BTreeSet<String>,
 ) -> Option<PeerInputRefusal> {
     if origin.is_empty() || origin == target || !origin_groups.is_disjoint(target_groups) { return None; }
+    if super::chat_worker::companion_parent(origin) == Some(target) {
+        tracing::info!(origin, target, verdict = "chat_tab_self_input", measured = true, n_considered = 1,
+            "a worker's own Chat tab sent to it: self input, not a cross-group message");
+        return None;
+    }
     tracing::warn!(origin, target, ?origin_groups, ?target_groups,
         verdict = "worker_group_boundary", measured = true, n_considered = 1,
         "worker input refused outside a shared group");
@@ -36,5 +45,18 @@ mod tests {
         assert!(worker_group_refusal("", "outside", &own, &other).is_none());
         assert!(worker_group_refusal("source", "source", &own, &other).is_none());
         assert!(worker_group_refusal("retired", "outside", &Default::default(), &other).is_some());
+    }
+
+    /// The live refusal: mxp-gs12@chat (no groups) -> mxp-gs12 (gs12) was
+    /// worker_group_boundary, so the Chat tab could not reach its own worker.
+    #[test]
+    fn a_workers_own_chat_tab_reaches_it_and_no_one_else() {
+        let none = Default::default();
+        let gs12 = ["gs12".to_string()].into_iter().collect();
+        assert!(worker_group_refusal("mxp-gs12@chat", "mxp-gs12", &none, &gs12).is_none());
+        assert!(worker_group_refusal("mxp-gs12@chat", "other-lane", &none, &gs12).is_some(),
+            "the chat tab must not become a route to any other worker");
+        assert!(worker_group_refusal("other@chat", "mxp-gs12", &none, &gs12).is_some(),
+            "another worker's chat tab is not self input");
     }
 }
