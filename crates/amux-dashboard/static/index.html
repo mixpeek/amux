@@ -826,8 +826,9 @@ setTimeout(function(){var f=document.getElementById('js-fallback');if(f&&f.style
 <!-- Scratchpad view: paste-to-save notes in ~/Vault/Scratchpad/ -->
 <div id="scratchpad-view" style="display:none;flex-direction:column;flex:1;min-height:0;">
   <div class="fe-toolbar">
-    <div class="fe-breadcrumb" style="font-weight:600;font-size:0.85rem;">Scratchpad</div>
-    <div class="sp-actions">
+    <div class="fe-breadcrumb sp-dir" id="sp-dir" title="~/Vault/Scratchpad">~/Vault/Scratchpad</div>
+    <button class="fe-tb-btn sp-more-btn" id="sp-more-btn" onclick="_spMoreToggle(event)" aria-label="Scratchpad actions" aria-haspopup="true" aria-expanded="false">&#x22EF;</button>
+    <div class="sp-actions" id="sp-actions" onclick="if(event.target.closest('button'))_spMoreClose()">
       <label class="sp-retain-wrap" title="Items older than this are deleted automatically">Keep
         <select id="sp-retain" class="input sp-retain" onchange="_spSetRetain(this.value)" aria-label="Keep scratchpad items for">
           <option value="1">1 day</option><option value="3">3 days</option><option value="7">7 days</option>
