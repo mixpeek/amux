@@ -395,6 +395,16 @@ STALE_SHELL_SNAPSHOT_H=${AMUX_CLEANUP_STALE_SHELL_SNAPSHOT_H:-6}
 # Seam: the test points this at a fixture so the arm can be fed elapsed times
 # without a real process. The default is what the scheduler actually runs.
 STALE_PS_CMD=${AMUX_CLEANUP_STALE_PS_CMD:-ps -eo pid=,etime=,args=}
+# Orphaned `sqlite3 <amux db> .backup` copies (DESKT-94). SQLite's online backup
+# restarts whenever another connection writes the source, so a .backup of the
+# live amux.db never finishes (AMUX-3491 measured it; VACUUM INTO is the fix).
+# When the lane's shell times out the sqlite3 child is reparented to launchd and
+# spins on: on 2026-10-10 one ran 2h52m at 96% CPU holding a 5G partial copy.
+# Only an ORPHAN (parent pid 1) is stopped: nobody is waiting on it, and it only
+# reads the database. One whose caller is alive is reported, never killed.
+SQLITE_ORPHAN_MIN=${AMUX_CLEANUP_SQLITE_ORPHAN_MIN:-20}
+SQLITE_PS_CMD=${AMUX_CLEANUP_SQLITE_PS_CMD:-ps -Ao pid=,ppid=,etime=,args=}
+SQLITE_DB_ROOT=${AMUX_CLEANUP_SQLITE_DB_ROOT:-${AMUX_HOME:-$HOME/.amux}}
 
 # ── pure decisions (no side effects, so the tests can exercise them) ──────────
 
@@ -704,6 +714,46 @@ churn_census() { # <colon-roots> <minutes> <budget_s> <min_files>
   done
   awk -v m="$minf" '$1 >= m' "$out" | sort -rn | head -3
   rm -f -- "${out:?}"
+}
+
+# Stop orphaned `sqlite3 <amux db> .backup` copies (DESKT-94; knobs above).
+# Sets sqlite_found / sqlite_stopped / sqlite_live.
+reap_orphan_sqlite_backups() { # <dry:0|1>
+  local DRY=${1:-0} line spid sppid setime sargs ss
+  sqlite_found=0; sqlite_stopped=0; sqlite_live=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # pid ppid etime args...
+    read -r spid sppid setime sargs <<< "$line"
+    case "$sargs" in sqlite3\ *) ;; *) continue ;; esac
+    case "$sargs" in *.backup*) ;; *) continue ;; esac
+    case "$sargs" in *"$SQLITE_DB_ROOT/"*) ;; *) continue ;; esac
+    ss=$(etime_secs "$setime")
+    case "$ss" in ''|*[!0-9]*) continue ;; esac
+    [ "$ss" -ge $(( SQLITE_ORPHAN_MIN * 60 )) ] || continue
+    sqlite_found=$((sqlite_found+1))
+    if [ "$sppid" != 1 ]; then
+      sqlite_live=$((sqlite_live+1))
+      echo "mac-cleanup: sqlite .backup pid=$spid age=$setime has a live caller (ppid $sppid), left alone: $sargs"
+      continue
+    fi
+    if [ "$DRY" = "1" ]; then
+      echo "mac-cleanup: orphaned sqlite .backup pid=$spid age=$setime would be stopped (dry run): $sargs"
+      continue
+    fi
+    kill -TERM "$spid" 2>/dev/null || true
+    sleep 2
+    kill -0 "$spid" 2>/dev/null && kill -KILL "$spid" 2>/dev/null
+    if kill -0 "$spid" 2>/dev/null; then
+      echo "mac-cleanup: FAILED to stop orphaned sqlite .backup pid=$spid"
+    else
+      sqlite_stopped=$((sqlite_stopped+1))
+      mkdir -p "$STATE_DIR" 2>/dev/null
+      printf '%s\tstopped\t%s\t%s\t%s\n' "$(date '+%F %T')" "$spid" "$setime" "$sargs" >> "$STATE_DIR/sqlite-orphans.log"
+      echo "mac-cleanup: stopped orphaned sqlite .backup pid=$spid age=$setime (a .backup of a live db never finishes; use VACUUM INTO): $sargs"
+    fi
+  done < <($SQLITE_PS_CMD 2>/dev/null)   # not a heredoc: this body is indented, and an indented EOF never closes one
+  echo "mac-cleanup: sqlite .backup: found=${sqlite_found} stopped=${sqlite_stopped} live_caller=${sqlite_live} (floor ${SQLITE_ORPHAN_MIN}m)"
 }
 
 # 0 = nothing inside was written in the last <hours>; 1 = something was; 2 = the
@@ -1692,6 +1742,9 @@ $($STALE_PS_CMD 2>/dev/null | grep 'shell-snapshots/snapshot-bash' | grep -v gre
 EOF
 echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} (floor ${STALE_SHELL_SNAPSHOT_H}h)"
 
+# ── act: stop orphaned sqlite .backup copies of amux's databases ─────────────
+reap_orphan_sqlite_backups "$DRY"
+
 # ── report: the consumers this script must not touch ─────────────────────────
 # Named with an owner, because the useful half of a hog report is who can act.
 echo "mac-cleanup: consumers above ${REPORT_GB}G (reported, never killed):"
@@ -1921,5 +1974,5 @@ fi
 if [ "$SECONDS" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: WARN tick took ${SECONDS}s, over ${TICK_WARN_S}s: the scheduler kills it at 600s, so a slower run is lost; tighten the budgets"
 fi
-echo "mac-cleanup: done elapsed=${SECONDS}s purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
+echo "mac-cleanup: done elapsed=${SECONDS}s purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0

@@ -22,6 +22,7 @@ TICK="$HERE/mac-cleanup-tick.sh"
 # scenario past it would silently find nothing.
 FIX=$(mktemp -d /tmp/mac-cleanup-wt-test.XXXXXX)
 export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a test (DESKT-81)
+export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
 trap 'rm -rf -- "${FIX:?}"' EXIT
 mkdir -p "$FIX/tmp"
 export TMPDIR="$FIX/tmp"

@@ -54,9 +54,11 @@ cleanup() {
 trap cleanup EXIT
 
 if [ -n "${AMUX_LIVE_DB:-}" ] && [ -r "${AMUX_LIVE_DB}" ]; then
-  # READ-ONLY backup. Never soak against the live file.
+  # READ-ONLY copy. Never soak against the live file. VACUUM INTO, not .backup:
+  # the backup API restarts whenever a writer touches the source, so a .backup
+  # of the live db never finishes (AMUX-3491, DESKT-94).
   echo "== seeding from a read-only copy of $AMUX_LIVE_DB"
-  sqlite3 "file:${AMUX_LIVE_DB}?mode=ro" ".backup '$WORK/amux.db'"
+  sqlite3 "file:${AMUX_LIVE_DB}?mode=ro" "VACUUM INTO '$WORK/amux.db'"
 else
   echo "== no AMUX_LIVE_DB; soaking against a fresh database"
 fi
