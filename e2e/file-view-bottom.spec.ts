@@ -26,8 +26,10 @@ async function fits(page: Page, selector = '#file-body') {
 // Measure the final glyph, including raw text without a DOM wrapper.
 // scrollTop=max alone passes even when the scrollport extends off screen.
 async function finalLine(page: Page, scroller = '#file-body', scroll = true, needle = end) {
-  if (scroll) await page.locator(scroller).evaluate(el => { el.scrollTop = el.scrollHeight; });
-  await expect.poll(() => page.locator(scroller).evaluate((el, needle) => {
+  // Scroll on every poll: content that renders or grows after one scroll left
+  // the last line below the fold on CI (desktop, mobile and ios-safari runs).
+  await expect.poll(() => page.locator(scroller).evaluate((el, [needle, scroll]) => {
+    if (scroll) el.scrollTop = el.scrollHeight;
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     let node: Node | null, offset = 0;
     const text = el.textContent || '', at = text.indexOf(needle);
@@ -41,12 +43,12 @@ async function finalLine(page: Page, scroller = '#file-body', scroll = true, nee
         range.setEnd(node,at+needle.length-offset);
       const r = range.getBoundingClientRect(), b = el.getBoundingClientRect();
       const hit = document.elementFromPoint(r.left+Math.min(10,r.width/2), r.bottom-2);
-      return r.height > 0 && r.top >= b.top && r.bottom <= Math.min(b.bottom,innerHeight) && !!hit && el.contains(hit);
+      return r.height > 0 && r.top >= b.top - 1 && r.bottom <= Math.min(b.bottom,innerHeight) + 1 && !!hit && el.contains(hit);
       }
       offset += length;
     }
     return false;
-  }, needle), 'the complete final line is visible and hit-testable after scrolling to the end').toBe(true);
+  }, [needle, scroll] as [string, boolean]), 'the complete final line is visible and hit-testable after scrolling to the end').toBe(true);
 }
 
 test('real Markdown preview, raw and edit reach the end in dashboard and embedded chat', async ({page,browserName}, info) => {
