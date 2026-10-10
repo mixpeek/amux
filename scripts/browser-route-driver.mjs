@@ -2,7 +2,7 @@
 // No model loop: observation and decisions remain with the worker.
 import {request as httpRequest} from 'node:http';
 import {request as httpsRequest} from 'node:https';
-import {readFileSync, writeFileSync, mkdirSync, existsSync, cpSync, renameSync, rmSync, openSync, closeSync, lstatSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdirSync, existsSync, cpSync, renameSync, rmSync, openSync, closeSync, lstatSync, realpathSync} from 'node:fs';
 import {join, basename, resolve} from 'node:path';
 import {createHash, randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
@@ -283,7 +283,9 @@ export async function route(ctx,verb,b={}) {
 export async function run(input) {
   try {return await route(input.context,input.verb,input.body||{});}catch(e){return {error:e.message,status:e.status||502,attempts:e.attempts,route:e.route,...(input.context.cleanup_events?.length?{cleanup_events:input.context.cleanup_events}:{})};}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
+// Node canonicalizes the module URL, but keeps the caller's symlink spelling
+// in argv. Compare canonical paths so /tmp on macOS still executes the driver.
+if(process.argv[1]&&import.meta.url===pathToFileURL(realpathSync(process.argv[1])).href) {
   let text='';for await(const chunk of process.stdin)text+=chunk;
   try {const result=await run(JSON.parse(text));process.stdout.write(JSON.stringify(result));}catch(e){process.stdout.write(JSON.stringify({error:e.message,status:400}));}
 }

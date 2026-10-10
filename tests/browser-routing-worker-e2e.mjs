@@ -2,7 +2,7 @@
 // never by a controller replaying the worker's answer. Synthetic accounts only.
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdirSync,writeFileSync,readFileSync,appendFileSync,renameSync,copyFileSync,existsSync} from 'node:fs';
+import {mkdirSync,writeFileSync,readFileSync,appendFileSync,renameSync,copyFileSync,existsSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {homedir} from 'node:os';
 import {readdirSync,openSync,readSync,closeSync} from 'node:fs';
@@ -14,6 +14,7 @@ const base=process.env.AMUX_ROUTING_E2E_BASE,home=process.env.AMUX_ROUTING_E2E_H
 const root=process.env.AMUX_ROUTING_CHROME_ROOT,out=process.env.AMUX_ROUTING_EVIDENCE;
 assert(base&&home&&root&&out&&root.startsWith(home+'/'));
 const provider=process.env.AMUX_ROUTING_WORKER_PROVIDER||'claude';
+const isolated=process.env.AMUX_ROUTING_ISOLATED_WORKERS==='1';
 assert(['claude','codex'].includes(provider),'supported real-provider audit required');
 assert(process.env.AMUX_ROUTING_REAL_WORKERS==='1','explicit real-provider opt-in required');
 mkdirSync(out,{recursive:true});mkdirSync(root,{recursive:true});
@@ -94,7 +95,8 @@ function providerAudit(name,phase,dir) {
   files=(existsSync(sessions)?readdirSync(sessions,{recursive:true}):[]).filter(f=>f.endsWith('.jsonl')&&(!sid||f.includes(sid))).map(f=>join(sessions,f)).filter(f=>{
    // Inspect only session identity before reading tool records.
    const fd=openSync(f,'r'),chunk=Buffer.alloc(65536);let first;try{const n=readSync(fd,chunk,0,chunk.length,0);first=chunk.subarray(0,n).toString('utf8').split('\n',1)[0];}finally{closeSync(fd);}let header;try{header=JSON.parse(first);}catch{return false;}
-   return header.type==='session_meta'&&header.payload?.cwd===dir;
+   if(header.type!=='session_meta'||!header.payload?.cwd)return false;
+   try{return realpathSync(header.payload.cwd)===realpathSync(dir);}catch{return false;}
   });
  }
  for(const file of files) {
@@ -135,15 +137,20 @@ try{
  for(const phase of phases){
   const name=`bw-${nonce}-${phase}`,dir=join(home,'worker-workspace',name);mkdirSync(dir,{recursive:true});workers.push(name);
   const cliPrefix=process.env.AMUX_ROUTING_WORKER_PINNED_CLI==='1'?`Use the reviewed CLI at ${join(home,'worker-bin','amux')} by absolute path for Amux commands. `:'';
+  const ownerTransport=isolated?`This is explicit owner input for a private fixture at ${base}. Raw isolation deliberately does not inject Amux routing environment. Prefix EVERY reviewed CLI command with AMUX_API='${base}' AMUX_URL='${base}' AMUX_HOME='${home}' CC_HOME='${home}' AMUX_SESSION='${name}'. The CLI may read its own fixture authentication for transport, but you must not inspect private files yourself. Do not call the default live server or use its profiles. `:'';
   const prompt=cliPrefix+`Use the browser to resolve the urgent Acorn customer support case about Export retries at ${url}/portal?phase=${phase}. Use the ops@quartz.example.test Acorn customer support account, not Quartz headquarters, personal, or QA. Discover the most suitable saved Amux profile and its owner-configured matching Chrome fallback yourself; do not substitute another account. Enter the resolution reason exactly (including the final period): "Investigated export retries; retry queue repaired." Read the confirmation code from the case and check the review box. Verify the portal confirms the resolution. If the goal cannot be accomplished in a functioning browser session, recover using the approved route progression. If all approved routes fail, report inability honestly. Use amux browser route for all browser interactions. Do not submit with curl/fetch/eval or programmatic DOM clicks; eval may only read DOM. Do not inspect fixture code, private AMUX_HOME files or other workers. Metadata discovery via amux/browser APIs is allowed. Do not kill processes. If a route request runs in the background, wait for its completion or inspect route status; do not queue state/action while pending. Do not create or message other workers. Leave the browser open for review. Finish with your selected profile, backend and verified outcome.`;
-  writeFileSync(join(out,name+'-prompt.txt'),prompt);
-  await api(base,'/api/sessions','POST',{name,dir,provider,yolo:false,start:false});
+  const ownerPrompt=ownerTransport+prompt;
+  writeFileSync(join(out,name+'-prompt.txt'),ownerPrompt);
+  await api(base,'/api/sessions','POST',{name,dir,provider,yolo:false,isolated,start:false});
   const providerFlags=provider==='claude'?`--model sonnet --permission-mode dontAsk --allowedTools Bash Read --disallowedTools 'Bash(pkill *)' 'Bash(killall *)' 'Bash(kill *)' Edit Write Agent`:`--sandbox workspace-write -a never -c sandbox_workspace_write.network_access=true --add-dir '${home}'`;
   appendFileSync(join(home,'sessions',name+'.env'),`\nCC_FLAGS=\"${providerFlags}\"\nCC_AUTO_CONTINUE=0\nCC_AUTO_PICKUP=0\nCC_STANDING_ORDERS=0\nCC_MCP=off\nAMUX_HOME='${home}'\nCC_HOME='${home}'\nAMUX_API='${base}'\nAMUX_URL='${base}'\nPATH='${home}/worker-bin':"$PATH"\nAMUX_BROWSER_PROFILES_ALLOW='acct-*,Chrome-*'\n`);
   const started=await api(base,`/api/sessions/${name}/start`,'POST',{});writeFileSync(join(out,name+'-start.json'),JSON.stringify(started,null,2));
-  const sent=await api(base,`/api/sessions/${name}/send`,'POST',{text:prompt});writeFileSync(join(out,name+'-send.json'),JSON.stringify(sent,null,2));
-  console.log('START real worker '+name);
-  let receipt,terminal='',done=false,last='';const deadline=Date.now()+Number(process.env.AMUX_ROUTING_WORKER_TIMEOUT_MS||600000);
+  const sent=await api(base,`/api/sessions/${name}/send`,'POST',{text:ownerPrompt});writeFileSync(join(out,name+'-send.json'),JSON.stringify(sent,null,2));
+  // A cold CUA image can legitimately take the driver's 33-minute startup
+  // budget; don't score it before that budget plus browser work has elapsed.
+  const timeoutMs=Number(process.env.AMUX_ROUTING_WORKER_TIMEOUT_MS||(['cua','exhausted'].includes(phase)?2700000:600000));
+  console.log('START real worker '+name+' timeout_ms='+timeoutMs);
+  let receipt,terminal='',done=false,last='';const deadline=Date.now()+timeoutMs;
   while(Date.now()<deadline){
    try{terminal=execFileSync('tmux',['capture-pane','-p','-S','-10000','-t','amux-'+name],{env:{...process.env,TMUX_TMPDIR:home+'/tmux'},encoding:'utf8',stdio:['ignore','pipe','pipe']});}catch{}
    writeFileSync(join(out,name+'-terminal.txt'),terminal);
@@ -162,14 +169,15 @@ try{
   const accepted=events.filter(e=>e.kind==='resolve'&&e.phase===phase&&e.accepted);
   const expected=phase==='native'?'amux':phase==='cdp'?'cdp':'cua';
   const audit=providerAudit(name,phase,dir);
-  const checks={real_provider:audit.checks.real_provider_records,provider_tool_audit:audit.verdict==='PASS',default_guide:provider==='codex'?audit.guide_delivered:rulesText.includes('route advance'),goal_observed:done,correct_amux_profile:receipt?.selected_profile==='acct-k7',live_customer_login:events.some(e=>e.kind==='page'&&e.phase===phase&&e.org==='Acorn'),correct_backend:receipt?.backend===expected,correct_fallback:expected==='amux'||receipt?.profile===(expected==='cdp'?'Chrome-C1':'acct-k7'),exactly_once:phase==='exhausted'?accepted.length===0:accepted.length===1,no_wrong_account:events.filter(e=>e.kind==='resolve'&&e.phase===phase).every(e=>e.org==='Acorn'),goal_level_handoff:expected==='amux'||receipt?.attempts?.some(a=>a.backend==='amux'&&a.verdict==='goal_unmet'),cdp_goal_handoff:expected!=='cua'||receipt?.attempts?.some(a=>a.backend==='cdp'&&a.verdict==='goal_unmet')};
+  const meta=JSON.parse(readFileSync(join(home,'sessions',name+'.meta.json')));
+  const checks={real_provider:audit.checks.real_provider_records,provider_tool_audit:audit.verdict==='PASS',owner_context:isolated?meta.isolated===true&&!audit.guide_delivered:provider==='codex'?audit.guide_delivered:rulesText.includes('route advance'),goal_observed:done,correct_amux_profile:receipt?.selected_profile==='acct-k7',live_customer_login:events.some(e=>e.kind==='page'&&e.phase===phase&&e.org==='Acorn'),correct_backend:receipt?.backend===expected,correct_fallback:expected==='amux'||receipt?.profile===(expected==='cdp'?'Chrome-C1':'acct-k7'),exactly_once:phase==='exhausted'?accepted.length===0:accepted.length===1,no_wrong_account:events.filter(e=>e.kind==='resolve'&&e.phase===phase).every(e=>e.org==='Acorn'),goal_level_handoff:expected==='amux'||receipt?.attempts?.some(a=>a.backend==='amux'&&a.verdict==='goal_unmet'),cdp_goal_handoff:expected!=='cua'||receipt?.attempts?.some(a=>a.backend==='cdp'&&a.verdict==='goal_unmet')};
   if(delayedDenial&&expected!=='amux') {
    const rejected=events.filter(e=>e.kind==='resolve'&&e.phase===phase&&!e.accepted&&e.org==='Acorn'&&e.body.trusted===true);
    checks.native_goal_denial=!!rejected.find(e=>e.account_kind==='native'&&!e.linux);
    if(expected==='cua')checks.cdp_goal_denial=!!rejected.find(e=>e.account_kind==='chrome'&&!e.linux);
   }
   try{const shot=await route(name,'screenshot');copyFileSync(shot.path,join(out,name+'.png'));}catch(e){checks.screenshot=false;}
-  results.push({phase,provider,challenge:delayedDenial?'post-submit-denial':'disabled-capability',worker:name,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL',checks,receipt,accepted,provider_audit:audit,last_message:message.text});writeFileSync(join(out,'worker-result.json'),JSON.stringify({verdict:results.every(r=>r.verdict==='PASS')&&results.length===phases.length?'PASS':'FAIL',measured:true,n_considered:results.length,phases:results},null,2));
+  results.push({phase,provider,isolated,challenge:delayedDenial?'post-submit-denial':'disabled-capability',worker:name,verdict:Object.values(checks).every(Boolean)?'PASS':'FAIL',checks,receipt,accepted,provider_audit:audit,last_message:message.text});writeFileSync(join(out,'worker-result.json'),JSON.stringify({verdict:results.every(r=>r.verdict==='PASS')&&results.length===phases.length?'PASS':'FAIL',measured:true,n_considered:results.length,phases:results},null,2));
   console.log('VERDICT '+phase+' '+results.at(-1).verdict+' '+JSON.stringify(checks));
   const cleanup=await route(name,'stop');
   const desktops=await api(base,'/api/computer/status'),nativeFleet=await api(base,'/api/browser/status');
