@@ -1721,6 +1721,8 @@
   #fc-container .fc-schedToggle-button[aria-pressed="false"],
   #fc-container .fc-issuesToggle-button[aria-pressed="false"],
   #fc-container .fc-gcalToggle-button[aria-pressed="false"] { opacity: 0.55; }
+  #fc-container .fc-footer-toolbar .fc-button { padding: 8px 10px; min-width: 44px; }
+  #fc-container .fc-footer-toolbar .fc-addEvent-button { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-size: 1.2rem; }
   #fc-container .fc-footer-toolbar { padding: 6px 4px; margin-top: 6px !important; }
   @media (max-width: 600px) {
     #calendar-view { height: calc(100dvh - 60px); }
@@ -8173,7 +8175,7 @@ body.light .bd-answer-head { color: #bc4c00; }
 }
 
 /* ── Calendar: Google-Calendar look, mobile first (2026-10-10) ── */
-#fc-container .fc { --fc-border-color: var(--border); --fc-today-bg-color: transparent; --fc-now-indicator-color: #ea4335; font-size: 0.8rem; }
+#fc-container .fc { --fc-border-color: var(--border); --fc-today-bg-color: transparent; --fc-page-bg-color: var(--bg); --fc-neutral-bg-color: var(--card); --fc-list-event-hover-bg-color: var(--card); --fc-now-indicator-color: #ea4335; font-size: 0.8rem; }
 #fc-container .fc-toolbar-title { font-size: 1.15rem; font-weight: 500; }
 #fc-container .fc .fc-button { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px; font-weight: 500; text-transform: none; box-shadow: none; }
 #fc-container .fc .fc-button-primary:not(:disabled).fc-button-active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: transparent; }
