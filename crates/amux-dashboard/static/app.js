@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1301';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1302';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -17503,6 +17503,10 @@ function _peekAfterConversation(saved, current) {
 }
 async function _peekLoadEarlier(options) {
   if (_peekAgents.selected) return 'subagent-tail';
+  // Thin peek already holds the pane's whole tmux scrollback; transcript
+  // pages are never drawn there, so loading them can find nothing and the
+  // old message ("Earlier output could not be loaded") was false.
+  if (_peekThin) return 'scrollback';
   const quiet = !!(options && options.quiet);
   const name = peekSession;
   const identity = _peekIdentity(name);
@@ -18372,6 +18376,7 @@ async function _peekMsgMove(direction, event) {
       const label = _peekMsgNavKind === 'all' ? 'messages'
         : ((_MSG_KIND[_peekMsgNavKind] || _MSG_KIND.unknown).label.toLowerCase() + ' messages');
       const why = earlier === 'subagent-tail' ? 'Only recent subagent output is loaded.' : earlier === 'beginning' ? 'Reached the beginning of the saved output.'
+        : earlier === 'scrollback' ? "Searched this worker's whole terminal scrollback."
         : earlier === 'loaded' || earlier === 'empty' ? 'Loaded an earlier output page.'
         : earlier === 'missing' ? 'This worker has no saved earlier output.'
         : 'Earlier output could not be loaded.';
