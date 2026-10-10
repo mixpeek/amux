@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1298';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1299';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -16658,7 +16658,12 @@ let _peekThin = false;
 // text is unchanged; otherwise a cached transcript-mode paint survives.
 let _peekModePainted = null;
 function _peekHtml(raw) {
-  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
+  // Thin still TAGS each prompt with its source (Ethan, 2026-10-10: the
+  // Human filter on momentbench-oss found nothing). Without the tag there is
+  // no .peek-prompt element, so every filter and the up/down message keys
+  // report "No matching ... messages" over a pane full of them. The tag is
+  // the one change peek may make; the text inside stays exactly as drawn.
+  if (_peekThin) return highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(raw))), {thin: true});
   return _hangIndent(wrapBoxBlocks(_fitRules(_wrapToolCalls(highlightPrompts(_linkifyPaths(ansiToHtml(raw)))))));
 }
 
@@ -16782,10 +16787,20 @@ function _draftEchoesSteering(input) {
 // Only the current frame has a composer. Its ruled input box is terminal UI,
 // not a delivered message, even when it contains a collapsed paste or a stamp.
 function _peekLiveHtml(raw) {
-  if (_peekThin) return _fitRules(_linkifyPaths(ansiToHtml(raw)));
   const lines = raw.split('\n');
   const plain = lines.map(line => _stripAnsi(line).replace(/\u00a0/g, ' '));
   const rule = line => /^\s*─{3,}[^\n]*$/.test(line);
+  if (_peekThin) {
+    // Tag the prompts above the composer; the composer box itself (the last
+    // ❯ line framed by rules) is where the owner types, not a message.
+    let cut = lines.length;
+    for (let i = plain.length - 1; i > 0; i--) {
+      if (/^\s*❯(?:\s|$)/.test(plain[i]) && rule(plain[i - 1])) { cut = i - 1; break; }
+    }
+    const head = cut > 0 ? highlightPrompts(_fitRules(_linkifyPaths(ansiToHtml(lines.slice(0, cut).join('\n')))), {thin: true}) : '';
+    const tail = cut < lines.length ? _fitRules(_linkifyPaths(ansiToHtml(lines.slice(cut).join('\n')))) : '';
+    return head + (head && tail ? '\n' : '') + tail;
+  }
   for (let i = plain.length - 1; i > 0; i--) {
     if (!/^\s*❯(?:\s|$)/.test(plain[i]) || !rule(plain[i - 1])) continue;
     const end = plain.findIndex((line, n) => n > i && rule(line));
@@ -16866,6 +16881,9 @@ const _NON_HUMAN_PROMPT_MARKS = [
 // kind human) from the usage-limit text alone, so a matching ledger row is
 // WRONG evidence here. These are checked before the rows for that reason.
 const _PROVIDER_PROMPT_MARKS = [
+  // Claude Code's /goal evaluator re-prompts the agent with this after each
+  // stop; 18 of random's 23 prompts were it, all reading Unclassified.
+  'Stop hook feedback:',
   'Your claude.ai usage limit has reset',
   'Goal check-in:',
   'Base directory for this skill:',
@@ -17004,7 +17022,8 @@ function _peekUnwrapPaste(blockLines) {
   }
   return kept;
 }
-function highlightPrompts(html) {
+function highlightPrompts(html, opts) {
+  const thin = !!(opts && opts.thin);
   const gemini = _peekGeminiPrompts();
   const promptStart = gemini ? /^[ \t]{0,2}[❯›>](?:[ \t]+|$)/ : /^[ \t]{0,2}[❯›](?:[ \t]+|$)/;
   const lines = html.split('\n');
@@ -17049,7 +17068,7 @@ function highlightPrompts(html) {
     // Close each block before opening its successor. Nested prompt wrappers
     // made scrollIntoView target a whole conversation instead of one message.
     out.push('<span class="peek-prompt peek-prompt-' + kind + '" data-msg-kind="' + kind
-      + '" data-msg-label="' + esc(label) + '">' + _peekUnwrapPaste(lines.slice(i, end)).join('\n') + '</span>');
+      + '" data-msg-label="' + esc(label) + '">' + (thin ? lines.slice(i, end) : _peekUnwrapPaste(lines.slice(i, end))).join('\n') + '</span>');
     i = end;
   }
   return out.join('\n');
