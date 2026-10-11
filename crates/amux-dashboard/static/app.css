@@ -8177,6 +8177,8 @@ body.light .bd-answer-head { color: #bc4c00; }
 }
 
 /* ── Calendar: Google-Calendar look, mobile first (2026-10-10) ── */
+#fc-container { color-scheme: dark; }
+body.light #fc-container { color-scheme: light; }
 #fc-container .fc { --fc-border-color: var(--border); --fc-today-bg-color: transparent; --fc-page-bg-color: var(--bg); --fc-neutral-bg-color: var(--card); --fc-list-event-hover-bg-color: var(--card); --fc-now-indicator-color: #ea4335; font-size: 0.8rem; }
 #fc-container .fc-toolbar-title { font-size: 1.15rem; font-weight: 500; }
 #fc-container .fc .fc-button { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px; font-weight: 500; text-transform: none; box-shadow: none; }

@@ -39950,6 +39950,15 @@ async function _gcalSource(info, success, failure) {
     // Copies of one event saved separately into two calendars carry DIFFERENT
     // ids (Boo at the Zoo sat in two calendars, twice on screen): the same
     // title, start and end is the same event to the reader.
+    // amux's own events come back AS Google events: the "amux" calendar in
+    // the owner's Google account subscribes to /api/calendar.ics, so every
+    // local event was drawn twice. The local event is the source; its Google
+    // copy is dropped when the title and start match.
+    const evKey = (title, start, allDay) => String(title || '').trim().toLowerCase() + '|'
+      + (allDay || /^\d{4}-\d{2}-\d{2}$/.test(String(start || '')) ? String(start || '').slice(0, 10) : String(new Date(start).getTime()));
+    const localKeys = new Set();
+    if (_calShowEvents) for (const le of (calEvents || [])) if (!le.deleted) localKeys.add(evKey(le.title, le.start, le.all_day));
+    for (const [k, e] of [...best]) if (localKeys.has(evKey(e.title, e.start_time, e.all_day))) best.delete(k);
     const seen = new Map();
     for (const e of best.values()) {
       const k = String(e.title || '').trim().toLowerCase() + '|' + (e.start_time || '') + '|' + (e.end_time || '');
