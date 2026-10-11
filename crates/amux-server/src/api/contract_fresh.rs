@@ -1,31 +1,34 @@
-//! Orchestration contract rule 7, phase 1 (AH-383).
+//! Conversation recycling at card boundaries.
 //!
-//! docs/orchestration-contract.md: a card boundary is a fresh session seeded
-//! by a harness-built brief; mid-card compaction stays with the provider.
+//! Two independent triggers, same mechanism (`new_conversation` + `restart`):
 //!
-//! When the server grants a contract card done (rule 2), the lane is marked
-//! `contract_fresh_pending`. The next time board-drive delivers a card to that
-//! lane, which it does only at an idle boundary, the conversation is recycled
-//! through the same path as `amux fresh` (config `new_conversation` +
-//! `restart`), and the dispatch text is prefixed with a brief built from the
-//! board: the card, its frozen contract, its description tail and the lane's
-//! last three outcomes. No model call.
+//! 1. **Contract rule 7** (AH-383). When the server grants a contract card
+//!    done (rule 2), the lane is marked `contract_fresh_pending`. The next
+//!    dispatch recycles the conversation and prefixes a brief with the card,
+//!    its frozen contract, its description tail and the lane's last outcomes.
+//!
+//! 2. **Per-task fresh** (GH-271). When `AMUX_NEW_CONVERSATION_PER_TASK=1`
+//!    is set for a lane (scoped: worker > group > global), every new card
+//!    pickup starts a clean conversation. Board-drive marks the lane with
+//!    `per_task_fresh_pending` after claiming a card; `at_dispatch` consumes
+//!    it. Resumes and nudges do not mark, so mid-card work keeps its context.
 //!
 //! Never recycles a lane that is not running, or that holds a card in doing
-//! other than the one being dispatched. Verdicts (rule 14): contract_fresh_session,
-//! contract_fresh_skipped (with a reason).
+//! other than the one being dispatched.
 use crate::api::session_verbs as sv;
 use crate::api::AppState;
 use crate::db::board_store::{self as bs, IssueRow};
 use serde_json::{json, Value};
 
 pub const PENDING: &str = "contract_fresh_pending";
+const PER_TASK_PENDING: &str = "per_task_fresh_pending";
+pub const PER_TASK_KEY: &str = "AMUX_NEW_CONVERSATION_PER_TASK";
 /// A boundary older than this is no longer the one that was marked.
 const PENDING_MAX_S: f64 = 24.0 * 3600.0;
 const DESC_TAIL: usize = 1200;
 const RECENT: usize = 3;
 
-/// Mark the lane: its next dispatched card starts a fresh session.
+/// Mark the lane: its next dispatched card starts a fresh session (contract rule 7).
 pub fn mark_pending(lane: &str, card: &str) {
     sv::update_meta(lane, &[(PENDING, json!({"card": card, "at": crate::config::now_f64()}))]);
 }
@@ -33,6 +36,30 @@ pub fn mark_pending(lane: &str, card: &str) {
 fn clear_pending(lane: &str) {
     let mut meta = sv::load_meta(lane);
     if meta.remove(PENDING).is_some() {
+        sv::save_meta(lane, &meta);
+    }
+}
+
+fn is_on(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
+}
+
+fn per_task_on(home: &std::path::Path, lane: &str) -> bool {
+    sv::scoped_setting_in(home, lane, PER_TASK_KEY).as_deref().map(is_on).unwrap_or(false)
+}
+
+/// If per-task fresh is enabled for `lane`, mark it so the next dispatch
+/// recycles the conversation. Called by board-drive after claiming a card.
+pub fn maybe_mark_per_task(lane: &str, card: &str) {
+    let home = crate::config::amux_home();
+    if per_task_on(&home, lane) {
+        sv::update_meta(lane, &[(PER_TASK_PENDING, json!({"card": card, "at": crate::config::now_f64()}))]);
+    }
+}
+
+fn clear_per_task(lane: &str) {
+    let mut meta = sv::load_meta(lane);
+    if meta.remove(PER_TASK_PENDING).is_some() {
         sv::save_meta(lane, &meta);
     }
 }
@@ -64,7 +91,7 @@ fn tail(s: &str, n: usize) -> String {
     t[t.len().saturating_sub(n)..].iter().collect()
 }
 
-/// The brief, built only from board data.
+/// The brief, built only from board data (contract rule 7).
 pub fn brief(prev: &str, next: Option<&IssueRow>, contract: Option<&crate::api::contract::Contract>, recent: &[IssueRow]) -> String {
     let mut b = format!(
         "[amux contract rule 7] Fresh session at a card boundary: this conversation was recycled after {prev} was granted done. \
@@ -111,20 +138,38 @@ Your env, board cards and memory are unchanged.\n"
     b
 }
 
-/// Called by board-drive just before it queues a dispatch to `lane`. Returns
-/// the text to deliver: unchanged unless the lane is at a pending boundary, in
-/// which case the conversation is recycled and the brief prefixes the text.
-pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
-    let home = crate::config::amux_home();
-    if !crate::api::contract::rule_on(&home, lane, "7") {
-        return text.to_string();
+/// Per-task brief: no contract info, just the card and recent outcomes.
+pub fn per_task_brief(next: Option<&IssueRow>, recent: &[IssueRow]) -> String {
+    let mut b = String::from(
+        "[amux] Fresh session: AMUX_NEW_CONVERSATION_PER_TASK is on for this worker, \
+         so this new card starts a clean conversation. \
+         Your env, board cards and memory are unchanged.\n",
+    );
+    if let Some(n) = next {
+        b.push_str(&format!("\nThis card: {}: {}\n", n.id, n.title));
+        let d = tail(&n.desc, DESC_TAIL);
+        if !d.is_empty() {
+            b.push_str(&format!("Description excerpt (tail; full card: GET /api/board/{}):\n{d}\n", n.id));
+        }
     }
-    let meta = sv::load_meta(lane);
-    let Some(pending) = meta.get(PENDING).cloned() else {
-        return text.to_string();
-    };
-    let prev = pending.get("card").and_then(Value::as_str).unwrap_or("the last card").to_string();
-    let age = crate::config::now_f64() - pending.get("at").and_then(Value::as_f64).unwrap_or(0.0);
+    if !recent.is_empty() {
+        b.push_str("\nYour last outcomes:\n");
+        for r in recent.iter().take(RECENT) {
+            b.push_str(&format!(
+                "- {} ({}): {} | {}\n",
+                r.id,
+                r.status,
+                first_line(&r.title, 100),
+                first_line(r.evidence.as_deref().unwrap_or("no evidence"), 160),
+            ));
+        }
+    }
+    b.push_str("\n---\n");
+    b
+}
+
+/// Fetch the lane's doing/done/verified rows and split into (next_card, recent_outcomes).
+async fn lane_context(state: &AppState, lane: &str, text: &str) -> (Option<IssueRow>, Vec<IssueRow>) {
     let lane_s = lane.to_string();
     let rows: Vec<IssueRow> = state
         .store
@@ -138,9 +183,76 @@ pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
         })
         .await
         .unwrap_or_default();
-    // The dispatched card is the doing card the dispatch text names.
     let next = rows.iter().find(|r| r.status == "doing" && text.contains(&r.id)).cloned();
-    let other_doing = rows.iter().filter(|r| r.status == "doing" && Some(&r.id) != next.as_ref().map(|n| &n.id)).count();
+    let mut recent: Vec<IssueRow> = rows.into_iter().filter(|r| r.status == "done" || r.status == "verified").collect();
+    recent.sort_by_key(|r| std::cmp::Reverse(r.updated));
+    recent.truncate(RECENT);
+    (next, recent)
+}
+
+/// Called by board-drive just before it queues a dispatch to `lane`. Returns
+/// the text to deliver: unchanged unless the lane is at a pending boundary, in
+/// which case the conversation is recycled and the brief prefixes the text.
+///
+/// Checks per-task fresh first (fires on every new card pickup), then contract
+/// rule 7 (fires only when a contract card was granted done).
+pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
+    let home = crate::config::amux_home();
+    let meta = sv::load_meta(lane);
+
+    // --- per-task fresh (GH-271) ---
+    if let Some(pt) = meta.get(PER_TASK_PENDING).cloned() {
+        let card = pt.get("card").and_then(Value::as_str).unwrap_or("-").to_string();
+        let running = sv::is_running(lane).await;
+        if !running {
+            clear_per_task(lane);
+            tracing::info!(lane, card = %card, reason = "not_running", measured = true,
+                n_considered = 1, verdict = "per_task_fresh_skipped",
+                "per-task fresh: lane not running, skipped recycle");
+        } else {
+            let resp = sv::config_patch(state, lane, &json!({"new_conversation": true, "restart": true})).await;
+            clear_per_task(lane);
+            if resp.status().is_success() {
+                let (next, recent) = lane_context(state, lane, text).await;
+                tracing::info!(lane, card = %card,
+                    next = next.as_ref().map(|n| n.id.as_str()).unwrap_or("-"),
+                    measured = true, n_considered = 1, verdict = "per_task_fresh_session",
+                    "per-task fresh: conversation recycled for new card");
+                return format!("{}{text}", per_task_brief(next.as_ref(), &recent));
+            }
+            tracing::warn!(lane, card = %card, reason = "recycle_refused",
+                status = resp.status().as_u16(), measured = true, n_considered = 1,
+                verdict = "per_task_fresh_skipped",
+                "per-task fresh: recycle refused; dispatching on old conversation");
+        }
+    }
+
+    // --- contract rule 7 ---
+    if !crate::api::contract::rule_on(&home, lane, "7") {
+        return text.to_string();
+    }
+    let Some(pending) = meta.get(PENDING).cloned() else {
+        return text.to_string();
+    };
+    let prev = pending.get("card").and_then(Value::as_str).unwrap_or("the last card").to_string();
+    let age = crate::config::now_f64() - pending.get("at").and_then(Value::as_f64).unwrap_or(0.0);
+    let (next, recent) = lane_context(state, lane, text).await;
+    let other_doing = {
+        let lane_s = lane.to_string();
+        let rows: Vec<IssueRow> = state
+            .store
+            .read_async(move |c| {
+                Ok(bs::list_issues(
+                    c,
+                    &["doing".into()],
+                    &[lane_s],
+                    bs::ArchivedFilter::ActiveOnly,
+                )?)
+            })
+            .await
+            .unwrap_or_default();
+        rows.iter().filter(|r| Some(&r.id) != next.as_ref().map(|n| &n.id)).count()
+    };
     let running = sv::is_running(lane).await;
     match decide(Some(age), running, other_doing) {
         Decision::Skip(reason) => {
@@ -164,9 +276,6 @@ pub async fn at_dispatch(state: &AppState, lane: &str, text: &str) -> String {
                 }
                 None => None,
             };
-            let mut recent: Vec<IssueRow> = rows.into_iter().filter(|r| r.status == "done" || r.status == "verified").collect();
-            recent.sort_by_key(|r| std::cmp::Reverse(r.updated));
-            recent.truncate(RECENT);
             tracing::info!(lane, prev = %prev, next = next.as_ref().map(|n| n.id.as_str()).unwrap_or("-"), measured = true,
                 n_considered = 1, verdict = "contract_fresh_session", "card boundary: fresh session with a harness-built brief");
             format!("{}{text}", brief(&prev, next.as_ref(), contract.as_ref(), &recent))
@@ -241,5 +350,50 @@ mod tests {
         assert!(none.contains("No frozen contract yet"));
         assert!(none.contains("measure original requirements") && none.contains("run all surfaces"));
         assert!(none.contains("GET /api/board/GE1-9"));
+    }
+
+    #[test]
+    fn per_task_brief_includes_card_and_outcomes_without_contract() {
+        let next = IssueRow {
+            id: "PT-1".into(), title: "add caching".into(),
+            desc: "x".repeat(2000) + "TAIL", ..Default::default()
+        };
+        let recent: Vec<IssueRow> = (1..=4)
+            .map(|i| IssueRow {
+                id: format!("PT-{i}"), status: "done".into(),
+                title: format!("t{i}"), evidence: Some(format!("ev{i}")),
+                ..Default::default()
+            })
+            .collect();
+        let b = per_task_brief(Some(&next), &recent);
+        assert!(b.contains("AMUX_NEW_CONVERSATION_PER_TASK"));
+        assert!(b.contains("PT-1: add caching"));
+        assert!(b.contains("TAIL"));
+        assert!(b.contains("PT-3 (done): t3 | ev3"), "three outcomes");
+        assert!(!b.contains("PT-4"), "capped at three");
+        assert!(!b.contains("contract"), "no contract mention");
+    }
+
+    #[test]
+    fn maybe_mark_per_task_respects_scoped_setting() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+
+        std::fs::write(h.join("sessions/off-lane.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        std::fs::write(
+            h.join("sessions/on-lane.env"),
+            "CC_DIR=\"/tmp\"\nAMUX_NEW_CONVERSATION_PER_TASK=1\n",
+        )
+        .unwrap();
+
+        maybe_mark_per_task("off-lane", "C-1");
+        assert!(!sv::load_meta("off-lane").contains_key(PER_TASK_PENDING),
+            "setting off: no mark");
+
+        maybe_mark_per_task("on-lane", "C-2");
+        assert!(sv::load_meta("on-lane").contains_key(PER_TASK_PENDING),
+            "setting on: mark written");
     }
 }
