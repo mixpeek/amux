@@ -2461,7 +2461,14 @@ pub(crate) fn connector_entitlement_check(
     connector_id: &str,
     requested_account: Option<&str>,
 ) -> Result<Option<String>, Value> {
-    let effective = super::scope::effective_connectors(conn, home, lane);
+    let effective = super::scope::effective_connectors(conn, home, lane).map_err(|reason| {
+        tracing::warn!(worker = %lane, connector = %connector_id, error = %reason,
+            verdict = "connector_scope_unreadable", measured = true, n_considered = 1,
+            "connector access refused because saved scope could not be verified");
+        json!({"error": reason, "blocked": "connector_scope_unreadable",
+            "connector": connector_id,
+            "how": "Repair the saved Connectors scope; access was not granted."})
+    })?;
     connector_entitlement_decision(&effective, lane, connector_id, requested_account)
 }
 

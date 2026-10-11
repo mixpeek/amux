@@ -365,26 +365,27 @@ fn read_cap_value(
             Ok((json!({ "skin": parsed }), set))
         }
         "connectors" => {
+            use rusqlite::OptionalExtension;
             // Same prefs-backed JSON storage as skin (structured config the SPA
             // and the launch-time connector resolver read, keyed by scope).
             let k = connectors_pref_key(level, name);
-            let raw: Option<String> = conn.and_then(|c| {
-                c.query_row(
+            let conn = conn.ok_or("connector scope database unavailable")?;
+            let raw: Option<String> = conn
+                .query_row(
                     "SELECT value FROM prefs WHERE key=?1",
                     rusqlite::params![k],
                     |r| r.get::<_, String>(0),
                 )
-                .ok()
-            });
-            let set = raw
-                .as_deref()
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false);
-            let parsed: Value = raw
-                .as_deref()
-                .and_then(|v| serde_json::from_str(v).ok())
-                .unwrap_or_else(|| json!({}));
-            Ok((json!({ "connectors": parsed }), set))
+                .optional()
+                .map_err(|_| format!("could not read saved connector scope '{k}'"))?;
+            let Some(raw) = raw else {
+                return Ok((json!({ "connectors": {} }), false));
+            };
+            // Only an absent row is unrestricted. Corruption must not erase
+            // a deny/pin or fall through to a broader parent grant.
+            let parsed: Map<String, Value> = serde_json::from_str(&raw)
+                .map_err(|_| format!("invalid saved connector scope '{k}'"))?;
+            Ok((json!({ "connectors": parsed }), true))
         }
         "memory" | "rules" => {
             let f = memory_file(home, level, name, key);
@@ -495,26 +496,24 @@ pub(crate) fn effective_connectors(
     conn: Option<&rusqlite::Connection>,
     home: &Path,
     lane: &str,
-) -> Map<String, Value> {
-    let Some(conn) = conn else {
-        return Map::new();
-    };
+) -> Result<Map<String, Value>, String> {
+    let conn = conn.ok_or("connector scope database unavailable")?;
     let mut merged = Map::new();
-    let mut apply = |level: &str, name: &str| {
-        if let Ok((v, _set)) = read_cap_value(Some(conn), home, level, name, "connectors") {
-            if let Some(obj) = v.get("connectors").and_then(Value::as_object) {
-                for (k, val) in obj {
-                    merged.insert(k.clone(), val.clone());
-                }
+    let mut apply = |level: &str, name: &str| -> Result<(), String> {
+        let (v, _) = read_cap_value(Some(conn), home, level, name, "connectors")?;
+        if let Some(obj) = v.get("connectors").and_then(Value::as_object) {
+            for (k, val) in obj {
+                merged.insert(k.clone(), val.clone());
             }
         }
+        Ok(())
     };
-    apply("global", "");
+    apply("global", "")?;
     for g in crate::api::session_verbs::lane_groups(lane) {
-        apply("group", &g);
+        apply("group", &g)?;
     }
-    apply("worker", lane);
-    merged
+    apply("worker", lane)?;
+    Ok(merged)
 }
 
 /// session_gates key convention: `group:<name>` for groups, the bare name
@@ -2260,7 +2259,7 @@ mod tests {
         ).await;
 
         let conn = st.store.read().unwrap();
-        let merged = effective_connectors(Some(&conn), home.path(), "w1");
+        let merged = effective_connectors(Some(&conn), home.path(), "w1").unwrap();
         assert_eq!(
             merged["gmail"]["account"], "ethan@mixpeek.com",
             "worker layer must win over global for the SAME key: {merged:?}"
@@ -2272,12 +2271,25 @@ mod tests {
 
         // A worker not in group alpha at all sees only the global layer.
         fleet(home.path(), &[("w2", "beta", false)]);
-        let merged2 = effective_connectors(Some(&conn), home.path(), "w2");
+        let merged2 = effective_connectors(Some(&conn), home.path(), "w2").unwrap();
         assert_eq!(merged2["gmail"]["account"], "info@mixpeek.com");
         assert!(
             merged2.get("slack").is_none(),
             "a different worker/group must not see alpha's slack grant: {merged2:?}"
         );
+    }
+
+    #[test]
+    fn connector_scope_requires_a_readable_database() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(effective_connectors(None, home.path(), "w").is_err());
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(effective_connectors(Some(&conn), home.path(), "w").is_err());
+        conn.execute("CREATE TABLE prefs (key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
+        assert!(effective_connectors(Some(&conn), home.path(), "w")
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

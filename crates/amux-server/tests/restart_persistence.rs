@@ -1492,3 +1492,151 @@ async fn connector_scope_patches_survive_concurrency_and_sigkill() {
         .contains("connector_scope_commit_failed"));
     rig.kill();
 }
+
+/// A damaged deny/pin must not be interpreted as an absent (unrestricted)
+/// layer, including after real SIGKILL. Every credential here is synthetic.
+#[tokio::test]
+async fn corrupted_connector_scope_stays_denied_after_sigkill_and_can_be_repaired() {
+    let mut rig = Rig::new();
+    rig.no_external_probes = true;
+    let immutable = rig._tmp.path().join("scope-proof-server");
+    std::fs::copy(server_bin(), &immutable).unwrap();
+    rig.server_binary = Some(immutable);
+    rig.spawn();
+    rig.wait_healthy().await;
+    let worker = "rr0150-suite";
+    let id = "scope-proof-oauth";
+    std::fs::create_dir_all(rig.home.join("sessions")).unwrap();
+    std::fs::write(
+        rig.home.join("sessions").join(format!("{worker}.env")),
+        "CC_TAGS=scope-proof-group\n",
+    )
+    .unwrap();
+    assert_eq!(
+        rig.post(
+            "/api/connectors",
+            json!({"id":id,"label":"Disposable scope proof","kind":"oauth2",
+        "client_id_env":"SCOPE_PROOF_ID","client_secret_env":"SCOPE_PROOF_SECRET",
+        "authorize_url":"https://example.test/authorize","token_url":"https://example.test/token"})
+        )
+        .await
+        .0,
+        200
+    );
+    let grant = rig.home.join("connectors").join(id).join("beth.json");
+    std::fs::create_dir_all(grant.parent().unwrap()).unwrap();
+    let stored = json!({"token":"synthetic-scope-only","expires_at":4_000_000_000_f64,
+        "token_uri":"https://example.test/token","client_id":"fixture-id","client_secret":"fixture-secret"});
+    std::fs::write(&grant, stored.to_string()).unwrap();
+    let mint = format!("/api/connectors/{id}/token?account=beth");
+    // Positive control: the saved grant is actually usable for the owner.
+    let owner = rig
+        .client
+        .post(rig.url(&mint))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(owner.status(), 200);
+    for (level, name, pref) in [
+        ("global", "", "connectors:global"),
+        (
+            "group",
+            "scope-proof-group",
+            "connectors:group:scope-proof-group",
+        ),
+        ("worker", worker, "connectors:worker:rr0150-suite"),
+    ] {
+        let value = json!({id:{"enabled":false,"account":"beth","mcp":false},
+            "unrelated":{"enabled":false,"account":"retained","mcp":true}});
+        let set = || json!({"level":level,"name":name,"capability":"connectors","value":value});
+        assert_eq!(
+            rig.client
+                .put(rig.url("/api/scope"))
+                .json(&set())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        assert_eq!(rig.post(&mint, json!({})).await.0, 403);
+        for malformed in ["{", "[]", "\"invalid-scope-marker\"", ""] {
+            rig.seed(
+                "UPDATE prefs SET value=?1 WHERE key=?2",
+                &[&malformed, &pref],
+            );
+            let (status, body) = rig.post(&mint, json!({})).await;
+            assert_eq!(status, 403, "{level}: corruption must not grant access");
+            assert_eq!(body["blocked"], "connector_scope_unreadable");
+            assert!(body.get("access_token").is_none());
+            let (_, scope) = rig
+                .get(&format!("/api/scope?level={level}&name={name}"))
+                .await;
+            let cap = scope["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["key"] == "connectors")
+                .unwrap();
+            assert!(cap["error"]
+                .as_str()
+                .unwrap()
+                .contains("invalid saved connector scope"));
+            let saved: String = rusqlite::Connection::open(&rig.db)
+                .unwrap()
+                .query_row("SELECT value FROM prefs WHERE key=?1", [pref], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(saved, malformed, "reads retain damaged evidence");
+        }
+        rig.restart().await;
+        assert_eq!(
+            rig.post(&mint, json!({})).await.1["blocked"],
+            "connector_scope_unreadable"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&grant).unwrap(),
+            stored.to_string(),
+            "scope faults cannot alter the grant"
+        );
+        // Owner replacement repairs the scope, preserving the exact pin/MCP
+        // and unrelated metadata, rather than silently clearing it.
+        assert_eq!(
+            rig.client
+                .put(rig.url("/api/scope"))
+                .json(&set())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        assert_eq!(rig.post(&mint, json!({})).await.0, 403);
+        let (_, scope) = rig
+            .get(&format!("/api/scope?level={level}&name={name}"))
+            .await;
+        let cap = scope["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["key"] == "connectors")
+            .unwrap();
+        assert_eq!(cap["value"]["connectors"], value);
+        assert_eq!(
+            rig.client
+                .put(rig.url("/api/scope"))
+                .json(&json!({"level":level,"name":name,"capability":"connectors","value":{}}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+    assert!(std::fs::read_to_string(&rig.log)
+        .unwrap()
+        .contains("connector_scope_unreadable"));
+    println!("PASS scope corruption: 12 faults across global/group/worker, 3 SIGKILL restarts, preserved grants and exact owner repair");
+}
