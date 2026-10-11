@@ -384,6 +384,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-targets.sh
+      - name: the Remotion bundle reaper takes only stale, unopened remotion-webpack-bundle dirs (RCA 20261010-211803)
+        run: |
+          set -uo pipefail
+          ./scripts/test-reap-remotion-bundles.sh
       - name: the idle worktree reaper only takes a merged, clean, unheld detached checkout (MO-3631/3633)
         run: |
           set -uo pipefail
