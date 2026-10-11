@@ -175,6 +175,10 @@ impl Rig {
             .env("TMUX_TMPDIR", self._tmp.path())
             .env("AMUX_NO_SELF_ADOPT", "1")
             .envs(self.no_external_probes.then_some(("AMUX_AUTOFIX_SECS", "0")))
+            // This fixture places its permission fault after startup. Idle
+            // upkeep must not rotate the grant before that fault is armed;
+            // connector_maintenance_process exercises the scheduled path.
+            .envs(self.no_external_probes.then_some(("AMUX_CONNECTOR_MAINTENANCE_SECS", "0")))
             .env("AMUX_RS_PORT", self.port.to_string())
             // Auth off: this is a loopback-only temp server.
             .env("AMUX_AUTH_TOKEN", "none")
