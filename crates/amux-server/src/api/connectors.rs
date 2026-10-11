@@ -2210,14 +2210,15 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
     let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
     let status = result.get("status").and_then(Value::as_str).unwrap_or("");
     let detail = result.get("detail").and_then(Value::as_str).unwrap_or("");
-    let mut all = last_tests(home);
-    all.insert(
-        id.to_string(),
-        json!({"ok": ok, "status": status, "detail": detail, "at": crate::config::now_f64()}),
-    );
-    let tmp = last_tests_path(home).with_extension("json.tmp");
-    if std::fs::write(&tmp, Value::Object(all).to_string()).is_ok() {
-        let _ = std::fs::rename(&tmp, last_tests_path(home));
+    let path = last_tests_path(home);
+    let committed = (|| -> std::io::Result<()> {
+        let _lease = crate::integrations::secure_store::lock(&path)?;
+        let mut all: Map<String, Value> = crate::integrations::secure_store::read_json(&path)?;
+        all.insert(id.to_string(), json!({"ok":ok,"status":status,"detail":detail,"at":now_ts()}));
+        crate::integrations::secure_store::write(&path, Value::Object(all).to_string().as_bytes())
+    })();
+    if committed.is_err() {
+        tracing::warn!(connector=id,verdict="connector_test_record_not_durable", "live test history was not committed; existing receipt retained");
     }
     if !ok {
         tracing::warn!(
@@ -2892,6 +2893,17 @@ async fn mint_from_user_grant(
     account: &str,
     scope: &str,
 ) -> Response {
+    mint_with_lifetime(ctx, id, family, account, scope, 60.0).await
+}
+
+async fn mint_with_lifetime(
+    ctx: &ConnectorsCtx,
+    id: &str,
+    family: &str,
+    account: &str,
+    scope: &str,
+    minimum_lifetime: f64,
+) -> Response {
     let fam_path = match oauth_store::family_path(&ctx.home, family, account) {
         Ok(path) => path,
         Err(_) => {
@@ -2910,10 +2922,10 @@ async fn mint_from_user_grant(
         .home
         .join("gmail-tokens")
         .join(format!("{account}.json"));
-    let (path, legacy) = if fam_path.exists() {
-        (fam_path, false)
+    let path = if fam_path.exists() {
+        fam_path
     } else if family == "google" && legacy_path.exists() {
-        (legacy_path, true)
+        legacy_path
     } else {
         return (
             StatusCode::NOT_FOUND,
@@ -2950,7 +2962,7 @@ async fn mint_from_user_grant(
     let expires_at = tf.get("expires_at").and_then(Value::as_f64);
     let remaining = expires_at.map(|exp| exp - now_ts());
     let nonexpiring = family != "google" && expires_at.is_none() && s("refresh_token").is_empty();
-    if !s("token").is_empty() && (remaining.is_some_and(|left| left > 60.0) || nonexpiring) {
+    if !s("token").is_empty() && (remaining.is_some_and(|left| left > minimum_lifetime) || nonexpiring) {
         return Json(json!({
             "ok":true,"access_token":s("token"),"token_type":"Bearer",
             "expires_in":remaining.map(|left| left as u64),
@@ -2986,6 +2998,24 @@ async fn mint_from_user_grant(
         ("client_secret".to_string(), s("client_secret")),
     ];
     match ctx.http.post_form(&token_uri, &form).await {
+        Ok((_, body)) if matches!(body.get("error").and_then(Value::as_str), Some("invalid_grant" | "invalid_refresh_token" | "token_revoked" | "token_expired" | "invalid_auth")) => {
+            tracing::warn!(
+                connector=id, family, account,
+                provider_error=body["error"].as_str().unwrap_or("revoked"),
+                verdict="connector_grant_revoked",
+                "provider rejected the saved refresh credential; re-approval required"
+            );
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "status": "needs_reauth",
+                    "detail": format!("the grant for {account} was revoked or expired. One re-approval repairs every worker."),
+                    "reconnect": format!("POST /api/connectors/{family}/auth?account={account} → open authorize_url, approve"),
+                })),
+            )
+                .into_response()
+        }
         Ok((st, body)) if st < 400 => {
             let access = body.get("access_token").and_then(Value::as_str).unwrap_or("");
             if access.is_empty() {
@@ -2996,7 +3026,7 @@ async fn mint_from_user_grant(
                     .into_response();
             }
             let expires_in = body.get("expires_in").and_then(Value::as_f64).unwrap_or(3599.0);
-            let updated = match oauth_store::refreshed(&tf, &body, !legacy) {
+            let updated = match oauth_store::refreshed(&tf, &body, true) {
                 Ok(updated) => updated,
                 Err(error) => return (StatusCode::BAD_GATEWAY, Json(json!({"ok":false,"error":error.to_string()}))).into_response(),
             };
@@ -3022,30 +3052,14 @@ async fn mint_from_user_grant(
             }))
             .into_response()
         }
-        Ok((_, body)) if body.to_string().contains("invalid_grant") => {
-            tracing::warn!(
-                "connector_token: {} user grant for {account} is REVOKED (invalid_grant) — needs one re-approval",
-                id
-            );
-            (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "ok": false,
-                    "status": "needs_reauth",
-                    "detail": format!("the grant for {account} was revoked or expired (invalid_grant). One re-approval repairs every worker."),
-                    "reconnect": format!("POST /api/connectors/{family}/auth?account={account} → open authorize_url, approve"),
-                })),
-            )
-                .into_response()
-        }
-        Ok((st, body)) => (
+        Ok((st, _)) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({"ok": false, "status": "error", "detail": format!("token refresh failed: HTTP {st}: {body}")})),
+            Json(json!({"ok": false, "status": "error", "detail": format!("token refresh failed: HTTP {st}; saved credentials retained")})),
         )
             .into_response(),
-        Err(e) => (
+        Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({"ok": false, "status": "error", "detail": format!("token refresh failed: {e}")})),
+            Json(json!({"ok": false, "status": "error", "detail": "token refresh transport failed; saved credentials retained"})),
         )
             .into_response(),
     }
@@ -3134,7 +3148,14 @@ pub(crate) async fn accounts_rollup(
                 .ok()
                 .and_then(|r| serde_json::from_str(&r).ok())
                 .unwrap_or(json!({}));
-            let health = if family != "google" {
+            let health = if family == "slack" {
+                let ctx = ConnectorsCtx { home: home.into(), http: http.clone() };
+                let response = mint_from_user_grant(&ctx, "slack", "slack", &a, "").await;
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), 1 << 20).await.ok();
+                let body: Value = body.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                if status.is_success() { "ok" } else if body["status"] == "needs_reauth" { "needs_reauth" } else { "not_connected" }.to_string()
+            } else if family != "google" {
                 // Slack bot tokens do not expire; Mattermost session tokens
                 // can be revoked server-side with no local signal — for both,
                 // presence says nothing about whether the token still works.
@@ -3156,7 +3177,8 @@ pub(crate) async fn accounts_rollup(
             if family == "google" {
                 canary_google_legs(http, &path, &health, legacy_gmail.contains(&a), legs).await;
             } else if family == "slack" && health == "ok" {
-                let token = tf.get("token").and_then(Value::as_str).unwrap_or("");
+                let committed: Value = crate::integrations::secure_store::read_json(&path).unwrap_or_default();
+                let token = committed.get("token").and_then(Value::as_str).unwrap_or("");
                 legs.insert("slack".into(), canary_slack_leg(http, token).await);
             } else if family == "mattermost" && health == "ok" {
                 let token = tf.get("token").and_then(Value::as_str).unwrap_or("");
@@ -3241,12 +3263,10 @@ pub(crate) async fn accounts_rollup(
         "checked_at": now_ts(),
         "accounts": canaries.iter().map(|(k, v)| (k.clone(), Value::Object(v.clone()))).collect::<Map<_, _>>(),
     });
-    let _ = std::fs::create_dir_all(home.join("connectors")).and_then(|_| {
-        std::fs::write(
-            home.join("connectors").join("canary.json"),
-            serde_json::to_string_pretty(&canary_file).unwrap_or_default(),
-        )
-    });
+    let _ = crate::integrations::secure_store::write(
+        &home.join("connectors/canary.json"),
+        canary_file.to_string().as_bytes(),
+    );
     let out = json!({
         "accounts": accounts,
         "needs_reauth": needs_reauth,
@@ -3476,6 +3496,14 @@ async fn accounts_view(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Respons
     Json(accounts_rollup(&ctx.http, &ctx.home, false).await).into_response()
 }
 
+#[path = "connector_maintenance.rs"]
+mod maintenance;
+
+/// Server maintenance and isolated HTTP/process tests share this exact pass.
+pub async fn maintenance_pass(ctx: &ConnectorsCtx) -> Value {
+    maintenance::pass(ctx).await
+}
+
 pub fn routes() -> Router<AppState> {
     routes_with(default_ctx())
 }
@@ -3488,6 +3516,7 @@ pub fn routes_with(ctx: Arc<ConnectorsCtx>) -> Router<AppState> {
             axum::routing::delete(delete_connector),
         )
         .route("/api/connectors/accounts", get(accounts_view))
+        .route("/api/connectors/maintenance", get(maintenance::view))
         .route("/api/connectors/{id}/credentials", post(set_credentials))
         .route("/api/connectors/{id}/auth", post(begin_auth))
         .route("/api/connectors/{id}/test", post(test_connection))
@@ -5152,7 +5181,7 @@ mod connector_maintenance_regressions {
     #[async_trait::async_trait]
     impl HttpTransport for RefreshHttp {
         async fn get(&self, _: &str, _: Option<&str>) -> Result<(u16, Value), String> {
-            Ok((200, json!({"emailAddress":"fixture@example.com"})))
+            Ok((200, json!({"ok":true,"emailAddress":"fixture@example.com"})))
         }
         async fn post_json(
             &self,
@@ -5192,6 +5221,121 @@ mod connector_maintenance_regressions {
         ConnectorsCtx {
             home: home.into(),
             http,
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_rollup_refreshes_rotating_slack() {
+        let home = tempfile::tempdir().unwrap();
+        let path = store_path(home.path(), "slack", "Fixture Workspace");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json!({"token":"old-access","refresh_token":"old-refresh","expires_at":0,"token_uri":"https://fixture.invalid/token","client_id":"fixture-client","client_secret":"fixture-secret"}).to_string()).unwrap();
+        let http = RefreshHttp::new(false);
+        let transport: Arc<dyn HttpTransport> = http.clone();
+        let result = accounts_rollup(&transport, home.path(), true).await;
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1, "idle Slack health must refresh its rotating grant, not canary an expired bearer");
+        assert_eq!(result["accounts"][0]["canary"]["slack"]["status"], "ok");
+        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored["refresh_token"], "rotated-refresh");
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_idle_grants_refresh_early_and_preserve_owner_configuration() {
+        for family in ["google", "slack", "fixture-oauth"] {
+            let home = tempfile::tempdir().unwrap();
+            let mut grant = json!({"token":"old-access","refresh_token":"old-refresh","expires_at":now_ts()+300.0,"token_uri":"https://fixture.invalid/token","client_id":"fixture-client","client_secret":"fixture-secret","identity_unverified":true,"owner_metadata":{"tenant":"Beth","pinned":true}});
+            let path = store_path(home.path(), family, "fixture@example.com");
+            write_store_file(&path, &grant).unwrap();
+            let registry = if family == "fixture-oauth" {json!([{"id":family,"label":"Owner fixture","kind":"oauth2","test_url":"https://fixture.invalid/canary"}])} else {json!([])};
+            write_store_file(&custom_store_path(home.path()), &registry).unwrap();
+            std::fs::write(home.path().join("server.env"), "OWNER_UNRELATED=stable\n").unwrap();
+            let registry_before = std::fs::read(custom_store_path(home.path())).unwrap();
+            let http = RefreshHttp::new(false);
+            let result = maintenance_pass(&ctx(home.path(), http.clone())).await;
+            assert_eq!(http.calls.load(Ordering::SeqCst), 1, "upkeep must refresh idle {family} before expiry");
+            assert_eq!(result["durable"], true);
+            let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(stored["refresh_token"], "rotated-refresh");
+            assert_eq!(stored["owner_metadata"], grant["owner_metadata"]);
+            assert_eq!(std::fs::read(custom_store_path(home.path())).unwrap(), registry_before);
+            assert_eq!(std::fs::read_to_string(home.path().join("server.env")).unwrap(), "OWNER_UNRELATED=stable\n");
+            assert!(!result.to_string().contains("rotated-refresh"));
+            assert!(!result.to_string().contains("new-access"));
+            maintenance_pass(&ctx(home.path(), http.clone())).await;
+            assert_eq!(http.calls.load(Ordering::SeqCst), 1, "second pass must reuse committed grant");
+            grant["disconnected"] = json!(true);
+            write_store_file(&path, &grant).unwrap();
+            maintenance_pass(&ctx(home.path(), http.clone())).await;
+            assert_eq!(http.calls.load(Ordering::SeqCst), 1, "disconnect must never be resurrected by upkeep");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), grant.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_corrupt_registry_is_retained_and_reported() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("connectors")).unwrap();
+        std::fs::write(custom_store_path(home.path()), "broken-json").unwrap();
+        let http = RefreshHttp::new(false);
+        let report = maintenance_pass(&ctx(home.path(), http)).await;
+        assert_eq!(report["grants"][0]["status"], "registry_unreadable");
+        assert_eq!(std::fs::read_to_string(custom_store_path(home.path())).unwrap(), "broken-json");
+        assert_eq!(report["failures"], 1);
+    }
+
+    #[test]
+    fn connector_maintenance_last_test_receipts_do_not_lose_parallel_updates() {
+        let home = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for index in 0..16 {
+                let home = home.path();
+                scope.spawn(move || record_test(home, &format!("fixture-{index}"), &json!({"ok":true,"status":"connected"})));
+            }
+        });
+        assert_eq!(last_tests(home.path()).len(), 16);
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(last_tests_path(home.path())).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::write(last_tests_path(home.path()), "corrupt-receipt").unwrap();
+        record_test(home.path(), "new", &json!({"ok":true}));
+        assert_eq!(std::fs::read_to_string(last_tests_path(home.path())).unwrap(), "corrupt-receipt");
+    }
+
+    #[tokio::test]
+    async fn connector_maintenance_legacy_unknown_expiry_refresh_is_bounded() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("gmail-tokens/fixture@example.com.json");
+        write_store_file(&path, &json!({"token":"old-access","refresh_token":"old-refresh","client_id":"fixture-client","client_secret":"fixture-secret","token_uri":"https://fixture.invalid/token"})).unwrap();
+        std::fs::File::open(&path).unwrap().set_modified(std::time::SystemTime::now()-std::time::Duration::from_secs(172_800)).unwrap();
+        let http = RefreshHttp::new(false);
+        let ctx = ctx(home.path(), http.clone());
+        assert_eq!(maintenance::maintain(&ctx,"google","fixture@example.com").await["status"], "ok");
+        let saved:Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved["expires_at"].as_f64().unwrap()>now_ts()+3000.0);
+        assert_eq!(maintenance::maintain(&ctx,"google","fixture@example.com").await["status"], "not_due");
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+    }
+
+    struct RejectedRefresh { status: u16, code: &'static str }
+    #[async_trait::async_trait]
+    impl HttpTransport for RejectedRefresh {
+        async fn get(&self,_:&str,_:Option<&str>)->Result<(u16,Value),String>{Err("unreachable fixture".into())}
+        async fn post_json(&self,_:&str,_:Option<&str>,_:&Value)->Result<(u16,Value),String>{Err("unexpected JSON".into())}
+        async fn post_form(&self,_:&str,_:&[(String,String)])->Result<(u16,Value),String>{Ok((self.status,json!({"ok":false,"error":self.code})))}
+    }
+    #[tokio::test]
+    async fn connector_maintenance_provider_revocation_never_replaces_saved_state() {
+        for (status,code) in [(200,"invalid_grant"),(400,"invalid_grant"),(200,"invalid_refresh_token"),(200,"token_revoked")] {
+            let home = tempfile::tempdir().unwrap();
+            let path = seed(home.path());
+            let before = std::fs::read(&path).unwrap();
+            let ctx = ConnectorsCtx { home:home.path().into(),http:Arc::new(RejectedRefresh{status,code}) };
+            let response = mint_with_lifetime(&ctx,"fixture","google","fixture@example.com","",600.0).await;
+            assert_eq!(response.status(),StatusCode::CONFLICT,"provider {status}/{code} must name reauth");
+            let body:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
+            assert_eq!(body["status"], "needs_reauth");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
 
