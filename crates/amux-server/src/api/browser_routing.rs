@@ -474,10 +474,18 @@ async fn request(
                 tracing::info!(verdict="browser_route_result",session=%r.session,verb=%r.verb,backend,status=code.as_u16(),attempts=?v.get("attempts").or_else(||v.pointer("/route/attempts")),cleanup_verdict=?v.get("cleanup_verdict"),cleanup_events=?v.get("cleanup_events"),"browser ladder request completed");
                 (code, Json(v)).into_response()
             }
-            Err(e) => error(
-                StatusCode::BAD_GATEWAY,
-                format!("browser driver did not return JSON: {e}"),
-            ),
+            Err(e) => {
+                // Driver input and output can contain credentials and page
+                // data. Retain process/size evidence without logging either.
+                tracing::warn!(verdict="browser_route_driver_invalid_json",session=%r.session,verb=%r.verb,exit_code=?out.status.code(),stdout_bytes=out.stdout.len(),stderr_bytes=out.stderr.len(),"browser driver returned invalid JSON");
+                error(
+                    StatusCode::BAD_GATEWAY,
+                    format!(
+                        "browser driver did not return JSON (exit {}, stdout {} bytes, stderr {} bytes): {e}",
+                        out.status, out.stdout.len(), out.stderr.len()
+                    ),
+                )
+            }
         },
         Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
         Err(_) => error(

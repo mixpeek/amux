@@ -14038,7 +14038,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1311';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1314';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -39914,7 +39914,25 @@ async function _gcalSource(info, success, failure) {
       const prev = best.get(k);
       if (!prev || rank(e) < rank(prev)) best.set(k, e);
     }
-    success([...best.values()].map(_gcalEventToFc));
+    // Copies of one event saved separately into two calendars carry DIFFERENT
+    // ids (Boo at the Zoo sat in two calendars, twice on screen): the same
+    // title, start and end is the same event to the reader.
+    // amux's own events come back AS Google events: the "amux" calendar in
+    // the owner's Google account subscribes to /api/calendar.ics, so every
+    // local event was drawn twice. The local event is the source; its Google
+    // copy is dropped when the title and start match.
+    const evKey = (title, start, allDay) => String(title || '').trim().toLowerCase() + '|'
+      + (allDay || /^\d{4}-\d{2}-\d{2}$/.test(String(start || '')) ? String(start || '').slice(0, 10) : String(new Date(start).getTime()));
+    const localKeys = new Set();
+    if (_calShowEvents) for (const le of (calEvents || [])) if (!le.deleted) localKeys.add(evKey(le.title, le.start, le.all_day));
+    for (const [k, e] of [...best]) if (localKeys.has(evKey(e.title, e.start_time, e.all_day))) best.delete(k);
+    const seen = new Map();
+    for (const e of best.values()) {
+      const k = String(e.title || '').trim().toLowerCase() + '|' + (e.start_time || '') + '|' + (e.end_time || '');
+      const prev = seen.get(k);
+      if (!prev || rank(e) < rank(prev)) seen.set(k, e);
+    }
+    success([...seen.values()].map(_gcalEventToFc));
     _calPanelRefresh();
   } catch (err) { failure(err); }
 }
@@ -40055,13 +40073,19 @@ function _fcInit() {
     footerToolbar: isMobile ? { left: 'calendars', center: 'timeGridDay,timeGrid3Day,listWeek,dayGridMonth', right: 'addEvent' } : false,
     buttonText: isMobile ? { listWeek: 'Agenda', dayGridMonth: 'Month', timeGridDay: 'Day', today: 'Today' }
       : { dayGridMonth: 'Month', timeGridWeek: 'Week', timeGridDay: 'Day', today: 'Today' },
-    views: { timeGrid3Day: { type: 'timeGrid', duration: { days: 3 }, buttonText: '3 day' } },
+    views: {
+      timeGrid3Day: { type: 'timeGrid', duration: { days: 3 }, buttonText: isMobile ? '3d' : '3 day' },
+      // A single day has the width for Google's side-by-side overlaps.
+      timeGridDay: { eventMaxStack: isMobile ? 4 : 10 },
+    },
+    dayMaxEventRows: 3,
     customButtons: {
       addEvent: {
-        text: '+ Event',
+        text: isMobile ? '+' : '+ Event',
+        hint: 'New event',
         click: () => openEventModal(null),
       },
-      calendars: { text: 'Calendars', click: _calPanelToggle },
+      calendars: { text: isMobile ? '\u2630' : 'Calendars', hint: 'Calendars', click: _calPanelToggle },
       subscribe: {
         text: 'Subscribe',
         click: showIcalInfo,
