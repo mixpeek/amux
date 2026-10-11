@@ -1,4 +1,4 @@
-.PHONY: install install-cli run dev check test clean status restart
+.PHONY: install install-cli run dev check test clean status restart desktop menubar
 
 BIN_DIR   ?= $(HOME)/.local/bin
 PORT      ?= 8824
@@ -54,3 +54,19 @@ restart:
 	@sleep 2
 	@curl -sk https://localhost:$(PORT)/health | python3 -m json.tool 2>/dev/null \
 		|| echo "Server not responding yet"
+
+# Build and open the lightweight macOS desktop app (WKWebView, ~15 MB RAM).
+desktop:
+	./desktop/build-desktop.sh
+	@open Amux.app
+
+# Build and launch the menu bar status item (CPU/MEM readout + pinned popover).
+menubar:
+	@echo "Building amux-menubar..."
+	@xcrun swiftc -parse-as-library -O -o scripts/amux-menubar scripts/amux-menubar.swift \
+		-framework Cocoa -framework WebKit
+	@echo "Launching..."
+	@pkill -f amux-menubar 2>/dev/null || true
+	@sleep 0.5
+	@AMUX_URL=$$(amux url) nohup scripts/amux-menubar &>/dev/null &
+	@echo "Menu bar active. Click C:xx% M:xx% to open."

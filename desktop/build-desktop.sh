@@ -75,4 +75,11 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 
-echo "Done — open $APP or: open Amux.app"
+# Install to /Applications if requested or by default on build
+if [ -d /Applications ]; then
+    rm -rf "/Applications/$APP"
+    cp -R "$APP" "/Applications/$APP"
+    echo "  Installed to /Applications/$APP"
+fi
+
+echo "Done — open /Applications/Amux.app  (or: open Amux.app)"

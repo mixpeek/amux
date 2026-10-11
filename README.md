@@ -49,6 +49,7 @@ Once installed, day-to-day commands are short:
 ```bash
 make run        # rebuild + reinstall; the running server self-adopts in ~5s
 make dev        # run against a scratch DB (safe for testing migrations)
+make desktop    # build + open the native macOS desktop app (no browser needed)
 make status     # launchd + /health at a glance
 make restart    # kick the launchd-managed server
 make check      # cargo check + JS syntax (fast, no link)
@@ -58,6 +59,18 @@ make test       # clippy + cargo test
 `make run` is the command after `git pull` — it rebuilds release, installs the binary, and the launchd-managed server picks it up automatically. `make dev` is for working on migrations or features you don't want touching the live DB.
 
 **Requirements:** tmux 3.2+, and at least one of Claude Code, Codex CLI, or Gemini CLI. The Rust toolchain is installed via rustup if you don't have it (with your confirmation).
+
+### macOS desktop app (no browser needed)
+
+A lightweight native wrapper around the dashboard using WKWebView. Uses ~15 MB of RAM instead of a full browser tab. Full native keyboard shortcuts (Cmd+C/V/X/A/Z, fullscreen, window management), self-signed cert acceptance on localhost, external links open in your default browser, and it remembers your last connection.
+
+```bash
+make desktop    # compiles, installs to /Applications, and opens
+```
+
+After the first build, launch it from Spotlight, the Dock, or `/Applications/Amux.app`. Rebuild with `make desktop` after pulling updates.
+
+Requires Xcode Command Line Tools (`xcode-select --install`). The built `Amux.app` is gitignored; the source is a single Swift file at `desktop/amux-desktop.swift`.
 
 ### Linux: systemd user services
 

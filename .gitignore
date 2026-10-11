@@ -89,3 +89,6 @@ CLAUDE.local.md
 
 # Cargo lifetime leases stay outside target/ so reclaim cannot remove their inode.
 .*.reclaim.lock
+
+# Built by `make menubar`; the source is scripts/amux-menubar.swift.
+scripts/amux-menubar
