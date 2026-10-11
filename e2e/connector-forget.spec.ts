@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
@@ -90,8 +91,8 @@ test('Forget can be cancelled, then disconnects only its accounts and cancels la
     expect(events.every(e => e.measured === true && e.n_considered === 1)).toBe(true);
     await page.screenshot({ path: info.outputPath('late-callback-refused.png'), fullPage: true });
   } finally {
-    await request.delete('/api/connectors/' + id, { headers: auth });
-    await request.delete('/api/connectors/' + keep, { headers: auth });
-    await new Promise<void>(resolve => provider.close(() => resolve()));
+    await cleanup('delete fixture connector', () => request.delete('/api/connectors/' + id, { headers: auth }), info);
+    await cleanup('delete kept connector', () => request.delete('/api/connectors/' + keep, { headers: auth }), info);
+    await cleanup('close fixture provider', () => new Promise<void>(resolve => provider.close(() => resolve())), info);
   }
 });
