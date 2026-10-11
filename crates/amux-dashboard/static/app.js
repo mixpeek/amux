@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1315';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1317';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -28328,22 +28328,43 @@ async function _connScopePicker(id, level, enabled) {
   setTimeout(() => search.focus(), 30);
 }
 
-// Verify a connector actually WORKS (AMUX-3339): hits POST /api/connectors/<id>/test,
-// which makes one cheap authenticated call to the provider. ApiKey connectors test
-// live now; OAuth ones report "connect first" until the token exchange lands.
+// Test results are durable on the server. Refresh the catalog before rendering
+// them so reopening the drawer cannot revive its pre-test status or timestamp.
 async function _connectorTest(id, btn) {
-  const out = document.getElementById('conn-test-' + id);
+  let out = document.getElementById('conn-test-' + id);
   const orig = btn.textContent;
   btn.disabled = true; btn.textContent = 'Testing…';
   if (out) { out.textContent = ''; out.className = 'conn-test-result'; }
+  const track = (verdict, providerMeasured) => {
+    fetch('/api/client-debug', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ kind: 'connector-test-refresh', connector: id, verdict,
+        measured: true, n_considered: 1, provider_measured: providerMeasured === true }) }).catch(() => {});
+  };
   try {
     const r = await fetch('/api/connectors/' + encodeURIComponent(id) + '/test', { method: 'POST' });
     const d = await r.json();
+    try {
+      const catalog = await fetch('/api/connectors', { cache: 'no-store' });
+      const fresh = await catalog.json();
+      if (!catalog.ok || !Array.isArray(fresh.connectors)) throw new Error('connector health unavailable');
+      _connectorsData = fresh;
+      _connectorsRender(fresh);
+      if (_connOpenId) _connDrawerRender();
+      track(d.ok ? 'passed' : 'refused', d.measured);
+    } catch (e) {
+      track('refresh_failed', d.measured);
+      showToast('Test finished, but saved health could not be refreshed. Refresh health to retry.');
+    }
+    // Rendering may replace the node or the owner may have closed/switched
+    // drawers during the request. Never write into the detached old result.
+    out = document.getElementById('conn-test-' + id);
     if (out) {
       out.textContent = (d.ok ? '✓ ' : '✗ ') + (d.detail || (d.ok ? 'works' : (d.status || 'failed')));
       out.className = 'conn-test-result ' + (d.ok ? 'ok' : 'bad');
     }
   } catch (e) {
+    track('test_failed', false);
+    out = document.getElementById('conn-test-' + id);
     if (out) { out.textContent = '✗ ' + e; out.className = 'conn-test-result bad'; }
   } finally {
     btn.disabled = false; btn.textContent = orig;
