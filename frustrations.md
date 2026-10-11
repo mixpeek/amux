@@ -5875,6 +5875,17 @@ SYMPTOM: record_test reads and replaces shared last-test state without a lock, u
 COST: Parallel canary/Test results can overwrite each other or disappear after restart, obscuring whether a saved connection still works.
 FIX: Stable sidecar lock, private atomic synced publication, corrupt-state preservation, connector_test_record_not_durable signal, and sixteen concurrent distinct-result checks. Canary and maintenance snapshots are also atomic.
 
+## Chat Markdown artifact links navigate away instead of opening files
+AREA: dashboard Chat files
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: A real Codex Chat reply linking an absolute local file with Markdown navigates the dashboard to that filesystem path. Plain path links work, but Markdown anchors never enter the file viewer.
+COST: The worker's artifact cannot be read through Chat, and opening it loses the dashboard view.
+FIX: Render Chat Markdown with the worker cwd and bind the existing delegated Markdown file handler. Emit chat-markdown-file-open with measured/count on actual clicks. Desktop/mobile browser regression opens real absolute/relative files including spaces from finished, interrupted and incrementally streamed replies, verifies the visible final line and unchanged URL, and preserves safe external links.
+
 ## Corrupt saved connector scope grants a denied worker unrestricted access
 AREA: connectors
 SEVERITY: blocks
