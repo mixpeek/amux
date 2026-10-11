@@ -728,6 +728,8 @@ jobs:
         run: |
           set -uo pipefail
           node scripts/test-linkify-paths.mjs
+      - name: Browser driver executable entrypoint
+        run: node scripts/test-browser-driver-entrypoint.mjs
 
       # AEAB-18. The freshness hook is a SHELL script outside crates/, so
       # rust.yml's path filter never sees it. It also guards a silent,

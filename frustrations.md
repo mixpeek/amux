@@ -5831,6 +5831,28 @@ SYMPTOM: A failed declared API-key test returns and persists the provider respon
 COST: A connector provider can disclose its credential through inventory/last-test results that workers can read.
 FIX: Use the shared redacted provider canary, retain connector_provider_test_failed/unreachable signals, and test a real HTTP provider that echoes the rejected bearer; assert no full key in the response, inventory or durable result.
 
+## Browser routing driver silently exits when Amux home uses a symlink
+AREA: browser
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-10-10
+SESSION: human Codex full scenario E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: Node canonicalizes import.meta.url but leaves argv[1] using the caller's path spelling. With a symlinked Amux home, the executable guard skips reading stdin and exits zero with no JSON; every route then returns JSON EOF.
+COST: A real Codex browser worker selected the right profile but could not observe or control it; a second fixture was needed to distinguish the path boundary from account routing.
+FIX: Compare the canonical executable path, cover file and directory aliases plus import-only use in CI, and log browser_route_driver_invalid_json with process status and output lengths rather than credential-bearing output. Canonicalize the E2E provider audit's cwd comparison too; otherwise the actual worker's canonical rollout is incorrectly counted as zero records.
+
+## Browser routing E2E delayed-response controller races its own teardown
+AREA: tests
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-10
+SESSION: human Codex full scenario E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: The UI race fixture holds every polling GET and removes the handler before all delayed fulfills finish, aborting a real browser run with Route is already handled. The worker fixture also scores cold CUA provisioning before the driver's supported startup budget expires.
+COST: The Browser tab run stopped after eleven checks; the CUA worker was scored as failed during a still-running first image build.
+FIX: Hold exactly one response and await its fulfillment before unroute, retain a measured failure receipt, test reload restoration, and log a phase-appropriate bounded worker timeout. A private main browser retest completed all seventeen UI checks; the failed receipts are retained separately.
+
 ## Corrupt saved connector scope grants a denied worker unrestricted access
 AREA: connectors
 SEVERITY: blocks
