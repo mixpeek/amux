@@ -5852,3 +5852,14 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: The UI race fixture holds every polling GET and removes the handler before all delayed fulfills finish, aborting a real browser run with Route is already handled. The worker fixture also scores cold CUA provisioning before the driver's supported startup budget expires.
 COST: The Browser tab run stopped after eleven checks; the CUA worker was scored as failed during a still-running first image build.
 FIX: Hold exactly one response and await its fulfillment before unroute, retain a measured failure receipt, test reload restoration, and log a phase-appropriate bounded worker timeout. A private main browser retest completed all seventeen UI checks; the failed receipts are retained separately.
+
+## Connector Test leaves the saved health view at its pre-test result
+AREA: browser
+SEVERITY: slows
+STATUS: open
+DATE: 2026-10-10
+SESSION: Codex checklist-e2e-20261010
+CARD: none (owner requested PR-only work; no board mutation)
+SYMPTOM: On live main46da, Google Calendar/Drive/Admin and Granola Test clicks wrote fresh durable receipts but the drawer still showed a three-hour-old Last live test. Closing/reopening retained that cached result until Refresh health. Missing Slack/Telegram/Mattermost tests likewise retained fourteen-hour-old timestamps.
+COST: Eight real browser Test clicks required independent API readback and manual Refresh health to reconcile persisted results with the owner's display.
+FIX: Refresh the authoritative connector catalog after Test, rerender cards and the currently selected drawer, and log a measured connector-test-refresh verdict without provider bodies or credentials. Desktop/mobile actual API/provider success-failure-recovery, reopen/reload, switched-drawer and unconfigured-refusal proof is retained; unmodified main negative controls fail. PR-only candidate pending review.
