@@ -14069,7 +14069,7 @@ async function saveGlobalMemory() {
   }
 }
 
-const APP_VER = '0.9.1315';   // bump together with the sw.js CACHE version
+const APP_VER = '0.9.1316';   // bump together with the sw.js CACHE version
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -27459,17 +27459,24 @@ async function _connCreate() {
 }
 
 async function _connDelete(id) {
-  if (!confirm('Forget connector "' + id + '"?\n\nThe definition is removed. Any credential VALUES already in server.env are left alone.')) return;
+  const track = verdict => fetch(API + '/api/client-debug', {
+    method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+    body: JSON.stringify({ kind: 'connector-forget', connector: id, verdict, measured: true, n_considered: 1, ver: APP_VER }),
+  }).catch(() => {});
+  if (!await showConfirm('Forget connector "' + id + '"?\n\nRemoves the definition and disconnects its saved accounts. Cancels pending sign-ins. Credential values in server.env are left alone.', 'Forget connector', true)) {
+    track('cancelled'); return;
+  }
   try {
     const r = await fetch(API + '/api/connectors/' + encodeURIComponent(id), {
       method: 'DELETE', headers: _authHeaders(),
     });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok || d.error) { showToast(d.error || 'delete failed'); return; }
+    if (!r.ok || d.error) { track('refused'); showToast(d.error || 'delete failed'); return; }
+    track('removed');
     const left = (d.credentials_left_in_server_env || []).join(', ');
     showToast('Removed ' + id + (left ? ' — ' + left + ' still in server.env' : ''));
     _connectorsTabLoad();
-  } catch (e) { showToast('delete failed: ' + String(e)); }
+  } catch (e) { track('failed'); showToast('delete failed: ' + String(e)); }
 }
 
 let _emailAccount = null;

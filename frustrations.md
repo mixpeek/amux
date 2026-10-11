@@ -5896,3 +5896,14 @@ CARD: none (user authorized PRs only; no live board write)
 SYMPTOM: On main 6e794eeb, invalid JSON, a non-object root or an empty stored scope becomes an empty map. A previously disabled worker can then mint a live bearer as though the connector were never scoped.
 COST: A storage fault broadens credential access; four private main fault cases minted a synthetic bearer and successfully used it with an independent provider.
 FIX: Distinguish absent scope from unreadable scope, propagate database/JSON/type errors through every effective layer, reject mint/send with connector_scope_unreadable and a repair path, and emit a measured WARN. Preserve damaged rows until explicit owner repair. Configurations shows unreadable local/inherited layers and direct repair controls; the editor requires explicit replacement JSON instead of offering a blank default. Real process tests cover all three layers, three SIGKILL restarts, immutable grants and exact metadata repair; private endpoint faults assert zero provider access.
+
+## Forget connector blocks the embedded browser on a native confirm dialog
+AREA: connectors
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: The declared connector Forget button still uses native confirm(), despite the shared app modal explicitly replacing it for standalone/PWA browsers. The real in-app browser validation loses focus after this action and cannot complete deletion. The text also omits saved-account disconnect and pending-consent cancellation.
+COST: A valid owner deletion cannot be completed/verified reliably through the browser, and its credential consequences are hidden.
+FIX: Use the shared asynchronous danger confirmation, describe the actual account/pending effects and retained environment values, and emit measured connector-forget cancelled/removed/refused/failed receipts. Real browser regression covers Cancel without a DELETE, confirmed deletion, unrelated config/keys preservation, old-grant tombstones, rejected late callback and no resurrection after redeclaration.
