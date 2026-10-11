@@ -128,6 +128,7 @@ pub mod ids {
     pub const DISK_WATCH: &str = "disk-watch";
     pub const STATUS_HISTORY: &str = "status-history";
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
+    pub const CONNECTOR_MAINTENANCE: &str = "connector-maintenance";
     pub const EPISODES: &str = "episodes";
     pub const TOKEN_LEDGER: &str = "token-ledger";
     pub const BOARD_HYGIENE: &str = "board-hygiene";
@@ -184,6 +185,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::GOAL_KEEPER,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
+    ids::CONNECTOR_MAINTENANCE,
     ids::EPISODES,
     ids::TOKEN_LEDGER,
     ids::BOARD_HYGIENE,
@@ -734,6 +736,14 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/metrics/host/pressure"),
+    },
+    Doc {
+        id: ids::CONNECTOR_MAINTENANCE,
+        name: "Connector maintenance",
+        purpose: "Refreshes renewable saved grants before expiry and probes configured connections without changing owner definitions, account pins or scopes. Independent of autofix/board policy; provider revocation still requires consent.",
+        env: &[EnvControl { var: "AMUX_CONNECTOR_MAINTENANCE_SECS", effect: "pass interval in seconds (default 300, 0 disables)", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/connectors/maintenance"),
     },
     Doc {
         id: ids::BROWSER_LOGIN_SYNC,
