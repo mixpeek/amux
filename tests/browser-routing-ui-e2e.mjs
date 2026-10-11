@@ -34,6 +34,9 @@ try{
  await p.selectOption('#bw-profile','routing-work');await p.selectOption('#bw-cdp-profile',chromeProfile);await p.selectOption('#bw-cua-profile','routing-work');await p.locator('#bw-cua-enabled').check();
  await p.locator('#bw-routing').getByRole('button',{name:'Save route',exact:true}).click();await p.waitForFunction(()=>document.querySelector('#bw-routing-status').textContent.startsWith('Saved:'));
  const config=await api(base,'/api/browser/routing/config');prove('Browser tab saves selected native/CDP/CUA profiles',config.config.native_profile==='routing-work'&&config.config.chrome_profile===chromeProfile&&config.config.cua_profile==='routing-work'&&config.config.allow_cua);
+ await p.reload();await p.waitForFunction(value=>document.querySelector('#bw-profile')?.value==='routing-work'&&document.querySelector('#bw-cdp-profile')?.value===value,chromeProfile);
+ if(!(await p.locator('#bw-routing').evaluate(e=>e.open)))await p.locator('#bw-routing summary').click();
+ prove('Browser tab reload restores saved profile and fallback choices',await p.inputValue('#bw-cdp-profile')===chromeProfile&&await p.inputValue('#bw-cua-profile')==='routing-work'&&await p.locator('#bw-cua-enabled').isChecked());
  await p.selectOption('#bw-profile','routing-personal');
  prove('unconfigured profile does not inherit the previous account fallback',await p.inputValue('#bw-cdp-profile')===''&&!(await p.locator('#bw-cua-enabled').isChecked()));
  await p.selectOption('#bw-cua-profile','routing-personal');
@@ -44,23 +47,25 @@ try{
 
  // Hold a real saved-default response behind explicit selection and a newer
  // owner write. This reproduced a Personal start and missing CDP on the old UI.
- let releaseDiscovery, discoveryRead;
+ let releaseDiscovery, discoveryRead, discoveryFinished, discoveryTaken=false;
  const discoveryHeld=new Promise(r=>releaseDiscovery=r);
  const discoveryReady=new Promise(r=>discoveryRead=r);
+ const discoveryDone=new Promise(r=>discoveryFinished=r);
  const holdDiscovery=async route=>{
-  if(route.request().method()!=='GET')return route.continue();
-  const response=await route.fetch();discoveryRead();await discoveryHeld;await route.fulfill({response});
+  if(route.request().method()!=='GET'||discoveryTaken)return route.continue();
+  discoveryTaken=true;
+  const response=await route.fetch();discoveryRead();await discoveryHeld;await route.fulfill({response});discoveryFinished();
  };
  await p.route('**/api/browser/routing/config',holdDiscovery);
  const lateDiscovery=p.evaluate(()=>window._bwLoadRouting());await discoveryReady;
  await p.selectOption('#bw-profile','routing-personal');await p.selectOption('#bw-profile','routing-work');
- releaseDiscovery();await lateDiscovery;await p.unroute('**/api/browser/routing/config',holdDiscovery);
+ releaseDiscovery();await lateDiscovery;await discoveryDone;await p.unroute('**/api/browser/routing/config',holdDiscovery);
  prove('late discovery preserves explicit Work selection and its matching fallback',await p.inputValue('#bw-profile')==='routing-work'&&await p.inputValue('#bw-cdp-profile')===chromeProfile&&await p.locator('#bw-cua-enabled').isChecked());
- let releaseOld, oldRead;const oldHeld=new Promise(r=>releaseOld=r);const oldReady=new Promise(r=>oldRead=r);
- const holdOld=async route=>{if(route.request().method()!=='GET')return route.continue();const response=await route.fetch();oldRead();await oldHeld;await route.fulfill({response});};
+ let releaseOld, oldRead, oldFinished, oldTaken=false;const oldHeld=new Promise(r=>releaseOld=r);const oldReady=new Promise(r=>oldRead=r);const oldDone=new Promise(r=>oldFinished=r);
+ const holdOld=async route=>{if(route.request().method()!=='GET'||oldTaken)return route.continue();oldTaken=true;const response=await route.fetch();oldRead();await oldHeld;await route.fulfill({response});oldFinished();};
  await p.route('**/api/browser/routing/config',holdOld);
  const oldDiscovery=p.evaluate(()=>window._bwLoadRouting());await oldReady;
- await p.evaluate(()=>window._bwSaveRouting());releaseOld();await oldDiscovery;await p.unroute('**/api/browser/routing/config',holdOld);
+ await p.evaluate(()=>window._bwSaveRouting());releaseOld();await oldDiscovery;await oldDone;await p.unroute('**/api/browser/routing/config',holdOld);
  prove('late discovery cannot replace a newer owner route save',await p.evaluate(()=>_bwRouteConfig.native_profile==='routing-work')&&await p.inputValue('#bw-profile')==='routing-work');
 
  await p.fill('#bw-url',`http://127.0.0.1:${fixture.address().port}`);await p.evaluate(()=>window._bwGo());
@@ -87,4 +92,5 @@ try{
  const bounds=await p.locator('#bw-routing').evaluate(e=>({scroll:e.scrollWidth,width:e.clientWidth}));prove('route settings fit phone width',bounds.scroll<=bounds.width+1);
  const session=await p.evaluate(()=>_bwSession);await api(base,'/api/browser/routing/request','POST',{verb:'stop',session,body:{}},session);
  writeFileSync(join(out,'ui-result.json'),JSON.stringify({verdict:'PASS',measured:true,n_considered:checks.length,checks},null,2));
-}finally{const session=await p.evaluate(()=>_bwSession).catch(()=>null);if(session)await api(base,'/api/browser/routing/request','POST',{verb:'stop',session,body:{}},session).catch(()=>{});await browser.close();fixture.close();}
+}catch(e){writeFileSync(join(out,'ui-result.json'),JSON.stringify({verdict:'FAIL',measured:true,n_considered:checks.length,checks,error:e.stack},null,2));throw e;}
+finally{const session=await p.evaluate(()=>_bwSession).catch(()=>null);if(session)await api(base,'/api/browser/routing/request','POST',{verb:'stop',session,body:{}},session).catch(()=>{});await browser.close();fixture.close();}
