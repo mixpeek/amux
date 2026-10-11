@@ -5886,6 +5886,17 @@ SYMPTOM: A real Codex Chat reply linking an absolute local file with Markdown na
 COST: The worker's artifact cannot be read through Chat, and opening it loses the dashboard view.
 FIX: Render Chat Markdown with the worker cwd and bind the existing delegated Markdown file handler. Emit chat-markdown-file-open with measured/count on actual clicks. Desktop/mobile browser regression opens real absolute/relative files including spaces from finished, interrupted and incrementally streamed replies, verifies the visible final line and unchanged URL, and preserves safe external links.
 
+## Corrupt saved connector scope grants a denied worker unrestricted access
+AREA: connectors
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-10-10
+SESSION: human Codex full E2E validation
+CARD: none (user authorized PRs only; no live board write)
+SYMPTOM: On main 6e794eeb, invalid JSON, a non-object root or an empty stored scope becomes an empty map. A previously disabled worker can then mint a live bearer as though the connector were never scoped.
+COST: A storage fault broadens credential access; four private main fault cases minted a synthetic bearer and successfully used it with an independent provider.
+FIX: Distinguish absent scope from unreadable scope, propagate database/JSON/type errors through every effective layer, reject mint/send with connector_scope_unreadable and a repair path, and emit a measured WARN. Preserve damaged rows until explicit owner repair. Configurations shows unreadable local/inherited layers and direct repair controls; the editor requires explicit replacement JSON instead of offering a blank default. Real process tests cover all three layers, three SIGKILL restarts, immutable grants and exact metadata repair; private endpoint faults assert zero provider access.
+
 ## Connector Test leaves the saved health view at its pre-test result
 AREA: browser
 SEVERITY: slows
